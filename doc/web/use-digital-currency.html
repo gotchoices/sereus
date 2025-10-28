@@ -1,11 +1,146 @@
 <h1>Use Case: Digital Currency</h1>
-<p>MyCHIPs historically used dual-party databases for shared tallies. On Sereus, tallies live in a thread, simplifying consensus and application logic by delegating storage concerns to the fabric.</p>
 
-<ul>
-  <li>Shared SQL with clear roles and permissions.</li>
-  <li>Reduced consensus complexity; simpler app layer.</li>
-  <li>Interoperable with other thread-based services.</li>
-</ul>
+<section>
+  <h2>MyCHIPs: A Credit-Based Digital Medium of Exchange</h2>
+  <p>The <a href="https://mychips.org" target="_blank" rel="noopener">MyCHIPs digital medium of exchange project</a> provides a system for managing credit relationships between individuals and businesses. Unlike cryptocurrency (which relies on tokens), MyCHIPs is based on credit tallies—records of mutual obligations between two parties.</p>
+  
+  <h3>The Traditional MyCHIPs Architecture</h3>
+  <p>Historically, MyCHIPs has been based on two separate, individual databases kept by two parties to a single logical shared tally of credit entries. Each party maintains their own database and the system must ensure consensus between these two independent databases.</p>
+  <p>This architecture presented challenges:</p>
+  <ul>
+    <li><strong>Consensus complexity:</strong> Ensuring both parties' databases agree requires complex synchronization protocols</li>
+    <li><strong>Conflict resolution:</strong> What happens when the databases disagree?</li>
+    <li><strong>Application burden:</strong> The application layer must handle all storage, distribution, and consistency concerns</li>
+    <li><strong>Availability:</strong> If one party's database is offline, the tally becomes inaccessible</li>
+  </ul>
+</section>
+
+<section>
+  <h2>MyCHIPs Retooled for Sereus Threads</h2>
+  <p>MyCHIPs is being retooled to work on a Sereus thread. This represents a fundamental simplification: instead of two separate databases that must be kept in sync, there is one shared thread database accessible to both parties.</p>
+  
+  <h3>How It Works</h3>
+  <p>When two parties establish a credit relationship:</p>
+  <ol>
+    <li><strong>Thread creation:</strong> One party creates a tally thread and invites the other</li>
+    <li><strong>Shared database:</strong> Both parties' cadres share the same thread database</li>
+    <li><strong>Credit transactions:</strong> When goods or services change hands, the transaction is recorded in the shared database</li>
+    <li><strong>Automatic distribution:</strong> Changes are automatically distributed across both parties' cadres</li>
+    <li><strong>Consensus by design:</strong> There's only one authoritative record, eliminating sync issues</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Benefits of Thread-Based Tallies</h2>
+  
+  <h3>Simplified Consensus</h3>
+  <p>With a shared database, consensus is inherent. Both parties see the same data because it's literally the same database, distributed across their cadres. There's no need for complex consensus protocols between separate databases.</p>
+  
+  <h3>Reduced Application Complexity</h3>
+  <p>The application layer becomes much simpler. Instead of managing two databases, handling synchronization, and resolving conflicts, the MyCHIPs application just issues SQL queries to the thread database. The Sereus stack handles:</p>
+  <ul>
+    <li>Storage and indexing (Optimystic)</li>
+    <li>Distribution across nodes (Optimystic + Fret)</li>
+    <li>Network transport (libp2p)</li>
+    <li>Consistency guarantees (thread database properties)</li>
+  </ul>
+  
+  <h3>Improved Availability</h3>
+  <p>Because the tally is distributed across both parties' cadres, it remains available even if some nodes are offline. If one party has multiple devices in their cadre, the tally is accessible from any of them.</p>
+  
+  <h3>Better Integration</h3>
+  <p>Thread-based tallies can more easily integrate with other Sereus applications. For example:</p>
+  <ul>
+    <li>A marketplace thread could reference tally threads for payment</li>
+    <li>Escrow services could participate in tally threads as third parties</li>
+    <li>Credit ratings could be computed from tally thread data</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Credit vs. Token-Based Currency</h2>
+  <p>MyCHIPs differs from cryptocurrencies like Bitcoin in fundamental ways:</p>
+  
+  <h3>Credit-Based</h3>
+  <p>MyCHIPs tallies represent credit relationships: "Alice owes Bob 100 CHIPs" or "Bob owes Alice 50 CHIPs." This is more like traditional banking and how most commerce actually works.</p>
+  <ul>
+    <li>No mining or proof-of-work</li>
+    <li>No global blockchain</li>
+    <li>Credit based on trust relationships, not scarcity</li>
+    <li>Can represent real economic value (goods/services exchanged)</li>
+  </ul>
+  
+  <h3>Relationship-Focused</h3>
+  <p>Each tally exists in a thread between specific parties. This creates natural privacy—your financial relationships aren't broadcast to the entire network.</p>
+  
+  <h3>Scalable</h3>
+  <p>Because tallies are between pairs (or small groups) rather than on a global ledger, the system scales naturally. More users mean more tallies, but each tally is independent.</p>
+</section>
+
+<section>
+  <h2>Technical Implementation</h2>
+  <p>A MyCHIPs tally thread includes SQL tables for:</p>
+  <ul>
+    <li><strong>Tally record:</strong> Basic information about the credit relationship</li>
+    <li><strong>Transactions (chits):</strong> Individual credit/debit entries</li>
+    <li><strong>Balance:</strong> Current state of the tally (who owes whom how much)</li>
+    <li><strong>Limits:</strong> Maximum credit each party will extend</li>
+    <li><strong>Terms:</strong> Interest rates, settlement terms, etc.</li>
+    <li><strong>Lifts:</strong> Multi-party settlements that net out circular debts</li>
+  </ul>
+  
+  <p>Role-based permissions ensure:</p>
+  <ul>
+    <li>Both parties can read all tally data</li>
+    <li>Transactions require consent of both parties</li>
+    <li>Unilateral limits on how much credit each extends</li>
+    <li>Audit trail of all changes</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Multi-Hop Payments and Lifts</h2>
+  <p>One of MyCHIPs' powerful features is the ability to make payments through chains of tallies:</p>
+  <ul>
+    <li>Alice wants to pay Carol but doesn't have a direct tally with her</li>
+    <li>Alice has a tally with Bob, and Bob has a tally with Carol</li>
+    <li>A payment can "hop" through: Alice credits Bob, Bob credits Carol</li>
+    <li>When circular debts exist (Alice→Bob→Carol→Alice), they can be "lifted" (netted out)</li>
+  </ul>
+  
+  <p>On Sereus, these operations can involve temporary multi-party threads or orchestration threads that coordinate across multiple bilateral tallies.</p>
+</section>
+
+<section>
+  <h2>Advantages Over Cryptocurrency</h2>
+  <ul>
+    <li><strong>No mining:</strong> No energy waste on proof-of-work</li>
+    <li><strong>Private transactions:</strong> Tallies aren't publicly visible</li>
+    <li><strong>Real value:</strong> Credit based on actual exchange of goods/services</li>
+    <li><strong>Flexible credit:</strong> Parties set their own credit terms and limits</li>
+    <li><strong>Scalable:</strong> No global blockchain bottleneck</li>
+    <li><strong>Familiar model:</strong> Based on credit relationships people understand</li>
+    <li><strong>Integrated:</strong> Can work alongside other thread-based applications</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Advantages Over Traditional Banking</h2>
+  <ul>
+    <li><strong>Peer-to-peer:</strong> No bank or central authority required</li>
+    <li><strong>User-controlled:</strong> You own your tally data, not a bank</li>
+    <li><strong>Low/no fees:</strong> No transaction fees extracted by intermediaries</li>
+    <li><strong>Instant settlement:</strong> No clearing house delays</li>
+    <li><strong>Transparent terms:</strong> All tally terms are explicit and visible to both parties</li>
+    <li><strong>Inclusive:</strong> Anyone can participate; no credit score or bank account required</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Current Status</h2>
+  <p>The retooling of MyCHIPs for Sereus threads is an active development effort. The goal is to leverage Sereus's thread infrastructure to dramatically simplify MyCHIPs' application layer while maintaining all of its economic and privacy properties.</p>
+  <p>Learn more about the MyCHIPs project at <a href="https://mychips.org" target="_blank" rel="noopener">mychips.org</a>.</p>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="uses" class="cta-button">Back: All Use Cases</a>

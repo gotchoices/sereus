@@ -1,11 +1,92 @@
 <h1>Use Case: Social Media</h1>
-<p>Early social media was chronological and user-controlled. Sereus restores user choice: publish timelines to selected followers; followers compose feeds without opaque ranking or ads.</p>
 
-<ul>
-  <li>Consent-based following; no global spam.</li>
-  <li>Custom feed synthesis; portable graph.</li>
-  <li>Thread-scoped identity and moderation.</li>
-</ul>
+<section>
+  <h2>What Happened to Social Media?</h2>
+  <p>In the early days of social media, there were two simple concepts:</p>
+  <ul>
+    <li><strong>My Timeline:</strong> A chronological list of all my posts</li>
+    <li><strong>My Feed:</strong> A chronological list of all the timelines of everyone I'm following, merged together</li>
+  </ul>
+  <p>It was straightforward, user-controlled, and transparent.</p>
+</section>
+
+<section>
+  <h2>The Rise of Algorithmic Curation</h2>
+  <p>Over time, social media companies got into the business of curating users' feeds. Rather than seeing everything from everyone you follow in chronological order, you began to see what the gatekeepers decided you would see—including posts by paying advertisers.</p>
+  <p>This practice led to:</p>
+  <ul>
+    <li><strong>Spam and ads:</strong> Unwanted content inserted into your feed</li>
+    <li><strong>Shadow banning:</strong> Opaque suppression of certain voices or topics</li>
+    <li><strong>Engagement manipulation:</strong> Content selected to maximize your time on platform, not your satisfaction</li>
+    <li><strong>Filter bubbles:</strong> Algorithms showing you only what you're likely to agree with</li>
+    <li><strong>Loss of control:</strong> You can't see all posts from accounts you follow, and you see posts from accounts you don't</li>
+  </ul>
+</section>
+
+<section>
+  <h2>The Sereus Alternative</h2>
+  <p>In a Sereus framework, social media returns to its roots—with enhanced privacy and user control.</p>
+  
+  <h3>User-Controlled Timelines</h3>
+  <p>A user can build a social media timeline (a thread database with a posts schema) and publish it to selected followers. You decide who can follow you, just as they decide to accept your invitation.</p>
+  
+  <h3>User-Built Feeds</h3>
+  <p>Followers build their own custom feeds by prioritizing posts as they wish. You can:</p>
+  <ul>
+    <li>See posts in pure chronological order</li>
+    <li>Filter by topic, keyword, or content type</li>
+    <li>Weight certain accounts more heavily than others</li>
+    <li>Mute topics or keywords without platform interference</li>
+    <li>Use client-side algorithms of your choice (or none at all)</li>
+  </ul>
+  <p>Importantly, <strong>there is no gatekeeper in the middle</strong>. The platform doesn't see your feed; you control it entirely.</p>
+  
+  <h3>Consent-Based Following</h3>
+  <p>Following relationships are established by mutual consent through thread invitations. This means:</p>
+  <ul>
+    <li>No unsolicited follows from bots or spam accounts</li>
+    <li>You choose who can see your timeline</li>
+    <li>Your follower graph is private—not publicly scrapeable</li>
+    <li>Blocking is truly effective; blocked users lose access to the thread</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Technical Architecture</h2>
+  <p>A Sereus-based social media app might work like this:</p>
+  <ol>
+    <li>Alice creates a "timeline thread" with a SQL schema for posts, likes, comments, etc.</li>
+    <li>Alice invites Bob to follow her timeline. Bob's cadre joins the thread and begins distributing the data.</li>
+    <li>When Alice posts, it's written to the thread database and automatically appears in Bob's client.</li>
+    <li>Bob creates his own "feed thread" that aggregates queries from all the timeline threads he follows.</li>
+    <li>Bob's feed client queries these threads and applies his chosen filters/ordering to build a unified view.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Advantages Over Platform Social Media</h2>
+  <ul>
+    <li><strong>No algorithmic manipulation:</strong> You see what you choose to see, in the order you prefer.</li>
+    <li><strong>No advertising:</strong> There's no central platform to sell ad space in your feed.</li>
+    <li><strong>No shadow banning:</strong> Content isn't suppressed by opaque algorithms.</li>
+    <li><strong>Private social graph:</strong> Your connections aren't publicly visible or mineable.</li>
+    <li><strong>True blocking:</strong> Blocked users actually lose access, not just "can't see your profile."</li>
+    <li><strong>Portable identity:</strong> You own your timeline; it's not hosted on a platform that could delete it.</li>
+    <li><strong>Resilient:</strong> Your timeline is distributed across your cadre and your followers' cadres.</li>
+    <li><strong>No deplatforming:</strong> No central authority can remove you from the network.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>New Possibilities</h2>
+  <p>The Sereus architecture also enables features impossible in centralized platforms:</p>
+  <ul>
+    <li><strong>Collaborative timelines:</strong> Multiple people co-managing a shared account or publication</li>
+    <li><strong>Granular permissions:</strong> Different followers can have different access levels to your posts</li>
+    <li><strong>Community moderation:</strong> Thread participants can collectively define moderation rules</li>
+    <li><strong>Portable curation:</strong> Build and share feed algorithms with others; remix and customize</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="use-classifieds" class="cta-button">Next: Classifieds / Marketplaces</a>

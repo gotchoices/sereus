@@ -1,17 +1,59 @@
 <h1>Overview</h1>
-<p>Sereus is a Web3 fabric where identities and permissions are scoped to consent-based threads. Each thread is a shared SQL database among its participants with role-based access.</p>
 
-<ul>
-  <li>No global identity leakage; only thread participants see each other.</li>
-  <li>Invite/consent flows form trusted subnets, not public broadcast.</li>
-  <li>Data lives in shared SQL, replicated across participants' cadres.</li>
+<section>
+  <h2>A New Model for Web3 Connections</h2>
+  <p>Sereus Fabric rethinks how users connect and share data on the web. Instead of broadcasting your identity to a global network, Sereus creates small, private threads—invitation-only subnets where connections form through mutual consent and existing trust.</p>
+</section>
+
+<section>
+  <h2>What Are Threads?</h2>
+  <p>A thread is the fundamental building block of Sereus. It represents:</p>
+  <ul>
+    <li><strong>A trusted subnet:</strong> Threads connect two or more users who have explicitly consented to share a common space.</li>
+    <li><strong>A shared SQL database:</strong> Each thread contains a database accessible by all participants, with access controlled by role-based permissions defined by the thread creator or group.</li>
+    <li><strong>A privacy boundary:</strong> Identities are shared only among thread participants. There is no global identity registry or directory.</li>
+    <li><strong>A collaboration space:</strong> Thread databases can contain any SQL schema, supporting diverse applications from messaging to complex business logic.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Key Principles</h2>
   
-</ul>
+  <h3>Consent-Based Identity</h3>
+  <p>Unlike traditional web platforms where your identity is globally searchable, Sereus identities exist only within the context of specific threads. When you join a thread, you share your identity only with that thread's participants. No central authority tracks your presence or connections.</p>
+  
+  <h3>Out-of-Band Trust</h3>
+  <p>Threads form based on existing knowledge or trust between participants. Credentials and initial connections are established out of band—perhaps through a QR code, an email, or an in-person exchange. This eliminates the need for certificate authorities or SSL-style trust hierarchies.</p>
+  
+  <h3>Shared Data, Distributed Storage</h3>
+  <p>Each thread's database is distributed across the devices (cadres) of its participants. Data is sharded and distributed for resilience. All participants see a consistent view of the data, with access controlled by their assigned roles within the thread.</p>
+  
+  <h3>Invitation-Only Joining</h3>
+  <p>New members join threads only by invitation from existing participants. This creates a natural barrier against spam, unsolicited messages, and unwanted connections. You receive communications only from threads you've explicitly joined.</p>
+</section>
+
+<section>
+  <h2>How It Differs from Traditional Web</h2>
+  <p>Traditional web applications typically rely on:</p>
+  <ul>
+    <li>Central servers that broker all connections</li>
+    <li>Global identity systems (usernames, email addresses, phone numbers)</li>
+    <li>Platform owners who control access and data</li>
+    <li>Certificate authorities to establish trust</li>
+  </ul>
+  
+  <p>Sereus replaces this model with:</p>
+  <ul>
+    <li>Direct peer-to-peer connections via libp2p</li>
+    <li>Thread-scoped identities known only to participants</li>
+    <li>User-owned data distributed across trusted devices</li>
+    <li>Out-of-band trust establishment without central authorities</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="architecture" class="cta-button">Next: Architecture</a>
   <a href="#" data-page="home" class="cta-button alt">Back: Home</a>
-  
 </div>
 
 

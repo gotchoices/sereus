@@ -1,11 +1,123 @@
 <h1>Use Case: Medical Records</h1>
-<p>Patients own their medical thread. Providers gain scoped access by QR or invite; data shards across more nodes as providers join, improving availability while keeping control with the patient.</p>
 
-<ul>
-  <li>Single patient-owned record; provider access is revocable.</li>
-  <li>Role-based access to protect sensitive fields.</li>
-  <li>Resilient storage via cadres and sharding.</li>
-</ul>
+<section>
+  <h2>The Medical Records Problem</h2>
+  <p>Much has been hoped for in the field of secure, portable medical records. Electronic Health Records (EHR) systems promise better care coordination and reduced medical errors, but they face a fundamental challenge:</p>
+  <p class="highlight"><strong>Who can you trust to securely keep your medical record?</strong></p>
+  
+  <p>Current approaches have significant limitations:</p>
+  <ul>
+    <li><strong>Hospital-owned records:</strong> Your data is locked in each provider's system; moving care means starting fresh</li>
+    <li><strong>EHR vendors:</strong> Centralized companies control access and can set terms unilaterally</li>
+    <li><strong>Privacy concerns:</strong> Medical data breaches are common and devastating</li>
+    <li><strong>Fragmentation:</strong> Your complete health history is scattered across multiple incompatible systems</li>
+    <li><strong>Access barriers:</strong> Getting your own records can be difficult and slow</li>
+    <li><strong>Patient powerlessness:</strong> You can't easily revoke a provider's access or control who sees what</li>
+  </ul>
+</section>
+
+<section>
+  <h2>The Sereus Solution: Patient-Owned Records</h2>
+  <p>Under a Sereus topology, the answer to "who can you trust?" is simple: <strong>You.</strong></p>
+  
+  <h3>How It Works</h3>
+  <ol>
+    <li><strong>Initial Setup:</strong> A patient initializes a blank medical record thread—a shared database with initially only a single subscriber/keeper: themselves.</li>
+    <li><strong>Granting Provider Access:</strong> The patient shares a QR code with their doctor. The doctor's cadre scans it and suddenly has appropriate access to the database.</li>
+    <li><strong>Collaborative Records:</strong> The doctor begins storing relevant data (visit notes, prescriptions, test results) directly to the shared thread database.</li>
+    <li><strong>Multi-Provider Access:</strong> When the patient shares the database with a second provider, that provider gains access (if granted by the thread policies) to the existing medical record.</li>
+    <li><strong>Increased Resilience:</strong> As more providers join, data is sharding across a larger number of nodes, providing additional data security and availability.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Patient Control</h2>
+  <p>The patient is always in charge of their own record:</p>
+  <ul>
+    <li><strong>Grant access:</strong> Add new providers by invitation/QR code</li>
+    <li><strong>Revoke access:</strong> Terminate provider access at any time for any reason</li>
+    <li><strong>Role-based permissions:</strong> Define what each provider can see and modify</li>
+    <li><strong>Audit trail:</strong> See who accessed what data and when</li>
+    <li><strong>Data ownership:</strong> The thread database belongs to you, not a hospital or vendor</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Technical Implementation</h2>
+  <p>A medical record thread might have a SQL schema including tables for:</p>
+  <ul>
+    <li>Patient demographics and contact information</li>
+    <li>Visit history and clinical notes</li>
+    <li>Medications and prescriptions</li>
+    <li>Laboratory results and test reports</li>
+    <li>Imaging studies and reports</li>
+    <li>Immunization records</li>
+    <li>Allergies and adverse reactions</li>
+    <li>Care plans and treatment protocols</li>
+  </ul>
+  
+  <p>Role-based permissions ensure:</p>
+  <ul>
+    <li>The patient can read everything</li>
+    <li>Providers can read relevant sections based on specialty</li>
+    <li>Only authorized providers can write to specific tables</li>
+    <li>Sensitive data (mental health, substance abuse) has additional access controls</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Advantages Over Traditional EHR</h2>
+  <ul>
+    <li><strong>Single source of truth:</strong> One comprehensive record, not fragments across systems</li>
+    <li><strong>Immediate access:</strong> New providers see your complete history instantly upon invitation</li>
+    <li><strong>Patient sovereignty:</strong> You control access, not the hospital or insurance company</li>
+    <li><strong>Privacy by design:</strong> Data stored only on your cadre and authorized providers' cadres</li>
+    <li><strong>Portability:</strong> Change providers without losing your records or starting over</li>
+    <li><strong>Resilience:</strong> Data distributed across multiple nodes; survives individual device failures</li>
+    <li><strong>Revocable access:</strong> Truly revoke a provider's access when switching care</li>
+    <li><strong>Granular control:</strong> Share different data with different providers based on need</li>
+    <li><strong>Audit transparency:</strong> Know exactly who accessed what and when</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Security and Privacy</h2>
+  <ul>
+    <li><strong>No central honeypot:</strong> Medical records aren't aggregated in one database to be breached</li>
+    <li><strong>Encryption in transit:</strong> libp2p connections are encrypted</li>
+    <li><strong>Consent-based access:</strong> Providers must be explicitly invited; can't just look you up</li>
+    <li><strong>Role-based permissions:</strong> Fine-grained control over who sees what</li>
+    <li><strong>Patient-controlled:</strong> You can remove access immediately if trust is broken</li>
+    <li><strong>Distributed storage:</strong> Data sharded across trusted nodes reduces single-point vulnerabilities</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Example Scenario</h2>
+  <p>Sarah creates her medical record thread when she's young and healthy. Over the years:</p>
+  <ol>
+    <li>She invites her primary care physician who begins documenting her annual checkups</li>
+    <li>When she needs a specialist, she shares access via QR code; the specialist sees relevant history</li>
+    <li>She has a child and invites her OB/GYN; gives them access to relevant reproductive health data</li>
+    <li>In an emergency, she shares temporary read access with ER staff from her phone</li>
+    <li>Later, she revokes access to a provider she's no longer seeing</li>
+    <li>Throughout, her complete medical history remains in one place, under her control</li>
+  </ol>
+  
+  <p>As more providers join, Sarah's record is automatically distributed across more nodes, improving availability without centralizing control.</p>
+</section>
+
+<section>
+  <h2>Broader Implications</h2>
+  <p>Patient-owned medical records on Sereus could enable:</p>
+  <ul>
+    <li><strong>Research participation:</strong> Patients selectively share de-identified data with researchers</li>
+    <li><strong>Care coordination:</strong> All providers see a unified record, reducing duplicate tests</li>
+    <li><strong>Family medical history:</strong> Share relevant genetic and family history across generations</li>
+    <li><strong>Public health:</strong> Voluntary, consent-based reporting for epidemiology</li>
+    <li><strong>Cross-border care:</strong> Medical records that work internationally</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="use-community-voting" class="cta-button">Next: Community Voting</a>

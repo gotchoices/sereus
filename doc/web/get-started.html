@@ -1,15 +1,153 @@
-<h1>Get Started</h1>
-<p>Develop locally, bootstrap a thread, and build an app module that reads/writes SQL on a consented thread.</p>
+<h1>Get Started with Sereus</h1>
 
-<ol>
-  <li>Install the stack and bootstrap tools (docs coming soon).</li>
-  <li>Create a dev thread, define roles and schema.</li>
-  <li>Run a local cadre and connect a peer via libp2p.</li>
-  <li>Build a thin client that issues SQL to the thread.</li>
-</ol>
+<section>
+  <h2>Development Path</h2>
+  <p>Building on Sereus involves understanding its fundamental concepts, setting up your development environment, and creating your first thread-based application. Here's the path from zero to a working application.</p>
+</section>
+
+<section>
+  <h2>Prerequisites</h2>
+  <p>Before diving into Sereus development, you should have:</p>
+  <ul>
+    <li><strong>Linux/Unix environment:</strong> Most development happens on Linux; macOS works as well</li>
+    <li><strong>SQL knowledge:</strong> Familiarity with SQL for defining schemas and querying data</li>
+    <li><strong>Basic networking:</strong> Understanding of IP addresses, ports, and peer-to-peer concepts</li>
+    <li><strong>Programming experience:</strong> Comfort with at least one programming language for building your application layer</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Conceptual Foundation</h2>
+  <p>Start by understanding the core concepts:</p>
+  <ol>
+    <li><strong>Threads:</strong> Small, private subnets formed by invitation. Each thread is a shared SQL database among consenting participants.</li>
+    <li><strong>Cadres:</strong> Your cluster of devices that distribute and serve thread data. Think of it as your personal infrastructure.</li>
+    <li><strong>Roles and Permissions:</strong> Thread creators define who can do what using role-based access controls.</li>
+    <li><strong>libp2p Addressing:</strong> How nodes find and connect to each other without central servers.</li>
+  </ol>
+  <p>Review the <a href="#" data-page="overview">Overview</a> and <a href="#" data-page="architecture">Architecture</a> pages to build your mental model.</p>
+</section>
+
+<section>
+  <h2>Development Steps</h2>
+  
+  <h3>Step 1: Install the Sereus Stack</h3>
+  <p>The Sereus stack consists of several components that work together:</p>
+  <ul>
+    <li><strong>Quereus:</strong> SQL query processor (<a href="https://github.com/gotchoices/quereus" target="_blank" rel="noopener">gotchoices/quereus</a>)</li>
+    <li><strong>Optimystic:</strong> Storage engine with B-trees and block storage (<a href="https://github.com/gotchoices/Optimystic" target="_blank" rel="noopener">gotchoices/Optimystic</a>)</li>
+    <li><strong>Fret:</strong> Distributed hash table (included with Optimystic)</li>
+    <li><strong>libp2p:</strong> Peer-to-peer networking library (<a href="https://libp2p.io/" target="_blank" rel="noopener">libp2p.io</a>)</li>
+    <li><strong>Bootstrap tools:</strong> Utilities for thread initialization and management</li>
+  </ul>
+  <p><em>Note: Detailed installation documentation is in development. Check the GitHub repositories for current setup instructions.</em></p>
+  
+  <h3>Step 2: Initialize Your Development Environment</h3>
+  <p>Set up a local development cadre:</p>
+  <ul>
+    <li>Configure a local node with storage</li>
+    <li>Generate your node identity and keys</li>
+    <li>Set up libp2p multiaddresses for local development</li>
+    <li>Test that your node can store and retrieve data</li>
+  </ul>
+  
+  <h3>Step 3: Create Your First Thread</h3>
+  <p>Bootstrap a development thread:</p>
+  <ol>
+    <li><strong>Define your schema:</strong> What tables and fields does your application need?</li>
+    <li><strong>Define roles:</strong> What permissions will different participants have?</li>
+    <li><strong>Initialize the thread:</strong> Use bootstrap tools to create the thread database</li>
+    <li><strong>Verify:</strong> Confirm you can query the thread database via SQL</li>
+  </ol>
+  
+  <h3>Step 4: Connect a Second Node</h3>
+  <p>Threads need at least two participants to be meaningful:</p>
+  <ul>
+    <li>Set up a second node (can be on the same machine for development)</li>
+    <li>Generate an invitation from your first node</li>
+    <li>Have the second node join via the invitation</li>
+    <li>Verify both nodes can see the same thread database</li>
+    <li>Test distribution by writing from one node and reading from the other</li>
+  </ul>
+  
+  <h3>Step 5: Build Your Application</h3>
+  <p>Now you're ready to build application logic:</p>
+  <ul>
+    <li><strong>Choose your language:</strong> Any language with SQL support can work</li>
+    <li><strong>Connect to Quereus:</strong> Your application issues SQL queries through the Quereus interface</li>
+    <li><strong>Implement your logic:</strong> Write the code that reads and writes to the thread database</li>
+    <li><strong>Handle events:</strong> React to changes in the thread (new messages, updated data, etc.)</li>
+    <li><strong>Test thoroughly:</strong> Verify behavior with multiple nodes online and offline</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Example Application: Simple Messaging</h2>
+  <p>A minimal messaging app demonstrates the basics:</p>
+  
+  <h3>Schema</h3>
+  <pre><code>CREATE TABLE messages (
+  id SERIAL PRIMARY KEY,
+  sender TEXT NOT NULL,
+  content TEXT NOT NULL,
+  timestamp TIMESTAMP DEFAULT NOW()
+);
+
+CREATE TABLE participants (
+  user_id TEXT PRIMARY KEY,
+  display_name TEXT,
+  role TEXT CHECK (role IN ('admin', 'member'))
+);</code></pre>
+  
+  <h3>Application Logic</h3>
+  <ul>
+    <li><strong>Send message:</strong> <code>INSERT INTO messages (sender, content) VALUES (?, ?)</code></li>
+    <li><strong>Retrieve messages:</strong> <code>SELECT * FROM messages ORDER BY timestamp DESC LIMIT 50</code></li>
+    <li><strong>List participants:</strong> <code>SELECT * FROM participants</code></li>
+  </ul>
+  
+  <p>The Sereus stack handles all distribution, storage, and network concerns. Your app just issues SQL.</p>
+</section>
+
+<section>
+  <h2>Next Steps</h2>
+  <p>Once you have a basic application working:</p>
+  <ul>
+    <li><strong>Explore advanced features:</strong> Multi-device cadres, complex role permissions, cross-thread references</li>
+    <li><strong>Test at scale:</strong> Add more participants, simulate network partitions, measure performance</li>
+    <li><strong>Build real applications:</strong> Choose a use case and build something useful</li>
+    <li><strong>Join the community:</strong> Share your work, contribute back, help others learn</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Learning Resources</h2>
+  <ul>
+    <li><strong>GitHub Repositories:</strong> Source code and documentation for Quereus, Optimystic, and tools</li>
+    <li><strong>libp2p Documentation:</strong> Learn about peer-to-peer networking at <a href="https://docs.libp2p.io/" target="_blank" rel="noopener">docs.libp2p.io</a></li>
+    <li><strong>Community Forum:</strong> Connect with other developers (links coming soon)</li>
+    <li><strong>Example Applications:</strong> Study reference implementations to understand patterns</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Development Status</h2>
+  <p>Sereus is under active development. Some components are mature while others are still evolving. The core concepts (threads, cadres, consent-based connections) are stable, but APIs and tooling continue to improve.</p>
+  <p>Early adopters should expect to work closely with the codebase and documentation, potentially contributing improvements as they learn.</p>
+</section>
+
+<section>
+  <h2>Questions or Stuck?</h2>
+  <p>If you run into issues or need guidance:</p>
+  <ul>
+    <li>Check the GitHub repositories for issues and discussions</li>
+    <li>Review the <a href="#" data-page="architecture">Architecture</a> and <a href="#" data-page="stack">Stack</a> pages for technical details</li>
+    <li>Reach out via the <a href="#" data-page="join">Join</a> page for community support</li>
+  </ul>
+</section>
 
 <div class="button-group">
-  <a href="#" data-page="join" class="cta-button">Next: Join</a>
+  <a href="#" data-page="join" class="cta-button">Next: Join the Community</a>
   <a href="#" data-page="uses" class="cta-button alt">Back: Use Cases</a>
 </div>
 

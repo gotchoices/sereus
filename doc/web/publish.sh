@@ -3,13 +3,27 @@ set -euo pipefail
 
 # Publish the Sereus static site via rsync/scp
 # Usage:
-#   ./publish.sh [HOST] [DEST_PATH]
+#   ./publish.sh [USER@HOST] [DEST_PATH]
+#   or set USER environment variable:
+#   USER=myuser ./publish.sh [HOST] [DEST_PATH]
 # Defaults:
-#   HOST: sereus.org
-#   DEST_PATH: /var/www/sereus
+#   USER: current user or USER env var
+#   HOST: gotchoices.org
+#   DEST_PATH: /var/www/sereus.org
 
-HOST="${1:-sereus.org}"
-DEST="${2:-/var/www/sereus}"
+# Parse user@host or just host
+HOST_ARG="${1:-gotchoices.org}"
+if [[ "$HOST_ARG" == *"@"* ]]; then
+  # User@host format provided
+  REMOTE="$HOST_ARG"
+else
+  # Just host provided, use USER env var or current user
+#  USER="${USER:-$(whoami)}"
+  USER="root"
+  REMOTE="${USER}@${HOST_ARG}"
+fi
+
+DEST="${2:-/var/www/sereus.org}"
 
 ROOT_DIR="$(cd "$(dirname "$0")" && pwd)"
 
@@ -21,24 +35,27 @@ if [ ! -f "$ROOT_DIR/images/logo2.png" ]; then
   fi
 fi
 
-echo "Publishing to ${HOST}:${DEST} ..."
-ssh "$HOST" "mkdir -p '$DEST'"
+echo "Publishing to ${REMOTE}:${DEST} ..."
+ssh "$REMOTE" "mkdir -p '$DEST'"
 
 EXCLUDES=(
   "--exclude" "example/"
   "--exclude" "server.sh"
   "--exclude" "publish.sh"
   "--exclude" "STATUS.md"
+  "--exclude" "README.md"
 )
 
 if command -v rsync >/dev/null 2>&1; then
-  rsync -avz --delete "${EXCLUDES[@]}" "$ROOT_DIR/" "$HOST:$DEST/"
+  rsync -avz --delete "${EXCLUDES[@]}" "$ROOT_DIR/" "$REMOTE:$DEST/"
 else
   # Fallback to scp (no delete/exclude support)
   echo "rsync not found; using scp (excludes ignored). Consider installing rsync."
-  scp -r "$ROOT_DIR"/* "$HOST:$DEST/"
+  scp -r "$ROOT_DIR"/* "$REMOTE:$DEST/"
 fi
 
-echo "Publish complete: https://${HOST}/"
+# Extract hostname for URL (strip username if present)
+HOST_ONLY="${REMOTE##*@}"
+echo "Publish complete: https://${HOST_ONLY}/"
 
 

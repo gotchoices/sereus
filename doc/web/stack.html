@@ -1,13 +1,90 @@
-<h1>Stack</h1>
-<p>The Sereus stack composes well-known building blocks and original components:</p>
+<h1>Technology Stack</h1>
 
-<ul>
-  <li><strong>Quereus</strong>: SQL query processor.</li>
-  <li><strong>Optimystic</strong>: B-trees, indexes, block storage.</li>
-  <li><strong>Fret</strong>: Distributed hash table (part of Optimystic).</li>
-  <li><strong>libp2p</strong>: Peer-to-peer transport.</li>
-  <li><strong>Bootstrap</strong>: Initialization and developer tooling.</li>
-</ul>
+<section>
+  <h2>An Integrated Foundation</h2>
+  <p>Sereus Fabric brings together proven open-source technologies and purpose-built components, creating a cohesive programming environment for consent-based, peer-to-peer applications. Each layer of the stack addresses a specific challenge in distributed systems.</p>
+</section>
+
+<section>
+  <h2>Core Components</h2>
+  
+  <h3>Quereus: SQL Query Processor</h3>
+  <p>Quereus provides the SQL interface for thread databases. It processes queries, manages transactions, and presents developers with a familiar relational database experience—even though the underlying data is distributed across multiple nodes.</p>
+  <ul>
+    <li>Standard SQL syntax for queries and schema definitions</li>
+    <li>Transaction support for consistent updates</li>
+    <li>Query optimization for distributed storage</li>
+    <li>Role-based access control integration</li>
+  </ul>
+  <p><a href="https://github.com/gotchoices/quereus" target="_blank" rel="noopener">GitHub: gotchoices/quereus</a></p>
+  
+  <h3>Optimystic: Storage Engine</h3>
+  <p>Optimystic provides the underlying storage layer with B-trees, indexes, and block storage. It handles the complexities of sharding, distribution, and synchronization across cadre nodes.</p>
+  <ul>
+    <li>B-tree data structures for efficient indexing</li>
+    <li>Block-level storage management</li>
+    <li>Distribution and consistency protocols</li>
+    <li>Coordination across distributed nodes</li>
+  </ul>
+  <p><a href="https://github.com/gotchoices/Optimystic" target="_blank" rel="noopener">GitHub: gotchoices/Optimystic</a></p>
+  
+  <h3>Fret: Distributed Hash Table</h3>
+  <p>Fret (part of the Optimystic distribution) implements a distributed hash table for content addressing and node discovery within threads. It enables efficient data location and retrieval across sharded storage.</p>
+  <ul>
+    <li>Content-addressable storage</li>
+    <li>Efficient key-value lookups</li>
+    <li>Node discovery within thread networks</li>
+    <li>Integrated with Optimystic storage</li>
+  </ul>
+  <p><em>Fret is distributed as part of Optimystic</em></p>
+  
+  <h3>libp2p: Peer-to-Peer Transport</h3>
+  <p>libp2p is a mature, community-supported library that handles all aspects of peer-to-peer networking. Sereus leverages libp2p for establishing connections, NAT traversal, transport encryption, and more.</p>
+  <ul>
+    <li>Multiple transport protocols (TCP, WebSockets, QUIC, etc.)</li>
+    <li>NAT traversal and hole-punching</li>
+    <li>Encrypted connections by default</li>
+    <li>Relay support for nodes behind restrictive networks</li>
+    <li>Multiaddress format for flexible addressing</li>
+    <li>Battle-tested in IPFS and other production systems</li>
+  </ul>
+  <p><a href="https://libp2p.io/" target="_blank" rel="noopener">Learn more at libp2p.io</a></p>
+  
+  <h3>Bootstrap Tools</h3>
+  <p>Sereus provides tooling to help developers initialize threads, configure cadres, and launch applications:</p>
+  <ul>
+    <li>Thread initialization and schema setup</li>
+    <li>Cadre configuration and node management</li>
+    <li>Invitation generation and credential exchange</li>
+    <li>Development and debugging utilities</li>
+    <li>Deployment assistance for production environments</li>
+  </ul>
+</section>
+
+<section>
+  <h2>How the Stack Works Together</h2>
+  <p>The components form a cohesive system:</p>
+  <ol>
+    <li><strong>Application Layer:</strong> Your application issues SQL queries through Quereus, treating the thread database like any other SQL database.</li>
+    <li><strong>Query Processing:</strong> Quereus parses queries, applies role-based access controls, and translates operations into storage commands.</li>
+    <li><strong>Storage Layer:</strong> Optimystic manages the actual data storage using B-trees and block storage. It shards data across participating nodes and maintains consistency.</li>
+    <li><strong>Content Discovery:</strong> Fret's distributed hash table helps locate data blocks across the network and facilitates node discovery.</li>
+    <li><strong>Network Transport:</strong> libp2p establishes and maintains encrypted peer-to-peer connections between cadre nodes, handling all network-level concerns.</li>
+    <li><strong>Bootstrap & Management:</strong> Developer tools handle initialization, configuration, and operational management of threads and cadres.</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Developer Benefits</h2>
+  <p>This integrated stack provides significant advantages for developers:</p>
+  <ul>
+    <li><strong>Familiar Interfaces:</strong> Write standard SQL; the distribution is transparent.</li>
+    <li><strong>Reduced Complexity:</strong> No need to implement your own distribution, consistency, or networking protocols.</li>
+    <li><strong>Proven Components:</strong> Build on mature, tested libraries like libp2p rather than reinventing peer-to-peer networking.</li>
+    <li><strong>Focus on Application Logic:</strong> Spend your time on features and user experience, not infrastructure plumbing.</li>
+    <li><strong>Scalable Foundation:</strong> The architecture supports everything from two-person conversations to complex multi-party applications.</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="uses" class="cta-button">Next: Use Cases</a>

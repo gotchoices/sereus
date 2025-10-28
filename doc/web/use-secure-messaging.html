@@ -1,11 +1,70 @@
 <h1>Use Case: Secure Messaging</h1>
-<p>Today’s messaging apps often rely on centralized brokers. With Sereus, peers connect directly using libp2p multiaddresses and consent invitations. Identities remain scoped to threads.</p>
 
-<ul>
-  <li>Invitation-based threads; no unsolicited messages.</li>
-  <li>Optional relays; can be privately controlled.</li>
-  <li>Shared SQL for message storage and policies.</li>
-</ul>
+<section>
+  <h2>The Problem with Centralized Messaging</h2>
+  <p>Current messaging platforms—even those focused on privacy—involve some degree of centralization. Apps like Signal, Telegram, and WhatsApp all require a company or corporate server presence through which connections must be negotiated.</p>
+  <p>For example, if user A wants to initiate a call to user B, they must negotiate with a gatekeeper (a Signal server, for instance) to establish the connection. This creates:</p>
+  <ul>
+    <li>A single point of failure and potential censorship</li>
+    <li>Dependency on a corporate entity's continued operation</li>
+    <li>Metadata exposure (who connects with whom, when, and how often)</li>
+    <li>Reliance on the platform's infrastructure</li>
+  </ul>
+</section>
+
+<section>
+  <h2>The Sereus Approach</h2>
+  <p>A Sereus-based messaging app fundamentally changes the topology. Users negotiate connections using any available libp2p multiaddress—no central broker required.</p>
+  
+  <h3>Direct Peer Connections</h3>
+  <p>Even if both participants are using phones behind firewalls, as long as they can publish a working multiaddress (or reach one through NAT traversal), their message partners can communicate with them directly. The connection happens peer-to-peer, without touching a central server.</p>
+  
+  <h3>Privately Controlled Relays</h3>
+  <p>In cases where a relay (with a public IP address) is required to bridge network boundaries, this relay can be <em>any node</em>—even one controlled privately. You're not locked into using infrastructure owned by the messaging platform. You can:</p>
+  <ul>
+    <li>Run your own relay on a VPS or home server</li>
+    <li>Use a relay operated by a trusted friend or organization</li>
+    <li>Choose relays based on reputation and trust</li>
+    <li>Switch relays at any time without affecting your message threads</li>
+  </ul>
+  
+  <h3>Private Identities</h3>
+  <p>Identities are not publicly available or searchable. Messages are based solely on established threads, which are built by invitation only. The result: you receive messages only from connections you've explicitly accepted. <strong>No spam. No unsolicited contact.</strong></p>
+</section>
+
+<section>
+  <h2>Security and Privacy Features</h2>
+  <ul>
+    <li><strong>No identity directory:</strong> There's no global username database to mine or harvest.</li>
+    <li><strong>Encrypted transport:</strong> libp2p connections are encrypted by default.</li>
+    <li><strong>Out-of-band credentials:</strong> Initial connection setup happens through QR codes, email, or in-person exchange—not through a central service.</li>
+    <li><strong>Consent-based threading:</strong> Every conversation is a thread you've explicitly joined.</li>
+    <li><strong>Distributed storage:</strong> Messages are stored in the shared thread database, distributed across participants' cadres for availability.</li>
+    <li><strong>Role-based permissions:</strong> Thread creators can define who can send messages, invite new members, or access message history.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Technical Implementation</h2>
+  <p>A Sereus messaging app would define a SQL schema for the thread database including tables for messages, participants, and metadata. When Alice sends a message to Bob:</p>
+  <ol>
+    <li>Alice's client writes the message to the shared thread database via a SQL INSERT</li>
+    <li>Optimystic distributes the change across nodes in Alice's and Bob's cadres</li>
+    <li>Bob's client queries for new messages and displays the update</li>
+  </ol>
+  <p>All the complexity of networking, distribution, and consistency is handled by the Sereus stack. The application just issues SQL queries.</p>
+</section>
+
+<section>
+  <h2>Advantages Over Traditional Messaging</h2>
+  <ul>
+    <li><strong>True decentralization:</strong> No company can shut down the service or deplatform users.</li>
+    <li><strong>Metadata privacy:</strong> Connection graphs aren't visible to third parties or platform operators.</li>
+    <li><strong>Infrastructure independence:</strong> Choose your own relays and storage; not locked to vendor infrastructure.</li>
+    <li><strong>Group messaging:</strong> Multi-party threads work exactly like two-party, just with more participants.</li>
+    <li><strong>Offline resilience:</strong> Messages sync when devices reconnect; multiple devices in your cadre provide redundancy.</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="use-social-media" class="cta-button">Next: Social Media</a>

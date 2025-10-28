@@ -1,12 +1,121 @@
 <h1>Use Case: Distributed Storage</h1>
-<p>Cadres—your device cluster—replicate sharded data across trusted peers in a thread. Build resilient personal backups and shared vaults without centralized storage fees.</p>
 
-<ul>
-  <li>Shard across participants for durability.</li>
-  <li>Control who stores what with roles/policies.</li>
-  <li>Keep data within consented subnets.</li>
+<section>
+  <h2>The Storage Challenge</h2>
+  <p>One of today's common challenges is how users can store all their photos, documents, and other data. The traditional solution is to pay a monthly fee for cloud storage and backups—services like iCloud, Google Drive, Dropbox, or OneDrive.</p>
+  <p>This creates several issues:</p>
+  <ul>
+    <li><strong>Recurring costs:</strong> Monthly fees that add up over time</li>
+    <li><strong>Vendor lock-in:</strong> Moving data between services is cumbersome</li>
+    <li><strong>Privacy concerns:</strong> Your data sits on servers you don't control</li>
+    <li><strong>Terms of service risks:</strong> Providers can change pricing or terms unilaterally</li>
+    <li><strong>Single point of failure:</strong> If the service goes down, your data is unavailable</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Sereus: Shared Storage Among Trusted Peers</h2>
+  <p>Sereus is fundamentally about shared databases. Users can form threads for the purpose of backing up and sharing data storage, creating a peer-to-peer storage network among trusted contacts.</p>
   
-</ul>
+  <h3>The Basic Concept</h3>
+  <p>A user might build or acquire:</p>
+  <ul>
+    <li>A cloud server or VPS with substantial storage</li>
+    <li>A physical Linux box with a large hard disk</li>
+    <li>A NAS (Network Attached Storage) device</li>
+    <li>Even a Raspberry Pi with external storage</li>
+  </ul>
+  <p>This device becomes part of the user's operational node cluster (cadre). The cadre automatically shards and distributes data across its nodes.</p>
+</section>
+
+<section>
+  <h2>Collaborative Storage Threads</h2>
+  <p>When two users form a storage thread together, the benefits multiply:</p>
+  
+  <h3>Cross-User Sharding</h3>
+  <p>If two users—each with their own storage infrastructure—form a common storage thread, their data will be sharded across <em>more nodes</em>, spanning both of their cadres. This offers:</p>
+  <ul>
+    <li><strong>Greater resilience:</strong> Data survives even if entire cadres go offline temporarily</li>
+    <li><strong>Geographic distribution:</strong> Data exists in multiple physical locations</li>
+    <li><strong>No single point of failure:</strong> Multiple independent infrastructure setups</li>
+    <li><strong>Shared capacity:</strong> Participants can leverage each other's storage resources</li>
+  </ul>
+  
+  <h3>Role-Based Storage Policies</h3>
+  <p>Thread creators can define storage policies using role-based permissions:</p>
+  <ul>
+    <li>Who can store data in the thread</li>
+    <li>How much storage each participant can use</li>
+    <li>What types of data can be stored</li>
+    <li>Retention and archival policies</li>
+    <li>Distribution factors (how many copies to maintain)</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Use Cases for Distributed Storage</h2>
+  
+  <h3>Personal Backup Networks</h3>
+  <p>Form storage threads with family members or trusted friends. Each participant contributes storage, and everyone benefits from geographic redundancy and increased capacity.</p>
+  
+  <h3>Collaborative Workspaces</h3>
+  <p>Teams can create shared storage threads for project files, with access controlled by roles. As team members come and go, their cadres join or leave the distribution network.</p>
+  
+  <h3>Archive Preservation</h3>
+  <p>Important documents, photos, or historical records can be preserved across multiple participants' storage infrastructure, ensuring long-term availability.</p>
+  
+  <h3>Media Libraries</h3>
+  <p>Families can share photo and video libraries through storage threads, with each member's devices contributing to the total storage pool.</p>
+</section>
+
+<section>
+  <h2>Technical Implementation</h2>
+  <p>Under the hood, Sereus handles the complexity:</p>
+  <ul>
+    <li><strong>Optimystic</strong> manages block storage and B-trees</li>
+    <li><strong>Fret</strong> (the distributed hash table) handles content addressing and chunk location</li>
+    <li>Data is automatically sharded based on the thread's distribution policy</li>
+    <li>Each cadre node stores only the shards assigned to it</li>
+    <li>Queries and retrievals are transparent—applications don't need to know where data is physically stored</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Advantages Over Cloud Storage</h2>
+  <ul>
+    <li><strong>No recurring fees:</strong> Pay once for hardware; no monthly subscriptions</li>
+    <li><strong>Privacy by default:</strong> Data stored only on devices you and your trusted contacts control</li>
+    <li><strong>Customizable capacity:</strong> Add storage as needed by expanding your cadre</li>
+    <li><strong>True ownership:</strong> Your data, your infrastructure, your rules</li>
+    <li><strong>Resilient:</strong> Data survives individual device failures through distribution</li>
+    <li><strong>Consent-based:</strong> Only thread participants have access; no third-party access</li>
+    <li><strong>Geographic distribution:</strong> Natural disaster resilience through multi-location storage</li>
+    <li><strong>Flexible policies:</strong> Define your own retention, archival, and access rules</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Example Scenario</h2>
+  <p>Alice has a home server with 4TB of storage. Bob has a cloud VPS with 2TB. Carol has a desktop computer with 3TB.</p>
+  <ol>
+    <li>They form a storage thread together, agreeing to share backup space</li>
+    <li>The thread policy allocates each person up to 1.5TB of the collective pool</li>
+    <li>When Alice stores her family photos, they're automatically sharded across her home server, Bob's VPS, and Carol's desktop</li>
+    <li>If Alice's home server fails, she can still access all her photos from the shards on Bob's and Carol's systems</li>
+    <li>Each participant benefits from approximately 9TB of total storage capacity (minus redundancy overhead)</li>
+  </ol>
+</section>
+
+<section>
+  <h2>Privacy and Security</h2>
+  <ul>
+    <li><strong>Data stays within the thread:</strong> Only participants' cadres store the data</li>
+    <li><strong>Encrypted distribution:</strong> Data is encrypted in transit via libp2p</li>
+    <li><strong>Access control:</strong> Role-based permissions determine who can read/write</li>
+    <li><strong>Revocable access:</strong> Remove a participant, and their cadre stops receiving updates</li>
+    <li><strong>No third-party access:</strong> Unlike cloud providers, there's no company with access to your data</li>
+  </ul>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="use-medical-records" class="cta-button">Next: Medical Records</a>

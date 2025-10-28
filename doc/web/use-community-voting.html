@@ -1,11 +1,139 @@
 <h1>Use Case: Community Voting</h1>
-<p>Leverage threads for transparent, verifiable community decision-making. Pair with projects like VoteTorrent for auditable processes while preserving voter privacy within consented groups.</p>
 
-<ul>
-  <li>Thread-scoped rolls and ballots.</li>
-  <li>Cryptographic integrity and auditability.</li>
-  <li>Privacy by consent and role policies.</li>
-</ul>
+<section>
+  <h2>The Challenge of Secure Voting</h2>
+  <p>Elections and community decision-making face a fundamental tension between competing requirements:</p>
+  <ul>
+    <li><strong>Transparency and auditability:</strong> Everyone should be able to verify the count is correct</li>
+    <li><strong>Voter privacy:</strong> Individual votes must remain secret to prevent coercion</li>
+    <li><strong>Accessibility:</strong> Easy for eligible voters to participate</li>
+    <li><strong>Security:</strong> Resistant to fraud, tampering, and double-voting</li>
+    <li><strong>Trust:</strong> Participants must trust the process without trusting a central authority</li>
+  </ul>
+  
+  <p>Traditional voting systems struggle with these requirements. Paper ballots offer auditability but limit accessibility. Online voting raises security and verifiability concerns. Blockchain-based approaches often sacrifice privacy or usability.</p>
+</section>
+
+<section>
+  <h2>Sereus for Voting: The Foundation</h2>
+  <p>Sereus provides a foundation for building voting systems that address these challenges through thread-based architecture:</p>
+  
+  <h3>Thread-Scoped Voter Rolls</h3>
+  <p>A voting thread includes only eligible voters, established through invitation and consent. This creates:</p>
+  <ul>
+    <li>A defined electorate without a public voter registry</li>
+    <li>Natural resistance to ballot stuffing (only thread participants can vote)</li>
+    <li>Privacy—the voter roll exists only within the thread, not publicly</li>
+    <li>Flexible eligibility criteria based on the community's needs</li>
+  </ul>
+  
+  <h3>Shared Database for Ballots</h3>
+  <p>The thread database can store:</p>
+  <ul>
+    <li>Election definitions and ballot questions</li>
+    <li>Encrypted or cryptographically protected votes</li>
+    <li>Audit trails and verification data</li>
+    <li>Results and tallies</li>
+  </ul>
+  
+  <h3>Distributed Trust</h3>
+  <p>Rather than trusting a single election authority, the thread participants collectively maintain the election infrastructure through their cadres. Data is distributed across nodes, making tampering difficult.</p>
+</section>
+
+<section>
+  <h2>VoteTorrent Integration</h2>
+  <p>There is an ongoing development project at <a href="https://votetorrent.org" target="_blank" rel="noopener">votetorrent.org</a> that aims to bring greater transparency and security to elections.</p>
+  <p>VoteTorrent's approach pairs naturally with Sereus threads:</p>
+  <ul>
+    <li><strong>Cryptographic integrity:</strong> Votes are cryptographically protected to ensure they can't be altered</li>
+    <li><strong>Public auditability:</strong> The voting process can be audited without revealing individual votes</li>
+    <li><strong>Verifiable counting:</strong> Each voter can verify their vote was included in the tally</li>
+    <li><strong>Distributed verification:</strong> Multiple parties can independently verify the results</li>
+  </ul>
+  
+  <p>By combining VoteTorrent's cryptographic methods with Sereus's thread architecture, elections gain both technical security and distributed infrastructure.</p>
+</section>
+
+<section>
+  <h2>Use Cases for Thread-Based Voting</h2>
+  
+  <h3>Community Organization Elections</h3>
+  <p>Homeowners associations, co-ops, and community groups can run board elections or decide on proposals. Thread membership naturally represents the community roster.</p>
+  
+  <h3>Corporate Governance</h3>
+  <p>Shareholder voting for board members or major decisions. Role-based permissions can implement different vote weights based on share ownership.</p>
+  
+  <h3>Nonprofit Board Elections</h3>
+  <p>Member organizations can conduct secure elections for board positions with full auditability and member verification.</p>
+  
+  <h3>Academic Committees</h3>
+  <p>Faculty and student bodies can make decisions on policies, appointments, or resource allocation.</p>
+  
+  <h3>Cooperative Decision-Making</h3>
+  <p>Worker cooperatives or buying clubs can use thread-based voting for operational decisions.</p>
+  
+  <h3>Public Elections (Future)</h3>
+  <p>With appropriate infrastructure and legal frameworks, the principles could scale to municipal or larger elections, bringing transparency and verifiability to democratic processes.</p>
+</section>
+
+<section>
+  <h2>Technical Features</h2>
+  <p>A Sereus-based voting system might include:</p>
+  <ul>
+    <li><strong>Voter registration:</strong> Thread invitation serves as registration; only participants can vote</li>
+    <li><strong>Ballot design:</strong> SQL schema defines races, candidates, and questions</li>
+    <li><strong>Vote casting:</strong> Encrypted votes written to thread database</li>
+    <li><strong>Tallying:</strong> Cryptographic protocols ensure correct counting without revealing individual votes</li>
+    <li><strong>Verification:</strong> Each voter receives a receipt they can use to verify inclusion</li>
+    <li><strong>Audit trail:</strong> All events logged for post-election review</li>
+    <li><strong>Dispute resolution:</strong> Thread policies define how challenges are handled</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Advantages Over Traditional Voting Systems</h2>
+  <ul>
+    <li><strong>Accessibility:</strong> Vote from anywhere with internet access</li>
+    <li><strong>Auditability:</strong> Cryptographic proofs enable verification without central trust</li>
+    <li><strong>Privacy:</strong> Individual votes remain secret while the count is verifiable</li>
+    <li><strong>Distributed infrastructure:</strong> No single point of failure or tampering</li>
+    <li><strong>Transparency:</strong> Election rules and processes encoded in the thread schema</li>
+    <li><strong>Cost-effective:</strong> Reduced infrastructure and administration costs</li>
+    <li><strong>Quick results:</strong> Electronic counting with cryptographic integrity</li>
+    <li><strong>Voter verification:</strong> Each participant can verify their vote was counted</li>
+    <li><strong>Resistance to coercion:</strong> Cryptographic techniques can prevent vote selling</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Security Considerations</h2>
+  <p>Thread-based voting systems must address:</p>
+  <ul>
+    <li><strong>Device security:</strong> Voters' devices must be secure during vote casting</li>
+    <li><strong>Identity verification:</strong> Ensuring the person voting is the authorized voter</li>
+    <li><strong>Coercion resistance:</strong> Preventing vote buying or forced voting</li>
+    <li><strong>Availability:</strong> Ensuring all eligible voters can access the system</li>
+    <li><strong>Denial of service:</strong> Protecting against attacks that prevent voting</li>
+  </ul>
+  
+  <p>These challenges are not unique to Sereus but are common to all electronic voting systems. The thread architecture provides tools to address them while offering significant advantages in transparency and distributed trust.</p>
+</section>
+
+<section>
+  <h2>Example Scenario</h2>
+  <p>A homeowners association with 200 members needs to elect a new board:</p>
+  <ol>
+    <li>The existing board creates an election thread and invites all members via email/QR</li>
+    <li>Members join the thread; their participation constitutes voter registration</li>
+    <li>Candidates are nominated and confirmed via the thread database</li>
+    <li>During the voting period, members cast encrypted ballots through their devices</li>
+    <li>Votes are distributed across participants' cadres, preventing single-point tampering</li>
+    <li>At close of voting, the cryptographic tally is computed</li>
+    <li>Each voter can verify their vote was included in the final count</li>
+    <li>Independent auditors can verify the tally without seeing individual votes</li>
+    <li>Results are published to the thread with full cryptographic proof</li>
+  </ol>
+</section>
 
 <div class="button-group">
   <a href="#" data-page="use-digital-currency" class="cta-button">Next: Digital Currency</a>
