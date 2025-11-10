@@ -1,0 +1,24 @@
+{
+  "name": "@sereus/bootstrap",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "dist/bootstrap.js",
+  "types": "dist/bootstrap.d.ts",
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run",
+    "dev:test": "vitest"
+  },
+  "dependencies": {
+    "@libp2p/mplex": "^11.0.46",
+    "@multiformats/multiaddr": "^12.3.1",
+    "libp2p": "^2.9.0"
+  },
+  "devDependencies": {
+    "@chainsafe/libp2p-noise": "^16.1.4",
+    "@libp2p/peer-id-factory": "^4.2.1",
+    "@libp2p/tcp": "^10.1.18",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
