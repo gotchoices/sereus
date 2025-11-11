@@ -31,9 +31,9 @@ interface ProvisioningResultMessage {
   provisionResult?: ProvisionResult // present in 2-msg flow
 }
 
-// 3) Initiator → Responder (foil flow; NEW stream)
+// 3) Initiator → Responder (initiatorCreates flow; NEW stream)
 interface DatabaseResultMessage {
-  thread: { threadId: string; createdBy: 'stock'|'foil' }
+  thread: { threadId: string; createdBy: 'initiator'|'responder' }
   dbConnectionInfo: { endpoint: string; credentialsRef: string }
 }
 ```
@@ -44,11 +44,11 @@ Notes:
 
 ## Flows
 
-### Stock Role (2 messages)
+### Mode: responderCreates (2 messages)
 1. Initiator sends InboundContact.
 2. Responder validates token/identity, provisions thread, and replies with ProvisioningResult (includes provisionResult).
 
-### Foil Role (3 messages)
+### Mode: initiatorCreates (3 messages)
 1. Initiator sends InboundContact.
 2. Responder validates token/identity and replies with ProvisioningResult (no provisionResult yet).
 3. Initiator provisions thread and sends DatabaseResult on a NEW stream.
@@ -70,9 +70,9 @@ Notes:
 - Never assume stream reuse. Close or recreate appropriately to avoid stuck pipes.
 
 ## Hooks (Application Integration)
-- `validateToken(token, sessionId) → { role, valid }`
+- `validateToken(token, sessionId) → { mode: 'responderCreates'|'initiatorCreates', valid: boolean }`
 - `validateIdentity(identity, sessionId) → boolean`
-- `provisionThread(role, partyA, partyB, sessionId) → { thread, dbConnectionInfo }`
+- `provisionThread(creator: 'initiator'|'responder', partyA: string, partyB: string, sessionId: string) → { thread, dbConnectionInfo }`
 - `validateResponse(msg, sessionId) → boolean`
 - `validateDatabaseResult(msg, sessionId) → boolean`
 
@@ -107,7 +107,7 @@ These hooks are the extension points for:
 - Proper libp2p usage: reading a stream to completion, writing JSON as a single encoded chunk, opening a NEW stream when required.
 - Configurability: protocol id is configurable in manager config and per link.
 
-## Testing Summary (port of Taleus tests)
+## Testing Summary
 - Concurrency: multiple bootstraps run in parallel; each gets unique thread ids.
 - Limits: configured max concurrent sessions enforced; either rejections or queued/batched handling.
 - Error isolation: invalid sessions don’t affect others; sessions cleaned up after finish.

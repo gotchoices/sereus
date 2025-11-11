@@ -1,11 +1,11 @@
 /*
-  Port of Taleus Bootstrap State Machine Tests
-  - Full suite copied and adapted to Sereus (thread-centric, configurable protocol)
-  - All tests are initially skipped EXCEPT the first sanity test
+  Comprehensive Bootstrap State Machine Tests
+  - Full suite adapted for Sereus (thread-centric, configurable protocol)
+  - Covers integration flows, concurrency, timeouts, cleanup/isolation, and hook failures
 */
 
 import { strict as assert } from 'assert'
-import { describe, it, beforeAll, afterAll, beforeEach, afterEach } from 'vitest'
+import { describe, it, beforeEach, afterEach } from 'vitest'
 import { createLibp2p, Libp2p } from 'libp2p'
 import { createEd25519PeerId, exportToProtobuf, createFromProtobuf } from '@libp2p/peer-id-factory'
 import { tcp } from '@libp2p/tcp'
@@ -24,7 +24,7 @@ import {
 } from '../../src/bootstrap.js'
 import { createSessionAwareHooks } from '../helpers/consumerMocks.js'
 
-// Shared config used by most tests (mirrors Taleus DEFAULT_CONFIG)
+// Shared config used by most tests
 const DEFAULT_CONFIG: SessionConfig = {
   sessionTimeoutMs: 30000,
   stepTimeoutMs: 5000,
@@ -58,7 +58,7 @@ async function createLibp2pNodeWithKeys(port: number = 0): Promise<Libp2p> {
   })
 }
 
-// FIRST TEST (active): identical in spirit to Taleus - manager constructs and has zero sessions
+// FIRST TEST (sanity): manager constructs and has zero sessions
 describe('Sereus Bootstrap - SessionManager (sanity)', () => {
   it('should create and configure properly', () => {
     const hooks = createSessionAwareHooks(['responder-token', 'initiator-token', 'multi-use-token']) as SessionHooks
@@ -70,24 +70,11 @@ describe('Sereus Bootstrap - SessionManager (sanity)', () => {
   })
 })
 
-// Enable the responderCreates 2-message flow as the first integration test
-// (deduped in ported suite) integration (responderCreates 2-message)
-
-// (deduped in ported suite) integration (initiatorCreates 3-message and rejection)
-
-// (deduped in ported suite) concurrent multi-use token scenarios
-
-// (deduped in ported suite) timeout and recovery
-
-// (deduped in ported suite) cleanup and isolation
-
-// (deduped in ported suite) hook failures and malformed returns
-
-// FULL PORT (initially skipped). We keep structure and logic, but adapt:
-// - '/taleus/bootstrap/1.0.0' -> DEFAULT_PROTOCOL_ID
+// Full suite: structure and logic adapted for Sereus
+// - Protocol string via DEFAULT_PROTOCOL_ID
 // - tally/tallyId -> thread/threadId
 // - provisionDatabase -> provisionThread
-describe('Sereus Bootstrap (ported Taleus suite)', () => {
+describe('Sereus Bootstrap - full suite', () => {
   let nodeA: Libp2p
   let nodeB: Libp2p
   let hooksA: SessionHooks

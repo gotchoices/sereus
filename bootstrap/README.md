@@ -1,6 +1,6 @@
 ## @sereus/bootstrap
 
-Configurable invitation-based bootstrap over libp2p to provision a shared Sereus thread (SQL DB). Extracted and generalized from Taleus, with protocol string override and neutral types.
+Configurable invitation-based bootstrap over libp2p to provision a shared Sereus thread (SQL DB), with protocol string override and neutral types.
 
 Terminology (generic):
 - Dialog roles: Initiator (dials first), Responder (accepts).

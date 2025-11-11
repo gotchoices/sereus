@@ -22,7 +22,7 @@ Purpose: Track decisions and options around packaging and documentation for Sere
 
 ## Documentation Roadmap
 
-- TODO: Expand `sereus/docs/bootstrap.md` with sequence diagrams (stock/foil flows)
+- TODO: Expand `sereus/docs/bootstrap.md` with sequence diagrams (responderCreates/initiatorCreates flows)
   - Add Mermaid diagrams for 2-message and 3-message flows.
   - Include error paths (rejection, timeout) and cadre disclosure timing.
 

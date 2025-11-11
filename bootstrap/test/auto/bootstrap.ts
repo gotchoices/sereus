@@ -1,7 +1,6 @@
 /*
-  Port of Taleus Bootstrap tests:
-  - Enable only the very first original test.
-  - All remaining Taleus tests will be ported next and initially skipped.
+  Bootstrap tests:
+  - Enable only the first sanity test.
 */
 import { strict as assert } from 'assert'
 import { describe, it, beforeEach } from 'vitest'
@@ -25,6 +24,6 @@ describe('Sereus Bootstrap State Machine (sanity)', () => {
   })
 })
 
-// The full Taleus suite will be ported and initially skipped in a follow-up commit.
+// The comprehensive suite lives in bootstrap.integration.ts
 
 
