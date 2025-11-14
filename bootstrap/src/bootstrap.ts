@@ -229,7 +229,7 @@ export class ListenerSession {
     const tokenInfo = await this.withStepTimeout(() => this.hooks.validateToken(msg.token, this.sessionId))
     this.tokenInfo = tokenInfo as any
     if (this.config.enableDebugLogging) console.debug(`[L:${this.sessionId}] token validated`, tokenInfo)
-    if (!this.tokenInfo.valid) { await this.sendRejection('Invalid token'); throw new Error('Invalid token') }
+    if (!this.tokenInfo?.valid) { await this.sendRejection('Invalid token'); throw new Error('Invalid token') }
     const okId = await this.withStepTimeout(() => this.hooks.validateIdentity(msg.identityBundle, this.sessionId))
     if (this.config.enableDebugLogging) console.debug(`[L:${this.sessionId}] identity validated=${okId}`)
     if (!okId) { await this.sendRejection('Invalid identity'); throw new Error('Invalid identity') }
