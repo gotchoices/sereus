@@ -1,6 +1,6 @@
 /*
   Comprehensive Bootstrap State Machine Tests
-  - Full suite adapted for Sereus (thread-centric, configurable protocol)
+  - Full suite adapted for Sereus (strand-centric, configurable protocol)
   - Covers integration flows, concurrency, timeouts, cleanup/isolation, and hook failures
 */
 
@@ -72,7 +72,7 @@ describe('Sereus Bootstrap - SessionManager (sanity)', () => {
 
 // Full suite: structure and logic adapted for Sereus
 // - Protocol string via DEFAULT_PROTOCOL_ID
-// - tally/tallyId -> thread/threadId
+// - tally/tallyId -> strand/strandId
 // - provisionDatabase -> provisionThread
 describe('Sereus Bootstrap - full suite', () => {
   let nodeA: Libp2p
@@ -116,9 +116,9 @@ describe('Sereus Bootstrap - full suite', () => {
       const results = await Promise.all(promises)
       const duration = Date.now() - startTime
       assert.equal(results.length, 5)
-      assert.ok(results.every(r => r.thread && r.dbConnectionInfo))
-      const threadIds = results.map(r => r.thread.threadId)
-      const unique = new Set(threadIds)
+      assert.ok(results.every(r => r.strand && r.dbConnectionInfo))
+      const strandIds = results.map(r => r.strand.strandId)
+      const unique = new Set(strandIds)
       assert.equal(unique.size, 5)
       assert.ok(duration < 2000)
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
@@ -138,7 +138,7 @@ describe('Sereus Bootstrap - full suite', () => {
         mode: 'responderCreates'
       }
       const result = await managerB.initiateBootstrap(link, nodeB)
-      assert.ok(result.thread && result.dbConnectionInfo)
+      assert.ok(result.strand && result.dbConnectionInfo)
       await new Promise(r => setTimeout(r, 50))
       const finalCounts = manager.getActiveSessionCounts()
       assert.equal(finalCounts.listeners, 0)
@@ -188,9 +188,9 @@ describe('Sereus Bootstrap - full suite', () => {
         mode: 'responderCreates'
       }
       const result = await managerB.initiateBootstrap(link, nodeB)
-      assert.ok(result.thread)
+      assert.ok(result.strand)
       assert.ok(result.dbConnectionInfo)
-      assert.equal(result.thread.createdBy, 'responder')
+      assert.equal(result.strand.createdBy, 'responder')
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 15000)
 
@@ -205,9 +205,9 @@ describe('Sereus Bootstrap - full suite', () => {
         mode: 'initiatorCreates'
       }
       const result = await managerB.initiateBootstrap(link, nodeB)
-      assert.ok(result.thread)
+      assert.ok(result.strand)
       assert.ok(result.dbConnectionInfo)
-      assert.equal(result.thread.createdBy, 'initiator')
+      assert.equal(result.strand.createdBy, 'initiator')
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 15000)
 
@@ -230,8 +230,8 @@ describe('Sereus Bootstrap - full suite', () => {
       const rejectingHooksA: SessionHooks = {
         async validateToken(token: string) { return { mode: 'responderCreates', valid: true } as any },
         async validateIdentity() { return false },
-        async provisionThread(creator: any, a: string, b: string) {
-          return { thread: { threadId: `thr-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
+        async provisionStrand(creator: any, a: string, b: string) {
+          return { strand: { strandId: `str-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
         },
         async validateResponse() { return true },
         async validateDatabaseResult() { return true }
@@ -304,7 +304,7 @@ describe('Sereus Bootstrap - full suite', () => {
         mode: 'responderCreates'
       }
       const result = await managerB.initiateBootstrap(link, nodeB)
-      assert.ok(result.thread && result.dbConnectionInfo)
+      assert.ok(result.strand && result.dbConnectionInfo)
       assert.ok(capturedResponse && capturedResponse.approved === true)
       assert.ok(Array.isArray(capturedResponse.cadrePeerAddrs) && capturedResponse.cadrePeerAddrs.length > 0)
       ;(hooksB as any).validateResponse = originalValidateResponse
@@ -367,18 +367,18 @@ describe('Sereus Bootstrap - full suite', () => {
       assert.equal(tokenResult.mode, 'responderCreates')
       const identityResult = await hooks.validateIdentity({ partyId: 'party-123' }, 'session-123')
       assert.equal(identityResult, true)
-      const dbResult = await hooks.provisionThread('responder', 'partyA', 'partyB', 'session-123')
-      assert.ok(dbResult.thread)
+      const dbResult = await hooks.provisionStrand('responder', 'partyA', 'partyB', 'session-123')
+      assert.ok(dbResult.strand)
       assert.ok(dbResult.dbConnectionInfo)
-      assert.equal(dbResult.thread.createdBy, 'responder')
+      assert.equal(dbResult.strand.createdBy, 'responder')
     })
 
     it('should handle hook failures gracefully', async () => {
       const tokenErrorHooksA: SessionHooks = {
         async validateToken(token: string) { throw new Error('Hook validation failed') },
         async validateIdentity() { return true },
-        async provisionThread(creator: any, a: string, b: string) {
-          return { thread: { threadId: `thr-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
+        async provisionStrand(creator: any, a: string, b: string) {
+          return { strand: { strandId: `str-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
         },
         async validateResponse() { return true },
         async validateDatabaseResult() { return true }
@@ -400,7 +400,7 @@ describe('Sereus Bootstrap - full suite', () => {
       const malformedHooksA: SessionHooks = {
         async validateToken() { return { } as any },
         async validateIdentity() { return 'yes' as any },
-        async provisionThread() { return { thread: { threadId: 'incomplete' } } as any },
+        async provisionStrand() { return { strand: { strandId: 'incomplete' } } as any },
         async validateResponse() { return true },
         async validateDatabaseResult() { return true }
       }
@@ -436,13 +436,13 @@ describe('Sereus Bootstrap - full suite', () => {
         customerManager2.initiateBootstrap(link, nodeB),
         customerManager3.initiateBootstrap(link, nodeB)
       ])
-      const ids = results.map(r => r.thread.threadId)
+      const ids = results.map(r => r.strand.strandId)
       const unique = new Set(ids)
       assert.equal(unique.size, 3)
       results.forEach(r => {
-        assert.ok(r.thread)
+        assert.ok(r.strand)
         assert.ok(r.dbConnectionInfo)
-        assert.equal(r.thread.createdBy, 'responder')
+        assert.equal(r.strand.createdBy, 'responder')
       })
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 15000)
@@ -480,8 +480,8 @@ describe('Sereus Bootstrap - full suite', () => {
       const slowHooksA: SessionHooks = {
         async validateToken() { await new Promise(r => setTimeout(r, 800)); return { mode: 'responderCreates', valid: true } as any },
         async validateIdentity() { return true },
-        async provisionThread(creator: any, a: string, b: string) {
-          return { thread: { threadId: `thr-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
+        async provisionStrand(creator: any, a: string, b: string) {
+          return { strand: { strandId: `str-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
         },
         async validateResponse() { return true },
         async validateDatabaseResult() { return true }
@@ -510,7 +510,7 @@ describe('Sereus Bootstrap - full suite', () => {
         mode: 'responderCreates'
       }
       const result = await managerB.initiateBootstrap(link, nodeB)
-      assert.ok(result.thread && result.dbConnectionInfo)
+      assert.ok(result.strand && result.dbConnectionInfo)
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 6000)
 
@@ -537,7 +537,7 @@ describe('Sereus Bootstrap - full suite', () => {
       // Second should succeed
       const managerB2 = new SessionManager(hooksB, DEFAULT_CONFIG)
       const res2 = await managerB2.initiateBootstrap(link, nodeB)
-      assert.ok(res2.thread && res2.dbConnectionInfo)
+      assert.ok(res2.strand && res2.dbConnectionInfo)
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 8000)
 
@@ -546,8 +546,8 @@ describe('Sereus Bootstrap - full suite', () => {
       const transientHooksA: SessionHooks = {
         async validateToken() { return { mode: 'responderCreates', valid: true } as any },
         async validateIdentity() { calls++; return calls > 1 },
-        async provisionThread(creator: any, a: string, b: string) {
-          return { thread: { threadId: `thr-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
+        async provisionStrand(creator: any, a: string, b: string) {
+          return { strand: { strandId: `str-${a}-${b}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
         },
         async validateResponse() { return true },
         async validateDatabaseResult() { return true }
@@ -566,7 +566,7 @@ describe('Sereus Bootstrap - full suite', () => {
       // Second should succeed
       const managerB2 = new SessionManager(hooksB, DEFAULT_CONFIG)
       const res = await managerB2.initiateBootstrap(link, nodeB)
-      assert.ok(res.thread && res.dbConnectionInfo)
+      assert.ok(res.strand && res.dbConnectionInfo)
       try { nodeA.unhandle(DEFAULT_PROTOCOL_ID) } catch {}
     }, 6000)
   })
@@ -610,7 +610,7 @@ describe('Sereus Bootstrap - full suite', () => {
         mgrB.initiateBootstrap(link, nodeB),
         mgrB.initiateBootstrap(link, nodeB)
       ])
-      results.forEach(r => assert.ok(r.thread && r.dbConnectionInfo))
+      results.forEach(r => assert.ok(r.strand && r.dbConnectionInfo))
       await new Promise(r => setTimeout(r, 100))
       const counts = manager.getActiveSessionCounts()
       assert.equal(counts.listeners, 0)

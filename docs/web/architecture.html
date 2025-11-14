@@ -2,29 +2,40 @@
 
 <section>
   <h2>Core Architectural Concepts</h2>
-  <p>Sereus Fabric's architecture centers on three fundamental concepts: threads, cadres, and peer-to-peer transport. Together, these create a distributed system where users maintain control over their data and connections while benefiting from the resilience of distribution.</p>
+  <p>Sereus Fabric's architecture centers on three fundamental concepts: strands, cadres, and peer-to-peer transport. Together, these create a distributed system where users maintain control over their data and connections while benefiting from the resilience of distribution.</p>
 </section>
 
 <section>
-  <h2>Threads: The Smallest Trust Domain</h2>
-  <p>A thread is the atomic unit of trust and collaboration in Sereus. Each thread:</p>
+  <h2>Strands: The Smallest Trust Domain</h2>
+  <p>A strand is the atomic unit of trust and collaboration in Sereus. Each strand:</p>
   <ul>
-    <li><strong>Defines a trust boundary:</strong> Only invited participants can join. Identities and data are visible only to thread members.</li>
-    <li><strong>Contains a logical database:</strong> Thread participants share a SQL database with a schema appropriate to their application (messaging, commerce, records, etc.).</li>
-    <li><strong>Establishes roles and permissions:</strong> The thread creator and/or group define role-based access controls. Different participants can have different read/write privileges on tables and fields.</li>
-    <li><strong>Supports multiple participants:</strong> Threads can connect two users (like a messaging conversation) or many users (like a group chat or collaborative workspace).</li>
+    <li><strong>Defines a trust boundary:</strong> Only invited participants can join. Identities and data are visible only to strand members.</li>
+    <li><strong>Contains a logical database:</strong> Strand participants share a SQL database with a schema appropriate to their application (messaging, commerce, records, etc.).</li>
+    <li><strong>Establishes roles and permissions:</strong> The strand creator and/or group define role-based access controls. Different participants can have different read/write privileges on tables and fields.</li>
+    <li><strong>Supports multiple participants:</strong> Strands can connect two users (like a messaging conversation) or many users (like a group chat or collaborative workspace).</li>
     <li><strong>Maintains consistency:</strong> All participants see a consistent view of the shared database, with changes distributed across participating cadres.</li>
   </ul>
 </section>
 
 <section>
-  <h2>Cadres: Device Clusters for Resilience</h2>
-  <p>A cadre is a user's personal cluster of devices that work together to provide storage and availability. Think of it as your personal cloud:</p>
+  <h2>Cadres: Your Personal Device Cluster</h2>
+  <p>A <strong>cadre</strong> is the group of nodes that manage and store data on behalf of a given user (or strand member). Think of it as your personal infrastructure cluster:</p>
   <ul>
     <li><strong>Multi-device support:</strong> A cadre might include your phone, laptop, desktop, a home server, or a cloud VPS—any combination of devices you control.</li>
-    <li><strong>Distributed storage:</strong> Thread data is sharded and distributed across the nodes in your cadre, providing redundancy and fault tolerance.</li>
+    <li><strong>Distributed storage:</strong> Data is sharded and distributed across the nodes in your cadre, providing redundancy and fault tolerance.</li>
     <li><strong>Availability:</strong> If one device is offline, others in your cadre can still serve data and accept updates. When the offline device reconnects, it syncs back up.</li>
-    <li><strong>Shared responsibility:</strong> When multiple users participate in a thread, their cadres collectively distribute the thread's database, improving overall data security and availability.</li>
+    <li><strong>Your infrastructure:</strong> You choose which devices join your cadre. Add devices for more storage or better availability.</li>
+  </ul>
+</section>
+
+<section>
+  <h2>Cohorts: The Strand's Collective Infrastructure</h2>
+  <p>A <strong>cohort</strong> is the group of all nodes belonging to a strand—in other words, the combined cadres of all strand members working together:</p>
+  <ul>
+    <li><strong>Collective distribution:</strong> When multiple users participate in a strand, their cadres form a cohort that collectively distributes the strand's database.</li>
+    <li><strong>Enhanced resilience:</strong> Data is distributed across all participants' devices, so the strand remains available even if entire cadres go offline temporarily.</li>
+    <li><strong>Shared responsibility:</strong> Each member's cadre contributes storage and availability to the cohort, improving overall data security and redundancy.</li>
+    <li><strong>Dynamic membership:</strong> As participants join or leave a strand, the cohort expands or contracts accordingly, with data automatically redistributed.</li>
   </ul>
 </section>
 
@@ -32,23 +43,23 @@
   <h2>Transport: Peer-to-Peer Connectivity</h2>
   <p>Sereus uses libp2p for network transport, enabling direct peer-to-peer connections:</p>
   <ul>
-    <li><strong>Multiaddresses:</strong> Each node publishes libp2p multiaddresses—network locations that other thread participants can use to connect directly.</li>
+    <li><strong>Multiaddresses:</strong> Each node publishes libp2p multiaddresses—network locations that other strand participants can use to connect directly.</li>
     <li><strong>No central broker:</strong> Unlike platforms like Signal or WhatsApp where a central server brokers connections, Sereus nodes communicate directly with each other.</li>
     <li><strong>NAT traversal:</strong> Even if both nodes are behind firewalls or NAT, libp2p provides mechanisms for establishing connections.</li>
     <li><strong>Optional relays:</strong> When direct connections aren't possible, relay nodes can forward traffic. Crucially, these relays can be privately operated—you're not forced to use a vendor's infrastructure.</li>
-    <li><strong>Private addressing:</strong> Connection information is exchanged only among thread participants. There's no public directory of nodes or users.</li>
+    <li><strong>Private addressing:</strong> Connection information is exchanged only among strand participants. There's no public directory of nodes or users.</li>
   </ul>
 </section>
 
 <section>
   <h2>How It All Works Together</h2>
-  <p>Consider a simple example: Alice and Bob want to share a secure messaging thread.</p>
+  <p>Consider a simple example: Alice and Bob want to share a secure messaging strand.</p>
   <ol>
-    <li><strong>Thread Creation:</strong> Alice creates a new thread with a messaging schema and invites Bob via QR code.</li>
-    <li><strong>Invitation:</strong> Bob scans the QR code, which contains the thread identifier and Alice's libp2p multiaddress. Bob's cadre initiates a connection to one of Alice's cadre nodes.</li>
-    <li><strong>Distribution Setup:</strong> Both Alice's and Bob's cadres now share the thread database. Data is sharded across all participating nodes.</li>
-    <li><strong>Communication:</strong> When Alice sends a message, it's written to the thread database and automatically distributed to Bob's cadre. Bob sees the update in real-time.</li>
-    <li><strong>Resilience:</strong> If Alice's phone is offline but her laptop is running, the thread remains available. If Bob adds a third device to his cadre, it automatically joins the distribution network for their thread.</li>
+    <li><strong>Strand Creation:</strong> Alice creates a new strand with a messaging schema and invites Bob via QR code.</li>
+    <li><strong>Invitation:</strong> Bob scans the QR code, which contains the strand identifier and Alice's libp2p multiaddress. Bob's cadre initiates a connection to one of Alice's cadre nodes.</li>
+    <li><strong>Cohort Formation:</strong> Alice's and Bob's cadres now form a cohort for this strand. The strand database is sharded and distributed across all nodes in the cohort.</li>
+    <li><strong>Communication:</strong> When Alice sends a message, it's written to the strand database and automatically distributed across the cohort. Bob sees the update in real-time.</li>
+    <li><strong>Resilience:</strong> If Alice's phone is offline but her laptop is running, the strand remains available because other nodes in the cohort continue operating. If Bob adds a third device to his cadre, it automatically joins the cohort and participates in distributing the strand data.</li>
   </ol>
 </section>
 
@@ -58,9 +69,9 @@
   <ul>
     <li><strong>No identity leakage:</strong> There's no global directory to mine for users or connections.</li>
     <li><strong>End-to-end encryption:</strong> libp2p connections are encrypted, and credentials are established out of band.</li>
-    <li><strong>Role-based access:</strong> Even within a thread, different participants can have different levels of access to data.</li>
-    <li><strong>Revocable access:</strong> Thread creators or authorized participants can revoke access at any time.</li>
-    <li><strong>Consent required:</strong> No one can join a thread without explicit invitation. No spam, no unsolicited connections.</li>
+    <li><strong>Role-based access:</strong> Even within a strand, different participants can have different levels of access to data.</li>
+    <li><strong>Revocable access:</strong> Strand creators or authorized participants can revoke access at any time.</li>
+    <li><strong>Consent required:</strong> No one can join a strand without explicit invitation. No spam, no unsolicited connections.</li>
   </ul>
 </section>
 

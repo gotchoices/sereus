@@ -22,10 +22,10 @@
   
   <h3>How It Works</h3>
   <ol>
-    <li><strong>Initial Setup:</strong> A patient initializes a blank medical record thread—a shared database with initially only a single subscriber/keeper: themselves.</li>
+    <li><strong>Initial Setup:</strong> A patient initializes a blank medical record strand—a shared database with initially only a single subscriber/keeper: themselves.</li>
     <li><strong>Granting Provider Access:</strong> The patient shares a QR code with their doctor. The doctor's cadre scans it and suddenly has appropriate access to the database.</li>
-    <li><strong>Collaborative Records:</strong> The doctor begins storing relevant data (visit notes, prescriptions, test results) directly to the shared thread database.</li>
-    <li><strong>Multi-Provider Access:</strong> When the patient shares the database with a second provider, that provider gains access (if granted by the thread policies) to the existing medical record.</li>
+    <li><strong>Collaborative Records:</strong> The doctor begins storing relevant data (visit notes, prescriptions, test results) directly to the shared strand database.</li>
+    <li><strong>Multi-Provider Access:</strong> When the patient shares the database with a second provider, that provider gains access (if granted by the strand policies) to the existing medical record.</li>
     <li><strong>Increased Resilience:</strong> As more providers join, data is sharding across a larger number of nodes, providing additional data security and availability.</li>
   </ol>
 </section>
@@ -38,13 +38,13 @@
     <li><strong>Revoke access:</strong> Terminate provider access at any time for any reason</li>
     <li><strong>Role-based permissions:</strong> Define what each provider can see and modify</li>
     <li><strong>Audit trail:</strong> See who accessed what data and when</li>
-    <li><strong>Data ownership:</strong> The thread database belongs to you, not a hospital or vendor</li>
+    <li><strong>Data ownership:</strong> The strand database belongs to you, not a hospital or vendor</li>
   </ul>
 </section>
 
 <section>
   <h2>Technical Implementation</h2>
-  <p>A medical record thread might have a SQL schema including tables for:</p>
+  <p>A medical record strand might have a SQL schema including tables for:</p>
   <ul>
     <li>Patient demographics and contact information</li>
     <li>Visit history and clinical notes</li>
@@ -94,7 +94,7 @@
 
 <section>
   <h2>Example Scenario</h2>
-  <p>Sarah creates her medical record thread when she's young and healthy. Over the years:</p>
+  <p>Sarah creates her medical record strand when she's young and healthy. Over the years:</p>
   <ol>
     <li>She invites her primary care physician who begins documenting her annual checkups</li>
     <li>When she needs a specialist, she shares access via QR code; the specialist sees relevant history</li>

@@ -1,6 +1,6 @@
 ## @sereus/bootstrap
 
-Configurable invitation-based bootstrap over libp2p to provision a shared Sereus thread (SQL DB), with protocol string override and neutral types.
+Configurable invitation-based bootstrap over libp2p to provision a shared Sereus strand (SQL DB), with protocol string override and neutral types.
 
 Terminology (generic):
 - Dialog roles: Initiator (dials first), Responder (accepts).
@@ -17,7 +17,7 @@ Legacy mapping for MyCHIPs:
 - Session-based state machines (listener/dialer) with timeouts, isolation, and cleanup
 - Two flows: responderCreates (2 messages) and initiatorCreates (3 messages with new stream)
 - Cadre disclosure timing: initiator discloses first; responder discloses only after validation; no disclosure on rejection
-- Hooks interface for token/identity validation and thread provisioning (Quereus/Optimystic)
+- Hooks interface for token/identity validation and strand provisioning (Quereus/Optimystic)
 - Configurable protocol string (default `/sereus/bootstrap/1.0.0`)
 
 ### Install
@@ -35,8 +35,8 @@ const hooks = {
   // Prefer new mode; legacy { role: 'stock'|'foil' } is still accepted
   async validateToken(token, sessionId) { return { mode: 'responderCreates', valid: token === 'ok' } },
   async validateIdentity(identity, sessionId) { return true },
-  async provisionThread(creator, a, b, sessionId) {
-    return { thread: { threadId: 'thr-1', createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db', credentialsRef: 'creds' } }
+  async provisionStrand(creator, a, b, sessionId) {
+    return { strand: { strandId: 'str-1', createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db', credentialsRef: 'creds' } }
   },
   async validateResponse() { return true },
   async validateDatabaseResult() { return true }
@@ -54,7 +54,7 @@ const result = await mgr.initiateBootstrap(link, libp2pNode)
 ### API
 - `createBootstrapManager(hooks, config?)` → `SessionManager`
 - `SessionManager.register(node, protocolId?)` / `unregister(node, protocolId?)`
-- `SessionManager.initiateBootstrap(link, node)` → `{ thread, dbConnectionInfo }`
+- `SessionManager.initiateBootstrap(link, node)` → `{ strand, dbConnectionInfo }`
 
 Types: see `src/bootstrap.ts`.
 

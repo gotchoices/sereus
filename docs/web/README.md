@@ -1,13 +1,13 @@
 # Web Site for Sereus Fabric
 
 ## Project Description
-Sereus Fabric (Sereus.org) is a [Web3](https://en.wikipedia.org/wiki/Web3) environment in which connections (threads) are established between users by common consent and based on some existing level of knowledge or trust.
-Unlike traditional www identities, Sereus nodes join small subnets (threads) by invitation/consent of the other parties on the thread.
-Identities are shared only among those party to the thread and credentials are shared out of band.
+Sereus Fabric (Sereus.org) is a [Web3](https://en.wikipedia.org/wiki/Web3) environment in which connections (strands) are established between users by common consent and based on some existing level of knowledge or trust.
+Unlike traditional www identities, Sereus nodes join small subnets (strands) by invitation/consent of the other parties on the strand.
+Identities are shared only among those party to the strand and credentials are shared out of band.
 So there is not a need for authorities as one might find in an SSL/CA type environment.
 
-Threads can connect two or more users, depending on their purpose and intent.
-Each thread contains a database, accessible by the users who are party to the thread and with access appropriate to their role as defined by the thread creator and/or the group.
+Strands can connect two or more users, depending on their purpose and intent.
+Each strand contains a database, accessible by the users who are party to the strand and with access appropriate to their role as defined by the strand creator and/or the group.
 
 ## Project Components
 Sereus Fabric (Sereus.org) is a programming environment that brings together:
@@ -25,7 +25,7 @@ Sereus Fabric (Sereus.org) is a programming environment that brings together:
 - Bootstrap Launch
 
 ## Example Uses
-Thread databases can contain arbitrary SQL schemas that can support any number of individual applications.
+Strand databases can contain arbitrary SQL schemas that can support any number of individual applications.
 Some possible examples include:
 
 ### Secure Messaging
@@ -38,7 +38,7 @@ So even if both nodes are phones running behind a firewall, as long as they can 
 If cases where a relay (with a public IP number) is required, this can be any node--even one controlled privately.
 
 Furthermore, identities are not publicly available.
-Messages can be based solely on established threads which are built by invitation only.
+Messages can be based solely on established strands which are built by invitation only.
 The result is, you get messages only from where you want.
 No spam.
 
@@ -86,7 +86,7 @@ One challenge today is how users can store all their photos and other data.
 The traditional solution is to pay a monthly fee for cloud storage and backups.
 
 Sereus is all about shared databases.
-It is possible users could form threads for the purpose of backing up and sharing data storage.
+It is possible users could form strands for the purpose of backing up and sharing data storage.
 
 A user might build a cloud server or a physical linux box with a large hard disk.
 This can become part of the user's operational node cluster (cadre).
@@ -112,7 +112,7 @@ This will bring more transparency and security to elections.
 
 ### Digital Currency
 The [MyCHIPs digital medium of exchange project](https://mychips.org) is historically based on two separate, individual databases kept by two parties to a single logical shared tally of credit entries.
-MyCHIPs is being retooled to work on a Sereus thread.
+MyCHIPs is being retooled to work on a Sereus strand.
 This will eliminate many of the existing challenges of consensus between tally partners.
 It will also simplify the application layer greatly as many of the storage issues will be dealt with by the Sereus stack.
 

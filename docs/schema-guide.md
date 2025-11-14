@@ -1,6 +1,6 @@
 ## Sereus Schema Guide (for Quereus)
 
-Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus thread schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
+Purpose: A compact, example-driven reference so a human or AI agent can define a full Sereus strand schema using Quereus’ declarative SQL. Assumes familiarity with SQL; focuses on Quereus- and Sereus-specific patterns.
 
 Key Quereus characteristics:
 - Declarative, order-independent schema blocks (`schema { ... }`).
@@ -36,17 +36,18 @@ explain schema main;       -- returns { info: 'hash:...' }
 ```
 
 Conventions used below:
-- “Thread” = the database shared by consenting participants.
-- “Cadre” = a user’s device cluster hosting copies of thread data.
+- "Strand" = the database shared by consenting participants.
+- "Cadre" = a user's personal device cluster that manages/stores data on their behalf.
+- "Cohort" = all nodes belonging to a strand (the combined cadres of all strand members).
 - Role/rights are modeled at the schema layer using context variables + checks.
 
 ---
 
-### Minimal Thread Schema Skeleton
+### Minimal Strand Schema Skeleton
 
 ```sql
 schema "com.example.messaging" version 1 using (default_vtab_module = 'memory') {
-  -- Identities scoped to the thread; emails optional to allow pseudonyms/handles
+  -- Identities scoped to the strand; emails optional to allow pseudonyms/handles
   table users (
     id          text primary key,
     display     text,         -- Handle or display name (not globally unique)
@@ -54,7 +55,7 @@ schema "com.example.messaging" version 1 using (default_vtab_module = 'memory') 
     created_at  text default datetime('now')
   );
 
-  -- Simple messages; each row belongs to a conversation (thread-local grouping)
+  -- Simple messages; each row belongs to a conversation (strand-local grouping)
   table conversations (
     id          text primary key,
     title       text,
@@ -487,7 +488,7 @@ schema "org.sereus.chat" version 1 using (default_vtab_module = 'memory') {
 - Use seeds for deterministic bootstrap (roles, system users, defaults).
 - Index for uniqueness and query speed; prefer named composite PKs where natural.
 
-This guide is intentionally compact and example-first. With it, an agent should be able to author thread schemas that enforce consent, membership, multi-tenancy, and audit/security directly in Quereus.
+This guide is intentionally compact and example-first. With it, an agent should be able to author strand schemas that enforce consent, membership, multi-tenancy, and audit/security directly in Quereus.
 
 
 ---

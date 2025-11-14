@@ -1,23 +1,24 @@
 ## Sereus Fabric
 
-Sereus is a Web3 programming fabric built on consent-based threads where users control identity, data, and connections. Instead of global identities and central brokers, Sereus forms small, private subnets by invitation only. Each thread is a shared SQL database with role-based permissions, distributed across participants’ devices for resilience.
+Sereus is a Web3 programming fabric built on consent-based strands where users control identity, data, and connections. Instead of global identities and central brokers, Sereus forms small, private subnets by invitation only. Each strand is a shared SQL database with role-based permissions, distributed across participants' devices for resilience.
 
 ### Why Sereus
-- **Privacy by design**: No global identity directory; identities exist only within threads you join.
+- **Privacy by design**: No global identity directory; identities exist only within strands you join.
 - **Direct peer connections**: libp2p multiaddresses enable end-to-end encrypted, serverless communication.
-- **Familiar SQL**: Each thread is a relational database; apps read/write via standard SQL.
+- **Familiar SQL**: Each strand is a relational database; apps read/write via standard SQL.
 - **Decentralized & resilient**: Data is distributed across participants’ devices (“cadres”).
 - **Developer-friendly**: Focus on application logic; the fabric handles distribution and transport.
 
 ### Core Concepts
-- **Threads**: Invitation-only trust domains; each thread contains a shared SQL database and RBAC.
-- **Cadres**: A user’s cluster of devices providing storage/availability (your “personal cloud”).
+- **Strands**: Invitation-only trust domains; each strand contains a shared SQL database and RBAC.
+- **Cadre**: The group of nodes that manage/store data on behalf of a given user (or strand member). Your personal infrastructure cluster.
+- **Cohort**: All nodes belonging to a strand—the combined cadres of all strand members working together to distribute the strand's database.
 - **Transport**: Peer-to-peer connectivity via libp2p (NAT traversal, relays, encrypted links).
 
 ### Technology Stack
 - **Quereus** (SQL processor): Query parsing, transactions, distributed-aware optimization.
 - **Optimystic** (storage engine): B-trees, block storage, sharding, synchronization.
-- **Fret** (DHT): Content addressing and node discovery within threads (part of Optimystic).
+- **Fret** (DHT): Content addressing and node discovery within strands (part of Optimystic).
 - **libp2p** (P2P network): Multiaddressing, NAT traversal, relays, encryption.
 
 ### What You Can Build
@@ -29,11 +30,11 @@ Sereus is a Web3 programming fabric built on consent-based threads where users c
 - Digital currency (shared tallies for credit-based exchange)
 
 ### Getting Started
-1) Understand the model: threads, cadres, roles, libp2p addressing.
+1) Understand the model: strands, cadres, roles, libp2p addressing.
 2) Set up the stack locally (Quereus, Optimystic/Fret, libp2p).
-3) Define a thread schema and roles; initialize your first thread.
+3) Define a strand schema and roles; initialize your first strand.
 4) Connect a second node via invitation; verify synchronized SQL state.
-5) Build your app by issuing SQL against the thread database.
+5) Build your app by issuing SQL against the strand database.
 
 See `docs/web/` for the full site content (Overview, Architecture, Stack, Use Cases, Get Started). Public site: `https://sereus.org`.
 

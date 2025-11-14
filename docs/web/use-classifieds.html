@@ -56,14 +56,14 @@
     <li>Trust is portable and not controlled by a platform</li>
   </ul>
   
-  <h3>Thread-Based Transactions</h3>
-  <p>Each transaction might involve several threads:</p>
+  <h3>Strand-Based Transactions</h3>
+  <p>Each transaction might involve several strands:</p>
   <ol>
-    <li><strong>Listing thread:</strong> Seller publishes item details; publicity service makes it discoverable</li>
-    <li><strong>Transaction thread:</strong> Buyer and seller create a shared thread to negotiate terms</li>
-    <li><strong>Escrow thread:</strong> Buyer, seller, and escrow service share a thread to manage payment</li>
-    <li><strong>Shipping thread:</strong> Buyer, seller, and shipper coordinate delivery</li>
-    <li><strong>Reputation thread:</strong> Transaction outcome is recorded for future reference</li>
+    <li><strong>Listing strand:</strong> Seller publishes item details; publicity service makes it discoverable</li>
+    <li><strong>Transaction strand:</strong> Buyer and seller create a shared strand to negotiate terms</li>
+    <li><strong>Escrow strand:</strong> Buyer, seller, and escrow service share a strand to manage payment</li>
+    <li><strong>Shipping strand:</strong> Buyer, seller, and shipper coordinate delivery</li>
+    <li><strong>Reputation strand:</strong> Transaction outcome is recorded for future reference</li>
   </ol>
 </section>
 
@@ -94,7 +94,7 @@
   <p>Compete on fee structure, dispute resolution fairness, and speed. Reputation matters because buyers and sellers choose explicitly.</p>
   
   <h3>Shipping Services</h3>
-  <p>Traditional and new shipping providers can participate on equal footing. Integration happens through thread APIs, not exclusive platform deals.</p>
+  <p>Traditional and new shipping providers can participate on equal footing. Integration happens through strand APIs, not exclusive platform deals.</p>
   
   <h3>Reputation Services</h3>
   <p>Aggregate transaction outcomes to provide buyer and seller ratings. Compete on fairness, transparency, and resistance to gaming.</p>

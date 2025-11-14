@@ -2,7 +2,7 @@
 
 <section>
   <h2>Development Path</h2>
-  <p>Building on Sereus involves understanding its fundamental concepts, setting up your development environment, and creating your first thread-based application. Here's the path from zero to a working application.</p>
+  <p>Building on Sereus involves understanding its fundamental concepts, setting up your development environment, and creating your first strand-based application. Here's the path from zero to a working application.</p>
 </section>
 
 <section>
@@ -20,9 +20,10 @@
   <h2>Conceptual Foundation</h2>
   <p>Start by understanding the core concepts:</p>
   <ol>
-    <li><strong>Threads:</strong> Small, private subnets formed by invitation. Each thread is a shared SQL database among consenting participants.</li>
-    <li><strong>Cadres:</strong> Your cluster of devices that distribute and serve thread data. Think of it as your personal infrastructure.</li>
-    <li><strong>Roles and Permissions:</strong> Thread creators define who can do what using role-based access controls.</li>
+    <li><strong>Strands:</strong> Small, private subnets formed by invitation. Each strand is a shared SQL database among consenting participants.</li>
+    <li><strong>Cadre:</strong> The group of nodes that manage and store data on behalf of a given user (strand member). Your personal device cluster.</li>
+    <li><strong>Cohort:</strong> All nodes belonging to a strand—the combined cadres of all strand members. The cohort collectively distributes the strand's database.</li>
+    <li><strong>Roles and Permissions:</strong> Strand creators define who can do what using role-based access controls.</li>
     <li><strong>libp2p Addressing:</strong> How nodes find and connect to each other without central servers.</li>
   </ol>
   <p>Review the <a href="#" data-page="overview">Overview</a> and <a href="#" data-page="architecture">Architecture</a> pages to build your mental model.</p>
@@ -38,7 +39,7 @@
     <li><strong>Optimystic:</strong> Storage engine with B-trees and block storage (<a href="https://github.com/gotchoices/Optimystic" target="_blank" rel="noopener">gotchoices/Optimystic</a>)</li>
     <li><strong>Fret:</strong> Distributed hash table (included with Optimystic)</li>
     <li><strong>libp2p:</strong> Peer-to-peer networking library (<a href="https://libp2p.io/" target="_blank" rel="noopener">libp2p.io</a>)</li>
-    <li><strong>Bootstrap tools:</strong> Utilities for thread initialization and management</li>
+    <li><strong>Bootstrap tools:</strong> Utilities for strand initialization and management</li>
   </ul>
   <p><em>Note: Detailed installation documentation is in development. Check the GitHub repositories for current setup instructions.</em></p>
   
@@ -51,22 +52,22 @@
     <li>Test that your node can store and retrieve data</li>
   </ul>
   
-  <h3>Step 3: Create Your First Thread</h3>
-  <p>Bootstrap a development thread:</p>
+  <h3>Step 3: Create Your First Strand</h3>
+  <p>Bootstrap a development strand:</p>
   <ol>
     <li><strong>Define your schema:</strong> What tables and fields does your application need?</li>
     <li><strong>Define roles:</strong> What permissions will different participants have?</li>
-    <li><strong>Initialize the thread:</strong> Use bootstrap tools to create the thread database</li>
-    <li><strong>Verify:</strong> Confirm you can query the thread database via SQL</li>
+    <li><strong>Initialize the strand:</strong> Use bootstrap tools to create the strand database</li>
+    <li><strong>Verify:</strong> Confirm you can query the strand database via SQL</li>
   </ol>
   
   <h3>Step 4: Connect a Second Node</h3>
-  <p>Threads need at least two participants to be meaningful:</p>
+  <p>Strands need at least two participants to be meaningful:</p>
   <ul>
     <li>Set up a second node (can be on the same machine for development)</li>
     <li>Generate an invitation from your first node</li>
     <li>Have the second node join via the invitation</li>
-    <li>Verify both nodes can see the same thread database</li>
+    <li>Verify both nodes can see the same strand database</li>
     <li>Test distribution by writing from one node and reading from the other</li>
   </ul>
   
@@ -75,8 +76,8 @@
   <ul>
     <li><strong>Choose your language:</strong> Any language with SQL support can work</li>
     <li><strong>Connect to Quereus:</strong> Your application issues SQL queries through the Quereus interface</li>
-    <li><strong>Implement your logic:</strong> Write the code that reads and writes to the thread database</li>
-    <li><strong>Handle events:</strong> React to changes in the thread (new messages, updated data, etc.)</li>
+    <li><strong>Implement your logic:</strong> Write the code that reads and writes to the strand database</li>
+    <li><strong>Handle events:</strong> React to changes in the strand (new messages, updated data, etc.)</li>
     <li><strong>Test thoroughly:</strong> Verify behavior with multiple nodes online and offline</li>
   </ul>
 </section>
@@ -113,7 +114,7 @@ CREATE TABLE participants (
   <h2>Next Steps</h2>
   <p>Once you have a basic application working:</p>
   <ul>
-    <li><strong>Explore advanced features:</strong> Multi-device cadres, complex role permissions, cross-thread references</li>
+    <li><strong>Explore advanced features:</strong> Multi-device cadres, complex role permissions, cross-strand references</li>
     <li><strong>Test at scale:</strong> Add more participants, simulate network partitions, measure performance</li>
     <li><strong>Build real applications:</strong> Choose a use case and build something useful</li>
     <li><strong>Join the community:</strong> Share your work, contribute back, help others learn</li>
@@ -132,7 +133,7 @@ CREATE TABLE participants (
 
 <section>
   <h2>Development Status</h2>
-  <p>Sereus is under active development. Some components are mature while others are still evolving. The core concepts (threads, cadres, consent-based connections) are stable, but APIs and tooling continue to improve.</p>
+  <p>Sereus is under active development. Some components are mature while others are still evolving. The core concepts (strands, cadres, consent-based connections) are stable, but APIs and tooling continue to improve.</p>
   <p>Early adopters should expect to work closely with the codebase and documentation, potentially contributing improvements as they learn.</p>
 </section>
 

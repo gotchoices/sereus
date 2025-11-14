@@ -38,7 +38,7 @@ npx ts-node sereus/bootstrap/test/manual/bootstrap-dial.ts /ip4/127.0.0.1/tcp/52
 It will attempt a bootstrap with a responderCreates token and print the result on success:
 
 ```
-Bootstrap result: { thread: { threadId: 'thr-...', createdBy: 'responder' }, dbConnectionInfo: { ... } }
+Bootstrap result: { strand: { strandId: 'str-...', createdBy: 'responder' }, dbConnectionInfo: { ... } }
 ```
 
 Notes:

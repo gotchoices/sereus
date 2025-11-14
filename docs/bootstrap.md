@@ -3,7 +3,7 @@
 This document captures protocol/usage details from the original Taleus bootstrap design, adapted for Sereus. It supplements `sereus/bootstrap/README.md` with rationale, flows, and security notes so Taleus can be retired without losing important knowledge.
 
 ## Scope
-- Invitation-based establishment of a shared thread (SQL DB) between participants.
+- Invitation-based establishment of a shared strand (SQL DB) between participants.
 - Transport: libp2p streams. Consensus/data-layer handled by Quereus/Optimystic.
 - Roles are logical; apps decide semantics. Library supports two primary flows and rejection.
 
@@ -33,7 +33,7 @@ interface ProvisioningResultMessage {
 
 // 3) Initiator → Responder (initiatorCreates flow; NEW stream)
 interface DatabaseResultMessage {
-  thread: { threadId: string; createdBy: 'initiator'|'responder' }
+  strand: { strandId: string; createdBy: 'initiator'|'responder' }
   dbConnectionInfo: { endpoint: string; credentialsRef: string }
 }
 ```
@@ -46,12 +46,12 @@ Notes:
 
 ### Mode: responderCreates (2 messages)
 1. Initiator sends InboundContact.
-2. Responder validates token/identity, provisions thread, and replies with ProvisioningResult (includes provisionResult).
+2. Responder validates token/identity, provisions strand, and replies with ProvisioningResult (includes provisionResult).
 
 ### Mode: initiatorCreates (3 messages)
 1. Initiator sends InboundContact.
 2. Responder validates token/identity and replies with ProvisioningResult (no provisionResult yet).
-3. Initiator provisions thread and sends DatabaseResult on a NEW stream.
+3. Initiator provisions strand and sends DatabaseResult on a NEW stream.
 
 ### Rejection Flow
 - Responder returns `approved=false` with `reason` and discloses no responder cadre.
@@ -72,14 +72,14 @@ Notes:
 ## Hooks (Application Integration)
 - `validateToken(token, sessionId) → { mode: 'responderCreates'|'initiatorCreates', valid: boolean }`
 - `validateIdentity(identity, sessionId) → boolean`
-- `provisionThread(creator: 'initiator'|'responder', partyA: string, partyB: string, sessionId: string) → { thread, dbConnectionInfo }`
+- `provisionThread(creator: 'initiator'|'responder', partyA: string, partyB: string, sessionId: string) → { strand, dbConnectionInfo }`
 - `validateResponse(msg, sessionId) → boolean`
 - `validateDatabaseResult(msg, sessionId) → boolean`
 
 These hooks are the extension points for:
 - Mapping tokens to role and scopes.
 - Enforcing invitation policies.
-- Creating the Quereus thread (apply schema, create creds, return connection).
+- Creating the Quereus strand (apply schema, create creds, return connection).
 
 ## Concurrency, Limits, and Timeouts
 - Session manager supports unlimited sessions by default; configure `maxConcurrentSessions` to protect responders.
@@ -92,13 +92,13 @@ These hooks are the extension points for:
 - On malformed hook returns: treat as validation failure or timeout.
 
 ## Multi-use Tokens / Multi-customer Scenarios
-- The library allows reusing tokens if app policy permits. Tests demonstrate multiple concurrent bootstraps using the same token generating distinct threads.
+- The library allows reusing tokens if app policy permits. Tests demonstrate multiple concurrent bootstraps using the same token generating distinct strands.
 - For stricter policies, encode single-use constraints in token validation.
 
 ## Extending to N-Party Bootstrap (Roadmap)
 - Current flows are 2-party. N-party can be layered as:
   1) Initiator collects approvals (ProvisioningResult) from N-1 responders.
-  2) After quorum, initiator provisions thread and distributes DatabaseResult to each responder (new stream per responder).
+  2) After quorum, initiator provisions strand and distributes DatabaseResult to each responder (new stream per responder).
   3) Optional: distribute credentials asymmetrically per participant.
 - Disclosure rules apply per leg; only disclose a party’s cadre after validating their token/identity.
 
@@ -108,20 +108,20 @@ These hooks are the extension points for:
 - Configurability: protocol id is configurable in manager config and per link.
 
 ## Testing Summary
-- Concurrency: multiple bootstraps run in parallel; each gets unique thread ids.
+- Concurrency: multiple bootstraps run in parallel; each gets unique strand ids.
 - Limits: configured max concurrent sessions enforced; either rejections or queued/batched handling.
 - Error isolation: invalid sessions don’t affect others; sessions cleaned up after finish.
 - Timeouts & network failures: short timeouts trigger expected errors; recovery verified by subsequent success.
 - Cadre disclosure: initiator cadre in message 1; responder cadre only after validation; no cadre on rejection.
 
 ## Migration Notes from Taleus
-- Terminology changed: tally → thread; provisioning result fields renamed accordingly.
+- Terminology changed: tally → strand; provisioning result fields renamed accordingly.
 - Protocol id changed and made configurable.
-- App-specific domain (credit chits, lifts, admin/officer policies, signatures) intentionally excluded from bootstrap; to be implemented in app layers on top of the thread.
+- App-specific domain (credit chits, lifts, admin/officer policies, signatures) intentionally excluded from bootstrap; to be implemented in app layers on top of the strand.
 
 ## References
 - `sereus/bootstrap/src/bootstrap.ts` (implementation)
 - `sereus/bootstrap/test/auto/bootstrap.ts` (integration tests)
-- `sereus/docs/schema-guide.md` (Quereus thread schema patterns)
+- `sereus/docs/schema-guide.md` (Quereus strand schema patterns)
 
 

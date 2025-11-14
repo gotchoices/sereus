@@ -28,7 +28,7 @@
   <p>In a Sereus framework, social media returns to its roots—with enhanced privacy and user control.</p>
   
   <h3>User-Controlled Timelines</h3>
-  <p>A user can build a social media timeline (a thread database with a posts schema) and publish it to selected followers. You decide who can follow you, just as they decide to accept your invitation.</p>
+  <p>A user can build a social media timeline (a strand database with a posts schema) and publish it to selected followers. You decide who can follow you, just as they decide to accept your invitation.</p>
   
   <h3>User-Built Feeds</h3>
   <p>Followers build their own custom feeds by prioritizing posts as they wish. You can:</p>
@@ -42,12 +42,12 @@
   <p>Importantly, <strong>there is no gatekeeper in the middle</strong>. The platform doesn't see your feed; you control it entirely.</p>
   
   <h3>Consent-Based Following</h3>
-  <p>Following relationships are established by mutual consent through thread invitations. This means:</p>
+  <p>Following relationships are established by mutual consent through strand invitations. This means:</p>
   <ul>
     <li>No unsolicited follows from bots or spam accounts</li>
     <li>You choose who can see your timeline</li>
     <li>Your follower graph is private—not publicly scrapeable</li>
-    <li>Blocking is truly effective; blocked users lose access to the thread</li>
+    <li>Blocking is truly effective; blocked users lose access to the strand</li>
   </ul>
 </section>
 
@@ -55,11 +55,11 @@
   <h2>Technical Architecture</h2>
   <p>A Sereus-based social media app might work like this:</p>
   <ol>
-    <li>Alice creates a "timeline thread" with a SQL schema for posts, likes, comments, etc.</li>
-    <li>Alice invites Bob to follow her timeline. Bob's cadre joins the thread and begins distributing the data.</li>
-    <li>When Alice posts, it's written to the thread database and automatically appears in Bob's client.</li>
-    <li>Bob creates his own "feed thread" that aggregates queries from all the timeline threads he follows.</li>
-    <li>Bob's feed client queries these threads and applies his chosen filters/ordering to build a unified view.</li>
+    <li>Alice creates a "timeline strand" with a SQL schema for posts, likes, comments, etc.</li>
+    <li>Alice invites Bob to follow her timeline. Bob's cadre joins the strand and begins distributing the data.</li>
+    <li>When Alice posts, it's written to the strand database and automatically appears in Bob's client.</li>
+    <li>Bob creates his own "feed strand" that aggregates queries from all the timeline strands he follows.</li>
+    <li>Bob's feed client queries these strands and applies his chosen filters/ordering to build a unified view.</li>
   </ol>
 </section>
 
@@ -83,7 +83,7 @@
   <ul>
     <li><strong>Collaborative timelines:</strong> Multiple people co-managing a shared account or publication</li>
     <li><strong>Granular permissions:</strong> Different followers can have different access levels to your posts</li>
-    <li><strong>Community moderation:</strong> Thread participants can collectively define moderation rules</li>
+    <li><strong>Community moderation:</strong> Strand participants can collectively define moderation rules</li>
     <li><strong>Portable curation:</strong> Build and share feed algorithms with others; remix and customize</li>
   </ul>
 </section>

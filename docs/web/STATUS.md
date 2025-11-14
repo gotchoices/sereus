@@ -19,8 +19,8 @@ All pages have been enhanced with comprehensive, informative content based on th
 
 ### Core Pages
 - [x] **home.html** - Compelling introduction with "Why Sereus?" section
-- [x] **overview.html** - Detailed explanation of threads, consent-based identity, and key principles
-- [x] **architecture.html** - In-depth coverage of threads, cadres, and transport layer
+- [x] **overview.html** - Detailed explanation of strands, consent-based identity, and key principles
+- [x] **architecture.html** - In-depth coverage of strands, cadres, and transport layer
 - [x] **stack.html** - Component descriptions with links to external resources
 - [x] **get-started.html** - Step-by-step developer onboarding with example code
 - [x] **uses.html** - Enhanced main use cases page with better structure

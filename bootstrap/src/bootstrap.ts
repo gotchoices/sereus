@@ -1,7 +1,7 @@
 /*
  * Sereus Bootstrap Session Manager
  *
- * Generic invitation-based bootstrap over libp2p to provision a shared thread (DB).
+ * Generic invitation-based bootstrap over libp2p to provision a shared strand (DB).
  * Protocol string is configurable; default provided.
  */
 
@@ -13,7 +13,7 @@ export const DEFAULT_PROTOCOL_ID = '/sereus/bootstrap/1.0.0'
 // Dialog party (generic)
 export type DialogParty = 'initiator' | 'responder'
 
-// Generic mode describing who provisions the DB/thread
+// Generic mode describing who provisions the DB/strand
 // responderCreates: responder provisions and returns info in Response (2-message)
 // initiatorCreates: initiator provisions after approval and sends DB info (3-message)
 export type BootstrapMode = 'responderCreates' | 'initiatorCreates'
@@ -41,7 +41,7 @@ export interface SessionHooks {
   // Return Mode (preferred)
   validateToken(token: string, sessionId: string): Promise<{ mode: BootstrapMode, valid: boolean }>
   validateIdentity(identity: unknown, sessionId: string): Promise<boolean>
-  provisionThread(creator: DialogParty, creatorPartyId: string, otherPartyId: string, sessionId: string): Promise<ProvisionResult>
+  provisionStrand(creator: DialogParty, creatorPartyId: string, otherPartyId: string, sessionId: string): Promise<ProvisionResult>
   validateResponse(response: unknown, sessionId: string): Promise<boolean>
   validateDatabaseResult(result: unknown, sessionId: string): Promise<boolean>
 }
@@ -72,17 +72,17 @@ export interface ProvisioningResultMessage {
 }
 
 export interface DatabaseResultMessage {
-  thread: { threadId: string, createdBy: DialogParty }
+  strand: { strandId: string, createdBy: DialogParty }
   dbConnectionInfo: { endpoint: string, credentialsRef: string }
 }
 
 export interface ProvisionResult {
-  thread: { threadId: string, createdBy: DialogParty }
+  strand: { strandId: string, createdBy: DialogParty }
   dbConnectionInfo: { endpoint: string, credentialsRef: string }
 }
 
 export interface BootstrapResult {
-  thread: { threadId: string, createdBy: DialogParty }
+  strand: { strandId: string, createdBy: DialogParty }
   dbConnectionInfo: { endpoint: string, credentialsRef: string }
 }
 
@@ -236,7 +236,7 @@ export class ListenerSession {
     const mode = tokenInfoToMode(this.tokenInfo!)
     if (mode === 'responderCreates') {
       if (this.config.enableDebugLogging) console.debug(`[L:${this.sessionId}] provisioning (responderCreates mode)`)
-      this.provisionResult = await this.withStepTimeout(() => this.hooks.provisionThread('responder', this.sessionId, msg.partyId, this.sessionId))
+      this.provisionResult = await this.withStepTimeout(() => this.hooks.provisionStrand('responder', this.sessionId, msg.partyId, this.sessionId))
       if (this.config.enableDebugLogging) console.debug(`[L:${this.sessionId}] provisioned`, this.provisionResult)
     }
   }
@@ -344,12 +344,12 @@ export class DialerSession {
     if (!this.responseMessage) throw new Error('No response message available')
     let provision: ProvisionResult
     try {
-      provision = await this.withStepTimeout(() => this.hooks.provisionThread('initiator', this.sessionId, this.responseMessage!.partyId!, this.sessionId))
+      provision = await this.withStepTimeout(() => this.hooks.provisionStrand('initiator', this.sessionId, this.responseMessage!.partyId!, this.sessionId))
     } catch (e: any) {
       this.state = 'D_FAILED'
       throw new Error(`Provisioning failed: ${e?.message || String(e)}`)
     }
-    const dbMsg: DatabaseResultMessage = { thread: provision.thread, dbConnectionInfo: provision.dbConnectionInfo }
+    const dbMsg: DatabaseResultMessage = { strand: provision.strand, dbConnectionInfo: provision.dbConnectionInfo }
     const pid = this.link.protocolId || this.config.protocolId || DEFAULT_PROTOCOL_ID
     const maddr = toMultiaddr(this.link.responderPeerAddrs[0])
     const newStream = await this.withStepTimeout(async () => (await this.node.dialProtocol(maddr, pid)) as LibP2PStream)

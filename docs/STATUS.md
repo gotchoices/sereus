@@ -27,10 +27,10 @@ Purpose: Track decisions and options around packaging and documentation for Sere
   - Include error paths (rejection, timeout) and cadre disclosure timing.
 
 - TODO: Author `sereus/docs/core.md` (future)
-  - Thread lifecycle, schema application patterns, multi-party bootstrap patterns.
+  - Strand lifecycle, schema application patterns, multi-party bootstrap patterns.
 
 - TODO: Cross-link to Quereus schema guide
-  - From bootstrap docs, link to `sereus/docs/schema-guide.md` for thread DDL patterns.
+  - From bootstrap docs, link to `sereus/docs/schema-guide.md` for strand DDL patterns.
 
 ## Testing/CI
 

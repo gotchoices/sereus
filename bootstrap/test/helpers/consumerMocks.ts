@@ -1,5 +1,5 @@
 /*
-  Session-aware hooks for bootstrap testing (thread-oriented)
+  Session-aware hooks for bootstrap testing (strand-oriented)
 */
 
 import type { SessionHooks, ProvisionResult, BootstrapMode, DialogParty } from '../../src/bootstrap.js'
@@ -32,11 +32,11 @@ export function createSessionAwareHooks(validTokens: string[] = ['test-token']):
       log(sessionId, { action: 'validateIdentity' })
       return !!(identity && typeof identity === 'object' && (identity.partyId || identity.id))
     },
-    async provisionThread(creator: DialogParty, partyA: string, partyB: string, sessionId: string) {
-      log(sessionId, { action: 'provisionThread', creator, partyA, partyB })
-      const id = `thr-${partyA}-${partyB}-${Date.now()}`
+    async provisionStrand(creator: DialogParty, partyA: string, partyB: string, sessionId: string) {
+      log(sessionId, { action: 'provisionStrand', creator, partyA, partyB })
+      const id = `str-${partyA}-${partyB}-${Date.now()}`
       const result: ProvisionResult = {
-        thread: { threadId: id, createdBy: creator },
+        strand: { strandId: id, createdBy: creator },
         dbConnectionInfo: { endpoint: `wss://db-${id}.example.com`, credentialsRef: `creds-${id}` }
       }
       provisioningDatabase.set(sessionId, result)
@@ -48,7 +48,7 @@ export function createSessionAwareHooks(validTokens: string[] = ['test-token']):
     },
     async validateDatabaseResult(result: any, sessionId: string) {
       log(sessionId, { action: 'validateDatabaseResult' })
-      return result && result.thread && result.dbConnectionInfo
+      return result && result.strand && result.dbConnectionInfo
     }
   }
 }

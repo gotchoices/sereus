@@ -25,11 +25,11 @@
     <li>Run your own relay on a VPS or home server</li>
     <li>Use a relay operated by a trusted friend or organization</li>
     <li>Choose relays based on reputation and trust</li>
-    <li>Switch relays at any time without affecting your message threads</li>
+    <li>Switch relays at any time without affecting your message strands</li>
   </ul>
   
   <h3>Private Identities</h3>
-  <p>Identities are not publicly available or searchable. Messages are based solely on established threads, which are built by invitation only. The result: you receive messages only from connections you've explicitly accepted. <strong>No spam. No unsolicited contact.</strong></p>
+  <p>Identities are not publicly available or searchable. Messages are based solely on established strands, which are built by invitation only. The result: you receive messages only from connections you've explicitly accepted. <strong>No spam. No unsolicited contact.</strong></p>
 </section>
 
 <section>
@@ -38,17 +38,17 @@
     <li><strong>No identity directory:</strong> There's no global username database to mine or harvest.</li>
     <li><strong>Encrypted transport:</strong> libp2p connections are encrypted by default.</li>
     <li><strong>Out-of-band credentials:</strong> Initial connection setup happens through QR codes, email, or in-person exchange—not through a central service.</li>
-    <li><strong>Consent-based threading:</strong> Every conversation is a thread you've explicitly joined.</li>
-    <li><strong>Distributed storage:</strong> Messages are stored in the shared thread database, distributed across participants' cadres for availability.</li>
-    <li><strong>Role-based permissions:</strong> Thread creators can define who can send messages, invite new members, or access message history.</li>
+    <li><strong>Consent-based stranding:</strong> Every conversation is a strand you've explicitly joined.</li>
+    <li><strong>Distributed storage:</strong> Messages are stored in the shared strand database, distributed across participants' cadres for availability.</li>
+    <li><strong>Role-based permissions:</strong> Strand creators can define who can send messages, invite new members, or access message history.</li>
   </ul>
 </section>
 
 <section>
   <h2>Technical Implementation</h2>
-  <p>A Sereus messaging app would define a SQL schema for the thread database including tables for messages, participants, and metadata. When Alice sends a message to Bob:</p>
+  <p>A Sereus messaging app would define a SQL schema for the strand database including tables for messages, participants, and metadata. When Alice sends a message to Bob:</p>
   <ol>
-    <li>Alice's client writes the message to the shared thread database via a SQL INSERT</li>
+    <li>Alice's client writes the message to the shared strand database via a SQL INSERT</li>
     <li>Optimystic distributes the change across nodes in Alice's and Bob's cadres</li>
     <li>Bob's client queries for new messages and displays the update</li>
   </ol>
@@ -61,7 +61,7 @@
     <li><strong>True decentralization:</strong> No company can shut down the service or deplatform users.</li>
     <li><strong>Metadata privacy:</strong> Connection graphs aren't visible to third parties or platform operators.</li>
     <li><strong>Infrastructure independence:</strong> Choose your own relays and storage; not locked to vendor infrastructure.</li>
-    <li><strong>Group messaging:</strong> Multi-party threads work exactly like two-party, just with more participants.</li>
+    <li><strong>Group messaging:</strong> Multi-party strands work exactly like two-party, just with more participants.</li>
     <li><strong>Offline resilience:</strong> Messages sync when devices reconnect; multiple devices in your cadre provide redundancy.</li>
   </ul>
 </section>

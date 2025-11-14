@@ -20,8 +20,8 @@ async function main() {
   const hooks = {
     async validateToken(token: string) { return { mode: token.includes('initiator') ? 'initiatorCreates' : 'responderCreates', valid: true } },
     async validateIdentity() { return true },
-    async provisionThread(creator: 'initiator'|'responder', a: string, b: string) {
-      return { thread: { threadId: `thr-${Date.now()}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
+    async provisionStrand(creator: 'initiator'|'responder', a: string, b: string) {
+      return { strand: { strandId: `str-${Date.now()}`, createdBy: creator }, dbConnectionInfo: { endpoint: 'wss://db.local', credentialsRef: 'creds' } }
     },
     async validateResponse() { return true },
     async validateDatabaseResult() { return true }
