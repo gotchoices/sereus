@@ -7,6 +7,10 @@ Intent:
 - The repo clone holds **code**
 - `systemd` manages start-on-boot and restarts
 
+Shared ops guidance (applies to Docker and systemd):
+- `../../docs/keys.md`
+- `../../docs/dnsaddr.md`
+
 ### What you would do (high level)
 1) Create an ops root (example):
    - `/srv/sereus-ops/repo` (git clone)

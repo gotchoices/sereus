@@ -36,6 +36,11 @@ Sereus is a Web3 programming fabric built on consent-based strands where users c
 4) Connect a second node via invitation; verify synchronized SQL state.
 5) Build your app by issuing SQL against the strand database.
 
+### Ops (running bootstrap/relay nodes)
+If you’re operating infrastructure (e.g., **libp2p relay** and/or **bootstrap** nodes), start here:
+- `ops/README.md` (entry point)
+- `ops/docker/README.md` (Docker-based production workflow + installer)
+
 See `docs/web/` for the full site content (Overview, Architecture, Stack, Use Cases, Get Started). Public site: `https://sereus.org`.
 
 ### Status

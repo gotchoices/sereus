@@ -2,6 +2,10 @@
 
 Docker-related operational resources for Sereus.
 
+### Jump links
+- Sereus deployment workflow: see **Installer (recommended)** below
+- If you don’t have Docker installed: see **Installing Docker (optional)** at the bottom
+
 ### Contents
 - `bootstrap/`: Docker Compose resources for running a **libp2p bootstrap node** (peer discovery seed).
 - `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal).
@@ -9,7 +13,6 @@ Docker-related operational resources for Sereus.
 - `sereus-node/`: A **headless Optimystic node** intended to be added to a user's **cadre** (personal infrastructure cluster).
 
 ### Recommended production layout (site directories)
-These service folders are **reference implementations**. For production, keep site-specific files (env, scripts, data) outside the git clone:
 
 ```text
 <sereus-ops>/
@@ -25,15 +28,7 @@ Each site instance folder typically contains:
 - `data/` (bind-mounted into the container; holds keys/state)
 
 ### Installer (recommended)
-#### 0) Prereqs (Ubuntu)
-
-```bash
-sudo apt-get update
-sudo apt-get install -y docker.io docker-compose-plugin
-sudo systemctl enable --now docker
-```
-
-#### 1) Create an ops root and clone the repo
+#### 0) Create an ops root and clone the repo
 
 ```bash
 mkdir -p ~/sereus-ops
@@ -41,7 +36,7 @@ cd ~/sereus-ops
 git clone <YOUR_SER_REPO_URL> repo
 ```
 
-#### 2) Scaffold a site instance directory (idempotent)
+#### 1) Scaffold a site instance directory (idempotent)
 
 From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
@@ -53,7 +48,7 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `up/down/logs`, and `data/`.
 
-#### 3) Start/stop/logs
+#### 2) Start/stop/logs
 
 ```bash
 cd docker-relay
@@ -63,26 +58,51 @@ vi env.local
 ```
 
 ### Key persistence (Peer ID stability)
-- You do **not** need to generate keys up front.
-- On first start, each service generates a libp2p private key and writes it to `KEY_FILE` (see `env.local`).
-- `./data/` is bind-mounted into the container as `/data`, so the key persists across reboots/upgrades.
-- If you delete `./data/`, the Peer ID will change.
+- See `../docs/keys.md`.
 
 ### DNSADDR (recommended)
-To avoid hardcoding IPs/Peer IDs in clients, publish `/dnsaddr/<name>` and manage the backing multiaddrs via DNS TXT records.
-
-Resolver behavior (in this repo):
-- lookup name: `_dnsaddr.<hostname>` (e.g. `_dnsaddr.relay.sereus.org`)
-- TXT value format: `dnsaddr=<multiaddr>`
-
-Example pattern:
-- `A/AAAA`: `relay.sereus.org -> <server ip>`
-- `TXT`: `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay.sereus.org/tcp/4001/p2p/<PEER_ID>`
-
-Clients can then use:
-- `/dnsaddr/relay.sereus.org`
+- See `../docs/dnsaddr.md`.
 
 ### Ops tests
 See `../test/README.md`.
+
+### Installing Docker (optional)
+If you already have Docker + Compose installed and working, you can skip this section.
+
+#### Recommended: Docker Engine from Docker’s apt repo (Compose v2 plugin)
+This avoids “Unable to locate package docker-compose-plugin” on some Ubuntu/Debian versions.
+
+```bash
+sudo apt-get update
+sudo apt-get install -y ca-certificates curl gnupg
+
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/ubuntu \
+  $(. /etc/os-release && echo ${VERSION_CODENAME}) stable" \
+| sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
+sudo systemctl enable --now docker
+
+docker --version
+docker compose version
+```
+
+#### Alternative: Ubuntu packages only (Compose v1)
+If you prefer distro packages and are okay using `docker-compose` (hyphen):
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose
+sudo systemctl enable --now docker
+
+docker --version
+docker-compose --version
+```
 
 
