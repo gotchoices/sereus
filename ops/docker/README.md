@@ -24,7 +24,8 @@ Docker-related operational resources for Sereus.
 
 Each site instance folder typically contains:
 - `env.local` (copied from the corresponding `env.example`)
-- `up.sh` / `down.sh` / `logs.sh` (copied from `site-scripts/`)
+- `svc` (symlink to `site-scripts/svc.sh`)
+- `up` / `down` / `logs` (optional convenience symlinks to `svc`)
 - `data/` (bind-mounted into the container; holds keys/state)
 
 ### Installer (recommended)
@@ -57,8 +58,8 @@ Notes:
 ```bash
 cd docker-relay
 vi env.local
-./up
-./logs
+./svc up
+./svc logs
 ```
 
 `env.local` (operator-facing knobs):
