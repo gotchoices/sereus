@@ -24,15 +24,15 @@ The `<multiaddr>` must include `/p2p/<peerId>` so clients learn the peer identit
 
 3) Publish TXT:
 - **Name**: `_dnsaddr.relay.sereus.org`
-- **Value**: `dnsaddr=/dns4/relay.sereus.org/tcp/4001/p2p/<PEER_ID>`
+- **Value**: `dnsaddr=/dns4/relay.sereus.org/tcp/<HOST_PORT>/p2p/<PEER_ID>`
 
 Clients can now dial:
 - `/dnsaddr/relay.sereus.org`
 
 ### Multiple nodes behind one DNS name
 Add multiple TXT records under the same `_dnsaddr.<hostname>`:
-- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-1.sereus.org/tcp/4001/p2p/<PEER_ID_1>`
-- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-2.sereus.org/tcp/4001/p2p/<PEER_ID_2>`
+- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-1.sereus.org/tcp/<HOST_PORT_1>/p2p/<PEER_ID_1>`
+- `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-2.sereus.org/tcp/<HOST_PORT_2>/p2p/<PEER_ID_2>`
 
 This enables:
 - adding capacity by adding TXT records

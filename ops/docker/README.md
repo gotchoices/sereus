@@ -61,6 +61,12 @@ vi env.local
 ./logs
 ```
 
+`env.local` (operator-facing knobs):
+- `HOST_PORT`: host port to expose (container listens on 4001)
+- `HOST_BIND_IP`: optional bind IP (default `0.0.0.0`)
+- `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
+- `ANNOUNCE_ADDRS`: advanced; leave empty unless troubleshooting reachability
+
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.
 
