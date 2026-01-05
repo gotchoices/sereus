@@ -12,11 +12,11 @@ Use the common installer-driven workflow documented in `../README.md` (Ops/Docke
 Minimal relay-specific steps (from your ops root):
 
 ```bash
-./repo/sereus/ops/scripts/install docker relay
+./sereus/ops/scripts/install docker relay
 cd docker-relay
 vi env.local
-./up
-./logs
+./svc up
+./svc logs
 ```
 
 ### Peer ID / key management

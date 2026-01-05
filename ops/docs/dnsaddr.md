@@ -29,6 +29,9 @@ The `<multiaddr>` must include `/p2p/<peerId>` so clients learn the peer identit
 Clients can now dial:
 - `/dnsaddr/relay.sereus.org`
 
+Notes:
+- Use the **host port** you configured (`HOST_PORT` in `env.local`), not the container-internal port.
+
 ### Multiple nodes behind one DNS name
 Add multiple TXT records under the same `_dnsaddr.<hostname>`:
 - `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay-1.sereus.org/tcp/<HOST_PORT_1>/p2p/<PEER_ID_1>`

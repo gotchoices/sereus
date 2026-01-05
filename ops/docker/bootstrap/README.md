@@ -12,11 +12,11 @@ Use the common installer-driven workflow documented in `../README.md` (Ops/Docke
 Minimal bootstrap-specific steps (from your ops root):
 
 ```bash
-./repo/sereus/ops/scripts/install docker bootstrap
+./sereus/ops/scripts/install docker bootstrap
 cd docker-bootstrap
 vi env.local
-./up
-./logs
+./svc up
+./svc logs
 ```
 
 ### Peer ID / key management

@@ -46,7 +46,7 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 ./sereus/ops/scripts/install docker bootstrap-relay
 ```
 
-This scaffolds `./docker-<service>/` instance folders with `env.local`, `up/down/logs`, and `data/`.
+This scaffolds `./docker-<service>/` instance folders with `env.local`, `svc`, and `data/`.
 
 Notes:
 - The clone directory does **not** have to be `sereus` — just run:
@@ -60,6 +60,18 @@ vi env.local
 ./svc up
 ./svc logs
 ```
+
+### Getting your Peer ID (and what to put in DNS)
+After `./svc up`, run:
+
+```bash
+./svc logs
+```
+
+You should see output like:
+- `relay peerId=<PEER_ID>` (or `bootstrap peerId=...`)
+
+Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 
 `env.local` (operator-facing knobs):
 - `HOST_PORT`: host port to expose (container listens on 4001)
