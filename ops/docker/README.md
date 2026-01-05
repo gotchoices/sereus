@@ -25,7 +25,6 @@ Docker-related operational resources for Sereus.
 Each site instance folder typically contains:
 - `env.local` (copied from the corresponding `env.example`)
 - `svc` (symlink to `site-scripts/svc.sh`)
-- `up` / `down` / `logs` (optional convenience symlinks to `svc`)
 - `data/` (bind-mounted into the container; holds keys/state)
 
 ### Installer (recommended)

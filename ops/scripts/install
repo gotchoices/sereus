@@ -89,17 +89,6 @@ else
   echo "linked: $svc_dst -> $svc_src"
 fi
 
-# Convenience aliases
-for name in up down logs; do
-  dst="$dest/$name"
-  if [[ -e "$dst" ]]; then
-    echo "exists, leaving as-is: $dst"
-    continue
-  fi
-  ln -s "$svc_dst" "$dst"
-  echo "linked: $dst -> $svc_dst"
-done
-
 # Convenience reference to the compose file (for humans). Note: build paths resolve relative
 # to the compose file directory, so prefer using ./svc which points at the repo compose file.
 compose_src="$ref_dir/docker-compose.yml"
