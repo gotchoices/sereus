@@ -35,6 +35,19 @@ Conventions:
   - [ ] “Run a private bootstrap node”
   - [ ] “Add a headless sereus-node to a cadre”
 
+### `sereus-node` (deferred) – make it real
+- [ ] Identify the runnable artifact:
+  - [ ] Optimystic headless node image name(s) and tags
+  - [ ] Entrypoint + required args/env
+- [ ] Cadre enrollment:
+  - [ ] Define how a node joins a cadre (token/QR/config, rotation, revoke)
+  - [ ] Decide what secrets/state must persist on disk
+- [ ] Docker wiring:
+  - [ ] Map required ports (tcp/ws/quic/etc) and document firewall rules
+  - [ ] Add healthcheck and minimal logging guidance
+  - [ ] Add volume layout (keys, state, logs) and backup guidance
+  - [ ] Add “start on reboot” instructions (systemd/docker enablement)
+
 ### Packages scaffold
 - [x] Create `sereus/packages/` and `sereus/packages/README.md`
 - [x] Move `sereus/bootstrap/` → `sereus/packages/bootstrap/` (keep npm name `@sereus/bootstrap`)
