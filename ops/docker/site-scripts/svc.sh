@@ -36,11 +36,30 @@ if [[ "$SERVICE_KEY" == docker-* ]]; then
   SERVICE_KEY="${SERVICE_KEY#docker-}"
 fi
 
-default_repo_dir="$OPS_DIR/repo"
-if [[ ! -d "$default_repo_dir" && -d "$OPS_DIR/sereus" ]]; then
-  default_repo_dir="$OPS_DIR/sereus"
-fi
+resolve_script_path() {
+  # `svc` is usually a symlink in the instance directory pointing at the repo copy.
+  # Prefer resolving one hop so we can infer repo location regardless of where the
+  # instance directory lives.
+  local self="$0"
+  if [[ -L "$self" ]]; then
+    local target
+    target="$(readlink "$self" 2>/dev/null || true)"
+    if [[ -n "$target" ]]; then
+      if [[ "$target" = /* ]]; then
+        echo "$target"
+      else
+        echo "$(cd "$(dirname "$self")" && cd "$(dirname "$target")" && pwd)/$(basename "$target")"
+      fi
+      return 0
+    fi
+  fi
+  echo "$self"
+}
 
+script_path="$(resolve_script_path)"
+default_repo_dir="$(cd "$(dirname "$script_path")/../../.." && pwd)"
+
+# If the user doesn't override repo location, infer it from the repo-resident svc script path.
 REPO_DIR="${SEREUS_REPO_DIR:-"$default_repo_dir"}"
 
 default_compose=""
@@ -57,6 +76,7 @@ ENV_FILE="${SEREUS_ENV_FILE:-"$SITE_DIR/env.local"}"
 
 if [[ ! -f "$COMPOSE_FILE" ]]; then
   echo "ERROR: compose file not found: $COMPOSE_FILE" >&2
+  echo "Guessed REPO_DIR: $REPO_DIR" >&2
   echo "Set SEREUS_REPO_DIR or SEREUS_COMPOSE_FILE to override." >&2
   exit 1
 fi
