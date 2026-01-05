@@ -1,0 +1,16 @@
+services:
+  bootstrap_relay:
+    build: .
+    container_name: sereus_libp2p_bootstrap_relay
+    env_file:
+      - ./env.example
+    ports:
+      - "4001:4001/tcp"
+    volumes:
+      - bootstrap_relay_data:/data
+    restart: unless-stopped
+
+volumes:
+  bootstrap_relay_data:
+
+

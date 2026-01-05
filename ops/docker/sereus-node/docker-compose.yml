@@ -1,0 +1,19 @@
+services:
+  sereus_node:
+    # Template only - provide a real image via env.example
+    image: ${SEREUS_NODE_IMAGE:?set SEREUS_NODE_IMAGE in env.example}
+    container_name: sereus_node
+    env_file:
+      - ./env.example
+    environment:
+      - DATA_DIR=${DATA_DIR:-/data}
+      - CADRE_ENROLLMENT_TOKEN=${CADRE_ENROLLMENT_TOKEN:-}
+      - CADRE_ID=${CADRE_ID:-}
+    volumes:
+      - sereus_node_data:${DATA_DIR:-/data}
+    restart: unless-stopped
+
+volumes:
+  sereus_node_data:
+
+

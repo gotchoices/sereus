@@ -8,7 +8,7 @@ This folder is intended to hold Docker (typically Docker Compose) resources for 
 
 ### What will live here
 - `docker-compose.yml` (or multiple compose files for different environments)
-- `.env.example` with required configuration knobs
+- `env.example` with required configuration knobs
 - Optional helper scripts (build/run, log tailing, health checks)
 
 

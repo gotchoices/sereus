@@ -1,0 +1,16 @@
+services:
+  relay:
+    build: .
+    container_name: sereus_libp2p_relay
+    env_file:
+      - ./env.example
+    ports:
+      - "4001:4001/tcp"
+    volumes:
+      - relay_data:/data
+    restart: unless-stopped
+
+volumes:
+  relay_data:
+
+

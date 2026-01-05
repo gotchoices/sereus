@@ -18,10 +18,12 @@ Conventions:
 
 ### Fill in ops/docker with runnable artifacts
 - [ ] Add initial Compose files (or placeholders) for:
-  - [ ] `sereus/ops/docker/bootstrap/docker-compose.yml`
-  - [ ] `sereus/ops/docker/relay/docker-compose.yml`
-  - [ ] `sereus/ops/docker/sereus-node/docker-compose.yml`
-- [ ] Add `.env.example` files for each folder with the minimum required knobs
+  - [x] `sereus/ops/docker/bootstrap/docker-compose.yml`
+  - [x] `sereus/ops/docker/relay/docker-compose.yml`
+  - [~] `sereus/ops/docker/sereus-node/docker-compose.yml` (template; needs image/entrypoint)
+  - [x] `sereus/ops/docker/bootstrap-relay/docker-compose.yml` (combined node)
+- [~] Add env example files for each folder with the minimum required knobs
+  - Note: dotfiles like `.env.example` are blocked in this workspace; using `env.example`.
 - [ ] Decide image strategy:
   - [ ] Use prebuilt images (document source + tags)
   - [ ] Or build locally (add `Dockerfile` and scripts)
