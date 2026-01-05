@@ -35,6 +35,27 @@ Conventions:
   - [ ] “Run a private bootstrap node”
   - [ ] “Add a headless sereus-node to a cadre”
 
+### Ops code sharing / multi-deployment support (deferred)
+- [ ] Decide whether the libp2p node “apps” should live outside `ops/docker/*` so they can be reused by:
+  - [ ] Docker Compose
+  - [ ] systemd (bare server)
+  - [ ] future k8s/helm deployment
+- [ ] Modularize runbook docs/READMEs so common guidance is centralized and referenced:
+  - [ ] DNSADDR + TXT record conventions (and rotation/expansion patterns)
+  - [ ] Key safety, persistence, and backup/restore guidance
+  - [ ] “One host, multiple hostnames” patterns (bootstrap+relay split/overlap)
+  - [ ] Firewall/ports guidance (per-transport)
+  - [ ] Suggested location: `sereus/ops/docker/README.md` + dedicated `sereus/ops/docker/docs/*.md` (or similar)
+- [ ] If yes: propose target layout (one of):
+  - [ ] `sereus/ops/node-apps/{relay,bootstrap,bootstrap-relay}` + `sereus/ops/node-apps/lib/` for shared utilities
+  - [ ] `sereus/packages/@sereus/libp2p-infra` (publishable) + thin wrappers in `ops/*`
+- [ ] Identify what should be shared vs per-role:
+  - [ ] key persistence + Peer ID printing
+  - [ ] listen/announce address handling
+  - [ ] logging + healthchecks
+  - [ ] relay limits/config (when we add them)
+  - [ ] DHT settings (if we keep DHT on bootstrap peers)
+
 ### `sereus-node` (deferred) – make it real
 - [ ] Identify the runnable artifact:
   - [ ] Optimystic headless node image name(s) and tags

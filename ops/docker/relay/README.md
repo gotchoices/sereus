@@ -36,12 +36,22 @@ docker logs -f sereus_libp2p_relay
 ```
 
 ### Peer ID / key management
-- The Peer ID is derived from a private key stored in a Docker volume at `KEY_FILE` (see `env.example`).
-- Compose mounts a named volume (`relay_data`) at `/data`, so the Peer ID stays stable across restarts/upgrades.
+- **You do not need to pre-generate keys.** On first start, the relay will:
+  - create an Ed25519 libp2p private key (if it doesn’t exist), and
+  - write it to `KEY_FILE` (default: `/data/libp2p-private.key.pb`)
+- The Peer ID is derived from that private key.
+- Compose mounts a named volume (`relay_data`) at `/data`, so the key (and therefore Peer ID) stays stable across restarts/upgrades.
+
+How to get your Peer ID (first-time):
+- Run `docker logs -f sereus_libp2p_relay` and look for:
+  - `relay peerId=<PEER_ID>`
+
+Important:
+- **If you delete the Docker volume** `relay_data`, a new key will be generated and your Peer ID will change.
 
 Backup/restore (optional):
-- Backup: stop the container and copy the key file out of the volume data dir.
-- Restore: put the same key back at `KEY_FILE` before starting; the Peer ID will match.
+- Backup: stop the container and archive the named volume contents (includes `KEY_FILE`).
+- Restore: restore the volume contents so `KEY_FILE` is present before starting; the Peer ID will match.
 
 ### DNS (optional, recommended): publish `/dnsaddr/relay.sereus.org`
 This repo’s libp2p DNSADDR resolver looks up TXT records at:
