@@ -70,7 +70,6 @@ mkdir -p "$SITE_DIR/data"
 
 dc() {
   docker compose \
-    --project-directory "$SITE_DIR" \
     -f "$COMPOSE_FILE" \
     --env-file "$ENV_FILE" \
     "$@"

@@ -76,6 +76,24 @@ else
   cp "$env_src" "$env_dst"
   chmod 600 "$env_dst" || true
   echo "created: $env_dst"
+
+  # Make HOST_DATA_DIR unambiguous (absolute path on the host).
+  # This avoids dependence on how docker-compose resolves relative paths.
+  host_data_dir="$dest/data"
+  tmpfile="$(mktemp)"
+  awk -v v="$host_data_dir" '
+    BEGIN { done=0 }
+    /^HOST_DATA_DIR=/ {
+      print "HOST_DATA_DIR=" v
+      done=1
+      next
+    }
+    { print }
+    END {
+      if (done==0) print "HOST_DATA_DIR=" v
+    }
+  ' "$env_dst" > "$tmpfile"
+  mv "$tmpfile" "$env_dst"
 fi
 
 svc_src="$docker_base/site-scripts/svc.sh"
