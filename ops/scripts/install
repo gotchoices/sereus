@@ -1,0 +1,97 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  cat <<'EOF'
+Usage:
+  ./sereus/ops/scripts/install docker <service> [dest_dir]
+
+Where:
+  <service>  one of: relay | bootstrap | bootstrap-relay
+  [dest_dir] optional path to create the site instance directory.
+             If omitted, defaults to ./docker-<service> in the current directory.
+
+What it does (idempotent, non-destructive):
+  - creates <dest_dir> and <dest_dir>/data
+  - copies env.example -> env.local (only if env.local does not exist)
+  - copies site scripts (up/down/logs) into <dest_dir> (only if missing)
+
+Notes:
+  - The instance directory can live anywhere (not necessarily under sereus-ops).
+  - The generated up/down/logs scripts default to locating the repo at ../repo.
+    Override with env vars when running them:
+      SEREUS_REPO_DIR=... ./up
+EOF
+}
+
+die() {
+  echo "ERROR: $*" >&2
+  exit 1
+}
+
+script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+repo_root="$(cd "$script_dir/../.." && pwd)"
+
+if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
+  usage
+  exit 0
+fi
+
+mode="${1:-}"
+service="${2:-}"
+dest="${3:-}"
+
+[[ -n "$mode" && -n "$service" ]] || { usage; exit 2; }
+[[ "$mode" == "docker" ]] || die "only 'docker' mode is scaffolded right now"
+
+case "$service" in
+  relay|bootstrap|bootstrap-relay) ;;
+  *) die "unknown service: $service" ;;
+esac
+
+if [[ -z "$dest" ]]; then
+  dest="$(pwd)/docker-$service"
+fi
+
+ref_dir="$repo_root/docker/$service"
+[[ -d "$ref_dir" ]] || die "reference folder not found: $ref_dir"
+
+mkdir -p "$dest/data"
+
+env_src="$ref_dir/env.example"
+env_dst="$dest/env.local"
+if [[ -f "$env_dst" ]]; then
+  echo "env.local exists, leaving as-is: $env_dst"
+else
+  [[ -f "$env_src" ]] || die "env.example not found: $env_src"
+  cp "$env_src" "$env_dst"
+  chmod 600 "$env_dst" || true
+  echo "created: $env_dst"
+fi
+
+for name in up down logs; do
+  src="$repo_root/docker/site-scripts/$name.sh"
+  dst="$dest/$name"
+  if [[ -f "$dst" ]]; then
+    echo "exists, leaving as-is: $dst"
+    continue
+  fi
+  [[ -f "$src" ]] || die "missing script: $src"
+  cp "$src" "$dst"
+  chmod +x "$dst" || true
+  echo "created: $dst"
+done
+
+cat <<EOF
+
+Done.
+
+Next:
+  cd "$dest"
+  edit ./env.local
+  ./up
+  ./logs
+
+EOF
+
+

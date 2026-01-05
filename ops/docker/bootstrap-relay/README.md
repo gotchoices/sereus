@@ -7,6 +7,17 @@ This folder runs a **single libp2p node** that provides both roles:
 This is useful for **small deployments** that want one host to provide both functions.
 
 ### How to deploy (Ubuntu)
+This runbook assumes a production-oriented **site directory** layout so your config/keys live outside the git clone:
+
+```text
+<sereus-ops>/
+  repo/                 # git clone of ser
+  bootstrap-relay/      # site instance (this service)
+    env.local
+    up.sh / down.sh / logs.sh
+    data/               # keys + state live here (bind-mounted into container)
+```
+
 Prereqs (one-time):
 
 ```bash
@@ -15,18 +26,35 @@ sudo apt-get install -y docker.io docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-Deploy:
+Create the ops layout:
 
 ```bash
-cd /path/to/ser/sereus/ops/docker/bootstrap-relay
-cp env.example env.local
-docker compose --env-file env.local up -d --build
-docker logs -f sereus_libp2p_bootstrap_relay
+mkdir -p ~/sereus-ops
+cd ~/sereus-ops
+git clone <YOUR_SER_REPO_URL> repo
+mkdir -p bootstrap-relay
+```
+
+Initialize the bootstrap-relay site directory:
+
+```bash
+cd ~/sereus-ops/bootstrap-relay
+cp ../repo/sereus/ops/docker/bootstrap-relay/env.example ./env.local
+cp ../repo/sereus/ops/docker/site-scripts/{up.sh,down.sh,logs.sh} .
+chmod +x up.sh down.sh logs.sh
+```
+
+Bring it up:
+
+```bash
+./up.sh
+./logs.sh
 ```
 
 ### Peer ID / key management
-- The Peer ID is derived from a private key stored in a Docker volume at `KEY_FILE` (see `env.example`).
-- Compose mounts a named volume (`bootstrap_relay_data`) at `/data`, so the Peer ID stays stable across restarts/upgrades.
+- **You do not need to pre-generate keys.** On first start, the node will create a key (if missing) and write it to `KEY_FILE` (default: `/data/libp2p-private.key.pb`).
+- The Peer ID is derived from that private key.
+- This deployment mounts `./data` (your site directory) into the container as `/data`, so the Peer ID stays stable across restarts/upgrades.
 
 ### DNS (optional, recommended)
 You can publish either (or both):

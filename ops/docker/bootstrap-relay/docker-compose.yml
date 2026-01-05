@@ -7,10 +7,7 @@ services:
     ports:
       - "4001:4001/tcp"
     volumes:
-      - bootstrap_relay_data:/data
+      - ./data:/data
     restart: unless-stopped
-
-volumes:
-  bootstrap_relay_data:
 
 

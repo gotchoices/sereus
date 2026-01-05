@@ -1,0 +1,33 @@
+[Unit]
+Description=Sereus libp2p relay (js-libp2p) - scaffold
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=sereus
+Group=sereus
+
+# Repo clone (code)
+WorkingDirectory=/srv/sereus-ops/repo/sereus/ops/docker/relay
+
+# Site instance env (config) - copy env.example -> env.local and customize
+EnvironmentFile=/srv/sereus-ops/relay/env.local
+
+# Ensure keys/state live under the site instance directory
+Environment=DATA_DIR=/srv/sereus-ops/relay/data
+Environment=KEY_FILE=/srv/sereus-ops/relay/data/libp2p-private.key.pb
+
+# Build once (optional). You may prefer to build manually during upgrades instead.
+# ExecStartPre=/usr/bin/npm ci
+# ExecStartPre=/usr/bin/npm run build
+
+ExecStart=/usr/bin/node dist/index.js
+
+Restart=on-failure
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target
+
+

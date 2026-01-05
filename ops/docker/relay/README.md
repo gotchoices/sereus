@@ -7,9 +7,18 @@ This folder runs a **libp2p Circuit Relay v2 “hop” node**. It helps peers co
 - Clients reserve relay slots and then use the relay as a rendezvous to establish routed connections.
 
 ### How to deploy (Ubuntu)
-Prereqs (one-time):
+This runbook assumes a production-oriented **site directory** layout so your config/keys live outside the git clone:
 
-- Install Docker + Compose plugin:
+```text
+<sereus-ops>/
+  repo/                 # git clone of ser
+  relay/                # site instance (this service)
+    env.local
+    up.sh / down.sh / logs.sh
+    data/               # keys + state live here (bind-mounted into container)
+```
+
+Prereqs (one-time):
 
 ```bash
 sudo apt-get update
@@ -17,22 +26,29 @@ sudo apt-get install -y docker.io docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-- (Optional) allow your user to run docker without sudo:
+Create the ops layout:
 
 ```bash
-sudo usermod -aG docker "$USER"
-newgrp docker
+mkdir -p ~/sereus-ops
+cd ~/sereus-ops
+git clone <YOUR_SER_REPO_URL> repo
+mkdir -p relay
 ```
 
-Deploy:
-
-- On the server, copy this folder (or clone the repo) and run:
+Initialize the relay site directory:
 
 ```bash
-cd /path/to/ser/sereus/ops/docker/relay
-cp env.example env.local
-docker compose --env-file env.local up -d --build
-docker logs -f sereus_libp2p_relay
+cd ~/sereus-ops/relay
+cp ../repo/sereus/ops/docker/relay/env.example ./env.local
+cp ../repo/sereus/ops/docker/site-scripts/{up.sh,down.sh,logs.sh} .
+chmod +x up.sh down.sh logs.sh
+```
+
+Bring it up:
+
+```bash
+./up.sh
+./logs.sh
 ```
 
 ### Peer ID / key management
@@ -40,18 +56,18 @@ docker logs -f sereus_libp2p_relay
   - create an Ed25519 libp2p private key (if it doesn’t exist), and
   - write it to `KEY_FILE` (default: `/data/libp2p-private.key.pb`)
 - The Peer ID is derived from that private key.
-- Compose mounts a named volume (`relay_data`) at `/data`, so the key (and therefore Peer ID) stays stable across restarts/upgrades.
+- This deployment mounts `./data` (your site directory) into the container as `/data`, so the key (and therefore Peer ID) stays stable across restarts/upgrades.
 
 How to get your Peer ID (first-time):
 - Run `docker logs -f sereus_libp2p_relay` and look for:
   - `relay peerId=<PEER_ID>`
 
 Important:
-- **If you delete the Docker volume** `relay_data`, a new key will be generated and your Peer ID will change.
+- **If you delete `./data`**, a new key will be generated and your Peer ID will change.
 
 Backup/restore (optional):
-- Backup: stop the container and archive the named volume contents (includes `KEY_FILE`).
-- Restore: restore the volume contents so `KEY_FILE` is present before starting; the Peer ID will match.
+- Backup: stop the container and back up `./data/` (includes `KEY_FILE`).
+- Restore: restore `./data/` so `KEY_FILE` is present before starting; the Peer ID will match.
 
 ### DNS (optional, recommended): publish `/dnsaddr/relay.sereus.org`
 This repo’s libp2p DNSADDR resolver looks up TXT records at:

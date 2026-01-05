@@ -7,9 +7,18 @@ This folder runs a **libp2p bootstrap peer**: a stable, well-known peer that oth
 - It is **not** a Sereus “strand bootstrap” protocol implementation; it’s network bootstrapping / peer discovery.
 
 ### How to deploy (Ubuntu)
-Prereqs (one-time):
+This runbook assumes a production-oriented **site directory** layout so your config/keys live outside the git clone:
 
-- Install Docker + Compose plugin:
+```text
+<sereus-ops>/
+  repo/                 # git clone of ser
+  bootstrap/            # site instance (this service)
+    env.local
+    up.sh / down.sh / logs.sh
+    data/               # keys + state live here (bind-mounted into container)
+```
+
+Prereqs (one-time):
 
 ```bash
 sudo apt-get update
@@ -17,27 +26,35 @@ sudo apt-get install -y docker.io docker-compose-plugin
 sudo systemctl enable --now docker
 ```
 
-- (Optional) allow your user to run docker without sudo:
+Create the ops layout:
 
 ```bash
-sudo usermod -aG docker "$USER"
-newgrp docker
+mkdir -p ~/sereus-ops
+cd ~/sereus-ops
+git clone <YOUR_SER_REPO_URL> repo
+mkdir -p bootstrap
 ```
 
-Deploy:
-
-- On the server, copy this folder (or clone the repo) and run:
+Initialize the bootstrap site directory:
 
 ```bash
-cd /path/to/ser/sereus/ops/docker/bootstrap
-cp env.example env.local
-docker compose --env-file env.local up -d --build
-docker logs -f sereus_libp2p_bootstrap
+cd ~/sereus-ops/bootstrap
+cp ../repo/sereus/ops/docker/bootstrap/env.example ./env.local
+cp ../repo/sereus/ops/docker/site-scripts/{up.sh,down.sh,logs.sh} .
+chmod +x up.sh down.sh logs.sh
+```
+
+Bring it up:
+
+```bash
+./up.sh
+./logs.sh
 ```
 
 ### Peer ID / key management
-- The Peer ID is derived from a private key stored in a Docker volume at `KEY_FILE` (see `env.example`).
-- Compose mounts a named volume (`bootstrap_data`) at `/data`, so the Peer ID stays stable across restarts/upgrades.
+- **You do not need to pre-generate keys.** On first start, the bootstrap node will create a key (if missing) and write it to `KEY_FILE` (default: `/data/libp2p-private.key.pb`).
+- The Peer ID is derived from that private key.
+- This deployment mounts `./data` (your site directory) into the container as `/data`, so the Peer ID stays stable across restarts/upgrades.
 
 ### DNS (optional, recommended): publish `/dnsaddr/bootstrap.sereus.org`
 TXT records are looked up at `_dnsaddr.<hostname>` and must look like `dnsaddr=<multiaddr>`.
