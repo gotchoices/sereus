@@ -25,7 +25,25 @@ Each site instance folder typically contains:
 - `data/` (bind-mounted into the container; holds keys/state)
 
 ### Installer (recommended)
-From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`) after cloning the repo into `repo/`:
+#### 0) Prereqs (Ubuntu)
+
+```bash
+sudo apt-get update
+sudo apt-get install -y docker.io docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+#### 1) Create an ops root and clone the repo
+
+```bash
+mkdir -p ~/sereus-ops
+cd ~/sereus-ops
+git clone <YOUR_SER_REPO_URL> repo
+```
+
+#### 2) Scaffold a site instance directory (idempotent)
+
+From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
 ```bash
 ./repo/sereus/ops/scripts/install docker relay
@@ -34,5 +52,37 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`) after cloning the
 ```
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `up/down/logs`, and `data/`.
+
+#### 3) Start/stop/logs
+
+```bash
+cd docker-relay
+vi env.local
+./up
+./logs
+```
+
+### Key persistence (Peer ID stability)
+- You do **not** need to generate keys up front.
+- On first start, each service generates a libp2p private key and writes it to `KEY_FILE` (see `env.local`).
+- `./data/` is bind-mounted into the container as `/data`, so the key persists across reboots/upgrades.
+- If you delete `./data/`, the Peer ID will change.
+
+### DNSADDR (recommended)
+To avoid hardcoding IPs/Peer IDs in clients, publish `/dnsaddr/<name>` and manage the backing multiaddrs via DNS TXT records.
+
+Resolver behavior (in this repo):
+- lookup name: `_dnsaddr.<hostname>` (e.g. `_dnsaddr.relay.sereus.org`)
+- TXT value format: `dnsaddr=<multiaddr>`
+
+Example pattern:
+- `A/AAAA`: `relay.sereus.org -> <server ip>`
+- `TXT`: `_dnsaddr.relay.sereus.org = dnsaddr=/dns4/relay.sereus.org/tcp/4001/p2p/<PEER_ID>`
+
+Clients can then use:
+- `/dnsaddr/relay.sereus.org`
+
+### Ops tests
+See `../test/README.md`.
 
 

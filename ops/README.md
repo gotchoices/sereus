@@ -8,5 +8,7 @@ It is intentionally **runtime-focused** (bring-up, configuration, scripts, and r
 
 ### Contents
 - `docker/`: Docker-focused resources (Compose stacks, helper scripts, image notes).
+- `systemd/`: Bare-server (non-Docker) scaffolds (early; pattern capture).
+- `test/`: Ops tests for validating infra nodes (reachability, identify/ping, optional DHT).
 
 
