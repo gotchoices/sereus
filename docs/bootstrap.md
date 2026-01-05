@@ -1,6 +1,6 @@
 # Sereus Bootstrap – Protocol and Implementation Notes
 
-This document captures protocol/usage details from the original Taleus bootstrap design, adapted for Sereus. It supplements `sereus/bootstrap/README.md` with rationale, flows, and security notes so Taleus can be retired without losing important knowledge.
+This document captures protocol/usage details from the original Taleus bootstrap design, adapted for Sereus. It supplements `sereus/packages/bootstrap/README.md` with rationale, flows, and security notes so Taleus can be retired without losing important knowledge.
 
 ## Scope
 - Invitation-based establishment of a shared strand (SQL DB) between participants.
@@ -120,8 +120,8 @@ These hooks are the extension points for:
 - App-specific domain (credit chits, lifts, admin/officer policies, signatures) intentionally excluded from bootstrap; to be implemented in app layers on top of the strand.
 
 ## References
-- `sereus/bootstrap/src/bootstrap.ts` (implementation)
-- `sereus/bootstrap/test/auto/bootstrap.ts` (integration tests)
+- `sereus/packages/bootstrap/src/bootstrap.ts` (implementation)
+- `sereus/packages/bootstrap/test/auto/bootstrap.ts` (integration tests)
 - `sereus/docs/schema-guide.md` (Quereus strand schema patterns)
 
 

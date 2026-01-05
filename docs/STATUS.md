@@ -1,40 +1,88 @@
-# Sereus Docs/Packaging – STATUS
+# Sereus – STATUS (Checklists)
 
-Purpose: Track decisions and options around packaging and documentation for Sereus bootstrap and future modules.
+This file is intentionally a **living checklist** of what’s done, what’s next, and what’s being debated.
 
-## Packaging Options (Aggregator vs Sub-packages)
+Conventions:
+- `[x]` done
+- `[ ]` todo / planned
+- `[~]` in progress / partially done
 
-- TODO: Evaluate adding top-level aggregator `sereus/index.ts`
-  - Why: Provide a single import for client apps (`import { bootstrap } from 'sereus'`).
-  - Pros: Simple DX, central place to surface cross-cutting utilities; version pinning in one package.
-  - Cons: Extra layer that can mask sub-package boundaries; risk of accidental breaking changes when re-export order changes; adds release overhead.
-  - Action: Prototype `sereus/index.ts` that re-exports `@sereus/bootstrap` only; defer publishing until a second module (e.g., `@sereus/core`) exists.
+## Repo Structure / Scaffolding (Ops + Packages)
 
-- TODO: Keep sub-package-first model (`@sereus/bootstrap`, future `@sereus/core`, `@sereus/identity`)
-  - Why: Clear ownership and versioning per module; least coupling; encourages tree-shaking.
-  - Pros: Scoped dependencies; independent evolution cadence.
-  - Cons: Apps must manage multiple imports; doc/examples must show per-module imports.
-  - Action: Continue publishing `@sereus/bootstrap`; revisit aggregator when ≥2 modules are stable.
+### Ops scaffold (Docker-first)
+- [x] Create `sereus/ops/` and `sereus/ops/README.md`
+- [x] Create `sereus/ops/docker/` and `sereus/ops/docker/README.md`
+- [x] Create `sereus/ops/docker/bootstrap/README.md`
+- [x] Create `sereus/ops/docker/relay/README.md`
+- [x] Create `sereus/ops/docker/sereus-node/README.md`
 
-- TODO: Protocol ID strategy
-  - Keep default `'/sereus/bootstrap/1.0.0'` but allow override per manager and per call.
-  - Document recommended app-specific IDs (e.g., `/mychips/bootstrap/1.0.0`, `/chat/bootstrap/1.0.0`).
+### Fill in ops/docker with runnable artifacts
+- [ ] Add initial Compose files (or placeholders) for:
+  - [ ] `sereus/ops/docker/bootstrap/docker-compose.yml`
+  - [ ] `sereus/ops/docker/relay/docker-compose.yml`
+  - [ ] `sereus/ops/docker/sereus-node/docker-compose.yml`
+- [ ] Add `.env.example` files for each folder with the minimum required knobs
+- [ ] Decide image strategy:
+  - [ ] Use prebuilt images (document source + tags)
+  - [ ] Or build locally (add `Dockerfile` and scripts)
+- [ ] Add helper scripts (if helpful):
+  - [ ] `up.sh` / `down.sh` wrappers
+  - [ ] log tailing / healthcheck scripts
+- [ ] Document quickstart flows:
+  - [ ] “Run a public relay”
+  - [ ] “Run a private bootstrap node”
+  - [ ] “Add a headless sereus-node to a cadre”
 
-## Documentation Roadmap
+### Packages scaffold
+- [x] Create `sereus/packages/` and `sereus/packages/README.md`
+- [x] Move `sereus/bootstrap/` → `sereus/packages/bootstrap/` (keep npm name `@sereus/bootstrap`)
+- [x] Update docs that referenced the old path (`sereus/docs/bootstrap.md`, manual test README)
 
-- TODO: Expand `sereus/docs/bootstrap.md` with sequence diagrams (responderCreates/initiatorCreates flows)
-  - Add Mermaid diagrams for 2-message and 3-message flows.
-  - Include error paths (rejection, timeout) and cadre disclosure timing.
+## libp2p Strand Bootstrap Library (`@sereus/bootstrap`)
 
-- TODO: Author `sereus/docs/core.md` (future)
-  - Strand lifecycle, schema application patterns, multi-party bootstrap patterns.
+- [x] Keep protocol id default `'/sereus/bootstrap/1.0.0'` with override options
+- [ ] Add diagrams to `sereus/docs/bootstrap.md`
+  - [ ] 2-message flow (`responderCreates`)
+  - [ ] 3-message flow (`initiatorCreates`, new stream)
+  - [ ] rejection + timeout paths
+- [ ] Decide whether to add an aggregator package/entrypoint (defer until ≥2 stable packages)
 
-- TODO: Cross-link to Quereus schema guide
-  - From bootstrap docs, link to `sereus/docs/schema-guide.md` for strand DDL patterns.
+## Cadre Management (Specification + Schema)
 
-## Testing/CI
+Goal: define and implement how a user manages a **cadre** (their personal cluster of nodes/devices) including membership, provisioning, enrollment, and trust boundaries.
 
-- TODO: Wire `@sereus/bootstrap` tests into workspace CI
-  - Add root scripts to run sub-package tests; document Corepack/Yarn 4 usage.
+- [ ] Create a Cadre management spec doc (suggested: `sereus/docs/cadre.md`)
+  - [ ] Definitions: cadre vs node vs device identity
+  - [ ] Enrollment lifecycle (invite/join/rotate/revoke)
+  - [ ] Key material / identity assumptions (where keys live, recovery, rotation)
+  - [ ] Transport expectations (direct vs relay, addressing, reachability)
+  - [ ] Operational requirements (headless node, backups, monitoring)
+- [ ] Create an initial Cadre schema doc (suggested: `sereus/docs/cadre-schema.md`)
+  - [ ] Tables: `cadres`, `cadre_nodes`, `node_keys`, `node_capabilities`, `node_status`
+  - [ ] RBAC / permissions model (who can add/remove nodes)
+  - [ ] Audit trail requirements
+- [ ] Decide where the schema lives long-term:
+  - [ ] As Quereus declarative schema blocks in docs
+  - [ ] As `.sql` artifacts under a dedicated schema folder (TBD)
+
+## Cohort Management (Specification + Schema)
+
+Goal: define and implement how a **cohort** (all nodes belonging to a strand) is tracked, managed, and evolved. This likely becomes the conceptual replacement for the current “projects/bootstrap” direction.
+
+- [ ] Create a Cohort management spec doc (suggested: `sereus/docs/cohort.md`)
+  - [ ] Definitions: strand vs cohort vs cadre; relationship model
+  - [ ] Cohort membership lifecycle (join/leave/ban/rehabilitate)
+  - [ ] Discovery and reachability (bootstrap nodes vs relays vs “known peers”)
+  - [ ] Security boundaries (cadre disclosure timing, trust levels, roles)
+  - [ ] Multi-party bootstrap roadmap alignment
+- [ ] Create an initial Cohort schema doc (suggested: `sereus/docs/cohort-schema.md`)
+  - [ ] Tables: `strands`, `strand_members`, `member_nodes`, `roles`, `invitations`
+  - [ ] Token/invitation encoding strategy (application-defined vs standardized)
+  - [ ] Auditing and key rotation impacts
+
+## Testing / CI
+
+- [ ] Wire `@sereus/bootstrap` tests into workspace CI
+- [ ] Add root-level scripts for running package tests consistently (Yarn workspace)
 
 
