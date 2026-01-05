@@ -16,7 +16,7 @@ Docker-related operational resources for Sereus.
 
 ```text
 <sereus-ops>/
-  repo/                 # git clone of ser
+  <repo>/               # git clone of ser (name is up to you)
   relay/                # site instance
   bootstrap/            # site instance
   bootstrap-relay/      # site instance
@@ -33,7 +33,7 @@ Each site instance folder typically contains:
 ```bash
 mkdir -p ~/sereus-ops
 cd ~/sereus-ops
-git clone <YOUR_SER_REPO_URL> repo
+git clone <YOUR_SER_REPO_URL> sereus
 ```
 
 #### 1) Scaffold a site instance directory (idempotent)
@@ -41,12 +41,16 @@ git clone <YOUR_SER_REPO_URL> repo
 From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 
 ```bash
-./repo/sereus/ops/scripts/install docker relay
-./repo/sereus/ops/scripts/install docker bootstrap
-./repo/sereus/ops/scripts/install docker bootstrap-relay
+./sereus/ops/scripts/install docker relay
+./sereus/ops/scripts/install docker bootstrap
+./sereus/ops/scripts/install docker bootstrap-relay
 ```
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `up/down/logs`, and `data/`.
+
+Notes:
+- The clone directory does **not** have to be `sereus` — just run:
+  - `./<your-clone-dir>/ops/scripts/install docker <service>`
 
 #### 2) Start/stop/logs
 

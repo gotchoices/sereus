@@ -32,6 +32,15 @@ die() {
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo_root="$(cd "$script_dir/../.." && pwd)"
 
+docker_base=""
+if [[ -d "$repo_root/ops/docker" ]]; then
+  docker_base="$repo_root/ops/docker"
+elif [[ -d "$repo_root/sereus/ops/docker" ]]; then
+  docker_base="$repo_root/sereus/ops/docker"
+else
+  die "could not find ops/docker in repo; expected '$repo_root/ops/docker' or '$repo_root/sereus/ops/docker'"
+fi
+
 if [[ "${1:-}" == "-h" || "${1:-}" == "--help" ]]; then
   usage
   exit 0
@@ -53,7 +62,7 @@ if [[ -z "$dest" ]]; then
   dest="$(pwd)/docker-$service"
 fi
 
-ref_dir="$repo_root/docker/$service"
+ref_dir="$docker_base/$service"
 [[ -d "$ref_dir" ]] || die "reference folder not found: $ref_dir"
 
 mkdir -p "$dest/data"
@@ -70,7 +79,7 @@ else
 fi
 
 for name in up down logs; do
-  src="$repo_root/docker/site-scripts/$name.sh"
+  src="$docker_base/site-scripts/$name.sh"
   dst="$dest/$name"
   if [[ -f "$dst" ]]; then
     echo "exists, leaving as-is: $dst"
