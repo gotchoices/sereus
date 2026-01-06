@@ -38,6 +38,7 @@ function parseArgs (argv) {
 
   for (let i = 2; i < argv.length; i++) {
     const a = argv[i]
+    if (a === '--') continue
     if (a === '--target') args.target = argv[++i]
     else if (a === '--relay') args.relay = true
     else if (a === '--dht') args.dht = true
