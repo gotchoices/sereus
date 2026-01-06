@@ -8,6 +8,7 @@ import { kadDHT } from '@libp2p/kad-dht'
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2'
 import { createEd25519PeerId } from '@libp2p/peer-id-factory'
 import { peerIdFromString } from '@libp2p/peer-id'
+import { multiaddr } from '@multiformats/multiaddr'
 
 import { resolveTargets } from './lib/dnsaddr.mjs'
 
@@ -64,7 +65,10 @@ async function main() {
     services: {
       identify: identify(),
       ping: ping(),
-      dht: kadDHT()
+      // For bootstrap-only peer routing, the listener needs to participate enough that
+      // the bootstrap node can learn/store it in routing tables. Server mode allows
+      // the bootstrap peer to open DHT protocol streams back over the existing connection.
+      dht: kadDHT({ clientMode: false })
     }
   })
 
@@ -80,19 +84,15 @@ async function main() {
     bootstrapTargets.forEach(ma => console.log(`  ${ma.toString()}`))
   }
 
-  await node.dial(relayTargets[0])
-
-  // Ensure the relay has a reservation for us, otherwise relayed dials will fail with NO_RESERVATION.
+  // Listen on the relay via /p2p-circuit so we advertise a relayed address.
+  // This is required for "bootstrap-only discovery" (`dht.findPeer`) to return a usable p2p-circuit address.
   const relayPeerIdStr = relayTargets[0].getComponents().find(c => c.name === 'p2p')?.value
-  if (!relayPeerIdStr) {
-    throw new Error(`Relay multiaddr is missing /p2p/<peerId>: ${relayTargets[0].toString()}`)
-  }
+  if (!relayPeerIdStr) throw new Error(`Relay multiaddr is missing /p2p/<peerId>: ${relayTargets[0].toString()}`)
+  const relayPeerId = peerIdFromString(relayPeerIdStr)
 
   const transports = node.components.transportManager.getTransports()
   const relayTransport = transports.find(t => t?.[Symbol.toStringTag] === '@libp2p/circuit-relay-v2-transport' && t?.reservationStore != null)
-  if (!relayTransport) {
-    throw new Error('Could not find circuit relay transport instance on this libp2p node')
-  }
+  if (!relayTransport) throw new Error('Could not find circuit relay transport instance on this libp2p node')
 
   if (args.verbose) {
     relayTransport.reservationStore.addEventListener('relay:created-reservation', (evt) => {
@@ -103,8 +103,9 @@ async function main() {
     })
   }
 
-  const relayPeerId = peerIdFromString(relayPeerIdStr)
-  await relayTransport.reservationStore.addRelay(relayPeerId, 'configured')
+  const relayListenAddr = multiaddr(relayTargets[0].toString()).encapsulate('/p2p-circuit')
+  await node.components.transportManager.listen([relayListenAddr])
+
   if (args.verbose) {
     console.log(`[listener] hasReservation(relay)=${relayTransport.reservationStore.hasReservation(relayPeerId)}`)
     const r = relayTransport.reservationStore.getReservation(relayPeerId)
@@ -118,6 +119,7 @@ async function main() {
     void node.services.ping.ping(relayPeerId).catch(() => {})
   }, 20_000)
 
+  // Dial bootstrap AFTER we have a relayed addr, so identify can advertise p2p-circuit addrs to the DHT overlay.
   await node.dial(bootstrapTargets[0])
 
   // Ensure we actually speak DHT to the bootstrap so we get added to routing tables.
@@ -177,7 +179,7 @@ async function main() {
 
   if (circuitAddrs.length === 0) {
     console.log('note: no p2p-circuit addresses are currently advertised')
-    console.log('      (that is ok; use the copy/paste dial address above for the \"start simple\" test)')
+    console.log('      (this can happen briefly; you can still use the copy/paste dial address above)')
   } else {
     console.log('listener relayed addrs (p2p-circuit):')
     circuitAddrs.forEach(a => console.log(`  ${a}`))

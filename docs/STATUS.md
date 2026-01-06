@@ -37,6 +37,32 @@ Conventions:
   - [x] “Run a private bootstrap node” (`sereus/ops/docker/quickstarts/bootstrap.md`)
   - [ ] “Add a headless sereus-node to a cadre” (deferred; needs real image/entrypoint)
 
+### Ops validation status (as-tested on `sereus.org`)
+- [x] Relay container works (Circuit Relay v2 server)
+  - Verified: a NAT'd listener can obtain a reservation and receive relayed inbound connections.
+- [x] Bootstrap container works (Kad-DHT server peer)
+  - Verified: `ops/test/check-node.mjs --dht` succeeds and `pair:dial --bootstrap-check` succeeds.
+- [x] NAT-to-NAT test pair works **when using an explicit relayed dial address**
+  - Listener prints a copy/paste dial address like:
+    - `/dns4/relay.sereus.org/tcp/4001/p2p/<relayPeerId>/p2p-circuit/p2p/<listenerPeerId>`
+  - Dialer succeeds when invoked with `--dial-addr "<that addr>"`
+- [~] Bootstrap-only discovery (`dht.findPeer(listenerPeerId)`) is **not working yet**
+  - Current outcome: the dialer times out (no `FINAL_PEER` result) even after the listener:
+    - reserves on the relay
+    - listens on `/p2p-circuit`
+    - dials the bootstrap and refreshes routing tables
+  - Practical implication: today you can prove relay reachability, but not yet the full “dial by Peer ID via bootstrap-only DHT lookup” flow.
+
+### Next paths to make bootstrap-only discovery work
+- [ ] Add explicit “publish self to DHT” step(s) in the listener (instead of relying on passive routing-table learning)
+  - Candidate: ensure the listener publishes a signed peer record / provider-style record that the bootstrap peer will return during `findPeer`.
+  - Add verbose tracing in both listener and dialer for DHT protocol traffic so we can see whether the bootstrap peer ever learns/stores the listener.
+- [ ] Evaluate switching the test pair from Kad-DHT to **FRET DHT** for small overlays
+  - Rationale: Kademlia peer routing is a poor fit for a 1-node “DHT” unless the bootstrap peer reliably learns/stores peers.
+  - Goal: dialer can resolve listener addresses using only:
+    - `--bootstrap /dnsaddr/bootstrap.sereus.org`
+    - `--peer <listenerPeerId>`
+
 ### Ops code sharing / multi-deployment support (deferred)
 - [ ] Decide whether the libp2p node “apps” should live outside `ops/docker/*` so they can be reused by:
   - [ ] Docker Compose

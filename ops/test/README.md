@@ -89,6 +89,7 @@ yarn workspace @sereus/ops-test pair:dial -- \
 ```
 
 3) **Bootstrap-only discovery** (goal state): dialer uses `dht.findPeer(<peerId>)` to discover a `p2p-circuit` address without `--relay`.
+   - Note: peer routing can take a short time to “soak” on small overlays. If it fails immediately, retry after ~30–60 seconds while the listener remains running and connected to the bootstrap.
 
 Troubleshooting:
 - Add `--verbose` to listener/dialer to print resolved DNSADDR targets and other helpful info.

@@ -41,6 +41,8 @@ function parseArgs(argv) {
     else if (a === '--timeout-ms') args.timeoutMs = Number(argv[++i])
     else if (a === '--verbose') args.verbose = true
     else if (a === '--bootstrap-check') args.bootstrapCheck = true
+    // Convenience alias (common typo): enables both flags
+    else if (a === '--bootstrap-check-verbose') { args.bootstrapCheck = true; args.verbose = true }
     else if (a === '-h' || a === '--help') { usage(); process.exit(0) }
     else throw new Error(`Unknown arg: ${a}`)
   }
@@ -97,6 +99,11 @@ async function main() {
     bootstrapTargets.forEach(ma => console.log(`  ${ma.toString()}`))
   }
   await node.dial(bootstrapTargets[0])
+  try {
+    // Give the DHT a moment to populate tables from the bootstrap connection.
+    await new Promise(resolve => setTimeout(resolve, 750))
+    await node.services.dht.refreshRoutingTable()
+  } catch {}
 
   // Optional: validate the bootstrap node is answering DHT queries.
   if (args.bootstrapCheck) {
@@ -152,13 +159,19 @@ async function main() {
 
   const events = []
   try {
-    // Give the DHT a moment to populate tables from the bootstrap connection.
-    await new Promise(resolve => setTimeout(resolve, 750))
-    try { await node.services.dht.refreshRoutingTable() } catch {}
-
+    if (args.verbose) {
+      console.log(`[dialer][dht] findPeer start target=${targetPeerId.toString()} timeoutMs=${args.timeoutMs}`)
+    }
     await withTimeout(args.timeoutMs, async (signal) => {
       for await (const ev of node.services.dht.findPeer(targetPeerId, { signal })) {
         events.push(ev)
+        if (args.verbose) {
+          const extra = []
+          if (ev?.closer?.length) extra.push(`closer=${ev.closer.length}`)
+          if (ev?.from?.toString) extra.push(`from=${ev.from.toString()}`)
+          if (ev?.peer?.id?.toString) extra.push(`peer=${ev.peer.id.toString()}`)
+          console.log(`[dialer][dht] ${ev?.name ?? '(unknown)'}${extra.length ? ' ' + extra.join(' ') : ''}`)
+        }
         if (ev?.name === 'FINAL_PEER') break
         if (ev?.name === 'QUERY_ERROR') break
       }
@@ -166,6 +179,15 @@ async function main() {
   } catch (e) {
     // If DHT lookup fails/times out but we have a relay address, we can still test relay connectivity
     // by synthesizing the p2p-circuit dial address.
+    if (args.verbose) {
+      console.log(`[dialer][dht] findPeer failed after events=${events.length}: ${e?.message ?? String(e)}`)
+      if (events.length > 0) {
+        console.log('[dialer][dht] summary:')
+        for (const ev of events.slice(-15)) {
+          console.log(`  ${ev?.name ?? '(unknown)'}`)
+        }
+      }
+    }
     if (!args.relay) throw e
     console.log(`warning: dht.findPeer failed (${e?.message ?? String(e)}); falling back to --relay synthesis`)
   }

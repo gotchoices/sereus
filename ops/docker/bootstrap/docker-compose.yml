@@ -5,7 +5,7 @@ services:
       context: ../libp2p-infra
     container_name: sereus_libp2p_bootstrap
     ports:
-      - "${HOST_BIND_IP:-0.0.0.0}:${HOST_PORT:-4001}:4001/tcp"
+      - "${HOST_BIND_IP:-0.0.0.0}:${HOST_PORT:-4002}:4001/tcp"
     environment:
       - SEREUS_ROLE=bootstrap
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
