@@ -1,6 +1,9 @@
-# Sereus Bootstrap – Protocol and Implementation Notes
+# Sereus Strand Initialization – Protocol and Implementation Notes
 
-This document captures protocol/usage details from the original Taleus bootstrap design, adapted for Sereus. It supplements `sereus/packages/bootstrap/README.md` with rationale, flows, and security notes so Taleus can be retired without losing important knowledge.
+> Note on naming: early iterations called this process “bootstrap”, but that clashes with **libp2p/bootstrap** and “DHT bootstrap peers”.
+> We now refer to this protocol as **strand initialization** (or just **initialization** when context is clear). The underlying protocol id remains `/sereus/bootstrap/1.0.0` for backward compatibility.
+
+This document captures protocol/usage details from the original Taleus bootstrap design, adapted for Sereus. It supplements `sereus/packages/strand-proto/README.md` with rationale, flows, and security notes so Taleus can be retired without losing important knowledge.
 
 ## Scope
 - Invitation-based establishment of a shared strand (SQL DB) between participants.
@@ -8,8 +11,8 @@ This document captures protocol/usage details from the original Taleus bootstrap
 - Roles are logical; apps decide semantics. Library supports two primary flows and rejection.
 
 ## Protocol Identity
-- Default: `/sereus/bootstrap/1.0.0`.
-- Apps may override per manager (`config.protocolId`) and/or per initiation (`link.protocolId`) to use domain-specific IDs (e.g., `/mychips/bootstrap/1.0.0`).
+- Default: `/sereus/bootstrap/1.0.0` (historical; may be revised later).
+- Apps may override per manager (`config.protocolId`) and/or per initiation (`link.protocolId`) to use domain-specific IDs (e.g., `/mychips/init/1.0.0`).
 
 ## Message Types (Canonical Shapes)
 
@@ -120,8 +123,8 @@ These hooks are the extension points for:
 - App-specific domain (credit chits, lifts, admin/officer policies, signatures) intentionally excluded from bootstrap; to be implemented in app layers on top of the strand.
 
 ## References
-- `sereus/packages/bootstrap/src/bootstrap.ts` (implementation)
-- `sereus/packages/bootstrap/test/auto/bootstrap.ts` (integration tests)
+- `sereus/packages/strand-proto/src/bootstrap.ts` (implementation)
+- `sereus/packages/strand-proto/test/auto/bootstrap.ts` (integration tests)
 - `sereus/docs/schema-guide.md` (Quereus strand schema patterns)
 
 

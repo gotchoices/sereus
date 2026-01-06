@@ -135,13 +135,13 @@ Conventions:
 
 ### Packages scaffold
 - [x] Create `sereus/packages/` and `sereus/packages/README.md`
-- [x] Move `sereus/bootstrap/` → `sereus/packages/bootstrap/` (keep npm name `@sereus/bootstrap`)
-- [x] Update docs that referenced the old path (`sereus/docs/bootstrap.md`, manual test README)
+- [x] Move `sereus/bootstrap/` → `sereus/packages/strand-proto/` and rename npm package to `@sereus/strand-proto`
+- [x] Update docs that referenced the old path (`sereus/docs/strand-proto.md`, manual test README)
 
-## libp2p Strand Bootstrap Library (`@sereus/bootstrap`)
+## libp2p Strand Bootstrap Library (`@sereus/strand-proto`)
 
 - [x] Keep protocol id default `'/sereus/bootstrap/1.0.0'` with override options
-- [ ] Add diagrams to `sereus/docs/bootstrap.md`
+- [ ] Add diagrams to `sereus/docs/strand-proto.md`
   - [ ] 2-message flow (`responderCreates`)
   - [ ] 3-message flow (`initiatorCreates`, new stream)
   - [ ] rejection + timeout paths
@@ -182,7 +182,7 @@ Goal: define and implement how a **cohort** (all nodes belonging to a strand) is
 
 ## Testing / CI
 
-- [ ] Wire `@sereus/bootstrap` tests into workspace CI
+- [ ] Wire `@sereus/strand-proto` tests into workspace CI
 - [ ] Add root-level scripts for running package tests consistently (Yarn workspace)
 
 

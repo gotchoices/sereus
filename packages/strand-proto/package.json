@@ -1,5 +1,5 @@
 {
-  "name": "@sereus/bootstrap",
+  "name": "@sereus/strand-proto",
   "version": "0.1.0",
   "type": "module",
   "main": "dist/bootstrap.js",

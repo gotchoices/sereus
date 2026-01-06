@@ -8,7 +8,7 @@ import { createBootstrapManager, DEFAULT_PROTOCOL_ID, type BootstrapLink } from 
 async function main() {
   const addr = process.argv[2]
   if (!addr) {
-    console.error('Usage: ts-node bootstrap-dial.ts <multiaddr>')
+    console.error('Usage: ts-node dial.ts <multiaddr>')
     process.exit(1)
   }
   const peerId = await createEd25519PeerId()

@@ -1,4 +1,4 @@
-## @sereus/bootstrap
+## @sereus/strand-proto
 
 Configurable invitation-based bootstrap over libp2p to provision a shared Sereus strand (SQL DB), with protocol string override and neutral types.
 
@@ -23,13 +23,13 @@ Legacy mapping for MyCHIPs:
 ### Install
 
 ```bash
-yarn add @sereus/bootstrap
+yarn add @sereus/strand-proto
 ```
 
 ### Usage
 
 ```ts
-import { createBootstrapManager, DEFAULT_PROTOCOL_ID } from '@sereus/bootstrap'
+import { createBootstrapManager, DEFAULT_PROTOCOL_ID } from '@sereus/strand-proto'
 
 const hooks = {
   // Prefer new mode; legacy { role: 'stock'|'foil' } is still accepted
