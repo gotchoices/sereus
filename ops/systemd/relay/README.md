@@ -2,6 +2,8 @@
 
 This is a **bare-bones scaffold** to preserve the pattern for non-Docker deployments.
 
+Status: **untested / not fully implemented yet**.
+
 Intent:
 - A site instance directory (e.g. `/srv/sereus-ops/relay`) holds **env + data**
 - The repo clone holds **code**

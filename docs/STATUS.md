@@ -27,6 +27,10 @@ Conventions:
 - [ ] Decide image strategy:
   - [ ] Use prebuilt images (document source + tags)
   - [ ] Or build locally (add `Dockerfile` and scripts)
+  - [ ] (Deferred) Consolidate `relay`/`bootstrap`/`bootstrap-relay` into a single image + ROLE dispatch
+    - Idea: build one `sereus-libp2p-infra` image containing a single program that enables services based on `SEREUS_ROLE=relay|bootstrap|bootstrap-relay`
+    - Compose differences become env-only; ops upgrades become “update one image tag”
+    - Keep per-role docs, but reduce duplication and reduce build/push overhead
 - [ ] Add helper scripts (if helpful):
   - [ ] `up.sh` / `down.sh` wrappers
   - [ ] log tailing / healthcheck scripts
