@@ -66,7 +66,41 @@ yarn workspace @sereus/ops-test pair:dial -- \
   --peer <LISTENER_PEER_ID>
 ```
 
-If `dht.findPeer(...)` doesn’t return a `p2p-circuit` address yet, pass `--relay /dnsaddr/relay.sereus.org` to the dialer as a fallback so it can synthesize:
-`/dnsaddr/relay.sereus.org/p2p-circuit/p2p/<LISTENER_PEER_ID>`.
+#### Layered approach to testing (recommended)
+Start simple, then add discovery:
+
+1) **Explicit dial address** (tests the relay path + opening a protocol stream over the relay, no DHT discovery)
+- Start the listener and copy the printed “copy/paste dial address (via relay)”
+- Dialer:
+
+```bash
+yarn workspace @sereus/ops-test pair:dial -- \
+  --bootstrap /dnsaddr/bootstrap.sereus.org \
+  --dial-addr "<PASTE_FROM_LISTENER>"
+```
+
+2) **Relay synthesis fallback** (still no DHT discovery, but less copy/paste)
+
+```bash
+yarn workspace @sereus/ops-test pair:dial -- \
+  --bootstrap /dnsaddr/bootstrap.sereus.org \
+  --peer <LISTENER_PEER_ID> \
+  --relay /dnsaddr/relay.sereus.org
+```
+
+3) **Bootstrap-only discovery** (goal state): dialer uses `dht.findPeer(<peerId>)` to discover a `p2p-circuit` address without `--relay`.
+
+Troubleshooting:
+- Add `--verbose` to listener/dialer to print resolved DNSADDR targets and other helpful info.
+- If the dialer fails with `NO_RESERVATION`, it means the listener has not successfully reserved a slot on the relay yet.
+- If you see “limited connection”: that is expected for relayed connections. This test pair explicitly:
+  - opens the dialer stream with `runOnLimitedConnection: true`
+  - registers the listener handler with `runOnLimitedConnection: true`
+  because relay links are intentionally marked limited by libp2p.
+- If you see `StreamResetError: stream reset` during the dialer write, it often means the listener rejected the inbound stream (e.g. handler not allowed on limited connections) or the relay could not open a STOP stream back to the listener (e.g. no active reservation/relay connection).
+- A reservation is only valid while the listener maintains an active connection to the relay; the listener keeps this alive (best-effort) by periodically pinging the relay.
+
+Optional checks:
+- Add `--bootstrap-check` to `pair:dial` to explicitly validate the bootstrap node is responding to DHT queries (`dht.findPeer(bootstrapPeerId)`).
 
 
