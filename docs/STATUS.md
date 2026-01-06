@@ -56,17 +56,56 @@ Conventions:
   - [ ] DHT settings (if we keep DHT on bootstrap peers)
 
 ### `sereus-node` (deferred) – make it real
-- [ ] Identify the runnable artifact:
-  - [ ] Optimystic headless node image name(s) and tags
-  - [ ] Entrypoint + required args/env
-- [ ] Cadre enrollment:
-  - [ ] Define how a node joins a cadre (token/QR/config, rotation, revoke)
-  - [ ] Decide what secrets/state must persist on disk
-- [ ] Docker wiring:
-  - [ ] Map required ports (tcp/ws/quic/etc) and document firewall rules
-  - [ ] Add healthcheck and minimal logging guidance
-  - [ ] Add volume layout (keys, state, logs) and backup guidance
-  - [ ] Add “start on reboot” instructions (systemd/docker enablement)
+- [ ] Reality check: what Optimystic already provides (and gaps)
+  - [x] **Protocol isolation via `networkName`** is implemented.
+    - All Optimystic protocols are prefixed like `/optimystic/{networkName}/...` (see `optimystic/PROTOCOL-ISOLATION.md` and `@optimystic/db-p2p` `createLibp2pNode`).
+    - Implication: a “cadre” very likely maps 1:1 to an Optimystic `networkName` (or a deterministic derivation like `sereus-cadre-${cadreId}`).
+  - [x] A headless libp2p+Optimystic runtime exists for development/testing:
+    - `optimystic/packages/test-peer` has a `service` command (no REPL) that starts a node via `@optimystic/db-p2p` `createLibp2pNode`.
+    - It supports: `--network`, `--bootstrap` / `--bootstrap-file`, `--storage file|memory`, `--storage-path`, `--fret-profile edge|core`.
+  - [ ] **Identity persistence is not clearly implemented**
+    - `@optimystic/db-p2p` currently accepts `id?: string` and uses `peerIdFromString(id)` (no explicit private key load/save).
+    - For a real `sereus-node`, we need **stable PeerID** (and the corresponding private key) across restarts.
+    - TODO: decide on a persistence format (protobuf/JSON) and implement `--key-file` (or similar) in a dedicated node runner.
+  - [ ] `relay?: boolean` exists in `NodeOptions` but appears **unused** in `createLibp2pNode` today (no circuit-relay service).
+  - [ ] Cluster membership logic is in flux:
+    - `optimystic/packages/db-p2p/src/cluster/service.ts` includes a note to “Re-enable and fix cluster membership logic for proper DHT routing”.
+
+- [ ] Identify the runnable artifact (production direction)
+  - [ ] Decide: should `sereus-node` run **Optimystic-only** (storage + p2p) or also embed **Quereus** (SQL surface)?
+    - Hypothesis: Optimystic provides the p2p/storage substrate; Quereus is a higher-level access plane and may run separately and connect as a client.
+  - [ ] Decide the bootstrap story for cadre networks:
+    - `bootstrapNodes` in `@optimystic/db-p2p` are used for libp2p bootstrap discovery and also fed into FRET.
+    - Question: do we expect operators to point `sereus-node` at **other Optimystic nodes** (recommended), vs pointing at generic libp2p bootstrap peers (likely not useful unless Optimystic also uses libp2p DHT directly).
+  - [ ] Define minimum env/args for a first runnable “cadre member”:
+    - `NETWORK_NAME` (cadre network name)
+    - `BOOTSTRAP_ADDRS` (comma-separated multiaddrs, preferably `/dnsaddr/...`)
+    - `LISTEN_PORT`
+    - `STORAGE_PATH` + `STORAGE_CAPACITY_BYTES` (Arachnode ring selection)
+    - `FRET_PROFILE=edge|core` (role tuning)
+    - `CLUSTER_SIZE` + policy knobs (downsize/tolerance)
+
+- [ ] Cadre enrollment (Sereus layer; not in Optimystic yet)
+  - [ ] Define how a node joins a cadre:
+    - What does an “enrollment token” contain? (cadre id, networkName, bootstrap list, auth, expiry)
+    - How is it rotated/revoked?
+  - [ ] Decide what secrets/state must persist on disk:
+    - libp2p private key (PeerID)
+    - Optimystic storage repo (file storage path)
+    - any cadre enrollment state / certificates / ACLs (TBD)
+
+- [ ] Bring `sereus/ops/docker/sereus-node` up to the current ops patterns
+  - [ ] Replace the current placeholder `SEREUS_NODE_IMAGE` approach with either:
+    - a local-build Dockerfile + entrypoint (preferred, consistent with other ops/docker stacks), or
+    - an explicitly deferred “prebuilt image” doc.
+  - [ ] Refactor `env.example` to host-level knobs (`HOST_PORT`, `HOST_BIND_IP`, `HOST_DATA_DIR`) plus the minimum `sereus-node` knobs above.
+  - [ ] Update the compose file to use `./svc` and `--env-file env.local` workflow (same as relay/bootstrap).
+
+- [ ] Docker wiring
+  - [ ] Map required ports (tcp/ws/quic/etc) and document firewall rules (start with tcp only)
+  - [ ] Add healthcheck and minimal logging guidance (PeerID, multiaddrs, networkName)
+  - [ ] Add volume layout and backup guidance (keys + storage)
+  - [ ] Add “start on reboot” instructions (Docker enablement + `restart: unless-stopped`)
 
 ### Packages scaffold
 - [x] Create `sereus/packages/` and `sereus/packages/README.md`
