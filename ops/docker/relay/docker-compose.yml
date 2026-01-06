@@ -1,10 +1,13 @@
 services:
   relay:
-    build: .
+    image: sereus-libp2p-infra:local
+    build:
+      context: ../libp2p-infra
     container_name: sereus_libp2p_relay
     ports:
       - "${HOST_BIND_IP:-0.0.0.0}:${HOST_PORT:-4001}:4001/tcp"
     environment:
+      - SEREUS_ROLE=relay
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
     volumes:
       - "${HOST_DATA_DIR:-./data}:/data"

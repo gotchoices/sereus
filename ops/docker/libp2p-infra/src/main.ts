@@ -12,16 +12,15 @@ import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { kadDHT } from '@libp2p/kad-dht'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
-const DATA_DIR = process.env.DATA_DIR ?? '/data'
-const KEY_FILE = process.env.KEY_FILE ?? path.join(DATA_DIR, 'libp2p-private.key.pb')
+type Role = 'relay' | 'bootstrap' | 'bootstrap-relay'
 
-function parseListenTcp (): { host: string, port: number } {
-  const raw = process.env.LISTEN_TCP ?? '0.0.0.0:4001'
-  const [host, portStr] = raw.split(':')
-  const port = Number(portStr)
-  if (!host || !Number.isFinite(port)) throw new Error(`Invalid LISTEN_TCP: ${raw}`)
-  return { host, port }
+const ROLE = (process.env.SEREUS_ROLE ?? '').trim() as Role
+if (!ROLE || !['relay', 'bootstrap', 'bootstrap-relay'].includes(ROLE)) {
+  throw new Error(`Missing/invalid SEREUS_ROLE. Expected one of: relay|bootstrap|bootstrap-relay (got ${JSON.stringify(process.env.SEREUS_ROLE)})`)
 }
+
+const DATA_DIR = '/data'
+const KEY_FILE = path.join(DATA_DIR, 'libp2p-private.key.pb')
 
 function parseAnnounceAddrs (): string[] | undefined {
   const raw = (process.env.ANNOUNCE_ADDRS ?? '').trim()
@@ -41,29 +40,36 @@ async function loadOrCreatePrivateKey () {
   }
 }
 
-const { host, port } = parseListenTcp()
 const announce = parseAnnounceAddrs()
+
+const services: Record<string, any> = {
+  identify: identify(),
+  ping: ping()
+}
+
+if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
+  services.relay = circuitRelayServer()
+}
+
+if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
+  services.dht = kadDHT({ clientMode: false })
+}
 
 const node = await createLibp2p({
   privateKey: await loadOrCreatePrivateKey(),
   addresses: {
-    listen: [`/ip4/${host}/tcp/${port}`],
+    listen: ['/ip4/0.0.0.0/tcp/4001'],
     ...(announce ? { announce } : {})
   },
   transports: [tcp()],
   connectionEncrypters: [noise()],
   streamMuxers: [yamux()],
-  services: {
-    identify: identify(),
-    ping: ping(),
-    relay: circuitRelayServer(),
-    dht: kadDHT({ clientMode: false })
-  }
+  services
 })
 
 await node.start()
 
-console.log(`bootstrap-relay peerId=${node.peerId.toString()}`)
+console.log(`${ROLE} peerId=${node.peerId.toString()}`)
 console.log('listening/advertising on:')
 node.getMultiaddrs().forEach(ma => console.log(ma.toString()))
 

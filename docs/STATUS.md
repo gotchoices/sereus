@@ -22,18 +22,16 @@ Conventions:
   - [x] `sereus/ops/docker/relay/docker-compose.yml`
   - [~] `sereus/ops/docker/sereus-node/docker-compose.yml` (template; needs image/entrypoint)
   - [x] `sereus/ops/docker/bootstrap-relay/docker-compose.yml` (combined node)
-- [~] Add env example files for each folder with the minimum required knobs
+- [x] Add env example files for each folder with the minimum required knobs
   - Note: dotfiles like `.env.example` are blocked in this workspace; using `env.example`.
 - [ ] Decide image strategy:
-  - [ ] Use prebuilt images (document source + tags)
-  - [ ] Or build locally (add `Dockerfile` and scripts)
-  - [ ] (Deferred) Consolidate `relay`/`bootstrap`/`bootstrap-relay` into a single image + ROLE dispatch
-    - Idea: build one `sereus-libp2p-infra` image containing a single program that enables services based on `SEREUS_ROLE=relay|bootstrap|bootstrap-relay`
-    - Compose differences become env-only; ops upgrades become “update one image tag”
-    - Keep per-role docs, but reduce duplication and reduce build/push overhead
+  - [ ] (Deferred) Use prebuilt images (document source + tags)
+  - [x] Build locally from the repo
+  - [x] Consolidate `relay`/`bootstrap`/`bootstrap-relay` into a single image + ROLE dispatch (compose remains per-role)
+    - Implemented: `sereus/ops/docker/libp2p-infra` image
+    - Per-role compose sets `SEREUS_ROLE=...`; operator `env.local` stays host-facing only
 - [ ] Add helper scripts (if helpful):
-  - [ ] `up.sh` / `down.sh` wrappers
-  - [ ] log tailing / healthcheck scripts
+  - [x] `svc` (single entry point for `up`/`down`/`logs`)
 - [ ] Document quickstart flows:
   - [ ] “Run a public relay”
   - [ ] “Run a private bootstrap node”
@@ -45,11 +43,8 @@ Conventions:
   - [ ] systemd (bare server)
   - [ ] future k8s/helm deployment
 - [ ] Modularize runbook docs/READMEs so common guidance is centralized and referenced:
-  - [ ] DNSADDR + TXT record conventions (and rotation/expansion patterns)
-  - [ ] Key safety, persistence, and backup/restore guidance
-  - [ ] “One host, multiple hostnames” patterns (bootstrap+relay split/overlap)
-  - [ ] Firewall/ports guidance (per-transport)
-  - [ ] Suggested location: `sereus/ops/docker/README.md` + dedicated `sereus/ops/docker/docs/*.md` (or similar)
+  - [x] `sereus/ops/docs/dnsaddr.md`
+  - [x] `sereus/ops/docs/keys.md`
 - [ ] If yes: propose target layout (one of):
   - [ ] `sereus/ops/node-apps/{relay,bootstrap,bootstrap-relay}` + `sereus/ops/node-apps/lib/` for shared utilities
   - [ ] `sereus/packages/@sereus/libp2p-infra` (publishable) + thin wrappers in `ops/*`

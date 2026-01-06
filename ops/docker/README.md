@@ -82,6 +82,9 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 - `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
 - `ANNOUNCE_ADDRS`: advanced; leave empty unless troubleshooting reachability
 
+### Image/build note
+`relay`, `bootstrap`, and `bootstrap-relay` all run the same image (`sereus-libp2p-infra:local`) built from `ops/docker/libp2p-infra/`.
+
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.
 

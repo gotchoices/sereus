@@ -13,6 +13,6 @@ COPY --from=build /app/node_modules ./node_modules
 COPY --from=build /app/dist ./dist
 VOLUME ["/data"]
 EXPOSE 4001/tcp
-CMD ["node", "dist/index.js"]
+CMD ["node", "dist/main.js"]
 
 
