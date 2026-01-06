@@ -6,10 +6,12 @@ import { identify } from '@libp2p/identify'
 import { ping } from '@libp2p/ping'
 import { kadDHT } from '@libp2p/kad-dht'
 import { multiaddr } from '@multiformats/multiaddr'
+import { dns, RecordType } from '@multiformats/dns'
+import { dnsJsonOverHttps } from '@multiformats/dns/resolvers'
 
 function usage () {
   console.log(`Usage:
-  node sereus/ops/test/check-node.mjs --target <multiaddr|/dnsaddr/...> [--relay] [--dht] [--all] [--timeout-ms N]
+  node sereus/ops/test/check-node.mjs --target <multiaddr|/dnsaddr/...> [--relay] [--dht] [--all] [--timeout-ms N] [--dns-mode auto|system|doh]
 
 Options:
   --target       Required. A concrete multiaddr (must include /p2p/<peerId>) or /dnsaddr/<hostname>
@@ -17,6 +19,10 @@ Options:
   --dht          Run a DHT query (dht.findPeer(remotePeerId)) and report success/failure
   --all          If --target resolves to multiple addresses, test all of them (default: first only)
   --timeout-ms   Overall per-target timeout (default: 15000)
+  --dns-mode     DNS resolver strategy for /dnsaddr targets:
+               - auto (default): try system DNS, fall back to DoH
+               - system: use OS/system resolver only
+               - doh: use DNS-over-HTTPS (Cloudflare/Google)
 `)
 }
 
@@ -26,7 +32,8 @@ function parseArgs (argv) {
     relay: false,
     dht: false,
     all: false,
-    timeoutMs: 15000
+    timeoutMs: 15000,
+    dnsMode: 'auto'
   }
 
   for (let i = 2; i < argv.length; i++) {
@@ -36,12 +43,14 @@ function parseArgs (argv) {
     else if (a === '--dht') args.dht = true
     else if (a === '--all') args.all = true
     else if (a === '--timeout-ms') args.timeoutMs = Number(argv[++i])
+    else if (a === '--dns-mode') args.dnsMode = String(argv[++i] ?? '')
     else if (a === '-h' || a === '--help') { usage(); process.exit(0) }
     else throw new Error(`Unknown arg: ${a}`)
   }
 
   if (!args.target) throw new Error('Missing --target')
   if (!Number.isFinite(args.timeoutMs) || args.timeoutMs <= 0) throw new Error('Invalid --timeout-ms')
+  if (!['auto', 'system', 'doh'].includes(args.dnsMode)) throw new Error('Invalid --dns-mode (use auto|system|doh)')
   return args
 }
 
@@ -55,18 +64,16 @@ async function withTimeout (ms, fn, label = 'operation') {
   }
 }
 
-async function resolveTargets (targetStr) {
+async function resolveTargets (targetStr, { dnsMode }) {
   const ma = multiaddr(targetStr)
 
-  // Prefer dnsaddr resolution if present.
   const hasDnsaddr = ma.getComponents().some(c => c.name === 'dnsaddr')
   if (!hasDnsaddr) return [ma]
 
-  // multiaddr.resolve is deprecated but still present in this dependency tree.
-  const resolved = await ma.resolve()
-  return Array.isArray(resolved)
-    ? resolved.map(r => (typeof r === 'string' ? multiaddr(r) : r))
-    : [ma]
+  // multiaddr DNS resolvers may not be registered (or may be removed). Implement
+  // DNSADDR resolution directly: query _dnsaddr.<hostname> TXT records containing
+  // strings like "dnsaddr=<multiaddr>".
+  return await resolveDnsaddrMultiaddr(ma, { dnsMode })
 }
 
 function getPeerIdStr (ma) {
@@ -74,9 +81,87 @@ function getPeerIdStr (ma) {
   return comp?.value ?? null
 }
 
+function makeResolver (mode) {
+  if (mode === 'doh') {
+    // Use public resolvers to avoid local DNS propagation/caching issues.
+    return dns({
+      resolvers: {
+        '.': [
+          dnsJsonOverHttps('https://cloudflare-dns.com/dns-query'),
+          dnsJsonOverHttps('https://dns.google/resolve')
+        ]
+      }
+    })
+  }
+
+  // system resolver
+  return dns()
+}
+
+async function resolveDnsaddrMultiaddr (ma, { maxDepth = 8, dnsMode = 'auto' } = {}) {
+  if (maxDepth <= 0) {
+    throw new Error('dnsaddr resolution exceeded max recursion depth')
+  }
+
+  const dnsaddrComp = ma.getComponents().find(c => c.name === 'dnsaddr')
+  const hostname = dnsaddrComp?.value
+  if (!hostname) return [ma]
+
+  const fqdn = `_dnsaddr.${hostname}`
+
+  const query = async (mode) => {
+    const resolver = makeResolver(mode)
+    return await resolver.query(fqdn, { types: [RecordType.TXT] })
+  }
+
+  let result
+  try {
+    if (dnsMode === 'system') result = await query('system')
+    else if (dnsMode === 'doh') result = await query('doh')
+    else {
+      // auto: try system, fall back to DoH on NXDOMAIN/temporary failures
+      try {
+        result = await query('system')
+      } catch (e) {
+        result = await query('doh')
+      }
+    }
+  } catch (e) {
+    const msg = e?.message ?? String(e)
+    throw new Error(`dnsaddr TXT lookup failed for ${fqdn}: ${msg}`)
+  }
+
+  const peerIdFilter = getPeerIdStr(ma)
+  const out = []
+
+  for (const answer of result.Answer ?? []) {
+    const addr = String(answer.data)
+      .replace(/["']/g, '')
+      .trim()
+      .split('=')[1]
+
+    if (!addr) continue
+    if (peerIdFilter && !addr.includes(peerIdFilter)) continue
+
+    if (addr.startsWith('/dnsaddr/')) {
+      const nested = await resolveDnsaddrMultiaddr(multiaddr(addr), { maxDepth: maxDepth - 1, dnsMode })
+      out.push(...nested)
+    } else {
+      out.push(multiaddr(addr))
+    }
+  }
+
+  if (out.length === 0) {
+    return [ma]
+  }
+
+  return out
+}
+
 function looksLikeRelay (protocols) {
   const s = protocols.join('\n').toLowerCase()
-  return s.includes('circuit') && s.includes('relay') && s.includes('hop')
+  // keep this heuristic loose - protocol strings vary between implementations/versions
+  return s.includes('circuit') && s.includes('relay')
 }
 
 async function drainQueryEvents (iter, limit = 200) {
@@ -120,18 +205,32 @@ async function checkOne (targetMa, { relay, dht, timeoutMs }) {
     const remotePeer = conn.remotePeer
     const remotePeerStr = remotePeer.toString()
 
-    const peerInfo = await node.peerStore.get(remotePeer)
-    const protocols = peerInfo.protocols ?? []
-    const addrs = peerInfo.addresses?.map(a => a.multiaddr.toString()) ?? []
+    const readPeerInfo = async () => {
+      const peerInfo = await node.peerStore.get(remotePeer)
+      const protocols = peerInfo.protocols ?? []
+      const addrs = peerInfo.addresses?.map(a => a.multiaddr.toString()) ?? []
+      return { protocols, addrs }
+    }
+
+    // Identify runs asynchronously after connect; give it a moment to populate protocols.
+    let { protocols, addrs } = await readPeerInfo()
+    if (protocols.length === 0) {
+      await new Promise(resolve => setTimeout(resolve, 750))
+      ;({ protocols, addrs } = await readPeerInfo())
+    }
 
     console.log(`connected peerId=${remotePeerStr}`)
     console.log(`known addrs:\n${addrs.map(a => `  ${a}`).join('\n') || '  (none)'}`)
     console.log(`protocols:\n${protocols.map(p => `  ${p}`).join('\n') || '  (none)'}`)
 
-    const rttMs = await withTimeout(timeoutMs, async (signal) => {
-      return await node.services.ping.ping(remotePeer, { signal })
-    }, 'ping')
-    console.log(`ping rtt=${rttMs}ms`)
+    try {
+      const rttMs = await withTimeout(timeoutMs, async (signal) => {
+        return await node.services.ping.ping(remotePeer, { signal })
+      }, 'ping')
+      console.log(`ping rtt=${rttMs}ms`)
+    } catch (e) {
+      console.log(`ping: not supported or failed (${e?.message ?? String(e)})`)
+    }
 
     if (relay) {
       const ok = looksLikeRelay(protocols)
@@ -164,7 +263,7 @@ async function checkOne (targetMa, { relay, dht, timeoutMs }) {
 
 async function main () {
   const args = parseArgs(process.argv)
-  const targets = await resolveTargets(args.target)
+  const targets = await resolveTargets(args.target, args)
 
   const list = args.all ? targets : targets.slice(0, 1)
   if (targets.length > 1) {

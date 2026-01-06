@@ -17,6 +17,12 @@ node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht
 node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht --all
 ```
 
+If your local DNS resolver can’t see the `_dnsaddr` record yet (propagation/caching), force DoH:
+
+```bash
+node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
+```
+
 You can also pass a concrete multiaddr (must include `/p2p/<peerId>`), e.g.:
 
 ```bash

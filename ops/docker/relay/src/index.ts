@@ -7,6 +7,7 @@ import { tcp } from '@libp2p/tcp'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
+import { ping } from '@libp2p/ping'
 import { circuitRelayServer } from '@libp2p/circuit-relay-v2'
 import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys'
 
@@ -53,6 +54,7 @@ const node = await createLibp2p({
   streamMuxers: [yamux()],
   services: {
     identify: identify(),
+    ping: ping(),
     relay: circuitRelayServer()
   }
 })
