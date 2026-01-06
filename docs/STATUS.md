@@ -32,10 +32,10 @@ Conventions:
     - Per-role compose sets `SEREUS_ROLE=...`; operator `env.local` stays host-facing only
 - [ ] Add helper scripts (if helpful):
   - [x] `svc` (single entry point for `up`/`down`/`logs`)
-- [ ] Document quickstart flows:
-  - [ ] “Run a public relay”
-  - [ ] “Run a private bootstrap node”
-  - [ ] “Add a headless sereus-node to a cadre”
+- [x] Document quickstart flows:
+  - [x] “Run a public relay” (`sereus/ops/docker/quickstarts/relay.md`)
+  - [x] “Run a private bootstrap node” (`sereus/ops/docker/quickstarts/bootstrap.md`)
+  - [ ] “Add a headless sereus-node to a cadre” (deferred; needs real image/entrypoint)
 
 ### Ops code sharing / multi-deployment support (deferred)
 - [ ] Decide whether the libp2p node “apps” should live outside `ops/docker/*` so they can be reused by:

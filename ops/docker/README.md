@@ -94,6 +94,11 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 ### Ops tests
 See `../test/README.md`.
 
+### Quickstarts
+- `quickstarts/relay.md`: run a **public relay**
+- `quickstarts/bootstrap.md`: run a **private bootstrap** peer (discovery seed)
+- `quickstarts/bootstrap-relay.md`: run a **combined** bootstrap + relay node
+
 ### Installing Docker (optional)
 If you already have Docker + Compose installed and working, you can skip this section.
 
