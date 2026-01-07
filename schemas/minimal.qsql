@@ -1,0 +1,62 @@
+declare schema CadreControl {
+    table AuthorityKey (
+        key text primary key,
+    );
+    
+    table Network (
+        id text,    -- UUID
+        primary key (/* empty - singleton */)
+    );
+    
+    table Strand (
+        id text primary key,    -- UUID
+        my_member_id text unique,
+        type text, -- Types: 'o' = Open, 'b' = Broadcast, 'c' = Closed
+        app_id text,
+        app_version text,
+        engine text,
+        engine_version text
+    );
+
+    table ClosedPeer (
+        strand_id text foreign key references Strand(id),
+        peer_id text,
+        primary key (strand_id, peer_id)
+    );
+
+    table CadreToken (
+        token text primary key,
+        expires_at datetime,
+        peer_id text null foreign key references CadrePeer(peer_id)
+    );
+
+    -- My Cadre
+    table CadrePeer (
+        peer_id text,
+        multiaddr text,
+        primary key (peer_id),
+        constraint CadrePeerValid check (
+            -- Authorized by an AuthorityKey or "shoe-in" the first entry
+            -- or a CadreToken (consumed)
+        )
+    );
+
+    table Member (
+        strand_id text foreign key references Strand(id),
+        id text unique,
+        contact_id text null foreign key references Contact(id),
+        primary key (strand_id, id),
+    );
+
+    table MemberToken (
+        member_id text foreign key references Member(id),
+        token text,
+        primary key (member_id, token),
+    );
+
+    table MemberPeer (
+        member_id text foreign key references Member(id),
+        peer_id text,
+        primary key (member_id, peer_id),
+    );
+}

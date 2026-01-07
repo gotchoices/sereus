@@ -8,7 +8,7 @@ An initial attempt at a strand negotiation (“strand initialization”) protoco
 - **node**: a device/process that runs libp2p, identified by a **Peer ID**.
 - **cadre**: one or more nodes representing a single party within a strand.
 - **strand**: a logical network over which participating parties transact data and share a database.
-- **cohort**: the set of parties participating in a strand (and, by extension, their cadres/nodes).
+- **cohort**: the set of nodes participating in a strand (union of all cadres).
 
 Networking terms:
 - **Peer ID**: a cryptographic identity for a libp2p node, derived from a private key.

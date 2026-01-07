@@ -1,0 +1,100 @@
+declare schema Chat {
+    table Invite (
+        Key string, --public key of invitation, part of private/public key pair
+        OneTime boolean,
+        CanInvite boolean,
+        primary key (Key),
+        constraint InsertOnly check on update, delete (false),
+        constraint InsertValid check on insert (
+            -- First invite needs no validation
+            (not exists (select 1 from Invite) and not exists (select 1 from Member) and MemberKey is null and MemberSignature is null)
+                or exists (
+                    select 1 from MemberKey K join Member M on K.MemberId = M.Id where K.Key = MemberKey and M.CanInvite
+                       and valid(digest(Key, OneTime, CanInvite), MemberSignature, MemberKey)
+                )
+        )
+    )
+        with context (MemberKey string null, MemberSignature string null);
+
+    table UsedInvite (
+        Key string, --The invite key that was used
+        MemberId string,
+        primary key (Key, MemberId),        
+        constraint InsertOnly check on update, delete (false),
+        constraint ValidUsage check (
+            exists (select 1 from Invite I where I.Key = new.Key and (not I.OneTime or (select count(1) from UsedInvite U where U.Key = new.Key) = 1))
+        ),
+        constraint MemberValid check (exists (select 1 from Member M where M.Id = new.MemberId))
+    );
+    
+    table Member (
+        Id string,
+        Name string check (length(Name) between 1 and 255),
+        CanInvite boolean,   -- The user can invite others
+        primary key (Id),
+        constraint CantDelete check on delete (false),
+        constraint UpdateValid check on update (
+            -- Only the name can change
+            new.Id = old.id and new.CanInvite = old.CanInvite
+                -- Change must be from a valid key held by this member
+                and exists (select 1 from MemberKey M where M.MemberId = new.Id and context.MemberKey = M.Key)
+                -- Signature must be valid
+                and verify(digest(new.Id, new.Name, new.CanInvite), MemberSignature, MemberKey)),
+        constraint InsertValid check on insert (
+            -- First member needs no invitation
+            not exists (select 1 from Member) 
+                -- Subsequent members must have a valid invite
+                or exists (
+                    select 1 from Invite I 
+                        join UsedInvite U on I.Key = U.Key and U.MemberId = new.Id
+                        where I.Key = context.InviteKey and (I.CanInvite or not new.CanInvite) 
+                            and valid(digest(new.Id, new.Name, new.CanInvite), context.InviteSignature, context.InviteKey)
+                )
+        )
+    )
+        with context (InviteKey string null, InviteSignature string null, MemberKey string null, MemberSignature string null);
+
+
+    -- insert into Member (Id, Name, CanInvite) with context InviteKey = '1234567890', InviteSignature = '1234567890' values ('1234567890', 'John Doe', true)
+
+    table MemberKey (
+        MemberId string,
+        Key string, --public key of member, part of private/public key pair
+        primary key (MemberId, Key),
+    );
+
+    index MemberKeyByKey on MemberKey (Key);
+    
+    table Message (
+        Id integer,    -- ID is the sequence of the message
+        Timestamp datetime,  -- Timestamp of the message as represented by the inserting member
+        MemberId string,  -- ID of the member who sent the message
+        Content string,  -- Content of the message
+        primary key (Id),
+        -- User's timestamp is reasonably close to the collective
+        constraint TimeValid check (Timestamp between now - timespan('5 min') and now + timespan('5 min')),
+        -- ID is a sequence starting at 0
+        constraint IdValid check (Id >= 0 and (Id = 0 or exists (select 1 from Message M where M.Id = new.Id - 1))),
+        -- Member authorized
+        constraint MessageAuthorized check on insert (
+            exists (select 1 from MemberKey K where K.Key = MemberKey and K.MemberId = new.MemberId)
+                and verify(digest(new.Id, new.MemberId, new.Content), MemberSignature, MemberKey)
+        )
+    )
+        with context (MemberKey string, MemberSignature string, now datetime);
+
+    table Attachment (
+        MessageId string,  -- ID of the message
+        Timestamp datetime,  -- Timestamp of the attachment
+        Type string,  -- Type of the attachment (mime type)
+        Filename string null,    -- Uploaded filename (with extension)
+        Content blob,  -- Content of the message (in Markdown?)
+        primary key (MessageId, Sequence),
+    );
+
+    table Response (
+        OriginalId datetime,   -- ID of the original message
+        ResponseId datetime,  -- ID of the response
+        primary key (ResponseId)
+    );
+}
