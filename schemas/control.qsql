@@ -1,18 +1,42 @@
+-- This manages a Sereus party's cadre, or set of nodes, and their participation in strands (networks)
 declare schema CadreControl {
+    -- A key that can authorize various control changes
     table AuthorityKey (
         Key text primary key,
-    );
+        constraint Authorized check (
+            -- Old authority can authorize by signature and transaction slot id (not repeatable)
+            old.Key is not null and old.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, old.Key)
+            
+                -- or other authorities can authorize by signature and transaction slot id (not repeatable)
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, A.Key))
+        )
+    ) with context (AuthorityKey string, SlotId string, Signature string);
     
+    -- A key that can validate a strand formation disclosure
+    table ValidationKey (
+        Key text primary key,
+        constraint Authorized check (
+            -- Authorities can authorize by signature and transaction slot id (not repeatable)
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, A.Key))
+        )
+    ) with context (AuthorityKey string, SlotId string, Signature string);
+
     -- A network of members sharing an app database, each contributing peer nodes (their cadre) to the overall cohort
+    -- Cadre peers should participate in each of these strands
     table Strand (
         Id text primary key,    -- UUID
-        MyPrivateKey text unique,
+        MemberPrivateKey text unique,   -- Our private key as a member of this strand
         Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the app, but only Closed controls reads
-        constraint MutationValid check (
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(old.Id, new.Id), new.Type), context.Signature, A.Key) = 1)
-        )
-    ) with context (AuthorityKey string, Signature string);
+        constraint Authorized check (
+            -- Authorized by authority signature and transaction slot id (not repeatable)
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, A.Key))
 
+                -- or authorized by a cadre peer who has received a valid formation invitation
+                or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
+        )
+    ) with context (AuthorityKey string, SlotId string, Signature string);
+
+    -- A peer (node) that is part of the cadre
     table CadrePeer (
         PeerId text,
         Multiaddr text,
@@ -25,19 +49,45 @@ declare schema CadreControl {
         constraint AuthorizedUpdate check on update (
             -- Peer can change it's own multiaddr
             verify(digest(new.PeerId, new.Multiaddr), context.Signature, new.PeerId)
+                -- or authorized by an authority key
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId), context.Signature, A.Key))
         )
     ) with context (AuthorityKey string null, Signature string);
 
+    -- An open invitation to form a strand with this party
     table FormationInvite (
-        Token text primary key,
+        Token text primary key, -- Just a random string
+        AppId text, -- The app for the strand that will be formed
         ExpiresAt datetime null,
-        RemainingUses int null,
+        TotalUses int null check (TotalUses >= 0),
         ValidationUrl text null,   -- Web hook - send disclosure, IP address...
-        -- TODO: AppId?
         primary key (Token),
-        constraint AuthorizedInsert check on insert, delete (
-            -- Authorized by an authority key
+        constraint AuthorizedAddOrRemove check on insert, delete (
+            -- Authorized by an authority key to add or remove this invite
             exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, A.Key))
         ),
     ) with context (AuthorityKey string, SlotId string, Signature string);
+
+    table FormationUsage (
+        Token text primary key,
+        UseNumber int,
+        Disclosure text,
+        StrandId text,
+        primary key (Token, UseNumber),
+        constraint InsertOnly check on update, delete (false),
+        constraint Monotonic check (
+            new.UseNumber = coalesce((select max(UseNumber) from FormationUsage U where U.Token = new.Token), 0) + 1
+        )
+        constraint Authorized check on insert (
+            -- Satisfies an invitation
+            exists (
+                select 1 from FormationInvite FI 
+                    where FI.Token = new.Token 
+                        and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
+                        and FI.ExpiresAt is null or FI.ExpiresAt > context.Now
+                        and (FI.ValidationUrl is null or verify(digest(new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey))
+            )
+        ),
+        constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),
+    ) with context (PeerId string, PeerSignature string, Now datetime, ValidationKey string null, ValidationSignature string null);
 }

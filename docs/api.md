@@ -30,13 +30,19 @@ Open invitation:
 ```ts
 type OpenInvitation = {
     token: string;
+    appId: string;
     expiration: DateTime,
     bootstrap: Muliaddr[],
 }
 ```
 
-Inviter forms:
+Invitee forms:
 ```ts
 formStrand(token: string, disclosure: object): { memberKey: string, invitePrivateKey: string };
 ```
 
+## Validate Strand Formation
+
+```ts
+validateStrandFormation(token string, disclosure: object): { validationKey: string; validationSignature: string };
+```
