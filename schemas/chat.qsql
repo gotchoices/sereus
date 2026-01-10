@@ -22,7 +22,7 @@ declare schema Chat {
         primary key (Key, MemberId),        
         constraint InsertOnly check on update, delete (false),
         constraint ValidUsage check (
-            exists (select 1 from Invite I where I.Key = new.Key and (not I.OneTime or (select count(1) from UsedInvite U where U.Key = new.Key) = 1))
+            exists (select 1 from Invite I where I.Key = new.Key and (not I.OneTime or (select count(1) from UsedInvite U where U.Key = new.Key)))
         ),
         constraint MemberValid check (exists (select 1 from Member M where M.Id = new.MemberId))
     );

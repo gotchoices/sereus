@@ -1,9 +1,10 @@
 ## Cadre peer authorization:
 
-Sent from authority to drone provider to spawn new cadre member.
+Sent from authority to drone provider to spawn new cadre member. Network ID is assumed for all control strands
 
 ```ts
-createCadrePeer(networkId: string, bootstrapNodes: Multiaddr[], token: string): Promise<PeerId>;
+createCadrePeer(): Promise<PeerId>;
+registerCadrePeer(bootstrapNodes: Multiaddr[], peerId: PeerId, authorityKey: string, signature: string);
 ```
 
 ## Member registration:

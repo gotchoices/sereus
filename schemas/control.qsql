@@ -1,0 +1,43 @@
+declare schema CadreControl {
+    table AuthorityKey (
+        Key text primary key,
+    );
+    
+    -- A network of members sharing an app database, each contributing peer nodes (their cadre) to the overall cohort
+    table Strand (
+        Id text primary key,    -- UUID
+        MyPrivateKey text unique,
+        Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the app, but only Closed controls reads
+        constraint MutationValid check (
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(old.Id, new.Id), new.Type), context.Signature, A.Key) = 1)
+        )
+    ) with context (AuthorityKey string, Signature string);
+
+    table CadrePeer (
+        PeerId text,
+        Multiaddr text,
+        primary key (MemberKey, PeerId),
+        constraint PeerIdImmutable check on update (old.PeerId = new.PeerId),
+        constraint AuthorizedInsert check on insert, delete (
+            -- Authorized by an authority key
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(new.PeerId, old.PeerId)), context.Signature, A.Key))
+        ),
+        constraint AuthorizedUpdate check on update (
+            -- Peer can change it's own multiaddr
+            verify(digest(new.PeerId, new.Multiaddr), context.Signature, new.PeerId)
+        )
+    ) with context (AuthorityKey string null, Signature string);
+
+    table FormationInvite (
+        Token text primary key,
+        ExpiresAt datetime null,
+        RemainingUses int null,
+        ValidationUrl text null,   -- Web hook - send disclosure, IP address...
+        -- TODO: AppId?
+        primary key (Token),
+        constraint AuthorizedInsert check on insert, delete (
+            -- Authorized by an authority key
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.SlotId), context.Signature, A.Key))
+        ),
+    ) with context (AuthorityKey string, SlotId string, Signature string);
+}
