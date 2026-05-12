@@ -44,7 +44,7 @@ npm install @serfab/cadre-cli @serfab/cadre-core
 ### Option B: Git clone (bleeding edge)
 
 ```bash
-git clone https://github.com/anthropics/sereus.git /opt/sereus
+git clone https://github.com/gotchoices/sereus.git /opt/sereus
 cd /opt/sereus
 npm install
 npm run build -w @serfab/cadre-core -w @serfab/cadre-cli

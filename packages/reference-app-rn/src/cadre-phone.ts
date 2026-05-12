@@ -2,7 +2,7 @@
  * cadre-phone.ts — CadreNode configured for a React Native phone node.
  *
  * - WebSocket + circuit-relay transports (no TCP in RN)
- * - MMKV-backed storage via db-p2p-storage-rn
+ * - LevelDB-backed storage via db-p2p-storage-rn (rn-leveldb under the hood)
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
  * - Authority role: the phone holds the signing keys
  */
@@ -18,43 +18,45 @@ import type {
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { MMKV } from 'react-native-mmkv';
-import { MMKVRawStorage } from '@optimystic/db-p2p-storage-rn';
+import {
+  LevelDBRawStorage,
+  loadOrCreateRNPeerKey,
+  openOptimysticRNDb,
+} from '@optimystic/db-p2p-storage-rn';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 
-// ── MMKV instance shared across the app ──────────────────────────────────────
-// NOTE: this app is pinned to react-native-mmkv ^3.x where `MMKV` is a value
-// class.  v4 (Nitro Modules) makes `MMKV` a type-only export and the runtime
-// API becomes `createMMKV({...})`.  When upgrading, change the import to
-// `import { createMMKV, type MMKV } from 'react-native-mmkv'` and replace
-// `new MMKV({...})` below with `createMMKV({...})`.
+// ── LevelDB helpers ──────────────────────────────────────────────────────────
+// Each strand (and the peer identity) gets its own LevelDB database file.
 
-const mmkv = new MMKV({ id: 'sereus-chat' });
+function openLevelDb(name: string) {
+	return openOptimysticRNDb({
+		openFn: (n, c, e) => new LevelDB(n, c, e),
+		WriteBatch: LevelDBWriteBatch,
+		name,
+	});
+}
 
 // ── Storage factory ──────────────────────────────────────────────────────────
-// Each strand (and the control network) gets an isolated key namespace inside
-// the single MMKV instance.
 
 function createStorage(strandId: string) {
-  return new MMKVRawStorage({ mmkv, prefix: `sereus:${strandId}:` });
+	return new LevelDBRawStorage(openLevelDb(`sereus-${strandId}`));
 }
 
 // ── Peer identity ───────────────────────────────────────────────────────────
 // Persist a single Ed25519 keypair so the phone keeps the same PeerId across
-// restarts. MMKV is not secure storage (not Keychain/Keystore) — acceptable
-// for v1; secure storage is tracked separately.
+// restarts. LevelDB on-disk is not secure storage (not Keychain/Keystore) —
+// acceptable for v1; secure storage is tracked separately.
 
-const PEER_KEY_STORAGE_KEY = 'sereus:peer-private-key';
+const PEER_IDENTITY_DB_NAME = 'sereus-peer-identity';
 
 async function loadOrCreatePhoneKey(): Promise<PrivateKey> {
-	const stored = mmkv.getBuffer(PEER_KEY_STORAGE_KEY);
-	if (stored) {
-		return privateKeyFromProtobuf(stored);
+	const db = openLevelDb(PEER_IDENTITY_DB_NAME);
+	try {
+		return await loadOrCreateRNPeerKey(db);
+	} finally {
+		await db.close();
 	}
-	const key = await generateKeyPair('Ed25519');
-	mmkv.set(PEER_KEY_STORAGE_KEY, Buffer.from(privateKeyToProtobuf(key)));
-	return key;
 }
 
 // ── Singleton ────────────────────────────────────────────────────────────────

@@ -5309,7 +5309,7 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.3"
     "@noble/hashes": "npm:^2.0.0"
     "@optimystic/db-p2p": "npm:^0.13.0"
-    "@optimystic/db-p2p-storage-rn": "npm:^0.13.0"
+    "@optimystic/db-p2p-storage-rn": "npm:^0.14.0"
     "@quereus/quereus": "npm:^2.8.0"
     "@serfab/cadre-core": "workspace:^"
     "@types/babel__core": "npm:^7"
@@ -5327,10 +5327,10 @@ __metadata:
     react: "npm:19.0.0"
     react-native: "npm:0.79.6"
     react-native-get-random-values: "npm:^1.11.0"
-    react-native-mmkv: "npm:^3.2.0"
     react-native-safe-area-context: "npm:5.4.0"
     react-native-screens: "npm:~4.11.0"
     readable-stream: "npm:^4.7.0"
+    rn-leveldb: "npm:^3.11.0"
     typescript: "npm:~5.8.3"
     web-streams-polyfill: "npm:^4.1.0"
   languageName: unknown
@@ -18130,16 +18130,6 @@ __metadata:
   languageName: node
   linkType: hard
 
-"react-native-mmkv@npm:^3.2.0":
-  version: 3.3.3
-  resolution: "react-native-mmkv@npm:3.3.3"
-  peerDependencies:
-    react: "*"
-    react-native: "*"
-  checksum: 10c0/efd7f725674d686ea126a213bd8c4270e8e4e8f306917a1b846a9f7ddf652ad057c7d509a9292d7bbf6a58603d4ab5a18e0c3b0d1b00447df45eeac81cbbd1e1
-  languageName: node
-  linkType: hard
-
 "react-native-safe-area-context@npm:5.4.0":
   version: 5.4.0
   resolution: "react-native-safe-area-context@npm:5.4.0"
@@ -18821,6 +18811,16 @@ __metadata:
   bin:
     rimraf: dist/esm/bin.mjs
   checksum: 10c0/c11a6a6fad937ada03c12fe688860690df8296d7cd08dbe59e3cc087f44e43573ae26ecbe48e54cb7a6db745b8c81fe5a15b9359233cc21d52d9b5b3330fcc74
+  languageName: node
+  linkType: hard
+
+"rn-leveldb@npm:^3.11.0":
+  version: 3.11.0
+  resolution: "rn-leveldb@npm:3.11.0"
+  peerDependencies:
+    react: "*"
+    react-native: "*"
+  checksum: 10c0/120ec7db0af7591b256f400295f18055a14f490b392ea183b62d16b833019001b246a90e210f8e842d090e005f91230fdd6cf46ea80b634566dc3d798add9bb8
   languageName: node
   linkType: hard
 
