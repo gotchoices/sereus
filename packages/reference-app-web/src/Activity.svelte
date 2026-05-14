@@ -63,7 +63,12 @@
 	{#if msgs.ready && msgs.activity.length > 0}
 		<ul class="log">
 			{#each msgs.activity as entry, i (entry.timestamp + ':' + entry.messageId + ':' + i)}
-				<li>
+				<li
+					data-testid="activity-row"
+					data-message-id={entry.messageId}
+					data-action={entry.action}
+					data-timestamp={entry.timestamp}
+				>
 					<span class="badge action-{entry.action}">{entry.action}</span>
 					<code class="id">{entry.messageId}</code>
 					<span class="ts">{formatWhen(entry.timestamp)}</span>

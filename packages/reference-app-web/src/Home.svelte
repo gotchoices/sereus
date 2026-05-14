@@ -67,15 +67,15 @@
 <section class="status">
 	<div class="row">
 		<span class="label">Status</span>
-		<span class="value status-{node.status}">{node.status}</span>
+		<span class="value status-{node.status}" data-testid="home-status">{node.status}</span>
 	</div>
 	<div class="row">
 		<span class="label">Mode</span>
-		<span class="value mode-{node.mode}">{node.mode}</span>
+		<span class="value mode-{node.mode}" data-testid="home-mode">{node.mode}</span>
 	</div>
 	<div class="row">
 		<span class="label">Peer ID</span>
-		<code class="value peer-id">{node.peerId ?? '—'}</code>
+		<code class="value peer-id" data-testid="home-peer-id">{node.peerId ?? '—'}</code>
 	</div>
 	{#if node.error}
 		<div class="row error">
@@ -102,6 +102,7 @@
 	<label for="bootstrap-input">Bootstrap multiaddr(s)</label>
 	<textarea
 		id="bootstrap-input"
+		data-testid="bootstrap-input"
 		rows="2"
 		spellcheck="false"
 		placeholder="/ip4/127.0.0.1/tcp/9091/ws/p2p/12D3..."
@@ -111,17 +112,22 @@
 
 	<div class="net-actions">
 		{#if node.mode === 'distributed'}
-			<button onclick={handleDisconnect} disabled={busy}>Disconnect</button>
+			<button onclick={handleDisconnect} disabled={busy} data-testid="btn-disconnect">
+				Disconnect
+			</button>
 		{:else}
 			<button
 				onclick={handleConnect}
 				disabled={busy || net.bootstrapInput.trim() === ''}
+				data-testid="btn-connect"
 			>
 				Connect
 			</button>
 		{/if}
 		{#if net.lastBootstrap && node.mode === 'solo'}
-			<span class="last-used">last used: <code>{net.lastBootstrap}</code></span>
+			<span class="last-used" data-testid="last-bootstrap">
+				last used: <code>{net.lastBootstrap}</code>
+			</span>
 		{/if}
 	</div>
 

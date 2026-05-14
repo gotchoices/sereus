@@ -1,0 +1,16 @@
+{
+	"extends": "@tsconfig/svelte/tsconfig.json",
+	"compilerOptions": {
+		"target": "ES2022",
+		"module": "ESNext",
+		"moduleResolution": "bundler",
+		"resolveJsonModule": true,
+		"isolatedModules": false,
+		"esModuleInterop": true,
+		"skipLibCheck": true,
+		"strict": true,
+		"noEmit": true,
+		"types": ["node", "@playwright/test"]
+	},
+	"include": ["e2e/**/*.ts", "playwright.config.ts"]
+}

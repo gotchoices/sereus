@@ -9,3 +9,8 @@ tmp/
 # Expo prebuild artifacts (managed workflow — EAS generates these)
 packages/reference-app-rn/android/
 packages/reference-app-rn/ios/
+
+# Playwright e2e artifacts for @serfab/reference-app-web
+packages/reference-app-web/e2e/.fixture-state.json
+packages/reference-app-web/test-results/
+packages/reference-app-web/playwright-report/

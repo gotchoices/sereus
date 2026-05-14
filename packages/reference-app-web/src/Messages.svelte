@@ -101,7 +101,12 @@
 			{#if msgs.updatedMs}
 				<span>refreshed {new Date(msgs.updatedMs).toLocaleTimeString()}</span>
 			{/if}
-			<button type="button" onclick={() => void refresh()} disabled={msgs.loading}>
+			<button
+				type="button"
+				onclick={() => void refresh()}
+				disabled={msgs.loading}
+				data-testid="btn-refresh"
+			>
 				Refresh
 			</button>
 		</div>
@@ -129,6 +134,7 @@
 				bind:value={author}
 				disabled={msgs.loading}
 				class="author"
+				data-testid="compose-author"
 			/>
 			<input
 				type="text"
@@ -136,8 +142,9 @@
 				bind:value={content}
 				disabled={msgs.loading}
 				class="content"
+				data-testid="compose-content"
 			/>
-			<button type="submit" disabled={msgs.loading}>Send</button>
+			<button type="submit" disabled={msgs.loading} data-testid="btn-send">Send</button>
 		</form>
 		{#if composeError}
 			<p class="error">{composeError}</p>
@@ -148,7 +155,7 @@
 		{:else}
 			<ul class="list">
 				{#each msgs.messages as msg (msg.id)}
-					<li>
+					<li data-testid="message-row" data-message-id={msg.id}>
 						<div class="msg-head">
 							<span class="author">{msg.author}</span>
 							<span class="ts">{formatWhen(msg.timestamp)}</span>
@@ -160,11 +167,13 @@
 									value={editing[msg.id]}
 									oninput={(e) => onEditInput(msg.id, e)}
 									disabled={msgs.loading}
+									data-testid="edit-input"
 								/>
 								<button
 									type="button"
 									onclick={() => void commitEdit(msg.id)}
 									disabled={msgs.loading}
+									data-testid="btn-save"
 								>
 									Save
 								</button>
@@ -172,17 +181,19 @@
 									type="button"
 									onclick={() => cancelEdit(msg.id)}
 									disabled={msgs.loading}
+									data-testid="btn-cancel"
 								>
 									Cancel
 								</button>
 							</div>
 						{:else}
-							<p class="body">{msg.content}</p>
+							<p class="body" data-testid="message-body">{msg.content}</p>
 							<div class="msg-actions">
 								<button
 									type="button"
 									onclick={() => beginEdit(msg.id, msg.content)}
 									disabled={msgs.loading}
+									data-testid="btn-edit"
 								>
 									Edit
 								</button>
@@ -191,6 +202,7 @@
 									class="danger"
 									onclick={() => void handleDelete(msg.id)}
 									disabled={msgs.loading}
+									data-testid="btn-delete"
 								>
 									Delete
 								</button>

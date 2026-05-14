@@ -32,15 +32,29 @@
 		if (path === '/') return route.path === '/';
 		return route.path === path || route.path.startsWith(path + '/');
 	}
+
+	function testIdFor(path: string): string {
+		switch (path) {
+			case '/': return 'nav-home';
+			case '/messages': return 'nav-messages';
+			case '/log': return 'nav-activity';
+			case '/diag': return 'nav-diagnostics';
+			default: return `nav-${path.replace(/[^a-z0-9]+/gi, '-')}`;
+		}
+	}
 </script>
 
 <main>
 	<header>
 		<h1>Sereus Web Reference</h1>
-		<span class="mode-badge mode-{node.mode}">{node.mode}</span>
+		<span class="mode-badge mode-{node.mode}" data-testid="mode-badge">{node.mode}</span>
 		<nav>
 			{#each NAV as item (item.path)}
-				<a href={hrefFor(item.path)} class:active={isActive(item.path)}>
+				<a
+					href={hrefFor(item.path)}
+					class:active={isActive(item.path)}
+					data-testid={testIdFor(item.path)}
+				>
 					{item.label}
 				</a>
 			{/each}

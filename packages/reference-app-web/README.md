@@ -160,7 +160,11 @@ Polls every two seconds while the tab is visible; pauses under
   peers), per-connection peer ID / remote multiaddr / direction / open
   protocols.
 - **Transports** — names of registered libp2p transports. In a healthy
-  browser bundle this is exactly `WebSockets, circuit-relay-v2`.
+  browser bundle this is exactly two entries: one matching `websockets`
+  and one matching `circuit-relay` (current builds report
+  `@libp2p/websockets` and `@libp2p/circuit-relay-v2-transport`). No TCP
+  transport should appear — its presence indicates a Node-only dep leaked
+  into the browser bundle.
 - **FRET** — known peer count, network size estimate, churn, partition,
   Arachnode ring membership.
 - **Storage** — `IndexedDBRawStorage`, `navigator.storage.estimate()` quota
@@ -181,7 +185,8 @@ Polls every two seconds while the tab is visible; pauses under
 - **"Did my identity persist?"** Identity → Persisted should read
   `persisted ✓` and the first-seen timestamp must not change on reload.
 - **"Did Optimystic accidentally pull in TCP?"** Transports list. The
-  browser bundle must show `WebSockets, circuit-relay-v2` only.
+  browser bundle must show only a WebSockets entry and a circuit-relay
+  entry — any TCP transport means a Node-only dep slipped in.
 
 ## Vite config notes
 
@@ -221,6 +226,58 @@ shim.
 If anything fails in Firefox / Safari, capture the console error and file
 a fix ticket rather than papering it over with a shim — the same applies
 as for `crypto`.
+
+## Automated end-to-end tests
+
+A Playwright suite lives in `e2e/`. Chromium-only for now; Firefox / Safari
+are explicit non-goals at this layer.
+
+```bash
+# One-time browser install (downloads Chromium if not already cached).
+yarn workspace @serfab/reference-app-web test:e2e:install
+
+# Run the suite (builds and previews the SPA automatically).
+yarn workspace @serfab/reference-app-web test:e2e
+
+# Interactive UI mode.
+yarn workspace @serfab/reference-app-web test:e2e:ui
+```
+
+The suite splits into two tiers:
+
+- **Tier 1 — solo** (`e2e/solo/`) — always runs. Covers boot + identity
+  persistence, hash routing, messages CRUD round-trip, reload persistence,
+  and the diagnostics-surface invariants (notably the
+  `WebSockets, circuit-relay-v2` Transports list — the canary that nothing
+  pulled TCP into the browser bundle).
+- **Tier 2 — distributed** (`e2e/distributed/`) — runs only when an
+  optimystic `reference-peer` fixture is available. Covers mode flip,
+  bootstrap persistence on reload, two-tab message convergence with bounded
+  waits, cross-tab activity ordering, and disconnect-mid-session behaviour.
+
+### Tier 2 fixture resolution
+
+`e2e/global-setup.ts` resolves the fixture in this order:
+
+1. If `OPTIMYSTIC_WS_BOOTSTRAP` is set, treat it as a manually-managed
+   multiaddr and skip spawning. Use this when you want to point at a
+   custom peer.
+2. Otherwise, look for the built reference-peer CLI at
+   `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
+   spawn it on WebSocket port `9191` (offset from the README-documented
+   `9091` so a developer can keep a manual peer alongside) with the
+   `--no-tcp --relay --offline` recipe documented above.
+3. If neither path works, write a `not available` marker to
+   `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
+
+To force-build the sibling peer:
+
+```bash
+yarn --cwd ../optimystic workspace @optimystic/reference-peer build
+```
+
+Wiring this suite into CI is intentionally out of scope for the current
+ticket — it stops at "runs cleanly locally".
 
 ## Out of scope (for follow-up)
 

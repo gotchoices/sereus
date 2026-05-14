@@ -53,7 +53,10 @@
 			<dd><code>{state.identity.peerIdShort ?? '—'}</code></dd>
 			<dt>Persisted</dt>
 			<dd>
-				<span class="badge" class:ok={state.identity.persisted}
+				<span
+					class="badge"
+					class:ok={state.identity.persisted}
+					data-testid="diag-identity-persisted"
 					>{state.identity.persisted ? 'persisted ✓' : 'not persisted'}</span
 				>
 			</dd>
@@ -105,7 +108,7 @@
 							</thead>
 							<tbody>
 								{#each state.connectivity.connections as c (c.peerId + c.remoteAddr)}
-									<tr>
+									<tr data-testid="diag-connection-row" data-peer-id={c.peerId}>
 										<td>
 											<Copyable value={c.peerId} label={c.peerIdShort} />
 										</td>
@@ -138,9 +141,9 @@
 				{#if state.transports.names.length === 0}
 					<span class="muted">—</span>
 				{:else}
-					<ul class="inline">
+					<ul class="inline" data-testid="diag-transports">
 						{#each state.transports.names as name (name)}
-							<li><code>{name}</code></li>
+							<li data-transport-name={name}><code>{name}</code></li>
 						{/each}
 					</ul>
 				{/if}
@@ -217,7 +220,7 @@
 		<h3>Storage</h3>
 		<dl>
 			<dt>Backend</dt>
-			<dd><code>{state.storage.backend ?? '—'}</code></dd>
+			<dd><code data-testid="diag-storage-backend">{state.storage.backend ?? '—'}</code></dd>
 			<dt>Quota</dt>
 			<dd>{formatBytes(state.storage.quotaBytes)}</dd>
 			<dt>Origin usage</dt>
@@ -251,36 +254,56 @@
 
 	<section class="card">
 		<h3>Crypto sanity</h3>
-		<ul class="checks">
-			<li class:ok={state.crypto.cryptoSubtle}>
+		<ul class="checks" data-testid="diag-crypto">
+			<li class:ok={state.crypto.cryptoSubtle} data-check="crypto.subtle" data-ok={state.crypto.cryptoSubtle}>
 				<span class="check-icon">{state.crypto.cryptoSubtle ? '✓' : '✗'}</span>
 				<code>crypto.subtle</code>
 			</li>
-			<li class:ok={state.crypto.cryptoGetRandomValues}>
+			<li
+				class:ok={state.crypto.cryptoGetRandomValues}
+				data-check="crypto.getRandomValues"
+				data-ok={state.crypto.cryptoGetRandomValues}
+			>
 				<span class="check-icon"
 					>{state.crypto.cryptoGetRandomValues ? '✓' : '✗'}</span
 				>
 				<code>crypto.getRandomValues</code>
 			</li>
-			<li class:ok={state.crypto.eventTarget}>
+			<li class:ok={state.crypto.eventTarget} data-check="EventTarget" data-ok={state.crypto.eventTarget}>
 				<span class="check-icon">{state.crypto.eventTarget ? '✓' : '✗'}</span>
 				<code>EventTarget</code>
 			</li>
-			<li class:ok={state.crypto.promiseWithResolvers}>
+			<li
+				class:ok={state.crypto.promiseWithResolvers}
+				data-check="Promise.withResolvers"
+				data-ok={state.crypto.promiseWithResolvers}
+			>
 				<span class="check-icon"
 					>{state.crypto.promiseWithResolvers ? '✓' : '✗'}</span
 				>
 				<code>Promise.withResolvers</code>
 			</li>
-			<li class:ok={state.crypto.structuredClone}>
+			<li
+				class:ok={state.crypto.structuredClone}
+				data-check="structuredClone"
+				data-ok={state.crypto.structuredClone}
+			>
 				<span class="check-icon">{state.crypto.structuredClone ? '✓' : '✗'}</span>
 				<code>structuredClone</code>
 			</li>
-			<li class:ok={state.crypto.readableStream}>
+			<li
+				class:ok={state.crypto.readableStream}
+				data-check="ReadableStream"
+				data-ok={state.crypto.readableStream}
+			>
 				<span class="check-icon">{state.crypto.readableStream ? '✓' : '✗'}</span>
 				<code>ReadableStream</code>
 			</li>
-			<li class:ok={state.crypto.bufferGlobal}>
+			<li
+				class:ok={state.crypto.bufferGlobal}
+				data-check="globalThis.Buffer"
+				data-ok={state.crypto.bufferGlobal}
+			>
 				<span class="check-icon">{state.crypto.bufferGlobal ? '✓' : '✗'}</span>
 				<code>globalThis.Buffer</code>
 			</li>
@@ -293,9 +316,9 @@
 			<button type="button" onclick={clearErrors}>Clear</button>
 		</header>
 		{#if state.errors.length === 0}
-			<p class="muted">No errors captured.</p>
+			<p class="muted" data-testid="diag-errors" data-error-count="0">No errors captured.</p>
 		{:else}
-			<ul class="errors">
+			<ul class="errors" data-testid="diag-errors" data-error-count={state.errors.length}>
 				{#each state.errors as err, i (err.ts + ':' + i)}
 					<li>
 						<div class="err-meta">
