@@ -31,13 +31,10 @@ test.describe('Tier 1 / solo / reload persistence', () => {
 			).toBeVisible({ timeout: 15_000 });
 		}
 
-		// Activity entries rehydrate too.
+		// Activity entries rehydrate too. We don't have the message IDs here
+		// (they were server-generated), so just count `created` rows.
 		await page.getByTestId('nav-activity').click();
 		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
-		for (const _c of contents) {
-			// We don't know message IDs here — just assert the diary contains
-			// at least one created entry per sent message.
-		}
 		const createdCount = await page
 			.locator('[data-testid="activity-row"][data-action="created"]')
 			.count();

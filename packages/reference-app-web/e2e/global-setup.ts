@@ -49,7 +49,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
 			available: true,
 			multiaddr: handle.multiaddr,
 			source: 'spawned',
-			pid: process.pid,
+			pid: null,
 		});
 		console.log(`[e2e] reference-peer ready: ${handle.multiaddr}`);
 	} catch (err) {

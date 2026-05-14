@@ -247,13 +247,19 @@ The suite splits into two tiers:
 
 - **Tier 1 — solo** (`e2e/solo/`) — always runs. Covers boot + identity
   persistence, hash routing, messages CRUD round-trip, reload persistence,
-  and the diagnostics-surface invariants (notably the
-  `WebSockets, circuit-relay-v2` Transports list — the canary that nothing
-  pulled TCP into the browser bundle).
+  and the diagnostics-surface invariants (notably the two-transport
+  Transports list — the canary that nothing pulled TCP into the browser
+  bundle).
 - **Tier 2 — distributed** (`e2e/distributed/`) — runs only when an
   optimystic `reference-peer` fixture is available. Covers mode flip,
   bootstrap persistence on reload, two-tab message convergence with bounded
   waits, cross-tab activity ordering, and disconnect-mid-session behaviour.
+
+> **Tier 2 is currently red.** The browser flips to `distributed` but the
+> libp2p dial never settles — `node.getConnections()` stays at zero. The
+> upstream `interactive` command does not declare an `--offline` flag, so
+> the spawned bootstrap comes up as a multi-node `Distributed` cluster the
+> browser cannot join. Tracked in `tickets/fix/web-e2e-tier2-connectivity`.
 
 ### Tier 2 fixture resolution
 
@@ -265,8 +271,9 @@ The suite splits into two tiers:
 2. Otherwise, look for the built reference-peer CLI at
    `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
    spawn it on WebSocket port `9191` (offset from the README-documented
-   `9091` so a developer can keep a manual peer alongside) with the
-   `--no-tcp --relay --offline` recipe documented above.
+   `9091` so a developer can keep a manual peer alongside) with
+   `interactive --no-tcp --relay`. (The plan asked for `--offline` too —
+   see the known-issue note above.)
 3. If neither path works, write a `not available` marker to
    `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
 

@@ -17,18 +17,19 @@ export interface ReferencePeerHandle {
  * Rejects after `startupTimeoutMs` (default 30s) so the suite fails fast
  * instead of hanging.
  *
- * The peer is launched with `--no-tcp --relay --offline` to match the
- * documented browser-only bootstrap recipe.
+ * Spawn args: `interactive --ws-port <N> --no-tcp --relay`. The plan ticket
+ * called for `--offline` as well, but the optimystic `interactive` command
+ * does not declare that flag today (only `service`/`run` do). Adding it
+ * here would make commander reject the spawn. The browser cannot dial-and-
+ * bootstrap into a single-node Distributed cluster, which is why every
+ * Tier 2 spec currently fails at the connection-row poll — see the
+ * `web-e2e-tier2-connectivity` ticket for the upstream fix.
  */
 export function spawnReferencePeer(
 	options: SpawnReferencePeerOptions,
 ): Promise<ReferencePeerHandle> {
 	const { cliPath, wsPort, startupTimeoutMs = 30_000 } = options;
 	return new Promise((resolvePromise, rejectPromise) => {
-		// `--offline` was deprecated on the interactive command (older docs
-		// reference it). With no bootstrap arg supplied the peer comes up as
-		// a self-contained network that the browser tabs can dial. If a future
-		// optimystic release reintroduces `--offline`, add it back here.
 		const child: ChildProcess = spawn(
 			process.execPath,
 			[
