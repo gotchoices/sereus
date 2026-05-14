@@ -24,6 +24,7 @@ interface OptimysticPluginResult {
   collectionFactory: CollectionFactory;
   vtables: Array<{ name: string; module: unknown; auxData: unknown }>;
   functions: Array<{ schema: unknown }>;
+  hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
   [key: string]: unknown;
 }
 
@@ -156,6 +157,20 @@ export class StrandDatabase {
     });
     timing('[strandDb:%s] setDefaultVtab: %dms', sid, Math.round(performance.now() - t0));
     log('Set default vtab to optimystic (networkName=%s, transactor=%s)', networkName, defaultTransactor);
+
+    // Hydrate Quereus's catalog from any persisted optimystic vtab schemas
+    // before running `apply schema App;`. Without this, a warm restart diffs
+    // the wrapped DDL against an empty catalog and re-emits CREATE TABLE /
+    // CREATE INDEX for every persisted object — which round-trips through
+    // optimystic storage and is the cause of the ~160s warm-start regression
+    // tracked in strand-database-must-hydrate-catalog-before-apply-schema.
+    // No-op on first launch (empty storage).
+    t0 = performance.now();
+    const hydrated = await pluginResult.hydrate(this.db);
+    timing('[strandDb:%s] hydrate: %dms (tables=%d, indexes=%d)',
+      sid, Math.round(performance.now() - t0), hydrated.tables, hydrated.indexes);
+    log('Hydrated catalog for strand %s (tables=%d, indexes=%d)',
+      sid, hydrated.tables, hydrated.indexes);
 
     // Execute the sApp schema DDL
     t0 = performance.now();
