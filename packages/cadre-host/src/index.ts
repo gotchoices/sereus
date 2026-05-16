@@ -26,3 +26,6 @@ export type {
   ContainerStatus,
   ContainerResources,
 } from '@serfab/cadre-provider';
+
+export { HostProcessOrchestrator } from './orchestrator/index.js';
+export type { HostProcessConfig, PersistedHandle } from './orchestrator/index.js';

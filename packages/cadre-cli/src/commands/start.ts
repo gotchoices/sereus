@@ -1,3 +1,4 @@
+import { writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 import debug from 'debug';
 import { CadreNode, type CadreNodeConfig, type ControlNetworkSeed, type StorageConfig } from '@serfab/cadre-core';
@@ -54,6 +55,7 @@ export const startCommand = new Command('start')
   .option('--seed <encoded>', 'Apply a base64url-encoded seed on startup')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
+  .option('--startup-token-file <path>', 'After successful node.start(), write $CADRE_STARTUP_TOKEN to this file. Used by external orchestrators to verify the spawned child is the one they expected (vs a recycled PID).')
   .action(async (options) => {
     if (options.debug) {
       debug.enable('cadre:*,sereus:*');
@@ -165,6 +167,17 @@ export const startCommand = new Command('start')
 
       // Start the node
       await node.start();
+
+      // Write startup-token file once the node is healthy. External orchestrators
+      // (e.g. cadre-host's HostProcessOrchestrator) use this to confirm the
+      // running PID is the child they spawned and not a recycled one.
+      if (options.startupTokenFile) {
+        const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+        if (token.length > 0) {
+          writeFileSync(options.startupTokenFile, token, { encoding: 'utf8' });
+          log('Wrote startup token to %s', options.startupTokenFile);
+        }
+      }
 
       // Enable seed listener if requested
       if (options.listenForSeeds) {

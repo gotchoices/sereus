@@ -41,16 +41,20 @@
   "devDependencies": {
     "@types/debug": "^4.1.12",
     "@types/node": "^25.0.10",
+    "@types/pidusage": "^2.0.5",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
   },
   "dependencies": {
+    "@serfab/cadre-cli": "workspace:^",
     "@serfab/cadre-core": "workspace:^",
     "@serfab/cadre-provider": "workspace:^",
     "commander": "^14.0.2",
     "debug": "^4.4.3",
-    "fastify": "^5.7.1"
+    "fastify": "^5.7.1",
+    "nanoid": "^5.1.6",
+    "pidusage": "^4.0.1"
   },
   "engines": {
     "node": ">=18"

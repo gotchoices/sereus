@@ -5175,7 +5175,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@serfab/cadre-cli@workspace:packages/cadre-cli":
+"@serfab/cadre-cli@workspace:^, @serfab/cadre-cli@workspace:packages/cadre-cli":
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-cli@workspace:packages/cadre-cli"
   dependencies:
@@ -5231,13 +5231,17 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-host@workspace:packages/cadre-host"
   dependencies:
+    "@serfab/cadre-cli": "workspace:^"
     "@serfab/cadre-core": "workspace:^"
     "@serfab/cadre-provider": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
+    "@types/pidusage": "npm:^2.0.5"
     commander: "npm:^14.0.2"
     debug: "npm:^4.4.3"
     fastify: "npm:^5.7.1"
+    nanoid: "npm:^5.1.6"
+    pidusage: "npm:^4.0.1"
     rimraf: "npm:^6.1.2"
     typescript: "npm:^5.9.3"
     vitest: "npm:^4.0.17"
@@ -5931,6 +5935,13 @@ __metadata:
   version: 4.0.2
   resolution: "@types/parse-json@npm:4.0.2"
   checksum: 10c0/b1b863ac34a2c2172fbe0807a1ec4d5cb684e48d422d15ec95980b81475fac4fdb3768a8b13eef39130203a7c04340fc167bae057c7ebcafd7dec9fe6c36aeb1
+  languageName: node
+  linkType: hard
+
+"@types/pidusage@npm:^2.0.5":
+  version: 2.0.5
+  resolution: "@types/pidusage@npm:2.0.5"
+  checksum: 10c0/f4add16388280410604254c91499b873f95c98146c0a8016e09733d3d5c4362b7a5f56e2f1a5e9677772ab97ac37ffb1194d3ad43f872364d9d86856d4db414c
   languageName: node
   linkType: hard
 
@@ -17464,6 +17475,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"pidusage@npm:^4.0.1":
+  version: 4.0.1
+  resolution: "pidusage@npm:4.0.1"
+  dependencies:
+    safe-buffer: "npm:^5.2.1"
+  checksum: 10c0/d80984af6818d7f53c34dcb1e6d16de26230409e41b1a6ae01391a5b15e69b6c7b21d76b1362709e0ee1b5fb65744969c0c45d0a836571e1d059299b5776ab08
+  languageName: node
+  linkType: hard
+
 "pify@npm:^3.0.0":
   version: 3.0.0
   resolution: "pify@npm:3.0.0"
@@ -19146,7 +19166,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"safe-buffer@npm:5.2.1, safe-buffer@npm:^5.1.0, safe-buffer@npm:~5.2.0":
+"safe-buffer@npm:5.2.1, safe-buffer@npm:^5.1.0, safe-buffer@npm:^5.2.1, safe-buffer@npm:~5.2.0":
   version: 5.2.1
   resolution: "safe-buffer@npm:5.2.1"
   checksum: 10c0/6501914237c0a86e9675d4e51d89ca3c21ffd6a31642efeba25ad65720bce6921c9e7e974e5be91a786b25aa058b5303285d3c15dbabf983a919f5f630d349f3
