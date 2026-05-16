@@ -8,7 +8,7 @@ A **cadre** is a party's personal cluster of nodes that collectively represent t
 
 - **Unified control**: A single control network through which a party manages all their nodes
 - **Strand participation**: Automatic lifecycle management for joining, syncing, and leaving strand networks
-- **Flexible deployment**: Support for self-hosted nodes, provider-hosted containers, and mobile devices
+- **Flexible deployment**: Support for self-hosted nodes (see [@serfab/cadre-host](cadre-host.md) for basement-PC deployments), provider-hosted containers, and mobile devices
 - **Key-based authorization**: Cryptographic authority delegation without central servers
 
 ```mermaid
@@ -602,9 +602,11 @@ graph TD
     CLI["<b>@serfab/cadre-cli</b><br/>CLI wrapper for servers"]
     MOB["<b>Mobile integration</b><br/>React Native / NativeScript"]
     CTR["<b>Container runtime</b><br/>Docker entrypoint, health checks,<br/>provider enrollment"]
+    HOST["<b>@serfab/cadre-host</b><br/>Self-hosted basement-PC deployments<br/>— see cadre-host.md"]
     CC --> CLI
     CC --> MOB
     CC --> CTR
+    CC --> HOST
     CC -.->|depends on| DEP["@optimystic/db-p2p · @quereus/quereus<br/>@optimystic/fret · @serfab/strand-proto"]
 ```
 
@@ -821,6 +823,11 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 - Provider API: container CRUD, billing plans/status, seed delivery, peer info
 - Billing integration: usage metering, Stripe-ready hooks, quota enforcement
 - Orchestration: Docker orchestrator, mock orchestrator, pluggable interface
+
+### `@serfab/cadre-host` (Foundation)
+
+- Workspace package skeleton with CLI shell (`install`, `start`, `status`, `invite`, `uninstall` — all stubs) and re-exports of the orchestrator + container lifecycle types from `@serfab/cadre-provider`.
+- Orchestrator, trust-circle auth, NAT layer, installer, and local UI implementations forthcoming in the `cadre-host-*` ticket set. See [cadre-host.md](cadre-host.md).
 
 ### Testing (127 tests passing)
 

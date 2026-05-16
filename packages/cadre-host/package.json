@@ -1,0 +1,60 @@
+{
+  "name": "@serfab/cadre-host",
+  "version": "0.6.0",
+  "type": "module",
+  "description": "Self-hosted cadre node manager for basement-PC deployments",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": "dist/bin/host.js",
+  "files": [
+    "src",
+    "dist",
+    "!dist/test",
+    "!**/*.tsbuildinfo"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/gotchoices/sereus.git",
+    "directory": "packages/cadre-host"
+  },
+  "keywords": [
+    "sereus",
+    "cadre",
+    "host",
+    "self-hosted",
+    "p2p",
+    "trust-circle"
+  ],
+  "scripts": {
+    "clean": "rimraf dist",
+    "build": "tsc -p tsconfig.build.json",
+    "test": "vitest run --passWithNoTests",
+    "dev:test": "vitest",
+    "start": "node dist/bin/host.js"
+  },
+  "devDependencies": {
+    "@types/debug": "^4.1.12",
+    "@types/node": "^25.0.10",
+    "rimraf": "^6.1.2",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.17"
+  },
+  "dependencies": {
+    "@serfab/cadre-core": "workspace:^",
+    "@serfab/cadre-provider": "workspace:^",
+    "commander": "^14.0.2",
+    "debug": "^4.4.3",
+    "fastify": "^5.7.1"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "author": "",
+  "license": "MIT"
+}

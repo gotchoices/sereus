@@ -5227,7 +5227,26 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@serfab/cadre-provider@workspace:packages/cadre-provider":
+"@serfab/cadre-host@workspace:packages/cadre-host":
+  version: 0.0.0-use.local
+  resolution: "@serfab/cadre-host@workspace:packages/cadre-host"
+  dependencies:
+    "@serfab/cadre-core": "workspace:^"
+    "@serfab/cadre-provider": "workspace:^"
+    "@types/debug": "npm:^4.1.12"
+    "@types/node": "npm:^25.0.10"
+    commander: "npm:^14.0.2"
+    debug: "npm:^4.4.3"
+    fastify: "npm:^5.7.1"
+    rimraf: "npm:^6.1.2"
+    typescript: "npm:^5.9.3"
+    vitest: "npm:^4.0.17"
+  bin:
+    cadre-host: dist/bin/host.js
+  languageName: unknown
+  linkType: soft
+
+"@serfab/cadre-provider@workspace:^, @serfab/cadre-provider@workspace:packages/cadre-provider":
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-provider@workspace:packages/cadre-provider"
   dependencies:

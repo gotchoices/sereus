@@ -28,11 +28,12 @@
     "typecheck": "yarn workspaces foreach -A run typecheck",
     "bump": "bumpp --recursive",
     "release": "yarn bump && yarn pub",
-    "pub": "yarn pub:strand-proto && yarn pub:cadre-core && yarn pub:cadre-cli && yarn pub:cadre-provider",
+    "pub": "yarn pub:strand-proto && yarn pub:cadre-core && yarn pub:cadre-cli && yarn pub:cadre-provider && yarn pub:cadre-host",
     "pub:strand-proto": "node scripts/publish-package.js strand-proto",
     "pub:cadre-core": "node scripts/publish-package.js cadre-core",
     "pub:cadre-cli": "node scripts/publish-package.js cadre-cli",
     "pub:cadre-provider": "node scripts/publish-package.js cadre-provider",
+    "pub:cadre-host": "node scripts/publish-package.js cadre-host",
     "upgrade:optimystic": "ncu -u --workspaces --filter '/@optimystic/.*/'",
     "upgrade:quereus": "ncu -u --workspaces --filter '/@quereus/.*/'"
   },
