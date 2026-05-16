@@ -11,7 +11,14 @@ npm install -g @serfab/cadre-host
 cadre-host install
 ```
 
-The full installer (service-host integration, first-run trust-circle setup, NAT bootstrap) is arriving in a follow-up release. At this stage the CLI commands print "not yet implemented" — the package establishes the surface that sibling tickets (`cadre-host-process-orchestrator`, `cadre-host-trust-circle`, `cadre-host-nat`, `cadre-host-installer`, `cadre-host-local-ui`) plug into.
+The full installer (service-host integration, first-run trust-circle setup, NAT bootstrap) is arriving in a follow-up release.
+
+At this stage:
+
+- `cadre-host invite <label>` issues a trust-circle invite via the running management API. See [docs/cadre-host.md](../../docs/cadre-host.md#trust-circle) for the lifecycle.
+- `cadre-host trust list` and `cadre-host trust revoke <token-or-peerId>` round out trust-circle management.
+- `HostProcessOrchestrator` runs cadre nodes as native child processes.
+- `install`, `start`, `status`, and `uninstall` still print "not yet implemented", pending the `cadre-host-nat`, `cadre-host-installer`, and `cadre-host-local-ui` tickets.
 
 ## More
 

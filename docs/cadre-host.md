@@ -72,6 +72,24 @@ The host process itself is not addressable from the public internet. The NAT lay
 
 The trust-circle invite flow lives in `cadre-host-trust-circle` and reuses the seed bootstrap and invite primitives from cadre-core.
 
+## Trust circle
+
+The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top:
+
+- **Labels** — human-readable display names (`"Mom's phone"`, `"My laptop"`) assigned by the host admin. Display-only; loss just shows the bare peer ID.
+- **Pending invites** — tokens that have been issued but not yet redeemed. Operational state; lives on the issuing node only.
+
+Both live in `<rootDir>/trust-circle.json`, written atomically (write-then-rename). If a future ticket wants cross-device label replication, a new `CadreMemberLabel` table can be added to the control schema; for now labels stay local.
+
+### Lifecycle
+
+1. **Issue** — `cadre-host invite "Mom's phone"` (or the management API's `POST /auth/invites`) generates a base64url token, asks cadre-core to mint a `CadreInvite` carrying the host's dialable addresses, persists a pending row, and prints the encoded invite. Default TTL is 24 h; override with `--ttl 7d`.
+2. **Deliver** — the encoded invite is shipped out-of-band (QR code rendered by the local UI, copy/paste, etc.).
+3. **Redeem** — the recipient's cadre node dials in via cadre-core's `dialInvite`/`acceptPhone` flow. Cadre-host's `redeemInvite` validates the token against the pending row, calls `acceptPhone` (which authorizes the peer in `CadrePeer`), then atomically consumes the pending row and writes a labelled member row. One-time use is enforced by removing the pending row on first redemption.
+4. **Revoke / remove** — `cadre-host trust revoke <token>` deletes a pending invite before it's redeemed; `cadre-host trust revoke <peerId>` removes an authorised member (deletes the `CadrePeer` row via a signed delete, then the local label).
+
+In v1 the management-API surface is localhost-only (`127.0.0.1`), so redemption assumes the recipient is on the same machine as the host or on the LAN reaching it. Cross-WAN redemption via the management API requires a future cadre-host-over-P2P ticket.
+
 ## Architecture sketch
 
 ```mermaid
@@ -99,10 +117,12 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 **v0.x foundation.** This release contains:
 
 - Workspace package skeleton (`packages/cadre-host/`).
-- CLI shell with `install`, `start`, `status`, `invite`, `uninstall` subcommands — all currently print "not yet implemented" and exit 0.
+- `HostProcessOrchestrator` — runs cadre nodes as native child processes.
+- `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
+- CLI: `invite <label>` (real), `trust list`, `trust revoke`; `install`, `start`, `status`, `uninstall` still print "not yet implemented" pending their tickets.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
-The orchestrator, trust-circle auth, NAT layer, installer, and local UI implementations are forthcoming in the `cadre-host-*` ticket set. Until those land, `cadre-host` is not yet runnable as a real service; the bin exists to anchor packaging and CLI shape.
+The NAT layer, installer, and local UI implementations are forthcoming in the `cadre-host-nat`, `cadre-host-installer`, and `cadre-host-local-ui` tickets. Until those land, `cadre-host` is not yet runnable end-to-end as a service.
 
 ## See also
 

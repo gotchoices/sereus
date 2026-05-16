@@ -11,8 +11,8 @@
  * layer, installer scripts, and the local UI live in sibling subdirectories
  * under src/ and are added by their respective tickets:
  *
- *   - cadre-host-process-orchestrator
- *   - cadre-host-trust-circle
+ *   - cadre-host-process-orchestrator     [DONE]
+ *   - cadre-host-trust-circle             [DONE]
  *   - cadre-host-nat
  *   - cadre-host-installer
  *   - cadre-host-local-ui
@@ -29,3 +29,22 @@ export type {
 
 export { HostProcessOrchestrator } from './orchestrator/index.js';
 export type { HostProcessConfig, PersistedHandle } from './orchestrator/index.js';
+
+export {
+  TrustCircleService,
+  TrustCircleStore,
+  TrustCircleError,
+  createTrustCircleHandlers,
+  parseDuration,
+  DEFAULT_INVITE_TTL_MS,
+} from './auth/index.js';
+export type {
+  TrustCircleServiceOptions,
+  CadreNodeLike,
+  TrustCircleMember,
+  PendingInvite,
+  TrustCircleFile,
+  TrustCircleSnapshot,
+  TrustCircleHandlers,
+  TrustCircleErrorCode,
+} from './auth/index.js';

@@ -154,8 +154,46 @@ export class SeedBootstrapService {
         with context AuthorityKey = ?, Signature = ?
         values (?, ?)
     `, [this.authorityPublicKey, signature, peerId, multiaddrStr]);
-    
+
     log('Peer %s authorized successfully', peerId);
+  }
+
+  /**
+   * Remove a peer from the cadre by authority signature.
+   *
+   * The constraint over CadrePeer's `check on insert, delete` validates a
+   * signature over `digest(old.PeerId, 'sha256', 'utf8')` by an authority
+   * key. We use the same digest pattern as authorizePeer.
+   */
+  async removePeer(peerId: string): Promise<void> {
+    if (!this.config.authorityPrivateKey) {
+      throw new Error('Authority private key required to remove peers');
+    }
+
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+
+    log('Removing peer: %s', peerId);
+
+    const peerIdDigest = digest(peerId, 'sha256', 'utf8', 'base64url') as string;
+    const signature = sign(
+      peerIdDigest,
+      this.config.authorityPrivateKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    ) as string;
+
+    const db = this.controlDatabase.getDatabase();
+    await db.exec(`
+      delete from CadreControl.CadrePeer
+        with context AuthorityKey = ?, Signature = ?
+        where PeerId = ?
+    `, [this.authorityPublicKey, signature, peerId]);
+
+    log('Peer %s removed successfully', peerId);
   }
 
   /**

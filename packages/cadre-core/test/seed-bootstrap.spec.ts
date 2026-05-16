@@ -551,5 +551,19 @@ describe('SeedBootstrapService Helper Methods', () => {
       ).rejects.toThrow('Invalid invite token');
     });
   });
+
+  describe('removePeer', () => {
+    it('requires an authority private key', async () => {
+      const service = new SeedBootstrapService({ partyId });
+      await expect(service.removePeer('12D3KooWTestPeer'))
+        .rejects.toThrow('Authority private key required');
+    });
+
+    it('requires the control database to be initialized', async () => {
+      const service = new SeedBootstrapService({ partyId, authorityPrivateKey });
+      await expect(service.removePeer('12D3KooWTestPeer'))
+        .rejects.toThrow('Control database not initialized');
+    });
+  });
 });
 

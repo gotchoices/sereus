@@ -661,6 +661,19 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Remove a previously-authorized peer from the cadre.
+   * Signs the peer ID with the authority key and deletes the CadrePeer row.
+   *
+   * @param peerId - The peer ID to remove
+   */
+  async removePeer(peerId: string): Promise<void> {
+    if (!this.seedBootstrapService) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    await this.seedBootstrapService.removePeer(peerId);
+  }
+
+  /**
    * Create a seed from the current control network state.
    * The seed contains peer information and is signed by an authority.
    */
