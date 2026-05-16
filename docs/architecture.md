@@ -770,6 +770,7 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 - [Strand Management](strands.md) - Strand concepts and negotiation
 - [Bootstrap Protocol](strand-proto.md) - Formation protocol details
 - [API Specification](api.md) - Cadre peer authorization API
+- [Cadre Consistency Model](cadre-consistency.md) - Design exploration: async Right-is-Right + transactional Sync for the control network
 
 ### Schemas
 
