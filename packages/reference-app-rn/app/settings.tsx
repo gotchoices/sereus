@@ -193,7 +193,7 @@ function LabelledInput(props: { label: string; value: string; onChangeText: (t: 
 
 function Btn({ label, onPress, disabled, color, testID }: { label: string; onPress: () => void; disabled?: boolean; color?: string; testID?: string }) {
   return (
-    <Pressable style={[styles.btn, { backgroundColor: color ?? '#6c63ff' }, disabled && styles.btnDisabled]} onPress={onPress} disabled={disabled} testID={testID} accessibilityLabel={testID ?? label}>
+    <Pressable style={[styles.btn, { backgroundColor: color ?? '#6c63ff' }, disabled && styles.btnDisabled]} onPress={onPress} disabled={disabled} testID={testID}>
       <Text style={styles.btnText}>{label}</Text>
     </Pressable>
   );

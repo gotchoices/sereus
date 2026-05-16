@@ -113,7 +113,6 @@ export default function ChatScreen() {
           onPress={handleSend}
           disabled={!draft.trim()}
           testID={TEST_IDS.chat.sendBtn}
-          accessibilityLabel={TEST_IDS.chat.sendBtn}
         >
           <Text style={styles.sendText}>Send</Text>
         </Pressable>
