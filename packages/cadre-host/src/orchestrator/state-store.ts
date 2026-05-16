@@ -1,5 +1,8 @@
 import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
+import debug from 'debug';
+
+const log = debug('cadre:host:state-store');
 
 /**
  * Persisted record for a single managed child. The orchestrator mirrors its
@@ -42,10 +45,15 @@ export class StateStore {
       const raw = readFileSync(this.path, 'utf8');
       const parsed = JSON.parse(raw) as PersistedState;
       if (!parsed || typeof parsed !== 'object' || !Array.isArray(parsed.handles)) {
+        log('state file at %s has unexpected shape; treating as empty', this.path);
         return { version: STATE_VERSION, handles: [] };
       }
       return { version: STATE_VERSION, handles: parsed.handles };
-    } catch {
+    } catch (err) {
+      // A corrupt state file is operationally significant — surviving children
+      // may now be leaked to the OS without an in-memory handle. Make the
+      // failure visible rather than silently returning empty.
+      log('failed to load state file at %s: %o', this.path, err);
       return { version: STATE_VERSION, handles: [] };
     }
   }
