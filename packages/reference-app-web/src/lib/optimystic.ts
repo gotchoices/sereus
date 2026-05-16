@@ -150,6 +150,12 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 		storage,
 		transports: [webSockets(), circuitRelayTransport()],
 		listenAddrs: [],
+		// libp2p's browser default gater denies insecure ws:// and private/loopback
+		// addresses, which blocks dialing a local reference-peer fixture
+		// (`/ip4/127.0.0.1/.../ws/...`). Lift both restrictions — the bootstrap
+		// multiaddr is user-supplied here, not arbitrary, so the security
+		// rationale for the default does not apply.
+		connectionGater: { denyDialMultiaddr: () => false },
 	};
 
 	const created = await createLibp2pNode(config);

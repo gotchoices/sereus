@@ -12,9 +12,3 @@ The profile distinction between `transaction` and `storage` currently has no rea
 
 ## Blocked on
 - Arachnode storage ring system design and implementation
-
-## TODO
-- [ ] Integrate Ring Zulu participation into CadreNode start
-- [ ] Implement storage ring opt-in based on profile and capacity
-- [ ] Map CadreNodeConfig.profile to actual ring participation
-- [ ] Update FRET profile hints to reflect real ring membership

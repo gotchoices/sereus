@@ -15,9 +15,3 @@ Once Arachnode is available, quota enforcement should:
 
 ## Blocked on
 - Arachnode storage ring system design and implementation
-
-## TODO
-- [ ] Implement per-strand storage tracking
-- [ ] Enforce quotaBytes limit in storage ring participation
-- [ ] Report storage usage via provider status endpoint
-- [ ] Integrate with cadre-provider billing metering

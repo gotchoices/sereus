@@ -14,11 +14,3 @@ Stress-test strand formation, replication fan-out, and convergence under load by
 ### Infrastructure
 - Parameterized party spawner: creates N cadre pairs (start with 5, target 20+)
 - Extends the multi-party test orchestrator
-
-## TODO
-- [ ] Build parameterized party spawner script
-- [ ] Implement fan-out open strand test
-- [ ] Implement pairwise closed strand formation test
-- [ ] Implement multi-strand per party test
-- [ ] Implement churn test
-- [ ] Add metrics instrumentation

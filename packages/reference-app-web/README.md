@@ -255,12 +255,6 @@ The suite splits into two tiers:
   bootstrap persistence on reload, two-tab message convergence with bounded
   waits, cross-tab activity ordering, and disconnect-mid-session behaviour.
 
-> **Tier 2 is currently red.** The browser flips to `distributed` but the
-> libp2p dial never settles — `node.getConnections()` stays at zero. The
-> upstream `interactive` command does not declare an `--offline` flag, so
-> the spawned bootstrap comes up as a multi-node `Distributed` cluster the
-> browser cannot join. Tracked in `tickets/fix/web-e2e-tier2-connectivity`.
-
 ### Tier 2 fixture resolution
 
 `e2e/global-setup.ts` resolves the fixture in this order:
@@ -272,8 +266,8 @@ The suite splits into two tiers:
    `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
    spawn it on WebSocket port `9191` (offset from the README-documented
    `9091` so a developer can keep a manual peer alongside) with
-   `interactive --no-tcp --relay`. (The plan asked for `--offline` too —
-   see the known-issue note above.)
+   `interactive --no-tcp --relay --offline` so the peer comes up as a
+   single-node `LocalTransactor` the browser tab can actually dial.
 3. If neither path works, write a `not available` marker to
    `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
 

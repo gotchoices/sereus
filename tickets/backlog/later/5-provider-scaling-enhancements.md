@@ -9,8 +9,3 @@ The provider service (`@serfab/cadre-provider`) has core functionality complete.
 - **Multi-region deployment**: geo-distributed provider nodes for latency and redundancy
 
 These are low priority and can be deferred until the core system is battle-tested.
-
-## TODO
-- [ ] Research Kubernetes operator patterns for container lifecycle
-- [ ] Design auto-scaling triggers and thresholds
-- [ ] Design multi-region topology and data routing

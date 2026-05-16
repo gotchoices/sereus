@@ -11,20 +11,7 @@ export interface ReferencePeerHandle {
 	stop(): Promise<void>;
 }
 
-/**
- * Spawn the optimystic reference-peer in interactive mode with a WebSocket
- * listener. Resolves once the peer logs its `/ws/p2p/<peerId>` multiaddr.
- * Rejects after `startupTimeoutMs` (default 30s) so the suite fails fast
- * instead of hanging.
- *
- * Spawn args: `interactive --ws-port <N> --no-tcp --relay`. The plan ticket
- * called for `--offline` as well, but the optimystic `interactive` command
- * does not declare that flag today (only `service`/`run` do). Adding it
- * here would make commander reject the spawn. The browser cannot dial-and-
- * bootstrap into a single-node Distributed cluster, which is why every
- * Tier 2 spec currently fails at the connection-row poll — see the
- * `web-e2e-tier2-connectivity` ticket for the upstream fix.
- */
+// Spawn args: `interactive --ws-port N --no-tcp --relay --offline` — single-node LocalTransactor so the browser can dial without a quorum.
 export function spawnReferencePeer(
 	options: SpawnReferencePeerOptions,
 ): Promise<ReferencePeerHandle> {
@@ -39,6 +26,7 @@ export function spawnReferencePeer(
 				String(wsPort),
 				'--no-tcp',
 				'--relay',
+				'--offline',
 			],
 			{
 				stdio: ['ignore', 'pipe', 'pipe'],
