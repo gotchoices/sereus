@@ -1,0 +1,29 @@
+
+[1m[46m RUN [49m[22m [36mv4.0.17 [39m[90mC:/projects/sereus/packages/cadre-provider[39m
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mPOST /containers triggers shutdown on success
+[22m[39mCadre Provider shutting down: shutdownAfter: POST /containers
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mDELETE /containers/:id with body {shutdownAfter:true} triggers shutdown on success
+[22m[39mCadre Provider shutting down: shutdownAfter: DELETE /containers/ctr_1w0U36-GQRpKDiYB
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mDELETE /containers/:id?shutdownAfter=true (query form) triggers shutdown
+[22m[39mCadre Provider shutting down: shutdownAfter: DELETE /containers/ctr_nxEflm_7XF_hY0F_
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mDELETE: body wins over query — body:true, query:false → shutdown
+[22m[39mCadre Provider shutting down: shutdownAfter: DELETE /containers/ctr_yIDaqY7SUuXF6WQW
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mrequestShutdown is idempotent — second call is a no-op
+[22m[39mCadre Provider shutting down: first
+
+[90mstdout[2m | src/server/__tests__/shutdown-after.test.ts[2m > [22m[2mshutdownAfter flag[2m > [22m[2mcaps app.close() at the 5s drain timeout
+[22m[39mCadre Provider shutting down: cap-test
+
+ [32m✓[39m src/server/__tests__/shutdown-after.test.ts [2m([22m[2m10 tests[22m[2m)[22m[33m 5542[2mms[22m[39m
+     [33m[2m✓[22m[39m caps app.close() at the 5s drain timeout [33m 5012[2mms[22m[39m
+
+[2m Test Files [22m [1m[32m1 passed[39m[22m[90m (1)[39m
+[2m      Tests [22m [1m[32m10 passed[39m[22m[90m (10)[39m
+[2m   Start at [22m 15:50:28
+[2m   Duration [22m 5.95s[2m (transform 99ms, setup 0ms, import 293ms, tests 5.54s, environment 0ms)[22m
+
