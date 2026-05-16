@@ -149,6 +149,48 @@ docker run -p 3000:3000 -v /var/run/docker.sock:/var/run/docker.sock cadre-provi
 
 For Kubernetes deployments, implement a custom orchestrator or use the Docker orchestrator with Docker-in-Docker.
 
+### One-shot mode
+
+Both `POST /containers` and `DELETE /containers/:id` accept a
+`shutdownAfter: true` flag. When set, the provider responds normally,
+then gracefully exits the process after the response flushes. This is
+intended for batch jobs, CI tasks, and managed orchestrators (e.g.
+Kubernetes Jobs) that provision a single container and exit.
+
+Shutdown only fires when the operation actually succeeds: quota errors,
+authentication failures, ownership mismatches, and orchestrator errors
+all return their normal error response and the process stays up.
+
+```bash
+# Provision then exit
+curl -X POST $URL/api/v1/containers \
+  -H 'Authorization: Bearer ...' \
+  -d '{"partyId":"...","bootstrapNodes":["..."],"shutdownAfter":true}'
+
+# Terminate then exit (body form)
+curl -X DELETE $URL/api/v1/containers/$ID \
+  -H 'Authorization: Bearer ...' \
+  -d '{"shutdownAfter":true}'
+
+# Terminate then exit (query form, for clients that avoid DELETE bodies)
+curl -X DELETE "$URL/api/v1/containers/$ID?shutdownAfter=true" \
+  -H 'Authorization: Bearer ...'
+```
+
+On success the response body carries `"shutdownInitiated": true` so the
+caller can confirm the flag was honored (the actual shutdown is
+observed by the connection closing).
+
+For supervised one-shot runs use the unit files under
+[`service/`](./service):
+
+- Linux: [`cadre-provider.service`](./service/cadre-provider.service) (systemd, `RestartPreventExitStatus=0`)
+- macOS: [`com.serfab.cadre-provider.plist`](./service/com.serfab.cadre-provider.plist) (launchd, `SuccessfulExit=false`)
+- Windows: [`install-service.ps1`](./service/install-service.ps1) (NSSM, `AppExit 0 Exit`)
+
+All three are configured so a clean exit (code 0) is final — the host
+won't restart the provider after it gracefully shuts down.
+
 ## License
 
 MIT

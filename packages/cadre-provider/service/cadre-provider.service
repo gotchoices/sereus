@@ -1,0 +1,22 @@
+[Unit]
+Description=Sereus Cadre Provider
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/node /opt/cadre-provider/dist/bin/provider.js start -c /etc/cadre-provider/provider.yaml
+Restart=on-failure
+RestartPreventExitStatus=0
+RestartSec=5s
+User=cadre-provider
+Group=cadre-provider
+SupplementaryGroups=docker
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/cadre-provider /var/log/cadre-provider
+
+[Install]
+WantedBy=multi-user.target

@@ -44,16 +44,9 @@ program
       // Create and start server
       const server = await createProviderServer({ config });
 
-      // Handle graceful shutdown
-      const shutdown = async () => {
-        console.log('\nShutting down...');
-        await server.stop();
-        console.log('Provider service stopped.');
-        process.exit(0);
-      };
-
-      process.on('SIGINT', shutdown);
-      process.on('SIGTERM', shutdown);
+      // Handle graceful shutdown via the single sequence on the server
+      process.on('SIGINT', () => server.requestShutdown('signal: SIGINT'));
+      process.on('SIGTERM', () => server.requestShutdown('signal: SIGTERM'));
 
       await server.start();
 

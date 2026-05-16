@@ -16,6 +16,9 @@ import { registerAuth, type AuthHooks } from './auth.js';
 
 const log = debug('cadre:provider:server');
 
+/** Hard cap on Fastify's drain phase during shutdown */
+const SHUTDOWN_DRAIN_TIMEOUT_MS = 5000;
+
 /** Provider server options */
 export interface ProviderServerOptions {
   /** Full configuration */
@@ -28,6 +31,11 @@ export interface ProviderServerOptions {
   orchestrator?: Orchestrator;
   /** Custom store (for testing) */
   store?: ProviderStore;
+  /**
+   * Process-exit function called at the end of the shutdown sequence.
+   * Defaults to `process.exit`; tests inject a spy to avoid killing the runner.
+   */
+  exitFn?: (code: number) => void;
 }
 
 /** Provider server instance */
@@ -42,6 +50,15 @@ export interface ProviderServer {
   start(): Promise<void>;
   /** Stop the server */
   stop(): Promise<void>;
+  /**
+   * Request a graceful shutdown of the entire process.
+   *
+   * Idempotent — repeated calls are no-ops. The sequence runs asynchronously
+   * (via `setImmediate`) so the caller can return its current response before
+   * the server starts draining. Errors during shutdown are logged then
+   * `exitFn(1)` is invoked; the success path calls `exitFn(0)`.
+   */
+  requestShutdown(reason: string): void;
 }
 
 /** Create a provider server */
@@ -49,6 +66,7 @@ export async function createProviderServer(
   options: ProviderServerOptions
 ): Promise<ProviderServer> {
   const { config, authHooks, billingHooks } = options;
+  const exitFn = options.exitFn ?? process.exit.bind(process);
 
   log('Creating provider server');
 
@@ -97,12 +115,54 @@ export async function createProviderServer(
     hooks: authHooks,
   });
 
-  // Register routes
   const basePath = config.server.basePath ?? '/api/v1';
+
+  let shuttingDown = false;
+
+  const runShutdownSequence = async (reason: string): Promise<void> => {
+    try {
+      console.log(`Cadre Provider shutting down: ${reason}`);
+      billingService.stop();
+
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const drain = app.close();
+      const timeout = new Promise<'timeout'>((resolve) => {
+        timer = setTimeout(() => resolve('timeout'), SHUTDOWN_DRAIN_TIMEOUT_MS);
+      });
+      const outcome = await Promise.race([drain.then(() => 'drained' as const), timeout]);
+      if (timer) clearTimeout(timer);
+      if (outcome === 'timeout') {
+        log('Shutdown drain timeout after %dms', SHUTDOWN_DRAIN_TIMEOUT_MS);
+      }
+
+      log('Shutdown complete');
+      exitFn(0);
+    } catch (err) {
+      log('Shutdown error: %O', err);
+      console.error('Provider shutdown error:', err instanceof Error ? err.message : err);
+      exitFn(1);
+    }
+  };
+
+  const requestShutdown = (reason: string): void => {
+    if (shuttingDown) {
+      log('requestShutdown ignored (already shutting down): %s', reason);
+      return;
+    }
+    shuttingDown = true;
+    log('requestShutdown triggered: %s', reason);
+
+    setImmediate(() => {
+      void runShutdownSequence(reason);
+    });
+  };
+
+  // Register routes
   registerRoutes(app, {
     basePath,
     containerService,
     billingService,
+    requestShutdown,
   });
 
   log('Server configured at %s', basePath);
@@ -135,6 +195,6 @@ export async function createProviderServer(
     billingService,
     start,
     stop,
+    requestShutdown,
   };
 }
-

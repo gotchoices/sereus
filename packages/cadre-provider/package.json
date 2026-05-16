@@ -9,6 +9,7 @@
   "files": [
     "src",
     "dist",
+    "service",
     "!dist/test",
     "!**/*.tsbuildinfo"
   ],

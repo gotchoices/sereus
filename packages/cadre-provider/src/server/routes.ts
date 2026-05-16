@@ -15,6 +15,19 @@ export interface RouteContext {
   containerService: ContainerService;
   billingService: BillingService;
   basePath: string;
+  /**
+   * Trigger a graceful shutdown of the provider process.
+   * Routes call this after a successful response when the caller passes
+   * `shutdownAfter: true`. Idempotent and asynchronous (fire-and-forget).
+   */
+  requestShutdown: (reason: string) => void;
+}
+
+/** Coerce an arbitrary value to a strict boolean for the shutdownAfter flag */
+function parseShutdownFlag(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === 'string') return value.toLowerCase() === 'true';
+  return false;
 }
 
 /** Customer identity from authentication */
@@ -33,7 +46,7 @@ function errorResponse(reply: FastifyReply, code: string, message: string, statu
 
 /** Register all routes */
 export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
-  const { basePath, containerService, billingService } = ctx;
+  const { basePath, containerService, billingService, requestShutdown } = ctx;
 
   // GET /status - Health check
   app.get(`${basePath}/status`, async (_request, reply) => {
@@ -50,7 +63,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
 
-    const body = request.body as Partial<CreateContainerRequest>;
+    const body = request.body as Partial<CreateContainerRequest> & { shutdownAfter?: unknown };
 
     // Validate required fields
     if (!body.partyId) {
@@ -78,10 +91,20 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     const container = await containerService.createContainer(createRequest);
 
-    return reply.status(201).send({
+    const shutdownAfter = parseShutdownFlag(body.shutdownAfter);
+    const payload: { ok: true; data: { container: typeof container }; shutdownInitiated?: true } = {
       ok: true,
       data: { container },
-    });
+    };
+    if (shutdownAfter) {
+      payload.shutdownInitiated = true;
+    }
+
+    await reply.status(201).send(payload);
+    if (shutdownAfter) {
+      requestShutdown('shutdownAfter: POST /containers');
+    }
+    return reply;
   });
 
   // GET /containers - List containers
@@ -147,12 +170,29 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       return errorResponse(reply, 'FORBIDDEN', 'Access denied', 403);
     }
 
-    const success = await containerService.terminateContainer(id);
+    // Body wins over query when both present
+    const body = (request.body ?? {}) as { shutdownAfter?: unknown };
+    const query = (request.query ?? {}) as { shutdownAfter?: unknown };
+    const shutdownAfter = body.shutdownAfter !== undefined
+      ? parseShutdownFlag(body.shutdownAfter)
+      : parseShutdownFlag(query.shutdownAfter);
 
-    return reply.send({
+    const success = await containerService.terminateContainer(id);
+    const triggerShutdown = success && shutdownAfter;
+
+    const payload: { ok: boolean; message: string; shutdownInitiated?: true } = {
       ok: success,
       message: success ? 'Container terminated' : 'Termination failed',
-    });
+    };
+    if (triggerShutdown) {
+      payload.shutdownInitiated = true;
+    }
+
+    await reply.send(payload);
+    if (triggerShutdown) {
+      requestShutdown('shutdownAfter: DELETE /containers/' + id);
+    }
+    return reply;
   });
 
   // GET /containers/:id/peer - Get container peer info
