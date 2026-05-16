@@ -596,6 +596,9 @@ export class CadreNode implements SAppIdLookup {
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       authorityPrivateKey,
+      ...(this.config.network?.inviteAddressResolver
+        ? { inviteAddressResolver: this.config.network.inviteAddressResolver }
+        : {}),
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -627,6 +630,9 @@ export class CadreNode implements SAppIdLookup {
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       // No authority key - this node only receives seeds
+      ...(this.config.network?.inviteAddressResolver
+        ? { inviteAddressResolver: this.config.network.inviteAddressResolver }
+        : {}),
     });
 
     this.seedBootstrapService.setEventCallbacks({

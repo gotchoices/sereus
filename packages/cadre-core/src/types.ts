@@ -124,6 +124,13 @@ export interface NetworkConfig {
    * ```
    */
   transports?: Libp2pTransports;
+  /**
+   * Optional async resolver returning the multiaddrs to embed in invites
+   * (and other authority-address contexts). When unset, `libp2pNode.getMultiaddrs()`
+   * is used. Hosts behind NAT supply this to substitute their DDNS hostname
+   * and externally-mapped port — see `@serfab/cadre-host`'s NatService.
+   */
+  inviteAddressResolver?: () => Promise<string[]>;
 }
 
 /**

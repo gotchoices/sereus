@@ -17,8 +17,10 @@ At this stage:
 
 - `cadre-host invite <label>` issues a trust-circle invite via the running management API. See [docs/cadre-host.md](../../docs/cadre-host.md#trust-circle) for the lifecycle.
 - `cadre-host trust list` and `cadre-host trust revoke <token-or-peerId>` round out trust-circle management.
+- `cadre-host nat status`, `cadre-host nat test`, `cadre-host nat ddns set duckdns --hostname <h> --token <t>`, `cadre-host nat ddns external --hostname <h>`, `cadre-host nat settings [--external-port N] [--no-upnp]` manage NAT / DDNS. See [docs/cadre-host.md](../../docs/cadre-host.md#nat-and-ddns).
 - `HostProcessOrchestrator` runs cadre nodes as native child processes.
-- `install`, `start`, `status`, and `uninstall` still print "not yet implemented", pending the `cadre-host-nat`, `cadre-host-installer`, and `cadre-host-local-ui` tickets.
+- `NatService` + `TrustCircleService` are libraries (not yet hosted by a long-running process); `cadre-host-local-ui` constructs them.
+- `install`, `start`, `status`, and `uninstall` still print "not yet implemented", pending the `cadre-host-installer` and `cadre-host-local-ui` tickets.
 
 ## More
 

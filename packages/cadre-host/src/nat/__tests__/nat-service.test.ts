@@ -1,0 +1,305 @@
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import { NatService, createNatHandlers } from '../nat-service.js';
+import { ExternalIpDetector } from '../external-ip.js';
+import type { PortMapper, PortMappingResult } from '../port-mapper.js';
+import type { SecretsStore } from '../secrets/index.js';
+import { ddnsAccount } from '../secrets/index.js';
+import type { CadreNodeLike } from '../nat-service.js';
+
+class StubMapper implements PortMapper {
+  mapCalls = 0;
+  unmapCalls = 0;
+  stopCalls = 0;
+  externalIpValue: string | null = '203.0.113.10';
+  mapFails = false;
+  async map(o: { externalPort: number; internalPort: number; protocol?: 'tcp' | 'udp'; ttlMs?: number }): Promise<PortMappingResult> {
+    this.mapCalls++;
+    if (this.mapFails) throw new Error('router refused');
+    return {
+      mode: 'auto-upnp',
+      externalIp: this.externalIpValue,
+      externalPort: o.externalPort,
+      internalPort: o.internalPort,
+      protocol: o.protocol ?? 'tcp',
+      leaseExpiresAt: new Date(Date.now() + (o.ttlMs ?? 60_000)),
+    };
+  }
+  async verify() { return true; }
+  async externalIp() { return this.externalIpValue; }
+  async unmap() { this.unmapCalls++; }
+  async stop() { this.stopCalls++; }
+}
+
+function makeSecrets(seed: Record<string, string> = {}): SecretsStore {
+  const m = new Map(Object.entries(seed));
+  return {
+    async set(a, v) { m.set(a, v); },
+    async get(a) { return m.has(a) ? m.get(a)! : null; },
+    async delete(a) { return m.delete(a); },
+    async list() { return [...m.keys()]; },
+  };
+}
+
+function makeNode(peerId = '12D3KooWHost', addrs: string[] = ['/ip4/192.168.1.10/tcp/4001']): CadreNodeLike {
+  return {
+    getPeerId: () => peerId,
+    getMultiaddrs: () => addrs,
+  };
+}
+
+function makeDetector(opts: { router?: string | null; pub?: string | null }): ExternalIpDetector {
+  return new ExternalIpDetector({
+    routerProbe: opts.router === undefined ? undefined : async () => opts.router ?? null,
+    fetch: (async () => ({
+      ok: opts.pub != null,
+      status: opts.pub != null ? 200 : 500,
+      async text() { return opts.pub ?? ''; },
+    })) as unknown as typeof fetch,
+    publicIpUrls: ['https://stub.test'],
+  });
+}
+
+let tmpRoot: string;
+beforeEach(() => {
+  tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-nat-svc-'));
+});
+afterEach(() => {
+  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+describe('NatService', () => {
+  it('start() runs port mapping, detects IP, status reflects auto-upnp', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ router: '203.0.113.10', pub: '203.0.113.10' }),
+    });
+    await svc.start();
+    const s = svc.getStatus();
+    expect(s.portMode).toBe('auto-upnp');
+    expect(s.externalPort).toBe(4001);
+    expect(s.externalIp).toBe('203.0.113.10');
+    expect(s.directReachability).toBe('reachable');
+    expect(mapper.mapCalls).toBe(1);
+  });
+
+  it('detects CGNAT and flags directReachability=cgnat', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ router: '100.64.0.5', pub: '203.0.113.10' }),
+    });
+    await svc.start();
+    const s = svc.getStatus();
+    expect(s.cgnatDetected).toBe(true);
+    expect(s.directReachability).toBe('cgnat');
+  });
+
+  it('flips portMode to failed when mapper throws', async () => {
+    const mapper = new StubMapper();
+    mapper.mapFails = true;
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    expect(svc.getStatus().portMode).toBe('failed');
+    expect(svc.getStatus().directReachability).toBe('unreachable');
+  });
+
+  it('stop() unmaps and is idempotent', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    await svc.stop();
+    await svc.stop();
+    expect(mapper.unmapCalls).toBe(1);
+    expect(mapper.stopCalls).toBe(1);
+  });
+
+  it('getInviteAddresses → dns4 when DDNS configured + reachable', async () => {
+    const mapper = new StubMapper();
+    const secrets = makeSecrets({ [ddnsAccount('duckdns', 'token')]: 'T' });
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode('12D3KooWHost'),
+      secretsStore: secrets,
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    await svc.putDdns({
+      providerId: 'duckdns',
+      hostname: 'foo.duckdns.org',
+      config: { token: 'T' },
+    });
+    const addrs = await svc.getInviteAddresses();
+    expect(addrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
+  });
+
+  it('getInviteAddresses → ip4 when reachable but no DDNS', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode('12D3KooWHost'),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '203.0.113.42' }),
+    });
+    await svc.start();
+    const addrs = await svc.getInviteAddresses();
+    expect(addrs).toEqual(['/ip4/203.0.113.42/tcp/4001/p2p/12D3KooWHost']);
+  });
+
+  it('getInviteAddresses → libp2p fallback when unreachable', async () => {
+    const mapper = new StubMapper();
+    mapper.mapFails = true;
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode('12D3KooWHost', ['/ip4/10.0.0.5/tcp/4001']),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: null }),
+    });
+    await svc.start();
+    const addrs = await svc.getInviteAddresses();
+    expect(addrs).toEqual(['/ip4/10.0.0.5/tcp/4001/p2p/12D3KooWHost']);
+  });
+
+  it('putDdns persists secrets and updates status', async () => {
+    const secrets = makeSecrets();
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: secrets,
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    const status = await svc.putDdns({
+      providerId: 'duckdns',
+      hostname: 'h.duckdns.org',
+      config: { token: 'TOK' },
+    });
+    expect(status.ddns.providerId).toBe('duckdns');
+    expect(status.ddns.hostname).toBe('h.duckdns.org');
+    expect(await secrets.get(ddnsAccount('duckdns', 'token'))).toBe('TOK');
+  });
+
+  it('putDdns with unknown provider → ddns_provider_unknown', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    await expect(svc.putDdns({
+      providerId: 'no-such-provider',
+      hostname: 'x',
+      config: {},
+    })).rejects.toMatchObject({ code: 'ddns_provider_unknown' });
+  });
+
+  it('putSettings can disable UPnP and re-enable it', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    expect(mapper.mapCalls).toBe(1);
+
+    let s = await svc.putSettings({ upnpEnabled: false });
+    expect(s.portMode).toBe('disabled');
+
+    s = await svc.putSettings({ upnpEnabled: true });
+    expect(s.portMode).toBe('auto-upnp');
+    expect(mapper.mapCalls).toBeGreaterThanOrEqual(2);
+  });
+
+  it('testReachability re-runs IP detect and updates lastTestedAt', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    expect(svc.getStatus().lastTestedAt).toBeNull();
+    await svc.testReachability();
+    expect(svc.getStatus().lastTestedAt).not.toBeNull();
+  });
+
+  it('listDdnsProviders returns at least DuckDNS', () => {
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    const providers = svc.listDdnsProviders();
+    const duck = providers.find((p) => p.id === 'duckdns');
+    expect(duck).toBeDefined();
+    expect(duck!.configFields[0]).toMatchObject({ key: 'token', secret: true });
+  });
+});
+
+describe('createNatHandlers', () => {
+  it('every handler delegates to the service', async () => {
+    const mapper = new StubMapper();
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: mapper,
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    const h = createNatHandlers(svc);
+
+    expect((await h.getStatus()).portMode).toBe('auto-upnp');
+    expect((await h.listDdnsProviders()).find((p) => p.id === 'duckdns')).toBeDefined();
+
+    const status = await h.testReachability();
+    expect(status.lastTestedAt).not.toBeNull();
+
+    const after = await h.putSettings({ externalPort: 4002 });
+    expect(after.externalPort).toBe(4002);
+
+    const ddnsStatus = await h.putDdns({
+      providerId: 'duckdns',
+      hostname: 'a.duckdns.org',
+      config: { token: 'T' },
+    });
+    expect(ddnsStatus.ddns.hostname).toBe('a.duckdns.org');
+  });
+});

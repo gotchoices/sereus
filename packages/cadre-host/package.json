@@ -47,6 +47,7 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
+    "@achingbrain/nat-port-mapper": "^4.0.0",
     "@serfab/cadre-cli": "workspace:^",
     "@serfab/cadre-core": "workspace:^",
     "@serfab/cadre-provider": "workspace:^",
@@ -54,6 +55,9 @@
     "debug": "^4.4.3",
     "fastify": "^5.7.1",
     "pidusage": "^4.0.1"
+  },
+  "optionalDependencies": {
+    "keytar": "^7.9.0"
   },
   "engines": {
     "node": ">=18"

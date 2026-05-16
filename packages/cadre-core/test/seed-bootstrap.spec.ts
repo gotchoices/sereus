@@ -565,5 +565,39 @@ describe('SeedBootstrapService Helper Methods', () => {
         .rejects.toThrow('Control database not initialized');
     });
   });
+
+  describe('createInvite — inviteAddressResolver hook', () => {
+    function makeMockLibp2p(rawAddrs: string[]) {
+      return {
+        getMultiaddrs: () => rawAddrs.map((a) => ({ toString: () => a })),
+      };
+    }
+
+    it('uses libp2pNode.getMultiaddrs() when no resolver is configured', async () => {
+      const service = new SeedBootstrapService({ partyId });
+      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+
+      const { invite } = await service.createInvite();
+      expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+    });
+
+    it('uses the resolver when configured (NAT host substitutes DDNS hostname)', async () => {
+      const resolver = async () => ['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost'];
+      const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
+      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+
+      const { invite } = await service.createInvite();
+      expect(invite.authorityAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
+    });
+
+    it('falls back to libp2pNode.getMultiaddrs() when the resolver throws', async () => {
+      const resolver = async () => { throw new Error('boom'); };
+      const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
+      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+
+      const { invite } = await service.createInvite();
+      expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+    });
+  });
 });
 

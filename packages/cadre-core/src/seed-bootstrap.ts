@@ -49,6 +49,13 @@ export interface SeedBootstrapConfig {
   authorityPrivateKey?: string;
   /** Authority public key (base64url) - derived from private key if not provided */
   authorityPublicKey?: string;
+  /**
+   * Optional async resolver returning the multiaddrs to embed in invites.
+   * When unset, `libp2pNode.getMultiaddrs()` is used. Hosts behind NAT supply
+   * this (via `@serfab/cadre-host`'s NatService) to substitute the host's
+   * DDNS hostname and externally-mapped port.
+   */
+  inviteAddressResolver?: () => Promise<string[]>;
 }
 
 /**
@@ -641,9 +648,21 @@ export class SeedBootstrapService {
 
     log('Creating invite for phone');
 
-    // Get this node's dialable addresses
-    const addrs = this.libp2pNode.getMultiaddrs();
-    const authorityAddrs = addrs.map(a => a.toString());
+    // Get this node's dialable addresses. When an inviteAddressResolver is
+    // configured (typically by `@serfab/cadre-host`'s NatService), it takes
+    // priority — it may substitute a DDNS hostname and externally-mapped
+    // port for the raw LAN multiaddrs libp2p reports.
+    let authorityAddrs: string[];
+    if (this.config.inviteAddressResolver) {
+      try {
+        authorityAddrs = await this.config.inviteAddressResolver();
+      } catch (err) {
+        log('inviteAddressResolver threw, falling back to libp2pNode.getMultiaddrs(): %o', err);
+        authorityAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
+      }
+    } else {
+      authorityAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
+    }
 
     const now = Date.now();
     const invite: CadreInvite = {

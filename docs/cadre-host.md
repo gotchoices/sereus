@@ -90,6 +90,82 @@ Both live in `<rootDir>/trust-circle.json`, written atomically (write-then-renam
 
 In v1 the management-API surface is localhost-only (`127.0.0.1`), so redemption assumes the recipient is on the same machine as the host or on the LAN reaching it. Cross-WAN redemption via the management API requires a future cadre-host-over-P2P ticket.
 
+## NAT and DDNS
+
+Cadre-host runs on machines that are typically behind NAT. To be dialable from the open internet it composes three layers, each fail-safe and independent:
+
+1. **UPnP / NAT-PMP port mapping.** The default is to punch a forward through the upstream router via `@achingbrain/nat-port-mapper`. If the router refuses or doesn't expose UPnP, port mode flips to `failed` and the user is prompted to either set up a manual port forward or fall back to a relay (next bullet). The mapping is refreshed periodically; lease expiry surfaces as `mappingLeaseExpiresAt` in the status snapshot.
+2. **Circuit-relay client (deferred).** When the host is unreachable directly (CGNAT or stubborn router) it will eventually consume a libp2p circuit relay so phones can still dial in. The relay-server side already exists in cadre-core (`network.enableRelay`); the client side that *reserves* through a relay is parked in [`backlog/4-relay-bootstrap-infrastructure`](../tickets/backlog/) and will be wired in once that ticket lands. Until then, hosts behind CGNAT will need either IPv6 or manual port forwarding.
+3. **Dynamic DNS.** When a stable hostname is desired, cadre-host pushes the current external IP to a DDNS provider. v1 ships **DuckDNS** only; additional providers (Cloudflare, No-IP, Dynu, …) are filed as backlog work and drop into `nat/ddns/` as one file each plus a registry entry.
+
+### External IP detection
+
+Cadre-host queries its external IP from two independent sources and compares them:
+
+- **Router-side** — the WAN IP that the UPnP/NAT-PMP gateway reports for itself.
+- **Public side** — an HTTPS GET to one of `api.ipify.org`, `ifconfig.me`, or `icanhazip.com`, first success wins.
+
+When both succeed and disagree, cadre-host flags `cgnatDetected: true` — the textbook signature of CGNAT, where the router thinks it has a public address that's really private to the carrier. The verdict is informational, not enforced; the heuristic can also misfire on dual-stack networks, sliced VPNs, or flapping IPs.
+
+### Reachability verdict
+
+The `directReachability` field in the status snapshot is best-effort:
+
+| Conditions                                | Verdict        |
+|-------------------------------------------|----------------|
+| `cgnatDetected: true`                     | `cgnat`        |
+| `portMode: auto-upnp` / `auto-natpmp`     | `reachable`    |
+| `portMode: failed`                        | `unreachable`  |
+| manual config / `upnpEnabled: false`      | `unknown`      |
+
+This is a heuristic, not a real dial-back. A future ticket will enable libp2p's AutoNAT service in `@optimystic/db-p2p`'s `libp2p-node-base.ts` and use its verdict here.
+
+### DuckDNS setup
+
+1. Register a subdomain at <https://www.duckdns.org/>. Note the token shown after sign-in.
+2. With cadre-host running, configure the provider:
+   ```sh
+   cadre-host nat ddns set duckdns --hostname foo.duckdns.org --token <token>
+   ```
+   The token is sent over loopback to the management API and persisted via the OS keychain (or a 0600 fallback file — see below). The update loop runs immediately and then every five minutes; unchanged IPs are *not* re-pushed (DuckDNS appreciates this).
+3. To inspect: `cadre-host nat status` shows the configured hostname, the last update result, and any error.
+
+If you'd rather manage DNS yourself (e.g. via the router's built-in DuckDNS client), tell cadre-host *not* to update the record:
+
+```sh
+cadre-host nat ddns external --hostname foo.duckdns.org
+```
+
+cadre-host then surfaces the hostname in invites and status but never makes an update request.
+
+### Invite address resolver
+
+The host's NAT layer hooks into cadre-core through the `network.inviteAddressResolver` option on `CadreNodeConfig`. Cadre-core's `SeedBootstrapService.createInvite` consults this resolver first; cadre-host's `NatService.getInviteAddresses()` returns:
+
+- `/dns4/<hostname>/tcp/<externalPort>/p2p/<peerId>` when DDNS is configured and reachability is `reachable`,
+- `/ip4/<externalIp>/tcp/<externalPort>/p2p/<peerId>` when only the raw IP is known,
+- the libp2p multiaddrs otherwise (including any `/p2p-circuit/` addresses once the relay-client work lands).
+
+### Credential storage
+
+DDNS tokens are stored in the OS keychain via `keytar` (service: `sereus-cadre-host`, account: `ddns:<providerId>:<field>`). When `keytar` is unavailable (missing native build tooling, no DBus secret service on a headless Linux box, etc.) cadre-host falls back to a plain JSON file at `<rootDir>/nat-secrets.json` with mode `0600`. The fallback is logged on every write:
+
+```
+[cadre-host] DDNS credentials will be stored UNENCRYPTED at <rootDir>/nat-secrets.json (keytar not installed). Install keytar's native dependencies for OS keychain protection.
+```
+
+On Windows POSIX permission bits don't apply, so the file is readable by any account on the same machine — install keytar's native dependency to avoid that.
+
+### Process integration
+
+`NatService` is constructed and owned by `cadre-host-local-ui` (same pattern as `TrustCircleService`). The local-ui ticket:
+
+1. Constructs `new NatService({ rootDir, cadreNode })` where `cadreNode` exposes `getPeerId()` and `getMultiaddrs()`.
+2. Calls `await service.start()` after the libp2p node is up.
+3. Mounts `createNatHandlers(service)` on Fastify under `/nat/*` (`GET /nat/status`, `POST /nat/test`, `PUT /nat/ddns`, `PUT /nat/settings`).
+4. Calls `await service.stop()` on shutdown to release the UPnP lease.
+5. Wires `service.getInviteAddresses.bind(service)` as `network.inviteAddressResolver` on the cadre-core `CadreNodeConfig`.
+
 ## Architecture sketch
 
 ```mermaid
@@ -119,10 +195,11 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - Workspace package skeleton (`packages/cadre-host/`).
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
-- CLI: `invite <label>` (real), `trust list`, `trust revoke`; `install`, `start`, `status`, `uninstall` still print "not yet implemented" pending their tickets.
+- `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
+- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install`, `start`, `status`, `uninstall` still print "not yet implemented" pending their tickets.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
-The NAT layer, installer, and local UI implementations are forthcoming in the `cadre-host-nat`, `cadre-host-installer`, and `cadre-host-local-ui` tickets. Until those land, `cadre-host` is not yet runnable end-to-end as a service.
+The installer and local UI implementations are forthcoming in the `cadre-host-installer` and `cadre-host-local-ui` tickets. Until those land, `cadre-host` is not yet runnable end-to-end as a service — `NatService` and `TrustCircleService` are libraries waiting for `cadre-host-local-ui` to construct and host them.
 
 ## See also
 

@@ -217,4 +217,295 @@ trust
     process.exit(0);
   });
 
+// ============================================================================
+// nat subcommands
+// ============================================================================
+
+const nat = program
+  .command('nat')
+  .description('Manage NAT traversal, port forwarding, and dynamic DNS');
+
+nat
+  .command('status')
+  .description('Show NAT, external-IP, and DDNS status')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .option('--json', 'Output raw JSON instead of a human-readable summary')
+  .action(async (opts: { port: string; host: string; json?: boolean }) => {
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/status`;
+    const body = await getJson(url);
+    if (opts.json) {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(body, null, 2));
+    } else {
+      printNatStatus(body);
+    }
+    process.exit(0);
+  });
+
+nat
+  .command('test')
+  .description('Re-run reachability probes and print the result')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .option('--json', 'Output raw JSON instead of a human-readable summary')
+  .action(async (opts: { port: string; host: string; json?: boolean }) => {
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/test`;
+    const body = await postJson(url, {});
+    if (opts.json) {
+      // eslint-disable-next-line no-console
+      console.log(JSON.stringify(body, null, 2));
+    } else {
+      printNatStatus(body);
+    }
+    process.exit(0);
+  });
+
+nat
+  .command('settings')
+  .description('Update NAT settings (external port, UPnP toggle)')
+  .option('--external-port <port>', 'External port to map')
+  .option('--internal-port <port>', 'Internal libp2p port (defaults to external)')
+  .option('--no-upnp', 'Disable UPnP/NAT-PMP port mapping')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (opts: {
+    externalPort?: string;
+    internalPort?: string;
+    upnp?: boolean;
+    port: string;
+    host: string;
+  }) => {
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/settings`;
+    const patch: Record<string, unknown> = {};
+    if (opts.externalPort) patch.externalPort = resolvePort(opts.externalPort);
+    if (opts.internalPort) patch.internalPort = resolvePort(opts.internalPort);
+    // Commander assigns `upnp: false` when `--no-upnp` is passed.
+    if (opts.upnp === false) patch.upnpEnabled = false;
+    if (opts.upnp === true) patch.upnpEnabled = true;
+
+    const body = await putJson(url, patch);
+    printNatStatus(body);
+    process.exit(0);
+  });
+
+const ddns = nat
+  .command('ddns')
+  .description('Configure dynamic DNS');
+
+ddns
+  .command('set')
+  .description('Configure a DDNS provider (and store credentials in the keychain)')
+  .argument('<provider>', 'Provider ID (e.g. "duckdns")')
+  .option('--hostname <hostname>', 'Hostname to publish (e.g. foo.duckdns.org)')
+  .option('--token <token>', 'Provider token (a secret value; prompts if omitted)')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (provider: string, opts: {
+    hostname?: string;
+    token?: string;
+    port: string;
+    host: string;
+  }) => {
+    if (!opts.hostname) {
+      // eslint-disable-next-line no-console
+      console.error('--hostname is required');
+      process.exit(1);
+      return;
+    }
+    const config: Record<string, string> = {};
+    if (opts.token) config.token = opts.token;
+
+    if (!config.token) {
+      if (!process.stdin.isTTY) {
+        // eslint-disable-next-line no-console
+        console.error(
+          'Missing --token for provider "' + provider + '" and stdin is not a TTY. ' +
+          'Re-run with --token <secret>.',
+        );
+        process.exit(1);
+        return;
+      }
+      try {
+        config.token = await readSecretLine('DDNS token: ');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error('Failed to read token: ' + (err as Error).message);
+        process.exit(1);
+        return;
+      }
+    }
+
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/ddns`;
+    const body = await putJson(url, {
+      providerId: provider,
+      hostname: opts.hostname,
+      config,
+      externallyManaged: false,
+    });
+    printNatStatus(body);
+    process.exit(0);
+  });
+
+ddns
+  .command('external')
+  .description('Declare an externally-managed DDNS hostname (cadre-host does not update it)')
+  .requiredOption('--hostname <hostname>', 'Hostname (no provider; cadre-host will not push updates)')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (opts: { hostname: string; port: string; host: string }) => {
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/settings`;
+    const body = await putJson(url, {
+      ddns: {
+        providerId: 'external',
+        hostname: opts.hostname,
+        externallyManaged: true,
+      },
+    });
+    printNatStatus(body);
+    process.exit(0);
+  });
+
+async function getJson(url: string): Promise<NatStatusLike> {
+  return await callJson(url, 'GET');
+}
+
+async function postJson(url: string, body: unknown): Promise<NatStatusLike> {
+  return await callJson(url, 'POST', body);
+}
+
+async function putJson(url: string, body: unknown): Promise<NatStatusLike> {
+  return await callJson(url, 'PUT', body);
+}
+
+interface NatStatusLike {
+  portMode?: string;
+  externalPort?: number;
+  internalPort?: number;
+  externalIp?: string | null;
+  routerExternalIp?: string | null;
+  cgnatDetected?: boolean;
+  directReachability?: string;
+  lastTestedAt?: string | null;
+  mappingLeaseExpiresAt?: string | null;
+  ddns?: {
+    providerId?: string | null;
+    hostname?: string | null;
+    externallyManaged?: boolean;
+    lastUpdateAt?: string | null;
+    lastUpdateOk?: boolean | null;
+    lastError?: string | null;
+  };
+}
+
+async function callJson(url: string, method: string, body?: unknown): Promise<NatStatusLike> {
+  let response: Response;
+  try {
+    const init: RequestInit = { method };
+    if (body !== undefined) {
+      init.headers = { 'content-type': 'application/json' };
+      init.body = JSON.stringify(body);
+    }
+    response = await fetch(url, init);
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(
+      `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
+      `Hint: is cadre-host running? Try \`cadre-host start\`.`,
+    );
+    process.exit(2);
+    throw err;
+  }
+  if (!response.ok) {
+    const text = await response.text().catch(() => '');
+    // eslint-disable-next-line no-console
+    console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+    process.exit(1);
+    throw new Error('non-ok');
+  }
+  if (response.status === 204) return {} as NatStatusLike;
+  return await response.json() as NatStatusLike;
+}
+
+function printNatStatus(s: NatStatusLike): void {
+  // eslint-disable-next-line no-console
+  console.log(`Port mapping: ${s.portMode ?? '?'} (external ${s.externalPort ?? '?'} → internal ${s.internalPort ?? '?'})`);
+  if (s.routerExternalIp) {
+    // eslint-disable-next-line no-console
+    console.log(`Router IP:    ${s.routerExternalIp}`);
+  }
+  // eslint-disable-next-line no-console
+  console.log(`External IP:  ${s.externalIp ?? '(unknown)'}${s.cgnatDetected ? '  [CGNAT detected]' : ''}`);
+  // eslint-disable-next-line no-console
+  console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
+  if (s.mappingLeaseExpiresAt) {
+    // eslint-disable-next-line no-console
+    console.log(`Lease expires: ${s.mappingLeaseExpiresAt}`);
+  }
+  const ddns = s.ddns ?? {};
+  if (ddns.providerId || ddns.hostname) {
+    // eslint-disable-next-line no-console
+    console.log(`\nDDNS:`);
+    // eslint-disable-next-line no-console
+    console.log(`  Provider:   ${ddns.providerId ?? '(none)'}${ddns.externallyManaged ? '  [externally managed]' : ''}`);
+    // eslint-disable-next-line no-console
+    console.log(`  Hostname:   ${ddns.hostname ?? '(unset)'}`);
+    if (ddns.lastUpdateAt) {
+      const ok = ddns.lastUpdateOk ? 'OK' : 'FAIL';
+      // eslint-disable-next-line no-console
+      console.log(`  Last update: ${ok} at ${ddns.lastUpdateAt}${ddns.lastError ? `  — ${ddns.lastError}` : ''}`);
+    }
+  } else {
+    // eslint-disable-next-line no-console
+    console.log('\nDDNS: not configured');
+  }
+}
+
+/** Read a single line from stdin with echo suppressed (TTY only). */
+function readSecretLine(prompt: string): Promise<string> {
+  return new Promise<string>((resolveLine, rejectLine) => {
+    const stdin = process.stdin;
+    const stdout = process.stdout;
+    const wasRaw = stdin.isRaw;
+    try {
+      stdout.write(prompt);
+      stdin.setRawMode(true);
+    } catch (err) {
+      rejectLine(err);
+      return;
+    }
+    stdin.resume();
+    stdin.setEncoding('utf8');
+
+    let buf = '';
+    const onData = (chunk: string) => {
+      for (const ch of chunk) {
+        if (ch === '\n' || ch === '\r' || ch === '') {
+          stdin.removeListener('data', onData);
+          try { stdin.setRawMode(wasRaw); } catch { /* ignore */ }
+          stdin.pause();
+          stdout.write('\n');
+          resolveLine(buf);
+          return;
+        }
+        if (ch === '') {
+          // Ctrl-C
+          stdin.removeListener('data', onData);
+          try { stdin.setRawMode(wasRaw); } catch { /* ignore */ }
+          stdin.pause();
+          stdout.write('\n');
+          rejectLine(new Error('cancelled'));
+          return;
+        }
+        if (ch === '' || ch === '\b') {
+          buf = buf.slice(0, -1);
+          continue;
+        }
+        buf += ch;
+      }
+    };
+    stdin.on('data', onData);
+  });
+}
+
 program.parseAsync();
