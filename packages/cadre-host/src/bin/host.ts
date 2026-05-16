@@ -18,6 +18,23 @@ import { parseDuration } from '../auth/duration.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
 
+/** libp2p peer-ID prefixes by key type: Ed25519, secp256k1, legacy RSA. */
+const PEER_ID_PREFIXES = ['12D3Koo', '16Uiu2HAm', 'Qm'] as const;
+
+function looksLikePeerId(id: string): boolean {
+  return PEER_ID_PREFIXES.some((p) => id.startsWith(p));
+}
+
+function resolvePort(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0 || n > 65535) {
+    // eslint-disable-next-line no-console
+    console.error(`Invalid --port: ${raw}`);
+    process.exit(1);
+  }
+  return n;
+}
+
 const program = new Command();
 
 program
@@ -61,13 +78,7 @@ program
       return;
     }
 
-    const port = Number(opts.port);
-    if (!Number.isFinite(port) || port <= 0) {
-      // eslint-disable-next-line no-console
-      console.error(`Invalid --port: ${opts.port}`);
-      process.exit(1);
-      return;
-    }
+    const port = resolvePort(opts.port);
 
     const url = `http://${opts.host}:${port}/auth/invites`;
     let response: Response;
@@ -122,7 +133,7 @@ trust
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
   .action(async (opts: { port: string; host: string }) => {
-    const url = `http://${opts.host}:${Number(opts.port)}/auth/trust-circle`;
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/auth/trust-circle`;
     let response: Response;
     try {
       response = await fetch(url);
@@ -177,9 +188,9 @@ trust
   .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
   .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
   .action(async (id: string, opts: { kind: string; port: string; host: string }) => {
-    const base = `http://${opts.host}:${Number(opts.port)}`;
+    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
     const kind = opts.kind === 'auto'
-      ? (id.startsWith('12D3Koo') || id.startsWith('Qm') ? 'member' : 'invite')
+      ? (looksLikePeerId(id) ? 'member' : 'invite')
       : opts.kind;
     const path = kind === 'member'
       ? `/auth/members/${encodeURIComponent(id)}`

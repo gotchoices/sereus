@@ -168,4 +168,20 @@ describe('cadre-host trust revoke CLI', () => {
     expect(result.code).toBe(0);
     expect(stub.requests[0]!.url).toBe('/auth/members/12D3KooWAlice');
   });
+
+  it('treats secp256k1 peer IDs (16Uiu2HAm…) as members', async () => {
+    stub.setResponse((_req, res) => {
+      res.statusCode = 204;
+      res.end();
+    });
+    const result = await runCli(['trust', 'revoke', '16Uiu2HAmExample', '--port', String(stub.port)]);
+    expect(result.code).toBe(0);
+    expect(stub.requests[0]!.url).toBe('/auth/members/16Uiu2HAmExample');
+  });
+
+  it('rejects invalid --port', async () => {
+    const result = await runCli(['trust', 'revoke', 'some-token', '--port', 'garbage']);
+    expect(result.code).toBe(1);
+    expect(result.stderr).toMatch(/Invalid --port/);
+  });
 });

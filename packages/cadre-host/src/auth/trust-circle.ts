@@ -109,19 +109,22 @@ export class TrustCircleService {
       throw new TrustCircleError('invalid_token', 'token and peerId are required');
     }
 
+    // Atomically claim the pending row before doing async work. This closes
+    // the race between two concurrent redemption requests for the same token —
+    // only the call that wins the synchronous removePending() proceeds; the
+    // other gets `already_redeemed`. The remove is durable (write-then-rename),
+    // so a crash after this point loses the token, which is the safe failure
+    // mode for a one-time credential.
     const pending = this.store.getPending(token);
-    if (!pending) {
-      // Could be unknown (never issued) or already redeemed (consumed). Treat as
-      // already_redeemed since "the token was once a thing or it's now gone"
-      // collapses to the same surface for an attacker; for ops we can't tell.
+    if (!pending || !this.store.removePending(token)) {
+      // Either never issued, or another concurrent caller just consumed it.
       throw new TrustCircleError('already_redeemed', 'Invite not found or already redeemed');
     }
 
     if (pending.expiresAt) {
       const expiresAt = new Date(pending.expiresAt);
       if (Number.isFinite(expiresAt.getTime()) && this.now() > expiresAt) {
-        // Reap the dead token so it doesn't sit forever.
-        this.store.removePending(token);
+        // Already removed above — just surface the expiry.
         throw new TrustCircleError('expired', 'Invite has expired');
       }
     }
@@ -139,12 +142,9 @@ export class TrustCircleService {
 
     await this.cadreNode.acceptPhone({ phonePeerId: peerId, token }, reconstructed);
 
-    // Consume the pending row first, *then* write the member. If the member
-    // write fails the peer is still authorized in CadrePeer — the next call
-    // to list() will pick it up unlabeled, which is the documented graceful
-    // degradation.
-    this.store.removePending(token);
-
+    // If the member write fails the peer is still authorized in CadrePeer —
+    // the next call to list() will pick it up unlabeled, which is the
+    // documented graceful degradation.
     const member: TrustCircleMember = {
       peerId,
       label: pending.label,

@@ -176,6 +176,46 @@ describe('TrustCircleService.redeemInvite', () => {
     await expect(service.redeemInvite({ token: 't', peerId: '' }))
       .rejects.toBeInstanceOf(TrustCircleError);
   });
+
+  it('claims pending atomically so a concurrent second call cannot also redeem', async () => {
+    const { token } = await service.issueInvite({ label: 'Race' });
+
+    // Block acceptPhone until we release it, simulating the async window
+    // between getPending() and removePending() under naive ordering.
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    const originalAccept = cadreNode.acceptPhone.bind(cadreNode);
+    cadreNode.acceptPhone = async (options, issued) => {
+      await gate;
+      await originalAccept(options, issued);
+    };
+
+    const first = service.redeemInvite({ token, peerId: 'pA' });
+    const second = service.redeemInvite({ token, peerId: 'pB' });
+
+    // The second call must be rejected synchronously (before the gate opens)
+    // because the pending row was already claimed by `first`.
+    await expect(second).rejects.toMatchObject({ code: 'already_redeemed' });
+
+    release();
+    await expect(first).resolves.toMatchObject({ peerId: 'pA' });
+
+    // Only one peer was authorized.
+    expect(cadreNode.authorizedPeers.has('pA')).toBe(true);
+    expect(cadreNode.authorizedPeers.has('pB')).toBe(false);
+  });
+});
+
+describe('TrustCircleService.issueInvite — label length', () => {
+  it('rejects labels over 200 characters', async () => {
+    await expect(service.issueInvite({ label: 'a'.repeat(201) }))
+      .rejects.toMatchObject({ code: 'invalid_label' });
+  });
+
+  it('accepts labels at the 200-character limit', async () => {
+    await expect(service.issueInvite({ label: 'a'.repeat(200) }))
+      .resolves.toBeDefined();
+  });
 });
 
 describe('TrustCircleService.revokePending', () => {
@@ -208,6 +248,15 @@ describe('TrustCircleService.removeMember', () => {
   it('throws not_found for an unknown peer', async () => {
     await expect(service.removeMember('unknown'))
       .rejects.toMatchObject({ code: 'not_found' });
+  });
+
+  it('removes a control-only peer (CadrePeer row without a local label)', async () => {
+    cadreNode.authorizedPeers.add('pCtrlOnly');
+    expect(store.getMember('pCtrlOnly')).toBeUndefined();
+
+    await service.removeMember('pCtrlOnly');
+    expect(cadreNode.removed).toEqual(['pCtrlOnly']);
+    expect(cadreNode.authorizedPeers.has('pCtrlOnly')).toBe(false);
   });
 });
 
