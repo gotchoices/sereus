@@ -5,6 +5,13 @@ import { fileURLToPath } from 'node:url';
 export interface FixtureStateAvailable {
 	available: true;
 	multiaddr: string;
+	/**
+	 * Additional bootstrap multiaddrs (currently the headless `service` peers
+	 * spawned alongside the primary `--offline` bootstrap to give the cluster
+	 * a real 3-node quorum). Empty when the fixture is `env`-sourced — the
+	 * caller is responsible for managing their own mesh.
+	 */
+	serviceMultiaddrs?: string[];
 	pid?: number | null;
 	source: 'spawned' | 'env';
 }

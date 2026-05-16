@@ -1,18 +1,24 @@
 import { test, expect } from '@playwright/test';
-import { loadFixtureState, requireFixture, connectToBootstrap } from './_helpers.js';
+import {
+	loadFixtureState,
+	requireFixture,
+	connectToBootstrap,
+	collectBootstrapMultiaddrs,
+} from './_helpers.js';
 
 test.describe('Tier 2 / distributed / bootstrap persistence', () => {
-	let multiaddr: string;
+	let bootstrapList: string[];
 
 	test.beforeAll(({}, testInfo) => {
 		const fixture = requireFixture(loadFixtureState(), testInfo);
-		multiaddr = fixture.multiaddr;
+		bootstrapList = collectBootstrapMultiaddrs(fixture);
 	});
 
 	test('bootstrap input is pre-filled with the last-used multiaddr after reload', async ({
 		page,
 	}) => {
-		await connectToBootstrap(page, multiaddr);
+		await connectToBootstrap(page, bootstrapList);
+		const expectedInput = bootstrapList.join('\n');
 
 		// Reload and verify the bootstrap textarea contains the previous value.
 		await page.reload();
@@ -25,7 +31,7 @@ test.describe('Tier 2 / distributed / bootstrap persistence', () => {
 			.poll(async () => (await page.getByTestId('bootstrap-input').inputValue()).trim(), {
 				timeout: 15_000,
 			})
-			.toBe(multiaddr);
+			.toBe(expectedInput);
 
 		// Current behaviour: reload boots fresh in solo mode (Network.connect()
 		// is not re-invoked automatically). Document that here so a regression

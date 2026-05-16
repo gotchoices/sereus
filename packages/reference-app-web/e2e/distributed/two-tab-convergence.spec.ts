@@ -1,5 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loadFixtureState, requireFixture, connectToBootstrap } from './_helpers.js';
+import {
+	loadFixtureState,
+	requireFixture,
+	connectToBootstrap,
+	collectBootstrapMultiaddrs,
+} from './_helpers.js';
 
 async function gotoMessages(page: Page) {
 	page.on('dialog', (d) => {
@@ -21,11 +26,11 @@ async function sendOne(page: Page, author: string, content: string): Promise<str
 }
 
 test.describe('Tier 2 / distributed / two-tab convergence (README acceptance)', () => {
-	let multiaddr: string;
+	let bootstrapList: string[];
 
 	test.beforeAll(({}, testInfo) => {
 		const fixture = requireFixture(loadFixtureState(), testInfo);
-		multiaddr = fixture.multiaddr;
+		bootstrapList = collectBootstrapMultiaddrs(fixture);
 	});
 
 	test('A sends, B sees; B edits, A sees; A deletes, B sees', async ({ browser }) => {
@@ -35,8 +40,8 @@ test.describe('Tier 2 / distributed / two-tab convergence (README acceptance)', 
 		const pageB = await ctxB.newPage();
 
 		try {
-			await connectToBootstrap(pageA, multiaddr);
-			await connectToBootstrap(pageB, multiaddr);
+			await connectToBootstrap(pageA, bootstrapList);
+			await connectToBootstrap(pageB, bootstrapList);
 			await gotoMessages(pageA);
 			await gotoMessages(pageB);
 

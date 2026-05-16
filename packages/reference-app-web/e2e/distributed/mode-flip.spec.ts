@@ -3,21 +3,22 @@ import {
 	loadFixtureState,
 	requireFixture,
 	connectToBootstrap,
+	collectBootstrapMultiaddrs,
 	extractPeerIdFromMultiaddr,
 } from './_helpers.js';
 
 test.describe('Tier 2 / distributed / mode flip', () => {
-	let multiaddr: string;
+	let bootstrapList: string[];
 	let bootstrapPeerId: string;
 
 	test.beforeAll(({}, testInfo) => {
 		const fixture = requireFixture(loadFixtureState(), testInfo);
-		multiaddr = fixture.multiaddr;
-		bootstrapPeerId = extractPeerIdFromMultiaddr(multiaddr);
+		bootstrapList = collectBootstrapMultiaddrs(fixture);
+		bootstrapPeerId = extractPeerIdFromMultiaddr(fixture.multiaddr);
 	});
 
 	test('Connect flips solo → distributed and lists the bootstrap peer', async ({ page }) => {
-		await connectToBootstrap(page, multiaddr);
+		await connectToBootstrap(page, bootstrapList);
 
 		// The Diagnostics page should show at least one connection row, and at
 		// least one of those rows should reference the bootstrap peer id.
@@ -33,7 +34,7 @@ test.describe('Tier 2 / distributed / mode flip', () => {
 	});
 
 	test('Disconnect snaps back to solo and empties the connection list', async ({ page }) => {
-		await connectToBootstrap(page, multiaddr);
+		await connectToBootstrap(page, bootstrapList);
 
 		await page.getByTestId('btn-disconnect').click();
 		await expect(page.getByTestId('mode-badge')).toHaveText('solo', {

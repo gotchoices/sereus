@@ -261,15 +261,34 @@ The suite splits into two tiers:
 
 1. If `OPTIMYSTIC_WS_BOOTSTRAP` is set, treat it as a manually-managed
    multiaddr and skip spawning. Use this when you want to point at a
-   custom peer.
+   custom peer or your own mesh.
 2. Otherwise, look for the built reference-peer CLI at
    `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
-   spawn it on WebSocket port `9191` (offset from the README-documented
-   `9091` so a developer can keep a manual peer alongside) with
-   `interactive --no-tcp --relay --offline` so the peer comes up as a
-   single-node `LocalTransactor` the browser tab can actually dial.
+   spawn a **3-node mesh** on offset WebSocket ports (9191/9192/9193) so a
+   developer can still keep a README-style manual peer alongside on 9091:
+   - `interactive --ws-port 9191 --no-tcp --relay --offline` — the
+     bootstrap, kept `--offline` so its own REPL transactor doesn't try
+     to form a cluster before the service peers appear. Its libp2p
+     `repoService` still participates in cluster consensus on remote
+     callers' behalf.
+   - `service --ws-port 9192 --no-tcp --relay --bootstrap <bootstrap>` —
+     headless service peer.
+   - `service --ws-port 9193 --no-tcp --relay --bootstrap <bootstrap>` —
+     headless service peer.
+
+   The browser tab dials all three multiaddrs up front (newline-separated
+   bootstrap input), so cluster consensus has a real 3-peer keyspace
+   without waiting on FRET discovery.
 3. If neither path works, write a `not available` marker to
    `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
+
+The manual "Two-tab convergence test (acceptance check)" above still uses
+the single `--offline` peer for a human demo — that path exercises the
+solo-mode plumbing end-to-end but cannot reproduce full cluster
+consensus, which is why the e2e fixture spawns the 3-node mesh internally.
+To reproduce what the e2e does locally, run `service --ws-port 9192/9193
+--no-tcp --relay --bootstrap <bootstrap>` alongside the bootstrap and
+paste all three addresses into the Network panel.
 
 To force-build the sibling packages the fixture depends on (the browser
 node's `connectionGater` plumbing lives in `db-p2p`; the `--offline`

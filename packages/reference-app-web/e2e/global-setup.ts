@@ -1,9 +1,10 @@
 import type { FullConfig } from '@playwright/test';
 import { detectOptimysticCli } from './fixtures/optimystic-detect.js';
-import { spawnReferencePeer, type ReferencePeerHandle } from './fixtures/reference-peer.js';
+import { spawnReferenceMesh, type ReferenceMeshHandle } from './fixtures/reference-peer.js';
 import { writeFixtureState, clearFixtureState } from './fixtures/state.js';
 
-const WS_PORT = 9191;
+const BOOTSTRAP_WS_PORT = 9191;
+const SERVICE_WS_PORTS = [9192, 9193];
 const ENV_OVERRIDE = 'OPTIMYSTIC_WS_BOOTSTRAP';
 
 // Stash the live handle on globalThis so global-teardown can find it. We
@@ -11,7 +12,7 @@ const ENV_OVERRIDE = 'OPTIMYSTIC_WS_BOOTSTRAP';
 // channel is the cleanest approach.
 declare global {
 	// eslint-disable-next-line no-var
-	var __referencePeer: ReferencePeerHandle | undefined;
+	var __referencePeer: ReferenceMeshHandle | undefined;
 }
 
 export default async function globalSetup(_config: FullConfig): Promise<void> {
@@ -22,6 +23,7 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
 		writeFixtureState({
 			available: true,
 			multiaddr: override.trim(),
+			serviceMultiaddrs: [],
 			source: 'env',
 			pid: null,
 		});
@@ -38,25 +40,33 @@ export default async function globalSetup(_config: FullConfig): Promise<void> {
 		return;
 	}
 
-	console.log(`[e2e] spawning reference-peer fixture on ws port ${WS_PORT}…`);
+	console.log(
+		`[e2e] spawning reference-peer mesh on ws ports ${BOOTSTRAP_WS_PORT} (bootstrap) + ${SERVICE_WS_PORTS.join(', ')} (service)…`,
+	);
 	try {
-		const handle = await spawnReferencePeer({
+		const handle = await spawnReferenceMesh({
 			cliPath: detect.cliPath,
-			wsPort: WS_PORT,
+			bootstrapWsPort: BOOTSTRAP_WS_PORT,
+			serviceWsPorts: SERVICE_WS_PORTS,
 		});
 		globalThis.__referencePeer = handle;
 		writeFixtureState({
 			available: true,
-			multiaddr: handle.multiaddr,
+			multiaddr: handle.bootstrapMultiaddr,
+			serviceMultiaddrs: handle.serviceMultiaddrs,
 			source: 'spawned',
 			pid: null,
 		});
-		console.log(`[e2e] reference-peer ready: ${handle.multiaddr}`);
+		console.log(`[e2e] reference-peer mesh ready:`);
+		console.log(`[e2e]   bootstrap: ${handle.bootstrapMultiaddr}`);
+		for (const addr of handle.serviceMultiaddrs) {
+			console.log(`[e2e]   service:   ${addr}`);
+		}
 	} catch (err) {
 		const reason = err instanceof Error ? err.message : String(err);
 		writeFixtureState({
 			available: false,
-			reason: `failed to spawn reference-peer: ${reason}`,
+			reason: `failed to spawn reference-peer mesh: ${reason}`,
 		});
 		console.warn(`[e2e] Tier 2 disabled: ${reason}`);
 	}

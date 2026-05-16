@@ -1,5 +1,10 @@
 import { test, expect, type Page } from '@playwright/test';
-import { loadFixtureState, requireFixture, connectToBootstrap } from './_helpers.js';
+import {
+	loadFixtureState,
+	requireFixture,
+	connectToBootstrap,
+	collectBootstrapMultiaddrs,
+} from './_helpers.js';
 
 async function gotoMessages(page: Page) {
 	page.on('dialog', (d) => {
@@ -42,11 +47,11 @@ async function readActivityTimestamps(page: Page): Promise<number[]> {
 }
 
 test.describe('Tier 2 / distributed / cross-tab activity', () => {
-	let multiaddr: string;
+	let bootstrapList: string[];
 
 	test.beforeAll(({}, testInfo) => {
 		const fixture = requireFixture(loadFixtureState(), testInfo);
-		multiaddr = fixture.multiaddr;
+		bootstrapList = collectBootstrapMultiaddrs(fixture);
 	});
 
 	test('concurrent writes converge as a set; per-side activity is newest-first', async ({ browser }) => {
@@ -56,8 +61,8 @@ test.describe('Tier 2 / distributed / cross-tab activity', () => {
 		const pageB = await ctxB.newPage();
 
 		try {
-			await connectToBootstrap(pageA, multiaddr);
-			await connectToBootstrap(pageB, multiaddr);
+			await connectToBootstrap(pageA, bootstrapList);
+			await connectToBootstrap(pageB, bootstrapList);
 			await gotoMessages(pageA);
 			await gotoMessages(pageB);
 

@@ -1,33 +1,121 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
-export interface SpawnReferencePeerOptions {
+export interface SpawnReferenceMeshOptions {
 	cliPath: string;
-	wsPort: number;
+	/** WS port for the bootstrap peer (interactive --offline). */
+	bootstrapWsPort: number;
+	/** WS ports for the headless service peers — one per port. Default: [9192, 9193]. */
+	serviceWsPorts?: number[];
+	/** Per-child stdout-scan timeout. Default 30s. */
 	startupTimeoutMs?: number;
 }
 
-export interface ReferencePeerHandle {
+export interface ReferenceMeshHandle {
+	/** Multiaddr of the bootstrap (--offline) peer — already part of cluster keyspace. */
+	bootstrapMultiaddr: string;
+	/** Multiaddrs of the service peers bootstrapped to it. */
+	serviceMultiaddrs: string[];
+	stop(): Promise<void>;
+}
+
+interface SingleNodeHandle {
 	multiaddr: string;
 	stop(): Promise<void>;
 }
 
-// Spawn args: `interactive --ws-port N --no-tcp --relay --offline` — single-node LocalTransactor so the browser can dial without a quorum.
-export function spawnReferencePeer(
-	options: SpawnReferencePeerOptions,
-): Promise<ReferencePeerHandle> {
-	const { cliPath, wsPort, startupTimeoutMs = 30_000 } = options;
-	return new Promise((resolvePromise, rejectPromise) => {
-		const child: ChildProcess = spawn(
-			process.execPath,
-			[
-				cliPath,
+/**
+ * Spawn a 3-node mesh: one interactive `--offline` bootstrap plus two headless
+ * `service` peers bootstrapped to it. The cluster has a real 3-peer keyspace,
+ * which gives `clusterSize: 3` cluster consensus a healthy quorum even though
+ * browser peers can't form direct connections to each other.
+ *
+ * The bootstrap stays `--offline` because its own REPL transactor is unused;
+ * the flag suppresses the bootstrap's attempt to form a cluster before the
+ * service nodes appear. The libp2p `repoService` it serves to remote callers
+ * is unaffected — see `libp2p-node-base.ts` notes in the ticket.
+ */
+export async function spawnReferenceMesh(
+	options: SpawnReferenceMeshOptions,
+): Promise<ReferenceMeshHandle> {
+	const {
+		cliPath,
+		bootstrapWsPort,
+		serviceWsPorts = [9192, 9193],
+		startupTimeoutMs = 30_000,
+	} = options;
+
+	const children: SingleNodeHandle[] = [];
+	const stopAll = async (): Promise<void> => {
+		// Stop in reverse spawn order so service peers exit before their bootstrap.
+		for (const child of [...children].reverse()) {
+			try {
+				await child.stop();
+			} catch {
+				// best effort — keep tearing down
+			}
+		}
+	};
+
+	try {
+		const bootstrap = await spawnSingleNode({
+			cliPath,
+			args: [
 				'interactive',
 				'--ws-port',
-				String(wsPort),
+				String(bootstrapWsPort),
 				'--no-tcp',
 				'--relay',
 				'--offline',
 			],
+			startupTimeoutMs,
+			label: 'bootstrap',
+		});
+		children.push(bootstrap);
+
+		const serviceMultiaddrs: string[] = [];
+		for (const port of serviceWsPorts) {
+			const svc = await spawnSingleNode({
+				cliPath,
+				args: [
+					'service',
+					'--ws-port',
+					String(port),
+					'--no-tcp',
+					'--relay',
+					'--bootstrap',
+					bootstrap.multiaddr,
+				],
+				startupTimeoutMs,
+				label: `service-${port}`,
+			});
+			children.push(svc);
+			serviceMultiaddrs.push(svc.multiaddr);
+		}
+
+		return {
+			bootstrapMultiaddr: bootstrap.multiaddr,
+			serviceMultiaddrs,
+			stop: stopAll,
+		};
+	} catch (err) {
+		await stopAll();
+		throw err;
+	}
+}
+
+interface SpawnSingleNodeOptions {
+	cliPath: string;
+	args: string[];
+	startupTimeoutMs: number;
+	label: string;
+}
+
+function spawnSingleNode(options: SpawnSingleNodeOptions): Promise<SingleNodeHandle> {
+	const { cliPath, args, startupTimeoutMs, label } = options;
+	return new Promise((resolvePromise, rejectPromise) => {
+		const child: ChildProcess = spawn(
+			process.execPath,
+			[cliPath, ...args],
 			{
 				stdio: ['ignore', 'pipe', 'pipe'],
 				env: { ...process.env, FORCE_COLOR: '0' },
@@ -71,7 +159,7 @@ export function spawnReferencePeer(
 			void stop();
 			rejectPromise(
 				new Error(
-					`reference-peer did not advertise a /ws/p2p multiaddr within ${startupTimeoutMs}ms.\n` +
+					`reference-peer (${label}) did not advertise a /ws/p2p multiaddr within ${startupTimeoutMs}ms.\n` +
 						`stdout:\n${stdoutBuffer}\nstderr:\n${stderrBuffer}`,
 				),
 			);
@@ -129,7 +217,7 @@ export function spawnReferencePeer(
 			cleanup();
 			rejectPromise(
 				new Error(
-					`reference-peer exited before advertising multiaddr (code=${code}, signal=${signal}).\n` +
+					`reference-peer (${label}) exited before advertising multiaddr (code=${code}, signal=${signal}).\n` +
 						`stdout:\n${stdoutBuffer}\nstderr:\n${stderrBuffer}`,
 				),
 			);
