@@ -271,9 +271,12 @@ The suite splits into two tiers:
 3. If neither path works, write a `not available` marker to
    `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
 
-To force-build the sibling peer:
+To force-build the sibling packages the fixture depends on (the browser
+node's `connectionGater` plumbing lives in `db-p2p`; the `--offline`
+CLI flag lives in `reference-peer`):
 
 ```bash
+yarn --cwd ../optimystic workspace @optimystic/db-p2p build
 yarn --cwd ../optimystic workspace @optimystic/reference-peer build
 ```
 
