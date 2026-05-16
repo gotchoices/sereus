@@ -1,0 +1,45 @@
+appId: ${MAESTRO_APP_ID}
+---
+# Flow 3: Full round-trip. Phone sends → drone sees, drone sends → phone sees.
+# Verifies bidirectional replication and that both messages remain visible
+# in the chat list.
+
+- runFlow: ../_setup.yaml
+
+# ── Phone → Drone ─────────────────────────────────────────────────────────
+- tapOn:
+    id: "input-message"
+- inputText: "Phone says hi"
+- hideKeyboard
+- tapOn:
+    id: "btn-send"
+- assertVisible: "Phone says hi"
+
+# Verify the drone sees the phone's message (via control + strand sync).
+- runScript:
+    file: ../_helpers/drone-assert-phone-message.js
+    env:
+      EXPECT_CONTENT: "Phone says hi"
+      STRAND_ID: ${WORKING_STRAND_ID}
+
+# ── Drone → Phone ─────────────────────────────────────────────────────────
+- runScript:
+    file: ../_helpers/drone-insert.js
+    env:
+      CONTENT: "Drone replies"
+      MEMBER_ID: "drone-test"
+      STRAND_ID: ${WORKING_STRAND_ID}
+
+- extendedWaitUntil:
+    visible: "Drone replies"
+    timeout: 5000
+
+# Both messages visible at the end (set membership).
+- assertVisible: "Phone says hi"
+- assertVisible: "Drone replies"
+
+# Monotonic Timestamps in the drone DB.
+- runScript:
+    file: ../_helpers/assert-monotonic-timestamps.js
+    env:
+      STRAND_ID: ${WORKING_STRAND_ID}

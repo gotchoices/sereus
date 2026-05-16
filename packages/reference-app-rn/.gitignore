@@ -12,3 +12,8 @@ node_modules/
 # Test fixture generated data
 test-fixture/test-data.json
 
+# Maestro e2e artifacts
+maestro/.fixture.log
+maestro/.maestro-junit.xml
+maestro/.maestro/
+

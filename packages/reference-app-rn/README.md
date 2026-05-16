@@ -146,6 +146,55 @@ Each phone runs its own CadreNode. To chat between two phones:
 | `yarn build:dev` | EAS cloud build (development profile) |
 | `yarn build:preview` | EAS cloud build (preview profile) |
 | `yarn test:bundle` | Verify the Metro bundle compiles for Android |
+| `yarn test:e2e` | Run the Maestro e2e suite against a local drone fixture (see below) |
+
+## E2E Tests (Maestro)
+
+`yarn test:e2e` runs a Maestro suite against a locally-spawned drone fixture.
+The orchestrator (`scripts/run-e2e.mjs`):
+
+1. Spawns the drone fixture (`test-fixture/start.mjs`) — in-memory CadreNode +
+   HTTP sidecar on port 4080
+2. Waits for `/health`
+3. `adb reverse tcp:4002` + `tcp:4080` so the emulator can reach host loopback
+4. Runs `maestro test maestro/flows/ -e PARTY_ID=… -e BOOTSTRAP_ADDR=… …`
+
+### Prerequisites
+
+- **Android emulator** running with the dev-client APK installed
+  (`yarn android` once produces a usable build)
+- **`adb`** on PATH (Android SDK platform-tools)
+- **Maestro CLI** on PATH —
+  [install](https://maestro.mobile.dev/getting-started/installing-maestro)
+- iOS support is not wired in `run-e2e.mjs`; the YAML flows themselves are
+  platform-agnostic
+
+### Flow inventory
+
+| File | What it covers |
+|------|----------------|
+| `maestro/_setup.yaml` | Connect, apply seed, create strand, discover the shared strand |
+| `maestro/flows/1-connect-and-send.yaml` | Send a message; local echo appears |
+| `maestro/flows/2-drone-to-phone.yaml` | Drone HTTP insert → phone displays it |
+| `maestro/flows/3-round-trip.yaml` | Phone send → drone sees; drone send → phone sees; both visible |
+
+### Artifacts
+
+- `maestro/.fixture.log` — full stdout/stderr from the drone fixture
+- `maestro/.maestro-junit.xml` — JUnit report from Maestro
+- `test-fixture/test-data.json` — emitted by the fixture each run; gitignored
+
+### Troubleshooting
+
+- **"adb reverse" warning**: emulator not running, or wrong device default —
+  run `adb devices` to confirm and `emulator -avd <name>` to start one.
+- **Connection fails / "Connection failed" modal**: the WS dial from the
+  emulator's `127.0.0.1:4002` did not tunnel to host. Verify
+  `adb reverse --list` shows both rules; if `adb reverse` is not supported on
+  the device, override `BOOTSTRAP_ADDR` to use `10.0.2.2:4002` instead and
+  pass it through `run-e2e.mjs`.
+- **`maestro: command not found`**: install Maestro per the link above;
+  override `MAESTRO_BIN=/path/to/maestro` if not on PATH.
 
 ## Project Structure
 

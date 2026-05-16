@@ -16,6 +16,7 @@ import {
 import { useCadre } from '../src/cadre-context';
 import { useChat } from '../src/use-chat';
 import type { ChatMessage } from '../src/chat-operations';
+import { TEST_IDS } from '../src/test-ids';
 
 export default function ChatScreen() {
   const cadre = useCadre();
@@ -61,7 +62,7 @@ export default function ChatScreen() {
       keyboardVerticalOffset={90}
     >
       {/* Status bar */}
-      <View style={[styles.statusBar, { backgroundColor: statusColor }]}>
+      <View style={[styles.statusBar, { backgroundColor: statusColor }]} testID={TEST_IDS.chat.statusBar}>
         <Text style={styles.statusText}>
           {cadre.status === 'connected'
             ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
@@ -81,6 +82,7 @@ export default function ChatScreen() {
       {/* Message list */}
       <FlatList
         ref={listRef}
+        testID={TEST_IDS.chat.messageList}
         data={chat.messages}
         keyExtractor={(m) => String(m.Id)}
         renderItem={({ item }) => (
@@ -97,6 +99,7 @@ export default function ChatScreen() {
       <View style={styles.composer}>
         <TextInput
           style={styles.input}
+          testID={TEST_IDS.chat.messageInput}
           value={draft}
           onChangeText={setDraft}
           placeholder="Message…"
@@ -109,6 +112,8 @@ export default function ChatScreen() {
           style={[styles.sendBtn, !draft.trim() && styles.sendBtnDisabled]}
           onPress={handleSend}
           disabled={!draft.trim()}
+          testID={TEST_IDS.chat.sendBtn}
+          accessibilityLabel={TEST_IDS.chat.sendBtn}
         >
           <Text style={styles.sendText}>Send</Text>
         </Pressable>
@@ -121,7 +126,7 @@ export default function ChatScreen() {
 
 function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
   return (
-    <View style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
+    <View testID={TEST_IDS.chat.messageRow(msg.Id)} style={[styles.bubble, isOwn ? styles.bubbleOwn : styles.bubbleOther]}>
       {!isOwn && (
         <Text style={styles.sender}>{msg.MemberName ?? msg.MemberId.slice(-6)}</Text>
       )}

@@ -1,0 +1,77 @@
+appId: ${MAESTRO_APP_ID}
+---
+# Shared bootstrap for all e2e flows.
+# Launches the phone app, connects to the drone fixture, applies the
+# pre-generated seed, creates a chat strand, and switches to the Chat tab.
+#
+# Env vars (injected by scripts/run-e2e.mjs):
+#   PARTY_ID, BOOTSTRAP_ADDR, SEED — from test-data.json
+#   STRAND_ID                      — drone's pre-created strand
+#   SIDECAR_URL                    — drone HTTP base URL
+#   MAESTRO_APP_ID                 — phone app bundle id
+#
+# Outputs (for caller flows):
+#   WORKING_STRAND_ID — the phone-created strand the drone has joined
+#                       (use this for drone-side message inserts so phone
+#                       and drone reference the same strand in chat tests)
+
+- launchApp:
+    clearState: true
+
+# Settings tab.
+- tapOn: "Settings"
+
+# ── Connect ───────────────────────────────────────────────────────────────
+- tapOn:
+    id: "input-party-id"
+- inputText: ${PARTY_ID}
+- hideKeyboard
+- tapOn:
+    id: "input-bootstrap-addr"
+- inputText: ${BOOTSTRAP_ADDR}
+- hideKeyboard
+- tapOn:
+    id: "btn-connect"
+- extendedWaitUntil:
+    visible:
+      id: "btn-disconnect"
+    timeout: 15000
+
+# ── Apply seed ────────────────────────────────────────────────────────────
+- tapOn:
+    id: "input-seed"
+- inputText: ${SEED}
+- hideKeyboard
+- tapOn:
+    id: "btn-apply-seed"
+- assertVisible:
+    id: "modal-title"
+    text: "Seed applied"
+- tapOn:
+    id: "btn-modal-ok"
+
+# ── Create strand ─────────────────────────────────────────────────────────
+- tapOn:
+    id: "btn-create-strand"
+- assertVisible:
+    id: "modal-title"
+    text: "Strand created"
+- tapOn:
+    id: "btn-modal-ok"
+
+# Wait for the phone status bar to reflect the new strand.
+- extendedWaitUntil:
+    visible:
+      id: "status-bar"
+      text: "Connected.*strand"
+    timeout: 10000
+
+# ── Discover the strand the drone joined ──────────────────────────────────
+# The phone-created strand syncs to the drone via control network +
+# strandFilter:all. Poll /status until the drone reports it.
+- runScript: _helpers/discover-phone-strand.js
+
+# ── Switch to Chat tab ────────────────────────────────────────────────────
+- tapOn: "Chat"
+- assertVisible:
+    id: "status-bar"

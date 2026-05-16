@@ -13,6 +13,7 @@ import {
   View,
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
+import { TEST_IDS } from '../src/test-ids';
 
 /** Generate a simple random UUID (good enough for demo). */
 function uuid(): string {
@@ -105,14 +106,14 @@ export default function SettingsScreen() {
             <InfoRow label="Status" value="Connected" color="#4caf50" />
             <InfoRow label="Peer ID" value={cadre.peerId ?? '—'} />
             <InfoRow label="Strands" value={String(cadre.strands.size)} />
-            <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" />
+            <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
         ) : (
           <>
             <InfoRow label="Status" value={cadre.status} color="#ff9800" />
-            <LabelledInput label="Party ID" value={partyId} onChangeText={setPartyId} placeholder="auto-generated if empty" />
-            <LabelledInput label="Bootstrap addr" value={bootstrapAddr} onChangeText={setBootstrapAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" />
-            <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} />
+            <LabelledInput label="Party ID" value={partyId} onChangeText={setPartyId} placeholder="auto-generated if empty" testID={TEST_IDS.settings.partyIdInput} />
+            <LabelledInput label="Bootstrap addr" value={bootstrapAddr} onChangeText={setBootstrapAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" testID={TEST_IDS.settings.bootstrapAddrInput} />
+            <Btn label="Connect" onPress={handleConnect} disabled={cadre.status === 'connecting'} testID={TEST_IDS.settings.connectBtn} />
           </>
         )}
       </Section>
@@ -120,16 +121,16 @@ export default function SettingsScreen() {
       {/* Add Peer */}
       {connected && (
         <Section title="Add Peer">
-          <LabelledInput label="Multiaddr" value={peerAddr} onChangeText={setPeerAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" />
-          <Btn label="Dial Peer" onPress={handleDialPeer} disabled={!peerAddr.trim()} />
+          <LabelledInput label="Multiaddr" value={peerAddr} onChangeText={setPeerAddr} placeholder="/ip4/…/tcp/…/ws/p2p/…" testID={TEST_IDS.settings.addPeerInput} />
+          <Btn label="Dial Peer" onPress={handleDialPeer} disabled={!peerAddr.trim()} testID={TEST_IDS.settings.addPeerBtn} />
         </Section>
       )}
 
       {/* Seed */}
       {connected && (
         <Section title="Seed Bootstrap">
-          <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline />
-          <Btn label="Apply Seed" onPress={handleApplySeed} disabled={!seedInput.trim()} />
+          <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
+          <Btn label="Apply Seed" onPress={handleApplySeed} disabled={!seedInput.trim()} testID={TEST_IDS.settings.applySeedBtn} />
         </Section>
       )}
 
@@ -139,7 +140,7 @@ export default function SettingsScreen() {
           {[...cadre.strands.entries()].map(([id, s]) => (
             <InfoRow key={id} label={id.slice(0, 8)} value={s.status} />
           ))}
-          <Btn label="Create Chat Strand" onPress={handleCreateStrand} />
+          <Btn label="Create Chat Strand" onPress={handleCreateStrand} testID={TEST_IDS.settings.createStrandBtn} />
         </Section>
       )}
 
@@ -149,11 +150,11 @@ export default function SettingsScreen() {
       <Modal visible={modal !== null} transparent animationType="fade" onRequestClose={() => setModal(null)}>
         <View style={styles.modalOverlay}>
           <View style={styles.modalBox}>
-            <Text style={styles.modalTitle}>{modal?.title}</Text>
+            <Text style={styles.modalTitle} testID={TEST_IDS.settings.modalTitle}>{modal?.title}</Text>
             <ScrollView style={styles.modalScroll}>
               <Text style={styles.modalMessage} selectable>{modal?.message}</Text>
             </ScrollView>
-            <Btn label="OK" onPress={() => setModal(null)} />
+            <Btn label="OK" onPress={() => setModal(null)} testID={TEST_IDS.settings.modalOkBtn} />
           </View>
         </View>
       </Modal>
@@ -181,18 +182,18 @@ function InfoRow({ label, value, color }: { label: string; value: string; color?
   );
 }
 
-function LabelledInput(props: { label: string; value: string; onChangeText: (t: string) => void; placeholder?: string; multiline?: boolean }) {
+function LabelledInput(props: { label: string; value: string; onChangeText: (t: string) => void; placeholder?: string; multiline?: boolean; testID?: string }) {
   return (
     <View style={{ marginBottom: 8 }}>
       <Text style={styles.label}>{props.label}</Text>
-      <TextInput style={styles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} />
+      <TextInput style={styles.input} value={props.value} onChangeText={props.onChangeText} placeholder={props.placeholder} placeholderTextColor="#666" multiline={props.multiline} testID={props.testID} />
     </View>
   );
 }
 
-function Btn({ label, onPress, disabled, color }: { label: string; onPress: () => void; disabled?: boolean; color?: string }) {
+function Btn({ label, onPress, disabled, color, testID }: { label: string; onPress: () => void; disabled?: boolean; color?: string; testID?: string }) {
   return (
-    <Pressable style={[styles.btn, { backgroundColor: color ?? '#6c63ff' }, disabled && styles.btnDisabled]} onPress={onPress} disabled={disabled}>
+    <Pressable style={[styles.btn, { backgroundColor: color ?? '#6c63ff' }, disabled && styles.btnDisabled]} onPress={onPress} disabled={disabled} testID={testID} accessibilityLabel={testID ?? label}>
       <Text style={styles.btnText}>{label}</Text>
     </Pressable>
   );

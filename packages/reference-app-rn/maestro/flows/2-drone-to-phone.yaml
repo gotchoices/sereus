@@ -1,0 +1,27 @@
+appId: ${MAESTRO_APP_ID}
+---
+# Flow 2: Drone-side insert appears on the phone within the poll window.
+# Verifies drone → phone replication: a message inserted directly into the
+# drone's strand database (via the HTTP sidecar) renders on the phone's
+# chat screen.
+
+- runFlow: ../_setup.yaml
+
+# Drone inserts into the strand the phone is also on (WORKING_STRAND_ID
+# discovered by _setup.yaml). Without this, the drone would insert into
+# its own pre-created strand and the phone wouldn't see the message.
+- runScript:
+    file: ../_helpers/drone-insert.js
+    env:
+      CONTENT: "Hello from drone"
+      MEMBER_ID: "drone-test"
+      STRAND_ID: ${WORKING_STRAND_ID}
+
+# Chat polls every 2s; allow up to 5s for the next poll + render.
+- extendedWaitUntil:
+    visible: "Hello from drone"
+    timeout: 5000
+
+# Member rendering for non-own message: MessageBubble shows MemberName ?? MemberId.
+# Sidecar inserts member as (memberId, memberId) so MemberName === 'drone-test'.
+- assertVisible: "drone-test"

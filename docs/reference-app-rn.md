@@ -500,9 +500,42 @@ Only when `react-native-mmkv` or another native dependency version changes. Othe
 
 ### Phase 2: Scripted Integration
 
-- Start drone as a fixture process
-- Use Maestro (or Detox) flows to: launch app → enter seed → send message → assert message appears
-- Maestro Cloud can run this in CI without local emulators
+Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
+`scripts/run-e2e.mjs` orchestrator:
+
+1. Spawns `test-fixture/start.mjs` (in-memory drone with WS + HTTP sidecar)
+2. Waits for `GET http://127.0.0.1:4080/health` to return 200
+3. Reads `test-fixture/test-data.json` for `partyId`, `droneBootstrapAddr`,
+   `seed`, `strandId`
+4. Runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can
+   reach the host-bound fixture
+5. Spawns Maestro against `maestro/flows/`, passing the test-data fields as
+   `-e KEY=VALUE` env vars
+6. Tears down the fixture + adb reverse rules on exit
+
+#### Prerequisites
+
+- Android emulator running, with the dev-client APK installed
+- `adb` on PATH
+- [Maestro CLI](https://maestro.mobile.dev/getting-started/installing-maestro)
+  on PATH (`maestro` binary)
+
+#### Flows
+
+| Flow | What it covers |
+|------|----------------|
+| `flows/1-connect-and-send.yaml` | Cold launch → connect → seed → create strand → send message → local echo |
+| `flows/2-drone-to-phone.yaml` | Drone-side HTTP insert appears in phone chat within 5s |
+| `flows/3-round-trip.yaml` | Bidirectional: phone send seen by drone; drone send seen by phone; both visible |
+
+All three flows share `_setup.yaml` for the connect/seed/strand bootstrap.
+After the phone creates its strand, `_helpers/discover-phone-strand.js`
+polls the drone's `/status` endpoint to discover the strand the drone has
+joined via `strandFilter:all` control-network sync — drone-side inserts
+target this strand so both nodes reference the same database.
+
+Maestro Cloud can run the same `maestro/flows/` directory in CI without
+local emulators; the orchestrator script is local-runnable only.
 
 ### Phase 3: Convergence Tests
 

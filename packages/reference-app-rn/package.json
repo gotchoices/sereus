@@ -9,6 +9,7 @@
     "android": "expo run:android",
     "ios": "expo run:ios",
     "test:bundle": "expo export --platform android && rm -rf dist",
+    "test:e2e": "node scripts/run-e2e.mjs",
     "build:dev": "eas build --profile development",
     "build:preview": "eas build --profile preview"
   },

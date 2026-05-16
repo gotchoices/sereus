@@ -1,0 +1,19 @@
+appId: ${MAESTRO_APP_ID}
+---
+# Flow 1: Connect, seed, create strand, send a message from the phone.
+# Verifies the basic happy path: app starts disconnected, connects to the
+# drone, applies a seed, creates a strand, and locally echoes a sent message.
+
+- runFlow: ../_setup.yaml
+
+# Compose and send.
+- tapOn:
+    id: "input-message"
+- inputText: "Hello from maestro"
+- hideKeyboard
+- tapOn:
+    id: "btn-send"
+
+# The local echo (optimistic update in use-chat.ts) appears immediately;
+# Maestro's default visibility wait of ~7s covers any FlatList settle time.
+- assertVisible: "Hello from maestro"
