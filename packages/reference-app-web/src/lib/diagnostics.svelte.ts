@@ -15,6 +15,8 @@
 
 import { getNode, getDb, getStorage, getIdentityFirstSeenMs } from './optimystic.js';
 import type { Libp2p, Connection } from '@libp2p/interface';
+import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
+import type { IRawStorage } from '@optimystic/db-p2p';
 
 const ERROR_BUFFER_LIMIT = 10;
 const POLL_INTERVAL_MS = 2_000;
@@ -435,11 +437,20 @@ const OBJECT_STORE_NAMES = [
 	'kv',
 ] as const;
 
+// Stable, minification-safe labels for IRawStorage implementations. Falling
+// back to `constructor.name` would break in production, where Vite mangles
+// class identifiers.
+function storageBackendLabel(storage: IRawStorage | null): string | null {
+	if (!storage) return null;
+	if (storage instanceof IndexedDBRawStorage) return 'IndexedDBRawStorage';
+	return 'unknown';
+}
+
 async function collectStorage(): Promise<StorageInfo> {
 	const storage = getStorage();
 	const db = getDb();
 
-	const backend = storage ? storage.constructor.name : null;
+	const backend = storageBackendLabel(storage);
 
 	let quotaBytes: number | null = null;
 	let usageBytes: number | null = null;

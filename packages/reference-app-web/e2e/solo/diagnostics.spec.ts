@@ -48,13 +48,10 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 			);
 		expect(cryptoOk).toEqual([true, true, true, true, true, true, true]);
 
-		// Storage backend should be set. The displayed string is the storage
-		// constructor name (`IndexedDBRawStorage` in dev), but Vite minifies
-		// class names in the production build, so we only assert that *some*
-		// non-empty backend name is reported.
-		const backend = (await page.getByTestId('diag-storage-backend').textContent())?.trim() ?? '';
-		expect(backend.length).toBeGreaterThan(0);
-		expect(backend).not.toBe('—');
+		// Storage backend should be the stable, minification-safe label.
+		await expect(page.getByTestId('diag-storage-backend')).toHaveText(
+			'IndexedDBRawStorage',
+		);
 
 		// Recent errors list — after a clean boot we expect zero entries.
 		const errCount = await page.getByTestId('diag-errors').getAttribute('data-error-count');
