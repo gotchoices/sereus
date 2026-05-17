@@ -133,7 +133,7 @@ export class Installer {
     }
 
     const cfg: HostConfigFile = {
-      version: 1,
+      version: 2,
       installId: randomInstallId(),
       uiPort: answers.uiPort,
       libp2pPort: answers.libp2pPort,
@@ -142,6 +142,7 @@ export class Installer {
       upnpEnabled: answers.upnpEnabled,
       installedAt: new Date().toISOString(),
       installerVersion: this.installerVersion,
+      updates: { autoApply: false },
     };
     const cfgPath = configPath(answers.dataDir);
     writeHostConfig(cfgPath, cfg);

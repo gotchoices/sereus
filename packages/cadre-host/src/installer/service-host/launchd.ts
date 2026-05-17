@@ -60,6 +60,12 @@ export class LaunchdServiceHost implements ServiceHost {
     void ctx;
   }
 
+  async restart(ctx: ServiceHostContext): Promise<void> {
+    void ctx;
+    const target = guiTarget();
+    run('launchctl', ['kickstart', '-k', `${target}/${LABEL}`]);
+  }
+
   async status(ctx: ServiceHostContext): Promise<ServiceHostStatus> {
     void ctx;
     const unitPath = serviceInstallPath('darwin');

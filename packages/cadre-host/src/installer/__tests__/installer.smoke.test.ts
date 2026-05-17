@@ -23,6 +23,9 @@ class FakeServiceHost implements ServiceHost {
     this.installed = false;
     this.running = false;
   }
+  async restart(_ctx: ServiceHostContext): Promise<void> {
+    this.running = true;
+  }
   async status(_ctx: ServiceHostContext): Promise<ServiceHostStatus> {
     return { installed: this.installed, running: this.running };
   }

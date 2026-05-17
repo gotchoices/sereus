@@ -64,6 +64,35 @@ export type {
 } from './installer/index.js';
 
 export {
+  UpdateService,
+  createUpdateHandlers,
+  UpdateStateStore,
+  UpdateErrorException,
+  applyUpdate,
+  defaultNpmExecutor,
+  fetchManifest,
+  verifyManifest,
+  canonicalJson,
+  signManifestForTesting,
+  compareVersions,
+  parseVersion,
+  getReleasePublicKey,
+  getReleasePublicKeyBase64,
+  ed25519FromRaw,
+} from './update/index.js';
+export type {
+  UpdateServiceOptions,
+  UpdateHandlers,
+  UpdateState,
+  UpdateApplyResult,
+  UpdateSettings,
+  UpdateManifest,
+  UpdateErrorCode,
+  NpmExecutor,
+  ServiceRestarter,
+} from './update/index.js';
+
+export {
   NatService,
   NatStore,
   NatError,

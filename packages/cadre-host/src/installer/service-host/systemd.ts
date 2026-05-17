@@ -64,6 +64,11 @@ export class SystemdServiceHost implements ServiceHost {
     void ctx;
   }
 
+  async restart(ctx: ServiceHostContext): Promise<void> {
+    void ctx;
+    run('systemctl', ['--user', 'restart', SERVICE_NAME]);
+  }
+
   async status(ctx: ServiceHostContext): Promise<ServiceHostStatus> {
     void ctx;
     const unitPath = serviceInstallPath('linux');

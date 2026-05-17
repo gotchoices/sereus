@@ -12,20 +12,26 @@
  * spin up an inline service, so cadre-host must be running.
  */
 
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
 
 import { Command } from 'commander';
 
 import { parseDuration } from '../auth/duration.js';
 import { Installer } from '../installer/index.js';
-import { readHostConfig } from '../installer/config.js';
+import { readHostConfig, updateHostConfig } from '../installer/config.js';
 import {
   configPath as resolveConfigPath,
   defaultDataDir,
+  defaultHostJs,
+  defaultServiceDir,
   identityPath as resolveIdentityPath,
 } from '../installer/paths.js';
 import { detectPlatform } from '../installer/platform.js';
+import { createServiceHost } from '../installer/service-host/index.js';
+import { UpdateService } from '../update/index.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
 
@@ -215,10 +221,49 @@ program
       }
       // eslint-disable-next-line no-console
       console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
-      // TODO(cadre-host-update-flow): kick off checkForUpdate() before serve().
+
+      // Update flow: notify-by-default; auto-apply opt-in via host.config.json.
+      // The local-UI ticket (6.5) wires the handlers into HTTP routes; here we
+      // just construct the service so the in-process timer + state file are
+      // populated.
+      const platform = detectPlatform();
+      const serviceHost = createServiceHost(platform);
+      const updateService = new UpdateService({
+        dataDir: cfg.dataDir,
+        currentVersion: readPackageVersionForStart(),
+        settings: cfg.updates,
+        ...(cfg.updates.manifestUrl ? { manifestUrl: cfg.updates.manifestUrl } : {}),
+        restart: async () => {
+          try {
+            await serviceHost.restart({
+              nodePath: process.execPath,
+              hostJs: defaultHostJs(),
+              dataDir: cfg.dataDir,
+              serviceDir: defaultServiceDir(),
+            });
+            return undefined;
+          } catch (err) {
+            return (err as Error).message;
+          }
+        },
+      });
+      // Persist settings changes back to host.config.json on PUT /update/settings.
+      updateService.onSettingsChanged((next) => {
+        try {
+          updateHostConfig(cfgPath, { updates: next });
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`failed to persist updated settings to ${cfgPath}: ${(err as Error).message}`);
+        }
+      });
+      // Don't block startup on the network round-trip — call and forget.
+      void updateService.check();
+      updateService.start();
+
       // TODO(cadre-host-local-ui-server): replace this with createLocalUiServer({...}).start().
       // For now, await termination so the service unit treats this as a long-running process.
       await waitForTermination();
+      updateService.stop();
       // eslint-disable-next-line no-console
       console.log('cadre-host stopped.');
       process.exit(0);
@@ -235,6 +280,19 @@ function parseIntArg(raw: string): number {
     throw new Error(`Invalid integer: ${raw}`);
   }
   return n;
+}
+
+function readPackageVersionForStart(): string {
+  try {
+    // dist/bin/host.js -> ../../package.json
+    const here = dirname(fileURLToPath(import.meta.url));
+    const pkgPath = resolve(here, '..', '..', 'package.json');
+    const raw = readFileSync(pkgPath, 'utf8');
+    const parsed = JSON.parse(raw) as { version?: string };
+    return parsed.version ?? '0.0.0-unknown';
+  } catch {
+    return '0.0.0-unknown';
+  }
 }
 
 function waitForTermination(): Promise<void> {

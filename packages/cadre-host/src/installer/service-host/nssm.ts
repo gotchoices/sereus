@@ -59,6 +59,12 @@ export class NssmServiceHost implements ServiceHost {
     runPwsh(['-ExecutionPolicy', 'Bypass', '-NoProfile', '-File', script]);
   }
 
+  async restart(ctx: ServiceHostContext): Promise<void> {
+    void ctx;
+    requireNssmAvailable();
+    runPwsh(['-ExecutionPolicy', 'Bypass', '-NoProfile', '-Command', `nssm.exe restart ${SERVICE_NAME}`]);
+  }
+
   async status(ctx: ServiceHostContext): Promise<ServiceHostStatus> {
     void ctx;
     const statusResult = spawnSync('nssm.exe', ['status', SERVICE_NAME], { encoding: 'utf8' });

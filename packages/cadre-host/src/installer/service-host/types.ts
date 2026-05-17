@@ -29,6 +29,14 @@ export interface ServiceHost {
   /** Stop + deregister. Idempotent: no-op when not installed. */
   uninstall(ctx: ServiceHostContext): Promise<void>;
 
+  /**
+   * Restart the running service. Used by the update flow after `npm install -g`
+   * to pick up the new binary. Throws if the OS service manager reports a
+   * non-zero exit — callers are responsible for surfacing that as a warning
+   * (the binary swap already succeeded).
+   */
+  restart(ctx: ServiceHostContext): Promise<void>;
+
   /** Cheap status read. */
   status(ctx: ServiceHostContext): Promise<ServiceHostStatus>;
 

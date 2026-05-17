@@ -54,7 +54,21 @@ cadre-host uninstall --remove-data --yes
 
 ## What `cadre-host start` does today
 
-`start` loads `host.config.json` + the identity and waits for SIGTERM. The full HTTP management server (Fastify with `/auth/*`, `/nat/*`, `/api/*` routes) lands in `cadre-host-local-ui` (`6.5.1`); until then the wizard's enrollment-invite step degrades silently (the URL is printed, the QR is not).
+`start` loads `host.config.json` + the identity, kicks off a background update check, arms a 24-hour update-check timer, and waits for SIGTERM. The full HTTP management server (Fastify with `/auth/*`, `/nat/*`, `/update/*`, `/api/*` routes) lands in `cadre-host-local-ui` (`6.5.1`); until then the wizard's enrollment-invite step degrades silently (the URL is printed, the QR is not). The `UpdateService` is exposed via `createUpdateHandlers()` for the local-UI ticket to wire up.
+
+## Updates
+
+cadre-host checks `https://releases.serfab.io/cadre-host/latest.json` once per `start` and every 24 hours thereafter. **Notify-by-default**: an available update is recorded in `<dataDir>/update-state.json` and surfaced by the local UI; the user clicks "apply" to install it. Auto-apply is opt-in via the local-UI settings page (writes `updates.autoApply: true` into `host.config.json`).
+
+The manifest URL is overridable two ways:
+- `CADRE_HOST_UPDATE_MANIFEST_URL` env var (wins over config).
+- `updates.manifestUrl` in `host.config.json` (settable from the local UI).
+
+Manifests are signed with Ed25519; cadre-host refuses to apply any release whose signature doesn't match the embedded release key. For CI / dev signing, set `CADRE_HOST_UPDATE_DEV_KEY` to a base64-encoded raw 32-byte public key.
+
+**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read identity, mutate trust circle, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on the trust-circle membership model for inter-cadre auth.
+
+Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
 
 ## More
 

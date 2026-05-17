@@ -18,7 +18,7 @@ describe('host.config.json round-trip', () => {
 
   function makeCfg(overrides: Partial<HostConfigFile> = {}): HostConfigFile {
     return {
-      version: 1,
+      version: 2,
       installId: 'abc123',
       uiPort: 8765,
       libp2pPort: 4001,
@@ -27,6 +27,7 @@ describe('host.config.json round-trip', () => {
       upnpEnabled: true,
       installedAt: '2026-01-01T00:00:00.000Z',
       installerVersion: '0.6.0',
+      updates: { autoApply: false },
       ...overrides,
     };
   }
@@ -36,6 +37,28 @@ describe('host.config.json round-trip', () => {
     const path = join(tmp, 'host.config.json');
     writeHostConfig(path, cfg);
     expect(readHostConfig(path)).toEqual(cfg);
+  });
+
+  it('upgrades v1 files in place on read', () => {
+    const path = join(tmp, 'host.config.json');
+    const v1 = {
+      version: 1,
+      installId: 'abc123',
+      uiPort: 8765,
+      libp2pPort: 4001,
+      dataDir: tmp,
+      identityPath: join(tmp, 'identity.key'),
+      upnpEnabled: true,
+      installedAt: '2026-01-01T00:00:00.000Z',
+      installerVersion: '0.6.0',
+    };
+    writeFileSync(path, JSON.stringify(v1));
+    const upgraded = readHostConfig(path);
+    expect(upgraded.version).toBe(2);
+    expect(upgraded.updates).toEqual({ autoApply: false });
+    // Reading again should be idempotent and stay v2.
+    const reRead = readHostConfig(path);
+    expect(reRead.version).toBe(2);
   });
 
   it('rejects unknown versions', () => {
@@ -52,12 +75,12 @@ describe('host.config.json round-trip', () => {
 
   it('rejects missing required fields', () => {
     const path = join(tmp, 'host.config.json');
-    writeFileSync(path, JSON.stringify({ version: 1, uiPort: 1234 }));
+    writeFileSync(path, JSON.stringify({ version: 2, uiPort: 1234 }));
     expect(() => readHostConfig(path)).toThrow(/missing required fields/);
   });
 
   it('refuses to write the wrong version', () => {
     const path = join(tmp, 'host.config.json');
-    expect(() => writeHostConfig(path, { ...makeCfg(), version: 2 as never })).toThrow(/version=2/);
+    expect(() => writeHostConfig(path, { ...makeCfg(), version: 3 as never })).toThrow(/version=3/);
   });
 });
