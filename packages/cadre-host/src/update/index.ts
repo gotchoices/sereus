@@ -286,8 +286,12 @@ export function createUpdateHandlers(service: UpdateService): UpdateHandlers {
 }
 
 function resolveManifestUrl(explicit: string | undefined, fromSettings: string | undefined): string {
+  // Env var wins — operators routinely point this at staging endpoints, and
+  // both the README and host.ts documentation promise that behavior.
+  // Then explicit constructor arg → persisted settings → compiled default.
   const envUrl = process.env.CADRE_HOST_UPDATE_MANIFEST_URL?.trim();
-  return explicit ?? envUrl ?? fromSettings ?? DEFAULT_MANIFEST_URL;
+  if (envUrl) return envUrl;
+  return explicit ?? fromSettings ?? DEFAULT_MANIFEST_URL;
 }
 
 export type { UpdateState, UpdateApplyResult, UpdateSettings, UpdateManifest } from './types.js';

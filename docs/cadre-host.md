@@ -166,6 +166,16 @@ On Windows POSIX permission bits don't apply, so the file is readable by any acc
 4. Calls `await service.stop()` on shutdown to release the UPnP lease.
 5. Wires `service.getInviteAddresses.bind(service)` as `network.inviteAddressResolver` on the cadre-core `CadreNodeConfig`.
 
+## Updates
+
+cadre-host fetches a signed manifest from `https://releases.serfab.io/cadre-host/latest.json` once on `start` and every 24 h thereafter. The manifest is an Ed25519-signed envelope `{ manifest, sig }` where the inner manifest carries `version`, `publishedAt`, an `npm.{ package, tag }` hint, and an optional `minPreviousVersion` step gate. The release public key is embedded in the binary; `CADRE_HOST_UPDATE_DEV_KEY` overrides it for CI / local signing.
+
+**Notify-by-default.** A successfully verified manifest with `version > current` writes an `available` record into `<dataDir>/update-state.json`; the local UI surfaces it as a banner with an explicit "Apply now" action. Auto-apply is opt-in (`updates.autoApply: true` in `host.config.json`, settable from the UI's settings page). Signature failures are recorded as `lastError` so the UI can warn; network failures stay silent.
+
+**Apply flow.** Re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g <pkg>@<version>` (5-minute timeout), then ask the platform's `ServiceHost.restart(...)` to pick up the new binary (`systemctl --user restart`, `launchctl kickstart`, or `nssm restart`). On install failure the previous version is reinstalled and the error is surfaced; the still-running old binary continues to serve. Restart failures are non-fatal — the binary swap already succeeded, so the user can restart manually.
+
+`UpdateService` lives in `src/update/` and exposes `createUpdateHandlers(service)` for the local-UI HTTP routes (`GET /update`, `POST /update/apply`, `GET/PUT /update/settings`); `cadre-host start` constructs the service so the daily timer and `update-state.json` are populated regardless of whether the UI has bound its routes yet.
+
 ## Architecture sketch
 
 ```mermaid
@@ -175,11 +185,14 @@ graph TD
     Orch["HostProcessOrchestrator"]
     TC["TrustCircleAuth"]
     NAT["NAT layer<br/>(DDNS · UPnP/PCP · relay)"]
+    Upd["UpdateService<br/>(signed manifest)"]
     Install["Installer + service-host"]
     UI --> Mgmt
     Mgmt --> Orch
     Mgmt --> TC
     Mgmt --> NAT
+    Mgmt --> Upd
+    Upd -. "npm install -g + ServiceHost.restart" .-> Install
     Orch --> N1["cadre node (child process)"]
     Orch --> N2["cadre node (child process)"]
     Orch --> NN["..."]
@@ -196,7 +209,8 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
 - `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
-- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity and waits on SIGTERM as a placeholder for the local UI HTTP listener.
+- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, arms the daily update check (`6.4.2`), and waits on SIGTERM as a placeholder for the local UI HTTP listener.
+- `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
 The local UI HTTP server is forthcoming in the `cadre-host-local-ui-server` ticket (`6.5.1`). Until it lands, `cadre-host start` keeps the service-host unit alive but does not yet expose `/auth/*` or `/nat/*` routes — `NatService` and `TrustCircleService` are libraries waiting for that server to construct and host them. The installer's "first enrollment invite" step degrades silently in the meantime.

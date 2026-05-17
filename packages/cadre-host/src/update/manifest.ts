@@ -25,9 +25,7 @@ export const DEFAULT_MANIFEST_URL = 'https://releases.serfab.io/cadre-host/lates
 export interface FetchManifestOptions {
   url: string;
   fetcher?: typeof fetch;
-  /** Per-attempt connect timeout in ms (default 5000). */
-  connectTimeoutMs?: number;
-  /** Total read timeout in ms (default 10000). */
+  /** Total fetch timeout (connect + read) in ms; default 10000. */
   readTimeoutMs?: number;
 }
 

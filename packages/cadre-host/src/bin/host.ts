@@ -200,7 +200,8 @@ program
   .action(async (opts: { dataDir?: string; tui?: boolean }) => {
     try {
       void opts.tui;
-      const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(detectPlatform());
+      const platform = detectPlatform();
+      const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
       const cfgPath = resolveConfigPath(dataDir);
       if (!existsSync(cfgPath)) {
         // eslint-disable-next-line no-console
@@ -226,7 +227,6 @@ program
       // The local-UI ticket (6.5) wires the handlers into HTTP routes; here we
       // just construct the service so the in-process timer + state file are
       // populated.
-      const platform = detectPlatform();
       const serviceHost = createServiceHost(platform);
       const updateService = new UpdateService({
         dataDir: cfg.dataDir,

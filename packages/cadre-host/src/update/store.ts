@@ -7,7 +7,7 @@
  */
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import { join } from 'node:path';
 import debug from 'debug';
 
 import { UpdateErrorException, type UpdateState } from './types.js';
@@ -71,7 +71,6 @@ export class UpdateStateStore {
 
   /** Persist a new state atomically. */
   save(state: UpdateState): void {
-    mkdirSync(dirname(this.path), { recursive: true });
     const next: UpdateState = { ...state, version: FILE_VERSION };
     const payload = JSON.stringify(next, null, 2) + '\n';
     const tmp = `${this.path}.tmp`;
