@@ -196,10 +196,10 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
 - `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
-- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install`, `start`, `status`, `uninstall` still print "not yet implemented" pending their tickets.
+- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity and waits on SIGTERM as a placeholder for the local UI HTTP listener.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
-The installer and local UI implementations are forthcoming in the `cadre-host-installer` and `cadre-host-local-ui` tickets. Until those land, `cadre-host` is not yet runnable end-to-end as a service — `NatService` and `TrustCircleService` are libraries waiting for `cadre-host-local-ui` to construct and host them.
+The local UI HTTP server is forthcoming in the `cadre-host-local-ui-server` ticket (`6.5.1`). Until it lands, `cadre-host start` keeps the service-host unit alive but does not yet expose `/auth/*` or `/nat/*` routes — `NatService` and `TrustCircleService` are libraries waiting for that server to construct and host them. The installer's "first enrollment invite" step degrades silently in the meantime.
 
 ## See also
 

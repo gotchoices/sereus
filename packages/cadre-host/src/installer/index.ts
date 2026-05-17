@@ -275,18 +275,27 @@ function readPackageVersion(): string {
 
 async function fetchEnrollmentInvite(uiPort: number): Promise<InstallResult['enrollmentInvite']> {
   const url = `http://127.0.0.1:${uiPort}/auth/invites`;
-  const response = await fetch(url, {
-    method: 'POST',
-    headers: { 'content-type': 'application/json' },
-    body: JSON.stringify({ label: 'Install — first device', ttlMs: 24 * 60 * 60 * 1000 }),
-  });
-  if (!response.ok) return undefined;
-  const body = await response.json() as { encodedInvite?: string; expiresAt?: string };
-  if (!body.encodedInvite) return undefined;
-  return {
-    encodedInvite: body.encodedInvite,
-    ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
-  };
+  // Node 18+'s fetch has no default timeout. Bound it so a slow / hung
+  // local-UI listener can't wedge `cadre-host install` indefinitely.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 5000);
+  try {
+    const response = await fetch(url, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Install — first device', ttlMs: 24 * 60 * 60 * 1000 }),
+      signal: controller.signal,
+    });
+    if (!response.ok) return undefined;
+    const body = await response.json() as { encodedInvite?: string; expiresAt?: string };
+    if (!body.encodedInvite) return undefined;
+    return {
+      encodedInvite: body.encodedInvite,
+      ...(body.expiresAt ? { expiresAt: body.expiresAt } : {}),
+    };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 // Exposed for tests that drive the wizard with a custom prompt fn.

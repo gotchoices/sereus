@@ -125,6 +125,25 @@ program
   .action(async (opts: { yes?: boolean; removeData?: boolean; dataDir?: string }) => {
     const installer = new Installer();
     try {
+      // --remove-data is destructive and irreversible (identity + trust circle
+      // are wiped). Require explicit --yes when stdin isn't a TTY, and prompt
+      // confirmation when it is.
+      if (opts.removeData && !opts.yes) {
+        if (!process.stdin.isTTY) {
+          console.error('uninstall: --remove-data requires --yes when stdin is not a TTY.');
+          process.exit(1);
+          return;
+        }
+        const dataDir = opts.dataDir ?? '(default data directory)';
+        const confirmed = await confirmDestructive(
+          `This will permanently delete ${dataDir} (identity, trust circle, NAT state). Continue? [y/N] `,
+        );
+        if (!confirmed) {
+          console.error('uninstall aborted.');
+          process.exit(1);
+          return;
+        }
+      }
       await installer.uninstall({
         yes: Boolean(opts.yes),
         removeData: Boolean(opts.removeData),
@@ -224,6 +243,17 @@ function waitForTermination(): Promise<void> {
     process.once('SIGINT', done);
     process.once('SIGTERM', done);
   });
+}
+
+async function confirmDestructive(message: string): Promise<boolean> {
+  const { createInterface } = await import('node:readline');
+  const rl = createInterface({ input: process.stdin, output: process.stdout });
+  try {
+    const answer = await new Promise<string>((res) => rl.question(message, res));
+    return /^(y|yes)$/i.test(answer.trim());
+  } finally {
+    rl.close();
+  }
 }
 
 const requireForQr = createRequire(import.meta.url);
