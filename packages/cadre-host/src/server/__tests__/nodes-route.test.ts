@@ -75,7 +75,17 @@ describe('/api/nodes routes', () => {
     app = Fastify();
     registerErrorHandler(app);
     orchestrator = fakeOrchestrator([{ ...SAMPLE_NODE, workdir }]);
-    registerNodesRoutes(app, { orchestrator, events: bus });
+    registerNodesRoutes(app, { orchestrator });
+    // Mirror what createLocalUiServer.start() does — forward orchestrator
+    // state changes onto the bus. The route itself doesn't publish; the
+    // listener is the single publication point.
+    orchestrator.onStateChange((info) => {
+      bus.publish({
+        type: 'node-state-changed',
+        nodeId: info.id,
+        status: info.status === 'running' ? 'running' : 'stopped',
+      });
+    });
   });
 
   afterEach(async () => {
@@ -123,12 +133,14 @@ describe('/api/nodes routes', () => {
     expect(body.data.lines).toEqual([]);
   });
 
-  it('POST /api/nodes/:id/stop calls orchestrator and publishes event', async () => {
+  it('POST /api/nodes/:id/stop calls orchestrator and publishes exactly one event via the listener', async () => {
     const events: unknown[] = [];
     bus.subscribe((e) => events.push(e));
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/stop' });
     expect(res.statusCode).toBe(200);
     expect(orchestrator.__stoppedDockerIds).toContain(SAMPLE_NODE.dockerId);
+    // Exactly one event — the orchestrator listener publishes; the route
+    // does not re-publish (regression guard).
     expect(events).toEqual([
       { type: 'node-state-changed', nodeId: 'alice', status: 'stopped' },
     ]);

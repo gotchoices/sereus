@@ -103,7 +103,7 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
     nat: opts.nat,
     ...(opts.update ? { update: opts.update } : {}),
   });
-  registerNodesRoutes(app, { orchestrator: opts.orchestrator, events });
+  registerNodesRoutes(app, { orchestrator: opts.orchestrator });
   registerSettingsRoutes(app, { settingsStore, nat: opts.nat, ...(opts.update ? { update: opts.update } : {}) });
 
   registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(opts.trustCircle), events });

@@ -1,6 +1,10 @@
 /**
  * /api/nodes — list managed cadre nodes, look up details, and control
- * lifecycle. Lifecycle ops publish `node-state-changed` to the bus.
+ * lifecycle.
+ *
+ * Bus events for lifecycle transitions are emitted by the orchestrator's
+ * `onStateChange` (forwarded by `createLocalUiServer.start`) — the route
+ * handlers don't re-publish.
  *
  * v1 limits: cadre-host doesn't yet auto-spawn nodes (the trust-circle →
  * node mapping ticket is separate). Until it lands, `listNodes()` is
@@ -12,7 +16,6 @@ import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
 import type { FastifyInstance } from 'fastify';
 
 import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
-import type { EventBus } from '../events/bus.js';
 import { defaultLogPath } from '../../orchestrator/log-rotator.js';
 
 const DEFAULT_LOG_LINES = 200;
@@ -20,11 +23,10 @@ const MAX_LOG_LINES = 2000;
 
 export interface NodesRoutesOptions {
   orchestrator: HostProcessOrchestrator;
-  events: EventBus;
 }
 
 export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptions): void {
-  const { orchestrator, events } = opts;
+  const { orchestrator } = opts;
 
   app.get('/api/nodes', async () => {
     return { ok: true, data: { nodes: orchestrator.listNodes() } };
@@ -75,10 +77,8 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
       });
     }
     await orchestrator.stopContainer(dockerId);
-    const after = orchestrator.getNode(dockerId);
-    if (after) {
-      events.publish({ type: 'node-state-changed', nodeId: after.id, status: 'stopped' });
-    }
+    // The orchestrator emits its own onStateChange — createLocalUiServer
+    // forwards that to the bus. Don't double-publish here.
     return { ok: true };
   });
 
