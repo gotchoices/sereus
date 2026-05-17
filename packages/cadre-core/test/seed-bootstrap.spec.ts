@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey, digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   SeedBootstrapService,
   SEED_PROTOCOL
 } from '../src/seed-bootstrap.js';
+import { CadreNode } from '../src/cadre-node.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -564,6 +567,79 @@ describe('SeedBootstrapService Helper Methods', () => {
       await expect(service.removePeer('12D3KooWTestPeer'))
         .rejects.toThrow('Control database not initialized');
     });
+  });
+
+  async function readCadrePeer(
+    node: CadreNode,
+    peerId: string
+  ): Promise<{ PeerId: string; Multiaddr: string | null } | undefined> {
+    const db = node.getControlDatabase();
+    if (!db) return undefined;
+    const inner = db.getDatabase();
+    for await (const row of inner.eval(
+      'select PeerId, Multiaddr from CadreControl.CadrePeer where PeerId = ?',
+      [peerId]
+    )) {
+      if (row.PeerId === peerId) {
+        return {
+          PeerId: row.PeerId as string,
+          Multiaddr: (row.Multiaddr as string | null) ?? null
+        };
+      }
+    }
+    return undefined;
+  }
+
+  describe('authorizePeer / removePeer — round-trip against a real control DB', () => {
+    /**
+     * Boot a real CadreNode + ControlDatabase, insert the authority key,
+     * initialize seed bootstrap, then exercise authorizePeer + removePeer
+     * end-to-end and read CadrePeer back to confirm the row is gone.
+     *
+     * This is the integration coverage that the unit tests above can't
+     * provide: it validates Quereus' DELETE-with-context syntax against
+     * the `AuthorizedInsert` constraint (which signs over `coalesce(new,
+     * old).PeerId`).
+     */
+    it('inserts then deletes a CadrePeer row via authority signature', async () => {
+      const node = new CadreNode({
+        controlNetwork: {
+          partyId: 'test-party-' + Math.random().toString(36).slice(2),
+          bootstrapNodes: []
+        },
+        profile: 'transaction'
+      });
+
+      try {
+        await node.start();
+
+        const db = node.getControlDatabase();
+        expect(db).not.toBeNull();
+        await db!.insertAuthorityKey(authorityPublicKey);
+
+        node.initializeSeedBootstrap(authorityPrivateKey);
+
+        // Use a real Ed25519-derived peerId so the value is shape-valid,
+        // though the constraint actually only cares about the signature
+        // over digest(PeerId, 'sha256', 'utf8').
+        const droneKey = await generateKeyPair('Ed25519');
+        const dronePeerId = peerIdFromPrivateKey(droneKey).toString();
+        const multiaddrs = ['/ip4/192.168.1.100/tcp/4001'];
+
+        await node.authorizePeer(dronePeerId, multiaddrs);
+
+        const after = await readCadrePeer(node, dronePeerId);
+        expect(after).toBeDefined();
+        expect(after!.Multiaddr).toBe(multiaddrs.join(','));
+
+        await node.removePeer(dronePeerId);
+
+        const removed = await readCadrePeer(node, dronePeerId);
+        expect(removed).toBeUndefined();
+      } finally {
+        await node.stop();
+      }
+    }, 60_000);
   });
 
   describe('createInvite — inviteAddressResolver hook', () => {
