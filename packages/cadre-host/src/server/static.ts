@@ -153,20 +153,30 @@ function placeholderHtml(): string {
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <title>cadre-host</title>
+    <title>cadre-host — UI bundle missing</title>
     <style>
       body { font-family: system-ui, -apple-system, sans-serif; max-width: 40rem; margin: 4rem auto; padding: 0 1rem; color: #1a1a1a; }
       h1 { font-weight: 600; }
       code { background: #f4f4f4; padding: 0.125rem 0.375rem; border-radius: 0.25rem; }
+      pre { background: #f4f4f4; padding: 0.75rem 1rem; border-radius: 0.5rem; overflow: auto; }
       .endpoint { font-family: ui-monospace, monospace; }
     </style>
   </head>
   <body>
-    <h1>cadre-host is running</h1>
+    <h1>cadre-host is running — UI bundle is missing</h1>
     <p>
-      The local UI bundle is not installed in this build. The HTTP management
-      API is fully available — you can browse:
+      The HTTP management API is fully available (see endpoints below), but the
+      Svelte SPA that normally renders at this URL hasn't been built into this
+      install. This page is most likely shown because the package was started
+      from a source checkout without running the UI build step.
     </p>
+    <p>To build it:</p>
+    <pre>yarn workspace @serfab/cadre-host build</pre>
+    <p>or just the UI:</p>
+    <pre>yarn workspace @serfab/cadre-host build:ui</pre>
+    <p>Then refresh this page.</p>
+
+    <h2 style="font-size:1.1rem;margin-top:2rem;">Available API endpoints</h2>
     <ul>
       <li><span class="endpoint">GET /api/status</span></li>
       <li><span class="endpoint">GET /api/nodes</span></li>
@@ -174,10 +184,6 @@ function placeholderHtml(): string {
       <li><span class="endpoint">GET /api/events</span> (Server-Sent Events)</li>
       <li><span class="endpoint">/auth/*</span>, <span class="endpoint">/nat/*</span>, <span class="endpoint">/update/*</span></li>
     </ul>
-    <p>
-      To install the SPA, run <code>yarn workspace @serfab/cadre-host build:ui</code>
-      (provided by the cadre-host-local-ui-spa ticket).
-    </p>
     <p>See <a href="https://github.com/gotchoices/sereus/blob/master/docs/cadre-host.md">docs/cadre-host.md</a>.</p>
   </body>
 </html>

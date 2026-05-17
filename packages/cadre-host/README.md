@@ -77,6 +77,24 @@ Manifests are signed with Ed25519; cadre-host refuses to apply any release whose
 
 Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
 
+## Local UI
+
+`cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. Five pages cover the day-to-day operations:
+
+- **Home / Status** — green/yellow/red dot, service version + uptime, trust-circle size, connectivity at a glance, "update available" banner.
+- **Trust Circle** — list members, invite a friend (modal generates a paste-friendly token + QR), revoke pending invites or remove members.
+- **Connectivity** — port-forwarding status, "Test reachability", DDNS provider configuration, manual port-forward instructions when UPnP isn't working.
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. `cadre-host` v1 doesn't auto-spawn nodes, so this list is usually empty until a trust-circle member completes enrollment.
+- **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
+
+The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the trust circle changes, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
+
+### Building the SPA
+
+`yarn workspace @serfab/cadre-host build` compiles both the server (TypeScript) and the SPA (`vite build` against `ui/`). The bundle lands in `dist/ui/` and is served by the same Fastify instance that handles `/api/*` and friends. When `dist/ui/` is missing (e.g. running from source without building), the server still answers all API routes and shows a placeholder at `/` explaining how to build.
+
+For UI-only iteration: `yarn workspace @serfab/cadre-host dev:ui` starts Vite on `:5173` and proxies `/api`, `/auth`, `/nat`, `/update` to `127.0.0.1:8765` (override with `CADRE_HOST_PORT`).
+
 ## More
 
 - [docs/cadre-host.md](../../docs/cadre-host.md) — persona, package boundary, deployment model, security posture.
