@@ -7,13 +7,15 @@
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join, resolve as resolvePath } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { PortAllocator } from '../orchestrator/port-allocator.js';
-import { LogRotator } from '../orchestrator/log-rotator.js';
+import { rotateOnDisk } from '../orchestrator/log-rotator.js';
 import { decodeDockerId, encodeDockerId } from '../orchestrator/types.js';
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
@@ -288,24 +290,49 @@ describe('HostProcessOrchestrator.getLogs', () => {
   });
 });
 
-describe('LogRotator', () => {
-  it('rotates when threshold exceeded and respects maxFiles', async () => {
+describe('rotateOnDisk', () => {
+  it('cascades base -> .1 -> ... and caps at maxFiles', async () => {
+    const fs = await import('node:fs');
     const dir = join(tmpRoot, 'logs');
     mkdirSync(dir, { recursive: true });
     const path = join(dir, 'node.log');
-    const rotator = new LogRotator({ filePath: path, maxBytes: 64, maxFiles: 3 });
-    // Each write is 32 bytes => rotates after 2 writes
-    const chunk = 'A'.repeat(32);
-    for (let i = 0; i < 12; i++) {
-      rotator.write(chunk);
-    }
-    await rotator.close();
 
-    // Should have node.log, node.log.1, node.log.2, node.log.3 — and no .4
-    const fs = await import('node:fs');
-    expect(fs.existsSync(path)).toBe(true);
-    expect(fs.existsSync(`${path}.1`)).toBe(true);
+    // Seed: base + .1 + .2 + .3 each with distinguishable content.
+    writeFileSync(path, 'base', 'utf8');
+    writeFileSync(`${path}.1`, 'one', 'utf8');
+    writeFileSync(`${path}.2`, 'two', 'utf8');
+    writeFileSync(`${path}.3`, 'three', 'utf8');
+
+    rotateOnDisk(path, 3);
+
+    // Active path is gone (rotated away). .1 has former base, .2 has former
+    // .1, .3 has former .2; former .3 is dropped because maxFiles=3.
+    expect(fs.existsSync(path)).toBe(false);
+    expect(fs.readFileSync(`${path}.1`, 'utf8')).toBe('base');
+    expect(fs.readFileSync(`${path}.2`, 'utf8')).toBe('one');
+    expect(fs.readFileSync(`${path}.3`, 'utf8')).toBe('two');
     expect(fs.existsSync(`${path}.4`)).toBe(false);
+  });
+
+  it('is a no-op when the active file does not exist', () => {
+    const dir = join(tmpRoot, 'logs-empty');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'node.log');
+    expect(() => rotateOnDisk(path, 3)).not.toThrow();
+  });
+
+  it('handles a partial cascade (only base present)', async () => {
+    const fs = await import('node:fs');
+    const dir = join(tmpRoot, 'logs-partial');
+    mkdirSync(dir, { recursive: true });
+    const path = join(dir, 'node.log');
+    writeFileSync(path, 'only', 'utf8');
+
+    rotateOnDisk(path, 5);
+
+    expect(fs.existsSync(path)).toBe(false);
+    expect(fs.readFileSync(`${path}.1`, 'utf8')).toBe('only');
+    expect(fs.existsSync(`${path}.2`)).toBe(false);
   });
 });
 
@@ -376,6 +403,128 @@ describe('Restart recovery (init)', () => {
     }
   });
 });
+
+/**
+ * The orchestrator must spawn children that survive the spawning process
+ * itself exiting. The same-process restart test below does not exercise
+ * this — both orchestrators live in the same vitest worker, so the
+ * spawning process's pipe-read fds never close. This test genuinely exits
+ * the spawning process and asserts that the grandchild (a) stays alive
+ * past the parent's death and (b) keeps writing to its log file.
+ *
+ * Requires `yarn workspace @serfab/cadre-host build` to have been run —
+ * the helper script imports the built dist so it can run as a plain Node
+ * process without a TS loader.
+ */
+describe('child survives orchestrator exit', () => {
+  const orchestratorDistUrl = (() => {
+    const here = dirname(fileURLToPath(import.meta.url));
+    const distPath = resolvePath(here, '..', '..', 'dist', 'orchestrator', 'host-process-orchestrator.js');
+    return { distPath, distUrl: 'file://' + distPath.replace(/\\/g, '/') };
+  })();
+
+  it.skipIf(!existsSync(orchestratorDistUrl.distPath))(
+    'grandchild stays alive and keeps logging after spawner process exits',
+    async () => {
+      const { distUrl } = orchestratorDistUrl;
+      const rootDir = join(tmpRoot, 'cross');
+      mkdirSync(rootDir, { recursive: true });
+
+      const helperPath = join(tmpRoot, 'spawner.mjs');
+      writeFileSync(helperPath, buildSpawnerScript(distUrl), 'utf8');
+
+      const request = {
+        containerId: 'cross1',
+        partyId: 'party-cross1',
+        bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001'],
+        profile: 'transaction',
+      };
+      const payload = {
+        rootDir,
+        entrypoint: scriptPath,
+        request,
+        // Ensure the fake child keeps ticking quickly so logs grow visibly
+        // in the ~300 ms observation window.
+        childEnv: { CHILD_TICK_MS: '20', CHILD_TICK_PAYLOAD: 'cross-tick' },
+      };
+
+      // Run the helper as a normal (non-detached) Node child and wait for
+      // it to exit. The orchestrator's grandchild should survive.
+      const result = spawnSync(process.execPath, [helperPath, JSON.stringify(payload)], {
+        encoding: 'utf8',
+        timeout: 15000,
+      });
+      expect(result.status, `helper exited non-zero: stderr=${result.stderr}`).toBe(0);
+
+      const jsonLine = result.stdout
+        .split(/\r?\n/)
+        .reverse()
+        .find((line) => line.trim().startsWith('{'));
+      expect(jsonLine, `helper produced no JSON line: stdout=${result.stdout}`).toBeTruthy();
+      const handle = JSON.parse(jsonLine!) as {
+        dockerId: string;
+        pid: number;
+        workdir: string;
+        logPath: string;
+      };
+
+      try {
+        // Immediate liveness
+        expect(isPidAlive(handle.pid)).toBe(true);
+
+        // POSIX delivers SIGPIPE on the child's NEXT write — give it time
+        // to attempt one (the fake child ticks every 20 ms).
+        await sleep(500);
+        expect(isPidAlive(handle.pid), 'grandchild died after spawner exit (likely SIGPIPE)').toBe(true);
+
+        // Logs must keep growing — proves stdio still works, not just PID.
+        const sizeA = statSync(handle.logPath).size;
+        await sleep(300);
+        const sizeB = statSync(handle.logPath).size;
+        expect(sizeB).toBeGreaterThan(sizeA);
+      } finally {
+        try { process.kill(handle.pid, 'SIGKILL'); } catch { /* ignore */ }
+        try { rmSync(handle.workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
+      }
+    },
+  );
+});
+
+function buildSpawnerScript(distUrl: string): string {
+  return `
+import { HostProcessOrchestrator } from ${JSON.stringify(distUrl)};
+import { defaultLogPath } from ${JSON.stringify(distUrl.replace('host-process-orchestrator.js', 'log-rotator.js'))};
+
+const payload = JSON.parse(process.argv[2]);
+const { rootDir, entrypoint, request, childEnv } = payload;
+
+for (const [k, v] of Object.entries(childEnv ?? {})) {
+  process.env[k] = String(v);
+}
+
+const orch = new HostProcessOrchestrator({
+  rootDir,
+  portRange: { start: 19000, end: 19999 },
+  stopTimeoutMs: 1500,
+  spawn: { entrypoint },
+});
+
+const res = await orch.createContainer(request);
+const pid = Number(res.dockerId.split(':')[0]);
+const workdir = (await import('node:path')).join(rootDir, request.containerId);
+const logPath = defaultLogPath(workdir);
+
+process.stdout.write(JSON.stringify({
+  dockerId: res.dockerId,
+  pid,
+  workdir,
+  logPath,
+}) + '\\n');
+
+// Exit cleanly — the detached/unref'd child should outlive us.
+process.exit(0);
+`;
+}
 
 describe('dockerId encoding', () => {
   it('encode/decode round-trips pid and token', () => {

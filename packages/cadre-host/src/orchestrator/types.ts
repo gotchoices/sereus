@@ -3,7 +3,6 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
-import type { LogRotator } from './log-rotator.js';
 
 /** User-facing configuration for `HostProcessOrchestrator`. */
 export interface HostProcessConfig {
@@ -39,7 +38,6 @@ export interface Handle {
   profile: 'storage' | 'transaction';
   /** Live ChildProcess reference; absent after re-attach via init(). */
   child?: ChildProcess;
-  logRotator?: LogRotator;
   /** Marked false when init() finds the PID dead or token mismatched. */
   alive: boolean;
 }

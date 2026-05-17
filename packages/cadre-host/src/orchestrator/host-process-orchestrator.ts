@@ -1,4 +1,4 @@
-import { spawn, type ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import {
@@ -22,7 +22,7 @@ import type {
   OrchestratorStats,
 } from '@serfab/cadre-provider';
 
-import { LogRotator, defaultLogPath } from './log-rotator.js';
+import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { PortAllocator } from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
@@ -52,6 +52,30 @@ const LIVENESS_POLL_MS = 100;
  *
  * Each container gets its own workdir under `rootDir`. Handles are mirrored
  * to `<rootDir>/state.json` so cadre-host can re-attach after a restart.
+ *
+ * ## Child stdio: direct-fd inheritance
+ *
+ * Spawned children inherit a file descriptor opened on `<workdir>/node.log`
+ * directly as their stdout and stderr. The orchestrator closes its own copy
+ * of the fd immediately after spawn, so the child's write path no longer
+ * touches any handle owned by this process. This is what lets children
+ * survive — and keep logging through — an orchestrator restart. Were the
+ * orchestrator instead piping stdout/stderr through an in-process Writable,
+ * a parent exit would deliver SIGPIPE to the child (POSIX) or fail its
+ * writes with EPIPE (Windows), silently breaking the documented "init()
+ * re-attach" flow.
+ *
+ * ## Log rotation: spawn-time only
+ *
+ * Because the child holds a stable fd open against the inode, the
+ * orchestrator cannot safely rename `node.log` while the child is running.
+ * Rotation therefore happens only at spawn time, when no live child is
+ * attached to the workdir (`createContainer` is the single producer per
+ * workdir). If `node.log` already exceeds `logMaxBytes`, the rotation
+ * cascade runs against the on-disk paths before the fresh fd is opened.
+ * A child whose log grows past `logMaxBytes` mid-run will keep appending
+ * to the active file until it (or its successor) is restarted; v1 traffic
+ * is low enough that this is acceptable.
  */
 export class HostProcessOrchestrator implements Orchestrator {
   private readonly rootDir: string;
@@ -159,40 +183,49 @@ export class HostProcessOrchestrator implements Orchestrator {
       env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${heapMB}`.trim();
     }
 
-    const logRotator = new LogRotator({
-      filePath: defaultLogPath(workdir),
-      maxBytes: this.logMaxBytes,
-      maxFiles: this.logMaxFiles,
-    });
+    // Rotate the on-disk log files BEFORE opening the fd — once the child
+    // is running it holds the inode open and any later rename would leave
+    // it writing to the rotated file. See class docstring.
+    const logPath = defaultLogPath(workdir);
+    maybeRotateAtSpawn(logPath, this.logMaxBytes, this.logMaxFiles);
+    const logFd = openSync(logPath, 'a');
 
-    const child = spawn(
-      process.execPath,
-      [
-        this.cliEntrypoint,
-        'start',
-        '-c', configPath,
-        '--health-port', String(healthPort),
-        '--metrics-port', String(metricsPort),
-        '--startup-token-file', tokenPath,
-      ],
-      {
-        cwd: workdir,
-        detached: true,
-        stdio: ['ignore', 'pipe', 'pipe'],
-        env,
-      },
-    );
+    let child;
+    try {
+      child = spawn(
+        process.execPath,
+        [
+          this.cliEntrypoint,
+          'start',
+          '-c', configPath,
+          '--health-port', String(healthPort),
+          '--metrics-port', String(metricsPort),
+          '--startup-token-file', tokenPath,
+        ],
+        {
+          cwd: workdir,
+          detached: true,
+          // Inherit the log fd directly. OS duplicates it into the child;
+          // closing our copy below is safe and severs the parent's only
+          // tie to the child's write path.
+          stdio: ['ignore', logFd, logFd],
+          env,
+        },
+      );
+    } finally {
+      // Always release the parent's copy of the fd — whether spawn succeeded
+      // or threw. The child (if any) has its own duplicate.
+      closeSync(logFd);
+    }
 
     if (!child.pid) {
       // Spawn failed — release reservations and report.
       this.portAllocator.release(healthPort);
       this.portAllocator.release(metricsPort);
       this.portAllocator.release(p2pPort);
-      void logRotator.close();
       throw new Error(`Failed to spawn child for container ${request.containerId}`);
     }
 
-    pipeWithRotation(child, logRotator);
     child.unref();
 
     const dockerId = encodeDockerId(child.pid, token);
@@ -207,7 +240,6 @@ export class HostProcessOrchestrator implements Orchestrator {
       partyId: request.partyId,
       profile: request.profile,
       child,
-      logRotator,
       alive: true,
     };
 
@@ -235,8 +267,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     const handle = this.requireHandle(dockerId);
     if (!isPidAlive(handle.pid)) {
       handle.alive = false;
-      await handle.logRotator?.close();
-      handle.logRotator = undefined;
       this.persist();
       return;
     }
@@ -283,8 +313,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     await Promise.race([exitPromise, sleep(1000)]);
 
     handle.alive = false;
-    await handle.logRotator?.close();
-    handle.logRotator = undefined;
     this.persist();
   }
 
@@ -292,9 +320,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     const handle = this.requireHandle(dockerId);
     if (isPidAlive(handle.pid)) {
       await this.stopContainer(dockerId);
-    } else {
-      await handle.logRotator?.close();
-      handle.logRotator = undefined;
     }
 
     this.portAllocator.release(handle.ports.health);
@@ -450,13 +475,23 @@ function tokenMatches(workdir: string, expected: string): boolean {
   }
 }
 
-function pipeWithRotation(child: ChildProcess, rotator: LogRotator): void {
-  const stream = rotator.writeStream();
-  // Pipe child stdio into the rotator's Writable. Errors on the destination
-  // are swallowed locally — the orchestrator does not want a logging hiccup
-  // to take down the child.
-  child.stdout?.on('data', (chunk: Buffer) => { stream.write(chunk); });
-  child.stderr?.on('data', (chunk: Buffer) => { stream.write(chunk); });
+/**
+ * Rotate the on-disk log files for a workdir if the active file is already
+ * at or above the byte threshold. Called from `createContainer` before the
+ * child's stdio fd is opened — the only safe rotation point because the
+ * caller guarantees no live child is attached to this workdir.
+ */
+function maybeRotateAtSpawn(logPath: string, maxBytes: number, maxFiles: number): void {
+  if (maxBytes <= 0 || maxFiles < 1) return;
+  let size = 0;
+  try {
+    size = statSync(logPath).size;
+  } catch {
+    return;
+  }
+  if (size >= maxBytes) {
+    rotateOnDisk(logPath, maxFiles);
+  }
 }
 
 function sleep(ms: number): Promise<void> {
