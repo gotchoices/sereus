@@ -11,7 +11,7 @@ import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve as resolvePath } from 'node:path';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
 import { PortAllocator } from '../orchestrator/port-allocator.js';
@@ -269,6 +269,31 @@ describe('HostProcessOrchestrator.getStats', () => {
   });
 });
 
+describe('HostProcessOrchestrator log rotation at spawn', () => {
+  it('rotates an oversized node.log before the new child opens it', async () => {
+    const rootDir = join(tmpRoot, 'rot');
+    mkdirSync(rootDir, { recursive: true });
+    const containerWorkdir = join(rootDir, 'rotc1');
+    mkdirSync(containerWorkdir, { recursive: true });
+    // Pre-seed an oversized active log so maybeRotateAtSpawn fires.
+    const seed = 'X'.repeat(2048);
+    writeFileSync(join(containerWorkdir, 'node.log'), seed, 'utf8');
+
+    const orch = makeOrchestrator({
+      rootDir,
+      logMaxBytes: 1024,
+      logMaxFiles: 3,
+    });
+    const { dockerId } = await orch.createContainer(makeRequest('rotc1'));
+    await waitFor(() => orch.isRunning(dockerId));
+
+    // The rotation cascade should have moved the seeded contents to .1
+    // and the fresh child should be writing to a brand-new node.log.
+    expect(readFileSync(join(containerWorkdir, 'node.log.1'), 'utf8')).toBe(seed);
+    expect(statSync(join(containerWorkdir, 'node.log')).size).toBeLessThan(seed.length);
+  });
+});
+
 describe('HostProcessOrchestrator.getLogs', () => {
   it('returns recent stdout lines from the child', async () => {
     const orch = makeOrchestrator();
@@ -419,19 +444,24 @@ describe('Restart recovery (init)', () => {
 describe('child survives orchestrator exit', () => {
   const orchestratorDistUrl = (() => {
     const here = dirname(fileURLToPath(import.meta.url));
-    const distPath = resolvePath(here, '..', '..', 'dist', 'orchestrator', 'host-process-orchestrator.js');
-    return { distPath, distUrl: 'file://' + distPath.replace(/\\/g, '/') };
+    const distDir = resolvePath(here, '..', '..', 'dist', 'orchestrator');
+    const distPath = join(distDir, 'host-process-orchestrator.js');
+    return {
+      distPath,
+      orchestratorUrl: pathToFileURL(distPath).href,
+      logRotatorUrl: pathToFileURL(join(distDir, 'log-rotator.js')).href,
+    };
   })();
 
   it.skipIf(!existsSync(orchestratorDistUrl.distPath))(
     'grandchild stays alive and keeps logging after spawner process exits',
     async () => {
-      const { distUrl } = orchestratorDistUrl;
+      const { orchestratorUrl, logRotatorUrl } = orchestratorDistUrl;
       const rootDir = join(tmpRoot, 'cross');
       mkdirSync(rootDir, { recursive: true });
 
       const helperPath = join(tmpRoot, 'spawner.mjs');
-      writeFileSync(helperPath, buildSpawnerScript(distUrl), 'utf8');
+      writeFileSync(helperPath, buildSpawnerScript(orchestratorUrl, logRotatorUrl), 'utf8');
 
       const request = {
         containerId: 'cross1',
@@ -490,10 +520,10 @@ describe('child survives orchestrator exit', () => {
   );
 });
 
-function buildSpawnerScript(distUrl: string): string {
+function buildSpawnerScript(orchestratorUrl: string, logRotatorUrl: string): string {
   return `
-import { HostProcessOrchestrator } from ${JSON.stringify(distUrl)};
-import { defaultLogPath } from ${JSON.stringify(distUrl.replace('host-process-orchestrator.js', 'log-rotator.js'))};
+import { HostProcessOrchestrator } from ${JSON.stringify(orchestratorUrl)};
+import { defaultLogPath } from ${JSON.stringify(logRotatorUrl)};
 
 const payload = JSON.parse(process.argv[2]);
 const { rootDir, entrypoint, request, childEnv } = payload;

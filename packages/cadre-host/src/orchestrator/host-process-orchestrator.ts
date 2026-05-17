@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { randomBytes } from 'node:crypto';
 import {
@@ -190,7 +190,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     maybeRotateAtSpawn(logPath, this.logMaxBytes, this.logMaxFiles);
     const logFd = openSync(logPath, 'a');
 
-    let child;
+    let child: ChildProcess;
     try {
       child = spawn(
         process.execPath,
@@ -212,14 +212,20 @@ export class HostProcessOrchestrator implements Orchestrator {
           env,
         },
       );
-    } finally {
-      // Always release the parent's copy of the fd — whether spawn succeeded
-      // or threw. The child (if any) has its own duplicate.
+    } catch (err) {
+      // Synchronous spawn failure — release the fd and the reserved ports
+      // before propagating, so a bad-args bug doesn't leak resources.
       closeSync(logFd);
+      this.portAllocator.release(healthPort);
+      this.portAllocator.release(metricsPort);
+      this.portAllocator.release(p2pPort);
+      throw err;
     }
+    // Always release the parent's copy of the fd — the child has its own.
+    closeSync(logFd);
 
     if (!child.pid) {
-      // Spawn failed — release reservations and report.
+      // Spawn returned without a pid — release reservations and report.
       this.portAllocator.release(healthPort);
       this.portAllocator.release(metricsPort);
       this.portAllocator.release(p2pPort);
