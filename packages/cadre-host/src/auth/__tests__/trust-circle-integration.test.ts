@@ -3,15 +3,18 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '@serfab/cadre-core';
 
 import { TrustCircleService } from '../trust-circle.js';
 import { TrustCircleStore } from '../trust-circle-store.js';
 
 /**
- * End-to-end integration test: stand up two real CadreNodes (host + phone)
- * with a real Quereus control DB, then exercise the full TrustCircleService
- * issue → redeem → list → remove cycle.
+ * End-to-end integration test: stand up a real host CadreNode with a real
+ * Quereus control DB and exercise the full TrustCircleService issue → redeem
+ * → list → remove cycle. The "phone" peerId is derived from a fresh Ed25519
+ * key (no second libp2p node) since the test only validates host-side state.
  *
  * This replaces the mock CadreNodeLike in trust-circle.test.ts with the real
  * CadreNode to validate that:
@@ -25,7 +28,6 @@ import { TrustCircleStore } from '../trust-circle-store.js';
 describe('TrustCircleService — real CadreNode integration', () => {
   let tmpRoot: string;
   let host: CadreNode;
-  let phone: CadreNode;
   let store: TrustCircleStore;
   let service: TrustCircleService;
   let hostAuthorityPrivateKey: string;
@@ -42,21 +44,14 @@ describe('TrustCircleService — real CadreNode integration', () => {
       'base64url'
     ) as string;
 
-    // Distinct party IDs so the two nodes don't share a control network —
-    // we only need the phone for its peerId.
     const baseId = Math.random().toString(36).slice(2);
 
     host = new CadreNode({
       controlNetwork: { partyId: `host-${baseId}`, bootstrapNodes: [] },
       profile: 'transaction'
     });
-    phone = new CadreNode({
-      controlNetwork: { partyId: `phone-${baseId}`, bootstrapNodes: [] },
-      profile: 'transaction'
-    });
 
     await host.start();
-    await phone.start();
 
     const db = host.getControlDatabase();
     expect(db).not.toBeNull();
@@ -70,12 +65,16 @@ describe('TrustCircleService — real CadreNode integration', () => {
 
   afterEach(async () => {
     try { await host.stop(); } catch { /* ignore */ }
-    try { await phone.stop(); } catch { /* ignore */ }
     try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
   });
 
   it('completes the full issue → redeem → list → remove cycle', async () => {
-    const phonePeerId = phone.peerId!.toString();
+    // Derive a shape-valid peerId from a fresh Ed25519 key — same pattern as
+    // packages/cadre-core/test/seed-bootstrap.spec.ts. The AuthorizedInsert
+    // constraint only checks the signature over digest(PeerId,…); peerId
+    // *liveness* doesn't matter for the host-side CRUD path under test.
+    const phoneKey = await generateKeyPair('Ed25519');
+    const phonePeerId = peerIdFromPrivateKey(phoneKey).toString();
 
     // Issue
     const issued = await service.issueInvite({ label: "Mom's phone" });
