@@ -12,9 +12,20 @@
  * spin up an inline service, so cadre-host must be running.
  */
 
+import { existsSync } from 'node:fs';
+import { createRequire } from 'node:module';
+
 import { Command } from 'commander';
 
 import { parseDuration } from '../auth/duration.js';
+import { Installer } from '../installer/index.js';
+import { readHostConfig } from '../installer/config.js';
+import {
+  configPath as resolveConfigPath,
+  defaultDataDir,
+  identityPath as resolveIdentityPath,
+} from '../installer/paths.js';
+import { detectPlatform } from '../installer/platform.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
 
@@ -42,22 +53,201 @@ program
   .description('Sereus cadre node manager for self-hosted basement-PC deployments')
   .version('0.6.0');
 
-const stubs: ReadonlyArray<readonly [string, string]> = [
-  ['install', 'Install cadre-host as a system service and run first-run setup'],
-  ['start', 'Start cadre-host in the foreground'],
-  ['status', 'Show running status of cadre-host and the cadre nodes it manages'],
-  ['uninstall', 'Stop and uninstall the cadre-host service'],
-];
+// ============================================================================
+// install — run the first-run wizard + register the system service
+// ============================================================================
 
-for (const [name, summary] of stubs) {
-  program
-    .command(name)
-    .description(summary)
-    .action(() => {
+program
+  .command('install')
+  .description('Install cadre-host as a system service and run first-run setup')
+  .option('--non-interactive', 'Use defaults / CLI flags only; never prompt')
+  .option('--data-dir <path>', 'Override the data directory')
+  .option('--ui-port <port>', 'Override the management UI port', parseIntArg)
+  .option('--libp2p-port <port>', 'Override the cadre libp2p port', parseIntArg)
+  .option('--no-upnp', 'Disable UPnP/NAT-PMP probing on first run')
+  .option('--no-browser', 'Do not open a browser after install')
+  .option('--no-invite', 'Skip generating the first enrollment invite')
+  .option('--system', 'System-wide install (not yet supported in v1)')
+  .option('--node-path <path>', 'Override the node binary embedded in the service unit')
+  .action(async (opts: {
+    nonInteractive?: boolean;
+    dataDir?: string;
+    uiPort?: number;
+    libp2pPort?: number;
+    upnp?: boolean;
+    browser?: boolean;
+    invite?: boolean;
+    system?: boolean;
+    nodePath?: string;
+  }) => {
+    const installer = new Installer();
+    try {
+      const result = await installer.install({
+        nonInteractive: Boolean(opts.nonInteractive),
+        ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
+        ...(typeof opts.uiPort === 'number' ? { uiPort: opts.uiPort } : {}),
+        ...(typeof opts.libp2pPort === 'number' ? { libp2pPort: opts.libp2pPort } : {}),
+        noUpnp: opts.upnp === false,
+        openBrowser: opts.browser !== false,
+        noInvite: opts.invite === false,
+        system: Boolean(opts.system),
+        ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
+      });
       // eslint-disable-next-line no-console
-      console.log(`cadre-host ${name}: not yet implemented`);
+      console.log(`cadre-host installed.`);
+      // eslint-disable-next-line no-console
+      console.log(`  Data dir:     ${result.dataDir}`);
+      // eslint-disable-next-line no-console
+      console.log(`  UI:           ${result.uiUrl}`);
+      // eslint-disable-next-line no-console
+      console.log(`  Service:      ${result.serviceName}`);
+      if (result.enrollmentInvite) {
+        printEnrollmentInvite(result.enrollmentInvite);
+      }
       process.exit(0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`install failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// uninstall — stop + deregister the system service
+// ============================================================================
+
+program
+  .command('uninstall')
+  .description('Stop and uninstall the cadre-host service')
+  .option('--yes', 'Skip the confirmation prompt (for scripts)')
+  .option('--remove-data', 'Also remove the data directory (default: preserve)')
+  .option('--data-dir <path>', 'Override the data directory to clean up')
+  .action(async (opts: { yes?: boolean; removeData?: boolean; dataDir?: string }) => {
+    const installer = new Installer();
+    try {
+      await installer.uninstall({
+        yes: Boolean(opts.yes),
+        removeData: Boolean(opts.removeData),
+        ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
+      });
+      // eslint-disable-next-line no-console
+      console.log('cadre-host uninstalled.');
+      process.exit(0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`uninstall failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// status — show service-host registration / running state
+// ============================================================================
+
+program
+  .command('status')
+  .description('Show running status of cadre-host and the cadre nodes it manages')
+  .action(async () => {
+    const installer = new Installer();
+    try {
+      const status = await installer.status();
+      // eslint-disable-next-line no-console
+      console.log(`Service installed: ${status.installed ? 'yes' : 'no'}`);
+      // eslint-disable-next-line no-console
+      console.log(`Service running:   ${status.running ? 'yes' : 'no'}`);
+      process.exit(0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`status failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// start — load config + identity, bind management API listener, wait
+// ============================================================================
+
+program
+  .command('start')
+  .description('Start cadre-host in the foreground')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .option('--no-tui', 'Reserved — currently a no-op (no TUI implemented yet)')
+  .action(async (opts: { dataDir?: string; tui?: boolean }) => {
+    try {
+      void opts.tui;
+      const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(detectPlatform());
+      const cfgPath = resolveConfigPath(dataDir);
+      if (!existsSync(cfgPath)) {
+        // eslint-disable-next-line no-console
+        console.error(
+          `cadre-host start: ${cfgPath} not found. ` +
+          `Run \`cadre-host install\` first (or pass --data-dir to an existing install).`,
+        );
+        process.exit(1);
+        return;
+      }
+      const cfg = readHostConfig(cfgPath);
+      const idPath = resolveIdentityPath(cfg.dataDir);
+      if (!existsSync(idPath)) {
+        // eslint-disable-next-line no-console
+        console.error(`cadre-host start: identity file not found at ${idPath}. Re-run \`cadre-host install\`.`);
+        process.exit(1);
+        return;
+      }
+      // eslint-disable-next-line no-console
+      console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
+      // TODO(cadre-host-update-flow): kick off checkForUpdate() before serve().
+      // TODO(cadre-host-local-ui-server): replace this with createLocalUiServer({...}).start().
+      // For now, await termination so the service unit treats this as a long-running process.
+      await waitForTermination();
+      // eslint-disable-next-line no-console
+      console.log('cadre-host stopped.');
+      process.exit(0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`start failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+function parseIntArg(raw: string): number {
+  const n = Number(raw);
+  if (!Number.isFinite(n) || !Number.isInteger(n)) {
+    throw new Error(`Invalid integer: ${raw}`);
+  }
+  return n;
+}
+
+function waitForTermination(): Promise<void> {
+  return new Promise<void>((resolveTerm) => {
+    const done = () => resolveTerm();
+    process.once('SIGINT', done);
+    process.once('SIGTERM', done);
+  });
+}
+
+const requireForQr = createRequire(import.meta.url);
+
+function printEnrollmentInvite(invite: { encodedInvite: string; expiresAt?: string }): void {
+  // Best-effort QR render — fall back to the bare token if the lib chokes.
+  // eslint-disable-next-line no-console
+  console.log('\nEnroll your first device with this invite:');
+  try {
+    const qr = requireForQr('qrcode-terminal') as { generate: (text: string, opts?: { small?: boolean }, cb?: (s: string) => void) => void };
+    qr.generate(invite.encodedInvite, { small: true }, (rendered) => {
+      // eslint-disable-next-line no-console
+      console.log(rendered);
     });
+  } catch (err) {
+    // eslint-disable-next-line no-console
+    console.error(`(qrcode-terminal unavailable: ${(err as Error).message})`);
+  }
+  // eslint-disable-next-line no-console
+  console.log(`  ${invite.encodedInvite}`);
+  if (invite.expiresAt) {
+    // eslint-disable-next-line no-console
+    console.log(`  (expires ${invite.expiresAt})`);
+  }
 }
 
 program

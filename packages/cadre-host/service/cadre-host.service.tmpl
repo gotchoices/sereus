@@ -1,0 +1,16 @@
+[Unit]
+Description=Sereus Cadre Host
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=@NODE_PATH@ @HOST_JS@ start --no-tui --data-dir @DATA_DIR@
+Restart=on-failure
+RestartPreventExitStatus=0
+RestartSec=5s
+Environment=NODE_ENV=production
+NoNewPrivileges=true
+
+[Install]
+WantedBy=default.target

@@ -11,16 +11,50 @@ npm install -g @serfab/cadre-host
 cadre-host install
 ```
 
-The full installer (service-host integration, first-run trust-circle setup, NAT bootstrap) is arriving in a follow-up release.
+The wizard:
 
-At this stage:
+1. Prompts for the data directory, UI port, libp2p port, and UPnP toggle (defaults shown in `[...]`).
+2. Generates a fresh Ed25519 node identity (`<dataDir>/identity.key`, mode 600 on POSIX).
+3. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the chosen libp2p port.
+4. Registers a system service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
+5. Opens `http://127.0.0.1:<uiPort>/` in your browser.
+6. Issues a 24-hour enrollment invite and prints it as both a QR code and a paste-friendly token.
 
-- `cadre-host invite <label>` issues a trust-circle invite via the running management API. See [docs/cadre-host.md](../../docs/cadre-host.md#trust-circle) for the lifecycle.
+Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning.
+
+### Per-user vs system install
+
+v1 supports per-user installs only. `cadre-host install --system` is accepted by the CLI but errors out; running cadre-host as a dedicated system user requires data-dir ownership work that's tracked separately.
+
+### Service-host details
+
+The rendered unit files live at:
+
+| Platform | Path |
+| -------- | ---- |
+| Linux    | `~/.config/systemd/user/cadre-host.service` |
+| macOS    | `~/Library/LaunchAgents/com.serfab.cadre-host.plist` |
+| Windows  | NSSM-managed service `CadreHost` (registry-stored config) |
+
+See [`service/README.md`](./service/README.md) for templates, manual-smoke instructions, and the cross-platform CI gap.
+
+## Uninstall
+
+```bash
+cadre-host uninstall              # stop + deregister, keep data
+cadre-host uninstall --remove-data --yes
+```
+
+## CLI subcommands once running
+
+- `cadre-host invite <label>` issues a trust-circle invite via the running management API. See [docs/cadre-host.md](../../docs/cadre-host.md#trust-circle).
 - `cadre-host trust list` and `cadre-host trust revoke <token-or-peerId>` round out trust-circle management.
 - `cadre-host nat status`, `cadre-host nat test`, `cadre-host nat ddns set duckdns --hostname <h> --token <t>`, `cadre-host nat ddns external --hostname <h>`, `cadre-host nat settings [--external-port N] [--no-upnp]` manage NAT / DDNS. See [docs/cadre-host.md](../../docs/cadre-host.md#nat-and-ddns).
 - `HostProcessOrchestrator` runs cadre nodes as native child processes.
-- `NatService` + `TrustCircleService` are libraries (not yet hosted by a long-running process); `cadre-host-local-ui` constructs them.
-- `install`, `start`, `status`, and `uninstall` still print "not yet implemented", pending the `cadre-host-installer` and `cadre-host-local-ui` tickets.
+
+## What `cadre-host start` does today
+
+`start` loads `host.config.json` + the identity and waits for SIGTERM. The full HTTP management server (Fastify with `/auth/*`, `/nat/*`, `/api/*` routes) lands in `cadre-host-local-ui` (`6.5.1`); until then the wizard's enrollment-invite step degrades silently (the URL is printed, the QR is not).
 
 ## More
 

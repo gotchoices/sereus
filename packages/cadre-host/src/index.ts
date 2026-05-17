@@ -49,6 +49,20 @@ export type {
   TrustCircleErrorCode,
 } from './auth/index.js';
 
+export { Installer } from './installer/index.js';
+export type {
+  InstallOptions,
+  InstallResult,
+  UninstallOptions,
+  InstallerOptions,
+  HostConfigFile,
+  WizardAnswers,
+  WizardDefaults,
+  ServiceHost,
+  ServiceHostContext,
+  ServiceHostStatus,
+} from './installer/index.js';
+
 export {
   NatService,
   NatStore,
