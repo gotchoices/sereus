@@ -239,7 +239,7 @@ Unknown keys → 400 `invalid_setting`.
 
 - `/api/nodes/:id/start` and `/api/nodes/:id/restart` return **501 not_implemented**. cadre-host v1 doesn't yet own a "spawn a cadre node from a trust-circle member id" path — that's a follow-up ticket. Stop on a running node works.
 - `cadre-host start` constructs `TrustCircleService` and `NatService` with **stub** `CadreNodeLike` adapters because v1 doesn't yet host an inline libp2p `CadreNode`. Listing the trust circle works (reads the local labels file); issuing/redeeming an invite or building invite addresses surfaces a 500. The wizard's "first enrollment invite" step still degrades silently for the same reason.
-- The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`; until that lands `/` returns a placeholder HTML pointing at this doc.
+- The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`. It ships into `<package>/dist/ui/` and is mounted by the static handler. When `dist/ui/` is absent (e.g. running from a source checkout without `yarn build`), `/` returns a placeholder HTML pointing at the build instructions; the API continues to answer.
 
 ## Architecture sketch
 
@@ -277,9 +277,8 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - CLI: `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, brings up the trust-circle / NAT / update services, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`). `ui` prints + opens the local-UI URL.
 - `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
 - Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
+- Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Trust Circle / Connectivity / Nodes + per-node detail / Settings) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. ≈ 43 KB gzipped.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
-
-The Svelte SPA bundle is forthcoming in the `cadre-host-local-ui-spa` ticket (`6.5.2`). Until it lands the server still binds and serves the API; the root `/` returns a placeholder HTML pointing at this doc.
 
 ## See also
 
