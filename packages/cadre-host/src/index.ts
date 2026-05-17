@@ -28,7 +28,12 @@ export type {
 } from '@serfab/cadre-provider';
 
 export { HostProcessOrchestrator } from './orchestrator/index.js';
-export type { HostProcessConfig, PersistedHandle } from './orchestrator/index.js';
+export type {
+  HostProcessConfig,
+  PersistedHandle,
+  ManagedNodeInfo,
+  NodeStateListener,
+} from './orchestrator/index.js';
 
 export {
   TrustCircleService,
@@ -145,3 +150,18 @@ export type {
   SecretsStore,
   KeytarLike,
 } from './nat/index.js';
+
+/* ──────────────── local UI server (6.5.1) ──────────────── */
+
+export {
+  createLocalUiServer,
+  EventBus,
+  HostSettingsStore,
+} from './server/index.js';
+export type {
+  LocalUiServer,
+  LocalUiServerOptions,
+  LocalUiEvent,
+  LocalUiEventType,
+  LocalUiEventListener,
+} from './server/index.js';

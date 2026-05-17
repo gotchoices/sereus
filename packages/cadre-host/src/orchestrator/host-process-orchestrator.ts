@@ -31,6 +31,8 @@ import {
   encodeDockerId,
   type Handle,
   type HostProcessConfig,
+  type ManagedNodeInfo,
+  type NodeStateListener,
 } from './types.js';
 
 const log = debug('cadre:host:orchestrator');
@@ -87,6 +89,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly defaultMemoryLimit?: string;
   private readonly handles = new Map<string, Handle>();
   private readonly cliEntrypoint: string;
+  /** State-change listeners — invoked when a handle's alive state changes. */
+  private readonly stateListeners = new Set<NodeStateListener>();
 
   constructor(private readonly cfg: HostProcessConfig) {
     this.rootDir = resolvePath(cfg.rootDir);
@@ -132,6 +136,48 @@ export class HostProcessOrchestrator implements Orchestrator {
       this.portAllocator.markUsed(persisted.ports.p2p);
     }
     log('init: re-attached %d handles', state.handles.length);
+  }
+
+  /**
+   * Snapshot of currently-known managed nodes. Used by the local UI's
+   * `/api/nodes` route.
+   */
+  listNodes(): ManagedNodeInfo[] {
+    return [...this.handles.values()].map((h) => toNodeInfo(h));
+  }
+
+  /**
+   * Look up a single managed node by either containerId (friendly id) or
+   * dockerId (opaque `pid:token`). Returns undefined when neither matches.
+   */
+  getNode(idOrDockerId: string): ManagedNodeInfo | undefined {
+    const direct = this.handles.get(idOrDockerId);
+    if (direct) return toNodeInfo(direct);
+    for (const h of this.handles.values()) {
+      if (h.containerId === idOrDockerId) return toNodeInfo(h);
+    }
+    return undefined;
+  }
+
+  /**
+   * Resolve the opaque dockerId for a friendly containerId so callers can
+   * pass it into stopContainer / getLogs / getStats.
+   */
+  resolveDockerId(idOrDockerId: string): string | undefined {
+    if (this.handles.has(idOrDockerId)) return idOrDockerId;
+    for (const h of this.handles.values()) {
+      if (h.containerId === idOrDockerId) return h.dockerId;
+    }
+    return undefined;
+  }
+
+  /**
+   * Register a state-change listener. Invoked when a handle's `alive`
+   * transitions (child exit, manual stop). Returns an unsubscribe fn.
+   */
+  onStateChange(listener: NodeStateListener): () => void {
+    this.stateListeners.add(listener);
+    return () => { this.stateListeners.delete(listener); };
   }
 
   /** Handles that init() found dead (PID gone or token mismatch). */
@@ -251,13 +297,15 @@ export class HostProcessOrchestrator implements Orchestrator {
 
     child.once('exit', () => {
       const h = this.handles.get(dockerId);
-      if (h) {
+      if (h && h.alive) {
         h.alive = false;
+        this.emitStateChange(h);
       }
     });
 
     this.handles.set(dockerId, handle);
     this.persist();
+    this.emitStateChange(handle);
 
     log('created container %s -> pid %d ports=%j', request.containerId, child.pid, handle.ports);
 
@@ -318,8 +366,10 @@ export class HostProcessOrchestrator implements Orchestrator {
     // Wait briefly for the OS to fully tear down the child (Windows cwd lock).
     await Promise.race([exitPromise, sleep(1000)]);
 
+    const wasAlive = handle.alive;
     handle.alive = false;
     this.persist();
+    if (wasAlive) this.emitStateChange(handle);
   }
 
   async removeContainer(dockerId: string): Promise<void> {
@@ -439,6 +489,18 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.stateStore.save(state);
   }
 
+  private emitStateChange(handle: Handle): void {
+    if (this.stateListeners.size === 0) return;
+    const info = toNodeInfo(handle);
+    for (const listener of this.stateListeners) {
+      try {
+        listener(info);
+      } catch (err) {
+        log('state listener threw for %s: %o', info.id, err);
+      }
+    }
+  }
+
   private toPersisted(h: Handle): PersistedHandle {
     return {
       containerId: h.containerId,
@@ -452,6 +514,19 @@ export class HostProcessOrchestrator implements Orchestrator {
       profile: h.profile,
     };
   }
+}
+
+function toNodeInfo(h: Handle): ManagedNodeInfo {
+  return {
+    id: h.containerId,
+    dockerId: h.dockerId,
+    partyId: h.partyId,
+    profile: h.profile,
+    status: h.alive ? 'running' : 'stopped',
+    spawnedAt: h.spawnedAt,
+    workdir: h.workdir,
+    ports: { ...h.ports },
+  };
 }
 
 /**

@@ -50,11 +50,18 @@ cadre-host uninstall --remove-data --yes
 - `cadre-host invite <label>` issues a trust-circle invite via the running management API. See [docs/cadre-host.md](../../docs/cadre-host.md#trust-circle).
 - `cadre-host trust list` and `cadre-host trust revoke <token-or-peerId>` round out trust-circle management.
 - `cadre-host nat status`, `cadre-host nat test`, `cadre-host nat ddns set duckdns --hostname <h> --token <t>`, `cadre-host nat ddns external --hostname <h>`, `cadre-host nat settings [--external-port N] [--no-upnp]` manage NAT / DDNS. See [docs/cadre-host.md](../../docs/cadre-host.md#nat-and-ddns).
+- `cadre-host ui` prints the local-UI URL and opens it in the default browser. Reads the configured port from `host.config.json`; doesn't require the cadre-host service to be running (if it isn't, the browser will fail to connect — that's obvious feedback).
 - `HostProcessOrchestrator` runs cadre nodes as native child processes.
 
 ## What `cadre-host start` does today
 
-`start` loads `host.config.json` + the identity, kicks off a background update check, arms a 24-hour update-check timer, and waits for SIGTERM. The full HTTP management server (Fastify with `/auth/*`, `/nat/*`, `/update/*`, `/api/*` routes) lands in `cadre-host-local-ui` (`6.5.1`); until then the wizard's enrollment-invite step degrades silently (the URL is printed, the QR is not). The `UpdateService` is exposed via `createUpdateHandlers()` for the local-UI ticket to wire up.
+`start` loads `host.config.json` + the identity, brings up the trust-circle / NAT / update services, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
+
+- `/auth/*` (trust circle), `/nat/*` (NAT/DDNS), `/update/*` (update flow) — these match the CLI's contract.
+- `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
+- `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
+
+If the configured `uiPort` is in use the server tries `uiPort+1..uiPort+9`; on total failure it exits with a message listing every port attempted. An origin guard rejects requests whose `Host` or `Origin` is not `127.0.0.1[:port]` / `localhost[:port]` (defeats DNS-rebind from a malicious page). There is no login — the security model is "same machine as the cadre-host user" (see threat model below).
 
 ## Updates
 

@@ -15,7 +15,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 
 import { Command } from 'commander';
 
@@ -32,6 +32,11 @@ import {
 import { detectPlatform } from '../installer/platform.js';
 import { createServiceHost } from '../installer/service-host/index.js';
 import { UpdateService } from '../update/index.js';
+import { HostProcessOrchestrator } from '../orchestrator/index.js';
+import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
+import { NatService } from '../nat/index.js';
+import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
+import { openBrowser } from '../installer/browser.js';
 
 const DEFAULT_PORT = Number(process.env.CADRE_HOST_PORT ?? '8765');
 
@@ -260,9 +265,54 @@ program
       void updateService.check();
       updateService.start();
 
-      // TODO(cadre-host-local-ui-server): replace this with createLocalUiServer({...}).start().
-      // For now, await termination so the service unit treats this as a long-running process.
+      // Wire the long-lived HTTP management server. The trust-circle and
+      // NAT services depend on a libp2p `CadreNodeLike`; v1 has no node-
+      // spawning path yet (that's a follow-up ticket), so we inject minimal
+      // stubs that fail loudly if a real call is attempted. The /auth/* and
+      // /nat/* routes are still mounted so the CLI's existing HTTP contract
+      // is intact — operations that genuinely need the libp2p node will
+      // surface a NatError / TrustCircleError, mapped to 500 by the server.
+      const orchestrator = new HostProcessOrchestrator({ rootDir: join(cfg.dataDir, 'orchestrator') });
+      await orchestrator.init();
+
+      const trustCircle = new TrustCircleService({
+        cadreNode: missingCadreNodeStub('trust-circle'),
+        store: new TrustCircleStore(cfg.dataDir),
+      });
+      const natService = new NatService({
+        rootDir: cfg.dataDir,
+        cadreNode: missingNatNodeStub(),
+      });
+      // Best-effort NAT start. Failures here aren't fatal — the local UI
+      // can still serve the trust circle, settings, etc.
+      try {
+        await natService.start();
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`NAT start failed: ${(err as Error).message}`);
+      }
+
+      const settingsStore = new HostSettingsStore({ dataDir: cfg.dataDir });
+      const server = createLocalUiServer({
+        uiPort: cfg.uiPort,
+        dataDir: cfg.dataDir,
+        orchestrator,
+        trustCircle,
+        nat: natService,
+        update: updateService,
+        settingsStore,
+      });
+      const { url, port } = await server.start();
+      if (port !== cfg.uiPort) {
+        // eslint-disable-next-line no-console
+        console.log(`(configured port ${cfg.uiPort} was in use — bound on ${port} instead)`);
+      }
+      // eslint-disable-next-line no-console
+      console.log(`cadre-host local UI: ${url}`);
+
       await waitForTermination();
+      try { await server.stop(); } catch { /* ignore */ }
+      try { await natService.stop(); } catch { /* ignore */ }
       updateService.stop();
       // eslint-disable-next-line no-console
       console.log('cadre-host stopped.');
@@ -270,6 +320,48 @@ program
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(`start failed: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  });
+
+// ============================================================================
+// ui — print the local-UI URL and open it in a browser
+// ============================================================================
+
+program
+  .command('ui')
+  .description('Print the local-UI URL and open it in the default browser')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .option('--no-browser', 'Print the URL but do not open a browser')
+  .action((opts: { dataDir?: string; browser?: boolean }) => {
+    try {
+      const platform = detectPlatform();
+      const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
+      const cfgPath = resolveConfigPath(dataDir);
+      if (!existsSync(cfgPath)) {
+        // eslint-disable-next-line no-console
+        console.error(`cadre-host ui: ${cfgPath} not found. Run \`cadre-host install\` first.`);
+        process.exit(1);
+        return;
+      }
+      const cfg = readHostConfig(cfgPath);
+      const url = `http://127.0.0.1:${cfg.uiPort}`;
+      // eslint-disable-next-line no-console
+      console.log(url);
+      if (opts.browser !== false) {
+        const res = openBrowser(url);
+        if (res.spawned) {
+          // eslint-disable-next-line no-console
+          console.log('(Opening in your default browser...)');
+        } else if (res.error) {
+          // eslint-disable-next-line no-console
+          console.error(`(unable to launch browser: ${res.error})`);
+        }
+      }
+      process.exit(0);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(`ui failed: ${(err as Error).message}`);
       process.exit(1);
     }
   });
@@ -293,6 +385,30 @@ function readPackageVersionForStart(): string {
   } catch {
     return '0.0.0-unknown';
   }
+}
+
+/**
+ * Returns a `CadreNodeLike` for TrustCircleService that fails loudly on any
+ * libp2p call. cadre-host v1 doesn't yet spawn the host's own cadre node —
+ * that ticket is separate. The trust-circle HTTP endpoints still load the
+ * local labels/pending file (listing works), but issuing/redeeming an invite
+ * requires a real node and surfaces a 500.
+ */
+function missingCadreNodeStub(name: string): import('../auth/trust-circle.js').CadreNodeLike {
+  return {
+    async createInvite() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot issue invite`); },
+    async acceptPhone() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot redeem`); },
+    async removePeer() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot remove peer`); },
+    encodeInvite() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot encode invite`); },
+    getControlDatabase() { return null; },
+  };
+}
+
+function missingNatNodeStub(): import('../nat/nat-service.js').CadreNodeLike {
+  return {
+    getPeerId() { return ''; },
+    getMultiaddrs() { return []; },
+  };
 }
 
 function waitForTermination(): Promise<void> {

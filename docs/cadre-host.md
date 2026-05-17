@@ -176,6 +176,71 @@ cadre-host fetches a signed manifest from `https://releases.serfab.io/cadre-host
 
 `UpdateService` lives in `src/update/` and exposes `createUpdateHandlers(service)` for the local-UI HTTP routes (`GET /update`, `POST /update/apply`, `GET/PUT /update/settings`); `cadre-host start` constructs the service so the daily timer and `update-state.json` are populated regardless of whether the UI has bound its routes yet.
 
+## Local UI server
+
+The local-UI server (`6.5.1-cadre-host-local-ui-server`) is the long-lived HTTP listener launched by `cadre-host start`. The Svelte SPA that consumes it ships in `6.5.2-cadre-host-local-ui-spa`.
+
+### Binding & origin policy
+
+- Bound to **`127.0.0.1`** only — never `0.0.0.0`. The OS firewall does not see this socket from another machine.
+- An **origin guard** rejects any request whose `Host` header isn't `127.0.0.1[:port]` or `localhost[:port]` (case-insensitive), and any request whose `Origin` header (when present) doesn't match one of those origins. This defeats DNS-rebind from a malicious page that resolves its own hostname to `127.0.0.1`.
+- **Port collision**: if the configured `uiPort` is in use, the server tries `uiPort+1..uiPort+9`. On total failure it exits non-zero with a clear message naming every port attempted. Re-configure `uiPort` in `host.config.json` and reinstall the service.
+
+### No login
+
+cadre-host is a same-machine management surface. Any local process running as the cadre-host user can already read identity files, mutate the trust circle, install global npm packages, and (with root) restart the service. A web-form password adds no real defence — it would protect the *non-existent* threat model "attacker is on this machine but can't run code as the cadre-host user". Don't add auth here; harden the host OS instead.
+
+### API surface
+
+| Path | Method | Purpose | Errors |
+|---|---|---|---|
+| `/api/status` | GET | Aggregated dashboard snapshot | — |
+| `/api/nodes` | GET | List managed cadre nodes (orchestrator handles) | — |
+| `/api/nodes/:id` | GET | One node's detail + stats | 404 unknown |
+| `/api/nodes/:id/logs?lines=N` | GET | Tail of `node.log` (default 200, max 2000) | 404 unknown |
+| `/api/nodes/:id/stop` | POST | Stop a running node | 404 unknown |
+| `/api/nodes/:id/{start,restart}` | POST | Lifecycle stub — v1 has no auto-spawn path (see honest-gap below) | 501 not_implemented |
+| `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted) | 400 invalid_setting |
+| `/api/events` | GET | Server-Sent Events stream | — |
+| `/auth/*` | various | Trust-circle (matches CLI) — `POST /auth/invites`, `GET /auth/trust-circle`, `DELETE /auth/invites/:token`, `DELETE /auth/members/:peerId` | mapped from `TrustCircleError.code` |
+| `/nat/*` | various | NAT/DDNS (matches CLI) — `GET /nat/status`, `POST /nat/test`, `GET /nat/providers`, `PUT /nat/ddns`, `PUT /nat/settings` | mapped from `NatError.code` |
+| `/update/*` | various | Update flow — `GET /update`, `POST /update/apply`, `GET/PUT /update/settings` | mapped from `UpdateErrorException.code` |
+| `/` (any GET) | — | SPA bundle (or placeholder HTML when `dist/ui/` is absent) | — |
+
+Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { code, message } }`. Status mapping is encoded in `src/server/error-handler.ts`.
+
+### Server-Sent Events
+
+`GET /api/events` returns `text/event-stream` and pushes:
+
+| Event | When |
+|---|---|
+| `node-state-changed` | A managed node transitions running ↔ stopped |
+| `trust-circle-changed` | An invite is issued / redeemed / revoked, or a member is removed |
+| `connectivity-changed` | NAT settings change, reachability re-tested, server boot |
+| `update-available` | A new release version is observed |
+
+A `: heartbeat` comment is sent every 15 s so corporate proxies don't time out idle connections; the wire format also includes a `retry: 5000` hint. Listeners are cleaned up on client disconnect — `bus.listenerCount()` drops back to zero.
+
+### Write-whitelist for `/api/settings`
+
+The SPA's settings page reads the full `host.config.json` (so it can show read-only fields) but only accepts these PUT keys:
+
+| Key | Accepted? | Notes |
+|---|---|---|
+| `upnpEnabled` | yes | Propagated to `NatService.putSettings` immediately |
+| `updates.autoApply` | yes | Propagated to `UpdateService.putSettings` |
+| `updates.manifestUrl` | yes | Propagated to `UpdateService.putSettings` (env var still wins) |
+| `uiPort`, `libp2pPort`, `dataDir`, `identityPath`, `installId`, `installedAt`, `installerVersion`, `version` | **no** | Edit at install time or directly in `host.config.json` and restart |
+
+Unknown keys → 400 `invalid_setting`.
+
+### Honest gaps
+
+- `/api/nodes/:id/start` and `/api/nodes/:id/restart` return **501 not_implemented**. cadre-host v1 doesn't yet own a "spawn a cadre node from a trust-circle member id" path — that's a follow-up ticket. Stop on a running node works.
+- `cadre-host start` constructs `TrustCircleService` and `NatService` with **stub** `CadreNodeLike` adapters because v1 doesn't yet host an inline libp2p `CadreNode`. Listing the trust circle works (reads the local labels file); issuing/redeeming an invite or building invite addresses surfaces a 500. The wizard's "first enrollment invite" step still degrades silently for the same reason.
+- The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`; until that lands `/` returns a placeholder HTML pointing at this doc.
+
 ## Architecture sketch
 
 ```mermaid
@@ -209,11 +274,12 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
 - `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
-- CLI: `invite <label>` (real), `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, arms the daily update check (`6.4.2`), and waits on SIGTERM as a placeholder for the local UI HTTP listener.
+- CLI: `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, brings up the trust-circle / NAT / update services, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`). `ui` prints + opens the local-UI URL.
 - `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
+- Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
-The local UI HTTP server is forthcoming in the `cadre-host-local-ui-server` ticket (`6.5.1`). Until it lands, `cadre-host start` keeps the service-host unit alive but does not yet expose `/auth/*` or `/nat/*` routes — `NatService` and `TrustCircleService` are libraries waiting for that server to construct and host them. The installer's "first enrollment invite" step degrades silently in the meantime.
+The Svelte SPA bundle is forthcoming in the `cadre-host-local-ui-spa` ticket (`6.5.2`). Until it lands the server still binds and serves the API; the root `/` returns a placeholder HTML pointing at this doc.
 
 ## See also
 

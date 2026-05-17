@@ -42,6 +42,28 @@ export interface Handle {
   alive: boolean;
 }
 
+/** Public view of a managed node — surfaced to `/api/nodes` callers. */
+export interface ManagedNodeInfo {
+  /** Friendly container id passed at create time. */
+  id: string;
+  /** Opaque dockerId (`pid:token`) — pass to stop/getStats/getLogs. */
+  dockerId: string;
+  partyId: string;
+  profile: 'storage' | 'transaction';
+  /** Runtime state derived from `Handle.alive`. */
+  status: 'running' | 'stopped';
+  spawnedAt: string;
+  workdir: string;
+  ports: { health: number; metrics: number; p2p: number };
+}
+
+/**
+ * Listener invoked when a managed node's lifecycle state changes
+ * (create, child exit, manual stop). Subscribe via
+ * `HostProcessOrchestrator.onStateChange`.
+ */
+export type NodeStateListener = (info: ManagedNodeInfo) => void;
+
 const TOKEN_SEPARATOR = ':';
 
 /**
