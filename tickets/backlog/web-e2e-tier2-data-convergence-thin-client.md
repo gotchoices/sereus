@@ -15,7 +15,7 @@ the cluster keyspace has enough server peers for a 3-peer quorum.
 
 **That isn't enough.** With two browsers + three server peers and
 `clusterSize=3`, FRET's responsibility-K selects the three nearest
-peers by XOR distance to each blockId. Because peer IDs are uniform
+peers by numeric distance to each blockId. Because peer IDs are uniform
 random, browser peers end up in the cluster for many blocks (≈ 60%
 each), and for ≈ 30% of blocks **both** browsers are in the cluster.
 

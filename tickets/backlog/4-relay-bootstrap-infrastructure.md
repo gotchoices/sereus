@@ -1,4 +1,3 @@
-priority: 2
 description: Design relay network and bootstrap node deployment for NAT traversal
 prereq: ops/docker/libp2p-infra, @libp2p/circuit-relay-v2, cadre-core network config
 ----
