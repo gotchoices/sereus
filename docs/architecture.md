@@ -824,13 +824,21 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 - Billing integration: usage metering, Stripe-ready hooks, quota enforcement
 - Orchestration: Docker orchestrator, mock orchestrator, pluggable interface
 
-### `@serfab/cadre-host` (Foundation)
+### `@serfab/cadre-host` (Complete)
 
-- Workspace package skeleton with CLI shell (`install`, `start`, `status`, `invite`, `uninstall` — all stubs) and re-exports of the orchestrator + container lifecycle types from `@serfab/cadre-provider`.
-- Orchestrator, trust-circle auth, NAT layer, installer, and local UI implementations forthcoming in the `cadre-host-*` ticket set. See [cadre-host.md](cadre-host.md).
+Self-hosted cadre node manager for basement-PC deployments — sibling of `@serfab/cadre-provider` (multi-tenant Docker hosting) targeting a single household / trust circle on one always-on machine. See [cadre-host.md](cadre-host.md) for persona, package boundary, and security posture.
 
-### Testing (127 tests passing)
+- **CLI** (`cadre-host`): `install`, `start`, `status`, `uninstall`, `invite`, `trust list|revoke`, `nat status|test|ddns|settings`, `ui`.
+- **Installer**: interactive + `--non-interactive` wizard, Ed25519 identity generation (mode 600), `host.config.json` / `nat.json` seeding, per-platform service-host registration (`systemd --user` on Linux, `LaunchAgent` on macOS, NSSM-managed `CadreHost` on Windows), best-effort browser open and first enrollment invite.
+- **HostProcessOrchestrator**: spawns cadre nodes as native child processes with PID-liveness, port allocator, state store, and log rotation; survives orchestrator restart (children stay running, are re-adopted).
+- **Trust-circle auth**: Ed25519-signed invite tokens with TTL, persistent store, revoke, list members; mounted at `/auth/*`.
+- **NAT layer**: UPnP/NAT-PMP port mapping, external-IP probe, reachability tests, DuckDNS DDNS provider with updater, secrets via keytar (with file-store fallback); mounted at `/nat/*`.
+- **Local UI server**: Fastify on `127.0.0.1:<uiPort>` (loopback only) with Origin/Host guard against DNS-rebind, SSE event bus at `/api/events`, settings store, `/api/status`, `/api/nodes/:id/{logs,stop,start,restart}`, `/api/settings`; serves the Svelte 5 SPA from `dist/ui/`.
+- **Update service**: notify-by-default with opt-in auto-apply, signed manifest fetch from `releases.serfab.io/cadre-host/latest.json`, Ed25519 signature verification, npm-channel apply with service-host restart; `/update/*` routes.
 
-- Unit tests: CadreNode, StrandWatcher, StrandInstanceManager, EnrollmentService, StrandSolicitationService, SchemaVerification, types
-- Integration tests: Seed bootstrap, strand formation protocol
+### Testing
+
+- **`@serfab/cadre-core`**: unit tests for CadreNode, StrandWatcher, StrandInstanceManager, EnrollmentService, StrandSolicitationService, schema verification, types. Integration tests for seed bootstrap and strand formation protocol.
+- **`@serfab/cadre-host`**: 281 unit + smoke tests across orchestrator, installer (including service-host stubs per platform), trust-circle, NAT (UPnP, reachability, DDNS, secrets), update service, and local-UI server routes / origin-guard / SSE bus.
+- **`packages/integration-tests`**: real-libp2p scenarios for basic connectivity, strand creation, multi-party sync/workflows, seed bootstrap, deliver-seed cross-network, enrollment e2e, strand-formation e2e, websocket chat, convergence stress. Cadre-host orchestrator + UI integration scenarios are tracked in `tickets/plan/cadre-host-integration-tests.md`.
 
