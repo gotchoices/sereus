@@ -54,7 +54,7 @@ export type {
   TrustCircleErrorCode,
 } from './auth/index.js';
 
-export { Installer } from './installer/index.js';
+export { Installer, readHostConfig, updateHostConfig, writeHostConfig } from './installer/index.js';
 export type {
   InstallOptions,
   InstallResult,
@@ -89,6 +89,7 @@ export type {
   UpdateServiceOptions,
   UpdateHandlers,
   UpdateState,
+  SignedManifest,
   UpdateApplyResult,
   UpdateSettings,
   UpdateManifest,

@@ -294,7 +294,7 @@ function resolveManifestUrl(explicit: string | undefined, fromSettings: string |
   return explicit ?? fromSettings ?? DEFAULT_MANIFEST_URL;
 }
 
-export type { UpdateState, UpdateApplyResult, UpdateSettings, UpdateManifest } from './types.js';
+export type { UpdateState, UpdateApplyResult, UpdateSettings, UpdateManifest, SignedManifest } from './types.js';
 export { UpdateErrorException, type UpdateErrorCode } from './types.js';
 export { compareVersions, parseVersion } from './version.js';
 export { fetchManifest, verifyManifest, canonicalJson, signManifestForTesting } from './manifest.js';
