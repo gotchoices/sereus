@@ -8,6 +8,15 @@ export interface SpawnReferenceMeshOptions {
 	serviceWsPorts?: number[];
 	/** Per-child stdout-scan timeout. Default 30s. */
 	startupTimeoutMs?: number;
+	/**
+	 * Network name passed via `--network` so the spawned peers' libp2p
+	 * `identify` codec (`/optimystic/<network>/id/1.0.0`) matches the
+	 * browser's. Without an explicit value, the CLI defaults to
+	 * `optimystic`, but the browser reference uses `sereus-web-reference`;
+	 * the mismatch breaks identify entirely and with it `RelayDiscovery`'s
+	 * topology onConnect hook.
+	 */
+	networkName?: string;
 }
 
 export interface ReferenceMeshHandle {
@@ -42,6 +51,7 @@ export async function spawnReferenceMesh(
 		bootstrapWsPort,
 		serviceWsPorts = [9192, 9193],
 		startupTimeoutMs = 30_000,
+		networkName = 'sereus-web-reference',
 	} = options;
 
 	const children: SingleNodeHandle[] = [];
@@ -64,8 +74,9 @@ export async function spawnReferenceMesh(
 				'--ws-port',
 				String(bootstrapWsPort),
 				'--no-tcp',
-				'--relay',
 				'--offline',
+				'--network',
+				networkName,
 			],
 			startupTimeoutMs,
 			label: 'bootstrap',
@@ -81,9 +92,10 @@ export async function spawnReferenceMesh(
 					'--ws-port',
 					String(port),
 					'--no-tcp',
-					'--relay',
 					'--bootstrap',
 					bootstrap.multiaddr,
+					'--network',
+					networkName,
 				],
 				startupTimeoutMs,
 				label: `service-${port}`,

@@ -149,7 +149,13 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 		clusterSize,
 		storage,
 		transports: [webSockets(), circuitRelayTransport()],
-		listenAddrs: [],
+		// `/p2p-circuit` activates the CircuitRelayTransport listener, which is
+		// what kicks `RelayDiscovery` and `ReservationStore.reserveRelay()` into
+		// action. Without this entry the AddressManager never calls listen() on
+		// the transport, so no reservation is made and the browser peer is not
+		// dialable through any service-peer relay — the Tier 2 specs would
+		// stall on `findCluster` picks that land on the browser tab itself.
+		listenAddrs: isDistributed ? ['/p2p-circuit'] : [],
 		// libp2p's browser default gater denies insecure ws:// and private/loopback
 		// addresses, which blocks dialing a local reference-peer fixture
 		// (`/ip4/127.0.0.1/.../ws/...`). Lift both restrictions — the bootstrap
@@ -160,6 +166,7 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 
 	const created = await createLibp2pNode(config);
 	node = created;
+	exposeDebugHook(created);
 
 	if (isDistributed) {
 		transactor = buildNetworkTransactor(created, networkName);
@@ -247,6 +254,7 @@ export async function stopNode(): Promise<void> {
 		await node.stop();
 		node = null;
 	}
+	clearDebugHook();
 	if (db) {
 		db.close();
 		db = null;
@@ -255,4 +263,25 @@ export async function stopNode(): Promise<void> {
 	transactor = null;
 	identityFirstSeenMs = null;
 	mode = 'solo';
+}
+
+/**
+ * Exposes a read-only `__optimystic` global so Playwright specs and devtools
+ * can inspect the running libp2p node without reaching into module-scoped
+ * state. Returns the node's current multiaddrs, peer id, and connection
+ * count — enough to verify a circuit-relay reservation has been published
+ * (`/p2p-circuit` in the multiaddrs) before the spec presses forward.
+ */
+function exposeDebugHook(libp2p: Libp2p): void {
+	if (typeof window === 'undefined') return;
+	(window as unknown as { __optimystic?: unknown }).__optimystic = {
+		getMultiaddrs: () => libp2p.getMultiaddrs().map((ma) => ma.toString()),
+		getPeerId: () => libp2p.peerId.toString(),
+		getConnectionCount: () => libp2p.getConnections().length,
+	};
+}
+
+function clearDebugHook(): void {
+	if (typeof window === 'undefined') return;
+	delete (window as unknown as { __optimystic?: unknown }).__optimystic;
 }

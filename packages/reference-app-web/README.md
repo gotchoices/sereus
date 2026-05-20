@@ -66,14 +66,17 @@ yarn workspace @optimystic/reference-peer build
 node packages/reference-peer/dist/src/cli.js interactive \
   --ws-port 9091 \
   --no-tcp \
-  --relay \
   --offline
 ```
 
 `--ws-port 9091` adds `/ip4/0.0.0.0/tcp/9091/ws` to the listen set,
 `--no-tcp` drops the default TCP listener so the bootstrap is browser-only,
-`--relay` turns on circuit-relay-v2 (useful once a second browser tab joins),
 and `--offline` keeps the bootstrap from trying to form its own cluster.
+Circuit-relay-v2 is on by default for any peer with an inbound listen
+address (TCP or WS); pass `--no-relay` to opt out for benchmarks or
+minimal nodes. The relay is what lets browser↔browser convergence work —
+two browser tabs can only reach each other via a service peer relaying
+their `/p2p-circuit` reservations.
 
 The peer prints its listen addrs on startup; copy the `/ws` line, append
 `/p2p/<peerId>` if it's not already on the line, and paste it into the
@@ -88,7 +91,7 @@ additional service nodes — see the optimystic repo for cluster recipes.
 
 ### Two-tab convergence test (acceptance check)
 
-1. Start the local bootstrap as above (`--ws-port 9091 --relay --offline`).
+1. Start the local bootstrap as above (`--ws-port 9091 --offline`).
 2. Open the dev server (`yarn workspace @serfab/reference-app-web dev`) in
    two browser tabs at `http://localhost:5173/`.
 3. In tab A: paste the bootstrap multiaddr into the Network panel and click
@@ -266,15 +269,22 @@ The suite splits into two tiers:
    `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
    spawn a **3-node mesh** on offset WebSocket ports (9191/9192/9193) so a
    developer can still keep a README-style manual peer alongside on 9091:
-   - `interactive --ws-port 9191 --no-tcp --relay --offline` — the
-     bootstrap, kept `--offline` so its own REPL transactor doesn't try
-     to form a cluster before the service peers appear. Its libp2p
+   - `interactive --ws-port 9191 --no-tcp --offline --network sereus-web-reference` —
+     the bootstrap, kept `--offline` so its own REPL transactor doesn't
+     try to form a cluster before the service peers appear. Its libp2p
      `repoService` still participates in cluster consensus on remote
-     callers' behalf.
-   - `service --ws-port 9192 --no-tcp --relay --bootstrap <bootstrap>` —
+     callers' behalf. Circuit-relay-v2 is on by default — the browser
+     tabs reserve a slot here so they're dialable through it.
+   - `service --ws-port 9192 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference` —
      headless service peer.
-   - `service --ws-port 9193 --no-tcp --relay --bootstrap <bootstrap>` —
+   - `service --ws-port 9193 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference` —
      headless service peer.
+
+   The explicit `--network sereus-web-reference` matches the browser's
+   default network name; without it the spawned peers fall back to
+   `optimystic` and the identify protocol prefix mismatches break every
+   topology — including the circuit-relay HOP discovery that grants the
+   browser its reservation.
 
    The browser tab dials all three multiaddrs up front (newline-separated
    bootstrap input), so cluster consensus has a real 3-peer keyspace
@@ -287,8 +297,9 @@ the single `--offline` peer for a human demo — that path exercises the
 solo-mode plumbing end-to-end but cannot reproduce full cluster
 consensus, which is why the e2e fixture spawns the 3-node mesh internally.
 To reproduce what the e2e does locally, run `service --ws-port 9192/9193
---no-tcp --relay --bootstrap <bootstrap>` alongside the bootstrap and
-paste all three addresses into the Network panel.
+--no-tcp --bootstrap <bootstrap> --network sereus-web-reference`
+alongside the bootstrap and paste all three addresses into the Network
+panel.
 
 To force-build the sibling packages the fixture depends on (the browser
 node's `connectionGater` plumbing lives in `db-p2p`; the `--offline`

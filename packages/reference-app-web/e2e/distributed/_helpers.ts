@@ -52,14 +52,14 @@ export async function maybeEnableBrowserDebug(page: Page): Promise<void> {
 			// The optimystic logger uses the namespace `optimystic:db-p2p:*`
 			// (see `optimystic/packages/db-p2p/src/logger.ts`). Capture libp2p
 			// dial + circuit-relay debug too so we can see who's reachable.
-			window.localStorage.setItem('debug', 'optimystic:*,libp2p:dial*,libp2p:circuit*');
+			window.localStorage.setItem('debug', 'optimystic:*,libp2p:dial*,libp2p:circuit*,libp2p:identify*,libp2p:registrar*');
 		} catch {
 			// localStorage may be unavailable in some test contexts; ignore.
 		}
 	});
 	page.on('console', (msg) => {
 		const text = msg.text();
-		if (text.includes('optimystic:') || text.includes('libp2p:circuit') || text.includes('libp2p:dial')) {
+		if (text.includes('optimystic:') || text.includes('libp2p:')) {
 			// Strip ANSI / %c colour controls for readable test output.
 			const clean = text.replace(/%c|color: [^;]+;?/g, '').trim();
 			console.log(`[browser ${msg.type()}] ${clean}`);
@@ -105,6 +105,27 @@ export async function connectToBootstrap(page: Page, multiaddrs: string | string
 			{ timeout: 60_000, intervals: [1000, 2000, 3000] },
 		)
 		.toBeGreaterThanOrEqual(1);
+	// Wait for the circuit-relay reservation to land. browsers can't form direct
+	// listens, so the only way other peers (including ourselves elsewhere in the
+	// cluster keyspace) can dial us is through a service-peer relay. The
+	// reservation handshake is asynchronous and races the test budget; gate the
+	// helper on a `/p2p-circuit/p2p/<self>` multiaddr being advertised so the
+	// downstream NetworkTransactor calls actually find a dialable peer.
+	await expect
+		.poll(
+			async () =>
+				page.evaluate(() => {
+					const hook = (window as unknown as {
+						__optimystic?: { getMultiaddrs: () => string[] };
+					}).__optimystic;
+					if (!hook) return [];
+					return hook.getMultiaddrs();
+				}),
+			{ timeout: 60_000, intervals: [500, 1000, 2000, 3000] },
+		)
+		.toEqual(
+			expect.arrayContaining([expect.stringMatching(/\/p2p-circuit\/p2p\//)]),
+		);
 	// Go back to home so subsequent tests can use the network panel.
 	await page.goto('/#/');
 }

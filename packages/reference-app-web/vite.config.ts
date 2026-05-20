@@ -28,6 +28,20 @@ export default defineConfig({
 			stream: 'readable-stream',
 			buffer: 'buffer',
 		},
+		// `@chainsafe/libp2p-gossipsub@14.x` calls `multiaddr.tuples()`, which
+		// only exists on `@multiformats/multiaddr` v12 (kept around as a
+		// backward-compat shim). Several optimystic transitive deps pull in
+		// v13 where `tuples()` was deleted in favour of `getComponents()`, and
+		// the registrar's `_onPeerIdentify` hands the gossipsub topology a v13
+		// multiaddr — which then explodes inside its `multiaddrToIPStr` helper
+		// and throws out of the topology loop *before* the circuit-relay HOP
+		// topology gets a chance to fire its onConnect. Without that fire, no
+		// reservation is requested and the browser peer is undialable.
+		//
+		// Deduping every consumer to the v12 multiaddr instance (which exposes
+		// both `tuples()` and `getComponents()`) restores compatibility until
+		// gossipsub upstream catches up.
+		dedupe: ['@multiformats/multiaddr'],
 	},
 	define: {
 		global: 'globalThis',
