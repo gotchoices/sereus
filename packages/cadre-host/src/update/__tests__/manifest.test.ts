@@ -90,4 +90,39 @@ describe('verifyManifest', () => {
     const tampered = { ...envelope, sig: envelope.sig.replace('ed25519:', 'rsa:') };
     expect(() => verifyManifest(tampered)).toThrow(/unsupported signature scheme/);
   });
+
+  it('rejects non-semver manifest.version (manifest_invalid)', () => {
+    const envelope = signManifestForTesting(
+      { ...sampleManifest, version: 'not-a-semver' },
+      kp.privateKey,
+    );
+    expect(() => verifyManifest(envelope)).toThrow(/not a valid semver/i);
+  });
+
+  it('rejects non-semver minPreviousVersion (manifest_invalid)', () => {
+    const envelope = signManifestForTesting(
+      { ...sampleManifest, minPreviousVersion: '0.6' },
+      kp.privateKey,
+    );
+    expect(() => verifyManifest(envelope)).toThrow(/minPreviousVersion.*not a valid semver/i);
+  });
+
+  it('rejects publishedAt that is not a round-trippable ISO-8601 string', () => {
+    const envelope = signManifestForTesting(
+      { ...sampleManifest, publishedAt: 'sometime last week' },
+      kp.privateKey,
+    );
+    expect(() => verifyManifest(envelope)).toThrow(/publishedAt.*ISO-8601/i);
+  });
+
+  it('rejects an npm package name that fails the naming regex', () => {
+    const envelope = signManifestForTesting(
+      {
+        ...sampleManifest,
+        channels: { npm: { package: 'BAD CHARS!', tag: 'latest' } },
+      },
+      kp.privateKey,
+    );
+    expect(() => verifyManifest(envelope)).toThrow(/not a valid npm package name/);
+  });
 });

@@ -94,6 +94,31 @@ export class UpdateService {
     this.checkIntervalMs = opts.checkIntervalMs ?? DEFAULT_CHECK_INTERVAL_MS;
     this.settings = opts.settings ?? { autoApply: false };
     this.manifestUrl = resolveManifestUrl(opts.manifestUrl, this.settings.manifestUrl);
+    this.recoverInterruptedApply();
+  }
+
+  /**
+   * If `update-state.json` still records an in-flight apply at construction
+   * time, the previous cadre-host process died mid-apply (OOM, power loss,
+   * sigkill). Without intervention, every subsequent `apply()` would short-
+   * circuit on `apply_in_progress` forever. We clear the marker and surface a
+   * `lastError` so the UI banner can flag that an apply was interrupted —
+   * the npm install may or may not have completed, so the operator should
+   * verify with `npm ls -g`.
+   */
+  private recoverInterruptedApply(): void {
+    const state = this.store.load();
+    if (!state.applyInProgress) return;
+    const { fromVersion, toVersion } = state.applyInProgress;
+    log('clearing stale applyInProgress (%s → %s); previous apply was interrupted', fromVersion, toVersion);
+    this.store.update({
+      applyInProgress: undefined,
+      lastError: {
+        code: 'apply_failed',
+        message: `previous apply (${fromVersion} → ${toVersion}) was interrupted (cadre-host restarted before it completed); the install may or may not have succeeded — verify with 'npm ls -g'`,
+        at: new Date().toISOString(),
+      },
+    });
   }
 
   /** Read the persisted state for UI consumption. */

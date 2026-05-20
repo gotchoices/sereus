@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { applyUpdate, type NpmExecutor, type NpmResult } from '../apply.js';
+import { applyUpdate, buildNpmSpawnSpec, quoteWindowsArg, type NpmExecutor, type NpmResult } from '../apply.js';
 import { UpdateErrorException } from '../types.js';
 
 function recordingExecutor(responses: NpmResult[]): { exec: NpmExecutor; calls: string[][] } {
@@ -97,5 +97,62 @@ describe('applyUpdate', () => {
       ['install', '-g', '@serfab/cadre-host@0.7.0'],
       ['install', '-g', '@serfab/cadre-host@0.6.0'],
     ]);
+  });
+});
+
+describe('quoteWindowsArg', () => {
+  it('leaves safe args untouched', () => {
+    expect(quoteWindowsArg('install')).toBe('install');
+    expect(quoteWindowsArg('-g')).toBe('-g');
+    expect(quoteWindowsArg('@serfab/cadre-host@0.7.0')).toBe('@serfab/cadre-host@0.7.0');
+  });
+
+  it('quotes args containing whitespace or shell metachars', () => {
+    expect(quoteWindowsArg('has space')).toBe('"has space"');
+    expect(quoteWindowsArg('with&amp')).toBe('"with&amp"');
+    expect(quoteWindowsArg('pipe|me')).toBe('"pipe|me"');
+  });
+
+  it('escapes embedded quotes and trailing backslashes', () => {
+    expect(quoteWindowsArg('with"quote')).toBe('"with\\"quote"');
+    expect(quoteWindowsArg('trailing\\')).toBe('trailing\\');
+    expect(quoteWindowsArg('trail ing\\')).toBe('"trail ing\\\\"');
+  });
+
+  it('rejects control characters', () => {
+    expect(() => quoteWindowsArg('bad\nnewline')).toThrow(/control character/);
+    expect(() => quoteWindowsArg('bad\x00null')).toThrow(/control character/);
+  });
+});
+
+describe('buildNpmSpawnSpec', () => {
+  it('builds a single-string command with empty args on Windows', () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+    try {
+      const spec = buildNpmSpawnSpec(['install', '-g', '@serfab/cadre-host@0.7.0']);
+      expect(spec).toEqual({
+        command: 'npm install -g @serfab/cadre-host@0.7.0',
+        args: [],
+        shell: true,
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
+  });
+
+  it('passes args through verbatim on posix (no shell)', () => {
+    const original = process.platform;
+    Object.defineProperty(process, 'platform', { value: 'linux', configurable: true });
+    try {
+      const spec = buildNpmSpawnSpec(['install', '-g', '@serfab/cadre-host@0.7.0']);
+      expect(spec).toEqual({
+        command: 'npm',
+        args: ['install', '-g', '@serfab/cadre-host@0.7.0'],
+        shell: false,
+      });
+    } finally {
+      Object.defineProperty(process, 'platform', { value: original, configurable: true });
+    }
   });
 });

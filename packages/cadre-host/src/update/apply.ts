@@ -116,12 +116,25 @@ async function tryRollback(
   }
 }
 
-/** Default executor: spawn `npm` with the given args. Adds a hard timeout. */
+/**
+ * Default executor: spawn `npm` with the given args. Adds a hard timeout.
+ *
+ * On Windows, npm ships as `npm.cmd` (a batch file). CreateProcess can't run
+ * batch files directly, so a shell is required — but Node's DEP0190 warns
+ * against `spawn(cmd, args, { shell: true })` because args are concatenated
+ * (not escaped) into the resulting command line. To dodge the deprecation we
+ * pre-quote each arg ourselves and pass the result as a single command string
+ * with an empty args array. Inputs come from a signed manifest after
+ * regex-validated package + semver checks, so injection surface is minimal;
+ * quoting is defense in depth.
+ */
 export function defaultNpmExecutor(timeoutMs: number): NpmExecutor {
   return (args: string[]) => new Promise<NpmResult>((resolveExec) => {
-    // Windows resolves `npm` via `npm.cmd`; using shell:true is the
-    // simplest cross-platform answer that still works with PATH lookup.
-    const child = spawn('npm', args, { shell: process.platform === 'win32', windowsHide: true });
+    const spawnSpec = buildNpmSpawnSpec(args);
+    const child = spawn(spawnSpec.command, spawnSpec.args, {
+      shell: spawnSpec.shell,
+      windowsHide: true,
+    });
     let stdout = '';
     let stderr = '';
     child.stdout?.on('data', (chunk: Buffer | string) => { stdout += String(chunk); });
@@ -141,6 +154,32 @@ export function defaultNpmExecutor(timeoutMs: number): NpmExecutor {
       resolveExec({ exitCode: code ?? -1, stdout, stderr });
     });
   });
+}
+
+/**
+ * Build the `(command, args, shell)` triple passed to `spawn`. Exported for
+ * tests — the spawn shape differs per platform and the quoting matters.
+ */
+export function buildNpmSpawnSpec(args: string[]): { command: string; args: string[]; shell: boolean } {
+  if (process.platform === 'win32') {
+    const commandLine = ['npm', ...args.map(quoteWindowsArg)].join(' ');
+    return { command: commandLine, args: [], shell: true };
+  }
+  return { command: 'npm', args, shell: false };
+}
+
+/** cmd.exe quoting — wrap args containing whitespace or shell metachars. */
+export function quoteWindowsArg(arg: string): string {
+  if (/[\x00\r\n]/.test(arg)) {
+    throw new Error('refusing to spawn npm with control character in argument');
+  }
+  if (arg.length === 0) return '""';
+  if (!/[\s"&|<>^()%!]/.test(arg)) return arg;
+  // Escape backslashes preceding a quote per MSVCRT/cmd rules, then double the
+  // quote itself (the cmd-friendly form rather than backslash-quote).
+  const escaped = arg.replace(/(\\*)"/g, (_m, slashes: string) => slashes + slashes + '\\"');
+  const trailing = escaped.replace(/(\\*)$/, (_m, slashes: string) => slashes + slashes);
+  return `"${trailing}"`;
 }
 
 function tail(s: string, n: number): string {

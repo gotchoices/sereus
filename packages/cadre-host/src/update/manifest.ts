@@ -18,6 +18,10 @@ import {
   type SignedManifest,
   type UpdateManifest,
 } from './types.js';
+import { parseVersion } from './version.js';
+
+/** npm package naming rule — slightly looser than the official one (we don't enforce length here other than the 214-char total). */
+const NPM_PACKAGE_NAME_RE = /^(?:@[a-z0-9-_.]+\/)?[a-z0-9-_.]+$/;
 
 /** Default release-manifest URL. Overridable via env var on the caller. */
 export const DEFAULT_MANIFEST_URL = 'https://releases.serfab.io/cadre-host/latest.json';
@@ -77,6 +81,7 @@ export function verifyManifest(
   if (!isUpdateManifest(body.manifest)) {
     throw new UpdateErrorException('manifest_invalid', 'manifest payload is missing required fields');
   }
+  assertManifestFieldsWellFormed(body.manifest);
 
   const sig = parseSignature(body.sig);
   const canonical = Buffer.from(canonicalJson(body.manifest), 'utf8');
@@ -130,6 +135,48 @@ function isSignedManifest(v: unknown): v is SignedManifest {
   if (!v || typeof v !== 'object') return false;
   const obj = v as Record<string, unknown>;
   return typeof obj.sig === 'string' && obj.manifest !== undefined && typeof obj.manifest === 'object';
+}
+
+/**
+ * Field-level validation that goes beyond the structural `isUpdateManifest`
+ * type guard: enforces semver on version strings, ISO-8601 round-tripping on
+ * the publish timestamp, and the npm naming regex on the package name. A
+ * signed-but-malformed manifest would otherwise surface as a confusing
+ * `compareVersions` throw further downstream.
+ */
+function assertManifestFieldsWellFormed(m: UpdateManifest): void {
+  try {
+    parseVersion(m.version);
+  } catch (err) {
+    throw new UpdateErrorException(
+      'manifest_invalid',
+      `manifest version "${m.version}" is not a valid semver: ${(err as Error).message}`,
+    );
+  }
+  if (m.minPreviousVersion !== undefined) {
+    try {
+      parseVersion(m.minPreviousVersion);
+    } catch (err) {
+      throw new UpdateErrorException(
+        'manifest_invalid',
+        `manifest minPreviousVersion "${m.minPreviousVersion}" is not a valid semver: ${(err as Error).message}`,
+      );
+    }
+  }
+  const parsed = new Date(m.publishedAt);
+  if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== m.publishedAt) {
+    throw new UpdateErrorException(
+      'manifest_invalid',
+      `manifest publishedAt "${m.publishedAt}" is not a round-trippable ISO-8601 string`,
+    );
+  }
+  const pkg = m.channels.npm.package;
+  if (!NPM_PACKAGE_NAME_RE.test(pkg) || pkg.length > 214) {
+    throw new UpdateErrorException(
+      'manifest_invalid',
+      `manifest channels.npm.package "${pkg}" is not a valid npm package name`,
+    );
+  }
 }
 
 function isUpdateManifest(v: unknown): v is UpdateManifest {

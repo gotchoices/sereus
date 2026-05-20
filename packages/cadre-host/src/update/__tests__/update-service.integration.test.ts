@@ -6,6 +6,7 @@ import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 
 import { signManifestForTesting } from '../manifest.js';
 import { UpdateService } from '../index.js';
+import { UpdateStateStore } from '../store.js';
 import type { UpdateManifest } from '../types.js';
 
 function freshKeypair(): { privateKey: KeyObject; publicRawB64: string } {
@@ -201,6 +202,40 @@ describe('UpdateService', () => {
     });
     await svc.check();
     expect(calls.some((c) => c[2] === '@serfab/cadre-host@0.7.0')).toBe(true);
+  });
+
+  it('recovers from a stale applyInProgress at construction time', async () => {
+    // Simulate a crash: write a state file that records an in-flight apply.
+    const seed = new UpdateStateStore(tmp);
+    seed.update({
+      applyInProgress: {
+        fromVersion: '0.6.0',
+        toVersion: '0.7.0',
+        startedAt: '2026-05-15T18:00:00.000Z',
+      },
+    });
+
+    const svc = new UpdateService({
+      dataDir: tmp,
+      currentVersion: '0.6.0',
+      fetcher: fakeFetch({}),
+      manifestUrl: 'https://example.com/m',
+    });
+    const state = await svc.getState();
+    expect(state.applyInProgress).toBeUndefined();
+    expect(state.lastError?.code).toBe('apply_failed');
+    expect(state.lastError?.message).toMatch(/interrupted/i);
+
+    // Now apply() must not short-circuit on apply_in_progress; with a stub
+    // manifest mismatch we expect the usual no_update_available path instead.
+    const envelope = signManifestForTesting(manifest('0.6.0'), kp.privateKey);
+    const svc2 = new UpdateService({
+      dataDir: tmp,
+      currentVersion: '0.7.0',
+      fetcher: fakeFetch(envelope),
+      manifestUrl: 'https://example.com/m',
+    });
+    await expect(svc2.apply()).rejects.toMatchObject({ code: 'no_update_available' });
   });
 
   it('start()/stop(): timer can be armed and cleared', async () => {
