@@ -1,7 +1,7 @@
 ---
-description: Review the 3-node mesh fixture upgrade — connectivity specs now pass against the spawned cluster, but data-convergence specs remain blocked on browser-thin-client work
+description: Review the 3-node mesh fixture upgrade — connectivity specs now pass against the spawned cluster, but data-convergence specs remain blocked on browser-relay-reservation work
 files: packages/reference-app-web/e2e/fixtures/reference-peer.ts, packages/reference-app-web/e2e/fixtures/state.ts, packages/reference-app-web/e2e/global-setup.ts, packages/reference-app-web/e2e/distributed/_helpers.ts, packages/reference-app-web/e2e/distributed/two-tab-convergence.spec.ts, packages/reference-app-web/e2e/distributed/cross-tab-activity.spec.ts, packages/reference-app-web/e2e/distributed/disconnect-mid-session.spec.ts, packages/reference-app-web/e2e/distributed/mode-flip.spec.ts, packages/reference-app-web/e2e/distributed/bootstrap-persistence.spec.ts, packages/reference-app-web/README.md
-prereq: web-e2e-tier2-data-convergence-thin-client
+prereq: web-e2e-tier2-data-convergence-relay
 ---
 
 ## What landed
@@ -19,7 +19,9 @@ Tier 2 specs passing — is **not met**. The 3-node mesh fixes the
 connectivity-layer specs but the three data-convergence specs (the same
 three that were failing before this ticket) still fail. Root-cause analysis
 below; a follow-up backlog ticket
-(`web-e2e-tier2-data-convergence-thin-client`) is filed to capture the
+(`web-e2e-tier2-data-convergence-relay`, originally drafted as
+`web-e2e-tier2-data-convergence-thin-client` but reframed during planning
+— see that ticket's "Why this exists" section) is filed to capture the
 remaining work.
 
 ## Test results
@@ -173,17 +175,16 @@ in real time — no zip extraction needed.
    README to be honest about that, the addition I left in calls it out;
    adjust the wording if you'd rather flag it more prominently.
 
-## Recommended next steps (filed as backlog ticket)
+## Recommended next steps (filed as plan ticket)
 
-`tickets/backlog/web-e2e-tier2-data-convergence-thin-client.md` — design
-+ implement a browser-side "thin-client" mode where the browser's
-`NetworkTransactor` is configured so the browser is **not** enrolled
-as a cluster member. With browsers excluded from cluster keyspace, the
-existing 3-node mesh fixture provides a uniform 3-peer cluster that
-all consensus operations can complete against. That ticket should also
-revisit whether the manual README acceptance check can ever truly
-converge with a single `--offline` peer or whether the README needs to
-prescribe the 3-node mesh.
+`tickets/plan/web-e2e-tier2-data-convergence-relay.md` — make browser
+peers dialable via circuit-relay reservations (service peers default
+to `--relay: true` when they have an inbound address; browsers
+actively reserve a slot). With browsers reachable, the existing 3-node
+mesh fixture's `findCluster` picks succeed without selection-side
+changes. That ticket should also revisit whether the manual README
+acceptance check can ever truly converge with a single `--offline`
+peer or whether the README needs to prescribe the relay-enabled mesh.
 
 ## Tier 1 status
 
