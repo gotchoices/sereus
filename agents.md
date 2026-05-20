@@ -1,4 +1,12 @@
-You are focused on the Sereus monorepo, but have access to ../quereus and ../optimystic workspaces as well for reference and debugging.
+You are focused on the Sereus monorepo, but have access to `../quereus` and `../optimystic` workspaces as well for reference and debugging (linked via `resolutions` in the root `package.json`).
+
+## Repo orientation
+
+- `packages/` — the monorepo's libraries and apps. The cadre runtimes are `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager with local UI, installer, NAT, trust-circle), and `@serfab/cadre-provider` (multi-tenant Docker host). SQL access is `@serfab/quereus-plugin-sereus`. Reference apps live in `reference-app-rn` and `reference-app-web`. Cross-package, real-network tests are in `integration-tests`. `strand-proto` is deprecated.
+- `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not where application code goes.
+- `docs/` — design and protocol docs. [`docs/architecture.md`](docs/architecture.md) is the entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), and [`docs/STATUS.md`](docs/STATUS.md) cover specific subsystems.
+- `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
+- `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
 
 ## General
 
@@ -26,4 +34,5 @@ This project uses [tess](tess/) for AI-driven ticket management.
 Read and follow the ticket workflow rules in tess/agent-rules/tickets.md.
 Tickets are in the [tickets/](tickets/) directory.
 
-Start with docs\architecture.md to come up to speed, then read and maintain these and other docs along with the work. 
+Start with [`docs/architecture.md`](docs/architecture.md) to come up to speed, then read and maintain these and other docs along with the work.
+
