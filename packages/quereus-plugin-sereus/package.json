@@ -1,6 +1,6 @@
 {
 	"name": "@serfab/quereus-plugin-sereus",
-	"version": "0.6.0",
+	"version": "0.7.0",
 	"type": "module",
 	"description": "Quereus plugin that connects to a Sereus strand for SQL access",
 	"main": "dist/index.js",
