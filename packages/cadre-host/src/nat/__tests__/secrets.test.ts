@@ -5,7 +5,7 @@ import { join } from 'node:path';
 
 import { KeytarSecretsStore } from '../secrets/keytar-store.js';
 import { FileSecretsStore } from '../secrets/file-store.js';
-import { ddnsAccount, type KeytarLike } from '../secrets/index.js';
+import { ddnsAccount, resolveKeytarLike, type KeytarLike } from '../secrets/index.js';
 import { NatError } from '../types.js';
 
 function makeFakeKeytar(): {
@@ -57,6 +57,28 @@ describe('ddnsAccount()', () => {
   it('rejects empty inputs', () => {
     expect(() => ddnsAccount('', 'token')).toThrow(NatError);
     expect(() => ddnsAccount('duckdns', '')).toThrow(NatError);
+  });
+});
+
+describe('resolveKeytarLike()', () => {
+  it('unwraps the CJS-via-ESM default export shape', () => {
+    const { keytar } = makeFakeKeytar();
+    expect(resolveKeytarLike({ default: keytar })).toBe(keytar);
+  });
+
+  it('passes through a direct named-export shape', () => {
+    const { keytar } = makeFakeKeytar();
+    expect(resolveKeytarLike(keytar)).toBe(keytar);
+  });
+
+  it('returns null when the shape is missing methods', () => {
+    expect(resolveKeytarLike({})).toBeNull();
+    expect(resolveKeytarLike({ default: {} })).toBeNull();
+  });
+
+  it('returns null for nullish input without crashing', () => {
+    expect(resolveKeytarLike(null)).toBeNull();
+    expect(resolveKeytarLike(undefined)).toBeNull();
   });
 });
 

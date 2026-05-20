@@ -40,8 +40,17 @@ export async function createSecretsStore(rootDir: string): Promise<SecretsStore>
     return makeFileFallback(rootDir, `keytar not installed: ${(err as Error).message}`);
   }
 
+  // `keytar` is a CJS package; under Node's ESM interop the dynamic import
+  // yields a Module Namespace whose `default` is the real `module.exports`.
+  // Unwrap before handing it to KeytarSecretsStore.
+  const keytar = resolveKeytarLike(keytarMod);
+  if (!keytar) {
+    log('keytar module loaded but API surface missing; using file fallback');
+    return makeFileFallback(rootDir, 'keytar module loaded but API surface missing');
+  }
+
   // Probe with a sentinel write — some installs load but throw at runtime.
-  const ks = new KeytarSecretsStore(KEYTAR_SERVICE, keytarMod as KeytarLike);
+  const ks = new KeytarSecretsStore(KEYTAR_SERVICE, keytar);
   const probeAccount = '__cadre_host_probe__';
   try {
     await ks.set(probeAccount, '1');
@@ -52,6 +61,28 @@ export async function createSecretsStore(rootDir: string): Promise<SecretsStore>
     log('keytar probe failed (%s); using file fallback', (err as Error).message);
     return makeFileFallback(rootDir, `keytar runtime error: ${(err as Error).message}`);
   }
+}
+
+/**
+ * Return the first candidate in `[mod, mod.default]` that satisfies the
+ * `KeytarLike` shape — or `null` if neither does. Handles the CJS-via-ESM
+ * interop case where the dynamic import yields `{ default: keytar }` rather
+ * than the keytar surface directly.
+ */
+export function resolveKeytarLike(mod: unknown): KeytarLike | null {
+  const candidates: unknown[] = [mod, (mod as { default?: unknown } | null)?.default];
+  for (const c of candidates) {
+    if (
+      c &&
+      typeof (c as KeytarLike).setPassword === 'function' &&
+      typeof (c as KeytarLike).getPassword === 'function' &&
+      typeof (c as KeytarLike).deletePassword === 'function' &&
+      typeof (c as KeytarLike).findCredentials === 'function'
+    ) {
+      return c as KeytarLike;
+    }
+  }
+  return null;
 }
 
 function makeFileFallback(rootDir: string, reason: string): SecretsStore {
