@@ -67,15 +67,20 @@ node packages/reference-peer/dist/src/cli.js interactive \
   --ws-port 9091 \
   --no-tcp \
   --offline \
-  --cluster-size 3
+  --cluster-size 3 \
+  --super-majority-threshold 0.51
 ```
 
 `--ws-port 9091` adds `/ip4/0.0.0.0/tcp/9091/ws` to the listen set,
 `--no-tcp` drops the default TCP listener so the bootstrap is browser-only,
 `--cluster-size 3` matches the browser's `clusterSize: 3` so the two ends
 agree on cluster-coordinator membership (the CLI defaults to the
-`libp2p-node-base` default of 10 otherwise), and `--offline` keeps the
-bootstrap from trying to form its own cluster.
+`libp2p-node-base` default of 10 otherwise),
+`--super-majority-threshold 0.51` matches the browser's distributed-mode
+default — `Math.ceil(3 * 0.67) = 3` would leave zero slack on a 3-peer
+cluster and demand unanimity, while `ceil(3 * 0.51) = 2` lets consensus
+land even when one peer doesn't co-sign,
+and `--offline` keeps the bootstrap from trying to form its own cluster.
 Circuit-relay-v2 is on by default for any peer with an inbound listen
 address (TCP or WS); pass `--no-relay` to opt out for benchmarks or
 minimal nodes. The relay is what lets browser↔browser convergence work —
@@ -273,15 +278,15 @@ The suite splits into two tiers:
    `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
    spawn a **3-node mesh** on offset WebSocket ports (9191/9192/9193) so a
    developer can still keep a README-style manual peer alongside on 9091:
-   - `interactive --ws-port 9191 --no-tcp --offline --network sereus-web-reference --cluster-size 3` —
+   - `interactive --ws-port 9191 --no-tcp --offline --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
      the bootstrap, kept `--offline` so its own REPL transactor doesn't
      try to form a cluster before the service peers appear. Its libp2p
      `repoService` still participates in cluster consensus on remote
      callers' behalf. Circuit-relay-v2 is on by default — the browser
      tabs reserve a slot here so they're dialable through it.
-   - `service --ws-port 9192 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3` —
+   - `service --ws-port 9192 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
      headless service peer.
-   - `service --ws-port 9193 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3` —
+   - `service --ws-port 9193 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
      headless service peer.
 
    The explicit `--network sereus-web-reference` matches the browser's
@@ -292,7 +297,11 @@ The suite splits into two tiers:
    browser's distributed-mode `clusterSize: 3` (see
    `src/lib/optimystic.ts`); without it the service peers fall back to the
    `libp2p-node-base` default of 10 and cluster-coordinator membership
-   disagrees end-to-end.
+   disagrees end-to-end. The explicit `--super-majority-threshold 0.51`
+   matches the browser's distributed-mode default — the 0.67 default
+   rounds via `Math.ceil` to 3-of-3 unanimity on a 3-peer cluster, leaving
+   zero slack; 0.51 rounds to 2-of-3 so a single non-co-signing peer
+   doesn't sink the round.
 
    The browser tab dials all three multiaddrs up front (newline-separated
    bootstrap input), so cluster consensus has a real 3-peer keyspace
@@ -306,8 +315,8 @@ solo-mode plumbing end-to-end but cannot reproduce full cluster
 consensus, which is why the e2e fixture spawns the 3-node mesh internally.
 To reproduce what the e2e does locally, run `service --ws-port 9192/9193
 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference
---cluster-size 3` alongside the bootstrap and paste all three addresses
-into the Network panel.
+--cluster-size 3 --super-majority-threshold 0.51` alongside the bootstrap
+and paste all three addresses into the Network panel.
 
 To force-build the sibling packages the fixture depends on (the browser
 node's `connectionGater` plumbing lives in `db-p2p`; the `--offline`

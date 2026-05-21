@@ -56,6 +56,14 @@ export interface StartNodeOptions {
 	bootstrapNodes?: string[];
 	/** Desired cluster size. Defaults: solo → 1, distributed → 3. */
 	clusterSize?: number;
+	/**
+	 * Super-majority threshold (fraction in (0, 1]). Defaults: distributed →
+	 * 0.51, solo → libp2p-node-base default. The distributed default exists
+	 * because `Math.ceil(3 * 0.67) = 3` leaves a 3-peer cluster with zero
+	 * slack — any single peer that returns without its own promise signature
+	 * sinks consensus.
+	 */
+	superMajorityThreshold?: number;
 }
 
 const DEFAULT_NETWORK_NAME = 'sereus-web-reference';
@@ -134,6 +142,7 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 	const bootstrapNodes = opts.bootstrapNodes ?? [];
 	const isDistributed = bootstrapNodes.length > 0;
 	const clusterSize = opts.clusterSize ?? (isDistributed ? 3 : 1);
+	const superMajorityThreshold = opts.superMajorityThreshold ?? (isDistributed ? 0.51 : undefined);
 	activeNetworkName = networkName;
 	mode = isDistributed ? 'distributed' : 'solo';
 
@@ -147,6 +156,9 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 		networkName,
 		bootstrapNodes,
 		clusterSize,
+		clusterPolicy: superMajorityThreshold !== undefined
+			? { superMajorityThreshold }
+			: undefined,
 		storage,
 		transports: [webSockets(), circuitRelayTransport()],
 		// `/p2p-circuit` activates the CircuitRelayTransport listener, which is
