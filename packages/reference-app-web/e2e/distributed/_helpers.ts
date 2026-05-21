@@ -69,17 +69,14 @@ export async function maybeEnableBrowserDebug(page: Page): Promise<void> {
 
 /**
  * Wait for the node to be `running` (solo, fresh boot), paste the bootstrap
- * multiaddr(s), click Connect, and wait for the mode badge to flip to
- * `distributed`. Used by every Tier 2 spec.
- *
- * Accepts a single multiaddr (legacy callers) or an array — the array form
- * is the path taken by the 3-node mesh fixture, where the browser dials the
- * bootstrap plus both service peers immediately.
+ * multiaddrs, click Connect, and wait for the mode badge to flip to
+ * `distributed`. Used by every Tier 2 spec. Callers build the list via
+ * {@link collectBootstrapMultiaddrs}, which always returns at least the
+ * primary bootstrap (env-override path returns a single-element array).
  */
-export async function connectToBootstrap(page: Page, multiaddrs: string | string[]): Promise<void> {
-	const list = Array.isArray(multiaddrs) ? multiaddrs : [multiaddrs];
-	if (list.length === 0) throw new Error('connectToBootstrap: no multiaddrs provided');
-	const textareaValue = list.join('\n');
+export async function connectToBootstrap(page: Page, multiaddrs: string[]): Promise<void> {
+	if (multiaddrs.length === 0) throw new Error('connectToBootstrap: no multiaddrs provided');
+	const textareaValue = multiaddrs.join('\n');
 	await maybeEnableBrowserDebug(page);
 	await page.goto('/');
 	await expect(page.getByTestId('home-status')).toHaveText('running', {
