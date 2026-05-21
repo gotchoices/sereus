@@ -70,6 +70,11 @@ const DEFAULT_NETWORK_NAME = 'sereus-web-reference';
 const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
 const NETWORK_TIMEOUT_MS = 30_000;
 const ABORT_OR_CANCEL_TIMEOUT_MS = 10_000;
+// Per-peer dial cap. The browser is more dial-failure-prone than a node peer
+// (WebSocket-only, circuit-relay required, frequently picks an undialable
+// browser tab as coordinator) so a tight per-peer deadline lets the
+// NetworkTransactor's retry loop move on without burning the full 30s budget.
+const DIAL_TIMEOUT_MS = 3_000;
 
 let node: Libp2p | null = null;
 let db: OptimysticWebDBHandle | null = null;
@@ -252,6 +257,7 @@ function buildNetworkTransactor(libp2p: Libp2p, networkName: string): ITransacto
 	return new NetworkTransactor({
 		timeoutMs: NETWORK_TIMEOUT_MS,
 		abortOrCancelTimeoutMs: ABORT_OR_CANCEL_TIMEOUT_MS,
+		dialTimeoutMs: DIAL_TIMEOUT_MS,
 		keyNetwork,
 		getRepo: (peerId) => {
 			return peerId.toString() === libp2p.peerId.toString()
