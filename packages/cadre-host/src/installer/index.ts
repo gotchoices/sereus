@@ -38,6 +38,7 @@ import {
   DEFAULT_UI_PORT,
   DEFAULT_LIBP2P_PORT,
   type WizardAnswers,
+  type WizardDefaults,
 } from './wizard.js';
 
 export type { HostConfigFile } from './config.js';
@@ -68,6 +69,8 @@ export interface InstallOptions {
   nodePath?: string;
   /** Test-only: stub the service-host registration. */
   serviceHost?: ServiceHost;
+  /** Test-only: stub the interactive wizard. Production callers leave unset. */
+  wizard?: (defaults: WizardDefaults) => Promise<WizardAnswers>;
 }
 
 export interface InstallResult {
@@ -233,17 +236,20 @@ export class Installer {
     if (opts.nonInteractive) {
       return this.resolveAnswersFromOptions(opts);
     }
-    const defaults = defaultsForPlatform(this.platform);
-    const answers = await runWizard(defaults);
-    // CLI flags still take precedence over wizard input — useful when the
-    // user passes `--ui-port 9000` but accepts defaults at the prompts.
-    return {
-      dataDir: opts.dataDir ?? answers.dataDir,
-      uiPort: opts.uiPort ?? answers.uiPort,
-      libp2pPort: opts.libp2pPort ?? answers.libp2pPort,
-      upnpEnabled: opts.noUpnp ? false : answers.upnpEnabled,
-      configureDdns: answers.configureDdns,
+    // CLI flags overlay the platform defaults so the wizard's `[...]` hint
+    // shows the user's chosen value. Pressing Enter accepts it; typing a new
+    // value also works (and now actually has an effect — the previous
+    // implementation showed the platform default in the prompt and silently
+    // discarded user input because the CLI flag won post-hoc).
+    const platformDefaults = defaultsForPlatform(this.platform);
+    const defaults: WizardDefaults = {
+      dataDir: opts.dataDir ?? platformDefaults.dataDir,
+      uiPort: opts.uiPort ?? platformDefaults.uiPort,
+      libp2pPort: opts.libp2pPort ?? platformDefaults.libp2pPort,
+      upnpEnabled: opts.noUpnp ? false : platformDefaults.upnpEnabled,
     };
+    const wizard = opts.wizard ?? runWizard;
+    return await wizard(defaults);
   }
 }
 
