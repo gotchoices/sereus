@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import debug from 'debug';
-import { privateKeyFromRaw } from '@libp2p/crypto/keys';
+import { privateKeyFromRaw, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { StrandFilter } from '@serfab/cadre-core';
 import { CliConfigFile, ResolvedConfig, ENV_MAPPINGS } from './types.js';
@@ -102,6 +102,26 @@ export async function loadPrivateKey(keyPath: string): Promise<Uint8Array> {
 }
 
 /**
+ * Load a libp2p protobuf-encoded private key from disk.
+ *
+ * This is the format cadre-host's installer writes to `identity.key`
+ * (`privateKeyToProtobuf`). Unlike {@link loadPrivateKey} (which expects
+ * hex-or-raw seed bytes), the protobuf form carries the key-type tag and is
+ * decoded with `privateKeyFromProtobuf`.
+ */
+export function loadProtobufPrivateKey(keyPath: string): PrivateKey {
+  const fullPath = path.resolve(keyPath);
+  log('Loading protobuf identity key from: %s', fullPath);
+
+  if (!fs.existsSync(fullPath)) {
+    throw new Error(`Identity key file not found: ${fullPath}`);
+  }
+
+  const bytes = fs.readFileSync(fullPath);
+  return privateKeyFromProtobuf(new Uint8Array(bytes));
+}
+
+/**
  * Parse strand filter from config format to StrandFilter type
  */
 export function parseStrandFilter(filter: CliConfigFile['strandFilter']): StrandFilter {
@@ -121,9 +141,12 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
   let fileConfig = await loadConfigFile(configPath);
   fileConfig = applyEnvironmentOverrides(fileConfig);
 
-  // Load private key if specified
+  // Load private key if specified. The protobuf identity (installer-written
+  // `identity.key`) takes precedence, then a raw/hex key file, then inline hex.
   let privateKey: PrivateKey | undefined;
-  if (fileConfig.identity?.keyFile) {
+  if (fileConfig.identity?.protobufKeyFile) {
+    privateKey = loadProtobufPrivateKey(fileConfig.identity.protobufKeyFile);
+  } else if (fileConfig.identity?.keyFile) {
     privateKey = privateKeyFromRaw(await loadPrivateKey(fileConfig.identity.keyFile));
   } else if (fileConfig.identity?.privateKeyHex) {
     privateKey = privateKeyFromRaw(Buffer.from(fileConfig.identity.privateKeyHex, 'hex'));

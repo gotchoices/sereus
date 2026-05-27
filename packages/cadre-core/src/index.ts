@@ -7,6 +7,9 @@ export { CadreNode } from './cadre-node.js';
 // Control database
 export { ControlDatabase, type ControlDatabaseConfig } from './control-database.js';
 
+// Authority key bridge (libp2p Ed25519 -> base64url authority keypair)
+export { authorityKeyFromLibp2p, type AuthorityKeyPair } from './authority-key.js';
+
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
 

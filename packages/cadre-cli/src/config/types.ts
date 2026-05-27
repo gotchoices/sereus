@@ -7,8 +7,14 @@ import type { NodeProfile, LatencyHint, StrandFilter } from '@serfab/cadre-core'
 export interface CliConfigFile {
   /** Node identity - path to key file or inline key */
   identity?: {
-    /** Path to file containing the private key (PEM or raw bytes) */
+    /** Path to file containing the private key (hex or raw bytes) */
     keyFile?: string;
+    /**
+     * Path to a libp2p protobuf-encoded private key (the format written by
+     * cadre-host's installer to `identity.key` via `privateKeyToProtobuf`).
+     * Loaded with `privateKeyFromProtobuf`. Takes precedence over `keyFile`.
+     */
+    protobufKeyFile?: string;
     /** Inline private key as hex string (not recommended for production) */
     privateKeyHex?: string;
   };
@@ -68,6 +74,7 @@ export const ENV_MAPPINGS = {
   CADRE_BOOTSTRAP_NODES: 'controlNetwork.bootstrapNodes',
   CADRE_PROFILE: 'profile',
   CADRE_KEY_FILE: 'identity.keyFile',
+  CADRE_IDENTITY_PROTOBUF: 'identity.protobufKeyFile',
   CADRE_STORAGE_PATH: 'storage.path',
   CADRE_STORAGE_TYPE: 'storage.type',
   CADRE_LISTEN_ADDRS: 'network.listenAddrs',

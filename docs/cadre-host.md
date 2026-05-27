@@ -73,6 +73,34 @@ Two external surfaces:
 
 The host process itself is not addressable from the public internet. The NAT layer exposes each cadre node, not the manager.
 
+### Node admin channel (management-channel transport)
+
+The management channel between the manager and its authority node is a **loopback HTTP admin surface** exposed by the spawned `cadre-cli start` child, not an in-process `CadreNode`. This is what lets the node carry the authority identity while the manager stays out of the control plane (and survives an orchestrator restart — a `127.0.0.1` port re-attaches where a stdio pipe could not).
+
+An ordinary node becomes the authority node via two `cadre-cli start` flags (no separate entrypoint):
+
+- `--authority` — after `node.start()`, bridges the node's libp2p Ed25519 identity into the base64url authority keypair (`authorityKeyFromLibp2p`), performs an **idempotent genesis** `AuthorityKey` insert on a fresh party (skipped when one already exists), and initializes seed-bootstrap so the node can mint invites and authorize peers. The node's peer identity and its authority key are the *same* keypair.
+- `--admin-port <port>` (or `CADRE_ADMIN_PORT`) — binds the admin listener on `127.0.0.1:<port>`. It refuses to bind without `CADRE_STARTUP_TOKEN`, which doubles as the `Authorization: Bearer <token>` secret (constant-time compared).
+
+The node is given its identity via the child config's `identity.protobufKeyFile` (the installer's protobuf `identity.key`) or the `--identity-protobuf <path>` flag.
+
+Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{ code, message } }` envelope; error codes `not_authorized` → 401, `not_ready` → 503, `bad_request` → 400, `internal` → 500):
+
+| Method & path | Purpose |
+|---|---|
+| `GET /admin/identity` | `{ peerId, partyId }` |
+| `GET /admin/multiaddrs` | observed libp2p addrs |
+| `GET /admin/members` | `CadrePeer` enumeration (replaces handing a `ControlDatabase` to the manager) |
+| `GET /admin/members/:peerId` | membership probe |
+| `POST /admin/invites` | mint a `CadreInvite` → `{ invite, encodedInvite }` |
+| `POST /admin/accept-phone` | authorize a redeeming peer |
+| `DELETE /admin/members/:peerId` | signed `CadrePeer` delete |
+| `PUT /admin/invite-addresses` | push NAT-resolved invite addresses (resolver transport) |
+
+`encodeInvite` needs no route: the mint route already returns `encodedInvite`. Invite addresses use a **push** model — the manager `PUT`s NAT-resolved addresses at spawn and on every NAT change; the node holds the latest set and embeds them in subsequent invites, falling back to `libp2pNode.getMultiaddrs()` when none have been pushed. Push (host→node) is chosen over a callback so the control-network node never needs to know or dial the manager's address.
+
+This node-side surface is established by `cadre-node-admin-channel`; `cadre-host-delegated-authority-node` (6.7) builds the manager-side adapters that spawn the node and consume these routes, and finalizes the topology reconciliation noted above (single household authority node, members as `CadrePeer` rows).
+
 ## Security posture
 
 `cadre-host` is a **trust-circle** system, not a zero-trust one. Two consequences:

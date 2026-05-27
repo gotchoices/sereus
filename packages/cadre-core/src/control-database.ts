@@ -304,6 +304,48 @@ export class ControlDatabase {
   }
 
   /**
+   * Check whether any authority key exists in the control database.
+   * Used to decide whether a fresh-party genesis insert is required.
+   */
+  async hasAuthorityKey(): Promise<boolean> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval('select count(1) as Count from CadreControl.AuthorityKey')) {
+      return (row.Count as number) > 0;
+    }
+    return false;
+  }
+
+  /**
+   * Idempotent genesis: insert `key` as the founding authority key only when
+   * the party has none yet. Returns true if it inserted, false if an authority
+   * key already existed (so a repeat `--authority` start is a no-op).
+   */
+  async ensureAuthorityKey(key: string): Promise<boolean> {
+    this.ensureInitialized();
+    if (await this.hasAuthorityKey()) {
+      log('Authority key already present; skipping genesis insert');
+      return false;
+    }
+    await this.insertAuthorityKey(key);
+    return true;
+  }
+
+  /**
+   * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
+   */
+  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    this.ensureInitialized();
+    const rows: Array<{ peerId: string; multiaddr: string | null }> = [];
+    for await (const row of this.db!.eval('select PeerId, Multiaddr from CadreControl.CadrePeer')) {
+      rows.push({
+        peerId: row.PeerId as string,
+        multiaddr: (row.Multiaddr as string | null) ?? null,
+      });
+    }
+    return rows;
+  }
+
+  /**
    * Insert the initial authority key (bootstrap - no existing authorities required)
    */
   async insertAuthorityKey(key: string): Promise<void> {

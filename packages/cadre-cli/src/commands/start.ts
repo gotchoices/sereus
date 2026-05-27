@@ -1,11 +1,18 @@
 import { writeFileSync } from 'node:fs';
 import { Command } from 'commander';
 import debug from 'debug';
-import { CadreNode, type CadreNodeConfig, type ControlNetworkSeed, type StorageConfig } from '@serfab/cadre-core';
+import {
+  CadreNode,
+  authorityKeyFromLibp2p,
+  type CadreNodeConfig,
+  type ControlNetworkSeed,
+  type StorageConfig,
+} from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { HealthServer } from '../server/health.js';
+import { AdminServer } from '../server/admin-server.js';
 
 const log = debug('cadre:cli:start');
 
@@ -56,6 +63,9 @@ export const startCommand = new Command('start')
   .option('--listen-for-seeds', 'Enable the seed protocol listener for receiving seeds')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'After successful node.start(), write $CADRE_STARTUP_TOKEN to this file. Used by external orchestrators to verify the spawned child is the one they expected (vs a recycled PID).')
+  .option('--identity-protobuf <path>', 'Load the node identity from a libp2p protobuf private key file (e.g. cadre-host\'s identity.key). Takes precedence over config identity.')
+  .option('--authority', 'Run as the authority node: initialize seed-bootstrap from the node identity and perform the idempotent genesis AuthorityKey insert on a fresh party.')
+  .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
   .action(async (options) => {
     if (options.debug) {
       debug.enable('cadre:*,sereus:*');
@@ -65,6 +75,13 @@ export const startCommand = new Command('start')
     log('Loading configuration from: %s', options.config);
 
     try {
+      // A --identity-protobuf flag overrides config identity. Route it through
+      // the env mapping (CADRE_IDENTITY_PROTOBUF -> identity.protobufKeyFile)
+      // so the loader resolves it the same way as the config-file path.
+      if (options.identityProtobuf) {
+        process.env.CADRE_IDENTITY_PROTOBUF = options.identityProtobuf;
+      }
+
       const config = await resolveConfig(options.config);
 
       // --ws-port convenience: append a WebSocket listen address
@@ -151,9 +168,16 @@ export const startCommand = new Command('start')
         console.log(`✓ Health server on port ${healthPort}, metrics on port ${metricsPort}`);
       }
 
+      // The admin channel is created after authority init below; declared here
+      // so graceful shutdown can close it.
+      let adminServer: AdminServer | null = null;
+
       // Handle graceful shutdown
       const shutdown = async () => {
         console.log('\nShutting down...');
+        if (adminServer) {
+          await adminServer.stop();
+        }
         if (healthServer) {
           await healthServer.stop();
         }
@@ -177,6 +201,46 @@ export const startCommand = new Command('start')
           writeFileSync(options.startupTokenFile, token, { encoding: 'utf8' });
           log('Wrote startup token to %s', options.startupTokenFile);
         }
+      }
+
+      // Authority init: bridge the libp2p identity into a base64url authority
+      // keypair, run the idempotent genesis insert on a fresh party, then bring
+      // up seed-bootstrap so this node can mint invites and authorize peers.
+      if (options.authority) {
+        if (!config.privateKey) {
+          throw new Error('--authority requires a node identity (set identity.protobufKeyFile, --identity-protobuf, or identity.keyFile)');
+        }
+        const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(config.privateKey);
+
+        const controlDb = node.getControlDatabase();
+        if (!controlDb) {
+          throw new Error('Control database unavailable after start; cannot run authority genesis');
+        }
+        const inserted = await controlDb.ensureAuthorityKey(publicKeyB64);
+        console.log(inserted
+          ? '✓ Genesis: inserted founding authority key'
+          : '• Authority key already present; skipping genesis');
+
+        node.initializeSeedBootstrap(privateKeyB64);
+        console.log('✓ Authority seed-bootstrap initialized');
+      }
+
+      // Bind the loopback admin channel if requested. The startup token doubles
+      // as the bearer secret, so refuse to expose the surface without it.
+      const adminPortRaw = process.env.CADRE_ADMIN_PORT ?? options.adminPort;
+      if (adminPortRaw) {
+        const adminPort = parseInt(adminPortRaw, 10);
+        if (isNaN(adminPort) || adminPort < 0 || adminPort > 65535) {
+          throw new Error(`Invalid admin port: ${adminPortRaw}`);
+        }
+        const token = process.env.CADRE_STARTUP_TOKEN ?? '';
+        if (token.length === 0) {
+          throw new Error('--admin-port requires CADRE_STARTUP_TOKEN in env (used as the admin bearer token)');
+        }
+        adminServer = new AdminServer({ port: adminPort, token });
+        adminServer.attach(node);
+        await adminServer.start();
+        console.log(`✓ Admin channel on 127.0.0.1:${adminServer.port}`);
       }
 
       // Enable seed listener if requested

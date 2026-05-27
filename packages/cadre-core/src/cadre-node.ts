@@ -62,6 +62,14 @@ export class CadreNode implements SAppIdLookup {
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
   private sAppConfigs: Map<string, SAppConfig> = new Map();
 
+  /**
+   * Most-recently pushed invite addresses (see {@link setInviteAddresses}).
+   * When non-null these take priority over `libp2pNode.getMultiaddrs()` when
+   * minting invites — the host pushes NAT-resolved addresses here so the
+   * control-network node never needs to dial back to the manager.
+   */
+  private latestInviteAddresses: string[] | null = null;
+
   constructor(config: CadreNodeConfig) {
     this.config = config;
     this.strandManager = new StrandInstanceManager();
@@ -93,6 +101,13 @@ export class CadreNode implements SAppIdLookup {
    */
   get peerId(): PeerId | undefined {
     return this.controlNode?.peerId;
+  }
+
+  /**
+   * The party ID this node serves (control-network identity).
+   */
+  get partyId(): string {
+    return this.config.controlNetwork.partyId;
   }
 
   /**
@@ -596,9 +611,7 @@ export class CadreNode implements SAppIdLookup {
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       authorityPrivateKey,
-      ...(this.config.network?.inviteAddressResolver
-        ? { inviteAddressResolver: this.config.network.inviteAddressResolver }
-        : {}),
+      inviteAddressResolver: () => this.resolveInviteAddresses(),
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -609,6 +622,48 @@ export class CadreNode implements SAppIdLookup {
 
     this.seedBootstrapService.initialize(this.controlNode, this.controlDatabase);
     log('Seed bootstrap service initialized');
+  }
+
+  /**
+   * Push the multiaddrs that future invites should advertise. Pass `null` to
+   * revert to the libp2p-reported addresses (the default). The host calls this
+   * at spawn and on every NAT change.
+   */
+  setInviteAddresses(addresses: string[] | null): void {
+    this.latestInviteAddresses = addresses;
+    log('Invite addresses updated: %s', addresses ? `${addresses.length} pushed` : 'cleared (libp2p fallback)');
+  }
+
+  /**
+   * Resolve the addresses to embed in invites. Prefers pushed addresses, then
+   * any config-supplied resolver, then the libp2p-observed multiaddrs.
+   */
+  private async resolveInviteAddresses(): Promise<string[]> {
+    if (this.latestInviteAddresses !== null) {
+      return this.latestInviteAddresses;
+    }
+    if (this.config.network?.inviteAddressResolver) {
+      return this.config.network.inviteAddressResolver();
+    }
+    return this.getMultiaddrs();
+  }
+
+  /**
+   * Enumerate the cadre's `CadrePeer` membership.
+   */
+  async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing members');
+    }
+    return this.controlDatabase.queryCadrePeers();
+  }
+
+  /**
+   * Probe whether a given peer is a `CadrePeer` member.
+   */
+  async isMember(peerId: string): Promise<boolean> {
+    const members = await this.listMembers();
+    return members.some(m => m.peerId === peerId);
   }
 
   /**
@@ -630,9 +685,7 @@ export class CadreNode implements SAppIdLookup {
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
       // No authority key - this node only receives seeds
-      ...(this.config.network?.inviteAddressResolver
-        ? { inviteAddressResolver: this.config.network.inviteAddressResolver }
-        : {}),
+      inviteAddressResolver: () => this.resolveInviteAddresses(),
     });
 
     this.seedBootstrapService.setEventCallbacks({
