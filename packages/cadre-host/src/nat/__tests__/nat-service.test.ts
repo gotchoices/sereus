@@ -291,6 +291,22 @@ describe('NatService — async channel node + onAddressesChanged', () => {
     expect(addrs).toEqual(['/ip4/203.0.113.50/tcp/4001/p2p/12D3KooWAsync']);
   });
 
+  it('throws node_unavailable when the node reports an empty peer ID (not ready)', async () => {
+    const notReadyNode: CadreNodeLike = {
+      getPeerId: async () => '',
+      getMultiaddrs: async () => [],
+    };
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: notReadyNode,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.50' }),
+    });
+    await svc.start();
+    await expect(svc.getInviteAddresses()).rejects.toMatchObject({ code: 'node_unavailable' });
+  });
+
   it('fires onAddressesChanged on putSettings and testReachability', async () => {
     const svc = new NatService({
       rootDir: tmpRoot,

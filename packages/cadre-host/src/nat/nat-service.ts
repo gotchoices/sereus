@@ -233,6 +233,12 @@ export class NatService {
       }
       throw err;
     }
+    // A reachable node that hasn't yet established its libp2p peer ID reports
+    // an empty peerId. Building addresses now would mint malformed `…/p2p/`
+    // suffixes (and push them to the node), so treat it as not-ready.
+    if (!peerId) {
+      throw new NatError('node_unavailable', 'Authority node has no peer ID yet (not ready)');
+    }
     const status = this.getStatus();
     const input: BuildInviteAddressesInput = {
       peerId,
