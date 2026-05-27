@@ -58,13 +58,60 @@ export async function maybeEnableBrowserDebug(page: Page): Promise<void> {
 		}
 	});
 	page.on('console', (msg) => {
+		// `msg.text()` returns the RAW `debug`-library format string (e.g.
+		// `dial:fail peer=%s ... code=%s msg=%s`) because the browser console
+		// does `%s` substitution lazily in its own formatter — so the rich
+		// `code=`/`msg=` fields never land in the captured text. Resolve the
+		// JSHandle args ourselves and re-run the printf substitution so the
+		// interpolated values are recoverable from the test log.
 		const text = msg.text();
-		if (text.includes('optimystic:') || text.includes('libp2p:')) {
+		if (!text.includes('optimystic:') && !text.includes('libp2p:')) return;
+		void (async () => {
+			let line: string;
+			try {
+				const args = await Promise.all(msg.args().map((h) => h.jsonValue()));
+				line = args.length > 0 && typeof args[0] === 'string'
+					? formatConsoleArgs(args[0], args.slice(1))
+					: text;
+			} catch {
+				// JSHandle may be disposed if the page closed mid-resolve; fall
+				// back to the raw (un-substituted) text rather than losing the line.
+				line = text;
+			}
 			// Strip ANSI / %c colour controls for readable test output.
-			const clean = text.replace(/%c|color: [^;]+;?/g, '').trim();
+			const clean = line.replace(/%c|color: [^;]+;?/g, '').replace(/\s+/g, ' ').trim();
 			console.log(`[browser ${msg.type()}] ${clean}`);
+		})();
+	});
+}
+
+/**
+ * Re-implements the subset of `console.log` printf substitution the `debug`
+ * library relies on (`%s %d %i %f %j %o %O %c %%`). The browser does this
+ * lazily, so to recover the interpolated `dial:fail code=/msg=` fields we must
+ * apply it ourselves against the resolved JSHandle arg values. `%c` consumes a
+ * styling arg but emits nothing.
+ */
+function formatConsoleArgs(format: string, args: unknown[]): string {
+	let i = 0;
+	const substituted = format.replace(/%([sdifjoOc%])/g, (_match, spec: string) => {
+		if (spec === '%') return '%';
+		const value = args[i++];
+		switch (spec) {
+			case 'c': return '';
+			case 'd':
+			case 'i': return String(Number.parseInt(String(value), 10));
+			case 'f': return String(Number.parseFloat(String(value)));
+			case 'j': return JSON.stringify(value);
+			case 'o':
+			case 'O': return typeof value === 'object' ? JSON.stringify(value) : String(value);
+			default: return String(value);
 		}
 	});
+	// Any args beyond the format placeholders are appended space-separated, as
+	// the browser console does.
+	const trailing = args.slice(i).map((v) => (typeof v === 'object' ? JSON.stringify(v) : String(v)));
+	return trailing.length > 0 ? `${substituted} ${trailing.join(' ')}` : substituted;
 }
 
 /**
