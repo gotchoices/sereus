@@ -4203,14 +4203,14 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@optimystic/db-p2p-storage-fs@npm:^0.13.4":
-  version: 0.13.4
-  resolution: "@optimystic/db-p2p-storage-fs@npm:0.13.4"
+"@optimystic/db-p2p-storage-fs@npm:^0.13.5":
+  version: 0.13.5
+  resolution: "@optimystic/db-p2p-storage-fs@npm:0.13.5"
   dependencies:
-    "@optimystic/db-core": "npm:^0.13.4"
-    "@optimystic/db-p2p": "npm:^0.13.4"
+    "@optimystic/db-core": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.13.5"
     debug: "npm:^4.4.3"
-  checksum: 10c0/de481422937f31c566baa5fee422ac3ade5b0e38a04b5542e9948a4b30e60d5ffae4997d934a219b30f98de998a84379f653a945749b0f41a0ac9398b46f882a
+  checksum: 10c0/7f5aad12109345ff4777782519ab0b5c7c867023d97912ebaabb25951a9893c43c8905fd75ea83ca28ba68d49fd20c14b27862ed7dda3cd45c1183f6fc674b49
   languageName: node
   linkType: hard
 
@@ -5235,8 +5235,8 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-cli@workspace:packages/cadre-cli"
   dependencies:
-    "@optimystic/db-p2p": "npm:^0.13.4"
-    "@optimystic/db-p2p-storage-fs": "npm:^0.13.4"
+    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/db-p2p-storage-fs": "npm:^0.13.5"
     "@serfab/cadre-core": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/js-yaml": "npm:^4.0.9"
@@ -5265,11 +5265,11 @@ __metadata:
     "@libp2p/peer-id": "npm:^6.0.4"
     "@libp2p/peer-id-factory": "npm:^4.2.4"
     "@libp2p/tcp": "npm:^11.0.10"
-    "@optimystic/db-core": "npm:^0.13.4"
-    "@optimystic/db-p2p": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.4"
-    "@quereus/quereus": "npm:^3.1.1"
+    "@optimystic/db-core": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
+    "@quereus/quereus": "npm:^3.2.1"
     "@serfab/strand-proto": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
@@ -5358,11 +5358,11 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.3"
     "@noble/curves": "npm:^2.0.1"
     "@noble/hashes": "npm:^2.0.1"
-    "@optimystic/db-core": "npm:^0.13.4"
-    "@optimystic/db-p2p": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.4"
-    "@quereus/quereus": "npm:^3.1.1"
+    "@optimystic/db-core": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
+    "@quereus/quereus": "npm:^3.2.1"
     "@serfab/cadre-core": "workspace:*"
     "@serfab/cadre-host": "workspace:*"
     "@types/debug": "npm:^4.1.12"
@@ -5383,13 +5383,13 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/websockets": "npm:^10.1.3"
-    "@optimystic/db-core": "npm:^0.13.4"
-    "@optimystic/db-p2p": "npm:^0.13.4"
-    "@optimystic/db-p2p-storage-fs": "npm:^0.13.4"
-    "@optimystic/db-p2p-storage-web": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.4"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.4"
-    "@quereus/quereus": "npm:^3.1.1"
+    "@optimystic/db-core": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/db-p2p-storage-fs": "npm:^0.13.5"
+    "@optimystic/db-p2p-storage-web": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
+    "@quereus/quereus": "npm:^3.2.1"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     acorn: "npm:^8.12.0"
@@ -5412,9 +5412,9 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
     "@libp2p/websockets": "npm:^10.1.3"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-p2p": "npm:^0.13.4"
+    "@optimystic/db-p2p": "npm:^0.13.5"
     "@optimystic/db-p2p-storage-rn": "npm:^0.14.0"
-    "@quereus/quereus": "npm:^3.1.1"
+    "@quereus/quereus": "npm:^3.2.1"
     "@serfab/cadre-core": "workspace:^"
     "@types/babel__core": "npm:^7"
     "@types/react": "npm:~19.0.10"
@@ -5448,9 +5448,9 @@ __metadata:
     "@libp2p/crypto": "npm:^5.1.13"
     "@libp2p/websockets": "npm:^10.1.3"
     "@multiformats/multiaddr": "npm:^12.5.1"
-    "@optimystic/db-core": "npm:^0.13.4"
-    "@optimystic/db-p2p": "npm:^0.13.4"
-    "@optimystic/db-p2p-storage-web": "npm:^0.13.4"
+    "@optimystic/db-core": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/db-p2p-storage-web": "npm:^0.13.5"
     "@optimystic/demo": "npm:*"
     "@playwright/test": "npm:^1.60.0"
     "@sveltejs/vite-plugin-svelte": "npm:^5.0.0"

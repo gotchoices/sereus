@@ -53,8 +53,8 @@
     "vitest": "^4.0.17"
   },
   "dependencies": {
-    "@optimystic/db-p2p": "^0.13.4",
-    "@optimystic/db-p2p-storage-fs": "^0.13.4",
+    "@optimystic/db-p2p": "^0.13.5",
+    "@optimystic/db-p2p-storage-fs": "^0.13.5",
     "@serfab/cadre-core": "workspace:^",
     "commander": "^14.0.2",
     "debug": "^4.4.3",

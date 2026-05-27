@@ -38,7 +38,18 @@ The shared types are too thin to warrant a third package (no `@serfab/cadre-orch
 
 ## Deployment model
 
-One host machine runs the `cadre-host` service. That service manages N cadre nodes as child processes — typically one per member of the trust circle. Friends and family connect to *their* cadre node over libp2p from their phones, laptops, etc. The household admin manages everything through a localhost web UI.
+One host machine runs the `cadre-host` service. That service is a **management plane only** — a loopback REST/UI control surface. It does **not** itself join any cadre control network and holds no in-process `CadreNode`. Instead it *spawns cadre nodes as child processes* and drives them over a local management channel, exactly as `@serfab/cadre-provider` spawns Docker drones and drives them over its REST API (see [architecture.md § Provider Integration](architecture.md#provider-integration)). The household admin manages everything through a localhost web UI; friends and family connect to the cadre over libp2p from their phones, laptops, etc.
+
+### Control-plane separation (load-bearing principle)
+
+There are two distinct planes, and conflating them is the mistake this section exists to prevent:
+
+- **Management plane** — how you talk *to* cadre-host: the loopback HTTP API + Svelte UI (and the `cadre-host` CLI, which is a thin HTTP client of that same API). This is *not* a cadre control network. It carries no authority keys on the wire and grants no cadre membership; it is same-machine admin access (see [Security posture](#security-posture)).
+- **Cadre control network** — the party's private Optimystic network (`CadreControl` schema) that only *cadre nodes* join. Authority operations (mint invite, `authorizePeer`, `removePeer`, report multiaddrs) happen **inside a cadre node**, never inside the manager process.
+
+cadre-host runs on a machine that *does* hold the admin's authority identity (unlike a provider, which never holds keys — architecture.md line 524). The consequence is **not** that the manager joins the control network; it is that one of the cadre nodes the manager spawns — the admin's **authority node** — carries that identity, and the manager delegates authority operations to it over the management channel.
+
+> **Open reconciliation (for the realignment ticket):** the diagram below sketches "one node per trust-circle member," but architecture.md defines a cadre as a *single party's* nodes sharing *one* control network, with trust-circle members modelled as `CadrePeer` rows (devices that dial in), not as separate nodes the host spawns on their behalf. Which topology cadre-host actually targets — a single household authority node with members as peers, vs. per-member hosted nodes — must be settled by the realignment ticket; the rest of this document assumes at least the admin's authority node is spawned and delegated to.
 
 ```mermaid
 graph TD
@@ -83,10 +94,12 @@ Both live in `<rootDir>/trust-circle.json`, written atomically (write-then-renam
 
 ### Lifecycle
 
-1. **Issue** — `cadre-host invite "Mom's phone"` (or the management API's `POST /auth/invites`) generates a base64url token, asks cadre-core to mint a `CadreInvite` carrying the host's dialable addresses, persists a pending row, and prints the encoded invite. Default TTL is 24 h; override with `--ttl 7d`.
+Authority operations (steps 1, 3, 4) are **delegated to the host's authority cadre node** over the management channel — the manager generates/validates the token and owns the pending/label state, but the `CadreInvite` mint, `acceptPhone`, and signed `CadrePeer` delete all execute inside the node, against its control-network DB. The manager never opens the control DB itself.
+
+1. **Issue** — `cadre-host invite "Mom's phone"` (or the management API's `POST /auth/invites`) generates a base64url token, asks the authority node to mint a `CadreInvite` carrying the host's dialable addresses, persists a pending row, and prints the encoded invite. Default TTL is 24 h; override with `--ttl 7d`.
 2. **Deliver** — the encoded invite is shipped out-of-band (QR code rendered by the local UI, copy/paste, etc.).
-3. **Redeem** — the recipient's cadre node dials in via cadre-core's `dialInvite`/`acceptPhone` flow. Cadre-host's `redeemInvite` validates the token against the pending row, calls `acceptPhone` (which authorizes the peer in `CadrePeer`), then atomically consumes the pending row and writes a labelled member row. One-time use is enforced by removing the pending row on first redemption.
-4. **Revoke / remove** — `cadre-host trust revoke <token>` deletes a pending invite before it's redeemed; `cadre-host trust revoke <peerId>` removes an authorised member (deletes the `CadrePeer` row via a signed delete, then the local label).
+3. **Redeem** — the recipient's cadre node dials in via cadre-core's `dialInvite`/`acceptPhone` flow. Cadre-host's `redeemInvite` validates the token against the pending row, asks the authority node to run `acceptPhone` (which authorizes the peer in `CadrePeer`), then atomically consumes the pending row and writes a labelled member row. One-time use is enforced by removing the pending row on first redemption.
+4. **Revoke / remove** — `cadre-host trust revoke <token>` deletes a pending invite before it's redeemed; `cadre-host trust revoke <peerId>` removes an authorised member (the authority node deletes the `CadrePeer` row via a signed delete, then the manager drops the local label).
 
 In v1 the management-API surface is localhost-only (`127.0.0.1`), so redemption assumes the recipient is on the same machine as the host or on the LAN reaching it. Cross-WAN redemption via the management API requires a future cadre-host-over-P2P ticket.
 
@@ -158,13 +171,13 @@ On Windows POSIX permission bits don't apply, so the file is readable by any acc
 
 ### Process integration
 
-`NatService` is constructed and owned by `cadre-host-local-ui` (same pattern as `TrustCircleService`). The local-ui ticket:
+`NatService` is constructed and owned by the manager process (`cadre-host start`), same pattern as `TrustCircleService`. Its `cadreNode` dependency is a **management-channel adapter to the spawned authority node**, not an in-process libp2p node — `getPeerId()` / `getMultiaddrs()` query the node over that channel. The wiring:
 
-1. Constructs `new NatService({ rootDir, cadreNode })` where `cadreNode` exposes `getPeerId()` and `getMultiaddrs()`.
-2. Calls `await service.start()` after the libp2p node is up.
+1. Constructs `new NatService({ rootDir, cadreNode })` where `cadreNode` proxies `getPeerId()` and `getMultiaddrs()` to the authority node.
+2. Calls `await service.start()` once the authority node is up and reporting addresses.
 3. Mounts `createNatHandlers(service)` on Fastify under `/nat/*` (`GET /nat/status`, `POST /nat/test`, `PUT /nat/ddns`, `PUT /nat/settings`).
 4. Calls `await service.stop()` on shutdown to release the UPnP lease.
-5. Wires `service.getInviteAddresses.bind(service)` as `network.inviteAddressResolver` on the cadre-core `CadreNodeConfig`.
+5. Installs `service.getInviteAddresses` as the authority node's `network.inviteAddressResolver` — set in the `CadreNodeConfig` the orchestrator passes when it spawns that node, so cadre-core's `SeedBootstrapService.createInvite` consults the host's NAT-resolved addresses. (Because the resolver lives in the manager while the node runs in a child, this is the one cross-plane hook the realignment ticket must design a transport for — e.g. resolved addresses pushed to the node at spawn/refresh time rather than a synchronous in-process callback.)
 
 ## Updates
 
@@ -237,34 +250,39 @@ Unknown keys → 400 `invalid_setting`.
 
 ### Honest gaps
 
-- `/api/nodes/:id/start` and `/api/nodes/:id/restart` return **501 not_implemented**. cadre-host v1 doesn't yet own a "spawn a cadre node from a trust-circle member id" path — that's a follow-up ticket. Stop on a running node works.
-- `cadre-host start` constructs `TrustCircleService` and `NatService` with **stub** `CadreNodeLike` adapters because v1 doesn't yet host an inline libp2p `CadreNode`. Listing the trust circle works (reads the local labels file); issuing/redeeming an invite or building invite addresses surfaces a 500. The wizard's "first enrollment invite" step still degrades silently for the same reason.
+- `/api/nodes/:id/start` and `/api/nodes/:id/restart` return **501 not_implemented**. cadre-host v1 doesn't yet own a "spawn a cadre node from saved config" path — that's part of the realignment ticket. Stop on a running node works.
+- **The authority node is not yet spawned, so trust-circle/NAT authority operations are stubbed.** `cadre-host start` currently constructs `TrustCircleService` and `NatService` with `CadreNodeLike` adapters that throw (`missingCadreNodeStub` / `missingNatNodeStub` in `src/bin/host.ts`). Listing the trust circle works (reads the local labels file); issuing/redeeming an invite or building invite addresses surfaces a 500, and the wizard's "first enrollment invite" step degrades silently.
+
+  > **Design correction in progress.** An earlier draft framed the fix as "host an *inline* libp2p `CadreNode`" inside the manager. That violates the control-plane separation above — it would make the manager a control-network participant. The correct target (tracked by the realignment ticket, see below) is: the orchestrator spawns the admin's **authority node** as a managed child, and `TrustCircleService` / `NatService` delegate to it over the management channel. The present `CadreNodeLike` interface (which hands back a live in-process `ControlDatabase`) is an in-process shortcut to be replaced by a channel-based adapter. Until that lands, the stubs keep the HTTP contract intact while failing loudly on operations that genuinely need the node.
 - The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`. It ships into `<package>/dist/ui/` and is mounted by the static handler. When `dist/ui/` is absent (e.g. running from a source checkout without `yarn build`), `/` returns a placeholder HTML pointing at the build instructions; the API continues to answer.
 
 ## Architecture sketch
 
 ```mermaid
 graph TD
-    UI["Local UI<br/>(fastify on 127.0.0.1)"]
-    Mgmt["Management API"]
-    Orch["HostProcessOrchestrator"]
-    TC["TrustCircleAuth"]
-    NAT["NAT layer<br/>(DDNS · UPnP/PCP · relay)"]
-    Upd["UpdateService<br/>(signed manifest)"]
-    Install["Installer + service-host"]
+    subgraph MP["Management plane (manager process — no control network)"]
+        UI["Local UI<br/>(fastify on 127.0.0.1)"]
+        Mgmt["Management API"]
+        Orch["HostProcessOrchestrator"]
+        TC["TrustCircleService<br/>(token + label/pending state)"]
+        NAT["NAT layer<br/>(DDNS · UPnP/PCP · relay)"]
+        Upd["UpdateService<br/>(signed manifest)"]
+        Install["Installer + service-host"]
+    end
     UI --> Mgmt
     Mgmt --> Orch
     Mgmt --> TC
     Mgmt --> NAT
     Mgmt --> Upd
     Upd -. "npm install -g + ServiceHost.restart" .-> Install
-    Orch --> N1["cadre node (child process)"]
-    Orch --> N2["cadre node (child process)"]
-    Orch --> NN["..."]
+    Orch -->|spawns| AN["authority cadre node<br/>(child process — joins control network)"]
+    Orch --> NN["other cadre node(s)<br/>(child processes)"]
+    TC -. "delegate: createInvite / acceptPhone / removePeer<br/>(management channel)" .-> AN
+    NAT -. "getPeerId / getMultiaddrs · inviteAddressResolver" .-> AN
     Install -.-> Mgmt
 ```
 
-The five named subsystems are each owned by a sibling ticket. This package establishes the surface they plug into — empty stubs in v0.x foundation, real implementations as each ticket lands.
+The dotted lines from `TC`/`NAT` to the authority node are the **management channel** (local IPC / loopback), *not* the control network — only the spawned cadre nodes (`AN`, `NN`) join control networks. The five named subsystems are each owned by a sibling ticket; this package establishes the surface they plug into. The trust-circle/NAT → authority-node delegation is the subject of the realignment work tracked in `tickets/` (`cadre-host-delegated-authority-node`).
 
 ## Status
 
@@ -279,6 +297,8 @@ The five named subsystems are each owned by a sibling ticket. This package estab
 - Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
 - Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Trust Circle / Connectivity / Nodes + per-node detail / Settings) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. ≈ 43 KB gzipped.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
+
+**Known architectural gap (realignment pending).** The trust-circle and NAT subsystems above are wired to `CadreNodeLike` adapters that, in `cadre-host start`, are throwing stubs (`missingCadreNodeStub` / `missingNatNodeStub`). cadre-host does not yet spawn an authority cadre node or delegate authority operations to it (see [Control-plane separation](#control-plane-separation-load-bearing-principle) and [Honest gaps](#honest-gaps)). Until `cadre-host-delegated-authority-node` lands, invite issuance/redemption and invite-address resolution return 500. (Note: `docs/architecture.md` currently marks `@serfab/cadre-host` "(Complete)"; that line should be qualified by this gap.)
 
 ## See also
 
