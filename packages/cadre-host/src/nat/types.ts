@@ -106,7 +106,9 @@ export type NatErrorCode =
   | 'ddns_update_failed'
   | 'secrets_unavailable'
   | 'storage_error'
-  | 'invalid_config';
+  | 'invalid_config'
+  /** The authority node's admin channel is unreachable / not ready. */
+  | 'node_unavailable';
 
 /** Typed error carrying a stable `code` for HTTP mapping in the local-ui. */
 export class NatError extends Error {

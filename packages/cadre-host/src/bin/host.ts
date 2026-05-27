@@ -35,6 +35,7 @@ import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
 import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
 import { NatService } from '../nat/index.js';
+import { AuthorityNodeClient } from '../authority/index.js';
 import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 
@@ -265,24 +266,56 @@ program
       void updateService.check();
       updateService.start();
 
-      // Wire the long-lived HTTP management server. The trust-circle and
-      // NAT services depend on a libp2p `CadreNodeLike`; v1 has no node-
-      // spawning path yet (that's a follow-up ticket), so we inject minimal
-      // stubs that fail loudly if a real call is attempted. The /auth/* and
-      // /nat/* routes are still mounted so the CLI's existing HTTP contract
-      // is intact — operations that genuinely need the libp2p node will
-      // surface a NatError / TrustCircleError, mapped to 500 by the server.
+      // Wire the long-lived HTTP management server. The manager holds no
+      // in-process cadre node: it spawns the admin's **authority node** as a
+      // managed child and delegates authority/membership/identity operations
+      // to it over the node's loopback admin channel (the 6.6 contract). The
+      // manager never joins the control network (see docs/cadre-host.md
+      // § Control-plane separation).
       const orchestrator = new HostProcessOrchestrator({ rootDir: join(cfg.dataDir, 'orchestrator') });
       await orchestrator.init();
 
+      // Spawn the authority node. Best-effort: a spawn failure leaves the
+      // management API up (trust-circle listing degrades to local labels,
+      // authority ops return 503) rather than taking down the whole process.
+      try {
+        await orchestrator.ensureAuthorityNode({
+          identityPath: idPath,
+          partyId: cfg.installId,
+          libp2pPort: cfg.libp2pPort,
+        });
+        // eslint-disable-next-line no-console
+        console.log('cadre-host: authority node spawned');
+      } catch (err) {
+        // eslint-disable-next-line no-console
+        console.error(`authority node spawn failed: ${(err as Error).message}`);
+      }
+
+      // The client reads the admin endpoint lazily so a node restart's fresh
+      // bearer token is picked up automatically.
+      const authority = new AuthorityNodeClient(() => orchestrator.getAuthorityAdminEndpoint());
+
       const trustCircle = new TrustCircleService({
-        cadreNode: missingCadreNodeStub('trust-circle'),
+        cadreNode: authority,
         store: new TrustCircleStore(cfg.dataDir),
       });
       const natService = new NatService({
         rootDir: cfg.dataDir,
-        cadreNode: missingNatNodeStub(),
+        cadreNode: authority,
       });
+
+      // Push NAT-resolved invite addresses to the node on every NAT change.
+      // NatService.start() also fires this once (best-effort initial push).
+      natService.onAddressesChanged(async (addresses) => {
+        if (addresses.length === 0) return;
+        try {
+          await authority.pushInviteAddresses(addresses);
+        } catch (err) {
+          // eslint-disable-next-line no-console
+          console.error(`invite-address push failed: ${(err as Error).message}`);
+        }
+      });
+
       // Best-effort NAT start. Failures here aren't fatal — the local UI
       // can still serve the trust circle, settings, etc.
       try {
@@ -313,6 +346,7 @@ program
       await waitForTermination();
       try { await server.stop(); } catch { /* ignore */ }
       try { await natService.stop(); } catch { /* ignore */ }
+      try { await orchestrator.stopAuthorityNode(); } catch { /* ignore */ }
       updateService.stop();
       // eslint-disable-next-line no-console
       console.log('cadre-host stopped.');
@@ -385,30 +419,6 @@ function readPackageVersionForStart(): string {
   } catch {
     return '0.0.0-unknown';
   }
-}
-
-/**
- * Returns a `CadreNodeLike` for TrustCircleService that fails loudly on any
- * libp2p call. cadre-host v1 doesn't yet spawn the host's own cadre node —
- * that ticket is separate. The trust-circle HTTP endpoints still load the
- * local labels/pending file (listing works), but issuing/redeeming an invite
- * requires a real node and surfaces a 500.
- */
-function missingCadreNodeStub(name: string): import('../auth/trust-circle.js').CadreNodeLike {
-  return {
-    async createInvite() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot issue invite`); },
-    async acceptPhone() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot redeem`); },
-    async removePeer() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot remove peer`); },
-    encodeInvite() { throw new Error(`${name}: cadre-host v1 has no inline cadre node — cannot encode invite`); },
-    getControlDatabase() { return null; },
-  };
-}
-
-function missingNatNodeStub(): import('../nat/nat-service.js').CadreNodeLike {
-  return {
-    getPeerId() { return ''; },
-    getMultiaddrs() { return []; },
-  };
 }
 
 function waitForTermination(): Promise<void> {

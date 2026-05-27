@@ -29,9 +29,11 @@ import { isPidAlive } from './pid-liveness.js';
 import {
   decodeDockerId,
   encodeDockerId,
+  type AuthoritySpawnConfig,
   type Handle,
   type HostProcessConfig,
   type ManagedNodeInfo,
+  type NodePorts,
   type NodeStateListener,
 } from './types.js';
 
@@ -48,6 +50,17 @@ const DEFAULTS = {
 const STARTUP_TOKEN_FILE = '.startup-token';
 const CONFIG_FILE = 'cadre.json';
 const LIVENESS_POLL_MS = 100;
+
+/** Fixed friendly id for the admin's authority node. */
+export const AUTHORITY_CONTAINER_ID = 'authority';
+
+/** Endpoint + bearer for the authority node's loopback admin channel (6.6). */
+export interface AuthorityAdminEndpoint {
+  /** e.g. `http://127.0.0.1:<adminPort>`. */
+  baseUrl: string;
+  /** The child's `CADRE_STARTUP_TOKEN`, used as the admin bearer secret. */
+  token: string;
+}
 
 /**
  * Runs cadre nodes as plain Node child processes on the host.
@@ -91,6 +104,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly cliEntrypoint: string;
   /** State-change listeners — invoked when a handle's alive state changes. */
   private readonly stateListeners = new Set<NodeStateListener>();
+  /** Persisted spawn config for the authority node (re-spawn on demand). */
+  private authorityConfig?: AuthoritySpawnConfig;
 
   constructor(private readonly cfg: HostProcessConfig) {
     this.rootDir = resolvePath(cfg.rootDir);
@@ -115,6 +130,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    */
   async init(): Promise<void> {
     const state = this.stateStore.load();
+    this.authorityConfig = state.authorityConfig;
     for (const persisted of state.handles) {
       const alive = isPidAlive(persisted.pid) && tokenMatches(persisted.workdir, persisted.startupToken);
       const handle: Handle = {
@@ -127,6 +143,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         spawnedAt: persisted.spawnedAt,
         partyId: persisted.partyId,
         profile: persisted.profile,
+        ...(persisted.authority ? { authority: true } : {}),
         alive,
       };
       this.handles.set(handle.dockerId, handle);
@@ -134,6 +151,10 @@ export class HostProcessOrchestrator implements Orchestrator {
       this.portAllocator.markUsed(persisted.ports.health);
       this.portAllocator.markUsed(persisted.ports.metrics);
       this.portAllocator.markUsed(persisted.ports.p2p);
+      // `admin` is absent on handles persisted before this build.
+      if (typeof persisted.ports.admin === 'number') {
+        this.portAllocator.markUsed(persisted.ports.admin);
+      }
     }
     log('init: re-attached %d handles', state.handles.length);
   }
@@ -192,11 +213,141 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
-    const healthPort = this.portAllocator.allocate();
-    const metricsPort = this.portAllocator.allocate();
-    const p2pPort = this.portAllocator.allocate();
+    const ports: NodePorts = {
+      health: this.portAllocator.allocate(),
+      metrics: this.portAllocator.allocate(),
+      p2p: this.portAllocator.allocate(),
+      admin: this.portAllocator.allocate(),
+    };
+    return this.launchChild({
+      containerId: request.containerId,
+      partyId: request.partyId,
+      profile: request.profile,
+      ports,
+      authority: false,
+      buildConfig: (workdir) => this.buildChildConfig(request, workdir),
+      extraArgs: [],
+      ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
+    });
+  }
 
-    const workdir = join(this.rootDir, request.containerId);
+  /**
+   * Ensure the admin's authority node is running, spawning it if absent or
+   * dead. Idempotent: a second call with the node already alive returns the
+   * existing handle without launching a second child. The spawn parameters
+   * are persisted so a later `/api/nodes/:id/{start,restart}` (or an
+   * orchestrator restart) can re-spawn it without re-supplying them.
+   *
+   * The authority node is spawned as `cadre-cli start --authority
+   * --admin-port <p> --identity-protobuf <identityPath>` so it carries the
+   * host's libp2p identity, founds/joins the control network, and exposes the
+   * loopback admin channel the manager delegates to.
+   */
+  async ensureAuthorityNode(cfg?: AuthoritySpawnConfig): Promise<ManagedNodeInfo> {
+    const config = cfg ?? this.authorityConfig;
+    if (!config) {
+      throw new Error('ensureAuthorityNode: no authority config supplied and none persisted');
+    }
+    this.authorityConfig = config;
+
+    const existing = this.findAuthorityHandle();
+    if (existing && isPidAlive(existing.pid) && tokenMatches(existing.workdir, existing.startupToken)) {
+      this.persist();
+      return toNodeInfo(existing);
+    }
+    if (existing) {
+      // Drop the stale handle and release its ports — but DO NOT delete the
+      // workdir: the authority node's control-DB storage lives there and must
+      // survive a restart. launchChild reuses the same workdir.
+      this.releasePorts(existing.ports);
+      this.handles.delete(existing.dockerId);
+    }
+
+    const profile = config.profile ?? 'storage';
+    const ports: NodePorts = {
+      health: this.portAllocator.allocate(),
+      metrics: this.portAllocator.allocate(),
+      admin: this.portAllocator.allocate(),
+      // The authority node must listen on the configured libp2p port so the
+      // NAT mapping (external → internal) lands on it. That port is outside
+      // the managed range, so markUsed is a harmless no-op.
+      p2p: config.libp2pPort,
+    };
+    this.portAllocator.markUsed(config.libp2pPort);
+
+    const result = this.launchChild({
+      containerId: AUTHORITY_CONTAINER_ID,
+      partyId: config.partyId,
+      profile,
+      ports,
+      authority: true,
+      buildConfig: (workdir) => this.buildAuthorityChildConfig(config, profile, workdir),
+      extraArgs: ['--authority', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
+    });
+    const handle = this.handles.get(result.dockerId)!;
+    return toNodeInfo(handle);
+  }
+
+  /** Endpoint + bearer for the authority node's admin channel, if spawned. */
+  getAuthorityAdminEndpoint(): AuthorityAdminEndpoint | undefined {
+    const handle = this.findAuthorityHandle();
+    if (!handle) return undefined;
+    return {
+      baseUrl: `http://127.0.0.1:${handle.ports.admin}`,
+      token: handle.startupToken,
+    };
+  }
+
+  /** Whether spawn parameters for the authority node are known (persisted). */
+  hasAuthorityConfig(): boolean {
+    return this.authorityConfig !== undefined;
+  }
+
+  /** Whether the given friendly/docker id refers to the authority node. */
+  isAuthorityNode(idOrDockerId: string): boolean {
+    if (idOrDockerId === AUTHORITY_CONTAINER_ID) return true;
+    const direct = this.handles.get(idOrDockerId);
+    if (direct?.authority) return true;
+    for (const h of this.handles.values()) {
+      if (h.authority && h.containerId === idOrDockerId) return true;
+    }
+    return false;
+  }
+
+  /** Stop the authority node (if running). Used on graceful shutdown. */
+  async stopAuthorityNode(): Promise<void> {
+    const handle = this.findAuthorityHandle();
+    if (handle && isPidAlive(handle.pid)) {
+      await this.stopContainer(handle.dockerId);
+    }
+  }
+
+  /** Stop the authority node (if running), then re-spawn it from saved config. */
+  async restartAuthorityNode(): Promise<ManagedNodeInfo> {
+    const handle = this.findAuthorityHandle();
+    if (handle && isPidAlive(handle.pid)) {
+      await this.stopContainer(handle.dockerId);
+    }
+    return this.ensureAuthorityNode();
+  }
+
+  /**
+   * Core spawn mechanics shared by `createContainer` and `ensureAuthorityNode`.
+   * The caller has already allocated `ports`. Releases the ports on a
+   * synchronous spawn failure.
+   */
+  private launchChild(opts: {
+    containerId: string;
+    partyId: string;
+    profile: 'storage' | 'transaction';
+    ports: NodePorts;
+    authority: boolean;
+    buildConfig: (workdir: string) => Record<string, unknown>;
+    extraArgs: string[];
+    memoryLimit?: string;
+  }): OrchestratorCreateResult {
+    const { containerId, ports } = opts;
+    const workdir = join(this.rootDir, containerId);
     mkdirSync(workdir, { recursive: true });
     mkdirSync(join(workdir, 'storage'), { recursive: true });
 
@@ -208,22 +359,18 @@ export class HostProcessOrchestrator implements Orchestrator {
     }
 
     const configPath = join(workdir, CONFIG_FILE);
-    writeFileSync(
-      configPath,
-      JSON.stringify(this.buildChildConfig(request, workdir), null, 2),
-      'utf8',
-    );
+    writeFileSync(configPath, JSON.stringify(opts.buildConfig(workdir), null, 2), 'utf8');
 
-    const memoryLimit = request.resources?.memoryLimit ?? this.defaultMemoryLimit;
+    const memoryLimit = opts.memoryLimit ?? this.defaultMemoryLimit;
     const heapBytes = parseMemoryLimit(memoryLimit);
     const heapMB = heapBytes !== undefined ? Math.max(64, Math.floor(heapBytes / (1024 * 1024))) : undefined;
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
       CADRE_STARTUP_TOKEN: token,
-      CADRE_HEALTH_PORT: String(healthPort),
-      CADRE_METRICS_PORT: String(metricsPort),
-      CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${p2pPort}`,
+      CADRE_HEALTH_PORT: String(ports.health),
+      CADRE_METRICS_PORT: String(ports.metrics),
+      CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${ports.p2p}`,
     };
     if (heapMB !== undefined) {
       env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${heapMB}`.trim();
@@ -236,35 +383,32 @@ export class HostProcessOrchestrator implements Orchestrator {
     maybeRotateAtSpawn(logPath, this.logMaxBytes, this.logMaxFiles);
     const logFd = openSync(logPath, 'a');
 
+    const args = [
+      this.cliEntrypoint,
+      'start',
+      '-c', configPath,
+      '--health-port', String(ports.health),
+      '--metrics-port', String(ports.metrics),
+      '--startup-token-file', tokenPath,
+      ...opts.extraArgs,
+    ];
+
     let child: ChildProcess;
     try {
-      child = spawn(
-        process.execPath,
-        [
-          this.cliEntrypoint,
-          'start',
-          '-c', configPath,
-          '--health-port', String(healthPort),
-          '--metrics-port', String(metricsPort),
-          '--startup-token-file', tokenPath,
-        ],
-        {
-          cwd: workdir,
-          detached: true,
-          // Inherit the log fd directly. OS duplicates it into the child;
-          // closing our copy below is safe and severs the parent's only
-          // tie to the child's write path.
-          stdio: ['ignore', logFd, logFd],
-          env,
-        },
-      );
+      child = spawn(process.execPath, args, {
+        cwd: workdir,
+        detached: true,
+        // Inherit the log fd directly. OS duplicates it into the child;
+        // closing our copy below is safe and severs the parent's only
+        // tie to the child's write path.
+        stdio: ['ignore', logFd, logFd],
+        env,
+      });
     } catch (err) {
       // Synchronous spawn failure — release the fd and the reserved ports
       // before propagating, so a bad-args bug doesn't leak resources.
       closeSync(logFd);
-      this.portAllocator.release(healthPort);
-      this.portAllocator.release(metricsPort);
-      this.portAllocator.release(p2pPort);
+      this.releasePorts(ports);
       throw err;
     }
     // Always release the parent's copy of the fd — the child has its own.
@@ -272,25 +416,24 @@ export class HostProcessOrchestrator implements Orchestrator {
 
     if (!child.pid) {
       // Spawn returned without a pid — release reservations and report.
-      this.portAllocator.release(healthPort);
-      this.portAllocator.release(metricsPort);
-      this.portAllocator.release(p2pPort);
-      throw new Error(`Failed to spawn child for container ${request.containerId}`);
+      this.releasePorts(ports);
+      throw new Error(`Failed to spawn child for container ${containerId}`);
     }
 
     child.unref();
 
     const dockerId = encodeDockerId(child.pid, token);
     const handle: Handle = {
-      containerId: request.containerId,
+      containerId,
       dockerId,
       pid: child.pid,
       startupToken: token,
       workdir,
-      ports: { health: healthPort, metrics: metricsPort, p2p: p2pPort },
+      ports,
       spawnedAt: new Date().toISOString(),
-      partyId: request.partyId,
-      profile: request.profile,
+      partyId: opts.partyId,
+      profile: opts.profile,
+      ...(opts.authority ? { authority: true } : {}),
       child,
       alive: true,
     };
@@ -307,14 +450,29 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.persist();
     this.emitStateChange(handle);
 
-    log('created container %s -> pid %d ports=%j', request.containerId, child.pid, handle.ports);
+    log('created container %s -> pid %d ports=%j', containerId, child.pid, handle.ports);
 
     return {
       dockerId,
-      healthEndpoint: `http://localhost:${healthPort}/health`,
-      metricsEndpoint: `http://localhost:${metricsPort}/metrics`,
-      p2pPort,
+      healthEndpoint: `http://localhost:${ports.health}/health`,
+      metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
+      p2pPort: ports.p2p,
     };
+  }
+
+  /** Locate the authority node's handle, if one has been spawned. */
+  private findAuthorityHandle(): Handle | undefined {
+    for (const h of this.handles.values()) {
+      if (h.authority || h.containerId === AUTHORITY_CONTAINER_ID) return h;
+    }
+    return undefined;
+  }
+
+  private releasePorts(ports: NodePorts): void {
+    this.portAllocator.release(ports.health);
+    this.portAllocator.release(ports.metrics);
+    this.portAllocator.release(ports.p2p);
+    this.portAllocator.release(ports.admin);
   }
 
   async stopContainer(dockerId: string): Promise<void> {
@@ -378,9 +536,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       await this.stopContainer(dockerId);
     }
 
-    this.portAllocator.release(handle.ports.health);
-    this.portAllocator.release(handle.ports.metrics);
-    this.portAllocator.release(handle.ports.p2p);
+    this.releasePorts(handle.ports);
 
     // On Windows the OS releases the child's cwd handle asynchronously, so
     // retry rmSync to give the kernel a chance to drop it.
@@ -481,10 +637,35 @@ export class HostProcessOrchestrator implements Orchestrator {
     return cfg;
   }
 
+  /**
+   * Child config for the authority node. It founds/joins the control network
+   * for `partyId` (no bootstrap peers — it is the founding node), and carries
+   * the host identity via `--identity-protobuf` (passed as a spawn arg).
+   */
+  private buildAuthorityChildConfig(
+    cfg: AuthoritySpawnConfig,
+    profile: 'storage' | 'transaction',
+    workdir: string,
+  ): Record<string, unknown> {
+    const config: Record<string, unknown> = {
+      controlNetwork: {
+        partyId: cfg.partyId,
+        bootstrapNodes: [],
+      },
+      profile,
+      strandFilter: 'all',
+    };
+    if (profile === 'storage') {
+      config.storage = { type: 'file', path: join(workdir, 'storage') };
+    }
+    return config;
+  }
+
   private persist(): void {
     const state: PersistedState = {
       version: 1,
       handles: [...this.handles.values()].map((h) => this.toPersisted(h)),
+      ...(this.authorityConfig ? { authorityConfig: this.authorityConfig } : {}),
     };
     this.stateStore.save(state);
   }
@@ -512,6 +693,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       spawnedAt: h.spawnedAt,
       partyId: h.partyId,
       profile: h.profile,
+      ...(h.authority ? { authority: true } : {}),
     };
   }
 }
@@ -526,6 +708,7 @@ function toNodeInfo(h: Handle): ManagedNodeInfo {
     spawnedAt: h.spawnedAt,
     workdir: h.workdir,
     ports: { ...h.ports },
+    ...(h.authority ? { authority: true } : {}),
   };
 }
 

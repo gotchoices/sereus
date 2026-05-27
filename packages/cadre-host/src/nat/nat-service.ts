@@ -24,6 +24,7 @@ import {
   type BuildInviteAddressesInput,
 } from './address-resolver.js';
 import { createSecretsStore, ddnsAccount, type SecretsStore } from './secrets/index.js';
+import { AuthorityNodeUnavailableError } from '../authority/authority-node-client.js';
 
 const log = debug('cadre:host:nat-service');
 
@@ -31,13 +32,20 @@ const log = debug('cadre:host:nat-service');
  * Minimal slice of CadreNode that NatService needs — defined as an interface
  * so tests can inject a mock without a real libp2p stack. Mirrors
  * `CadreNodeLike` in `auth/trust-circle.ts`.
+ *
+ * Both methods are async: in production they round-trip over the authority
+ * node's loopback admin channel (`GET /admin/identity`, `GET /admin/multiaddrs`).
+ * Synchronous test mocks can return a value directly (it's awaited).
  */
 export interface CadreNodeLike {
   /** Returns this node's peer ID (libp2p) as a string. */
-  getPeerId(): string;
+  getPeerId(): Promise<string> | string;
   /** Returns the current observed multiaddrs from libp2p. */
-  getMultiaddrs(): string[];
+  getMultiaddrs(): Promise<string[]> | string[];
 }
+
+/** Listener notified when the invite addresses may have changed. */
+export type AddressesChangedListener = (addresses: string[]) => void | Promise<void>;
 
 export interface NatServiceOptions {
   /** Cadre-host root directory (same one orchestrator + trust-circle use). */
@@ -94,6 +102,8 @@ export class NatService {
   private latestIp: ExternalIpResult | null = null;
   private lastTestedAt: Date | null = null;
   private started = false;
+  /** Listeners notified when the invite addresses may have changed. */
+  private readonly addressListeners = new Set<AddressesChangedListener>();
 
   // For createSecretsStore async init.
   private readonly secretsRootDir: string;
@@ -135,6 +145,9 @@ export class NatService {
       now: this.nowFn,
     });
     await this.ddnsUpdater.start();
+
+    // Initial invite-address push (best-effort; skipped if the node isn't up).
+    await this.fireAddressesChanged();
   }
 
   /** Release the port mapping and clear timers. Idempotent. */
@@ -198,12 +211,28 @@ export class NatService {
     if (this.ddnsUpdater) {
       await this.ddnsUpdater.forceUpdate().catch((err) => log('ddns forceUpdate err: %s', (err as Error).message));
     }
+    // Reachability/IP may have changed → invite addresses may have changed.
+    await this.fireAddressesChanged();
     return this.getStatus();
   }
 
-  /** Build the multiaddrs to embed in invites. */
+  /**
+   * Build the multiaddrs to embed in invites. The peer ID and libp2p
+   * fallback addresses are fetched over the authority node's admin channel; a
+   * node-unavailable failure surfaces as `NatError('node_unavailable')`.
+   */
   async getInviteAddresses(): Promise<string[]> {
-    const peerId = this.cadreNode.getPeerId();
+    let peerId: string;
+    let libp2pAddrs: string[];
+    try {
+      peerId = await this.cadreNode.getPeerId();
+      libp2pAddrs = await this.cadreNode.getMultiaddrs();
+    } catch (err) {
+      if (err instanceof AuthorityNodeUnavailableError) {
+        throw new NatError('node_unavailable', `Authority node unavailable: ${err.message}`);
+      }
+      throw err;
+    }
     const status = this.getStatus();
     const input: BuildInviteAddressesInput = {
       peerId,
@@ -211,9 +240,43 @@ export class NatService {
       ddnsHostname: status.ddns.hostname,
       externalIp: status.externalIp,
       reachable: status.directReachability === 'reachable',
-      libp2pAddrs: this.cadreNode.getMultiaddrs(),
+      libp2pAddrs,
     };
     return buildInviteAddresses(input);
+  }
+
+  /**
+   * Register a listener fired when the invite addresses may have changed
+   * (after `start`, `putSettings`, and `testReachability`). `cadre-host start`
+   * wires this to `AuthorityNodeClient.pushInviteAddresses`. Returns an
+   * unsubscribe fn.
+   */
+  onAddressesChanged(listener: AddressesChangedListener): () => void {
+    this.addressListeners.add(listener);
+    return () => { this.addressListeners.delete(listener); };
+  }
+
+  /**
+   * Recompute invite addresses and notify listeners. Best-effort: when the
+   * authority node is unreachable (or the build fails), the notification is
+   * skipped — the push is retried on the next NAT event.
+   */
+  private async fireAddressesChanged(): Promise<void> {
+    if (this.addressListeners.size === 0) return;
+    let addresses: string[];
+    try {
+      addresses = await this.getInviteAddresses();
+    } catch (err) {
+      log('onAddressesChanged skipped: %s', (err as Error).message);
+      return;
+    }
+    for (const listener of this.addressListeners) {
+      try {
+        await listener(addresses);
+      } catch (err) {
+        log('address listener threw: %s', (err as Error).message);
+      }
+    }
   }
 
   /** Current settings (cheap read; for handlers to surface to UI). */
@@ -243,6 +306,10 @@ export class NatService {
       }
       if (ddnsChanged && this.ddnsUpdater) {
         await this.ddnsUpdater.updateSettings(next.ddns);
+      }
+      if (upnpChanged || portChanged || ddnsChanged) {
+        // Port / DDNS changes alter the advertised invite addresses.
+        await this.fireAddressesChanged();
       }
     }
     return this.getStatus();

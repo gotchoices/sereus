@@ -9,11 +9,12 @@ import { TrustCircleService, createTrustCircleHandlers } from '../trust-circle.j
 import { TrustCircleStore } from '../trust-circle-store.js';
 import { TrustCircleError } from '../types.js';
 import type { CadreNodeLike } from '../trust-circle.js';
+import { AuthorityNodeUnavailableError } from '../../authority/authority-node-client.js';
 
 /**
- * Minimal in-memory mock of CadreNode + ControlDatabase. Records calls so
- * assertions can verify the auth + redemption flow without standing up a
- * real libp2p control network.
+ * Minimal in-memory mock of the authority-node channel adapter. Records calls
+ * so assertions can verify the auth + redemption flow without standing up a
+ * real libp2p control network or admin channel.
  */
 class MockCadreNode implements CadreNodeLike {
   readonly authorizedPeers = new Set<string>();
@@ -23,8 +24,8 @@ class MockCadreNode implements CadreNodeLike {
 
   /** Toggle to make acceptPhone reject. */
   acceptShouldThrow: Error | null = null;
-  /** Toggle to make getControlDatabase return null (simulate offline). */
-  dbAvailable = true;
+  /** When false, membership calls throw AuthorityNodeUnavailableError. */
+  nodeAvailable = true;
 
   async createInvite(token?: string, expiresIn?: number) {
     this.issuedInvites.push({ token, expiresIn });
@@ -53,21 +54,14 @@ class MockCadreNode implements CadreNodeLike {
     return 'enc:' + JSON.stringify(invite);
   }
 
-  getControlDatabase() {
-    if (!this.dbAvailable) return null;
-    const peers = this.authorizedPeers;
-    return {
-      getDatabase: () => ({
-        async *eval(_sql: string, params?: unknown[]) {
-          if (params && params.length > 0) {
-            const target = params[0] as string;
-            if (peers.has(target)) yield { PeerId: target };
-            return;
-          }
-          for (const p of peers) yield { PeerId: p };
-        },
-      }),
-    } as unknown as ReturnType<CadreNodeLike['getControlDatabase']>;
+  async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    if (!this.nodeAvailable) throw new AuthorityNodeUnavailableError('node down');
+    return [...this.authorizedPeers].map((peerId) => ({ peerId, multiaddr: null }));
+  }
+
+  async isMember(peerId: string): Promise<boolean> {
+    if (!this.nodeAvailable) throw new AuthorityNodeUnavailableError('node down');
+    return this.authorizedPeers.has(peerId);
   }
 }
 
@@ -290,14 +284,22 @@ describe('TrustCircleService.list', () => {
     expect(store.getMember('orphan')).toBeUndefined();
   });
 
-  it('falls back to local labels when control DB is unavailable', async () => {
+  it('falls back to local labels when the authority node is unavailable', async () => {
     store.addMember({ peerId: 'pZ', label: 'Zoe', addedAt: 't' });
-    cadreNode.dbAvailable = false;
+    cadreNode.nodeAvailable = false;
 
     const snap = await service.list();
     expect(snap.members.some(m => m.peerId === 'pZ' && m.label === 'Zoe')).toBe(true);
-    // Orphan check is skipped when DB is unavailable.
+    // Orphan check is skipped when the node is unavailable.
     expect(store.getMember('pZ')).toBeDefined();
+  });
+
+  it('issueInvite surfaces node_unavailable when the channel is down', async () => {
+    const downNode = new MockCadreNode();
+    downNode.createInvite = async () => { throw new AuthorityNodeUnavailableError('refused'); };
+    const svc = new TrustCircleService({ cadreNode: downNode, store });
+    await expect(svc.issueInvite({ label: 'Nina' }))
+      .rejects.toMatchObject({ code: 'node_unavailable' });
   });
 
   it('shows unlabelled CadrePeer rows with peerId as label', async () => {

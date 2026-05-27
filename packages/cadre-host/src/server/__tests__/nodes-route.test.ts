@@ -15,24 +15,47 @@ interface FakeOrchestrator extends HostProcessOrchestrator {
   __nodes: Map<string, ManagedNodeInfo>;
   __listeners: Set<NodeStateListener>;
   __stoppedDockerIds: string[];
+  __ensured: number;
+  __restarted: number;
 }
 
-function fakeOrchestrator(initial: ManagedNodeInfo[] = []): FakeOrchestrator {
+function fakeOrchestrator(
+  initial: ManagedNodeInfo[] = [],
+  opts: { authorityId?: string; hasAuthorityConfig?: boolean } = {},
+): FakeOrchestrator {
   const nodes = new Map(initial.map((n) => [n.dockerId, n]));
   const listeners = new Set<NodeStateListener>();
   const stopped: string[] = [];
+  const counters = { ensured: 0, restarted: 0 };
+  const findById = (id: string): ManagedNodeInfo | undefined => {
+    const direct = nodes.get(id);
+    if (direct) return direct;
+    for (const n of nodes.values()) if (n.id === id) return n;
+    return undefined;
+  };
   const inst = {
     listNodes: () => [...nodes.values()],
-    getNode: (id: string) => {
-      const direct = nodes.get(id);
-      if (direct) return direct;
-      for (const n of nodes.values()) if (n.id === id) return n;
-      return undefined;
-    },
+    getNode: (id: string) => findById(id),
     resolveDockerId: (id: string) => {
       if (nodes.has(id)) return id;
       for (const n of nodes.values()) if (n.id === id) return n.dockerId;
       return undefined;
+    },
+    isAuthorityNode: (id: string) => {
+      if (!opts.authorityId) return false;
+      const node = findById(id);
+      return id === opts.authorityId || node?.id === opts.authorityId;
+    },
+    hasAuthorityConfig: () => opts.hasAuthorityConfig ?? false,
+    ensureAuthorityNode: async () => {
+      counters.ensured++;
+      const node = opts.authorityId ? findById(opts.authorityId) : undefined;
+      return node ?? { id: opts.authorityId, status: 'running' } as unknown as ManagedNodeInfo;
+    },
+    restartAuthorityNode: async () => {
+      counters.restarted++;
+      const node = opts.authorityId ? findById(opts.authorityId) : undefined;
+      return node ?? { id: opts.authorityId, status: 'running' } as unknown as ManagedNodeInfo;
     },
     onStateChange: (l: NodeStateListener) => { listeners.add(l); return () => { listeners.delete(l); }; },
     stopContainer: async (dockerId: string) => {
@@ -48,6 +71,8 @@ function fakeOrchestrator(initial: ManagedNodeInfo[] = []): FakeOrchestrator {
     __nodes: nodes,
     __listeners: listeners,
     __stoppedDockerIds: stopped,
+    get __ensured() { return counters.ensured; },
+    get __restarted() { return counters.restarted; },
   } as unknown as FakeOrchestrator;
   return inst;
 }
@@ -146,16 +171,71 @@ describe('/api/nodes routes', () => {
     ]);
   });
 
-  it('POST /api/nodes/:id/start returns 501 not_implemented', async () => {
+  it('POST /api/nodes/:id/start on a non-authority node returns 501 not_implemented', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/start' });
     expect(res.statusCode).toBe(501);
     const body = res.json() as { error: { code: string } };
     expect(body.error.code).toBe('not_implemented');
   });
 
-  it('POST /api/nodes/:id/restart returns 501 not_implemented', async () => {
+  it('POST /api/nodes/:id/restart on a non-authority node returns 501 not_implemented', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/restart' });
     expect(res.statusCode).toBe(501);
+  });
+
+  it('POST /api/nodes/:id/start on an unknown node returns 404', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/nobody/start' });
+    expect(res.statusCode).toBe(404);
+    const body = res.json() as { error: { code: string } };
+    expect(body.error.code).toBe('not_found');
+  });
+});
+
+describe('/api/nodes — authority node start/restart', () => {
+  const AUTHORITY_NODE: ManagedNodeInfo = {
+    id: 'authority',
+    dockerId: '999:tok',
+    partyId: 'install-id',
+    profile: 'storage',
+    status: 'running',
+    spawnedAt: '2025-01-01T00:00:00Z',
+    workdir: '',
+    ports: { health: 1, metrics: 2, p2p: 4555, admin: 3 },
+    authority: true,
+  };
+
+  let app: ReturnType<typeof Fastify>;
+  let orchestrator: FakeOrchestrator;
+
+  beforeEach(() => {
+    app = Fastify();
+    registerErrorHandler(app);
+    orchestrator = fakeOrchestrator([AUTHORITY_NODE], { authorityId: 'authority', hasAuthorityConfig: true });
+    registerNodesRoutes(app, { orchestrator });
+  });
+
+  afterEach(async () => { await app.close(); });
+
+  it('start ensures the authority node', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/authority/start' });
+    expect(res.statusCode).toBe(200);
+    expect(orchestrator.__ensured).toBe(1);
+  });
+
+  it('restart re-spawns the authority node', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/authority/restart' });
+    expect(res.statusCode).toBe(200);
+    expect(orchestrator.__restarted).toBe(1);
+  });
+
+  it('start returns 501 when there is no saved authority config', async () => {
+    const app2 = Fastify();
+    registerErrorHandler(app2);
+    const orch2 = fakeOrchestrator([AUTHORITY_NODE], { authorityId: 'authority', hasAuthorityConfig: false });
+    registerNodesRoutes(app2, { orchestrator: orch2 });
+    const res = await app2.inject({ method: 'POST', url: '/api/nodes/authority/start' });
+    expect(res.statusCode).toBe(501);
+    await app2.close();
   });
 });
 

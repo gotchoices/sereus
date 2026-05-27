@@ -39,6 +39,7 @@ const TRUST_STATUS: Record<TrustCircleErrorCode, number> = {
   already_redeemed: 404,
   expired: 410,
   storage_error: 500,
+  node_unavailable: 503,
 };
 
 const NAT_STATUS: Record<NatErrorCode, number> = {
@@ -51,6 +52,7 @@ const NAT_STATUS: Record<NatErrorCode, number> = {
   router_unreachable: 500,
   ip_detection_failed: 500,
   ddns_update_failed: 500,
+  node_unavailable: 503,
 };
 
 const UPDATE_STATUS: Record<UpdateErrorCode, number> = {

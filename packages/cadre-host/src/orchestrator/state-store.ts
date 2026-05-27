@@ -2,6 +2,8 @@ import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import debug from 'debug';
 
+import type { AuthoritySpawnConfig, NodePorts } from './types.js';
+
 const log = debug('cadre:host:state-store');
 
 /**
@@ -15,15 +17,19 @@ export interface PersistedHandle {
   pid: number;
   startupToken: string;
   workdir: string;
-  ports: { health: number; metrics: number; p2p: number };
+  ports: NodePorts;
   spawnedAt: string;          // ISO timestamp
   partyId: string;
   profile: 'storage' | 'transaction';
+  /** True for the admin's authority node. */
+  authority?: boolean;
 }
 
 export interface PersistedState {
   version: 1;
   handles: PersistedHandle[];
+  /** Spawn parameters for the authority node, so it can be re-spawned on demand. */
+  authorityConfig?: AuthoritySpawnConfig;
 }
 
 const STATE_VERSION = 1;
@@ -48,7 +54,11 @@ export class StateStore {
         log('state file at %s has unexpected shape; treating as empty', this.path);
         return { version: STATE_VERSION, handles: [] };
       }
-      return { version: STATE_VERSION, handles: parsed.handles };
+      return {
+        version: STATE_VERSION,
+        handles: parsed.handles,
+        ...(parsed.authorityConfig ? { authorityConfig: parsed.authorityConfig } : {}),
+      };
     } catch (err) {
       // A corrupt state file is operationally significant — surviving children
       // may now be leaked to the OS without an in-memory handle. Make the
@@ -60,7 +70,15 @@ export class StateStore {
 
   save(state: PersistedState): void {
     mkdirSync(dirname(this.path), { recursive: true });
-    const payload = JSON.stringify({ version: STATE_VERSION, handles: state.handles }, null, 2);
+    const payload = JSON.stringify(
+      {
+        version: STATE_VERSION,
+        handles: state.handles,
+        ...(state.authorityConfig ? { authorityConfig: state.authorityConfig } : {}),
+      },
+      null,
+      2,
+    );
     const tmp = `${this.path}.tmp`;
     writeFileSync(tmp, payload, { encoding: 'utf8' });
     renameSync(tmp, this.path);

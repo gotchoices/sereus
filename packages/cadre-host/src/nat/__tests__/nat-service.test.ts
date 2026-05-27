@@ -273,6 +273,63 @@ describe('NatService', () => {
   });
 });
 
+describe('NatService — async channel node + onAddressesChanged', () => {
+  it('getInviteAddresses awaits async getPeerId/getMultiaddrs from the channel', async () => {
+    const asyncNode: CadreNodeLike = {
+      getPeerId: async () => '12D3KooWAsync',
+      getMultiaddrs: async () => ['/ip4/10.0.0.9/tcp/4001'],
+    };
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: asyncNode,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.50' }),
+    });
+    await svc.start();
+    const addrs = await svc.getInviteAddresses();
+    expect(addrs).toEqual(['/ip4/203.0.113.50/tcp/4001/p2p/12D3KooWAsync']);
+  });
+
+  it('fires onAddressesChanged on putSettings and testReachability', async () => {
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode('12D3KooWHook'),
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.7' }),
+    });
+    await svc.start();
+
+    const fired: string[][] = [];
+    svc.onAddressesChanged((addrs) => { fired.push(addrs); });
+
+    await svc.putSettings({ externalPort: 4002 });
+    await svc.testReachability();
+
+    expect(fired.length).toBeGreaterThanOrEqual(2);
+    // The pushed addresses carry the node's peer ID.
+    expect(fired.at(-1)!.every((a) => a.includes('12D3KooWHook'))).toBe(true);
+  });
+
+  it('onAddressesChanged unsubscribe stops further notifications', async () => {
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: makeNode(),
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+    });
+    await svc.start();
+    let count = 0;
+    const off = svc.onAddressesChanged(() => { count++; });
+    await svc.testReachability();
+    off();
+    await svc.testReachability();
+    expect(count).toBe(1);
+  });
+});
+
 describe('createNatHandlers', () => {
   it('every handler delegates to the service', async () => {
     const mapper = new StubMapper();

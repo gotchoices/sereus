@@ -6,9 +6,10 @@
  * `onStateChange` (forwarded by `createLocalUiServer.start`) — the route
  * handlers don't re-publish.
  *
- * v1 limits: cadre-host doesn't yet auto-spawn nodes (the trust-circle →
- * node mapping ticket is separate). Until it lands, `listNodes()` is
- * usually empty and start/restart are stubs. Stop on a running node works.
+ * start/restart are real for the admin's authority node (re-spawned from the
+ * persisted `AuthoritySpawnConfig`). Generic per-member node spawn from saved
+ * config is out of scope and returns `not_implemented`. Stop works for any
+ * running node.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
@@ -82,35 +83,56 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
     return { ok: true };
   });
 
-  // start / restart: the orchestrator's createContainer requires a full
-  // OrchestratorCreateRequest (partyId, bootstrapNodes, profile, ...).
-  // cadre-host doesn't yet own a "spawn this node from saved config" path
-  // — that lives in the trust-circle-driven node spawner planned for a
-  // follow-up ticket. Until then these endpoints stub out cleanly so the
-  // SPA gets a predictable error rather than a route-not-found 404.
+  // start / restart: real for the admin's authority node (spawned from the
+  // persisted AuthoritySpawnConfig). Generic per-member node spawn from saved
+  // config is out of scope — those ids return a clear not_implemented; unknown
+  // ids 404.
   app.post<{ Params: { id: string } }>('/api/nodes/:id/start', async (request, reply) => {
-    return reply.code(501).send({
-      ok: false,
-      error: {
-        code: 'not_implemented',
-        message:
-          `start ${request.params.id}: cadre-host v1 has no auto-spawn path. ` +
-          `Restart the cadre-host service to bring up persisted nodes.`,
-      },
-    });
+    const { id } = request.params;
+    if (orchestrator.isAuthorityNode(id)) {
+      if (!orchestrator.hasAuthorityConfig()) {
+        return notImplemented(reply, `start ${id}: authority node has no saved spawn config.`);
+      }
+      const node = await orchestrator.ensureAuthorityNode();
+      return { ok: true, data: { node } };
+    }
+    return startRestartFallback(reply, orchestrator, id, 'start');
   });
 
   app.post<{ Params: { id: string } }>('/api/nodes/:id/restart', async (request, reply) => {
-    return reply.code(501).send({
-      ok: false,
-      error: {
-        code: 'not_implemented',
-        message:
-          `restart ${request.params.id}: cadre-host v1 has no auto-spawn path. ` +
-          `Restart the cadre-host service to bring up persisted nodes.`,
-      },
-    });
+    const { id } = request.params;
+    if (orchestrator.isAuthorityNode(id)) {
+      if (!orchestrator.hasAuthorityConfig()) {
+        return notImplemented(reply, `restart ${id}: authority node has no saved spawn config.`);
+      }
+      const node = await orchestrator.restartAuthorityNode();
+      return { ok: true, data: { node } };
+    }
+    return startRestartFallback(reply, orchestrator, id, 'restart');
   });
+}
+
+/** 404 for unknown ids; 501 not_implemented for known non-authority nodes. */
+function startRestartFallback(
+  reply: import('fastify').FastifyReply,
+  orchestrator: HostProcessOrchestrator,
+  id: string,
+  verb: string,
+) {
+  if (!orchestrator.getNode(id)) {
+    return reply.code(404).send({
+      ok: false,
+      error: { code: 'not_found', message: `Unknown node: ${id}` },
+    });
+  }
+  return notImplemented(
+    reply,
+    `${verb} ${id}: only the authority node is start/restart-able; generic node spawn is out of scope.`,
+  );
+}
+
+function notImplemented(reply: import('fastify').FastifyReply, message: string) {
+  return reply.code(501).send({ ok: false, error: { code: 'not_implemented', message } });
 }
 
 /**

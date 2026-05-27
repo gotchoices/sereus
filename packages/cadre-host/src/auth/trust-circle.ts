@@ -1,8 +1,9 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
-import type { CadreNode } from '@serfab/cadre-core';
-import type { CadreInvite, ControlDatabase } from '@serfab/cadre-core';
+import type { CadreInvite } from '@serfab/cadre-core';
+
+import { AuthorityNodeUnavailableError } from '../authority/authority-node-client.js';
 
 import type { TrustCircleStore } from './trust-circle-store.js';
 import type {
@@ -41,15 +42,21 @@ export interface CadreNodeLike {
   acceptPhone(options: { phonePeerId: string; token?: string }, issuedInvite?: CadreInvite): Promise<void>;
   removePeer(peerId: string): Promise<void>;
   encodeInvite(invite: CadreInvite): string;
-  getControlDatabase(): ControlDatabase | null;
+  /** Enumerate the cadre's `CadrePeer` membership (over the admin channel). */
+  listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
+  /** Probe whether a peer is a `CadrePeer` member (over the admin channel). */
+  isMember(peerId: string): Promise<boolean>;
 }
 
 /**
  * TrustCircleService — orchestrates invite issuance, redemption, and
  * membership management.
  *
- * Membership is canonical in the cadre control DB (`CadrePeer` table);
- * labels and pending tokens live in the host-local `TrustCircleStore`.
+ * Membership is canonical in the cadre control DB (`CadrePeer` table),
+ * reached over the authority node's admin channel; labels and pending tokens
+ * live in the host-local `TrustCircleStore`. When the node is unreachable,
+ * authority operations surface `node_unavailable` (→ 503) and `list()`
+ * degrades to the local labels file.
  */
 export class TrustCircleService {
   private readonly cadreNode: CadreNodeLike;
@@ -82,7 +89,9 @@ export class TrustCircleService {
     const created = this.now();
     const expiresAt = new Date(created.getTime() + ttlMs);
 
-    const { invite, encodedInvite } = await this.cadreNode.createInvite(token, ttlMs);
+    const { invite, encodedInvite } = await this.cadreNode
+      .createInvite(token, ttlMs)
+      .catch((err) => this.toDomainError(err));
 
     const pending: PendingInvite = {
       token,
@@ -140,7 +149,9 @@ export class TrustCircleService {
       ...(pending.expiresAt ? { expiresAt: new Date(pending.expiresAt).getTime() } : {}),
     };
 
-    await this.cadreNode.acceptPhone({ phonePeerId: peerId, token }, reconstructed);
+    await this.cadreNode
+      .acceptPhone({ phonePeerId: peerId, token }, reconstructed)
+      .catch((err) => this.toDomainError(err));
 
     // If the member write fails the peer is still authorized in CadrePeer —
     // the next call to list() will pick it up unlabeled, which is the
@@ -178,7 +189,7 @@ export class TrustCircleService {
     }
 
     if (inControl) {
-      await this.cadreNode.removePeer(peerId);
+      await this.cadreNode.removePeer(peerId).catch((err) => this.toDomainError(err));
     }
     if (inLocal) {
       this.store.removeMember(peerId);
@@ -188,21 +199,18 @@ export class TrustCircleService {
 
   /** Whether the peer is present in the cadre's CadrePeer table. */
   async isMember(peerId: string): Promise<boolean> {
-    const db = this.cadreNode.getControlDatabase();
-    if (!db) return false;
-    const inner = db.getDatabase();
-    for await (const row of inner.eval(
-      'select PeerId from CadreControl.CadrePeer where PeerId = ?',
-      [peerId],
-    )) {
-      if (row.PeerId === peerId) return true;
+    try {
+      return await this.cadreNode.isMember(peerId);
+    } catch (err) {
+      this.toDomainError(err);
     }
-    return false;
   }
 
   /**
-   * UI snapshot. Joins the canonical CadrePeer list with local labels;
-   * prunes any orphan labels (peer is no longer authorised).
+   * UI snapshot. Joins the canonical CadrePeer list (fetched over the admin
+   * channel) with local labels; prunes any orphan labels (peer is no longer
+   * authorised). When the authority node is unreachable, degrades to the
+   * local labels file so listing keeps working while the node is down.
    */
   async list(): Promise<TrustCircleSnapshot> {
     const labels = new Map<string, Omit<TrustCircleMember, 'peerId'>>();
@@ -211,12 +219,21 @@ export class TrustCircleService {
     }
 
     const members: TrustCircleMember[] = [];
-    const seenPeerIds = new Set<string>();
-    const db = this.cadreNode.getControlDatabase();
-    if (db) {
-      const inner = db.getDatabase();
-      for await (const row of inner.eval('select PeerId from CadreControl.CadrePeer')) {
-        const peerId = row.PeerId as string;
+
+    // Consult the control DB over the admin channel. A node-unavailable error
+    // is non-fatal — fall back to the local labels rather than 503-ing a
+    // read-only listing.
+    let controlMembers: Array<{ peerId: string }> | null = null;
+    try {
+      controlMembers = await this.cadreNode.listMembers();
+    } catch (err) {
+      if (!(err instanceof AuthorityNodeUnavailableError)) throw err;
+      controlMembers = null;
+    }
+
+    if (controlMembers) {
+      const seenPeerIds = new Set<string>();
+      for (const { peerId } of controlMembers) {
         seenPeerIds.add(peerId);
         const label = labels.get(peerId);
         members.push({
@@ -226,19 +243,16 @@ export class TrustCircleService {
           ...(label?.self ? { self: true } : {}),
         });
       }
-    }
-
-    // Prune labels for peers that no longer exist in CadrePeer.
-    // Only prune when we successfully consulted the control DB, otherwise
-    // we'd wipe labels for a transient connectivity issue.
-    if (db) {
+      // Prune labels for peers that no longer exist in CadrePeer. Only when we
+      // successfully consulted the node — otherwise a transient outage would
+      // wipe labels.
       for (const peerId of labels.keys()) {
         if (!seenPeerIds.has(peerId)) {
           this.store.removeMember(peerId);
         }
       }
     } else {
-      // Fallback: return labels as-is.
+      // Node down: return labels as-is (degradation; no pruning).
       for (const [peerId, row] of labels) {
         members.push({ peerId, ...row });
       }
@@ -251,6 +265,18 @@ export class TrustCircleService {
     pending.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
 
     return { members, pending };
+  }
+
+  /**
+   * Translate an admin-channel transport failure into a `node_unavailable`
+   * TrustCircleError (→ 503). Re-throws anything else unchanged. Returns
+   * `never` so callers can `.catch(err => this.toDomainError(err))`.
+   */
+  private toDomainError(err: unknown): never {
+    if (err instanceof AuthorityNodeUnavailableError) {
+      throw new TrustCircleError('node_unavailable', `Authority node unavailable: ${err.message}`);
+    }
+    throw err instanceof Error ? err : new Error(String(err));
   }
 }
 

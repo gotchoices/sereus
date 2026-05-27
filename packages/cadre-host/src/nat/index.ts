@@ -6,7 +6,7 @@
  */
 
 export { NatService, createNatHandlers } from './nat-service.js';
-export type { NatServiceOptions, CadreNodeLike } from './nat-service.js';
+export type { NatServiceOptions, CadreNodeLike, AddressesChangedListener } from './nat-service.js';
 export { NatStore } from './nat-store.js';
 export {
   NatError,
