@@ -4,6 +4,7 @@ tmp/
 .yarnrc.yml
 .DS_Store
 .yarn
+.pnp.*
 *.tsbuildinfo
 
 # Expo prebuild artifacts (managed workflow — EAS generates these)
