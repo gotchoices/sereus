@@ -15,6 +15,8 @@ class MockNode {
   ];
   /** When true, authority methods throw the "not initialized" error. */
   seedUninitialized = false;
+  /** When true, read methods throw an unclassifiable error (-> internal/500). */
+  genericFailure = false;
 
   readonly partyId = 'party-xyz';
   get peerId() { return { toString: () => '12D3KooWSelf' }; }
@@ -25,7 +27,13 @@ class MockNode {
 
   getMultiaddrs(): string[] { this.record('getMultiaddrs'); return this.multiaddrs; }
 
-  async listMembers() { this.record('listMembers'); return this.members; }
+  async listMembers() {
+    this.record('listMembers');
+    if (this.genericFailure) {
+      throw new Error('control database read failed: disk gone');
+    }
+    return this.members;
+  }
 
   async isMember(peerId: string) { this.record('isMember', peerId); return this.members.some((m) => m.peerId === peerId); }
 
@@ -240,6 +248,39 @@ describe('AdminServer', () => {
     const res = await fetch(`${base}/admin/bogus`, { headers: auth() });
     expect(res.status).toBe(400);
     expect((await res.json()).error.code).toBe('bad_request');
+  });
+
+  describe('error classification & body handling', () => {
+    it('maps an unclassifiable error to 500 internal', async () => {
+      node.genericFailure = true;
+      const res = await fetch(`${base}/admin/members`, { headers: auth() });
+      expect(res.status).toBe(500);
+      const body = await res.json();
+      expect(body.ok).toBe(false);
+      expect(body.error.code).toBe('internal');
+      expect(body.error.message).toMatch(/disk gone/);
+    });
+
+    it('rejects a non-object JSON body (array) with 400 bad_request', async () => {
+      const res = await fetch(`${base}/admin/invites`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify(['not', 'an', 'object']),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('bad_request');
+    });
+
+    it('rejects an over-large request body with 400 bad_request', async () => {
+      const huge = JSON.stringify({ token: 'x'.repeat(300 * 1024) });
+      const res = await fetch(`${base}/admin/invites`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: huge,
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('bad_request');
+    });
   });
 
   it('requires a non-empty token at construction', () => {
