@@ -62,6 +62,13 @@ export class TrustCircleService {
   private readonly cadreNode: CadreNodeLike;
   private readonly store: TrustCircleStore;
   private readonly now: () => Date;
+  /**
+   * In-flight redemption claims (by token). Serialises concurrent redeems
+   * for the same token without burning the durable pending row before
+   * `acceptPhone` succeeds. Intra-process only — the orchestrator enforces
+   * single-process ownership of a given rootDir, so no file lock is needed.
+   */
+  private readonly inFlightRedemptions = new Set<string>();
 
   constructor(opts: TrustCircleServiceOptions) {
     this.cadreNode = opts.cadreNode;
@@ -111,6 +118,20 @@ export class TrustCircleService {
    *   - cadre-core authorizes the peer (inserts CadrePeer row).
    *   - The pending row is consumed (one-time enforcement).
    *   - A labelled member row is written locally.
+   *
+   * Ordering: the synchronous *claim* against `inFlightRedemptions` serialises
+   * concurrent redeems for the same token (second concurrent caller rejects
+   * synchronously before its first await). The durable `removePending` only
+   * runs *after* `acceptPhone` succeeds — so a transient `node_unavailable`
+   * leaves the token re-redeemable rather than permanently burning it.
+   *
+   * Crash-safety tradeoff: if the host crashes between `acceptPhone` success
+   * and the durable `removePending`, a retry will dial in fine but the
+   * authority node's `acceptPhone` will reject the second `CadrePeer` insert
+   * with a PK constraint error (cadre-core does not upsert). That surfaces to
+   * the redeemer as a non-`node_unavailable` failure; the admin can revoke
+   * the lingering pending row. This is a narrower window than the prior
+   * behaviour, where *any* transient node outage burned the token.
    */
   async redeemInvite(opts: { token: string; peerId: string }): Promise<{ peerId: string; label: string }> {
     const { token, peerId } = opts;
@@ -118,54 +139,66 @@ export class TrustCircleService {
       throw new TrustCircleError('invalid_token', 'token and peerId are required');
     }
 
-    // Atomically claim the pending row before doing async work. This closes
-    // the race between two concurrent redemption requests for the same token —
-    // only the call that wins the synchronous removePending() proceeds; the
-    // other gets `already_redeemed`. The remove is durable (write-then-rename),
-    // so a crash after this point loses the token, which is the safe failure
-    // mode for a one-time credential.
     const pending = this.store.getPending(token);
-    if (!pending || !this.store.removePending(token)) {
-      // Either never issued, or another concurrent caller just consumed it.
+    if (!pending) {
       throw new TrustCircleError('already_redeemed', 'Invite not found or already redeemed');
     }
 
     if (pending.expiresAt) {
       const expiresAt = new Date(pending.expiresAt);
       if (Number.isFinite(expiresAt.getTime()) && this.now() > expiresAt) {
-        // Already removed above — just surface the expiry.
+        // Expiry is permanent — reap the pending row durably.
+        this.store.removePending(token);
         throw new TrustCircleError('expired', 'Invite has expired');
       }
     }
 
-    // Reconstruct the CadreInvite that was originally issued. cadre-core's
-    // acceptPhone validates `issuedInvite.token === options.token` (already
-    // matches by construction) and re-checks expiration.
-    const reconstructed: CadreInvite = {
-      partyId: '',
-      authorityAddrs: [],
-      token: pending.token,
-      createdAt: new Date(pending.createdAt).getTime(),
-      ...(pending.expiresAt ? { expiresAt: new Date(pending.expiresAt).getTime() } : {}),
-    };
+    // Synchronous in-memory claim. Closes the race between two concurrent
+    // redemption requests for the same token — the loser sees the token in
+    // the set and rejects synchronously before its first `await`.
+    if (this.inFlightRedemptions.has(token)) {
+      throw new TrustCircleError('already_redeemed', 'Invite not found or already redeemed');
+    }
+    this.inFlightRedemptions.add(token);
 
-    await this.cadreNode
-      .acceptPhone({ phonePeerId: peerId, token }, reconstructed)
-      .catch((err) => this.toDomainError(err));
+    try {
+      // Reconstruct the CadreInvite that was originally issued. cadre-core's
+      // acceptPhone validates `issuedInvite.token === options.token` (already
+      // matches by construction) and re-checks expiration.
+      const reconstructed: CadreInvite = {
+        partyId: '',
+        authorityAddrs: [],
+        token: pending.token,
+        createdAt: new Date(pending.createdAt).getTime(),
+        ...(pending.expiresAt ? { expiresAt: new Date(pending.expiresAt).getTime() } : {}),
+      };
 
-    // If the member write fails the peer is still authorized in CadrePeer —
-    // the next call to list() will pick it up unlabeled, which is the
-    // documented graceful degradation.
-    const member: TrustCircleMember = {
-      peerId,
-      label: pending.label,
-      addedAt: this.now().toISOString(),
-    };
-    this.store.addMember(member);
+      await this.cadreNode
+        .acceptPhone({ phonePeerId: peerId, token }, reconstructed)
+        .catch((err) => this.toDomainError(err));
 
-    log('redeemed invite for "%s" (peerId=%s, token=%s)', pending.label, peerId, token);
+      // acceptPhone succeeded → durably consume the pending row. If we crash
+      // between here and the next line, the token stays pending (re-redeem
+      // would fail at acceptPhone with a duplicate-CadrePeer error, not
+      // node_unavailable, and the admin can revoke).
+      this.store.removePending(token);
 
-    return { peerId, label: pending.label };
+      // If the member write fails the peer is still authorized in CadrePeer —
+      // the next call to list() will pick it up unlabeled, which is the
+      // documented graceful degradation.
+      const member: TrustCircleMember = {
+        peerId,
+        label: pending.label,
+        addedAt: this.now().toISOString(),
+      };
+      this.store.addMember(member);
+
+      log('redeemed invite for "%s" (peerId=%s, token=%s)', pending.label, peerId, token);
+
+      return { peerId, label: pending.label };
+    } finally {
+      this.inFlightRedemptions.delete(token);
+    }
   }
 
   /** Revoke a pending invite by token. No-op if not found. */

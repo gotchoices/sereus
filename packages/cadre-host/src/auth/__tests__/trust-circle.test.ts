@@ -198,6 +198,71 @@ describe('TrustCircleService.redeemInvite', () => {
     expect(cadreNode.authorizedPeers.has('pA')).toBe(true);
     expect(cadreNode.authorizedPeers.has('pB')).toBe(false);
   });
+
+  it('preserves the pending token when acceptPhone fails with node_unavailable', async () => {
+    const { token } = await service.issueInvite({ label: 'Transient' });
+    cadreNode.acceptShouldThrow = new AuthorityNodeUnavailableError('node down');
+
+    await expect(service.redeemInvite({ token, peerId: 'pTrans' }))
+      .rejects.toMatchObject({ code: 'node_unavailable' });
+
+    // Token must still be redeemable.
+    expect(store.getPending(token)).toBeDefined();
+    expect(cadreNode.authorizedPeers.has('pTrans')).toBe(false);
+
+    // Retry after the node recovers.
+    cadreNode.acceptShouldThrow = null;
+    await expect(service.redeemInvite({ token, peerId: 'pTrans' }))
+      .resolves.toMatchObject({ peerId: 'pTrans', label: 'Transient' });
+    expect(cadreNode.authorizedPeers.has('pTrans')).toBe(true);
+    expect(store.getPending(token)).toBeUndefined();
+  });
+
+  it('concurrent redeem during a gated node_unavailable leaves the token re-redeemable', async () => {
+    const { token } = await service.issueInvite({ label: 'GatedFail' });
+
+    // Gate acceptPhone — reject on release with a transient error so the
+    // first redeem hits node_unavailable. The second redeem should still
+    // bounce synchronously while the gate is held.
+    let release!: () => void;
+    const gate = new Promise<void>((_, reject) => { release = () => reject(new AuthorityNodeUnavailableError('node down')); });
+    cadreNode.acceptPhone = async () => {
+      await gate;
+    };
+
+    const first = service.redeemInvite({ token, peerId: 'pA' });
+    const second = service.redeemInvite({ token, peerId: 'pB' });
+
+    await expect(second).rejects.toMatchObject({ code: 'already_redeemed' });
+
+    release();
+    await expect(first).rejects.toMatchObject({ code: 'node_unavailable' });
+
+    // Pending row preserved; in-flight Set cleared via finally.
+    expect(store.getPending(token)).toBeDefined();
+    expect(cadreNode.authorizedPeers.has('pA')).toBe(false);
+    expect(cadreNode.authorizedPeers.has('pB')).toBe(false);
+
+    // Third redeem (after in-flight slot freed) succeeds against a healthy node.
+    cadreNode.acceptPhone = async (options) => {
+      cadreNode.authorizedPeers.add(options.phonePeerId);
+    };
+    await expect(service.redeemInvite({ token, peerId: 'pC' }))
+      .resolves.toMatchObject({ peerId: 'pC', label: 'GatedFail' });
+    expect(store.getPending(token)).toBeUndefined();
+    expect(cadreNode.authorizedPeers.has('pC')).toBe(true);
+  });
+
+  it('preserves the pending token on non-transient acceptPhone failures (admin must revoke)', async () => {
+    const { token } = await service.issueInvite({ label: 'OtherFail' });
+    cadreNode.acceptShouldThrow = new Error('cadre-core rejected the peer');
+
+    await expect(service.redeemInvite({ token, peerId: 'pX' }))
+      .rejects.toThrow('cadre-core rejected the peer');
+
+    expect(store.getPending(token)).toBeDefined();
+    expect(cadreNode.authorizedPeers.has('pX')).toBe(false);
+  });
 });
 
 describe('TrustCircleService.issueInvite — label length', () => {
