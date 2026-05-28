@@ -1,0 +1,14 @@
+(node:47032) [DEP0180] DeprecationWarning: fs.Stats constructor is deprecated.
+(Use `node --trace-deprecation ...` to show where the warning was created)
+(node:47032) ExperimentalWarning: Type Stripping is an experimental feature and might change at any time
+(Use `node --trace-warnings ...` to show where the warning was created)
+[2J[1;3HFound 3 golden plan test cases
+[property-planner] Rule 'predicate-pushdown' never fired across 30 runs
+[property-planner] Rule 'projection-pruning' never fired across 30 runs
+[property-planner] Rule 'join-key-inference' never fired across 30 runs
+[property-planner] Rule 'join-greedy-commute' never fired across 30 runs
+[property-planner] Rule 'subquery-decorrelation' never fired across 30 runs
+
+[92m [0m[32m 3647 passing[0m[90m (50s)[0m
+[36m [0m[36m 9 pending[0m
+
