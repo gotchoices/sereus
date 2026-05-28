@@ -636,6 +636,15 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         const removed = await readCadrePeer(node, dronePeerId);
         expect(removed).toBeUndefined();
+
+        // Re-authorize the same peer to exercise the insert→delete→insert
+        // cycle through the flat OLD/NEW row layout that deferred constraints
+        // walk (the bug this regression test guards against was a NEW.PeerId
+        // resolution failure inside the DELETE path's deferred check).
+        await node.authorizePeer(dronePeerId, multiaddrs);
+        const reAuthorized = await readCadrePeer(node, dronePeerId);
+        expect(reAuthorized).toBeDefined();
+        expect(reAuthorized!.Multiaddr).toBe(multiaddrs.join(','));
       } finally {
         await node.stop();
       }
