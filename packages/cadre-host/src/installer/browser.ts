@@ -16,24 +16,22 @@ export interface OpenBrowserResult {
 }
 
 export function openBrowser(url: string, platform: NodeJS.Platform = process.platform): OpenBrowserResult {
+  if (platform === 'darwin') return spawnOpener('open', [url]);
+  if (platform === 'win32') return spawnOpener('rundll32', ['url.dll,FileProtocolHandler', url]);
+  // linux + everything else POSIX-ish
+  return spawnOpener('xdg-open', [url]);
+}
+
+function spawnOpener(cmd: string, args: string[]): OpenBrowserResult {
   try {
-    if (platform === 'darwin') {
-      const child = spawn('open', [url], { detached: true, stdio: 'ignore' });
-      child.unref();
-      return { attempted: true, spawned: true };
-    }
-    if (platform === 'win32') {
-      // rundll32 is the most portable way to invoke the registered handler
-      // without going through cmd.exe (which would require escaping URLs).
-      const child = spawn('rundll32', ['url.dll,FileProtocolHandler', url], {
-        detached: true,
-        stdio: 'ignore',
-      });
-      child.unref();
-      return { attempted: true, spawned: true };
-    }
-    // linux + everything else POSIX-ish
-    const child = spawn('xdg-open', [url], { detached: true, stdio: 'ignore' });
+    const child = spawn(cmd, args, { detached: true, stdio: 'ignore' });
+    // The launcher's absence (ENOENT on a headless box without xdg-utils,
+    // etc.) is reported asynchronously via the child's `error` event, not
+    // by `spawn()` throwing. Without a listener, Node escalates to an
+    // unhandled-error crash and kills the install. Swallow it: this is a
+    // best-effort convenience, the install / UI commands have already
+    // printed the URL.
+    child.on('error', () => { /* best-effort */ });
     child.unref();
     return { attempted: true, spawned: true };
   } catch (err) {

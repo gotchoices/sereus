@@ -42,8 +42,17 @@ journalctl --user -u cadre-host -f
 
 `Restart=on-failure` + `RestartPreventExitStatus=0` make exit 0 final.
 
-The installer also runs `loginctl enable-linger <user>` so the unit survives
-logout / reboot.
+The installer attempts `loginctl enable-linger <user>` so the unit survives
+logout / reboot. This is the **one** step in the install that requires root,
+and it is opportunistic: if `loginctl` is missing or you aren't root, the
+installer logs a warning and continues. Without linger the user-systemd
+service runs only while you have an active session (desktop or SSH) and
+stops when you log out. You can enable linger separately, before or after
+`cadre-host install`:
+
+```bash
+sudo loginctl enable-linger "$USER"
+```
 
 ## macOS (launchd) — manual smoke
 
