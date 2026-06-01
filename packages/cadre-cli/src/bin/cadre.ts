@@ -11,7 +11,7 @@ const program = new Command();
 program
   .name('cadre')
   .description('Sereus Cadre Node CLI - manage cadre node instances')
-  .version('0.0.1');
+  .version('0.7.1');
 
 program.addCommand(startCommand);
 program.addCommand(statusCommand);

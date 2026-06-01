@@ -212,7 +212,7 @@ sudo npm install @serfab/cadre-cli @serfab/cadre-core
 **git method:**
 
 ```bash
-sudo git clone https://github.com/anthropics/sereus.git /opt/sereus
+sudo git clone https://github.com/gotchoices/sereus.git /opt/sereus
 cd /opt/sereus
 sudo npm install
 sudo npm run build -w @serfab/cadre-core -w @serfab/cadre-cli

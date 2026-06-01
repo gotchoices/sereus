@@ -10,6 +10,7 @@ import {
 } from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
+import { fromString } from 'uint8arrays';
 import { resolveConfig, type ResolvedConfig } from '../config/index.js';
 import { HealthServer } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
@@ -46,7 +47,6 @@ function resolveStorageConfig(config: ResolvedConfig['storage']): StorageConfig 
  * Decode a base64url-encoded seed
  */
 function decodeSeed(encoded: string): ControlNetworkSeed {
-  const { fromString } = require('uint8arrays');
   const bytes = fromString(encoded, 'base64url');
   const json = new TextDecoder().decode(bytes);
   return JSON.parse(json) as ControlNetworkSeed;
@@ -162,7 +162,7 @@ export const startCommand = new Command('start')
         const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
         const metricsPort = parseInt(process.env.CADRE_METRICS_PORT ?? options.metricsPort, 10);
 
-        healthServer = new HealthServer({ healthPort, metricsPort });
+        healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile });
         healthServer.attach(node);
         await healthServer.start();
         console.log(`✓ Health server on port ${healthPort}, metrics on port ${metricsPort}`);

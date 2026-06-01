@@ -1,6 +1,6 @@
 [Unit]
 Description=Sereus Cadre Node
-Documentation=https://github.com/sereus/cadre-cli
+Documentation=https://github.com/gotchoices/sereus
 After=network-online.target
 Wants=network-online.target
 

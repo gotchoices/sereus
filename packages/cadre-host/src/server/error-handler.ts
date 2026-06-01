@@ -7,6 +7,7 @@
  *       invalid_label, invalid_token             → 400
  *       not_found, already_redeemed              → 404
  *       expired                                  → 410
+ *       node_unavailable                         → 503
  *       storage_error                            → 500
  *   - NatError
  *       invalid_config, ddns_provider_unknown,
@@ -14,6 +15,7 @@
  *       secrets_unavailable, storage_error,
  *       mapping_failed, router_unreachable,
  *       ip_detection_failed, ddns_update_failed  → 500
+ *       node_unavailable                         → 503
  *   - UpdateErrorException
  *       manifest_invalid, no_update_available,
  *       min_previous_version                     → 400

@@ -768,7 +768,7 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 
 ### Internal Documentation
 
-- [Arachnode Architecture](arachnode.md) - Storage ring system
+- [Arachnode Architecture](arachnode.md) - Storage ring system (planned)
 - [Strand Management](strands.md) - Strand concepts and negotiation
 - [Bootstrap Protocol](strand-proto.md) - Formation protocol details
 - [API Specification](api.md) - Cadre peer authorization API

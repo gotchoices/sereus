@@ -72,7 +72,8 @@ export function defaultFakeCadreNode(): CadreNodeLike {
 		async acceptPhone() { /* no-op */ },
 		async removePeer() { /* no-op */ },
 		encodeInvite() { return 'cadre://invite/test'; },
-		getControlDatabase() { return null; },
+		async listMembers() { return []; },
+		async isMember() { return false; },
 	};
 }
 

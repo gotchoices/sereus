@@ -469,7 +469,7 @@ describe('Multi-Party Strand Workflows', () => {
 			}
 		}, 60_000);
 
-		// ── Scenario 5: Disconnect/reconnect sync ──────────────────────────
+		// ── Scenario 5: Multi-round bidirectional convergence ──────────────────────────
 
 		it('should converge across multiple rounds of bidirectional writes', async () => {
 			let partyA: CadreNode | undefined;

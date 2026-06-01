@@ -9,6 +9,8 @@ export interface HealthServerOptions {
   healthPort?: number;
   /** Port for metrics endpoint (default: 9090) */
   metricsPort?: number;
+  /** Configured node profile (e.g. 'storage' or 'transaction'); surfaced in /status */
+  profile?: string;
 }
 
 export interface HealthStatus {
@@ -64,6 +66,7 @@ export class HealthServer {
     this.options = {
       healthPort: options.healthPort ?? 8080,
       metricsPort: options.metricsPort ?? 9090,
+      profile: options.profile ?? '',
     };
   }
 
@@ -116,8 +119,8 @@ export class HealthServer {
       node: {
         running: isRunning,
         peerId,
-        partyId: '', // Would come from config
-        profile: 'storage',
+        partyId: this.node?.partyId ?? '',
+        profile: this.options.profile,
         strands: { total: strands.size, active, idle, hibernating },
       },
     };

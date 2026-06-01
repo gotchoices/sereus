@@ -2,7 +2,7 @@
  * HTTP routes for the Provider API.
  */
 
-import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
+import type { FastifyInstance, FastifyReply } from 'fastify';
 import debug from 'debug';
 import type { ContainerService } from '../service/container-service.js';
 import type { BillingService } from '../service/billing-service.js';

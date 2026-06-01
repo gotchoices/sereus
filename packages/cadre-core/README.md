@@ -104,7 +104,7 @@ Mobile apps typically shouldn't participate in all strands. Use filters to contr
 
 ```typescript
 // Only participate in strands for a specific app
-strandFilter: { mode: 'appId', appId: 'com.example.chat' }
+strandFilter: { mode: 'sAppId', sAppId: 'com.example.chat' }
 
 // Only participate in one specific strand
 strandFilter: { mode: 'strandId', strandId: 'strand-abc123' }
@@ -151,7 +151,7 @@ const { seed, encodedSeed } = await node.addDrone({
 });
 
 // Send to provider for drone initialization
-await provider.applySeed(droneInfo.containerId, encodedSeed);
+await provider.initializeNode(droneInfo.containerId, encodedSeed);
 ```
 
 ## API Reference
