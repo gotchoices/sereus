@@ -19,8 +19,9 @@
  * leaks connection metadata to a third party. `loadIceConfig` never throws; it
  * logs and returns `[]`.
  *
- * Consumed by `web-webrtc-transport-to-bypass-relay` (ticket 3) — this file only
- * delivers the helper + schema; it does NOT wire the transport.
+ * `cadre-web.ts` (`startCadre`) consumes this helper to populate the WebRTC
+ * transport's `rtcConfiguration.iceServers`; this file only delivers the helper +
+ * schema and never instantiates a transport itself.
  *
  * TURN forward-pointers (do not lose when TURN is enabled):
  *  - TURN entries carry ephemeral credentials minted by a signing endpoint that
@@ -38,8 +39,9 @@ export const ICE_CONFIG_URL_STORAGE_KEY = 'ice-config-url';
 
 /**
  * Manifest-fetch deadline. `loadIceConfig` is awaited during node startup
- * (`optimystic.ts` → `startNode`), so an unbounded fetch against a misbehaving
- * manifest host would stall boot indefinitely. Cap it: on timeout we abort and
+ * (`cadre-web.ts` → `startCadre`, before `new CadreNode(...)`), so an unbounded
+ * fetch against a misbehaving manifest host would stall boot indefinitely. Cap
+ * it: on timeout we abort and
  * fall back to the STUN-less-but-safe `[]` path, the same as any other failure.
  */
 const FETCH_TIMEOUT_MS = 5_000;
