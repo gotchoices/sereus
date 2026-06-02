@@ -794,13 +794,15 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 
 ### Reference apps (cadre on edge platforms)
 
-Two reference apps exercise the **same** cadre/strand stack on edge platforms —
-both bring up a `CadreNode` (transaction profile), join its control network, and
-run a chat sApp strand. They are cadre references, not transport-only demos:
+Three reference apps exercise the **same** cadre/strand stack on edge platforms —
+each brings up a `CadreNode` (transaction profile), joins its control network, and
+runs a chat sApp strand, on a different JS runtime. They are cadre references, not
+transport-only demos:
 
 | App | Platform | Storage | Coverage |
 |-----|----------|---------|----------|
-| `packages/reference-app-rn` | React Native (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports |
+| `packages/reference-app-rn` | React Native / Hermes (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports; Maestro e2e (drone fixture + sidecar) |
+| `packages/reference-app-ns` | NativeScript / V8 (Android) · JSC (iOS) | SQLite (`db-p2p-storage-ns`) | control network + open chat strand; seed apply; WebSocket/relay transports; **reuses the RN Maestro e2e** (only the app id differs) |
 | `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo authority self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
@@ -823,6 +825,21 @@ Vite aliases (never a `crypto` shim). cadre-core pulls in `@optimystic/db-p2p`'s
 main entry (which statically imports `@libp2p/tcp`), but supplying an explicit
 browser transports array means `tcp()` is never instantiated, so no TCP transport
 reaches the bundle's runtime.
+
+The NativeScript app ([reference-app-ns.md](reference-app-ns.md)) is the RN app's
+functional twin on a **third JS engine** — V8 (Android) / JSC (iOS) — proving the
+stack is not Hermes-specific. Its polyfill surface sits between RN and the browser:
+NS 8.8+ provides `crypto.getRandomValues`/`randomUUID`/`subtle.generateKey` and
+`TextEncoder` natively (unlike Hermes), but still needs `crypto.subtle.digest`,
+`TextDecoder`, `structuredClone`, web streams, `Promise.withResolvers`, timer
+`.ref()/.unref()`, `Buffer`, `CustomEvent`, and `Intl.PluralRules` shims, plus a
+webpack resolver that mirrors RN's Metro config (`react-native`/`browser`
+conditions → db-p2p `rn.js`, the `@libp2p/crypto` browser rewrite, and `node:`
+stripping). Its automated e2e **reuses** the RN drone fixture, HTTP sidecar, and
+Maestro flows verbatim (only `MAESTRO_APP_ID` changes); the one NS-specific risk —
+whether Maestro's `id:` matcher resolves NS `automationText` (Android
+`contentDescription` / iOS `accessibilityIdentifier`) — is verified out-of-band via
+Maestro Studio, with Appium as the documented fallback.
 
 ## References
 

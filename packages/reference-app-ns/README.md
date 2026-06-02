@@ -8,10 +8,14 @@ UI framework: **NativeScript Core** (plain TypeScript + XML) — not Svelte Nati
 (archived / Svelte-4-only) and not Vue. The UI is deliberately trivial; the value
 is in the bundler config, polyfills, WebSocket transport, and SQLite storage.
 
+Full architecture — topology, the re-audited V8/JSC polyfill table, the webpack
+resolver config, the startup order, and the testing strategy — is in
+[`docs/reference-app-ns.md`](../../docs/reference-app-ns.md).
+
 > The full **chat-connect UI** (Chat + Settings tabs, connect over WebSocket +
-> circuit relay, apply seed, create strand, poll-based bidirectional chat) landed
-> with `reference-app-ns-chat` at parity with reference-app-rn. The automated
-> Maestro e2e is the dependent `reference-app-ns-e2e` ticket. `src/solo-smoke.ts`
+> circuit relay, apply seed, create strand, poll-based bidirectional chat) is at
+> parity with reference-app-rn, and an automated **Maestro e2e** (`yarn … test:e2e`,
+> see below) reuses the RN drone fixture + flows verbatim. `src/solo-smoke.ts`
 > remains as a programmatic solo/forming-mode helper (no UI).
 
 ## Layout
@@ -44,6 +48,7 @@ nativescript.config.ts
 | `yarn workspace @serfab/reference-app-ns typecheck` | `tsc --noEmit` across the new package + cadre-core/db-p2p/storage-ns/quereus types | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of reference-app-rn's `expo export`. | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle:native` | `ns prepare android` — the same webpack compile plus the gradle native-plugin build | **no** — needs local Android SDK / gradle |
+| `yarn workspace @serfab/reference-app-ns test:e2e` | `node scripts/run-e2e.mjs` — spawns the RN drone fixture, `adb reverse`, runs the reused RN Maestro flows against the NS app | **no** — needs emulator + built APK + Maestro + adb (see Automated e2e) |
 | `ns build android` / `ns build ios` | full native device build | **no** — needs local Android SDK / Xcode, out-of-band / CI |
 
 ## Device smoke (manual / out-of-band)
@@ -64,6 +69,52 @@ A real device or emulator is required (the SQLite + WebSocket plugins are native
 7. Against a drone (see [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)
    § Two-Node Startup): enter the drone's Party ID + bootstrap multiaddr before
    Connect; messages then replicate bidirectionally.
+
+### Two-node drone start (manual)
+
+```bash
+# Drone (Node.js) — listens on WebSocket so the phone can reach it
+cd packages/cadre-cli
+node dist/bin/cadre.js start -c ../reference-app-rn/drone.cadre.yaml --listen-for-seeds --ws-port 4002
+# → note the printed Peer ID, then build the bootstrap multiaddr:
+#   /ip4/<LAN_IP>/tcp/4002/ws/p2p/<DRONE_PEER_ID>
+```
+
+On the phone's **Settings** tab: enter the drone's **Party ID**
+(`reference-chat-party`) + that **bootstrap addr** → **Connect** → **Apply Seed**
+(if needed) → **Create Chat Strand**, then chat on the **Chat** tab. The full
+walk-through is shared with RN —
+[`docs/reference-app-rn.md` § Two-Node Startup Sequence](../../docs/reference-app-rn.md#two-node-startup-sequence).
+
+## Automated e2e (Maestro)
+
+```bash
+yarn workspace @serfab/reference-app-ns test:e2e
+```
+
+`scripts/run-e2e.mjs` **reuses reference-app-rn's drone fixture, HTTP sidecar,
+Maestro flows, `_setup.yaml`, and `_helpers/*` verbatim** — they are
+runtime-agnostic, so the only difference from an RN run is `MAESTRO_APP_ID`
+(→ `org.gotchoices.sereus.chat.ns`). There are no duplicate flow files in this
+package; see [`maestro/README.md`](maestro/README.md). The orchestrator spawns
+the RN fixture, waits for `GET /health`, reads its `test-data.json`, sets up
+`adb reverse tcp:4002`/`tcp:4080`, runs the three flows
+(`1-connect-and-send`, `2-drone-to-phone`, `3-round-trip`), and tears down.
+
+**Prerequisites (out-of-band — not agent-runnable):**
+
+- a built NS APK installed on a running Android emulator
+  (`ns build android` / `ns run android`; the SQLite + WebSocket plugins are
+  native, so an emulator or device is mandatory)
+- `adb` on PATH
+- the [Maestro CLI](https://maestro.mobile.dev/getting-started/installing-maestro)
+  on PATH
+
+**One-time verification:** confirm Maestro's `id:` matcher resolves the NS
+`automationText` values (Android `contentDescription` / iOS
+`accessibilityIdentifier`) via Maestro Studio against a real build. If `id:`
+matching is unworkable on NS, fall back to Appium — see
+[`docs/reference-app-ns.md` § Testing strategy](../../docs/reference-app-ns.md#maestro-e2e-device--ci--out-of-band).
 
 ## Storage
 

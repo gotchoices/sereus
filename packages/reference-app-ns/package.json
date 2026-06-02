@@ -8,6 +8,7 @@
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test:bundle": "node scripts/bundle-check.js",
     "test:bundle:native": "ns prepare android",
+    "test:e2e": "node scripts/run-e2e.mjs",
     "clean": "rimraf platforms hooks",
     "android": "ns run android",
     "ios": "ns run ios"
