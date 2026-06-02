@@ -3,6 +3,8 @@ import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } fr
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import type { IRepo } from '@optimystic/db-core';
+import { multiaddr } from '@multiformats/multiaddr';
+import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
   CadreNodeConfig,
   StrandInstance,
@@ -20,9 +22,22 @@ import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure,
-  StrandMode
+  StrandMode,
+  ResolveOpts
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { authorityKeyFromLibp2p } from './authority-key.js';
+import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
+import {
+  signPeerRecord,
+  verifyPeerRecordSignature,
+  isPeerRecordFresh,
+  orderSignalingFirst,
+  isSignalingAddr,
+  currentMemberTrustPolicy,
+  DEFAULT_PEER_RECORD_MAX_AGE_MS,
+  DEFAULT_PEER_RECORD_HEARTBEAT_MS
+} from './peer-record.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
 import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
@@ -77,6 +92,13 @@ export class CadreNode implements SAppIdLookup {
    * control-network node never needs to dial back to the manager.
    */
   private latestInviteAddresses: string[] | null = null;
+
+  /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
+  private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
+  /** TTL heartbeat that re-publishes the self record before it goes stale. */
+  private recordRefreshTimer: ReturnType<typeof setInterval> | null = null;
+  /** Listener that re-publishes the self record when reachable addresses change. */
+  private selfPeerUpdateHandler: (() => void) | null = null;
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
@@ -340,55 +362,237 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Schedule self-registration in the CadrePeer table.
-   * This runs as a background task after the node is started.
+   * Schedule the node's initial self-record publish + ongoing refresh shortly
+   * after start (non-blocking). {@link registerSelf} is idempotent and safely
+   * no-ops when it cannot yet sign/insert (e.g. authority key not installed),
+   * so the timer is harmless even when registration only becomes possible later.
    */
   private scheduleSelfRegistration(): void {
-    // Run in background - don't block start()
-    setTimeout(async () => {
-      try {
-        await this.registerSelf();
-      } catch (error) {
-        log('Self-registration failed: %o', error);
-        // Don't emit error event - this is a background task
-        // The node can still function without self-registration
-      }
+    this.selfRegistrationTimer = setTimeout(() => {
+      void (async () => {
+        try {
+          await this.registerSelf();
+        } catch (error) {
+          // Background task — a failed publish must not crash the node.
+          log('Self-registration failed: %o', error);
+        }
+        this.startRecordRefresh();
+      })();
     }, 1000); // Small delay to ensure node is fully started
+    // Node-only: don't keep the event loop alive solely for this timer.
+    (this.selfRegistrationTimer as { unref?: () => void } | null)?.unref?.();
   }
 
   /**
-   * Register this peer in the CadrePeer table.
-   * This allows other cadre members to discover this node.
+   * Publish (or refresh) this node's own signed `CadrePeer` address record so
+   * other members can resolve its current signaling/relay multiaddrs from its
+   * PeerId alone. Public, awaitable, and idempotent.
+   *
+   * - Builds a `PeerAddressRecord` from the node's current dialable addrs
+   *   (signaling/`p2p-circuit` first), signed with the ed25519 key behind its
+   *   PeerId (sourced from `config.privateKey`).
+   * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
+   * - If not, and the node is its own authority: an authority-signed INSERT that
+   *   also carries the self-signature.
+   * - Otherwise: logs and returns (a non-authority node with no row yet must
+   *   wait for an authority to insert it; it can then self-refresh).
+   *
+   * Safe to call repeatedly (heartbeat / address-change driven); each successful
+   * publish strictly increases `UpdatedAt`.
    */
-  private async registerSelf(): Promise<void> {
-    if (!this.controlNode || !this.controlDatabase) {
+  async registerSelf(): Promise<void> {
+    if (!this.running || !this.controlNode || !this.controlDatabase) {
       log('Cannot register self - node or database not initialized');
       return;
     }
 
-    const peerId = this.controlNode.peerId.toString();
-    const multiaddrs = this.controlNode.getMultiaddrs();
-
-    if (multiaddrs.length === 0) {
-      log('No multiaddrs available for self-registration');
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      log('registerSelf: no self-signing key available (config.privateKey unset or not matching peerId); skipping');
       return;
     }
 
-    // Use the first available multiaddr (typically the one with the peer ID)
-    const multiaddr = multiaddrs[0]!.toString();
+    const peerId = this.controlNode.peerId.toString();
+    const addrs = await this.collectSelfAddrs();
+    const existing = await this.controlDatabase.queryPeerRecord(peerId);
 
-    log('Registering self: peerId=%s, multiaddr=%s', peerId, multiaddr);
+    // Strictly increase UpdatedAt even on a same-millisecond re-publish.
+    const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
+    const record = signPeerRecord(
+      { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt },
+      signingKey.privateKeyB64
+    );
 
-    // TODO: This requires signing the update to satisfy the AuthorizedUpdate constraint
-    // For now, we log what would happen. Full implementation requires:
-    // 1. Either an authority key to authorize the insert
-    // 2. Or the peer's private key to sign the update
-    log('Self-registration requires authorization - skipping for now');
-    // const db = this.controlDatabase.getDatabase();
-    // await db.exec(
-    //   'insert or replace into CadrePeer (PeerId, Multiaddr) values (?, ?)',
-    //   [peerId, multiaddr]
-    // );
+    if (existing) {
+      await this.controlDatabase.updateSelfPeerRecord(record);
+      log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', updatedAt, addrs.length);
+    } else if (this.seedBootstrapService) {
+      // First-time row: requires an authority signature (the node is its own
+      // authority). insertSelfPeerRecord throws if no authority key is present.
+      await this.seedBootstrapService.insertSelfPeerRecord(record);
+      log('registerSelf: inserted own CadrePeer record (authority-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
+    } else {
+      log('registerSelf: not yet a CadrePeer member and no authority service to self-insert; skipping (an authority must add this peer first)');
+    }
+  }
+
+  /**
+   * The ed25519 keypair (base64url) the node signs its own record with — the key
+   * behind its libp2p PeerId. Sourced from `config.privateKey`; returns null when
+   * absent or (defensively) when it does not match the control node's PeerId, in
+   * which case self-publish is skipped rather than producing an unresolvable row.
+   */
+  private getSelfSigningKey(): { privateKeyB64: string; publicKeyB64: string } | null {
+    const peerId = this.controlNode?.peerId.toString();
+    if (!peerId || !this.config.privateKey) {
+      return null;
+    }
+    try {
+      const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(this.config.privateKey);
+      if (publicKeyB64 === ed25519PublicKeyB64FromPeerId(peerId)) {
+        return { privateKeyB64, publicKeyB64 };
+      }
+      log('getSelfSigningKey: config.privateKey does not match control node peerId; cannot self-sign');
+    } catch (error) {
+      log('getSelfSigningKey: failed to derive ed25519 key from config.privateKey: %o', error);
+    }
+    return null;
+  }
+
+  /**
+   * Collect this node's current dialable addresses for publication, signaling
+   * (`/p2p-circuit`) first. Prefers the best invite/NAT-resolved set and folds
+   * in the relay/signaling address (the WebRTC dial input) when not already
+   * present.
+   */
+  private async collectSelfAddrs(): Promise<string[]> {
+    const resolved = await this.resolveInviteAddresses();
+    const relay = await this.getRelayAddress();
+    const merged = relay && !resolved.includes(relay) ? [...resolved, relay] : resolved;
+    return orderSignalingFirst([...new Set(merged)]);
+  }
+
+  /**
+   * Wire the ongoing self-record refresh: re-publish whenever libp2p reports an
+   * address change (relay reservation rotation, NAT change) and on a TTL
+   * heartbeat at half the freshness ceiling. Idempotent — repeated calls do not
+   * stack listeners/timers.
+   */
+  private startRecordRefresh(): void {
+    if (!this.controlNode || this.recordRefreshTimer) {
+      return;
+    }
+
+    const republish = (reason: string) => {
+      void this.registerSelf().catch((error) => log('Record refresh (%s) failed: %o', reason, error));
+    };
+
+    this.selfPeerUpdateHandler = () => republish('self:peer:update');
+    this.controlNode.addEventListener('self:peer:update', this.selfPeerUpdateHandler);
+
+    this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
+    (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
+    log('Record refresh wired (heartbeat=%dms)', DEFAULT_PEER_RECORD_HEARTBEAT_MS);
+  }
+
+  /** Tear down the self-record refresh timers + listener (see {@link cleanup}). */
+  private stopRecordRefresh(): void {
+    if (this.selfRegistrationTimer) {
+      clearTimeout(this.selfRegistrationTimer);
+      this.selfRegistrationTimer = null;
+    }
+    if (this.recordRefreshTimer) {
+      clearInterval(this.recordRefreshTimer);
+      this.recordRefreshTimer = null;
+    }
+    if (this.controlNode && this.selfPeerUpdateHandler) {
+      this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
+    }
+    this.selfPeerUpdateHandler = null;
+  }
+
+  /**
+   * Resolve a peer's current, signed, trust-checkable multiaddrs from only its
+   * PeerId — the transport-agnostic input a NAT-to-NAT WebRTC (or any) dial path
+   * consumes, with no copy/paste of a relayed dial string.
+   *
+   * Reads the peer's `CadrePeer` record and gates it through, in order:
+   *   1. record present (else `[]`),
+   *   2. `publicKey <-> peerId` binding (the stored key's libp2p identity must be
+   *      the requested peerId),
+   *   3. self-signature verifies against `publicKey`,
+   *   4. freshness — rejected once older than `maxAgeMs` (never a dead relay
+   *      reservation),
+   *   5. the pluggable trust gate (`opts.trustPolicy`).
+   * Survivors are returned signaling (`/p2p-circuit`) first, filtered to
+   * signaling-only when requested, as parsed `Multiaddr`s (unparsable addrs
+   * dropped). Any gate failure yields an empty array rather than throwing.
+   */
+  async resolvePeerAddrs(peerId: string, opts: ResolveOpts = {}): Promise<Multiaddr[]> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before resolving peer addrs');
+    }
+
+    const record = await this.controlDatabase.queryPeerRecord(peerId);
+    if (!record) {
+      log('resolvePeerAddrs: no record for %s', peerId);
+      return [];
+    }
+
+    // publicKey <-> peerId binding: the stored key must be the one embedded in
+    // the requested Ed25519 peer id (also rejects a non-Ed25519 / missing key).
+    if (!record.publicKey || ed25519PublicKeyB64FromPeerId(peerId) !== record.publicKey) {
+      log('resolvePeerAddrs: publicKey does not match peerId for %s', peerId);
+      return [];
+    }
+
+    // Self-signature over (peerId, addrs, updatedAt).
+    if (!verifyPeerRecordSignature(record)) {
+      log('resolvePeerAddrs: signature verification failed for %s', peerId);
+      return [];
+    }
+
+    // Freshness: never hand back a dead relay reservation.
+    const maxAgeMs = opts.maxAgeMs ?? DEFAULT_PEER_RECORD_MAX_AGE_MS;
+    if (!isPeerRecordFresh(record.updatedAt, maxAgeMs, Date.now())) {
+      log('resolvePeerAddrs: record for %s is stale (updatedAt=%d, maxAgeMs=%d)', peerId, record.updatedAt, maxAgeMs);
+      return [];
+    }
+
+    // Pluggable trust gate (defaults to current-member).
+    const trustPolicy = opts.trustPolicy ?? currentMemberTrustPolicy();
+    const trusted = await trustPolicy.evaluate({
+      peerId,
+      publicKey: record.publicKey,
+      partyId: this.partyId,
+      record,
+    });
+    if (!trusted) {
+      log('resolvePeerAddrs: trust policy rejected %s', peerId);
+      return [];
+    }
+
+    // Order signaling-first (the on-record order was what we verified above),
+    // optionally restrict to signaling addrs, then parse — dropping any addr
+    // that does not parse as a multiaddr.
+    let addrs = orderSignalingFirst(record.addrs);
+    if (opts.signalingOnly) {
+      addrs = addrs.filter(isSignalingAddr);
+    }
+    return this.parseMultiaddrs(addrs);
+  }
+
+  /** Parse multiaddr strings, dropping (and logging) any that fail to parse. */
+  private parseMultiaddrs(addrs: string[]): Multiaddr[] {
+    const out: Multiaddr[] = [];
+    for (const addr of addrs) {
+      try {
+        out.push(multiaddr(addr));
+      } catch (error) {
+        log('resolvePeerAddrs: dropping unparsable multiaddr %s: %o', addr, error);
+      }
+    }
+    return out;
   }
 
   private async handleStrandAdded(strand: StrandRow): Promise<void> {
@@ -437,6 +641,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   private async cleanup(): Promise<void> {
+    // Stop self-record refresh timers + address-change listener (before the
+    // control node is torn down, so removeEventListener has a live target).
+    this.stopRecordRefresh();
+
     // Stop hibernation manager
     this.hibernationManager.stop();
 

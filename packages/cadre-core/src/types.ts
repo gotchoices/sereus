@@ -458,6 +458,83 @@ export interface CadreNodeEvents {
 }
 
 // ============================================================================
+// Peer Address Record / Resolution Types
+// ============================================================================
+
+/**
+ * A peer's self-published, freshness-stamped, self-signed address record.
+ *
+ * This is the logical shape of a `CadreControl.CadrePeer` row. A node publishes
+ * its own record (signing with the ed25519 key behind its PeerId); any node can
+ * resolve another member's current signaling/relay multiaddrs from only its
+ * PeerId by reading the record, re-verifying the self-signature against
+ * `publicKey`, checking freshness, and applying a trust gate.
+ *
+ * The signature covers `peerId`, the comma-joined `addrs`, and `updatedAt` — see
+ * `peerRecordSignedPayload`. `publicKey` is NOT inside the signed payload: it is
+ * the key the signature is verified *with*, and its libp2p-identity binding to
+ * `peerId` is checked separately at resolve time, so re-signing it would be
+ * redundant.
+ */
+export interface PeerAddressRecord {
+  /** libp2p peer ID (base58btc) — the row key. */
+  peerId: string;
+  /** ed25519 public key (base64url) whose libp2p identity IS `peerId`. */
+  publicKey: string;
+  /** Current dialable multiaddrs, signaling (`/p2p-circuit`) first. */
+  addrs: string[];
+  /** epoch ms — freshness; strictly increasing per peer. */
+  updatedAt: number;
+  /** ed25519 self-signature over the signed payload, base64url. */
+  sig: string;
+}
+
+/**
+ * Options for {@link CadreNode.resolvePeerAddrs}.
+ */
+export interface ResolveOpts {
+  /**
+   * Freshness ceiling in ms. A record older than this is filtered out (a
+   * resolver must never hand back a dead relay reservation). Defaults to
+   * {@link DEFAULT_PEER_RECORD_MAX_AGE_MS}.
+   */
+  maxAgeMs?: number;
+  /** Return only `/p2p-circuit` signaling addrs (the WebRTC dial input). */
+  signalingOnly?: boolean;
+  /**
+   * Pluggable trust gate, evaluated after signature + freshness pass. Defaults
+   * to {@link currentMemberTrustPolicy} (any existing — therefore
+   * authority-vouched — CadrePeer member is trusted). Inject a stricter policy
+   * (e.g. from `seed-signerkey-trust-policy`) to reject otherwise-valid records
+   * before dialing.
+   */
+  trustPolicy?: PeerResolveTrustPolicy;
+}
+
+/**
+ * Context handed to a {@link PeerResolveTrustPolicy} when gating a resolution.
+ */
+export interface PeerResolveContext {
+  /** The peer being resolved. */
+  peerId: string;
+  /** The record's ed25519 public key (already bound to `peerId` and verified). */
+  publicKey: string;
+  /** The party whose control network produced the record. */
+  partyId: string;
+  /** The full verified, fresh record. */
+  record: PeerAddressRecord;
+}
+
+/**
+ * Decides whether a signature-verified, fresh peer-address record should be
+ * trusted enough to dial. The seam through which a richer trust model
+ * (trust circle, pinned keys) composes with `resolvePeerAddrs`.
+ */
+export interface PeerResolveTrustPolicy {
+  evaluate(ctx: PeerResolveContext): Promise<boolean> | boolean;
+}
+
+// ============================================================================
 // Seed Bootstrap API Types (from architecture.md)
 // ============================================================================
 

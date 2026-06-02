@@ -6,7 +6,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow } from './types.js';
+import type { StrandRow, PeerAddressRecord } from './types.js';
 
 const log = debug('sereus:cadre:control-db');
 const timing = debug('sereus:cadre:timing');
@@ -58,19 +58,37 @@ declare schema CadreControl {
         -- TODO: constraint to ensure member private key only if closed
     ) with context (AuthorityKey text, StampId text, Signature text);
 
-    -- A peer (node) that is part of the cadre
+    -- A peer (node) that is part of the cadre, carrying a self-published,
+    -- freshness-stamped, self-signed address record (see PeerAddressRecord).
+    -- The row IS the peer-address record: a resolver reads it, re-verifies Sig against
+    -- PublicKey, checks freshness (UpdatedAt) and trust, then dials the addrs.
     table CadrePeer (
         PeerId text primary key,
-        Multiaddr text,
+        PublicKey text null,            -- ed25519 (base64url) whose libp2p identity == PeerId (null if non-Ed25519)
+        Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
+        UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay/rollback guard)
+        Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
         constraint AuthorizedInsert check on insert, delete (
-            -- Authorized by an authority key
+            -- Authorized by an authority key, which vouches both membership and the
+            -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
             -- Use utf8 input encoding since peer IDs are base58btc strings, not base64url
             exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(new.PeerId, old.PeerId), 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedUpdate check on update (
-            -- Peer can change its own multiaddr (using utf8 encoding for both values)
-            verify(digest(new.PeerId, 'sha256', 'utf8') || digest(new.Multiaddr, 'sha256', 'utf8'), context.Signature, new.PeerId, 'ed25519')
-                -- or authorized by an authority key
+            -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
+            -- (the key behind PeerId). PeerId/PublicKey are immutable on self-update, UpdatedAt
+            -- must strictly increase (replay guard), and Sig is verified against the stored
+            -- PublicKey over the same payload the publish path signs
+            -- (peer-record.ts:peerRecordSignedPayload).
+            (
+                new.PeerId = old.PeerId
+                and new.PublicKey = old.PublicKey
+                and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
+                and verify(
+                        digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text), 'sha256', 'utf8'),
+                        new.Sig, new.PublicKey, 'ed25519')
+            )
+                -- or an authority re-authorizes (rotation / correction)
                 or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (AuthorityKey text null, Signature text);
@@ -360,6 +378,56 @@ export class ControlDatabase {
       });
     }
     return rows;
+  }
+
+  /**
+   * Read a single peer's address record (the full `CadrePeer` row) by PeerId.
+   *
+   * Returns null when no row exists. Missing/legacy column values are coalesced
+   * to their empty form (`''` key/sig, `[]` addrs, `0` stamp) so the caller's
+   * verify/freshness gates uniformly reject an unpublished or malformed row.
+   * The split `addrs` re-join to the exact stored `Multiaddr` (split-on-`,` is
+   * the inverse of join-on-`,`), so the resolver re-verifies over the same bytes
+   * the publisher signed.
+   */
+  async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval(
+      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig from CadreControl.CadrePeer where PeerId = ?',
+      [peerId]
+    )) {
+      const multiaddr = (row.Multiaddr as string | null) ?? '';
+      return {
+        peerId: row.PeerId as string,
+        publicKey: (row.PublicKey as string | null) ?? '',
+        addrs: multiaddr.length > 0 ? multiaddr.split(',') : [],
+        updatedAt: (row.UpdatedAt as number | null) ?? 0,
+        sig: (row.Sig as string | null) ?? '',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Apply a peer's own self-signed address-record update to an existing row.
+   *
+   * Authorization is carried entirely by the record: the `Sig` column (verified
+   * by the `AuthorizedUpdate` self-branch against the stored `PublicKey`) plus
+   * the strictly-increasing `UpdatedAt`. No authority key is involved, so this
+   * is the refresh path for any member — authority or drone — once its row
+   * exists. `PublicKey` is intentionally not in the SET list (it is immutable on
+   * self-update and the constraint enforces `new.PublicKey = old.PublicKey`).
+   */
+  async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
+    this.ensureInitialized();
+    const multiaddr = record.addrs.join(',');
+    await this.db!.exec(`
+      update CadreControl.CadrePeer
+        with context AuthorityKey = null, Signature = ?
+        set Multiaddr = ?, UpdatedAt = ?, Sig = ?
+        where PeerId = ?
+    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
+    log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
   }
 
   /**

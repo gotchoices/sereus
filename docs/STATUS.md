@@ -62,6 +62,7 @@ Conventions:
   - Goal: dialer can resolve listener addresses using only:
     - `--bootstrap /dnsaddr/bootstrap.sereus.org`
     - `--peer <listenerPeerId>`
+- [x] Intra-cadre **PeerId → signed address resolution at the control-DB layer.** `CadreNode.resolvePeerAddrs(peerId)` returns a cadre member's current, self-signed, freshness-checked signaling/relay multiaddrs from its PeerId alone, reading the self-published `CadrePeer` `PeerAddressRecord` (written by `CadreNode.registerSelf`, re-published on address change + TTL heartbeat). This removes the copy/paste relayed-dial-address workaround above **for cadre members**, independent of the still-open bootstrap-only DHT `findPeer` flow. A FRET-backed, coordinate-keyed store for arbitrary (non-member) peers remains future work (`tickets/backlog/fret-backed-peer-record-liveness.md`).
 
 ### Ops code sharing / multi-deployment support (deferred)
 - [ ] Decide whether the libp2p node “apps” should live outside `ops/docker/*` so they can be reused by:

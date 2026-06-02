@@ -64,7 +64,7 @@ A cadre node is a running instance of the `@serfab/cadre-core` library. Each nod
 1. **Connects to the control network** using its PeerId and authorized bootstrap addresses
 2. **Watches the `Strand` table** for changes (reactive pattern - which is a TODO for Optimystic so we'll have to poll for now)
 3. **Starts/stops strand instances** as rows are added/removed
-4. **Reports its multiaddr** back to `CadrePeer` for peer discovery
+4. **Publishes a signed peer-address record** to its own `CadrePeer` row (`CadreNode.registerSelf`): its current dialable/relay multiaddrs (signaling `/p2p-circuit` first), an ed25519 `PublicKey` whose libp2p identity *is* its PeerId, a monotonic `UpdatedAt` freshness stamp, and a self-`Sig` over those fields. It re-publishes on relay-reservation/address change and on a TTL heartbeat. Any member can then **resolve** another member's current signaling address from its PeerId alone via `CadreNode.resolvePeerAddrs(peerId)` — which re-verifies the signature, checks the `PublicKey↔PeerId` binding and freshness, and applies a pluggable trust gate — so a NAT-to-NAT WebRTC dial can be negotiated without copy/paste.
 
 ```mermaid
 graph TD
@@ -153,6 +153,20 @@ interface SeedPeer {
   publicKey?: string;       // ed25519 public key (base64url) — set on authority peers (derived from the AuthorityKey table, not used to gate the seed's own signerKey)
 }
 ```
+
+`SeedPeer` is the **cold-start projection** of a `CadrePeer` row: a seed pre-populates the peerstore so an unconnected node can make its first dials. Once connected, the authoritative, replicated form of the same mapping is the `CadrePeer` row itself, which is a signed **`PeerAddressRecord`**:
+
+```typescript
+interface PeerAddressRecord {
+  peerId: string;       // libp2p peer ID (base58btc) — the CadrePeer row key
+  publicKey: string;    // ed25519 (base64url) whose libp2p identity IS peerId
+  addrs: string[];      // current dialable multiaddrs, signaling (/p2p-circuit) first
+  updatedAt: number;    // epoch ms — strictly increasing freshness stamp per peer
+  sig: string;          // ed25519 self-signature over (peerId, addrs, updatedAt)
+}
+```
+
+The peer self-publishes and self-signs this record (the `CadreControl.CadrePeer` schema enforces the self-signature, monotonic `UpdatedAt`, and immutable `PeerId`/`PublicKey` on update); a resolver re-verifies it. Unlike a `SeedPeer` dial hint, a `PeerAddressRecord` is freshness-stamped and individually trust-checkable, so `resolvePeerAddrs` never hands back a stale relay reservation. A FRET-backed, coordinate-keyed liveness store remains future work (`tickets/backlog/fret-backed-peer-record-liveness.md`).
 
 The seed is **cache pre-population**, not a separate database. After applying the seed, the node's normal query mechanisms (`select * from CadrePeer`) fetch authoritative state from peers, naturally merging with the seed data.
 

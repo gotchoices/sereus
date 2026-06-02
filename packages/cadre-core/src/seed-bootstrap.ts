@@ -27,7 +27,8 @@ import type {
   AddPhoneOptions,
   DroneInitResult,
   InviteResult,
-  CadreInvite
+  CadreInvite,
+  PeerAddressRecord
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
@@ -205,22 +206,72 @@ export class SeedBootstrapService {
   /**
    * Authorize a new peer to join the cadre.
    * Signs the peer ID with the authority key and inserts into CadrePeer table.
+   *
+   * The authority vouches the `PublicKey <-> PeerId` binding: rather than trust a
+   * caller-supplied key, the binding is enforced by construction — `PublicKey` is
+   * DERIVED from the (Ed25519) `peerId`. A non-Ed25519 peer id yields a null
+   * `PublicKey`, and such a row can never be self-updated (it has no key to
+   * verify against), which is correct. The row is inserted with a fresh
+   * `UpdatedAt` but no self-signature (`Sig` null) — the authority cannot produce
+   * the peer's self-signature, so the peer must self-publish (see
+   * {@link CadreNode.registerSelf}) before the row resolves.
    */
   async authorizePeer(options: AuthorizePeerOptions): Promise<void> {
     const { peerId, multiaddrs } = options;
-    
+    log('Authorizing peer: %s', peerId);
+    // CadrePeer.Multiaddr stores a comma-joined list; use '' when no addrs provided.
+    const multiaddrStr = multiaddrs?.length ? multiaddrs.join(',') : '';
+    await this.insertCadrePeerRow({
+      peerId,
+      publicKey: ed25519PublicKeyB64FromPeerId(peerId),
+      multiaddr: multiaddrStr,
+      updatedAt: Date.now(),
+      sig: null,
+    });
+    log('Peer %s authorized successfully', peerId);
+  }
+
+  /**
+   * Authority-signed INSERT of this node's OWN self-signed address record.
+   *
+   * Used by {@link CadreNode.registerSelf} when the node is not yet a member and
+   * is its own authority (it holds the authority key): the row is authority-signed
+   * (satisfying `AuthorizedInsert`) AND carries a valid self-`Sig`, so it resolves
+   * immediately without a follow-up self-update.
+   */
+  async insertSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
+    await this.insertCadrePeerRow({
+      peerId: record.peerId,
+      publicKey: record.publicKey,
+      multiaddr: record.addrs.join(','),
+      updatedAt: record.updatedAt,
+      sig: record.sig,
+    });
+  }
+
+  /**
+   * Shared authority-signed `CadrePeer` INSERT. Signs `digest(peerId)` with the
+   * authority key (satisfying `AuthorizedInsert`) and writes the full record
+   * row. The authority signature does NOT cover the address columns — those are
+   * vouched only as far as the authority asserts them, and a peer's own `Sig`
+   * (when present) is what makes the row resolvable.
+   */
+  private async insertCadrePeerRow(row: {
+    peerId: string;
+    publicKey: string | null;
+    multiaddr: string;
+    updatedAt: number;
+    sig: string | null;
+  }): Promise<void> {
     if (!this.config.authorityPrivateKey) {
       throw new Error('Authority private key required to authorize peers');
     }
-    
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    
-    log('Authorizing peer: %s', peerId);
-    
+
     // Sign the peer ID with the authority key
-    const peerIdDigest = digest(peerId, 'sha256', 'utf8', 'base64url') as string;
+    const peerIdDigest = digest(row.peerId, 'sha256', 'utf8', 'base64url') as string;
     const signature = sign(
       peerIdDigest,
       this.config.authorityPrivateKey,
@@ -229,19 +280,13 @@ export class SeedBootstrapService {
       'base64url',
       'base64url'
     ) as string;
-    
-    // Insert into CadrePeer table with authority context
+
     const db = this.controlDatabase.getDatabase();
-    // CadrePeer.Multiaddr is NOT NULL; use empty string when no addrs provided
-    const multiaddrStr = multiaddrs?.length ? multiaddrs.join(',') : '';
-
     await db.exec(`
-      insert into CadreControl.CadrePeer (PeerId, Multiaddr)
+      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig)
         with context AuthorityKey = ?, Signature = ?
-        values (?, ?)
-    `, [this.authorityPublicKey, signature, peerId, multiaddrStr]);
-
-    log('Peer %s authorized successfully', peerId);
+        values (?, ?, ?, ?, ?)
+    `, [this.authorityPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig]);
   }
 
   /**

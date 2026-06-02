@@ -72,6 +72,19 @@ export {
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
 
+// Peer-address record (self-published, signed, freshness-stamped CadrePeer row)
+export {
+  peerRecordSignedPayload,
+  signPeerRecord,
+  verifyPeerRecordSignature,
+  isPeerRecordFresh,
+  isSignalingAddr,
+  orderSignalingFirst,
+  currentMemberTrustPolicy,
+  DEFAULT_PEER_RECORD_MAX_AGE_MS,
+  DEFAULT_PEER_RECORD_HEARTBEAT_MS
+} from './peer-record.js';
+
 // Seed trust policy (trust anchor for incoming seeds)
 export {
   dbAnchoredTrustPolicy,
