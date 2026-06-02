@@ -1,6 +1,24 @@
--- Simple sApp for integration testing
--- A shared key-value store where members can add/update their own items
--- NOTE: This is just the app logic - the runtime wraps it in declare/apply
+-- Simple sApp for integration testing — single source of truth for the fixture.
+-- A shared key-value store where members add/update/delete only their own items.
+--
+-- Signed-write RBAC: every write carries two context parameters —
+--   MemberKey  : the writer's ed25519 public key (base64url)
+--   Signature  : an ed25519 signature (base64url) over the sha256 digest of the
+--                authenticated payload `Id|Name|Value` (or just `Id` for delete).
+--
+-- The signer (see rbac-signed-write.integration.ts) computes the exact same bytes:
+--   payload   = Id || '|' || Name || '|' || coalesce(Value,'')
+--   hashBytes = digest(payload, 'sha256', 'utf8', 'bytes')
+--   Signature = sign(hashBytes, memberPrivateKey, 'ed25519')
+-- and `digest(payload,'sha256','utf8')` below yields the base64url form of those same
+-- hashBytes, which verify() decodes (its default inputEncoding is base64url) before
+-- checking against Signature/MemberKey.
+--
+-- Curve note: verify()/sign() default to secp256k1, but the suite generates ed25519
+-- member keys, so the explicit 'ed25519' curve arg is REQUIRED on every verify() call.
+--
+-- NOTE: This is just the app logic — the runtime (StrandDatabase.executeSchema) wraps
+-- it in `declare schema App { ... } apply schema App;`, exposing the table as App.Items.
 
 table Items (
     Id text primary key,
@@ -8,16 +26,24 @@ table Items (
     Value text,
     CreatedBy text not null,
     constraint AuthorizedWrite check (
-        -- Insert: creator must be the context member
-        (old.Id is null and new.CreatedBy = context.MemberKey)
-        -- Update: only the creator can update
-        or (old.Id is not null and old.CreatedBy = context.MemberKey
-            and verify(digest(new.Id, new.Name, new.Value), context.Signature, context.MemberKey))
+        -- Insert: the creator must be the context member AND sign the payload.
+        (old.Id is null
+            and new.CreatedBy = context.MemberKey
+            and verify(
+                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, ''), 'sha256', 'utf8'),
+                context.Signature, context.MemberKey, 'ed25519'))
+        -- Update: only the original creator may update, with a fresh signature over the
+        -- new payload, and may not reassign ownership.
+        or (old.Id is not null
+            and old.CreatedBy = context.MemberKey
+            and new.CreatedBy = context.MemberKey
+            and verify(
+                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, ''), 'sha256', 'utf8'),
+                context.Signature, context.MemberKey, 'ed25519'))
     ),
     constraint AuthorizedDelete check on delete (
-        -- Only the creator can delete
+        -- Only the creator can delete, proven by a signature over the row key.
         old.CreatedBy = context.MemberKey
-        and verify(digest(old.Id), context.Signature, context.MemberKey)
+        and verify(digest(old.Id, 'sha256', 'utf8'), context.Signature, context.MemberKey, 'ed25519')
     )
-) with context (MemberKey text, Signature text);
-
+) with context (MemberKey text, Signature text null);

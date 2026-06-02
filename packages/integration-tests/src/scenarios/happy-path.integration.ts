@@ -13,7 +13,7 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { TestCadreNetwork, waitForCount, sleep } from '../harness/index.js';
-import { SIMPLE_SAPP_LOGIC } from '../fixtures/index.js';
+import { loadSimpleSApp } from '../fixtures/index.js';
 
 describe('Happy Path - Full Workflow', () => {
   let network: TestCadreNetwork;
@@ -30,6 +30,8 @@ describe('Happy Path - Full Workflow', () => {
   });
 
   it('should complete the full strand formation workflow', async () => {
+    const simpleSApp = await loadSimpleSApp();
+
     // ========================================
     // Step 1: Create two parties with cadres
     // ========================================
@@ -59,7 +61,7 @@ describe('Happy Path - Full Workflow', () => {
     // ========================================
     
     const strand = await network.createStrand(alice, {
-      schema: SIMPLE_SAPP_LOGIC,
+      schema: simpleSApp,
       type: 'o' // Open strand
     });
     
@@ -121,18 +123,20 @@ describe('Happy Path - Full Workflow', () => {
   });
 
   it('should handle multiple strands in the same workflow', async () => {
+    const simpleSApp = await loadSimpleSApp();
+
     // Create parties
     const carol = await network.createParty({ name: 'carol-multi', droneCount: 1 });
     const dave = await network.createParty({ name: 'dave-multi', droneCount: 1 });
-    
+
     // Carol creates two different sApps
     const strand1 = await network.createStrand(carol, {
-      schema: SIMPLE_SAPP_LOGIC,
+      schema: simpleSApp,
       sAppId: 'inventory-app'
     });
 
     const strand2 = await network.createStrand(carol, {
-      schema: SIMPLE_SAPP_LOGIC,
+      schema: simpleSApp,
       sAppId: 'orders-app'
     });
     
