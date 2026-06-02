@@ -5,6 +5,7 @@
 		startDiagnostics,
 		stopDiagnostics,
 		refreshDiagnostics,
+		runAuthorityGateProbe,
 		clearErrors,
 		formatBytes,
 		formatDuration,
@@ -12,7 +13,9 @@
 	} from './lib/diagnostics.svelte.js';
 	import Copyable from './lib/Copyable.svelte';
 
-	const state = diagnosticsState();
+	const diag = diagnosticsState();
+
+	let gateBusy = $state(false);
 
 	onMount(() => {
 		startDiagnostics();
@@ -21,6 +24,15 @@
 
 	function onManualRefresh() {
 		void refreshDiagnostics();
+	}
+
+	async function onVerifyGate() {
+		gateBusy = true;
+		try {
+			await runAuthorityGateProbe();
+		} finally {
+			gateBusy = false;
+		}
 	}
 
 	function percent(used: number | null, quota: number | null): string {
@@ -33,7 +45,7 @@
 	<header>
 		<h2>Diagnostics</h2>
 		<div class="meta">
-			<span>updated {formatTimestamp(state.updatedMs)}</span>
+			<span>updated {formatTimestamp(diag.updatedMs)}</span>
 			<button type="button" onclick={onManualRefresh}>Refresh now</button>
 		</div>
 	</header>
@@ -43,8 +55,8 @@
 		<dl>
 			<dt>Party ID</dt>
 			<dd>
-				{#if state.cadre.partyId}
-					<Copyable value={state.cadre.partyId} />
+				{#if diag.cadre.partyId}
+					<Copyable value={diag.cadre.partyId} />
 				{:else}
 					—
 				{/if}
@@ -53,54 +65,164 @@
 			<dd>
 				<span
 					class="badge"
-					class:ok={state.cadre.controlConnected}
+					class:ok={diag.cadre.controlConnected}
 					data-testid="diag-control-connected"
-					>{state.cadre.controlConnected ? 'connected ✓' : 'disconnected'}</span
+					>{diag.cadre.controlConnected ? 'connected ✓' : 'disconnected'}</span
 				>
 			</dd>
 			<dt>Control peer</dt>
-			<dd><code>{state.cadre.controlPeerIdShort ?? '—'}</code></dd>
+			<dd><code>{diag.cadre.controlPeerIdShort ?? '—'}</code></dd>
 			<dt>CadrePeer count</dt>
 			<dd>
-				{#if state.cadre.cadrePeerError}
-					<span class="bad">{state.cadre.cadrePeerError}</span>
+				{#if diag.cadre.cadrePeerError}
+					<span class="bad">{diag.cadre.cadrePeerError}</span>
 				{:else}
-					{state.cadre.cadrePeerCount ?? '—'}
+					{diag.cadre.cadrePeerCount ?? '—'}
 				{/if}
 			</dd>
 			<dt>Authority</dt>
 			<dd>
 				<span
 					class="badge"
-					class:bad={state.cadre.authority === 'error'}
-					data-testid="diag-authority">{state.cadre.authority}</span
+					class:bad={diag.cadre.authority === 'error'}
+					data-testid="diag-authority">{diag.cadre.authority}</span
 				>
-				{#if state.cadre.authorityError}
-					<span class="bad">{state.cadre.authorityError}</span>
+				{#if diag.cadre.authorityError}
+					<span class="bad">{diag.cadre.authorityError}</span>
 				{/if}
 			</dd>
 			<dt>Chat strand</dt>
 			<dd>
-				{#if state.cadre.strand}
+				{#if diag.cadre.strand}
 					<span
 						class="badge"
-						class:ok={state.cadre.strand.status === 'active'}
-						class:bad={state.cadre.strand.status === 'error'}
-						data-testid="diag-strand-status">{state.cadre.strand.status ?? '—'}</span
+						class:ok={diag.cadre.strand.status === 'active'}
+						class:bad={diag.cadre.strand.status === 'error'}
+						data-testid="diag-strand-status">{diag.cadre.strand.status ?? '—'}</span
 					>
 					<span class="muted">
-						· {state.cadre.strand.connectedPeers ?? 0} peers
-						· {state.cadre.strand.latencyHint ?? '—'}
+						· {diag.cadre.strand.connectedPeers ?? 0} peers
+						· {diag.cadre.strand.latencyHint ?? '—'}
 					</span>
-					{#if state.cadre.strand.error}
-						<div class="bad">{state.cadre.strand.error}</div>
+					{#if diag.cadre.strand.error}
+						<div class="bad">{diag.cadre.strand.error}</div>
 					{/if}
 					<div class="muted strand-id">
-						<code>{state.cadre.strand.id}</code>
-						{#if state.cadre.strand.sAppId}· sApp <code>{state.cadre.strand.sAppId}</code>{/if}
+						<code>{diag.cadre.strand.id}</code>
+						{#if diag.cadre.strand.sAppId}· sApp <code>{diag.cadre.strand.sAppId}</code>{/if}
 					</div>
 				{:else}
 					<span class="muted">no strand</span>
+				{/if}
+			</dd>
+		</dl>
+	</section>
+
+	<section class="card">
+		<header class="card-header">
+			<h3>Control authorization (RBAC)</h3>
+			<button type="button" onclick={onVerifyGate} disabled={gateBusy} data-testid="diag-verify-gate">
+				{gateBusy ? 'Verifying…' : 'Verify authority gate'}
+			</button>
+		</header>
+		{#if diag.authorization.error}
+			<p class="bad" data-testid="diag-authz-error">{diag.authorization.error}</p>
+		{/if}
+		<dl>
+			<dt>Authority keys</dt>
+			<dd data-testid="diag-authority-keys">{diag.authorization.authorityKeyCount}</dd>
+			<dt>Validation keys</dt>
+			<dd data-testid="diag-validation-keys">{diag.authorization.validationKeyCount}</dd>
+			<dt>Relay</dt>
+			<dd>
+				<span
+					class="badge"
+					class:ok={diag.authorization.relay.status === 'reserved'}
+					class:bad={diag.authorization.relay.status === 'error'}
+					data-testid="diag-relay-status">{diag.authorization.relay.status}</span
+				>
+				{#if diag.authorization.relay.error}
+					<span class="bad">{diag.authorization.relay.error}</span>
+				{/if}
+				{#if diag.authorization.relay.circuitAddrs.length > 0}
+					<ul class="addr-list">
+						{#each diag.authorization.relay.circuitAddrs as addr (addr)}
+							<li><Copyable value={addr} /></li>
+						{/each}
+					</ul>
+				{/if}
+			</dd>
+			<dt>Authority gate</dt>
+			<dd>
+				{#if diag.authorization.gateProbe}
+					<span
+						class="badge"
+						class:ok={diag.authorization.gateProbe.rejected}
+						class:bad={!diag.authorization.gateProbe.rejected}
+						data-testid="diag-gate-result"
+						>{diag.authorization.gateProbe.rejected
+							? 'unauthorized write rejected ✓'
+							: 'unauthorized write ACCEPTED ✗'}</span
+					>
+					{#if diag.authorization.gateProbe.error}
+						<div class="muted gate-detail">{diag.authorization.gateProbe.error}</div>
+					{/if}
+				{:else}
+					<span class="muted">not run — click “Verify authority gate”</span>
+				{/if}
+			</dd>
+			<dt>Formation invites</dt>
+			<dd>
+				{#if diag.authorization.formationInvites.length === 0}
+					<span class="muted" data-testid="diag-formation-invites" data-count="0">none</span>
+				{:else}
+					<ul class="row-list" data-testid="diag-formation-invites" data-count={diag.authorization.formationInvites.length}>
+						{#each diag.authorization.formationInvites as inv (inv.token)}
+							<li>
+								<code>{inv.token}</code>
+								<span class="muted">
+									· sApp {inv.sAppId ?? '—'}
+									{#if inv.totalUses != null}· uses {inv.totalUses}{/if}
+									{#if inv.expiresAt}· expires {inv.expiresAt}{/if}
+								</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</dd>
+			<dt>Formation usage</dt>
+			<dd>
+				{#if diag.authorization.formationUsage.length === 0}
+					<span class="muted" data-testid="diag-formation-usage" data-count="0">none</span>
+				{:else}
+					<ul class="row-list" data-testid="diag-formation-usage" data-count={diag.authorization.formationUsage.length}>
+						{#each diag.authorization.formationUsage as use (use.token + ':' + use.useNumber)}
+							<li>
+								<code>{use.token}</code>
+								<span class="muted">· use #{use.useNumber} → strand {use.strandId ?? '—'}</span>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</dd>
+			<dt>Strands</dt>
+			<dd>
+				{#if diag.authorization.strands.length === 0}
+					<span class="muted" data-testid="diag-control-strands" data-count="0">none in control DB</span>
+				{:else}
+					<ul class="row-list" data-testid="diag-control-strands" data-count={diag.authorization.strands.length}>
+						{#each diag.authorization.strands as s (s.id)}
+							<li data-strand-type={s.type} data-has-member-key={s.hasMemberKey}>
+								<code>{s.id}</code>
+								<span class="badge" class:ok={s.type === 'c'}>
+									{s.type === 'c' ? 'closed' : 'open'}
+								</span>
+								<span class="muted">
+									· {s.hasMemberKey ? 'member key ✓' : 'no member key'}
+								</span>
+							</li>
+						{/each}
+					</ul>
 				{/if}
 			</dd>
 		</dl>
@@ -111,28 +233,28 @@
 		<dl>
 			<dt>Peer ID</dt>
 			<dd>
-				{#if state.identity.peerId}
-					<Copyable value={state.identity.peerId} />
+				{#if diag.identity.peerId}
+					<Copyable value={diag.identity.peerId} />
 				{:else}
 					—
 				{/if}
 			</dd>
 			<dt>Short</dt>
-			<dd><code>{state.identity.peerIdShort ?? '—'}</code></dd>
+			<dd><code>{diag.identity.peerIdShort ?? '—'}</code></dd>
 			<dt>Persisted</dt>
 			<dd>
 				<span
 					class="badge"
-					class:ok={state.identity.persisted}
+					class:ok={diag.identity.persisted}
 					data-testid="diag-identity-persisted"
-					>{state.identity.persisted ? 'persisted ✓' : 'not persisted'}</span
+					>{diag.identity.persisted ? 'persisted ✓' : 'not persisted'}</span
 				>
 			</dd>
 			<dt>First seen</dt>
 			<dd>
-				{formatTimestamp(state.identity.firstSeenMs)}
-				{#if state.identity.ageMs != null}
-					<span class="muted">(age {formatDuration(state.identity.ageMs)})</span>
+				{formatTimestamp(diag.identity.firstSeenMs)}
+				{#if diag.identity.ageMs != null}
+					<span class="muted">(age {formatDuration(diag.identity.ageMs)})</span>
 				{/if}
 			</dd>
 		</dl>
@@ -143,17 +265,17 @@
 		<dl>
 			<dt>Status</dt>
 			<dd>
-				<span class="badge status-{state.connectivity.status}">
-					{state.connectivity.status ?? '—'}
+				<span class="badge status-{diag.connectivity.status}">
+					{diag.connectivity.status ?? '—'}
 				</span>
 			</dd>
 			<dt>Listen addrs</dt>
 			<dd>
-				{#if state.connectivity.listenAddrs.length === 0}
+				{#if diag.connectivity.listenAddrs.length === 0}
 					<span class="muted">none (browser cannot listen)</span>
 				{:else}
 					<ul class="addr-list">
-						{#each state.connectivity.listenAddrs as addr (addr)}
+						{#each diag.connectivity.listenAddrs as addr (addr)}
 							<li><Copyable value={addr} /></li>
 						{/each}
 					</ul>
@@ -163,18 +285,18 @@
 			<dd>
 				<div class="path-summary" data-testid="diag-path-summary">
 					<span class="badge" data-testid="diag-path-relayed"
-						>relayed {state.connectivity.paths.relayed}</span
+						>relayed {diag.connectivity.paths.relayed}</span
 					>
 					<span class="badge ok" data-testid="diag-path-direct"
-						>direct {state.connectivity.paths.direct}</span
+						>direct {diag.connectivity.paths.direct}</span
 					>
 					<span
 						class="badge"
-						class:bad={state.connectivity.paths.stuckOnRelay > 0}
+						class:bad={diag.connectivity.paths.stuckOnRelay > 0}
 						data-testid="diag-path-stuck"
-						>stuck-on-relay {state.connectivity.paths.stuckOnRelay}</span
+						>stuck-on-relay {diag.connectivity.paths.stuckOnRelay}</span
 					>
-					{#each Object.entries(state.connectivity.paths.byTransport) as [transport, count] (transport)}
+					{#each Object.entries(diag.connectivity.paths.byTransport) as [transport, count] (transport)}
 						{#if count > 0}
 							<span class="badge" data-transport={transport}
 								><code>{transport}</code> {count}</span
@@ -182,21 +304,21 @@
 						{/if}
 					{/each}
 				</div>
-				{#if state.connectivity.paths.stuckOnRelay > 0}
+				{#if diag.connectivity.paths.stuckOnRelay > 0}
 					<p class="bad warn-row" data-testid="diag-stuck-warning">
-						⚠ {state.connectivity.paths.stuckOnRelay} connection{state.connectivity
+						⚠ {diag.connectivity.paths.stuckOnRelay} connection{diag.connectivity
 							.paths.stuckOnRelay === 1
 							? ''
 							: 's'} stuck on relay — direct upgrade (WebRTC/DCUtR) did not
 						complete within {Math.round(
-							state.connectivity.paths.settleWindowMs / 1000,
+							diag.connectivity.paths.settleWindowMs / 1000,
 						)}s.
 					</p>
 				{/if}
 			</dd>
 			<dt>Connections</dt>
 			<dd>
-				{#if state.connectivity.connections.length === 0}
+				{#if diag.connectivity.connections.length === 0}
 					<span class="muted">0</span>
 				{:else}
 					<div class="conn-table">
@@ -211,7 +333,7 @@
 								</tr>
 							</thead>
 							<tbody>
-								{#each state.connectivity.connections as c (c.peerId + c.remoteAddr)}
+								{#each diag.connectivity.connections as c (c.peerId + c.remoteAddr)}
 									<tr
 										data-testid="diag-connection-row"
 										data-peer-id={c.peerId}
@@ -259,11 +381,11 @@
 		<dl>
 			<dt>Registered</dt>
 			<dd>
-				{#if state.transports.names.length === 0}
+				{#if diag.transports.names.length === 0}
 					<span class="muted">—</span>
 				{:else}
 					<ul class="inline" data-testid="diag-transports">
-						{#each state.transports.names as name (name)}
+						{#each diag.transports.names as name (name)}
 							<li data-transport-name={name}><code>{name}</code></li>
 						{/each}
 					</ul>
@@ -274,19 +396,19 @@
 
 	<section class="card">
 		<h3>FRET</h3>
-		{#if !state.fret.available}
+		{#if !diag.fret.available}
 			<p class="muted">FRET service is not registered on this node.</p>
 		{:else}
 			<dl>
 				<dt>Known peers</dt>
-				<dd>{state.fret.knownPeerCount}</dd>
+				<dd>{diag.fret.knownPeerCount}</dd>
 				<dt>Network size</dt>
 				<dd>
-					{#if state.fret.networkSize}
-						est. {state.fret.networkSize.estimate}
+					{#if diag.fret.networkSize}
+						est. {diag.fret.networkSize.estimate}
 						<span class="muted"
-							>(confidence {state.fret.networkSize.confidence.toFixed(2)},
-							sources {state.fret.networkSize.sources})</span
+							>(confidence {diag.fret.networkSize.confidence.toFixed(2)},
+							sources {diag.fret.networkSize.sources})</span
 						>
 					{:else}
 						<span class="muted">—</span>
@@ -294,32 +416,32 @@
 				</dd>
 				<dt>Churn</dt>
 				<dd>
-					{state.fret.churn != null
-						? state.fret.churn.toFixed(3)
+					{diag.fret.churn != null
+						? diag.fret.churn.toFixed(3)
 						: '—'}
 				</dd>
 				<dt>Partition</dt>
 				<dd>
-					{#if state.fret.partition === null}
+					{#if diag.fret.partition === null}
 						<span class="muted">—</span>
 					{:else}
-						<span class="badge" class:bad={state.fret.partition}>
-							{state.fret.partition ? 'detected' : 'none'}
+						<span class="badge" class:bad={diag.fret.partition}>
+							{diag.fret.partition ? 'detected' : 'none'}
 						</span>
 					{/if}
 				</dd>
 				<dt>Last refresh</dt>
-				<dd>{formatTimestamp(state.fret.lastTickMs)}</dd>
+				<dd>{formatTimestamp(diag.fret.lastTickMs)}</dd>
 				<dt>My Arachnode</dt>
 				<dd>
-					{#if state.fret.myArachnode}
-						ring depth {state.fret.myArachnode.ringDepth}
-						<span class="muted">({state.fret.myArachnode.status})</span>
+					{#if diag.fret.myArachnode}
+						ring depth {diag.fret.myArachnode.ringDepth}
+						<span class="muted">({diag.fret.myArachnode.status})</span>
 						<br />
-						capacity {formatBytes(state.fret.myArachnode.capacityUsed)} /
-						{formatBytes(state.fret.myArachnode.capacityTotal)}
+						capacity {formatBytes(diag.fret.myArachnode.capacityUsed)} /
+						{formatBytes(diag.fret.myArachnode.capacityTotal)}
 						<span class="muted"
-							>(avail {formatBytes(state.fret.myArachnode.capacityAvailable)})</span
+							>(avail {formatBytes(diag.fret.myArachnode.capacityAvailable)})</span
 						>
 					{:else}
 						<span class="muted">not announced yet</span>
@@ -327,10 +449,10 @@
 				</dd>
 				<dt>Known rings</dt>
 				<dd>
-					{#if state.fret.knownRings.length === 0}
+					{#if diag.fret.knownRings.length === 0}
 						<span class="muted">—</span>
 					{:else}
-						{state.fret.knownRings.join(', ')}
+						{diag.fret.knownRings.join(', ')}
 					{/if}
 				</dd>
 			</dl>
@@ -341,25 +463,25 @@
 		<h3>Storage</h3>
 		<dl>
 			<dt>Backend</dt>
-			<dd><code data-testid="diag-storage-backend">{state.storage.backend ?? '—'}</code></dd>
+			<dd><code data-testid="diag-storage-backend">{diag.storage.backend ?? '—'}</code></dd>
 			<dt>Quota</dt>
-			<dd>{formatBytes(state.storage.quotaBytes)}</dd>
+			<dd>{formatBytes(diag.storage.quotaBytes)}</dd>
 			<dt>Origin usage</dt>
 			<dd>
-				{formatBytes(state.storage.usageBytes)}
+				{formatBytes(diag.storage.usageBytes)}
 				<span class="muted"
-					>{percent(state.storage.usageBytes, state.storage.quotaBytes)}</span
+					>{percent(diag.storage.usageBytes, diag.storage.quotaBytes)}</span
 				>
 			</dd>
 			<dt>Raw approx</dt>
-			<dd>{formatBytes(state.storage.approxRawBytes)}</dd>
+			<dd>{formatBytes(diag.storage.approxRawBytes)}</dd>
 			<dt>Store counts</dt>
 			<dd>
-				{#if state.storage.storesError}
-					<span class="bad">{state.storage.storesError}</span>
-				{:else if state.storage.storeCounts}
+				{#if diag.storage.storesError}
+					<span class="bad">{diag.storage.storesError}</span>
+				{:else if diag.storage.storeCounts}
 					<ul class="store-counts">
-						{#each Object.entries(state.storage.storeCounts) as [name, count] (name)}
+						{#each Object.entries(diag.storage.storeCounts) as [name, count] (name)}
 							<li>
 								<code>{name}</code>
 								<span class="count">{count}</span>
@@ -376,56 +498,56 @@
 	<section class="card">
 		<h3>Crypto sanity</h3>
 		<ul class="checks" data-testid="diag-crypto">
-			<li class:ok={state.crypto.cryptoSubtle} data-check="crypto.subtle" data-ok={state.crypto.cryptoSubtle}>
-				<span class="check-icon">{state.crypto.cryptoSubtle ? '✓' : '✗'}</span>
+			<li class:ok={diag.crypto.cryptoSubtle} data-check="crypto.subtle" data-ok={diag.crypto.cryptoSubtle}>
+				<span class="check-icon">{diag.crypto.cryptoSubtle ? '✓' : '✗'}</span>
 				<code>crypto.subtle</code>
 			</li>
 			<li
-				class:ok={state.crypto.cryptoGetRandomValues}
+				class:ok={diag.crypto.cryptoGetRandomValues}
 				data-check="crypto.getRandomValues"
-				data-ok={state.crypto.cryptoGetRandomValues}
+				data-ok={diag.crypto.cryptoGetRandomValues}
 			>
 				<span class="check-icon"
-					>{state.crypto.cryptoGetRandomValues ? '✓' : '✗'}</span
+					>{diag.crypto.cryptoGetRandomValues ? '✓' : '✗'}</span
 				>
 				<code>crypto.getRandomValues</code>
 			</li>
-			<li class:ok={state.crypto.eventTarget} data-check="EventTarget" data-ok={state.crypto.eventTarget}>
-				<span class="check-icon">{state.crypto.eventTarget ? '✓' : '✗'}</span>
+			<li class:ok={diag.crypto.eventTarget} data-check="EventTarget" data-ok={diag.crypto.eventTarget}>
+				<span class="check-icon">{diag.crypto.eventTarget ? '✓' : '✗'}</span>
 				<code>EventTarget</code>
 			</li>
 			<li
-				class:ok={state.crypto.promiseWithResolvers}
+				class:ok={diag.crypto.promiseWithResolvers}
 				data-check="Promise.withResolvers"
-				data-ok={state.crypto.promiseWithResolvers}
+				data-ok={diag.crypto.promiseWithResolvers}
 			>
 				<span class="check-icon"
-					>{state.crypto.promiseWithResolvers ? '✓' : '✗'}</span
+					>{diag.crypto.promiseWithResolvers ? '✓' : '✗'}</span
 				>
 				<code>Promise.withResolvers</code>
 			</li>
 			<li
-				class:ok={state.crypto.structuredClone}
+				class:ok={diag.crypto.structuredClone}
 				data-check="structuredClone"
-				data-ok={state.crypto.structuredClone}
+				data-ok={diag.crypto.structuredClone}
 			>
-				<span class="check-icon">{state.crypto.structuredClone ? '✓' : '✗'}</span>
+				<span class="check-icon">{diag.crypto.structuredClone ? '✓' : '✗'}</span>
 				<code>structuredClone</code>
 			</li>
 			<li
-				class:ok={state.crypto.readableStream}
+				class:ok={diag.crypto.readableStream}
 				data-check="ReadableStream"
-				data-ok={state.crypto.readableStream}
+				data-ok={diag.crypto.readableStream}
 			>
-				<span class="check-icon">{state.crypto.readableStream ? '✓' : '✗'}</span>
+				<span class="check-icon">{diag.crypto.readableStream ? '✓' : '✗'}</span>
 				<code>ReadableStream</code>
 			</li>
 			<li
-				class:ok={state.crypto.bufferGlobal}
+				class:ok={diag.crypto.bufferGlobal}
 				data-check="globalThis.Buffer"
-				data-ok={state.crypto.bufferGlobal}
+				data-ok={diag.crypto.bufferGlobal}
 			>
-				<span class="check-icon">{state.crypto.bufferGlobal ? '✓' : '✗'}</span>
+				<span class="check-icon">{diag.crypto.bufferGlobal ? '✓' : '✗'}</span>
 				<code>globalThis.Buffer</code>
 			</li>
 		</ul>
@@ -436,11 +558,11 @@
 			<h3>Recent errors</h3>
 			<button type="button" onclick={clearErrors}>Clear</button>
 		</header>
-		{#if state.errors.length === 0}
+		{#if diag.errors.length === 0}
 			<p class="muted" data-testid="diag-errors" data-error-count="0">No errors captured.</p>
 		{:else}
-			<ul class="errors" data-testid="diag-errors" data-error-count={state.errors.length}>
-				{#each state.errors as err, i (err.ts + ':' + i)}
+			<ul class="errors" data-testid="diag-errors" data-error-count={diag.errors.length}>
+				{#each diag.errors as err, i (err.ts + ':' + i)}
 					<li>
 						<div class="err-meta">
 							<span class="err-time">{new Date(err.ts).toLocaleTimeString()}</span>
@@ -606,6 +728,25 @@
 
 	.addr-list li {
 		margin-bottom: 0.25rem;
+	}
+
+	.row-list {
+		list-style: none;
+		margin: 0;
+		padding: 0;
+		display: grid;
+		gap: 0.25rem;
+	}
+
+	.row-list li {
+		font-size: 0.8125rem;
+		word-break: break-word;
+	}
+
+	.gate-detail {
+		margin-top: 0.25rem;
+		font-size: 0.75rem;
+		word-break: break-word;
 	}
 
 	.inline {

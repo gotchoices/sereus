@@ -13,20 +13,30 @@
  *     across reloads.
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
- * Phase 1 is a **solo** single-node cadre: no control bootstrap, the node
- * self-seeds as its own authority (mirroring `cadre-cli start --authority`),
- * and the chat strand runs in `bootstrap` mode so DML lands on the strand's
- * IndexedDB without any peers. Phase 2 adds control-network bootstrap, consent
- * formation, RBAC, and cross-party convergence.
+ * The node self-seeds as its own authority (mirroring `cadre-cli start
+ * --authority`); the solo chat strand runs in `bootstrap` mode so DML lands on
+ * the strand's IndexedDB without any peers.
+ *
+ * Beyond the solo strand, this module also drives the **consent/invitation
+ * strand-formation** flow: relay reservation for dialability, responder-side
+ * `createOpenInvitation` / `encodeInvitation`, initiator-side `decodeInvitation`
+ * / `formStrand` + closed-strand `addStrand`, plus read-only helpers that surface
+ * the `CadreControl` authorization gates ("RBAC") to diagnostics. Live two-party
+ * cross-cohort convergence still needs relay infra + a dialable second cadre.
  */
 
 import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
 	StrandInstance,
+	OpenInvitation,
+	FormStrandResult,
+	StrandFormationDisclosure,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import { multiaddr } from '@multiformats/multiaddr';
+import type { Database } from '@quereus/quereus';
 import {
 	loadOrCreateBrowserPeerKey,
 	DEFAULT_PEER_KEY_NAME,
@@ -36,6 +46,7 @@ import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC, webRTCDirect } from '@libp2p/webrtc';
 import { loadIceConfig } from './ice-config.js';
+import { resolveRelayAddrs } from './relay-config.js';
 import {
 	openStores,
 	closeStores,
@@ -44,7 +55,7 @@ import {
 	getStoreStorage,
 	CONTROL_STORE_KEY,
 } from './strand-storage.js';
-import { getChatSAppConfig, CHAT_STRAND_ID } from './chat-strand.js';
+import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 
 /**
  * db-p2p's transport-factory element type. The WebRTC factories from
@@ -59,8 +70,78 @@ type TransportFactory = Libp2pTransports[number];
 /** Outcome of the solo authority self-genesis step. */
 export type AuthorityState = 'pending' | 'genesis' | 'existing' | 'error';
 
+/**
+ * Relay-reservation posture for the dialable side of formation.
+ *  - `none`    — no relay configured; the tab is solo/undialable (Phase-1 posture).
+ *  - `dialing` — a relay is configured and a reservation is in flight.
+ *  - `reserved`— a `/p2p-circuit` address is held, so the tab is dialable.
+ *  - `error`   — the relay dial/reservation failed (see {@link RelayState.error}).
+ */
+export type RelayStatus = 'none' | 'dialing' | 'reserved' | 'error';
+
+export interface RelayState {
+	status: RelayStatus;
+	/** Configured relay multiaddrs (from the runtime relay manifest). */
+	addrs: string[];
+	/** This tab's `/p2p-circuit` listen addresses once reserved (dialable side). */
+	circuitAddrs: string[];
+	error: string | null;
+}
+
+/** A strand this tab joined via the consent/invitation formation flow. */
+export interface FormedStrand {
+	strandId: string;
+	/** Member (peer) key minted for this strand membership. */
+	memberKey: string;
+	/** Membership type — formed strands are closed (`'c'`). */
+	type: 'o' | 'c';
+}
+
+/** Result of an attempted unauthorized control write (the RBAC gate demo). */
+export interface AuthorityGateProbe {
+	/** True when the `CadreControl` constraint rejected the write (gate working). */
+	rejected: boolean;
+	/** The rejection message (when `rejected`), else null. */
+	error: string | null;
+}
+
+/** A `FormationInvite` row, as surfaced to diagnostics. */
+export interface FormationInviteRow {
+	token: string;
+	sAppId: string | null;
+	expiresAt: string | null;
+	totalUses: number | null;
+}
+
+/** A `FormationUsage` row, as surfaced to diagnostics. */
+export interface FormationUsageRow {
+	token: string;
+	useNumber: number;
+	strandId: string | null;
+}
+
+/** A control-network `Strand` row (membership type + member-key presence). */
+export interface ControlStrandRow {
+	id: string;
+	type: 'o' | 'c';
+	hasMemberKey: boolean;
+}
+
+/** Control-network authorization ("RBAC") state, for the diagnostics surface. */
+export interface ControlAuthorizationState {
+	authorityKeyCount: number;
+	validationKeyCount: number;
+	formationInvites: FormationInviteRow[];
+	formationUsage: FormationUsageRow[];
+	strands: ControlStrandRow[];
+}
+
 const PARTY_ID_KEY = 'party-id';
 const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
+
+/** How long to wait for a circuit-relay reservation before giving up. */
+const RELAY_RESERVE_TIMEOUT_MS = 10_000;
+const RELAY_RESERVE_POLL_MS = 250;
 
 let node: CadreNode | null = null;
 let controlStorage: IRawStorage | null = null;
@@ -69,6 +150,9 @@ let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let authorityState: AuthorityState = 'pending';
 let authorityError: string | null = null;
+let relayState: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+let solicitationReady = false;
+const formedStrands = new Map<string, FormedStrand>();
 
 // ── Getters (read by the store + diagnostics) ─────────────────────────────────
 
@@ -110,6 +194,16 @@ export function getIdentityFirstSeenMs(): number | null {
 
 export function getAuthorityState(): { state: AuthorityState; error: string | null } {
 	return { state: authorityState, error: authorityError };
+}
+
+/** Relay-reservation posture (dialability for formation). */
+export function getRelayState(): RelayState {
+	return relayState;
+}
+
+/** Strands joined this session via the consent/invitation formation flow. */
+export function getFormedStrands(): FormedStrand[] {
+	return [...formedStrands.values()];
 }
 
 // ── Persistence helpers (party id + identity-first-seen, on the control DB) ───
@@ -166,6 +260,17 @@ export async function startCadre(): Promise<CadreNode> {
 	// no manifest is configured (host/LAN candidates still work).
 	const iceServers = await loadIceConfig();
 
+	// Relay multiaddr(s) from the runtime manifest. When configured, the tab
+	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation
+	// and become dialable for strand formation. Empty → Phase-1 solo posture.
+	const relayAddrs = resolveRelayAddrs();
+	relayState = {
+		status: relayAddrs.length > 0 ? 'dialing' : 'none',
+		addrs: relayAddrs,
+		circuitAddrs: [],
+		error: null,
+	};
+
 	const config: CadreNodeConfig = {
 		privateKey,
 		controlNetwork: {
@@ -182,7 +287,9 @@ export async function startCadre(): Promise<CadreNode> {
 				webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
 				webRTCDirect() as unknown as TransportFactory,
 			],
-			listenAddrs: [], // solo; Phase 2 sets ['/p2p-circuit', '/webrtc']
+			// Dialable side of formation listens via circuit relay + WebRTC; solo
+			// tabs (no relay configured) keep the Phase-1 no-listen posture.
+			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },
@@ -193,6 +300,7 @@ export async function startCadre(): Promise<CadreNode> {
 
 	exposeDebugHook(node);
 	await runAuthorityGenesis(node, privateKey);
+	await reserveRelay(node, relayAddrs);
 
 	return node;
 }
@@ -224,6 +332,246 @@ async function runAuthorityGenesis(cadre: CadreNode, privateKey: PrivateKey): Pr
 		authorityError = err instanceof Error ? err.message : String(err);
 		console.warn('[reference-app-web] authority self-genesis failed:', err);
 	}
+}
+
+/**
+ * Dial the configured relay(s) and wait until a `/p2p-circuit` reservation makes
+ * this tab dialable. Fail-soft: a missing/unreachable relay leaves the tab in
+ * the solo posture (formation create/join then surface a clear "not dialable"
+ * error) rather than aborting node startup. A no-op when no relay is configured.
+ */
+async function reserveRelay(cadre: CadreNode, relayAddrs: string[]): Promise<void> {
+	if (relayAddrs.length === 0) {
+		relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+		return;
+	}
+	const control = cadre.getControlNode();
+	if (!control) {
+		relayState = { status: 'error', addrs: relayAddrs, circuitAddrs: [], error: 'control node unavailable' };
+		return;
+	}
+	try {
+		for (const addr of relayAddrs) {
+			await control.dial(multiaddr(addr));
+		}
+		const circuitAddrs = await waitForCircuitReservation(control);
+		if (circuitAddrs.length > 0) {
+			relayState = { status: 'reserved', addrs: relayAddrs, circuitAddrs, error: null };
+		} else {
+			relayState = {
+				status: 'error',
+				addrs: relayAddrs,
+				circuitAddrs: [],
+				error: `no circuit reservation within ${RELAY_RESERVE_TIMEOUT_MS}ms`,
+			};
+		}
+	} catch (err) {
+		relayState = {
+			status: 'error',
+			addrs: relayAddrs,
+			circuitAddrs: [],
+			error: err instanceof Error ? err.message : String(err),
+		};
+		console.warn('[reference-app-web] relay reservation failed:', err);
+	}
+}
+
+/** Poll the control node's multiaddrs until a `/p2p-circuit` address appears. */
+async function waitForCircuitReservation(control: Libp2p): Promise<string[]> {
+	const deadline = Date.now() + RELAY_RESERVE_TIMEOUT_MS;
+	while (Date.now() < deadline) {
+		const circuit = control
+			.getMultiaddrs()
+			.map((ma) => ma.toString())
+			.filter((s) => s.includes('/p2p-circuit'));
+		if (circuit.length > 0) return circuit;
+		await delay(RELAY_RESERVE_POLL_MS);
+	}
+	return [];
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// ── Strand formation (consent / invitation flow) ──────────────────────────────
+
+/**
+ * Lazily bring up the strand solicitation service (responder + initiator
+ * transport). Idempotent; called by both {@link createInvitation} and
+ * {@link joinViaInvitation}.
+ */
+function ensureSolicitation(): CadreNode {
+	if (!node) throw new Error('CadreNode not started');
+	if (!solicitationReady) {
+		node.initializeStrandSolicitation();
+		solicitationReady = true;
+	}
+	return node;
+}
+
+/** What {@link createInvitation} returns to the responder UI. */
+export interface CreatedInvitation {
+	/** Base64url-encoded `OpenInvitation` to copy out-of-band to the initiator. */
+	encoded: string;
+	token: string;
+	sAppId: string;
+	expiration: string;
+}
+
+/**
+ * Responder side: mint an open invitation for the chat sApp and encode it for
+ * out-of-band (copy/paste) delivery. Requires the tab to be **dialable** — the
+ * invitation embeds this cadre's multiaddrs, so `createOpenInvitation` throws
+ * when no relay reservation has produced a `/p2p-circuit` address.
+ */
+export async function createInvitation(
+	expirationMs: number = 24 * 60 * 60 * 1000,
+): Promise<CreatedInvitation> {
+	const cadre = ensureSolicitation();
+	if (relayState.status !== 'reserved') {
+		throw new Error(
+			'This tab is not dialable — strand formation needs a circuit-relay ' +
+				'reservation. Configure a relay (VITE_RELAY_ADDR or localStorage ' +
+				`"relay-addr"). Relay status: ${relayState.status}` +
+				(relayState.error ? ` (${relayState.error})` : ''),
+		);
+	}
+	const invitation = await cadre.createOpenInvitation(CHAT_SAPP_ID, expirationMs);
+	return {
+		encoded: cadre.encodeInvitation(invitation),
+		token: invitation.token,
+		sAppId: invitation.sAppId,
+		expiration: invitation.expiration.toISOString(),
+	};
+}
+
+/**
+ * Initiator side: decode an out-of-band invitation, run the formation protocol
+ * against the responder's cadre, then launch the resulting **closed** strand
+ * against the same signed chat schema using the minted member key.
+ *
+ * The closed strand's raw storage is pre-opened before `addStrand` (the provider
+ * is synchronous), mirroring the Phase-1 chat-strand bring-up.
+ */
+export async function joinViaInvitation(
+	encoded: string,
+	disclosure: StrandFormationDisclosure = {},
+): Promise<FormedStrand> {
+	const cadre = ensureSolicitation();
+	const invitation: OpenInvitation = cadre.decodeInvitation(encoded.trim());
+	const result: FormStrandResult = await cadre.formStrand(invitation, {
+		partyId: partyId ?? undefined,
+		...disclosure,
+	});
+
+	// Provision the closed strand locally: pre-open its IndexedDB store, then add
+	// it with the responder-minted member key so reads are authorized.
+	await openStores([result.strandId]);
+	await cadre.addStrand({
+		strandRow: {
+			Id: result.strandId,
+			MemberPrivateKey: result.invitePrivateKey,
+			Type: 'c',
+		},
+		sAppConfig: getChatSAppConfig(),
+	});
+
+	const formed: FormedStrand = {
+		strandId: result.strandId,
+		memberKey: result.memberKey,
+		type: 'c',
+	};
+	formedStrands.set(result.strandId, formed);
+	return formed;
+}
+
+// ── RBAC / authorization gate (observability) ─────────────────────────────────
+
+/**
+ * Demonstrate the `CadreControl` authority gate: attempt a `Strand` insert that
+ * claims an authority it does not hold (a non-enrolled key + bogus signature) and
+ * carries no consuming `FormationUsage` row. The `Strand.Authorized` constraint
+ * satisfies *neither* branch, so the write must be rejected at commit.
+ *
+ * Returns `{ rejected: true }` when the constraint correctly blocks the write
+ * (the RBAC gate is working) and `{ rejected: false }` if it unexpectedly
+ * succeeds — a regression worth surfacing.
+ */
+export async function attemptUnauthorizedStrandWrite(): Promise<AuthorityGateProbe> {
+	if (!node) throw new Error('CadreNode not started');
+	const controlDb = node.getControlDatabase();
+	if (!controlDb) throw new Error('control database unavailable');
+	const db = controlDb.getDatabase();
+	const probeId = `rbac-probe-${node.peerId?.toString() ?? 'anon'}`;
+	try {
+		await db.exec(
+			`insert into CadreControl.Strand (Id, Type, MemberPrivateKey)
+				with context AuthorityKey = ?, Signature = ?, StampId = ?
+				values (?, 'o', null)`,
+			['not-an-authority-key', 'bogus-signature', probeId, probeId],
+		);
+		// Reaching here means the gate let an unauthorized write through. Best-effort
+		// cleanup is not attempted (the row is itself a regression marker).
+		return { rejected: false, error: null };
+	} catch (err) {
+		return { rejected: true, error: err instanceof Error ? err.message : String(err) };
+	}
+}
+
+/**
+ * Read the control-network authorization ("RBAC") state for diagnostics: counts
+ * of authority/validation keys, the `FormationInvite` / `FormationUsage` rows,
+ * and each `Strand`'s membership type + member-key presence. Pure read-only SQL
+ * over the control database's Quereus handle — no network round-trips.
+ */
+export async function readControlAuthorizationState(): Promise<ControlAuthorizationState> {
+	if (!node) throw new Error('CadreNode not started');
+	const controlDb = node.getControlDatabase();
+	if (!controlDb) throw new Error('control database unavailable');
+	const db = controlDb.getDatabase();
+
+	const authorityKeyCount = await countRows(db, 'CadreControl.AuthorityKey');
+	const validationKeyCount = await countRows(db, 'CadreControl.ValidationKey');
+
+	const formationInvites: FormationInviteRow[] = [];
+	for await (const row of db.eval(
+		'select Token, sAppId, ExpiresAt, TotalUses from CadreControl.FormationInvite',
+	)) {
+		formationInvites.push({
+			token: row.Token as string,
+			sAppId: (row.sAppId as string | null) ?? null,
+			expiresAt: (row.ExpiresAt as string | null) ?? null,
+			totalUses: (row.TotalUses as number | null) ?? null,
+		});
+	}
+
+	const formationUsage: FormationUsageRow[] = [];
+	for await (const row of db.eval(
+		'select Token, UseNumber, StrandId from CadreControl.FormationUsage',
+	)) {
+		formationUsage.push({
+			token: row.Token as string,
+			useNumber: row.UseNumber as number,
+			strandId: (row.StrandId as string | null) ?? null,
+		});
+	}
+
+	const strands: ControlStrandRow[] = (await controlDb.queryStrands()).map((s) => ({
+		id: s.Id,
+		type: s.Type,
+		hasMemberKey: s.MemberPrivateKey != null && s.MemberPrivateKey.length > 0,
+	}));
+
+	return { authorityKeyCount, validationKeyCount, formationInvites, formationUsage, strands };
+}
+
+/** Count rows in a fully-qualified control table via a scalar aggregate. */
+async function countRows(db: Database, table: string): Promise<number> {
+	for await (const row of db.eval(`select count(1) as Count from ${table}`)) {
+		return (row.Count as number) ?? 0;
+	}
+	return 0;
 }
 
 /**
@@ -260,6 +608,9 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	authorityState = 'pending';
 	authorityError = null;
+	relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+	solicitationReady = false;
+	formedStrands.clear();
 }
 
 // ── Debug hook ────────────────────────────────────────────────────────────────
@@ -277,6 +628,14 @@ function exposeDebugHook(cadre: CadreNode): void {
 		getConnectionCount: () => cadre.getControlNode()?.getConnections().length ?? 0,
 		getStrandStatus: () => getChatStrand()?.status ?? null,
 		getAuthorityState: () => authorityState,
+		// Phase 2 — formation + RBAC, surfaced for e2e drive/assert.
+		getRelayState: () => relayState,
+		getFormedStrands: () => getFormedStrands(),
+		createInvitation: (expirationMs?: number) => createInvitation(expirationMs),
+		joinViaInvitation: (encoded: string, disclosure?: StrandFormationDisclosure) =>
+			joinViaInvitation(encoded, disclosure),
+		attemptUnauthorizedStrandWrite: () => attemptUnauthorizedStrandWrite(),
+		readControlAuthorizationState: () => readControlAuthorizationState(),
 	};
 }
 

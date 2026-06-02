@@ -16,27 +16,42 @@ declare global {
 }
 
 /**
- * Phase 1 deferral. The Tier-2 distributed suite asserts membership-free
- * Optimystic convergence on a shared network — which no longer holds now that
- * chat data lives inside a cadre **strand** cohort. Re-establishing cross-node /
- * cross-party convergence requires control-network membership or strand
- * formation, which is Phase 2 (`reference-app-web-strand-formation-consent-rbac`).
- * Until then every distributed spec skips with this reason. Flip to `false` (and
- * rewire the distributed specs onto the cadre model) when Phase 2 lands.
+ * Tier-2 convergence deferral (still on).
+ *
+ * The legacy distributed suite (`e2e/distributed/*`) asserts *membership-free*
+ * Optimystic convergence on a shared network — obsolete now that chat data lives
+ * inside a cadre **strand** cohort. The Phase-2 cadre analogue is two parties
+ * sharing a **closed** strand via the consent/invitation formation flow, then a
+ * message written by one converging to the other through the cohort.
+ *
+ * That live path is not yet runnable in this fixture because it needs all of:
+ *   1. a circuit-relay reservation so both browser tabs are dialable
+ *      (the relay is deployment infra — see `relay-config.ts` / `ops/`), and
+ *   2. the DB-backed consent wiring (`FormationInvite` / `FormationUsage` inserts)
+ *      that `formationinvite-fix-curve-and-wire-consent` lands in cadre-core, and
+ *   3. a dialable second cadre (a second relayed tab, or a headless cadre
+ *      responder fixture — `cadre-cli` has no formation command today).
+ *
+ * Until a relay fixture + responder land, every distributed spec skips with this
+ * reason. The solo-tier `formation-rbac.spec.ts` covers what a single tab can
+ * prove (formation panel, dialability/invalid-invitation guards, the authority
+ * gate, and the authorization surface). Flip to `false` and add the relay/
+ * responder fixture below to re-establish live convergence.
  */
-const TIER2_DEFERRED_TO_PHASE2 = true;
+const TIER2_CONVERGENCE_DEFERRED = true;
 
 export default async function globalSetup(_config: FullConfig): Promise<void> {
 	clearFixtureState();
 
-	if (TIER2_DEFERRED_TO_PHASE2) {
+	if (TIER2_CONVERGENCE_DEFERRED) {
 		writeFixtureState({
 			available: false,
 			reason:
-				'Phase 1: chat data now lives in a cadre strand cohort; distributed ' +
-				'convergence is re-established in Phase 2 (strand formation / RBAC).',
+				'Tier-2 cross-party convergence needs a circuit-relay reservation + a ' +
+				'dialable second cadre + the cadre-core consent DB wiring; deferred to a ' +
+				'relay/responder fixture (see global-setup.ts).',
 		});
-		console.log('[e2e] Tier 2 deferred to Phase 2 (cadre strand model)');
+		console.log('[e2e] Tier 2 convergence deferred (needs relay + responder fixture)');
 		return;
 	}
 

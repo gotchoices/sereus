@@ -49,9 +49,17 @@ const CHAT_AUTHOR_PRIVATE_KEY = 'TUbBDNtNCtDw9uoiEdlyWp7Smj_FGQQIb-ZaFXCulTw';
 /**
  * Fixed strand id for the single browser chat strand. A constant (rather than a
  * per-session UUID) keeps the strand's IndexedDB database stable across reloads,
- * so messages persist. Phase 2 introduces control-discovered / formed strands.
+ * so messages persist. Phase 2's formed (closed) strands use a responder-minted
+ * UUID instead — see {@link CHAT_SAPP_ID}.
  */
 export const CHAT_STRAND_ID = 'sereus-web-chat';
+
+/**
+ * The chat sApp's id — the author public key that doubles as the `SAppConfig.id`.
+ * Formation (`createOpenInvitation`) names the sApp by this id so a formed strand
+ * launches against the *same* signed chat schema as the solo Phase-1 strand.
+ */
+export const CHAT_SAPP_ID = CHAT_AUTHOR_PUBLIC_KEY;
 
 /**
  * The signed chat sApp config. The signature is computed at runtime via

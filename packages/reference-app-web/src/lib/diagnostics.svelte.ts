@@ -23,6 +23,14 @@ import {
 	getChatStrand,
 	getChatStrandId,
 	getAuthorityState,
+	getRelayState,
+	readControlAuthorizationState,
+	attemptUnauthorizedStrandWrite,
+	type RelayState,
+	type FormationInviteRow,
+	type FormationUsageRow,
+	type ControlStrandRow,
+	type AuthorityGateProbe,
 } from './cadre-web.js';
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
@@ -114,6 +122,26 @@ export interface CadreInfo {
 	strand: CadreStrandInfo | null;
 }
 
+/**
+ * Control-network authorization ("RBAC") surface: the gates the `CadreControl`
+ * schema enforces, made observable. Authority/validation key counts, the
+ * formation invite/usage audit rows, per-strand membership type + member-key
+ * presence, the relay-dialability posture, and the result of a manual
+ * authority-gate probe (an unauthorized write that *should* be rejected).
+ */
+export interface AuthorizationInfo {
+	available: boolean;
+	error: string | null;
+	authorityKeyCount: number;
+	validationKeyCount: number;
+	formationInvites: FormationInviteRow[];
+	formationUsage: FormationUsageRow[];
+	strands: ControlStrandRow[];
+	relay: RelayState;
+	/** Result of the last manual "verify authority gate" probe (null until run). */
+	gateProbe: AuthorityGateProbe | null;
+}
+
 export interface CryptoSanityInfo {
 	cryptoSubtle: boolean;
 	cryptoGetRandomValues: boolean;
@@ -133,6 +161,7 @@ export interface ErrorEntry {
 export interface DiagSnapshot {
 	updatedMs: number | null;
 	cadre: CadreInfo;
+	authorization: AuthorizationInfo;
 	identity: IdentityInfo;
 	connectivity: ConnectivityInfo;
 	transports: TransportsInfo;
@@ -156,10 +185,25 @@ function emptyCadre(): CadreInfo {
 	};
 }
 
+function emptyAuthorization(): AuthorizationInfo {
+	return {
+		available: false,
+		error: null,
+		authorityKeyCount: 0,
+		validationKeyCount: 0,
+		formationInvites: [],
+		formationUsage: [],
+		strands: [],
+		relay: { status: 'none', addrs: [], circuitAddrs: [], error: null },
+		gateProbe: null,
+	};
+}
+
 function emptySnapshot(): DiagSnapshot {
 	return {
 		updatedMs: null,
 		cadre: emptyCadre(),
+		authorization: emptyAuthorization(),
 		identity: {
 			peerId: null,
 			peerIdShort: null,
@@ -229,6 +273,7 @@ export async function refreshDiagnostics(): Promise<void> {
 	try {
 		const node = getControlNode();
 		snapshot.cadre = await collectCadre();
+		snapshot.authorization = await collectAuthorization();
 		snapshot.identity = collectIdentity(node);
 		snapshot.connectivity = collectConnectivity(node);
 		snapshot.transports = collectTransports(node);
@@ -374,6 +419,52 @@ async function collectCadre(): Promise<CadreInfo> {
 				}
 			: null,
 	};
+}
+
+// Manual authority-gate probe result persists across polls (it is button-driven,
+// not part of the cheap per-tick read).
+let lastGateProbe: AuthorityGateProbe | null = null;
+
+/**
+ * Control-network authorization ("RBAC") state. Cheap read-only SQL over the
+ * control database's Quereus handle (no network), guarded so a transactor hiccup
+ * surfaces as `error` rather than sinking the whole tick. Carries the relay
+ * posture and the most recent manual authority-gate probe result.
+ */
+async function collectAuthorization(): Promise<AuthorizationInfo> {
+	const node = getCadreNode();
+	const relay = getRelayState();
+	if (!node?.isRunning) {
+		return { ...emptyAuthorization(), relay, gateProbe: lastGateProbe };
+	}
+	try {
+		const state = await readControlAuthorizationState();
+		return { available: true, error: null, ...state, relay, gateProbe: lastGateProbe };
+	} catch (err) {
+		return {
+			...emptyAuthorization(),
+			error: err instanceof Error ? err.message : String(err),
+			relay,
+			gateProbe: lastGateProbe,
+		};
+	}
+}
+
+/**
+ * Run the authority-gate demonstration: attempt an unauthorized control write
+ * and record whether the `CadreControl` constraints rejected it. The result is
+ * stashed so it survives the next poll, and pushed to the snapshot immediately.
+ */
+export async function runAuthorityGateProbe(): Promise<void> {
+	try {
+		lastGateProbe = await attemptUnauthorizedStrandWrite();
+	} catch (err) {
+		// An unexpected throw (node not started, control db missing) is itself a
+		// failed probe — record it rather than letting it escape to the UI handler.
+		lastGateProbe = { rejected: false, error: err instanceof Error ? err.message : String(err) };
+		pushError('authorityGateProbe', err);
+	}
+	snapshot.authorization = { ...snapshot.authorization, gateProbe: lastGateProbe };
 }
 
 function shortPeerId(id: string | null): string | null {

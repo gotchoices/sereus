@@ -1,12 +1,21 @@
 <script lang="ts">
 	import { nodeState, restart } from './lib/store.svelte.js';
-	import { networkState, setSeedInput } from './lib/network.svelte.js';
+	import {
+		formationState,
+		setJoinInput,
+		doCreateInvitation,
+		doJoinViaInvitation,
+	} from './lib/network.svelte.js';
+	import { copyToClipboard } from './lib/diagnostics.svelte.js';
 	import { ensureReady as ensureMessagesReady } from './lib/messages.svelte.js';
 
 	const node = nodeState();
-	const net = networkState();
+	const formation = formationState();
 
 	let busy = $state(false);
+	let copied = $state(false);
+
+	const relayReady = $derived(node.relay.status === 'reserved');
 
 	$effect(() => {
 		if (node.status === 'running') {
@@ -24,9 +33,15 @@
 		}
 	}
 
-	function onSeedInput(evt: Event) {
+	function onJoinInput(evt: Event) {
 		const target = evt.currentTarget as HTMLTextAreaElement;
-		setSeedInput(target.value);
+		setJoinInput(target.value);
+	}
+
+	async function onCopyInvitation() {
+		if (!formation.invitation) return;
+		copied = await copyToClipboard(formation.invitation.encoded);
+		if (copied) setTimeout(() => (copied = false), 1500);
 	}
 </script>
 
@@ -67,6 +82,18 @@
 		<span class="label">Authority</span>
 		<span class="value" data-testid="home-authority">{node.authority}</span>
 	</div>
+	<div class="row">
+		<span class="label">Relay</span>
+		<span
+			class="value relay-{node.relay.status}"
+			data-testid="home-relay"
+			title={node.relay.error ?? ''}
+		>
+			{node.relay.status}
+			{#if node.relay.status === 'reserved'}<span class="muted"> · dialable</span>{/if}
+			{#if node.relay.error}<span class="muted"> · {node.relay.error}</span>{/if}
+		</span>
+	</div>
 	{#if node.error}
 		<div class="row error">
 			<span class="label">Error</span>
@@ -88,34 +115,106 @@
 </section>
 
 <section class="card">
-	<h2>Cadre</h2>
+	<h2>Strand formation</h2>
 	<p class="hint">
-		This browser is a real <strong>Sereus cadre node</strong>: it runs a control
-		network (<code>CadreControl</code>), self-seeds as its own authority, and
-		hosts a signed open chat strand. Phase 1 is a solo single-node cadre.
+		Form a <strong>closed</strong> chat strand with another party via the
+		consent/invitation flow. One tab is the <em>responder</em> (creates an
+		invitation), the other is the <em>initiator</em> (joins via it). The
+		encoded invitation moves out-of-band — copy it from the responder and paste
+		it into the initiator. Both tabs must be <strong>dialable</strong> through a
+		circuit relay (see Relay status above).
 	</p>
-	<label for="seed-input">Control-network seed (Phase 2)</label>
-	<textarea
-		id="seed-input"
-		data-testid="seed-input"
-		rows="2"
-		spellcheck="false"
-		placeholder="Joining another party's cadre via a signed seed lands in Phase 2"
-		value={net.seedInput}
-		oninput={onSeedInput}
-		disabled
-	></textarea>
-	<div class="net-actions">
-		<button disabled data-testid="btn-join" title="Phase 2">Join cadre (Phase 2)</button>
-		<span class="muted">consent formation · RBAC · cross-party convergence — forthcoming</span>
+
+	{#if !relayReady}
+		<p class="hint warn" data-testid="formation-relay-warning">
+			⚠ This tab is not dialable (relay: <code>{node.relay.status}</code>).
+			Creating an invitation needs a relay reservation — set
+			<code>VITE_RELAY_ADDR</code> or <code>localStorage["relay-addr"]</code> to
+			a circuit-relay multiaddr and restart. Joining still works if the pasted
+			invitation reaches a dialable responder.
+		</p>
+	{/if}
+
+	<div class="formation-grid">
+		<div class="formation-col">
+			<h3>Responder — create invitation</h3>
+			<button
+				onclick={doCreateInvitation}
+				disabled={formation.createBusy || node.status !== 'running'}
+				data-testid="btn-create-invitation"
+			>
+				{formation.createBusy ? 'Creating…' : 'Create invitation'}
+			</button>
+			{#if formation.createError}
+				<p class="bad" data-testid="formation-create-error">{formation.createError}</p>
+			{/if}
+			{#if formation.invitation}
+				<label for="invitation-out">Encoded invitation (copy to the other tab)</label>
+				<textarea
+					id="invitation-out"
+					data-testid="invitation-out"
+					rows="3"
+					readonly
+					spellcheck="false"
+					value={formation.invitation.encoded}
+				></textarea>
+				<div class="net-actions">
+					<button onclick={onCopyInvitation} data-testid="btn-copy-invitation">
+						{copied ? 'Copied ✓' : 'Copy'}
+					</button>
+					<span class="muted">token <code>{formation.invitation.token}</code></span>
+				</div>
+			{/if}
+		</div>
+
+		<div class="formation-col">
+			<h3>Initiator — join via invitation</h3>
+			<label for="invitation-in">Paste an encoded invitation</label>
+			<textarea
+				id="invitation-in"
+				data-testid="invitation-in"
+				rows="3"
+				spellcheck="false"
+				placeholder="Paste the responder's encoded invitation here"
+				value={formation.joinInput}
+				oninput={onJoinInput}
+				disabled={node.status !== 'running'}
+			></textarea>
+			<div class="net-actions">
+				<button
+					onclick={doJoinViaInvitation}
+					disabled={formation.joinBusy || node.status !== 'running'}
+					data-testid="btn-join"
+				>
+					{formation.joinBusy ? 'Forming…' : 'Form strand'}
+				</button>
+			</div>
+			{#if formation.joinError}
+				<p class="bad" data-testid="formation-join-error">{formation.joinError}</p>
+			{/if}
+			{#if formation.joined}
+				<div class="joined" data-testid="formation-joined">
+					<div class="row">
+						<span class="label">Strand</span>
+						<code class="value">{formation.joined.strandId}</code>
+					</div>
+					<div class="row">
+						<span class="label">Membership</span>
+						<span class="value">{formation.joined.type === 'c' ? 'closed (member key)' : 'open'}</span>
+					</div>
+				</div>
+			{/if}
+		</div>
 	</div>
 </section>
 
 <footer>
 	<p>
-		Solo cadre: no control bootstrap, no listen addresses. Identity and party id
-		persist in IndexedDB and survive reloads. Messages are stored in the chat
-		strand's IndexedDB-backed database via its bootstrap-mode local transactor.
+		Identity and party id persist in IndexedDB and survive reloads. The solo
+		chat strand runs in bootstrap mode; a strand formed via an invitation is a
+		closed strand keyed by the minted member key. Control-network authorization
+		(authority keys, formation invites/usage, strand membership) is visible on
+		the <a href="#/diag">Diagnostics</a> page.
 	</p>
 </footer>
 
@@ -269,6 +368,64 @@
 
 	.net-actions .muted {
 		font-size: 0.75rem;
+	}
+
+	.relay-reserved {
+		color: #1f7a3b;
+	}
+	.relay-dialing {
+		color: #8a5a00;
+	}
+	.relay-error {
+		color: #b3261e;
+	}
+	.relay-none {
+		color: #8a8d94;
+	}
+
+	.hint.warn {
+		color: #6b4d00;
+		background: #fff6e0;
+		border: 1px solid #f0d68a;
+		border-radius: 0.375rem;
+		padding: 0.5rem 0.625rem;
+	}
+
+	.formation-grid {
+		display: grid;
+		grid-template-columns: repeat(auto-fit, minmax(16rem, 1fr));
+		gap: 1.25rem;
+		margin-top: 0.5rem;
+	}
+
+	.formation-col h3 {
+		margin: 0 0 0.5rem 0;
+		font-size: 0.8125rem;
+		font-weight: 600;
+		color: #4a4d54;
+	}
+
+	.formation-col label {
+		margin-top: 0.625rem;
+	}
+
+	.joined {
+		margin-top: 0.625rem;
+		display: grid;
+		gap: 0.375rem;
+		padding: 0.5rem 0.625rem;
+		background: #eef0f4;
+		border-radius: 0.375rem;
+	}
+
+	.joined .label {
+		color: #6c6f76;
+	}
+
+	.bad {
+		color: #b3261e;
+		font-size: 0.8125rem;
+		margin: 0.5rem 0 0 0;
 	}
 
 	footer {

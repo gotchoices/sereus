@@ -801,11 +801,22 @@ run a chat sApp strand. They are cadre references, not transport-only demos:
 | App | Platform | Storage | Coverage |
 |-----|----------|---------|----------|
 | `packages/reference-app-rn` | React Native (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports |
-| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo authority self-genesis; WebSocket/relay/WebRTC transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo authority self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
-is **Phase 1**: a solo single-node cadre. Consent-driven strand formation,
-closed-strand RBAC, and cross-party convergence are Phase 2. Its polyfill surface
+drives the full **consent/invitation formation path** end-to-end — it is the
+first reference to call `createOpenInvitation` / `encodeInvitation` (responder)
+and `decodeInvitation` / `formStrand` + closed-strand `addStrand` (initiator) —
+and surfaces the `CadreControl` authorization gates (authority keys, formation
+invites/usage, strand membership type + member-key presence) on its Diagnostics
+page, including a live authority-gate probe that shows an unauthorized control
+write being rejected. Becoming **dialable** for formation requires a circuit-relay
+reservation (resolved from a runtime relay manifest, like the ICE manifest); a
+tab with no relay configured stays solo and surfaces a clear "not dialable" error
+rather than failing silently. Live two-party cross-cohort convergence (a message
+written in one tab converging to the other through a shared closed strand) needs a
+relay fixture + a dialable second cadre and is the reference's remaining deferred
+e2e tier. Its polyfill surface
 is much smaller than RN — modern browsers provide `crypto.subtle`, `EventTarget`,
 `ReadableStream`, etc. natively, so only `os`/`net`/`tls`/`stream`/`buffer` need
 Vite aliases (never a `crypto` shim). cadre-core pulls in `@optimystic/db-p2p`'s

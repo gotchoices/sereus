@@ -20,7 +20,9 @@ import {
 	getChatStrandId,
 	getPartyId,
 	getAuthorityState,
+	getRelayState,
 	type AuthorityState,
+	type RelayState,
 } from './cadre-web.js';
 import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
@@ -40,6 +42,7 @@ interface NodeState {
 	strandPeers: number | null;
 	strandError: string | null;
 	authority: AuthorityState;
+	relay: RelayState;
 }
 
 export interface CadreEvent {
@@ -62,6 +65,7 @@ const state = $state<NodeState>({
 	strandPeers: null,
 	strandError: null,
 	authority: 'pending',
+	relay: { status: 'none', addrs: [], circuitAddrs: [], error: null },
 });
 
 const events = $state<{ list: CadreEvent[] }>({ list: [] });
@@ -157,6 +161,15 @@ export async function start(): Promise<void> {
 			record(`authority:${state.authority}`);
 		}
 
+		// Relay reservation (dialability for formation) settles inside start().
+		state.relay = getRelayState();
+		if (state.relay.status !== 'none') {
+			record(
+				`relay:${state.relay.status}`,
+				state.relay.error ?? state.relay.circuitAddrs[0] ?? '',
+			);
+		}
+
 		// Bring up the signed chat strand. SchemaVerificationError surfaces here.
 		await addChatStrand();
 		syncStrand();
@@ -184,6 +197,7 @@ export async function stop(): Promise<void> {
 		state.strandPeers = null;
 		state.strandError = null;
 		state.authority = 'pending';
+		state.relay = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 		state.status = 'stopped';
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);

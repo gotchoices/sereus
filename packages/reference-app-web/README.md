@@ -27,11 +27,19 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
 
 Identity (Ed25519 peer key) and the party id persist in IndexedDB across reloads.
 
-> **Phase 1 vs Phase 2.** This is Phase 1: a **solo single-node cadre**. The
-> consent/invitation strand-formation flow, closed-strand membership, RBAC
-> demonstration, and cross-node/cross-party convergence are Phase 2
-> (`reference-app-web-strand-formation-consent-rbac`). The Home "Cadre" panel's
-> seed input and the Tier-2 distributed e2e suite are inert until then.
+It also drives the **consent/invitation strand-formation flow** (Phase 2): a tab
+can mint an `OpenInvitation` for the chat sApp (responder) or join via a pasted
+invitation (initiator), forming a **closed** strand keyed by a minted member key.
+The `CadreControl` authorization gates ("RBAC") — authority keys, formation
+invites/usage, strand membership type + member-key presence, and a live
+authority-gate probe — are observable on the Diagnostics page.
+
+> **What's still deferred.** Live two-party **cross-cohort convergence** (a
+> message written in one tab replicating to another through a shared closed
+> strand) needs circuit-relay infrastructure + a dialable second cadre, and the
+> DB-backed consent wiring landing in cadre-core
+> (`formationinvite-fix-curve-and-wire-consent`). It is the remaining deferred
+> e2e tier — see [Automated end-to-end tests](#automated-end-to-end-tests).
 
 ## Run
 
@@ -55,8 +63,9 @@ and stored messages.
 ## Routes
 
 - `#/` — **Home** — node status, party id, peer id, control-network connection,
-  chat-strand status, authority state, Restart, and a (disabled) Phase-2 cadre
-  seed panel.
+  chat-strand status, authority state, relay (dialability) status, Restart, and
+  the **strand-formation panel**: create an invitation (responder) / join via a
+  pasted invitation (initiator), showing the resulting strand id + membership type.
 - `#/messages` — compose / list chat messages backed by the strand's
   `App.Member` / `App.Message` tables (Quereus SQL). The chat sApp is
   append-only — there is no edit/delete (that belonged to the old demo app).
@@ -87,12 +96,58 @@ Authority genesis is **fail-soft**: the chat round-trip runs in bootstrap mode
 and does not depend on authority, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
 
-## Phase 2 (forthcoming)
+## Strand formation (consent / invitation flow)
 
-Consent-driven strand formation, closed-strand membership + RBAC, joining
-another party's cadre via a signed control-network seed, and cross-node /
-cross-party convergence. The Home seed input and the distributed e2e tier are
-placeholders for this work.
+The Home **Strand formation** panel drives the cadre-core formation API
+end-to-end. The flow is between two parties; in a browser-only demo that means
+**two tabs** (a relayed second cadre), with the invitation moved out-of-band by
+copy/paste:
+
+1. **Responder** clicks *Create invitation* → `node.createOpenInvitation(sAppId)`
+   mints a `FormationInvite` token, and `encodeInvitation` base64url-encodes it.
+   Copy the encoded blob.
+2. **Initiator** pastes it and clicks *Form strand* → `decodeInvitation` →
+   `formStrand(invitation, { partyId })` runs the formation protocol against the
+   responder's cadre and returns `{ memberKey, invitePrivateKey, strandId }`.
+3. The initiator then launches the resulting **closed** strand against the same
+   signed chat schema: `addStrand({ strandRow: { Id: strandId, MemberPrivateKey:
+   invitePrivateKey, Type: 'c' }, sAppConfig })`.
+
+### Dialability (relay reservation)
+
+A browser tab can't open a listener, so to be **dialable** for formation it must
+hold a circuit-relay-v2 **reservation** and advertise a `/p2p-circuit` address.
+The relay is deployment infrastructure (see `ops/`), so its multiaddr is resolved
+at runtime — exactly like the ICE manifest:
+
+- `VITE_RELAY_ADDR` (build-time, comma-separated), or
+- `localStorage["relay-addr"]` (runtime override).
+
+When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, dials
+the relay, and waits for a reservation (Home "Relay" row → `reserved`). With **no**
+relay configured the tab stays in the Phase-1 solo posture (`listenAddrs: []`);
+*Create invitation* then surfaces a clear "not dialable — configure a relay" error
+instead of failing silently. (Joining still works if the pasted invitation points
+at a dialable responder.)
+
+### Authorization gates ("RBAC")
+
+There is no app-level role engine — "RBAC" here is the authorization model the
+`CadreControl` schema constraints enforce, plus strand membership:
+
+- `AuthorityKey` / `ValidationKey` inserts are authority-signed (genesis bootstraps
+  the first).
+- `Strand` inserts are authorized by an authority signature **or** a valid
+  `FormationUsage` row (indirect consent via a consumed `FormationInvite`).
+- Closed strands (`Type: 'c'`) carry a member private key; open strands don't.
+
+These gates are observable on Diagnostics (see below). The "Verify authority gate"
+button attempts an *unauthorized* `Strand` insert (a non-enrolled key + bogus
+signature, no consuming `FormationUsage`); the `CadreControl` constraint rejects it
+at commit, demonstrating the gate is live.
+
+> **Still deferred:** live two-party cross-cohort convergence — see
+> [Automated end-to-end tests](#automated-end-to-end-tests).
 
 ## Diagnostics (`#/diag`)
 
@@ -101,6 +156,11 @@ Polls every two seconds while the tab is visible. Surfaces:
 - **Cadre** — party id, control-network connection + control peer id, CadrePeer
   membership count, authority self-genesis outcome, and the chat strand's status
   / connected peers / latency hint / sApp id / error.
+- **Control authorization (RBAC)** — the `CadreControl` gates made observable:
+  authority/validation key counts, the `FormationInvite` / `FormationUsage` audit
+  rows, each control-DB `Strand`'s membership type (open/closed) + member-key
+  presence, the relay-dialability posture, and a "Verify authority gate" button
+  that probes an unauthorized control write (expected: rejected).
 - **Identity** — peer ID, persistence badge, first-seen timestamp and age.
 - **Connectivity** — control-node status, listen multiaddrs (empty in a browser
   peer), per-connection peer ID / remote multiaddr / direction / open protocols,
@@ -162,7 +222,7 @@ ticket rather than papering it over with a shim — the same applies as for
 ```
 src/
   App.svelte             # nav + hash route switcher (Home, Messages, Activity, Diagnostics)
-  Home.svelte            # node status + party/peer/control/strand state + Phase-2 cadre panel
+  Home.svelte            # node status + party/peer/control/strand/relay state + strand-formation panel
   Messages.svelte        # /messages — chat strand send / list
   Activity.svelte        # /log — CadreNode lifecycle event log
   Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
@@ -174,7 +234,8 @@ src/
     strand-storage.ts        # per-strand IndexedDB IRawStorage provider (pre-open bridge)
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
-    network.svelte.ts        # Phase-2 control-network seed input (placeholder)
+    network.svelte.ts        # strand-formation panel state (create / join invitation)
+    relay-config.ts          # optional circuit-relay multiaddr from a runtime manifest
     messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
@@ -202,16 +263,24 @@ yarn workspace @serfab/reference-app-web test:e2e
   persistence, hash routing, the chat strand send/list round-trip, reload
   persistence of strand DML, the schema-signature gate (a pure-Node assertion
   that the valid signed config verifies and a tampered one throws
-  `SchemaVerificationError`), the connection-path classifier parity table, and
-  the diagnostics-surface invariants — notably the **four-transport** Transports
-  list, the canary that no TCP transport leaked into the browser bundle.
-- **Tier 2 — distributed** (`e2e/distributed/`) — **deferred to Phase 2.** These
-  specs assert membership-free Optimystic convergence on a shared network, which
-  no longer holds now that chat data lives inside a cadre **strand** cohort.
-  `e2e/global-setup.ts` writes the fixture as unavailable
-  (`TIER2_DEFERRED_TO_PHASE2`), so every distributed spec skips with a Phase-2
-  reason. Re-establishing cross-node / cross-party convergence requires
-  control-network membership or strand formation (Phase 2).
+  `SchemaVerificationError`), the connection-path classifier parity table, the
+  diagnostics-surface invariants — notably the **four-transport** Transports list,
+  the canary that no TCP transport leaked into the browser bundle — and
+  (`formation-rbac.spec.ts`) the **formation + RBAC** surface a single tab can
+  prove: the formation panel renders, the dialability guard rejects *Create
+  invitation* with no relay, a malformed invitation is rejected on join, the
+  **authority gate** rejects an unauthorized control write, and the authorization
+  surface reflects the genesis authority + zero formation rows.
+- **Tier 2 — cross-party convergence** (`e2e/distributed/`) — **deferred.** The
+  legacy distributed specs assert *membership-free* Optimystic convergence — now
+  obsolete (chat data lives in a cadre **strand** cohort). The Phase-2 analogue —
+  two parties sharing a closed strand via formation, then a message converging
+  across the cohort — is not yet runnable here: it needs (1) a circuit-relay
+  reservation so both tabs are dialable, (2) the DB-backed consent wiring from
+  `formationinvite-fix-curve-and-wire-consent`, and (3) a dialable second cadre (a
+  second relayed tab, or a headless cadre responder fixture — `cadre-cli` has no
+  formation command today). `e2e/global-setup.ts` writes the fixture as
+  unavailable (`TIER2_CONVERGENCE_DEFERRED`), so every distributed spec skips.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."
@@ -219,4 +288,6 @@ Wiring this suite into CI is out of scope for the current ticket — it stops at
 ## Out of scope (for follow-up)
 
 - Real-time push (gossip / sync subscription wiring) — convergence is poll-based.
-- Phase 2: consent strand formation, closed-strand RBAC, cross-party convergence.
+- Live two-party cross-cohort convergence e2e — needs relay infra + a dialable
+  second cadre + the cadre-core consent DB wiring (see Tier 2 above).
+- A richer app-level RBAC notion beyond the schema-enforced `CadreControl` gates.
