@@ -96,7 +96,7 @@ Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{
 | `DELETE /admin/members/:peerId` | signed `CadrePeer` delete |
 | `PUT /admin/invite-addresses` | push NAT-resolved invite addresses (resolver transport) |
 
-`encodeInvite` needs no route: the mint route already returns `encodedInvite`. Invite addresses use a **push** model — the manager `PUT`s NAT-resolved addresses at spawn and on every NAT change; the node holds the latest set and embeds them in subsequent invites, falling back to `libp2pNode.getMultiaddrs()` when none have been pushed. Push (host→node) is chosen over a callback so the control-network node never needs to know or dial the manager's address.
+`encodeInvite` needs no route: the mint route already returns `encodedInvite`. Invite addresses use a **push** model — the manager `PUT`s NAT-resolved addresses at spawn and on every NAT change; the node holds the latest set and embeds them in subsequent invites, falling back to `libp2pNode.getMultiaddrs()` when none have been pushed. The spawn-time push is a bounded retry awaited inside `NatService.start()` (the freshly spawned node's admin channel may not be bound yet), so the manager's invite-minting API does not come up until the first address set has landed (or the retry budget elapses). Push (host→node) is chosen over a callback so the control-network node never needs to know or dial the manager's address.
 
 This node-side surface is established by `cadre-node-admin-channel`; `cadre-host-delegated-authority-node` (6.7) builds the manager-side adapters that spawn the node and consume these routes, and finalizes the topology reconciliation noted above (single household authority node, members as `CadrePeer` rows).
 

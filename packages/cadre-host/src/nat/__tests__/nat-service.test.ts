@@ -371,6 +371,29 @@ describe('NatService — async channel node + onAddressesChanged', () => {
 });
 
 describe('NatService — initial invite-address push retry', () => {
+  it('delivers the initial push exactly once when the node is ready on the first attempt', async () => {
+    // The common production happy path: node bound fast, listener registered
+    // BEFORE start(). No retry needed — but the push must still fire (once).
+    const { node, peerIdCalls } = makeFlakyNode(0, '12D3KooWReady');
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: node,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.42' }),
+      initialPushRetryMs: 1,
+      initialPushTimeoutMs: 2_000,
+    });
+
+    const fired: string[][] = [];
+    svc.onAddressesChanged((addrs) => { fired.push(addrs); });
+
+    await svc.start();
+
+    expect(fired).toEqual([['/ip4/203.0.113.42/tcp/4001/p2p/12D3KooWReady']]);
+    expect(peerIdCalls()).toBe(1); // succeeded on the first attempt, no retry
+  });
+
   it('retries past a not-yet-ready node and delivers the push exactly once', async () => {
     const { node, peerIdCalls } = makeFlakyNode(3, '12D3KooWFlaky');
     const svc = new NatService({
