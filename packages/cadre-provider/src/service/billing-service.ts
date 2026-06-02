@@ -6,6 +6,7 @@ import debug from 'debug';
 import type { Container, UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
+import { fetchContainerHealthStatus } from './container-health.js';
 import type { BillingConfig } from '../config/types.js';
 
 const log = debug('cadre:provider:billing');
@@ -121,14 +122,29 @@ export class BillingService {
 
       try {
         const stats = await this.orchestrator.getStats(container.dockerId);
+
+        // Sample live strand counts from the container's /status endpoint.
+        // Resolves to undefined on any fetch failure (helper swallows errors),
+        // so a single unreachable container degrades to 0 strands rather than
+        // aborting the whole collection pass.
+        const health = await fetchContainerHealthStatus(container);
+        const peakStrands = health?.node?.strands?.active ?? 0;
+
         const metrics: UsageMetrics = {
           containerId: container.id,
           periodStart,
           periodEnd: now,
           uptimeSeconds: (this.config.usageCollectionIntervalSec ?? 60),
-          storageBytes: 0, // Would need to query actual storage
+          // Storage usage is not observable yet: neither the container health
+          // server nor orchestrator stats surface bytes-on-disk. Real metering
+          // is blocked on the Arachnode storage ring — see
+          // tickets/backlog/later/5-quota-enforcement.md. Report 0 until then.
+          storageBytes: 0,
           bandwidthBytes: stats.networkTxBytes,
-          peakStrands: 0, // Would need to query health endpoint
+          // Instantaneous active-strand sample at collection time, not a true
+          // period peak (a real peak needs continuous sampling — separate
+          // enhancement). 0 when /status is unavailable.
+          peakStrands,
         };
         await this.store.saveUsageMetrics(metrics);
       } catch (err) {

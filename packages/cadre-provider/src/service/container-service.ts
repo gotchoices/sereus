@@ -12,6 +12,7 @@ import type {
 } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
+import { statusUrlFromHealthEndpoint } from './container-health.js';
 
 const log = debug('cadre:provider:container');
 
@@ -174,7 +175,7 @@ export class ContainerService {
     // Fetch live health if available
     if (container.healthEndpoint && container.status === 'running') {
       try {
-        const healthRes = await fetch(`${container.healthEndpoint.replace('/health', '/status')}`);
+        const healthRes = await fetch(statusUrlFromHealthEndpoint(container.healthEndpoint));
         if (healthRes.ok) {
           response.health = await healthRes.json();
         }

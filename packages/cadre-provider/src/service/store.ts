@@ -134,6 +134,16 @@ export class FileStore implements ProviderStore {
         this.cache.apiKeys.set(k.keyHash, k);
       }
     }
+
+    const billingFile = path.join(this.dataDir, 'customer-billing.json');
+    if (fs.existsSync(billingFile)) {
+      const data = JSON.parse(fs.readFileSync(billingFile, 'utf-8'));
+      for (const b of data) {
+        b.currentPeriodStart = new Date(b.currentPeriodStart);
+        b.currentPeriodEnd = new Date(b.currentPeriodEnd);
+        this.cache.customerBilling.set(b.customerId, b);
+      }
+    }
   }
 
   private async saveCache(): Promise<void> {
@@ -144,6 +154,9 @@ export class FileStore implements ProviderStore {
 
     const apiKeysFile = path.join(this.dataDir, 'api-keys.json');
     fs.writeFileSync(apiKeysFile, JSON.stringify(Array.from(this.cache.apiKeys.values()), null, 2));
+
+    const billingFile = path.join(this.dataDir, 'customer-billing.json');
+    fs.writeFileSync(billingFile, JSON.stringify(Array.from(this.cache.customerBilling.values()), null, 2));
   }
 
   async getContainer(id: string): Promise<Container | undefined> {
