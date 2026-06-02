@@ -290,6 +290,7 @@ interface SeedAckMessage {
 ```
 
 **Validation**:
+- The `signature` is an ed25519 signature over `digest(canonicalJson({partyId, peers, transactions}), 'sha256')` — a canonical (recursively key-sorted, `undefined`-dropped, whitespace-free) serialization shared with cadre-host's update-manifest signing. Both signer and verifier route through the same `canonicalSeedPayload` builder so the signed bytes are independent of key insertion order and optional-field presence (`transactions` is folded in identically whether absent or present)
 - New node verifies `signature` using `signerKey` (ed25519)
 - `signerKey` must match the `publicKey` of a peer with `isAuthority: true` in the seed's peer list — this ensures only actual authority holders can produce valid seeds
 - TODO: enforce a trust policy for `signerKey` (e.g. pinned authority keys per party, or TOFU with explicit user confirmation)

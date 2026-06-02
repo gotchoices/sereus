@@ -287,6 +287,25 @@ describe('SeedBootstrapService', () => {
       const view = backing.subarray(3);
       expect(new TextDecoder().decode(decodeLengthPrefixedFrame(view))).toBe('hi');
     });
+
+    it('decodes a zero-length body as an empty view', () => {
+      // A bare prefix declaring length 0 is the boundary case: available === 0,
+      // length === 0, so it neither under- nor over-runs.
+      const decoded = decodeLengthPrefixedFrame(new Uint8Array([0, 0, 0, 0]));
+      expect(decoded.length).toBe(0);
+    });
+
+    it('returns only the declared body, ignoring trailing bytes', () => {
+      // declared length < available: the parser uses exactly the declared slice
+      // and never reads past it, so trailing wire garbage cannot leak into the
+      // decoded body.
+      const body = new TextEncoder().encode('hi');
+      const f = frame(body); // declares length 2
+      const withTrailer = new Uint8Array(f.length + 3);
+      withTrailer.set(f, 0);
+      withTrailer.set(new TextEncoder().encode('XYZ'), f.length);
+      expect(new TextDecoder().decode(decodeLengthPrefixedFrame(withTrailer))).toBe('hi');
+    });
   });
 
   describe('SEED_PROTOCOL', () => {
