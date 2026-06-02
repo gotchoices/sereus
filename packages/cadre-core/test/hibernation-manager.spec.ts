@@ -180,6 +180,28 @@ describe('HibernationManager', () => {
       manager.stop();
     });
 
+    it('a rejecting onHibernate is caught (no unhandled rejection, no check-in scheduled)', async () => {
+      const callbacks = createCallbacks();
+      // onHibernate now releases resources and can reject (e.g. db.close throws).
+      callbacks.onHibernate.mockRejectedValueOnce(new Error('quiesce boom'));
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-reject', 'interactive');
+      manager.trackStrand(instance);
+
+      const timeouts = HIBERNATION_TIMEOUTS.interactive;
+      // Driving past idle + hibernate must not throw despite the rejected wake.
+      await vi.advanceTimersByTimeAsync(timeouts.idleTimeout + timeouts.hibernateTimeout + 200);
+
+      // The rejection was swallowed: tracking state stays consistent and the
+      // manager is still usable (the failed hibernate just skipped check-in setup).
+      expect(callbacks.onHibernate).toHaveBeenCalledTimes(1);
+      expect(manager.getStatus().enabled).toBe(true);
+
+      manager.stop();
+    });
+
     it('fires onWake exactly once for two near-simultaneous activities', async () => {
       const callbacks = createCallbacks();
       const manager = new HibernationManager({ enabled: true }, callbacks);

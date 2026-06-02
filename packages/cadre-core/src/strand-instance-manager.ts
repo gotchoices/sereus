@@ -238,50 +238,83 @@ export class StrandInstanceManager {
     // otherwise default to true for storage profile nodes.
     const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
 
-    let t0 = performance.now();
-    const node = await createLibp2pNode({
-      port: 0, // Random port
-      bootstrapNodes: config.bootstrapNodes ?? [],
-      networkName: `strand-${strandId}`,
-      storage: strandStorage,
-      fretProfile: config.profile === 'storage' ? 'core' : 'edge',
-      relay: enableRelay,
-      clusterSize: 3,
-      clusterPolicy: {
-        allowDownsize: true,
-        sizeTolerance: 0.5
-      },
-      arachnode: {
-        enableRingZulu: config.profile === 'storage'
-      },
-      ...(config.privateKey && { privateKey: config.privateKey }),
-      ...(config.network?.transports && { transports: config.network.transports }),
-      ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs })
-    }) as Libp2pNodeWithRepo;
-    timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
+    try {
+      let t0 = performance.now();
+      const node = await createLibp2pNode({
+        port: 0, // Random port
+        bootstrapNodes: config.bootstrapNodes ?? [],
+        networkName: `strand-${strandId}`,
+        storage: strandStorage,
+        fretProfile: config.profile === 'storage' ? 'core' : 'edge',
+        relay: enableRelay,
+        clusterSize: 3,
+        clusterPolicy: {
+          allowDownsize: true,
+          sizeTolerance: 0.5
+        },
+        arachnode: {
+          enableRingZulu: config.profile === 'storage'
+        },
+        ...(config.privateKey && { privateKey: config.privateKey }),
+        ...(config.network?.transports && { transports: config.network.transports }),
+        ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs })
+      }) as Libp2pNodeWithRepo;
+      timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 
-    instance.libp2pNode = node;
+      instance.libp2pNode = node;
 
-    // Create and initialize the StrandDatabase. In bootstrap mode the same
-    // strandStorage instance also backs the optimystic local transactor so
-    // DML lands on the host's persistent storage (e.g. MMKV on RN). Sharing
-    // the instance — not creating a second one over the same id+prefix —
-    // avoids cache divergence between the libp2p and database paths.
-    t0 = performance.now();
-    const strandDb = new StrandDatabase({
-      strandId,
-      sAppConfig,
-      libp2pNode: node,
-      coordinatedRepo: node.coordinatedRepo,
-      mode: config.mode ?? 'networked',
-      rawStorage: strandStorage
-    });
-    await strandDb.initialize();
-    timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
-    instance.database = strandDb;
+      // Create and initialize the StrandDatabase. In bootstrap mode the same
+      // strandStorage instance also backs the optimystic local transactor so
+      // DML lands on the host's persistent storage (e.g. MMKV on RN). Sharing
+      // the instance — not creating a second one over the same id+prefix —
+      // avoids cache divergence between the libp2p and database paths.
+      //
+      // Attach before initialize so a failed init is cleaned up by
+      // releaseRuntime below (close() is safe on a partially-initialized db).
+      t0 = performance.now();
+      const strandDb = new StrandDatabase({
+        strandId,
+        sAppConfig,
+        libp2pNode: node,
+        coordinatedRepo: node.coordinatedRepo,
+        mode: config.mode ?? 'networked',
+        rawStorage: strandStorage
+      });
+      instance.database = strandDb;
+      await strandDb.initialize();
+      timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
 
-    instance.status = 'active';
-    instance.lastActivity = new Date();
+      instance.status = 'active';
+      instance.lastActivity = new Date();
+    } catch (error) {
+      // Roll back any partially-attached runtime so the instance is left with
+      // NEITHER handle. Otherwise the `libp2pNode || database` "already live"
+      // guard in resumeStrand/handleStrandWake would treat a half-built strand
+      // as healthy — leaking the libp2p node and never retrying the rebuild.
+      await this.releaseRuntime(instance).catch((cleanupErr) => {
+        log('buildStrandRuntime cleanup for strand %s also failed: %o', strandId, cleanupErr);
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Release an instance's strand-network runtime: close the StrandDatabase, then
+   * stop the libp2p node (construction order in reverse), clearing both fields
+   * and zeroing connectedPeers. Tolerant of partially-built state — either handle
+   * may be absent — so it doubles as rollback for a failed `buildStrandRuntime`.
+   * Shared by `quiesceStrand`, `stopStrand`, and that rollback path.
+   */
+  private async releaseRuntime(instance: StrandInstance): Promise<void> {
+    if (instance.database) {
+      await instance.database.close();
+      instance.database = undefined;
+    }
+    if (instance.libp2pNode) {
+      await instance.libp2pNode.stop();
+      instance.libp2pNode = undefined;
+    }
+    instance.connectedPeers = 0;
   }
 
   /**
@@ -304,16 +337,7 @@ export class StrandInstanceManager {
     }
 
     log('Quiescing strand instance: %s', strandId);
-    // Close the database before stopping libp2p (mirrors stopStrand ordering).
-    if (instance.database) {
-      await instance.database.close();
-      instance.database = undefined;
-    }
-    if (instance.libp2pNode) {
-      await instance.libp2pNode.stop();
-      instance.libp2pNode = undefined;
-    }
-    instance.connectedPeers = 0;
+    await this.releaseRuntime(instance);
     log('Strand %s quiesced (resources released, instance retained)', strandId);
   }
 
@@ -381,15 +405,7 @@ export class StrandInstanceManager {
     instance.status = 'stopping';
 
     try {
-      // Close the database before stopping libp2p
-      if (instance.database) {
-        await instance.database.close();
-        instance.database = undefined;
-      }
-      if (instance.libp2pNode) {
-        await instance.libp2pNode.stop();
-        instance.libp2pNode = undefined;
-      }
+      await this.releaseRuntime(instance);
       instance.status = 'stopped';
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);

@@ -135,6 +135,38 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(1);
   });
 
+  it('resume that fails to rebuild rolls back the partial runtime, so a later resume retries', async () => {
+    const manager = new StrandInstanceManager();
+    const instance = await manager.startStrand(createStartConfig('flaky-strand'));
+
+    await manager.quiesceStrand('flaky-strand');
+    expect(instance.libp2pNode).toBeUndefined();
+
+    // The libp2p node comes up, but StrandDatabase.initialize() throws — the
+    // failure mode that previously left the node attached (leaked) and the
+    // instance falsely "already live".
+    mocks.initialize.mockRejectedValueOnce(new Error('schema apply boom'));
+    await expect(
+      manager.resumeStrand('flaky-strand', { bootstrapNodes: [], mode: 'networked' })
+    ).rejects.toThrow(/schema apply boom/);
+
+    // Rolled back to a fully-released state: neither handle attached, status error.
+    expect(instance.libp2pNode).toBeUndefined();
+    expect(instance.database).toBeUndefined();
+    expect(instance.status).toBe('error');
+    // The node built during the failed resume was stopped (no leak): one stop
+    // for the quiesce + one for the rollback.
+    expect(mocks.stop).toHaveBeenCalledTimes(2);
+
+    // A subsequent resume actually rebuilds (not a false "already live" return).
+    const resumed = await manager.resumeStrand('flaky-strand', { bootstrapNodes: [], mode: 'networked' });
+    expect(resumed.status).toBe('active');
+    expect(resumed.libp2pNode).toBeDefined();
+    expect(resumed.database).toBeDefined();
+    // start (1) + failed resume (2) + successful resume (3).
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(3);
+  });
+
   it('stopStrand after quiesce removes the instance and clears the retained launch config', async () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('stop-after-quiesce'));

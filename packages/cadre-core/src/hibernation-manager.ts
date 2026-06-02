@@ -208,13 +208,16 @@ export class HibernationManager {
 
     log('Idle timeout for strand %s', strandId);
 
-    // Transition to idle
+    // Transition to idle. The callback can reject (e.g. a future idle handler
+    // that releases resources); catch so the timer chain never unhandled-rejects.
     void this.callbacks.onIdle(strandId).then(() => {
       // Schedule hibernate transition
       const timeouts = this.getTimeouts(latencyHint);
       if (timeouts.hibernateTimeout !== Infinity) {
         this.scheduleHibernateTransition(instance);
       }
+    }).catch((err) => {
+      log('onIdle failed for strand %s: %o', strandId, err);
     });
   }
 
@@ -240,13 +243,17 @@ export class HibernationManager {
 
     log('Hibernate timeout for strand %s', strandId);
 
-    // Transition to hibernating
+    // Transition to hibernating. onHibernate now releases strand-network
+    // resources (quiesce), so its close()/stop() can reject — catch so a failed
+    // hibernate logs instead of producing an unhandled rejection.
     void this.callbacks.onHibernate(strandId).then(() => {
       // Schedule periodic check-ins
       const timeouts = this.getTimeouts(latencyHint);
       if (timeouts.checkInInterval !== Infinity) {
         this.scheduleCheckIn(instance);
       }
+    }).catch((err) => {
+      log('onHibernate failed for strand %s: %o', strandId, err);
     });
   }
 
