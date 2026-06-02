@@ -1,7 +1,6 @@
 const { execSync } = require('child_process');
 const fs = require('fs');
 const { join } = require('path');
-const { pathToFileURL } = require('url');
 
 const rootDir = join(__dirname, '..');
 const packageName = process.argv[2];
@@ -14,33 +13,25 @@ if (!packageName) {
 const packageDir = join(rootDir, 'packages', packageName);
 
 /**
- * Read PROD_KEY_BASE64 straight from source and decide placeholder-ness — the
- * fallback when the built export isn't available. Honors CADRE_HOST_UPDATE_DEV_KEY
- * with the same precedence as the runtime `isPlaceholderReleaseKey`.
+ * Decide whether the embedded release key is still the all-zeros placeholder by
+ * reading PROD_KEY_BASE64 straight from source. This is the byte string the
+ * build compiles verbatim into `dist`, so it is exactly what ships.
+ *
+ * Deliberately ignores `CADRE_HOST_UPDATE_DEV_KEY`: that override is a *runtime*
+ * dev/CI affordance that never ships in the package, so it has no bearing on
+ * what the published binary will trust. (Reusing the runtime
+ * `isPlaceholderReleaseKey`, which honors the override, would let a dev key set
+ * on the publish/CI machine silently wave the placeholder through.)
  */
-function sourceKeyIsPlaceholder(dir) {
+function embeddedKeyIsPlaceholder(dir) {
 	const srcPath = join(dir, 'src', 'update', 'release-key.ts');
 	const src = fs.readFileSync(srcPath, 'utf8');
 	const match = /const PROD_KEY_BASE64 = '([^']*)';/.exec(src);
 	if (!match) {
 		throw new Error(`Could not locate PROD_KEY_BASE64 in ${srcPath} to verify the release key`);
 	}
-	const override = (process.env.CADRE_HOST_UPDATE_DEV_KEY || '').trim();
-	const effective = override.length > 0 ? override : match[1];
-	const raw = Buffer.from(effective, 'base64');
+	const raw = Buffer.from(match[1], 'base64');
 	return raw.length === 32 && raw.every((b) => b === 0);
-}
-
-/** Prefer the built export; fall back to a source read if dist isn't present. */
-async function embeddedKeyIsPlaceholder(dir) {
-	const distEntry = join(dir, 'dist', 'index.js');
-	if (fs.existsSync(distEntry)) {
-		const mod = await import(pathToFileURL(distEntry).href);
-		if (typeof mod.isPlaceholderReleaseKey === 'function') {
-			return mod.isPlaceholderReleaseKey();
-		}
-	}
-	return sourceKeyIsPlaceholder(dir);
 }
 
 /**
@@ -49,12 +40,12 @@ async function embeddedKeyIsPlaceholder(dir) {
  * signature_invalid, making the update flow dead on arrival. The escape hatch
  * CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1 is for internal/test publishes only.
  */
-async function assertReleaseKeyEmbedded(dir) {
+function assertReleaseKeyEmbedded(dir) {
 	if (process.env.CADRE_HOST_ALLOW_PLACEHOLDER_KEY === '1') {
 		console.warn('CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1 — skipping release-key placeholder guard.');
 		return;
 	}
-	if (await embeddedKeyIsPlaceholder(dir)) {
+	if (embeddedKeyIsPlaceholder(dir)) {
 		throw new Error(
 			'the embedded Ed25519 release key is the all-zeros placeholder.\n' +
 			'  Generate a real keypair offline: node packages/cadre-host/scripts/release-keygen.mjs --write-source\n' +
@@ -73,7 +64,7 @@ async function main() {
 	execSync('yarn build', { stdio: 'inherit' });
 
 	if (packageName === 'cadre-host') {
-		await assertReleaseKeyEmbedded(packageDir);
+		assertReleaseKeyEmbedded(packageDir);
 	}
 
 	execSync('yarn npm publish --access public', { stdio: 'inherit' });
