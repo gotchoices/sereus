@@ -23,7 +23,10 @@
 table Items (
     Id text primary key,
     Name text not null,
-    Value text,
+    -- Explicitly nullable: Quereus follows Third Manifesto semantics and defaults
+    -- unqualified columns to NOT NULL, so the `null` keyword is required for the
+    -- `coalesce(Value,'')` / signer `value ?? ''` empty-segment branch to be reachable.
+    Value text null,
     CreatedBy text not null,
     constraint AuthorizedWrite check (
         -- Insert: the creator must be the context member AND sign the payload.

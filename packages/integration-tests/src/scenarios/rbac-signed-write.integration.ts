@@ -291,6 +291,24 @@ describe('sApp signed-write RBAC (real strand)', () => {
 				[M.publicKey, mDeleteSig, 'item-1'],
 			);
 			expect(await aliceDb.get(`select Id from App.Items where Id = 'item-1'`)).toBeUndefined();
+
+			// ── 8. Authorized insert with a null Value accepted ──────────────
+			// Exercises the empty-segment branch of the payload: the JS signer's
+			// `${value ?? ''}` and the constraint's `coalesce(Value,'')` must both
+			// collapse a null Value to the same empty string, so signer and verifier
+			// still operate on identical bytes. (Cases 1–7 only used non-null values.)
+			const nullSig = signItem(M, 'item-null', 'noval', null);
+			await aliceDb.exec(
+				`insert into App.Items (Id, Name, Value, CreatedBy)
+				   with context MemberKey = ?, Signature = ?
+				   values (?, ?, ?, ?)`,
+				[M.publicKey, nullSig, 'item-null', 'noval', null, M.publicKey],
+			);
+			const nullRow = await aliceDb.get(
+				`select Name, Value from App.Items where Id = 'item-null'`,
+			);
+			expect(nullRow?.Name).toBe('noval');
+			expect(nullRow?.Value ?? null).toBeNull();
 		} finally {
 			await bobNode?.stop();
 			await aliceNode?.stop();
