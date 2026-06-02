@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, statSync, existsSync } from 'node:fs';
-import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -135,10 +135,14 @@ export function resolveSafe(rootDir: string, urlPath: string): string | null {
   const root = normalize(rootDir);
   const target = normalize(join(root, cleaned === '/' ? '' : cleaned));
   // Containment: target must be rootDir itself or strictly beneath it.
-  // `relative(root, root)` is '' (accepted); descendants have no leading '..';
-  // siblings/escapes start with '..' (or are absolute across drives) → rejected.
+  // `relative(root, target)` is '' for root itself (accepted) and a descendant
+  // path with no leading '..' for in-root assets. Reject when it climbs out
+  // (exactly '..', or '..' + separator) or — cross-drive on Windows — is
+  // absolute. Guarding on '..' + separator rather than a bare '..' prefix avoids
+  // falsely rejecting legitimate in-root names that merely *begin* with '..'
+  // (e.g. a '..foo' asset), which would re-introduce a looser prefix check.
   const rel = relative(root, target);
-  if (rel.startsWith('..') || isAbsolute(rel)) return null;
+  if (rel === '..' || rel.startsWith('..' + sep) || isAbsolute(rel)) return null;
   return target;
 }
 

@@ -1,6 +1,6 @@
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join, normalize, relative } from 'node:path';
+import { join, normalize, relative, sep } from 'node:path';
 
 import Fastify from 'fastify';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -30,6 +30,12 @@ describe('resolveSafe', () => {
     expect(resolveSafe(root, '/../ui-private/secret')).toBeNull();
   });
 
+  it('accepts an in-root asset whose name merely begins with ".."', () => {
+    // `..foo` is a legitimate descendant — the containment guard must not reject
+    // it via a loose '..' prefix match (the precise check keys on '..' + sep).
+    expect(resolveSafe(root, '/..foo.js')).toBe(normalize(join(root, '..foo.js')));
+  });
+
   it('rejects ordinary out-of-tree traversal', () => {
     expect(resolveSafe(root, '/../../etc/passwd')).toBeNull();
   });
@@ -57,7 +63,7 @@ describe('resolveSafe', () => {
       const resolved = resolveSafe(root, p);
       if (resolved !== null) {
         const rel = relative(normalize(root), resolved);
-        expect(rel.startsWith('..')).toBe(false);
+        expect(rel === '..' || rel.startsWith('..' + sep)).toBe(false);
       }
     }
   });
@@ -113,14 +119,25 @@ describe('serveStatic (via registerStaticMount)', () => {
     expect(res.body).toContain('<title>spa</title>');
   });
 
-  // Boundary smoke-check (NOT the prefix-bypass regression test — that lives in
-  // the `resolveSafe` block above). Fastify's router collapses `../` (literal
-  // and `%2e%2e`-encoded) to within-root before the handler runs, so a
-  // traversal URL never reaches `resolveSafe` in its escaping form over HTTP.
-  // The invariant we assert at the HTTP boundary is simply: sibling content is
-  // never served, regardless of vector.
+  // HTTP-level regression for the sibling-prefix bypass. Two vector classes:
+  //   - literal / `%2e%2e`-with-literal-slash: Fastify's router collapses the
+  //     `../` to a within-root path before the handler, so these never reach
+  //     `resolveSafe` in escaping form — they pass regardless of the fix.
+  //   - encoded-SEPARATOR (`%2f`/`%5c`): Fastify does NOT collapse these; the
+  //     handler sees the still-encoded url, `decodeSafe` then reconstitutes
+  //     `../`, and the escaping path DOES reach `resolveSafe`. Under the old
+  //     `startsWith` guard this served the sibling secret over HTTP — a genuine
+  //     exploit. These cases fail without the `relative`-based guard.
+  // Either way the asserted invariant is the same: sibling content never leaks.
   it('never serves sibling-prefix directory content over HTTP', async () => {
-    for (const url of ['/../ui-private/secret.txt', '/%2e%2e/ui-private/secret.txt']) {
+    const vectors = [
+      '/../ui-private/secret.txt',
+      '/%2e%2e/ui-private/secret.txt',
+      '/..%2fui-private%2fsecret.txt',
+      '/%2e%2e%2fui-private%2fsecret.txt',
+      '/..%5cui-private%5csecret.txt',
+    ];
+    for (const url of vectors) {
       const res = await app.inject({ method: 'GET', url });
       expect(res.body).not.toContain('top secret');
     }
