@@ -2,7 +2,8 @@ import { Command } from 'commander';
 import fs from 'node:fs';
 import path from 'node:path';
 import debug from 'debug';
-import { EnrollmentService } from '@serfab/cadre-core';
+import { EnrollmentService, verifyPeerAuthorization } from '@serfab/cadre-core';
+import { peerIdFromString } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 
 const log = debug('cadre:cli:enroll');
@@ -49,60 +50,64 @@ export const enrollCommand = new Command('enroll')
   )
   .addCommand(
     new Command('register')
-      .description('Register a peer with the control network (requires authority signature)')
-      .requiredOption('-p, --peer-id <id>', 'Peer ID to register')
-      .requiredOption('-b, --bootstrap <addrs...>', 'Bootstrap node multiaddrs')
-      .requiredOption('-a, --authority-key <key>', 'Authority public key that signed')
-      .requiredOption('-s, --signature <sig>', 'Signature from authority')
-      .option('-c, --config <path>', 'Config file for node settings', 'cadre.yaml')
+      .description('Verify an authority-signed peer authorization (offline check — does not contact the control network or register the peer)')
+      .requiredOption('-p, --peer-id <id>', 'Peer ID the authority signed')
+      .requiredOption('-b, --bootstrap <addrs...>', 'Bootstrap node multiaddrs (advisory metadata; echoed back, not verified)')
+      .requiredOption('-a, --authority-key <key>', 'Authority public key that produced the signature (base64url)')
+      .requiredOption('-s, --signature <sig>', 'Authority signature over the peer ID (base64url)')
+      .option('-c, --config <path>', 'Config file for node settings (echoed back; not used to register)', 'cadre.yaml')
       .action(async (options) => {
-        console.log('Registering peer with control network...');
-        log('Peer ID: %s', options.peerId);
+        log('Verifying authority signature for peer: %s', options.peerId);
         log('Bootstrap nodes: %o', options.bootstrap);
 
-        // Create enrollment service with custom verifier
-        const enrollment = new EnrollmentService();
-
-        // Validate the registration data format
-        // Note: Without an AuthorityVerifier, we can only check the format
-        const registration = {
-          peerId: options.peerId,
-          bootstrapNodes: options.bootstrap,
-          authorityKey: options.authorityKey,
-          signature: options.signature,
-        };
-
-        // Basic validation of the inputs
-        if (!registration.peerId || registration.peerId.length < 10) {
-          console.error('✗ Invalid peer ID format');
+        // Meaningful input validation (replaces the old length-only theatre).
+        // The peer ID must actually parse as a libp2p peer ID.
+        try {
+          peerIdFromString(options.peerId);
+        } catch {
+          console.error('✗ Invalid peer ID (does not parse as a libp2p peer ID)');
           process.exit(1);
         }
 
-        if (!registration.bootstrapNodes || registration.bootstrapNodes.length === 0) {
+        // At least one bootstrap node is advisory metadata for a later start,
+        // not a registration prerequisite — but require one so the operator
+        // doesn't think this command persisted connection info.
+        if (!options.bootstrap || options.bootstrap.length === 0) {
           console.error('✗ At least one bootstrap node is required');
           process.exit(1);
         }
 
-        if (!registration.authorityKey || registration.authorityKey.length < 10) {
-          console.error('✗ Invalid authority key format');
+        if (!options.authorityKey) {
+          console.error('✗ Authority key is required');
           process.exit(1);
         }
 
-        if (!registration.signature || registration.signature.length < 10) {
-          console.error('✗ Invalid signature format');
+        if (!options.signature) {
+          console.error('✗ Signature is required');
           process.exit(1);
         }
 
-        console.log('✓ Registration data format is valid');
-        console.log(`  Peer ID:     ${registration.peerId}`);
-        console.log(`  Authority:   ${registration.authorityKey.substring(0, 20)}...`);
-        console.log(`  Bootstrap:   ${registration.bootstrapNodes.length} node(s)`);
+        // The one real job: verify the authority signature over the peer ID,
+        // using the same digest/scheme the authority used to produce it.
+        const valid = verifyPeerAuthorization(options.peerId, options.authorityKey, options.signature);
+
+        if (!valid) {
+          console.error('✗ Authority signature does not match this peer ID (peer is NOT authorized)');
+          console.error(`  Peer ID:   ${options.peerId}`);
+          console.error(`  Authority: ${options.authorityKey.substring(0, 20)}…`);
+          process.exit(1);
+        }
+
+        console.log('✓ Authority signature is valid for this peer ID');
+        console.log(`  Peer ID:     ${options.peerId}`);
+        console.log(`  Authority:   ${options.authorityKey.substring(0, 20)}…`);
+        console.log(`  Bootstrap:   ${options.bootstrap.length} node(s) (advisory; not registered)`);
         console.log('');
-        console.log('To complete registration, the authority must submit this');
-        console.log('registration to the control network from an authorized node.');
-        console.log('');
-        console.log('Then start the node with:');
-        console.log(`  cadre start -c ${options.config}`);
+        console.log('This command ONLY verified the signature offline. It did NOT');
+        console.log('register or enroll this peer anywhere. Membership is granted by');
+        console.log('the running authority node, which self-registers and authorizes');
+        console.log('peers — an operator on the authority node runs:');
+        console.log('  cadre start --authority');
       })
   );
 

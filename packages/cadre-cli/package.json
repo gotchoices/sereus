@@ -45,7 +45,6 @@
     "start": "node dist/bin/cadre.js"
   },
   "devDependencies": {
-    "@libp2p/peer-id": "^6.0.4",
     "@types/debug": "^4.1.12",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.10",
@@ -56,6 +55,7 @@
   "dependencies": {
     "@libp2p/crypto": "^5.1.13",
     "@libp2p/interface": "^3.1.0",
+    "@libp2p/peer-id": "^6.0.4",
     "@optimystic/db-p2p": "^0.13.5",
     "@optimystic/db-p2p-storage-fs": "^0.13.5",
     "@serfab/cadre-core": "workspace:^",

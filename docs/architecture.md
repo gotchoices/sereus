@@ -885,6 +885,8 @@ Maestro Studio, with Appium as the documented fallback.
 ### `@serfab/cadre-cli` (Complete)
 
 - CLI commands: `cadre start`, `cadre status`, `cadre enroll`, `cadre strands`
+  - `cadre status` reads **live runtime** from the running node's health `/status` endpoint (`--health-host`/`--health-port`, env `CADRE_HEALTH_PORT`): it reports the live `running`/`peerId`/`multiaddrs`/strand counts when a node answers, clearly distinguished from the static "Configuration" summary. A missing config is non-fatal (the live query still runs); when no node is reachable it says so (and exits non-zero, code `3`) rather than asserting `running: false`.
+  - `cadre enroll register` is an **offline signature verification** — it checks that the supplied authority signature is valid over the peer ID (the same digest/scheme the authority signs with, via `verifyPeerAuthorization`) and does **not** contact the control network or register the peer. Membership is granted by the running authority node (`cadre start --authority`), which self-registers and authorizes peers.
 - YAML/JSON config with environment variable overrides
 - Systemd service file with security hardening, graceful shutdown
 

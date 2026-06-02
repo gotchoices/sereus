@@ -72,6 +72,12 @@ export {
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
 
+// Peer Authorization (shared authority-signature digest + offline verifier)
+export {
+  peerAuthorizationDigest,
+  verifyPeerAuthorization
+} from './peer-authorization.js';
+
 // Strand Wake (control-network push-wake protocol)
 export {
   StrandWakeService,

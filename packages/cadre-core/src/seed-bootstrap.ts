@@ -32,6 +32,7 @@ import type {
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
+import { peerAuthorizationDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   dbAnchoredTrustPolicy,
@@ -270,8 +271,10 @@ export class SeedBootstrapService {
       throw new Error('Control database not initialized');
     }
 
-    // Sign the peer ID with the authority key
-    const peerIdDigest = digest(row.peerId, 'sha256', 'utf8', 'base64url') as string;
+    // Sign the peer ID with the authority key. The signed bytes come from the
+    // shared peerAuthorizationDigest helper so the offline `cadre enroll
+    // register` verifier checks the exact same construction.
+    const peerIdDigest = peerAuthorizationDigest(row.peerId);
     const signature = sign(
       peerIdDigest,
       this.config.authorityPrivateKey,
@@ -307,7 +310,8 @@ export class SeedBootstrapService {
 
     log('Removing peer: %s', peerId);
 
-    const peerIdDigest = digest(peerId, 'sha256', 'utf8', 'base64url') as string;
+    // Same canonical digest as the authorizing INSERT (see peerAuthorizationDigest).
+    const peerIdDigest = peerAuthorizationDigest(peerId);
     const signature = sign(
       peerIdDigest,
       this.config.authorityPrivateKey,
