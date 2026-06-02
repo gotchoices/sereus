@@ -13,7 +13,7 @@
  */
 
 import { readFileSync, statSync, existsSync } from 'node:fs';
-import { dirname, extname, join, normalize, resolve } from 'node:path';
+import { dirname, extname, isAbsolute, join, normalize, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
@@ -118,12 +118,27 @@ function serveStatic(rootDir: string, request: FastifyRequest, reply: FastifyRep
   });
 }
 
-function resolveSafe(rootDir: string, urlPath: string): string | null {
+/**
+ * Resolve a request path to an absolute file path inside `rootDir`, or `null`
+ * if it would escape the root.
+ *
+ * Exported for direct unit testing. The containment check uses `path.relative`
+ * rather than a bare `startsWith` prefix test: the latter is the classic
+ * prefix-bypass anti-pattern, accepting sibling directories whose name shares
+ * `rootDir`'s basename as a prefix (e.g. `dist/ui-private` vs `dist/ui`).
+ * `relative` respects the path-separator boundary on both POSIX and Windows,
+ * and surfaces cross-drive escapes on Windows as an absolute result.
+ */
+export function resolveSafe(rootDir: string, urlPath: string): string | null {
   const cleaned = decodeSafe(urlPath);
   if (cleaned === null) return null;
-  const target = normalize(join(rootDir, cleaned === '/' ? '' : cleaned));
-  // Disallow path traversal above rootDir.
-  if (!target.startsWith(normalize(rootDir))) return null;
+  const root = normalize(rootDir);
+  const target = normalize(join(root, cleaned === '/' ? '' : cleaned));
+  // Containment: target must be rootDir itself or strictly beneath it.
+  // `relative(root, root)` is '' (accepted); descendants have no leading '..';
+  // siblings/escapes start with '..' (or are absolute across drives) → rejected.
+  const rel = relative(root, target);
+  if (rel.startsWith('..') || isAbsolute(rel)) return null;
   return target;
 }
 
