@@ -99,6 +99,7 @@ export class ContainerService {
       updated.dockerId = result.dockerId;
       updated.healthEndpoint = result.healthEndpoint;
       updated.metricsEndpoint = result.metricsEndpoint;
+      updated.seedEndpoint = result.seedEndpoint;
       updated.status = 'enrolling';
       updated.updatedAt = new Date();
       await this.store.saveContainer(updated);

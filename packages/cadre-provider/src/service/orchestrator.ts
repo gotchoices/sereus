@@ -29,6 +29,8 @@ export interface OrchestratorCreateResult {
   healthEndpoint: string;
   /** Metrics endpoint URL */
   metricsEndpoint: string;
+  /** The URL of the node's seed API (`POST /seed`), served on the health server's port */
+  seedEndpoint: string;
   /** P2P listening port */
   p2pPort: number;
 }
@@ -84,6 +86,7 @@ export class MockOrchestrator implements Orchestrator {
       dockerId,
       healthEndpoint: `http://localhost:${8080 + this.idCounter}/health`,
       metricsEndpoint: `http://localhost:${9090 + this.idCounter}/metrics`,
+      seedEndpoint: `http://localhost:${8080 + this.idCounter}/seed`,
       p2pPort: 4000 + this.idCounter,
     };
   }
