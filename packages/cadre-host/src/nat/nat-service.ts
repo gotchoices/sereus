@@ -28,6 +28,14 @@ import { AuthorityNodeUnavailableError } from '../authority/authority-node-clien
 
 const log = debug('cadre:host:nat-service');
 
+/** Sleep helper for the initial-push retry loop; unref'd so it never holds the process open. */
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => {
+    const t = setTimeout(res, ms);
+    if (typeof t.unref === 'function') t.unref();
+  });
+}
+
 /**
  * Minimal slice of CadreNode that NatService needs — defined as an interface
  * so tests can inject a mock without a real libp2p stack. Mirrors
@@ -64,6 +72,10 @@ export interface NatServiceOptions {
   externalIpDetector?: ExternalIpDetector;
   /** Optional: re-use an existing NatStore (mostly for tests). */
   store?: NatStore;
+  /** Initial-push retry: poll interval while the node is not-yet-ready. Default 250ms. */
+  initialPushRetryMs?: number;
+  /** Initial-push retry: total budget before giving up (best-effort). Default 15000ms. */
+  initialPushTimeoutMs?: number;
 }
 
 /**
@@ -108,6 +120,10 @@ export class NatService {
   // For createSecretsStore async init.
   private readonly secretsRootDir: string;
 
+  // Initial invite-address push retry tunables (injectable so tests run fast).
+  private readonly initialPushRetryMs: number;
+  private readonly initialPushTimeoutMs: number;
+
   constructor(opts: NatServiceOptions) {
     this.cadreNode = opts.cadreNode;
     this.store = opts.store ?? new NatStore(opts.rootDir);
@@ -117,6 +133,8 @@ export class NatService {
     this.portMapper = opts.portMapper ?? null;
     this.injectedDetector = opts.externalIpDetector ?? null;
     this.secretsRootDir = opts.rootDir;
+    this.initialPushRetryMs = opts.initialPushRetryMs ?? 250;
+    this.initialPushTimeoutMs = opts.initialPushTimeoutMs ?? 15_000;
     this.currentSettings = this.store.load();
   }
 
@@ -146,8 +164,9 @@ export class NatService {
     });
     await this.ddnsUpdater.start();
 
-    // Initial invite-address push (best-effort; skipped if the node isn't up).
-    await this.fireAddressesChanged();
+    // Initial invite-address push. Retries on `node_unavailable` until the
+    // freshly spawned authority node accepts it (bounded; best-effort after).
+    await this.pushInitialAddresses();
   }
 
   /** Release the port mapping and clear timers. Idempotent. */
@@ -276,11 +295,45 @@ export class NatService {
       log('onAddressesChanged skipped: %s', (err as Error).message);
       return;
     }
+    await this.notifyAddressListeners(addresses);
+  }
+
+  /** Deliver an address set to every registered listener (errors are logged, not thrown). */
+  private async notifyAddressListeners(addresses: string[]): Promise<void> {
     for (const listener of this.addressListeners) {
       try {
         await listener(addresses);
       } catch (err) {
         log('address listener threw: %s', (err as Error).message);
+      }
+    }
+  }
+
+  /**
+   * Initial invite-address push. The authority node's admin channel is a freshly
+   * spawned detached child that may not be bound yet (and may not have a libp2p
+   * peer ID yet), so a single attempt races readiness and silently drops the first
+   * NAT-resolved address set. Retry on `node_unavailable` until the node accepts it
+   * or the bounded budget elapses (best-effort thereafter). Awaited by start() so
+   * the management API — the invite-minting path — does not come up first.
+   */
+  private async pushInitialAddresses(): Promise<void> {
+    if (this.addressListeners.size === 0) return;
+    const deadline = this.nowFn().getTime() + this.initialPushTimeoutMs;
+    for (;;) {
+      if (!this.started) return; // stop() ran during a retry
+      try {
+        const addresses = await this.getInviteAddresses();
+        await this.notifyAddressListeners(addresses);
+        return;
+      } catch (err) {
+        const code = err instanceof NatError ? err.code : undefined;
+        // Only retry transient not-ready; surface anything unexpected via log + give up.
+        if (code !== 'node_unavailable' || this.nowFn().getTime() >= deadline) {
+          log('initial invite-address push not delivered: %s', (err as Error).message);
+          return;
+        }
+        await sleep(this.initialPushRetryMs);
       }
     }
   }

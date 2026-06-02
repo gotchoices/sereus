@@ -305,7 +305,9 @@ program
       });
 
       // Push NAT-resolved invite addresses to the node on every NAT change.
-      // NatService.start() also fires this once (best-effort initial push).
+      // NatService.start() also fires this once as an initial push, retried
+      // until the freshly spawned authority node accepts it (bounded; the
+      // management API that mints invites comes up only after start() resolves).
       natService.onAddressesChanged(async (addresses) => {
         if (addresses.length === 0) return;
         try {

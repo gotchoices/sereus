@@ -9,6 +9,7 @@ import type { PortMapper, PortMappingResult } from '../port-mapper.js';
 import type { SecretsStore } from '../secrets/index.js';
 import { ddnsAccount } from '../secrets/index.js';
 import type { CadreNodeLike } from '../nat-service.js';
+import { AuthorityNodeUnavailableError } from '../../authority/authority-node-client.js';
 
 class StubMapper implements PortMapper {
   mapCalls = 0;
@@ -49,6 +50,29 @@ function makeNode(peerId = '12D3KooWHost', addrs: string[] = ['/ip4/192.168.1.10
     getPeerId: () => peerId,
     getMultiaddrs: () => addrs,
   };
+}
+
+/**
+ * A node that mimics a freshly spawned authority child: `getPeerId` throws
+ * `AuthorityNodeUnavailableError` for the first `failTimes` calls (admin channel
+ * not bound yet), then returns a real peer ID. Exposes the call count so tests
+ * can assert how many attempts the retry loop made.
+ */
+function makeFlakyNode(
+  failTimes: number,
+  peerId = '12D3KooWFlaky',
+  addrs: string[] = ['/ip4/192.168.1.10/tcp/4001'],
+): { node: CadreNodeLike; peerIdCalls: () => number } {
+  let calls = 0;
+  const node: CadreNodeLike = {
+    getPeerId: async () => {
+      calls += 1;
+      if (calls <= failTimes) throw new AuthorityNodeUnavailableError('admin channel not bound yet');
+      return peerId;
+    },
+    getMultiaddrs: async () => addrs,
+  };
+  return { node, peerIdCalls: () => calls };
 }
 
 function makeDetector(opts: { router?: string | null; pub?: string | null }): ExternalIpDetector {
@@ -343,6 +367,78 @@ describe('NatService — async channel node + onAddressesChanged', () => {
     off();
     await svc.testReachability();
     expect(count).toBe(1);
+  });
+});
+
+describe('NatService — initial invite-address push retry', () => {
+  it('retries past a not-yet-ready node and delivers the push exactly once', async () => {
+    const { node, peerIdCalls } = makeFlakyNode(3, '12D3KooWFlaky');
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: node,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.42' }),
+      initialPushRetryMs: 1,
+      initialPushTimeoutMs: 2_000,
+    });
+
+    // Listener registered BEFORE start() — this is the race the fix closes.
+    const fired: string[][] = [];
+    svc.onAddressesChanged((addrs) => { fired.push(addrs); });
+
+    await svc.start();
+
+    // Delivered exactly once, with the NAT-resolved address carrying the peer ID.
+    expect(fired).toEqual([['/ip4/203.0.113.42/tcp/4001/p2p/12D3KooWFlaky']]);
+    // It took the failing attempts plus the successful one (proves it retried).
+    expect(peerIdCalls()).toBe(4);
+  });
+
+  it('gives up after the bounded timeout but still resolves start() (best-effort)', async () => {
+    // Always unavailable — the retry budget elapses without a successful push.
+    const node: CadreNodeLike = {
+      getPeerId: async () => { throw new AuthorityNodeUnavailableError('never ready'); },
+      getMultiaddrs: async () => [],
+    };
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: node,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.42' }),
+      initialPushRetryMs: 2,
+      initialPushTimeoutMs: 20,
+    });
+
+    const fired: string[][] = [];
+    svc.onAddressesChanged((addrs) => { fired.push(addrs); });
+
+    await svc.start(); // resolves despite the node never coming up
+    expect(fired).toEqual([]); // best-effort: nothing delivered
+    // The process is otherwise healthy — status still builds.
+    expect(svc.getStatus().portMode).toBe('auto-upnp');
+  });
+
+  it('does not retry on a non-node_unavailable error', async () => {
+    let calls = 0;
+    const node: CadreNodeLike = {
+      getPeerId: async () => { calls += 1; throw new Error('boom'); },
+      getMultiaddrs: async () => [],
+    };
+    const svc = new NatService({
+      rootDir: tmpRoot,
+      cadreNode: node,
+      secretsStore: makeSecrets(),
+      portMapper: new StubMapper(),
+      externalIpDetector: makeDetector({ pub: '203.0.113.42' }),
+      initialPushRetryMs: 1,
+      initialPushTimeoutMs: 2_000,
+    });
+    svc.onAddressesChanged(() => { /* registered before start */ });
+
+    await svc.start(); // does not hang retrying a non-transient failure
+    expect(calls).toBe(1);
   });
 });
 
