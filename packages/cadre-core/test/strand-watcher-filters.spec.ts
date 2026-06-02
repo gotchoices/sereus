@@ -222,6 +222,59 @@ describe('StrandWatcher Filters', () => {
 
       await watcher.stop();
     });
+
+    it('stops a deferred strand once its sAppId resolves to a non-match', async () => {
+      const strands = [createStrand('late-strand')];
+      const queryable: StrandQueryable = { queryStrands: async () => strands };
+      const mapping: Record<string, string> = {};
+      const sAppIdLookup: SAppIdLookup = { getSAppId: (id) => mapping[id] };
+      const added: string[] = [];
+      const removed: string[] = [];
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async (s) => { added.push(s.Id); },
+        onStrandRemoved: async (id) => { removed.push(id); }
+      };
+      const watcher = new StrandWatcher(
+        queryable, callbacks, { mode: 'sAppId', sAppId: 'target-app' }, 60000, sAppIdLookup
+      );
+      await watcher.start();
+      await watcher.forcePoll();
+      expect(added).toEqual(['late-strand']);     // deferred admission
+      mapping['late-strand'] = 'other-app';        // resolves to non-match
+      await watcher.forcePoll();
+      expect(removed).toEqual(['late-strand']);
+      expect(watcher.getKnownStrands().has('late-strand')).toBe(false);
+      await watcher.stop();
+    });
+
+    it('keeps a deferred strand running once its sAppId resolves to a match', async () => {
+      const strands = [createStrand('late-strand')];
+      const queryable: StrandQueryable = { queryStrands: async () => strands };
+      const mapping: Record<string, string> = {};
+      const sAppIdLookup: SAppIdLookup = { getSAppId: (id) => mapping[id] };
+      const added: string[] = [];
+      const removed: string[] = [];
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async (s) => { added.push(s.Id); },
+        onStrandRemoved: async (id) => { removed.push(id); }
+      };
+      const watcher = new StrandWatcher(
+        queryable, callbacks, { mode: 'sAppId', sAppId: 'target-app' }, 60000, sAppIdLookup
+      );
+      await watcher.start();
+      await watcher.forcePoll();
+      expect(added).toEqual(['late-strand']);     // deferred admission
+      mapping['late-strand'] = 'target-app';       // resolves to a match
+      await watcher.forcePoll();
+      expect(removed).toEqual([]);                 // stays running
+      expect(watcher.getKnownStrands().has('late-strand')).toBe(true);
+
+      // A subsequent poll must not re-add or re-remove it (admission is final).
+      await watcher.forcePoll();
+      expect(added).toEqual(['late-strand']);
+      expect(removed).toEqual([]);
+      await watcher.stop();
+    });
   });
 });
 

@@ -4,6 +4,14 @@ import type { StrandFilter, StrandRow } from './types.js';
 const log = debug('sereus:cadre:strand-watcher');
 
 /**
+ * Outcome of evaluating a strand against the current filter.
+ * - `pass`: admit (final)
+ * - `reject`: exclude
+ * - `defer`: admit provisionally; sAppId not yet known, re-evaluate next poll
+ */
+type FilterDecision = 'pass' | 'reject' | 'defer';
+
+/**
  * Extended strand row that includes the sAppId for filtering purposes.
  * The sAppId is provided by the hosting application, not from the control network.
  */
@@ -49,6 +57,8 @@ export class StrandWatcher {
   private readonly sAppIdLookup?: SAppIdLookup;
 
   private knownStrands: Map<string, StrandRow> = new Map();
+  /** Ids admitted under a `defer` decision; re-evaluated each poll until they resolve. */
+  private provisional: Set<string> = new Set();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private initialPollTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -69,32 +79,36 @@ export class StrandWatcher {
   }
 
   /**
-   * Check if a strand passes the current filter
+   * Evaluate a strand against the current filter, distinguishing a not-yet-known
+   * sAppId (`defer`) from a known non-match (`reject`). A `defer` admission is
+   * provisional and re-checked on subsequent polls.
    */
-  private passesFilter(strand: StrandRow): boolean {
+  private evaluateFilter(strand: StrandRow): FilterDecision {
     switch (this.filter.mode) {
       case 'all':
-        return true;
+        return 'pass';
       case 'none':
-        return false;
+        return 'reject';
       case 'strandId':
-        return strand.Id === this.filter.strandId;
+        return strand.Id === this.filter.strandId ? 'pass' : 'reject';
       case 'sAppId': {
-        // Look up the sAppId for this strand
-        const sAppId = this.sAppIdLookup?.getSAppId(strand.Id);
+        if (!this.sAppIdLookup) {
+          // No way to ever decide - admit permanently (no lookup configured).
+          return 'pass';
+        }
+        const sAppId = this.sAppIdLookup.getSAppId(strand.Id);
         if (sAppId === undefined) {
-          // If no sAppId lookup configured or unknown strand, pass through
-          // The strand will need to be re-evaluated when sApp info is available
+          // sAppId not yet known - admit provisionally and re-evaluate next poll.
           log('sAppId unknown for strand %s - deferring filter decision', strand.Id);
-          return true;
+          return 'defer';
         }
         const matches = sAppId === this.filter.sAppId;
         log('sAppId filter: strand %s has sAppId %s, filter wants %s, match=%s',
             strand.Id, sAppId, this.filter.sAppId, matches);
-        return matches;
+        return matches ? 'pass' : 'reject';
       }
       default:
-        return true;
+        return 'pass';
     }
   }
 
@@ -110,15 +124,43 @@ export class StrandWatcher {
 
       // Find added strands
       for (const strand of currentStrands) {
-        if (!this.knownStrands.has(strand.Id) && this.passesFilter(strand)) {
-          log('Strand added: %s', strand.Id);
-          this.knownStrands.set(strand.Id, strand);
+        if (this.knownStrands.has(strand.Id)) continue;
+        const decision = this.evaluateFilter(strand);
+        if (decision === 'reject') continue;
+        log('Strand added: %s', strand.Id);
+        this.knownStrands.set(strand.Id, strand);
+        if (decision === 'defer') {
+          // Provisional admission: sAppId unknown, re-check on later polls.
+          this.provisional.add(strand.Id);
+        }
+        try {
+          await this.callbacks.onStrandAdded(strand);
+        } catch (error) {
+          log('Error handling strand add for %s: %o', strand.Id, error);
+        }
+      }
+
+      // Re-evaluate provisional admissions whose sAppId may now be resolvable.
+      // Snapshot ids so we can mutate provisional/knownStrands inside the loop.
+      for (const strandId of [...this.provisional]) {
+        const strand = currentMap.get(strandId);
+        if (!strand) continue; // handled by the removed-strand loop below
+        const decision = this.evaluateFilter(strand);
+        if (decision === 'pass') {
+          // Resolved to a match - admission is now final.
+          this.provisional.delete(strandId);
+        } else if (decision === 'reject') {
+          // Resolved to a non-match - stop the provisionally-admitted strand.
+          log('Provisional strand rejected on re-evaluation: %s', strandId);
+          this.knownStrands.delete(strandId);
+          this.provisional.delete(strandId);
           try {
-            await this.callbacks.onStrandAdded(strand);
+            await this.callbacks.onStrandRemoved(strandId);
           } catch (error) {
-            log('Error handling strand add for %s: %o', strand.Id, error);
+            log('Error handling strand remove for %s: %o', strandId, error);
           }
         }
+        // decision === 'defer': still unknown, leave provisional for next poll.
       }
 
       // Find removed strands
@@ -126,6 +168,7 @@ export class StrandWatcher {
         if (!currentMap.has(strandId)) {
           log('Strand removed: %s', strandId);
           this.knownStrands.delete(strandId);
+          this.provisional.delete(strandId);
           try {
             await this.callbacks.onStrandRemoved(strandId);
           } catch (error) {
@@ -187,6 +230,7 @@ export class StrandWatcher {
     }
 
     this.knownStrands.clear();
+    this.provisional.clear();
     log('StrandWatcher stopped');
   }
 
