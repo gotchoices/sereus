@@ -1,9 +1,12 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { multiaddr } from '@multiformats/multiaddr';
 import { CadreNode } from '../src/cadre-node.js';
+import { StrandWakeService } from '../src/strand-wake-protocol.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance } from '../src/types.js';
+import { duplexPair } from './wake-stream-helpers.js';
 
 describe('CadreNode', () => {
   let authorPrivateKey: string;
@@ -503,6 +506,61 @@ describe('CadreNode', () => {
       await expect(callCheckIn('checkin-fail')).resolves.toBeUndefined();
       expect(instance.status).toBe('hibernating');
       expect(quiesceCalls).toEqual(['checkin-fail']);
+    });
+  });
+
+  describe('push-wake (control-network WAKE_PROTOCOL)', () => {
+    it('pushWake dials the target and a hibernating receiver transitions to active', async () => {
+      // Receiver: a hibernating strand whose wake() flips it to active (standing
+      // in for wakeStrand → resumeStrand).
+      const receiverInstance: StrandInstance = {
+        strandId: 'push-strand',
+        status: 'hibernating',
+        connectedPeers: 0,
+        lastActivity: new Date(0),
+        latencyHint: 'interactive'
+      };
+      const wakeCalls: string[] = [];
+      const receiver = new StrandWakeService({
+        isMember: async () => true,
+        getStrand: (id) => (id === 'push-strand' ? receiverInstance : undefined),
+        wake: async (id) => {
+          wakeCalls.push(id);
+          receiverInstance.status = 'active';
+          receiverInstance.lastActivity = new Date();
+        }
+      });
+
+      // Sender: stub the signed-record address resolution and loop the control
+      // node's dialProtocol straight into the receiver service (no real libp2p).
+      const sender = new CadreNode(createConfig());
+      (sender as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
+        async () => [multiaddr('/ip4/1.2.3.4/tcp/4001')];
+      (sender as unknown as { controlNode: unknown }).controlNode = {
+        dialProtocol: async () => {
+          const { clientStream, serverStream } = duplexPair();
+          void (receiver as unknown as { handleStream(s: unknown, p: string): Promise<void> })
+            .handleStream(serverStream, 'sender-peer');
+          return clientStream;
+        }
+      };
+
+      const ack = await sender.pushWake('target-peer', 'push-strand', 'activity');
+
+      expect(ack.accepted).toBe(true);
+      expect(ack.status).toBe('active');
+      expect(wakeCalls).toEqual(['push-strand']);
+      expect(receiverInstance.status).toBe('active');
+    });
+
+    it('pushWake throws when the target has no resolvable control-network address', async () => {
+      const sender = new CadreNode(createConfig());
+      (sender as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs = async () => [];
+      (sender as unknown as { controlNode: unknown }).controlNode = {
+        dialProtocol: async () => { throw new Error('should not dial'); }
+      };
+
+      await expect(sender.pushWake('target-peer', 'push-strand')).rejects.toThrow(/no dialable/i);
     });
   });
 

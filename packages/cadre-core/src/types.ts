@@ -612,6 +612,34 @@ export interface SeedAckMessage {
   reason?: string;
 }
 
+// ============================================================================
+// Strand Wake (control-network push-wake protocol) — see strand-wake-protocol.ts
+// ============================================================================
+
+/**
+ * Request sent over the control network's `WAKE_PROTOCOL` from a same-cadre peer
+ * to a hibernating peer, asking it to bring a strand online and pull pending
+ * activity. The receiver gates this on cadre membership before honoring it.
+ */
+export interface WakeRequest {
+  /** The strand the sender knows has pending activity. */
+  strandId: string;
+  /** Optional cause hint, e.g. `"activity"` (a server saw new traffic) or `"manual"`. */
+  reason?: string;
+}
+
+/**
+ * Acknowledgment of a {@link WakeRequest}, returned on the same stream.
+ */
+export interface WakeAck {
+  /** Whether the receiver honored the wake (member + participated strand). */
+  accepted: boolean;
+  /** The strand's status after the wake (present when `accepted`). */
+  status?: StrandStatus;
+  /** Reason for rejection (non-member, unknown strand, malformed frame). */
+  reason?: string;
+}
+
 /**
  * Options for authorizing a new peer in the cadre.
  */

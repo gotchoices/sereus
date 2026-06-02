@@ -207,7 +207,17 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     get/pend/commit/cancel), so the check-in is a resume-as-reachability cycle relying on app-driven reads to
     surface activity — not a bespoke head/version probe. Lighter control-network pre-check parked to backlog
     (`hibernation-control-network-pending-precheck`).
-- [ ] Push-wake via the control network
+- [x] Push-wake via the control network
+  - `strand-wake-protocol.ts` adds `WAKE_PROTOCOL` (`/sereus/strand-wake/1.0.0`), modeled on seed-bootstrap:
+    length-prefixed JSON `WakeRequest`/`WakeAck` frames, one request → one ack per stream.
+  - `StrandWakeService` (receiver, registered in `CadreNode.start`/`cleanup`) gates inbound wakes on
+    `CadrePeer` membership (`CadreNode.isMember`) — v1 authorization is control-network membership, no
+    extra signature — then routes a hibernating/idle strand through the same wake path as a local wake
+    (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
+  - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
+    control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
+  - Out of scope (owned by `tickets/backlog/3-mobile-background-service.md`): the automatic trigger
+    policy (a server fanning wakes on detected activity) and mobile FCM/APNs delivery.
 
 ## Testing / CI
 

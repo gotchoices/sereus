@@ -50,6 +50,8 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
+import type { WakeAck, WakeRequest } from './types.js';
 import {
   summarizeConnectionPaths,
   type ConnectionPathSummary
@@ -79,6 +81,7 @@ export class CadreNode implements SAppIdLookup {
   private enrollmentService: EnrollmentService;
   private seedBootstrapService: SeedBootstrapService | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
+  private strandWakeService: StrandWakeService | null = null;
   private running = false;
   private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<any>>> = new Map();
 
@@ -251,6 +254,16 @@ export class CadreNode implements SAppIdLookup {
 
       // Start hibernation manager
       this.hibernationManager.start();
+
+      // Register the control-network push-wake receiver: a same-cadre peer can
+      // signal us to bring a hibernating strand online. Gated on CadrePeer
+      // membership; the wake routes through the same path as a local wake.
+      this.strandWakeService = new StrandWakeService({
+        isMember: (peerId) => this.isMember(peerId),
+        getStrand: (strandId) => this.strandManager.getInstance(strandId),
+        wake: (strandId) => this.wakeStrand(strandId),
+      });
+      this.strandWakeService.initialize(this.controlNode);
 
       this.running = true;
       this.emit('control:connected', undefined);
@@ -654,6 +667,12 @@ export class CadreNode implements SAppIdLookup {
       this.seedBootstrapService = null;
     }
 
+    // Stop strand wake service (unregister the WAKE_PROTOCOL handler)
+    if (this.strandWakeService) {
+      await this.strandWakeService.shutdown();
+      this.strandWakeService = null;
+    }
+
     // Unregister strand solicitation service
     if (this.strandSolicitationService && this.controlNode) {
       this.strandSolicitationService.unregisterResponder(this.controlNode);
@@ -1055,6 +1074,33 @@ export class CadreNode implements SAppIdLookup {
   async isMember(peerId: string): Promise<boolean> {
     const members = await this.listMembers();
     return members.some(m => m.peerId === peerId);
+  }
+
+  /**
+   * Push-wake a hibernating cadre peer over the control network.
+   *
+   * Resolves the target's signed control-network address from its `CadrePeer`
+   * record (via {@link resolvePeerAddrs}, signaling/relay first — so a NAT'd peer
+   * is reachable through its circuit-relay address), dials `WAKE_PROTOCOL`, sends
+   * the {@link WakeRequest}, and returns the peer's {@link WakeAck}. The receiver
+   * gates the request on cadre membership and only resumes a strand it already
+   * participates in.
+   *
+   * @param targetPeerId - The hibernating cadre peer to wake.
+   * @param strandId - The strand the caller knows has pending activity.
+   * @param reason - Optional cause hint, e.g. `"activity"` or `"manual"`.
+   * @throws if the node is not started or the target has no dialable address.
+   */
+  async pushWake(targetPeerId: string, strandId: string, reason?: string): Promise<WakeAck> {
+    if (!this.controlNode) {
+      throw new Error('CadreNode must be started before pushing wakes');
+    }
+    const addrs = await this.resolvePeerAddrs(targetPeerId);
+    if (addrs.length === 0) {
+      throw new Error(`No dialable control-network address for peer ${targetPeerId}`);
+    }
+    const request: WakeRequest = { strandId, reason };
+    return await dialWake(this.controlNode, addrs, request);
   }
 
   /**

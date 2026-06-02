@@ -72,6 +72,15 @@ export {
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
 
+// Strand Wake (control-network push-wake protocol)
+export {
+  StrandWakeService,
+  dialWake,
+  WAKE_PROTOCOL,
+  type StrandWakeServiceOptions,
+  type DialWakeOptions
+} from './strand-wake-protocol.js';
+
 // Peer-address record (self-published, signed, freshness-stamped CadrePeer row)
 export {
   peerRecordSignedPayload,
