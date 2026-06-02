@@ -55,7 +55,7 @@ export const enrollCommand = new Command('enroll')
       .requiredOption('-b, --bootstrap <addrs...>', 'Bootstrap node multiaddrs (advisory metadata; echoed back, not verified)')
       .requiredOption('-a, --authority-key <key>', 'Authority public key that produced the signature (base64url)')
       .requiredOption('-s, --signature <sig>', 'Authority signature over the peer ID (base64url)')
-      .option('-c, --config <path>', 'Config file for node settings (echoed back; not used to register)', 'cadre.yaml')
+      .option('-c, --config <path>', 'Config file for node settings (accepted for compatibility; not used by this offline check)', 'cadre.yaml')
       .action(async (options) => {
         log('Verifying authority signature for peer: %s', options.peerId);
         log('Bootstrap nodes: %o', options.bootstrap);

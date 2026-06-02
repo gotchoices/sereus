@@ -79,9 +79,16 @@ cadre start -c cadre.yaml --debug
 
 ### Check Status
 
+`cadre status` reads **live runtime** from a running node's health `/status`
+endpoint and reports it alongside the static config summary. A missing config
+file is non-fatal (the live query still runs); when no node is reachable it
+says so and exits with code `3` (rather than reporting a bare `running: false`).
+
 ```bash
 cadre status -c cadre.yaml
 cadre status --json
+# point at a node on another host/port (env CADRE_HEALTH_PORT also honored):
+cadre status --health-host 10.0.0.5 --health-port 8080 --timeout 2000
 ```
 
 ### Enroll New Peers
@@ -92,7 +99,10 @@ Create a new peer identity:
 cadre enroll create --output ./keys --name my-node
 ```
 
-Register a peer (requires authority signature):
+Verify an authority's signature over a peer ID. This is an **offline check**:
+it confirms the signature is valid but does **not** contact the control network
+or register the peer. Membership is granted by the running authority node
+(`cadre start --authority`), which self-registers and authorizes peers.
 
 ```bash
 cadre enroll register \
