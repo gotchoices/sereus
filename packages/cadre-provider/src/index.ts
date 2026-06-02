@@ -84,6 +84,15 @@ export {
   type ContainerServiceOptions,
 } from './service/container-service.js';
 
+// Wire types for a container's live `/status` payload (referenced by
+// ContainerStatusResponse.health), plus the helpers that fetch/derive it.
+export {
+  type ContainerHealthStatus,
+  type ContainerStrandCounts,
+  fetchContainerHealthStatus,
+  statusUrlFromHealthEndpoint,
+} from './service/container-health.js';
+
 export {
   BillingService,
   type BillingServiceOptions,

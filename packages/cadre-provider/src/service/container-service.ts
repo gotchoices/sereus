@@ -12,7 +12,7 @@ import type {
 } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
-import { statusUrlFromHealthEndpoint } from './container-health.js';
+import { fetchContainerHealthStatus } from './container-health.js';
 
 const log = debug('cadre:provider:container');
 
@@ -173,16 +173,12 @@ export class ContainerService {
 
     const response: ContainerStatusResponse = { container };
 
-    // Fetch live health if available
-    if (container.healthEndpoint && container.status === 'running') {
-      try {
-        const healthRes = await fetch(statusUrlFromHealthEndpoint(container.healthEndpoint));
-        if (healthRes.ok) {
-          response.health = await healthRes.json();
-        }
-      } catch {
-        // Health fetch failed
-      }
+    // Fetch live `/status` for running containers. The shared helper derives the
+    // `/status` URL, short-circuits to `undefined` when there is no health
+    // endpoint / the fetch fails / the response is non-OK, and parses into the
+    // wire-accurate ContainerHealthStatus — so the declared type stays honest.
+    if (container.status === 'running') {
+      response.health = await fetchContainerHealthStatus(container);
     }
 
     return response;

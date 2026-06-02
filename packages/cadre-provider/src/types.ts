@@ -2,6 +2,8 @@
  * Type definitions for the Sereus Cadre Provider service.
  */
 
+import type { ContainerHealthStatus } from './service/container-health.js';
+
 // ============================================================================
 // Container Types
 // ============================================================================
@@ -83,16 +85,12 @@ export interface Container {
 /** Container status response */
 export interface ContainerStatusResponse {
   container: Container;
-  health?: {
-    status: 'healthy' | 'unhealthy' | 'starting';
-    uptime: number;
-    strands: {
-      total: number;
-      active: number;
-      idle: number;
-      hibernating: number;
-    };
-  };
+  /**
+   * Live `/status` payload from the container's health server, or `undefined`
+   * when unavailable. Strand counts live under `health.node.strands` (matching
+   * the real wire shape) — read them as `health?.node?.strands?.active ?? 0`.
+   */
+  health?: ContainerHealthStatus;
 }
 
 // ============================================================================
