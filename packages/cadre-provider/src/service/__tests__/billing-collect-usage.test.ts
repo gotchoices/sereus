@@ -104,6 +104,36 @@ describe('BillingService.collectUsage strand metering', () => {
     expect(byId.get('ctr_b')?.peakStrands).toBe(7);
   });
 
+  it('falls back to 0 strands when /status responds non-OK', async () => {
+    const { service, store } = await makeService([runningContainer()]);
+    const saved = vi.spyOn(store, 'saveUsageMetrics');
+
+    // 503 from the status server — helper returns undefined on !res.ok.
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      status: 'unhealthy', uptime: 0, node: { strands: { total: 4, active: 4, idle: 0, hibernating: 0 } },
+    }, false)) as typeof globalThis.fetch;
+
+    await (service as unknown as CollectUsageInternal).collectUsage();
+
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect((saved.mock.calls[0][0] as UsageMetrics).peakStrands).toBe(0);
+  });
+
+  it('falls back to 0 strands when the payload omits node.strands', async () => {
+    const { service, store } = await makeService([runningContainer()]);
+    const saved = vi.spyOn(store, 'saveUsageMetrics');
+
+    // A well-formed-but-strandless payload (e.g. node still starting up).
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      status: 'starting', uptime: 0,
+    })) as typeof globalThis.fetch;
+
+    await (service as unknown as CollectUsageInternal).collectUsage();
+
+    expect(saved).toHaveBeenCalledTimes(1);
+    expect((saved.mock.calls[0][0] as UsageMetrics).peakStrands).toBe(0);
+  });
+
   it('skips containers that are not running', async () => {
     const { service, store } = await makeService([
       runningContainer({ id: 'ctr_stopped', status: 'stopped' }),
