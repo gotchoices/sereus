@@ -204,7 +204,7 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
     `widen-typecheck-cadre-core-host-tests`.
   - `cadre-host` `ui/` (Svelte) and `reference-app-web` `.svelte` files are **not** covered — `tsc` can't type-check
     `.svelte`; that needs `svelte-check` (already a devDependency in both). Not wired into `typecheck` yet.
-  - `cadre-provider` and `strand-proto` have no widened-test config: provider tests pass at source scope only by
-    omission (its `__tests__` are not type-checked); `strand-proto` is deprecated so left source-only by design.
+  - `cadre-provider` has no test files, so its `tsconfig.build.json` scope already covers everything; `strand-proto`
+    is deprecated so left source-only by design. Neither needs a widened-test config.
 
 
