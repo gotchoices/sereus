@@ -4,6 +4,8 @@ import {
 	requireFixture,
 	connectToBootstrap,
 	collectBootstrapMultiaddrs,
+	gotoMessages,
+	sendOne,
 } from './_helpers.js';
 
 /**
@@ -12,18 +14,16 @@ import {
  * After a two-browser NAT-to-NAT pair connects through the Tier-2 relay and one
  * tab drives a cross-browser dial (sending a message the other tab converges
  * on), assert that `window.__optimystic.getConnectionPaths()` returns a
- * well-formed summary and that the known circuit connection is classified as
- * `relayed`.
+ * well-formed summary and that any circuit connection is classified as
+ * `relayed` (transport `circuit-relay`, `/p2p-circuit` in its remoteAddr).
  *
- * TODAY (relay-only world) the expectation is `relayed >= 1`: browsers can only
- * reach each other through a `/p2p-circuit` relay.
- *
- * ┌─ WEBRTC-TICKET FLIP POINT ──────────────────────────────────────────────┐
- * │ The WebRTC transport ticket adds the complementary assertion: after a    │
- * │ settle window the pair upgrades to a `direct`/`webrtc` connection and     │
- * │ `stuckOnRelay === 0`. Do NOT assert direct-upgrade here — that capability │
- * │ does not exist yet and the assertion belongs to the consumer ticket.     │
- * └──────────────────────────────────────────────────────────────────────────┘
+ * This spec is the **classification well-formedness guard**. With the WebRTC
+ * transport now wired (see `webrtc-upgrade.spec.ts`), the pair starts on a
+ * `/p2p-circuit` relay then upgrades to a direct `webrtc` connection, so the
+ * cross-browser pairing is asserted as "reached over a relay **or** already
+ * upgraded to webrtc" — relay-or-direct — to stay honest about that transition.
+ * The direct-upgrade success criteria (`direct`/`webrtc` + `stuckOnRelay === 0`)
+ * live in the dedicated `webrtc-upgrade.spec.ts`.
  */
 
 interface ConnectionPathSummaryShape {
@@ -73,23 +73,6 @@ function assertWellFormed(summary: ConnectionPathSummaryShape): void {
 	expect(summary.paths.filter((p) => p.kind === 'relayed').length).toBe(summary.relayed);
 }
 
-async function gotoMessages(page: Page) {
-	page.on('dialog', (d) => void d.accept());
-	await page.getByTestId('nav-messages').click();
-	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 30_000 });
-}
-
-async function sendOne(page: Page, author: string, content: string): Promise<string> {
-	await page.getByTestId('compose-author').fill(author);
-	await page.getByTestId('compose-content').fill(content);
-	await page.getByTestId('btn-send').click();
-	const row = page.locator('[data-testid="message-row"]', { hasText: content });
-	await expect(row).toBeVisible({ timeout: 30_000 });
-	const id = await row.getAttribute('data-message-id');
-	if (!id) throw new Error('row missing data-message-id');
-	return id;
-}
-
 test.describe('Tier 2 / distributed / connection-path classification', () => {
 	let bootstrapList: string[];
 
@@ -129,8 +112,12 @@ test.describe('Tier 2 / distributed / connection-path classification', () => {
 			assertWellFormed(summaryA);
 			assertWellFormed(summaryB);
 
-			// TODAY: at least one side reaches the other over a relay. Poll because
-			// the circuit dial may land slightly after convergence is visible.
+			// At least one side reaches the other over a relay, OR the pair has
+			// already upgraded to a direct webrtc path. Poll because the circuit
+			// dial may land slightly after convergence is visible, and because the
+			// webrtc upgrade may have replaced the relay by the time we look. Either
+			// outcome proves the cross-browser pairing converged; the dedicated
+			// `webrtc-upgrade.spec.ts` asserts the upgrade specifically.
 			await expect
 				.poll(
 					async () => {
@@ -138,11 +125,13 @@ test.describe('Tier 2 / distributed / connection-path classification', () => {
 							getConnectionPaths(pageA),
 							getConnectionPaths(pageB),
 						]);
-						return Math.max(a.relayed, b.relayed);
+						const relayed = Math.max(a.relayed, b.relayed);
+						const webrtc = Math.max(a.byTransport.webrtc ?? 0, b.byTransport.webrtc ?? 0);
+						return relayed >= 1 || webrtc >= 1;
 					},
 					{ timeout: 30_000, intervals: [1000, 2000, 3000] },
 				)
-				.toBeGreaterThanOrEqual(1);
+				.toBe(true);
 
 			// Sanity: any relayed path must be tagged with the circuit-relay transport.
 			const relayedPaths = [...summaryA.paths, ...summaryB.paths].filter(

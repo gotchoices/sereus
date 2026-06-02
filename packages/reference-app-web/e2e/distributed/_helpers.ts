@@ -115,6 +115,34 @@ function formatConsoleArgs(format: string, args: unknown[]): string {
 }
 
 /**
+ * Navigate to the Messages view and wait for the compose form to be ready.
+ * Accepts any in-page `confirm`/`alert` dialogs so a send is never blocked.
+ * Shared by the connection-path and webrtc-upgrade specs.
+ */
+export async function gotoMessages(page: Page): Promise<void> {
+	page.on('dialog', (d) => void d.accept());
+	await page.getByTestId('nav-messages').click();
+	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 30_000 });
+}
+
+/**
+ * Compose and send one message, wait for its row to render, and return its
+ * `data-message-id`. The id lets a sibling tab assert convergence on the exact
+ * same message (a cross-browser dial), which is what forces a live connection
+ * between the two browser peers.
+ */
+export async function sendOne(page: Page, author: string, content: string): Promise<string> {
+	await page.getByTestId('compose-author').fill(author);
+	await page.getByTestId('compose-content').fill(content);
+	await page.getByTestId('btn-send').click();
+	const row = page.locator('[data-testid="message-row"]', { hasText: content });
+	await expect(row).toBeVisible({ timeout: 30_000 });
+	const id = await row.getAttribute('data-message-id');
+	if (!id) throw new Error('row missing data-message-id');
+	return id;
+}
+
+/**
  * Wait for the node to be `running` (solo, fresh boot), paste the bootstrap
  * multiaddrs, click Connect, and wait for the mode badge to flip to
  * `distributed`. Used by every Tier 2 spec. Callers build the list via

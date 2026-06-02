@@ -45,13 +45,30 @@ import {
 } from '@optimystic/db-p2p-storage-web';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { webRTC, webRTCDirect } from '@libp2p/webrtc';
 import type { Libp2p } from 'libp2p';
 import {
 	summarizeConnectionPaths,
 	type ConnectionPathSummary,
 } from './connection-path.js';
+import { loadIceConfig } from './ice-config.js';
 
 export type NodeMode = 'solo' | 'distributed';
+
+/**
+ * db-p2p's transport-factory element type. `@libp2p/webrtc@6.0.14` is the
+ * correct transport for this libp2p generation — it declares
+ * `@libp2p/interface@^3.1.0`, matching db-p2p's pin — but its *transitive*
+ * `@libp2p/interface-internal` / `@libp2p/utils` resolve a newer
+ * `@libp2p/interface@3.2.x` whose `Transport` carries a differently-branded
+ * `[transportSymbol]`. The two are runtime-identical: `transportSymbol` is
+ * `Symbol.for('@libp2p/transport')`, a global registry key, so libp2p's
+ * transport registration works regardless of which interface copy declared it.
+ * The skew is therefore purely nominal at the type layer; we bridge the
+ * webRTC factories to this type rather than pin five transitive packages (which
+ * would risk other workspaces) or force a monorepo-wide interface resolution.
+ */
+type TransportFactory = NonNullable<NodeOptions['transports']>[number];
 
 export interface StartNodeOptions {
 	/** Logical network identifier — also used as the IndexedDB database name. */
@@ -160,6 +177,12 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 	const privateKey = await loadOrCreateBrowserPeerKey(db);
 	storage = new IndexedDBRawStorage(db);
 
+	// ICE servers (STUN/TURN) for WebRTC NAT traversal come from the runtime
+	// manifest, never a hard-coded third party. `loadIceConfig` never throws and
+	// returns `[]` when no manifest URL is configured — `webRTC` accepts an empty
+	// `iceServers` array (host/LAN candidates still work; NAT traversal degrades).
+	const iceServers = await loadIceConfig();
+
 	const config: NodeOptions = {
 		privateKey,
 		networkName,
@@ -169,14 +192,39 @@ export async function startNode(opts: StartNodeOptions = {}): Promise<Libp2p> {
 			? { superMajorityThreshold }
 			: undefined,
 		storage,
-		transports: [webSockets(), circuitRelayTransport()],
+		// webSockets  — dial public WS nodes (bootstrap / service peers).
+		// circuitRelay — the signaling substrate: reserve a relay slot, accept a
+		//                dial-in over `/p2p-circuit`, and carry the WebRTC SDP
+		//                exchange. `webRTC` reuses this connection for signaling
+		//                automatically, so it must stay present.
+		// webRTC       — browser↔browser (and browser↔NAT'd peer): once SDP is
+		//                swapped over the circuit a direct connection forms and the
+		//                relay drops out of the data path. ICE from the manifest.
+		// webRTCDirect — browser→public node with a public addr (e.g. a storage
+		//                drone); dial-only from a browser, no relay involved.
+		transports: [
+			webSockets(),
+			circuitRelayTransport(),
+			// Cast bridges the nominal `@libp2p/interface` brand skew (see
+			// `TransportFactory` above) — runtime-safe, no `any`.
+			webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
+			webRTCDirect() as unknown as TransportFactory,
+		],
 		// `/p2p-circuit` activates the CircuitRelayTransport listener, which is
 		// what kicks `RelayDiscovery` and `ReservationStore.reserveRelay()` into
 		// action. Without this entry the AddressManager never calls listen() on
 		// the transport, so no reservation is made and the browser peer is not
 		// dialable through any service-peer relay — the Tier 2 specs would
 		// stall on `findCluster` picks that land on the browser tab itself.
-		listenAddrs: isDistributed ? ['/p2p-circuit'] : [],
+		//
+		// `/webrtc` (not `/webrtc-direct` — browsers can only *listen* for WebRTC
+		// over a circuit reservation) lets libp2p construct the
+		// `/<relay>/p2p-circuit/webrtc/p2p/<self>` listen address once the
+		// reservation lands and advertise it via identify. A dialing peer reads
+		// that addr and upgrades the relayed connection to a direct WebRTC one,
+		// leaving the relay as signaling-only. Solo mode stays `[]` (no
+		// reservation, transports present-but-idle).
+		listenAddrs: isDistributed ? ['/p2p-circuit', '/webrtc'] : [],
 		// libp2p's browser default gater denies insecure ws:// and private/loopback
 		// addresses, which blocks dialing a local reference-peer fixture
 		// (`/ip4/127.0.0.1/.../ws/...`). Lift both restrictions — the bootstrap
