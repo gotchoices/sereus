@@ -78,6 +78,9 @@ export class ContainerService {
     container: Container,
     request: CreateContainerRequest
   ): Promise<void> {
+    // Once the orchestrator hands back a dockerId, this service owns cleanup of
+    // those resources (bounded host ports) on every non-success exit.
+    let dockerId: string | undefined;
     try {
       // Update status to creating
       await this.updateStatus(container.id, 'creating');
@@ -91,10 +94,16 @@ export class ContainerService {
         resources: request.resources,
         strandFilter: request.strandFilter,
       });
+      dockerId = result.dockerId;
 
       // Update with orchestrator details
       const updated = await this.store.getContainer(container.id);
-      if (!updated) return;
+      if (!updated) {
+        // Record vanished after a successful create — reclaim the orchestrator
+        // resources we just allocated so the host port range does not leak.
+        await this.safeReclaim(dockerId);
+        return;
+      }
 
       updated.dockerId = result.dockerId;
       updated.healthEndpoint = result.healthEndpoint;
@@ -118,6 +127,18 @@ export class ContainerService {
         updated.updatedAt = new Date();
         await this.store.saveContainer(updated);
       }
+      // If a container was created before the failure, reclaim it — otherwise it
+      // keeps running with its host ports held.
+      if (dockerId) await this.safeReclaim(dockerId);
+    }
+  }
+
+  /** Best-effort orchestrator removal; logs but never throws (already on an error/cleanup path). */
+  private async safeReclaim(dockerId: string): Promise<void> {
+    try {
+      await this.orchestrator.removeContainer(dockerId);
+    } catch (err) {
+      log('Failed to reclaim orchestrator resources for %s: %O', dockerId, err);
     }
   }
 

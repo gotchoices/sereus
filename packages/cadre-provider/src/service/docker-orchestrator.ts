@@ -47,14 +47,33 @@ export class DockerOrchestrator implements Orchestrator {
   private readonly portAllocator: PortAllocator;
   private readonly containerPorts = new Map<string, { health: number; metrics: number; p2p: number }>();
 
-  constructor(config: DockerConfig) {
+  constructor(config: DockerConfig, docker?: Docker) {
     this.config = config;
-    this.docker = new Docker({ socketPath: config.socketPath });
+    this.docker = docker ?? new Docker({ socketPath: config.socketPath });
     this.portAllocator = new PortAllocator(
       config.portRange?.start ?? 10000,
       config.portRange?.end ?? 20000
     );
     log('DockerOrchestrator initialized with socket: %s', config.socketPath);
+  }
+
+  /** Allocate `count` ports atomically; release any already taken if one fails. */
+  private allocatePorts(count: number): number[] {
+    const ports: number[] = [];
+    try {
+      for (let i = 0; i < count; i++) ports.push(this.portAllocator.allocate());
+      return ports;
+    } catch (err) {
+      for (const p of ports) this.portAllocator.release(p);
+      throw err;
+    }
+  }
+
+  /** Release a set of ports (used by both the failure path and removeContainer). */
+  private releasePorts(ports: { health: number; metrics: number; p2p: number }): void {
+    this.portAllocator.release(ports.health);
+    this.portAllocator.release(ports.metrics);
+    this.portAllocator.release(ports.p2p);
   }
 
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
@@ -65,47 +84,62 @@ export class DockerOrchestrator implements Orchestrator {
       await this.pullImage();
     }
 
-    // Allocate ports
-    const healthPort = this.portAllocator.allocate();
-    const metricsPort = this.portAllocator.allocate();
-    const p2pPort = this.portAllocator.allocate();
+    // Allocate ports atomically (releases partial allocations on failure).
+    const [healthPort, metricsPort, p2pPort] = this.allocatePorts(3) as [number, number, number];
 
     const resources = request.resources ?? this.config.defaultResources ?? {};
 
-    // Create container
-    const container = await this.docker.createContainer({
-      name: `cadre-${request.containerId}`,
-      Image: this.config.image,
-      Env: [
-        `CADRE_PARTY_ID=${request.partyId}`,
-        `CADRE_BOOTSTRAP_NODES=${request.bootstrapNodes.join(',')}`,
-        `CADRE_PROFILE=${request.profile}`,
-        `CADRE_HEALTH_PORT=8080`,
-        `CADRE_METRICS_PORT=9090`,
-        `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001`,
-        request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
-        resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
-      ].filter(Boolean),
-      HostConfig: {
-        PortBindings: {
-          '8080/tcp': [{ HostPort: String(healthPort) }],
-          '9090/tcp': [{ HostPort: String(metricsPort) }],
-          '4001/tcp': [{ HostPort: String(p2pPort) }],
+    // Anything that throws between allocation and the successful record below
+    // must release the ports and best-effort remove a partially-created
+    // container — otherwise the bounded host-port range leaks permanently.
+    let container: Docker.Container | undefined;
+    try {
+      // Create container
+      container = await this.docker.createContainer({
+        name: `cadre-${request.containerId}`,
+        Image: this.config.image,
+        Env: [
+          `CADRE_PARTY_ID=${request.partyId}`,
+          `CADRE_BOOTSTRAP_NODES=${request.bootstrapNodes.join(',')}`,
+          `CADRE_PROFILE=${request.profile}`,
+          `CADRE_HEALTH_PORT=8080`,
+          `CADRE_METRICS_PORT=9090`,
+          `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001`,
+          request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
+          resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
+        ].filter(Boolean),
+        HostConfig: {
+          PortBindings: {
+            '8080/tcp': [{ HostPort: String(healthPort) }],
+            '9090/tcp': [{ HostPort: String(metricsPort) }],
+            '4001/tcp': [{ HostPort: String(p2pPort) }],
+          },
+          Memory: this.parseMemoryLimit(resources.memoryLimit),
+          NanoCpus: this.parseCpuLimit(resources.cpuLimit),
+          NetworkMode: this.config.network,
+          RestartPolicy: { Name: 'unless-stopped' },
         },
-        Memory: this.parseMemoryLimit(resources.memoryLimit),
-        NanoCpus: this.parseCpuLimit(resources.cpuLimit),
-        NetworkMode: this.config.network,
-        RestartPolicy: { Name: 'unless-stopped' },
-      },
-      Labels: {
-        'sereus.container-id': request.containerId,
-        'sereus.party-id': request.partyId,
-        'sereus.profile': request.profile,
-      },
-    });
+        Labels: {
+          'sereus.container-id': request.containerId,
+          'sereus.party-id': request.partyId,
+          'sereus.profile': request.profile,
+        },
+      });
 
-    // Start container
-    await container.start();
+      // Start container
+      await container.start();
+    } catch (err) {
+      this.releasePorts({ health: healthPort, metrics: metricsPort, p2p: p2pPort });
+      if (container) {
+        // Free the reserved name + labels left by a created-but-unstarted container.
+        try {
+          await container.remove({ force: true });
+        } catch (rmErr) {
+          log('Cleanup of partial container failed: %O', rmErr);
+        }
+      }
+      throw err;
+    }
 
     const dockerId = container.id;
     this.containerPorts.set(dockerId, { health: healthPort, metrics: metricsPort, p2p: p2pPort });
@@ -136,9 +170,7 @@ export class DockerOrchestrator implements Orchestrator {
     // Release ports
     const ports = this.containerPorts.get(dockerId);
     if (ports) {
-      this.portAllocator.release(ports.health);
-      this.portAllocator.release(ports.metrics);
-      this.portAllocator.release(ports.p2p);
+      this.releasePorts(ports);
       this.containerPorts.delete(dockerId);
     }
   }

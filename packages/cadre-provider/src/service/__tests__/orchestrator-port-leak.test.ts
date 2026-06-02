@@ -1,0 +1,109 @@
+import { describe, it, expect, vi } from 'vitest';
+import type Docker from 'dockerode';
+import { DockerOrchestrator } from '../docker-orchestrator.js';
+import type { DockerConfig } from '../../config/types.js';
+import type { OrchestratorCreateRequest } from '../orchestrator.js';
+
+const request: OrchestratorCreateRequest = {
+  containerId: 'ctr_1',
+  partyId: 'party-1',
+  bootstrapNodes: [],
+  profile: 'transaction',
+};
+
+/** Private surface we read to prove ports were freed back to the allocator. */
+type OrchestratorInternal = {
+  allocatePorts(count: number): number[];
+};
+
+/** DockerConfig with a tiny port range so a single leak exhausts the pool. */
+function config(start: number, end: number): DockerConfig {
+  return { image: 'test-image', portRange: { start, end } };
+}
+
+describe('DockerOrchestrator port-leak on provisioning failure', () => {
+  it('releases all ports when docker.createContainer rejects', async () => {
+    let fail = true;
+    const fakeDocker = {
+      createContainer: vi.fn(async () => {
+        if (fail) throw new Error('docker create failed');
+        return { id: 'cid-ok', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
+      }),
+      getContainer: vi.fn(),
+    } as unknown as Docker;
+
+    // Exactly 3 ports: a leak from the first attempt would exhaust the range.
+    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+
+    await expect(orch.createContainer(request)).rejects.toThrow('docker create failed');
+
+    // Ports were freed — a second (non-failing) create still finds 3 ports.
+    fail = false;
+    const result = await orch.createContainer(request);
+    expect(result.dockerId).toBe('cid-ok');
+  });
+
+  it('releases ports and force-removes the partial container when start rejects', async () => {
+    let startFails = true;
+    const removeSpy = vi.fn(async () => {});
+    const fakeDocker = {
+      createContainer: vi.fn(async () => ({
+        id: 'cid-partial',
+        start: vi.fn(async () => {
+          if (startFails) throw new Error('start failed');
+        }),
+        remove: removeSpy,
+      })),
+      getContainer: vi.fn(),
+    } as unknown as Docker;
+
+    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+
+    await expect(orch.createContainer(request)).rejects.toThrow('start failed');
+    // The created-but-unstarted container's reserved name + labels are freed.
+    expect(removeSpy).toHaveBeenCalledWith({ force: true });
+
+    // Ports freed too: a retry within the tiny range succeeds.
+    startFails = false;
+    const result = await orch.createContainer(request);
+    expect(result.dockerId).toBe('cid-partial');
+  });
+
+  it('releases partially-allocated ports when the range cannot satisfy the request', async () => {
+    const createSpy = vi.fn();
+    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn() } as unknown as Docker;
+
+    // Only 2 ports available, but createContainer needs 3.
+    const orch = new DockerOrchestrator(config(10000, 10001), fakeDocker);
+
+    await expect(orch.createContainer(request)).rejects.toThrow('No available ports in range');
+    // Allocation failed before reaching Docker.
+    expect(createSpy).not.toHaveBeenCalled();
+
+    // Both briefly-taken ports are back: a fresh 2-port allocation succeeds.
+    expect(() => (orch as unknown as OrchestratorInternal).allocatePorts(2)).not.toThrow();
+  });
+
+  it('records ports and returns endpoints on success without any cleanup', async () => {
+    const removeSpy = vi.fn(async () => {});
+    const fakeDocker = {
+      createContainer: vi.fn(async () => ({
+        id: 'cid-1',
+        start: vi.fn(async () => {}),
+        remove: removeSpy,
+      })),
+      getContainer: vi.fn(),
+    } as unknown as Docker;
+
+    const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
+
+    const result = await orch.createContainer(request);
+    expect(result.dockerId).toBe('cid-1');
+    expect(result.healthEndpoint).toMatch(/^http:\/\/localhost:\d+\/health$/);
+    expect(result.seedEndpoint).toMatch(/\/seed$/);
+    expect(removeSpy).not.toHaveBeenCalled();
+
+    // The 3 ports are now held/recorded — the range is exhausted on the next create.
+    await expect(orch.createContainer(request)).rejects.toThrow('No available ports in range');
+  });
+});
