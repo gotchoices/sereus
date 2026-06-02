@@ -14,8 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
 
 import { createTestCadreHost, type TestCadreHost } from '../harness/index.js';
 
@@ -24,19 +23,27 @@ describe('cadre-host trust-circle', () => {
 	let host: TestCadreHost;
 
 	beforeEach(async () => {
-		const authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-		const authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		// Own-authority node: the libp2p identity key IS the authority key (the
+		// cadre-cli `--authority` shape), so registerSelf can authority-sign the
+		// INSERT of its own CadrePeer row.
+		const nodeKey = await generateKeyPair('Ed25519');
+		const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
 		const baseId = Math.random().toString(36).slice(2);
 
 		cadreNode = new CadreNode({
 			controlNetwork: { partyId: `host-${baseId}`, bootstrapNodes: [] },
+			privateKey: nodeKey,
 			profile: 'transaction',
 		});
 		await cadreNode.start();
 		const db = cadreNode.getControlDatabase();
 		if (!db) throw new Error('control database missing');
-		await db.insertAuthorityKey(authorityPublicKey);
-		cadreNode.initializeSeedBootstrap(authorityPrivateKey);
+		await db.insertAuthorityKey(publicKeyB64);
+		cadreNode.initializeSeedBootstrap(privateKeyB64);
+
+		// The authority writes its own CadrePeer row up-front (the implement
+		// ticket's CLI change), so it appears as a member alongside redeemed peers.
+		await cadreNode.registerSelf();
 
 		host = await createTestCadreHost({ cadreNodeForTrustCircle: cadreNode });
 	}, 60_000);
@@ -71,13 +78,16 @@ describe('cadre-host trust-circle', () => {
 		const redeemed = await host.trustCircle.redeemInvite({ token: issued.token, peerId: phonePeerId });
 		expect(redeemed).toEqual({ peerId: phonePeerId, label: "Mom's phone" });
 
-		// 4. GET /auth/trust-circle — sees one member, no pending.
+		// 4. GET /auth/trust-circle — CadrePeer carries the authority's own
+		//    self-registered row plus the redeemed phone; no pending.
 		const after = await host.request({ method: 'GET', path: '/auth/trust-circle' });
 		expect(after.status).toBe(200);
 		const afterBody = after.body as { members: Array<{ peerId: string; label: string }>; pending: unknown[] };
-		expect(afterBody.members).toHaveLength(1);
-		expect(afterBody.members[0]!.peerId).toBe(phonePeerId);
-		expect(afterBody.members[0]!.label).toBe("Mom's phone");
+		expect(afterBody.members).toHaveLength(2);
+		const phoneMember = afterBody.members.find((m) => m.peerId === phonePeerId);
+		expect(phoneMember).toBeDefined();
+		expect(phoneMember!.label).toBe("Mom's phone");
+		expect(afterBody.members.some((m) => m.peerId === cadreNode.peerId!.toString())).toBe(true);
 		expect(afterBody.pending).toHaveLength(0);
 
 		// 5. DELETE /auth/members/:peerId.
@@ -87,11 +97,14 @@ describe('cadre-host trust-circle', () => {
 		});
 		expect(del.status).toBe(200);
 
-		// 6. GET /auth/trust-circle — no members.
+		// 6. GET /auth/trust-circle — the phone is gone; the authority's own
+		//    self-registered row remains.
 		const final = await host.request({ method: 'GET', path: '/auth/trust-circle' });
 		expect(final.status).toBe(200);
-		const finalBody = final.body as { members: unknown[] };
-		expect(finalBody.members).toHaveLength(0);
+		const finalBody = final.body as { members: Array<{ peerId: string }> };
+		expect(finalBody.members.map((m) => m.peerId)).not.toContain(phonePeerId);
+		expect(finalBody.members).toHaveLength(1);
+		expect(finalBody.members[0]!.peerId).toBe(cadreNode.peerId!.toString());
 	}, 90_000);
 
 	it('DELETE on an unknown pending token returns 404 with not_found', async () => {

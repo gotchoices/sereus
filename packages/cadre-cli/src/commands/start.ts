@@ -233,6 +233,19 @@ export const startCommand = new Command('start')
 
         node.initializeSeedBootstrap(privateKeyB64);
         console.log('✓ Authority seed-bootstrap initialized');
+
+        // Write the authority's own signed CadrePeer row up-front, before any
+        // seed can be minted. The background heartbeat keeps it fresh, but it
+        // fires too late for the first invite/seed — without this, createSeed()
+        // would omit the authority peer and a receiving node's signer-is-authority
+        // gate would reject the seed until the ~7.5 min heartbeat caught up.
+        const selfReg = await node.registerSelf();
+        const selfRegMessage: Record<typeof selfReg, string> = {
+          inserted: '✓ Authority self-registered into CadrePeer (row inserted)',
+          refreshed: '✓ Authority CadrePeer record refreshed',
+          skipped: '• Authority self-registration skipped (no self-signing key available)',
+        };
+        console.log(selfRegMessage[selfReg]);
       }
 
       // Bind the loopback admin channel if requested. The startup token doubles

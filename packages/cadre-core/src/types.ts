@@ -490,6 +490,16 @@ export interface PeerAddressRecord {
 }
 
 /**
+ * Outcome of {@link CadreNode.registerSelf}, surfaced so callers (e.g. the CLI
+ * `--authority` branch) can log what happened:
+ * - `inserted` — the first authority-signed INSERT of this node's `CadrePeer` row.
+ * - `refreshed` — a self-signed UPDATE of an existing row (heartbeat / addr change).
+ * - `skipped` — nothing written (no self-signing key, or not yet a member with no
+ *   authority service to self-insert).
+ */
+export type SelfRegistrationOutcome = 'inserted' | 'refreshed' | 'skipped';
+
+/**
  * Options for {@link CadreNode.resolvePeerAddrs}.
  */
 export interface ResolveOpts {

@@ -78,7 +78,7 @@ The management channel between the manager and its authority node is a **loopbac
 
 An ordinary node becomes the authority node via two `cadre-cli start` flags (no separate entrypoint):
 
-- `--authority` — after `node.start()`, bridges the node's libp2p Ed25519 identity into the base64url authority keypair (`authorityKeyFromLibp2p`), performs an **idempotent genesis** `AuthorityKey` insert on a fresh party (skipped when one already exists), and initializes seed-bootstrap so the node can mint invites and authorize peers. The node's peer identity and its authority key are the *same* keypair.
+- `--authority` — after `node.start()`, bridges the node's libp2p Ed25519 identity into the base64url authority keypair (`authorityKeyFromLibp2p`), performs an **idempotent genesis** `AuthorityKey` insert on a fresh party (skipped when one already exists), and initializes seed-bootstrap so the node can mint invites and authorize peers. It then **self-registers its own `CadrePeer` row** (`await node.registerSelf()`) so seeds include the authority peer from the first invite onward instead of waiting for the TTL heartbeat. The node's peer identity and its authority key are the *same* keypair.
 - `--admin-port <port>` (or `CADRE_ADMIN_PORT`) — binds the admin listener on `127.0.0.1:<port>`. It refuses to bind without `CADRE_STARTUP_TOKEN`, which doubles as the `Authorization: Bearer <token>` secret (constant-time compared).
 
 The node is given its identity via the child config's `identity.protobufKeyFile` (the installer's protobuf `identity.key`) or the `--identity-protobuf <path>` flag.
@@ -112,7 +112,7 @@ The trust-circle invite flow lives in `cadre-host-trust-circle` and reuses the s
 
 ## Trust circle
 
-The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top:
+The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top. Note the authority node self-registers (the `--authority` flag above), so it is itself a `CadrePeer` and appears in the listing as an unlabeled member alongside the devices the admin has added:
 
 - **Labels** — human-readable display names (`"Mom's phone"`, `"My laptop"`) assigned by the host admin. Display-only; loss just shows the bare peer ID.
 - **Pending invites** — tokens that have been issued but not yet redeemed. Operational state; lives on the issuing node only.

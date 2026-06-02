@@ -15,6 +15,7 @@ import {
   tofuTrustPolicy
 } from '../src/seed-trust-policy.js';
 import { CadreNode } from '../src/cadre-node.js';
+import { authorityKeyFromLibp2p } from '../src/authority-key.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -1057,5 +1058,95 @@ describe('SeedBootstrapService Helper Methods', () => {
       expect(invite.authorityKeys).toBeUndefined();
     });
   });
+});
+
+describe('registerSelf — authority self-registration into CadrePeer', () => {
+  /** Minimal libp2p surface the receiver's applySeed consumes (merge + dial). */
+  function makeReceiverLibp2p() {
+    return {
+      peerStore: { merge: async () => {} },
+      dial: async () => {},
+    };
+  }
+
+  /**
+   * The CLI `--authority` shape: the node's libp2p identity key IS its authority
+   * key (authorityKeyFromLibp2p), so it can authority-sign the INSERT of its OWN
+   * self-signed address record. This is the gap the implement ticket closes —
+   * before registerSelf the authority is absent from the seed it mints; after,
+   * the seed carries it as an authority peer, and a receiver that trusts the
+   * signer accepts it.
+   *
+   * NOTE: the ticket described the receiver check as a literal
+   * `seed.peers.some(p => p.isAuthority && p.publicKey === seed.signerKey)` gate.
+   * That inline gate was superseded by the pluggable trust-policy design (see
+   * `applySeed`); this test asserts the still-true contract — the authority is
+   * present in the seed AND a signer-trusting receiver applies it successfully.
+   */
+  it('inserts the authority into CadrePeer so seeds include it, and a receiver accepts the seed', async () => {
+    const nodeKey = await generateKeyPair('Ed25519');
+    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+
+    const node = new CadreNode({
+      controlNetwork: {
+        partyId: 'self-reg-' + Math.random().toString(36).slice(2),
+        bootstrapNodes: [],
+      },
+      privateKey: nodeKey,
+      profile: 'transaction',
+    });
+
+    try {
+      await node.start();
+      const selfPeerId = node.peerId!.toString();
+
+      // Neutralize the 1s background self-registration timer so this test's
+      // explicit registerSelf() calls are the sole writers — the insert/refresh
+      // outcomes are then deterministic (no timer racing an INSERT in). The
+      // single-flight guard in registerSelf is what makes that race harmless in
+      // production; here we simply remove it for a clean assertion.
+      clearTimeout((node as any).selfRegistrationTimer);
+      (node as any).selfRegistrationTimer = null;
+
+      node.initializeSeedBootstrap(privateKeyB64);
+
+      // Before self-registration the authority is not a CadrePeer, so the seed
+      // it mints omits its own peer.
+      const before = await node.createSeed();
+      expect(before.peers.some((p) => p.peerId === selfPeerId)).toBe(false);
+
+      // Enable authority-signed inserts, then self-register up-front.
+      const db = node.getControlDatabase();
+      expect(db).not.toBeNull();
+      await db!.insertAuthorityKey(publicKeyB64);
+
+      const outcome = await node.registerSelf();
+      expect(outcome).toBe('inserted');
+
+      // The seed now carries the authority as an authority peer whose key is the
+      // seed's own signer.
+      const after = await node.createSeed();
+      const selfPeer = after.peers.find((p) => p.peerId === selfPeerId);
+      expect(selfPeer).toBeDefined();
+      expect(selfPeer!.isAuthority).toBe(true);
+      expect(after.signerKey).toBe(publicKeyB64);
+      expect(selfPeer!.publicKey).toBe(after.signerKey);
+
+      // A second node accepts the seed once it trusts the signer (pinned key) —
+      // the signer is now backed by an authority peer the seed carries.
+      const receiver = new SeedBootstrapService({ partyId: after.partyId });
+      (receiver as any).libp2pNode = makeReceiverLibp2p();
+      const applied = await receiver.applySeed(after, {
+        trustPolicy: pinnedKeyTrustPolicy([after.signerKey]),
+      });
+      expect(applied.success).toBe(true);
+
+      // registerSelf is idempotent: a second call refreshes the existing row.
+      const refreshed = await node.registerSelf();
+      expect(refreshed).toBe('refreshed');
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
 });
 

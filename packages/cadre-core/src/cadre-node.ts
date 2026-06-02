@@ -23,7 +23,8 @@ import type {
   FormStrandResult,
   StrandFormationDisclosure,
   StrandMode,
-  ResolveOpts
+  ResolveOpts,
+  SelfRegistrationOutcome
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { authorityKeyFromLibp2p } from './authority-key.js';
@@ -102,6 +103,13 @@ export class CadreNode implements SAppIdLookup {
   private recordRefreshTimer: ReturnType<typeof setInterval> | null = null;
   /** Listener that re-publishes the self record when reachable addresses change. */
   private selfPeerUpdateHandler: (() => void) | null = null;
+  /**
+   * Single-flight guard for {@link registerSelf}. Concurrent callers (the explicit
+   * CLI `--authority` publish, the 1s startup timer, the TTL heartbeat, and the
+   * address-change listener) share one in-flight publish so two of them can never
+   * both read "no row yet" and race a duplicate INSERT (a `CadrePeer` PK conflict).
+   */
+  private registerSelfInFlight: Promise<SelfRegistrationOutcome> | null = null;
 
   constructor(config: CadreNodeConfig) {
     this.config = config;
@@ -411,18 +419,39 @@ export class CadreNode implements SAppIdLookup {
    *   wait for an authority to insert it; it can then self-refresh).
    *
    * Safe to call repeatedly (heartbeat / address-change driven); each successful
-   * publish strictly increases `UpdatedAt`.
+   * publish strictly increases `UpdatedAt`. Concurrent calls are collapsed into a
+   * single in-flight publish (see {@link registerSelfInFlight}) so the explicit
+   * startup publish and the background timers can never race a duplicate INSERT.
+   *
+   * @returns what the publish did — `inserted`, `refreshed`, or `skipped`.
    */
-  async registerSelf(): Promise<void> {
+  async registerSelf(): Promise<SelfRegistrationOutcome> {
+    // Join an in-flight publish rather than starting a second one. Without this,
+    // the explicit CLI call and the 1s timer could both observe "no row yet" and
+    // both attempt the INSERT — the loser hits a CadrePeer PK conflict.
+    if (this.registerSelfInFlight) {
+      return this.registerSelfInFlight;
+    }
+    const op = this.publishSelfRecord();
+    this.registerSelfInFlight = op;
+    try {
+      return await op;
+    } finally {
+      this.registerSelfInFlight = null;
+    }
+  }
+
+  /** The body of {@link registerSelf}; serialised by its single-flight guard. */
+  private async publishSelfRecord(): Promise<SelfRegistrationOutcome> {
     if (!this.running || !this.controlNode || !this.controlDatabase) {
       log('Cannot register self - node or database not initialized');
-      return;
+      return 'skipped';
     }
 
     const signingKey = this.getSelfSigningKey();
     if (!signingKey) {
       log('registerSelf: no self-signing key available (config.privateKey unset or not matching peerId); skipping');
-      return;
+      return 'skipped';
     }
 
     const peerId = this.controlNode.peerId.toString();
@@ -439,14 +468,17 @@ export class CadreNode implements SAppIdLookup {
     if (existing) {
       await this.controlDatabase.updateSelfPeerRecord(record);
       log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', updatedAt, addrs.length);
-    } else if (this.seedBootstrapService) {
+      return 'refreshed';
+    }
+    if (this.seedBootstrapService) {
       // First-time row: requires an authority signature (the node is its own
       // authority). insertSelfPeerRecord throws if no authority key is present.
       await this.seedBootstrapService.insertSelfPeerRecord(record);
       log('registerSelf: inserted own CadrePeer record (authority-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
-    } else {
-      log('registerSelf: not yet a CadrePeer member and no authority service to self-insert; skipping (an authority must add this peer first)');
+      return 'inserted';
     }
+    log('registerSelf: not yet a CadrePeer member and no authority service to self-insert; skipping (an authority must add this peer first)');
+    return 'skipped';
   }
 
   /**

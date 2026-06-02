@@ -2,10 +2,9 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
 
 import { TrustCircleService } from '../trust-circle.js';
 import { TrustCircleStore } from '../trust-circle-store.js';
@@ -36,18 +35,19 @@ describe('TrustCircleService — real CadreNode integration', () => {
   beforeEach(async () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-tc-int-'));
 
-    hostAuthorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    hostAuthorityPublicKey = getPublicKey(
-      hostAuthorityPrivateKey,
-      'ed25519',
-      'base64url',
-      'base64url'
-    ) as string;
+    // Own-authority host: the node's libp2p identity key IS its authority key
+    // (the cadre-cli `--authority` shape), so registerSelf can authority-sign the
+    // INSERT of its own CadrePeer row.
+    const hostKey = await generateKeyPair('Ed25519');
+    const authority = authorityKeyFromLibp2p(hostKey);
+    hostAuthorityPrivateKey = authority.privateKeyB64;
+    hostAuthorityPublicKey = authority.publicKeyB64;
 
     const baseId = Math.random().toString(36).slice(2);
 
     host = new CadreNode({
       controlNetwork: { partyId: `host-${baseId}`, bootstrapNodes: [] },
+      privateKey: hostKey,
       profile: 'transaction'
     });
 
@@ -58,6 +58,11 @@ describe('TrustCircleService — real CadreNode integration', () => {
     await db!.insertAuthorityKey(hostAuthorityPublicKey);
 
     host.initializeSeedBootstrap(hostAuthorityPrivateKey);
+
+    // The authority writes its own CadrePeer row up-front (the implement ticket's
+    // CLI change). After this the host's own peerId is a member, so it shows up
+    // alongside any redeemed peers in the trust-circle listing.
+    await host.registerSelf();
 
     store = new TrustCircleStore(tmpRoot);
     service = new TrustCircleService({ cadreNode: host, store });
@@ -92,12 +97,15 @@ describe('TrustCircleService — real CadreNode integration', () => {
     // Verify directly against the control DB: the row is there.
     expect(await isInCadrePeer(host, phonePeerId)).toBe(true);
 
-    // List — should see the peer once, labelled. Exercises the new
-    // CadreNode.listMembers() path that replaced getControlDatabase().
+    // List — exercises the CadreNode.listMembers() path. CadrePeer now carries
+    // the host's own self-registered row in addition to the redeemed phone.
     const snap = await service.list();
-    expect(snap.members).toHaveLength(1);
-    expect(snap.members[0]!.peerId).toBe(phonePeerId);
-    expect(snap.members[0]!.label).toBe("Mom's phone");
+    expect(snap.members).toHaveLength(2);
+    const phoneMember = snap.members.find((m) => m.peerId === phonePeerId);
+    expect(phoneMember).toBeDefined();
+    expect(phoneMember!.label).toBe("Mom's phone");
+    // The host's own peerId is present too (unlabeled → bare peerId as label).
+    expect(snap.members.some((m) => m.peerId === host.peerId!.toString())).toBe(true);
     expect(snap.pending).toHaveLength(0);
   }, 90_000);
 
@@ -118,7 +126,10 @@ describe('TrustCircleService — real CadreNode integration', () => {
     expect(await isInCadrePeer(host, phonePeerId)).toBe(false);
     expect(store.getMember(phonePeerId)).toBeUndefined();
     const afterRemove = await service.list();
-    expect(afterRemove.members).toHaveLength(0);
+    // The phone is gone; the host's own self-registered row remains.
+    expect(afterRemove.members.map((m) => m.peerId)).not.toContain(phonePeerId);
+    expect(afterRemove.members).toHaveLength(1);
+    expect(afterRemove.members[0]!.peerId).toBe(host.peerId!.toString());
   }, 90_000);
 });
 
