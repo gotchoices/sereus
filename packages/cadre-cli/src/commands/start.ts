@@ -237,8 +237,9 @@ export const startCommand = new Command('start')
         // Write the authority's own signed CadrePeer row up-front, before any
         // seed can be minted. The background heartbeat keeps it fresh, but it
         // fires too late for the first invite/seed — without this, createSeed()
-        // would omit the authority peer and a receiving node's signer-is-authority
-        // gate would reject the seed until the ~7.5 min heartbeat caught up.
+        // would omit the authority peer, so a freshly-seeded node would have no
+        // authority multiaddr to dial (applySeed dials the seed's isAuthority
+        // peers) until the ~7.5 min heartbeat first published the row.
         const selfReg = await node.registerSelf();
         const selfRegMessage: Record<typeof selfReg, string> = {
           inserted: '✓ Authority self-registered into CadrePeer (row inserted)',

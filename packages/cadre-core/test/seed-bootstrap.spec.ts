@@ -1148,5 +1148,50 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
       await node.stop();
     }
   }, 60_000);
+
+  /**
+   * Regression guard for the single-flight semantics of registerSelf. Two truly
+   * concurrent callers (the CLI's explicit `--authority` publish + a background
+   * timer is the production shape) must collapse into ONE publish: without the
+   * `registerSelfInFlight` guard both would observe "no row yet", both attempt
+   * the authority-signed INSERT, and the loser would reject on a CadrePeer PK
+   * conflict — which, for the awaited CLI call, exits the authority node.
+   */
+  it('collapses concurrent registerSelf calls into a single INSERT (no PK-conflict race)', async () => {
+    const nodeKey = await generateKeyPair('Ed25519');
+    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+
+    const node = new CadreNode({
+      controlNetwork: {
+        partyId: 'self-reg-race-' + Math.random().toString(36).slice(2),
+        bootstrapNodes: [],
+      },
+      privateKey: nodeKey,
+      profile: 'transaction',
+    });
+
+    try {
+      await node.start();
+      const selfPeerId = node.peerId!.toString();
+      clearTimeout((node as any).selfRegistrationTimer);
+      (node as any).selfRegistrationTimer = null;
+
+      node.initializeSeedBootstrap(privateKeyB64);
+      const db = node.getControlDatabase();
+      await db!.insertAuthorityKey(publicKeyB64);
+
+      // Fire both before either has a chance to settle. The guard makes the
+      // second join the first's in-flight publish, so neither hits a conflict
+      // and both observe the same 'inserted' outcome.
+      const [a, b] = await Promise.all([node.registerSelf(), node.registerSelf()]);
+      expect([a, b].sort()).toEqual(['inserted', 'inserted']);
+
+      // Exactly one CadrePeer row for self resulted from the two calls.
+      const seed = await node.createSeed();
+      expect(seed.peers.filter((p) => p.peerId === selfPeerId)).toHaveLength(1);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
 });
 
