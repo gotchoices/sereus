@@ -103,6 +103,27 @@ describe('HealthServer', () => {
       expect(node.applySeedCalls).toHaveLength(0);
     });
 
+    it('rejects a body missing the seed field (400) without calling applySeed', async () => {
+      const { base } = await startServer(TOKEN);
+      const res = await postSeed(base, { authorization: `Bearer ${TOKEN}` }, JSON.stringify({}));
+      expect(res.status).toBe(400);
+      expect(node.applySeedCalls).toHaveLength(0);
+    });
+
+    it('rejects a malformed JSON body (400) without calling applySeed', async () => {
+      const { base } = await startServer(TOKEN);
+      const res = await postSeed(base, { authorization: `Bearer ${TOKEN}` }, '{not json');
+      expect(res.status).toBe(400);
+      expect(node.applySeedCalls).toHaveLength(0);
+    });
+
+    it('does not expose /seed to non-POST methods (404) — the method guard is not auth', async () => {
+      const { base } = await startServer(TOKEN);
+      const res = await fetch(`${base}/seed`, { method: 'GET', headers: { authorization: `Bearer ${TOKEN}` } });
+      expect(res.status).toBe(404);
+      expect(node.applySeedCalls).toHaveLength(0);
+    });
+
     it('still serves probes unauthenticated', async () => {
       const { base } = await startServer(TOKEN);
       expect((await fetch(`${base}/health`)).status).toBe(200);

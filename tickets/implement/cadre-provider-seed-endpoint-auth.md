@@ -6,9 +6,13 @@ files: packages/cadre-provider/src/service/docker-orchestrator.ts, packages/cadr
 
 ## Context
 
-Once `cadre-cli-seed-endpoint-auth` lands, a cadre container's `POST /seed`
-route is **disabled unless `CADRE_SEED_TOKEN` is set** and, when enabled,
-requires `Authorization: Bearer <CADRE_SEED_TOKEN>`. The provider is the in-tree
+> **Note:** the cli-side auth contract this ticket depends on **already landed**
+> via `seed-network-path-authn` (the `cadre-cli-seed-endpoint-auth` prereq slug
+> was reduced to deployment-surface hardening only). The container's `POST /seed`
+> code gate is live now; this ticket is purely the provider-side wiring.
+
+A cadre container's `POST /seed` route is **disabled unless `CADRE_SEED_TOKEN`
+is set** and, when enabled, requires `Authorization: Bearer <CADRE_SEED_TOKEN>`. The provider is the in-tree
 consumer of that endpoint (`ContainerService.applySeed` → `fetch(seedEndpoint,
 { method: POST, body: { seed } })`, `container-service.ts:233-265`), so it must
 now (a) provision the container with a seed token, (b) present that token when
