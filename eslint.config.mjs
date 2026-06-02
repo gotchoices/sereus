@@ -40,6 +40,10 @@ export default tseslint.config(
 			// RN native/build dirs
 			'packages/reference-app-rn/android/**',
 			'packages/reference-app-rn/ios/**',
+			// NativeScript generated native/build output (gitignored, like the RN dirs above):
+			// minified Android bundle/vendor/runtime artifacts and build-tools.
+			'packages/reference-app-ns/platforms/**',
+			'packages/reference-app-ns/hooks/**',
 			// Maestro e2e helper scripts run in Maestro's own JS engine with
 			// injected globals (http/json/output/env) — not node/browser ES modules.
 			'packages/reference-app-rn/maestro/**',
