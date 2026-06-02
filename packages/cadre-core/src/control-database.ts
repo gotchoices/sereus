@@ -272,8 +272,11 @@ export class ControlDatabase {
       // Check if we're in a Node.js environment
       if (typeof process !== 'undefined' && process.versions?.node) {
         try {
-          // Use require to conditionally load fs only in Node.js
-          // This won't be bundled by React Native's Metro bundler
+          // Use require to conditionally load fs only in Node.js.
+          // This won't be bundled by React Native's Metro bundler — a dynamic
+          // import() would be statically picked up by Metro, so require is
+          // intentional here (cross-platform constraint, not lazy CommonJS).
+          // eslint-disable-next-line @typescript-eslint/no-require-imports
           const fs = require('fs/promises');
           schemaContent = await fs.readFile(this.config.schemaPath, 'utf-8');
         } catch (error) {
@@ -494,7 +497,7 @@ export class ControlDatabase {
       this.collectionFactory = null;
     }
     if (this.db) {
-      this.db.close();
+      void this.db.close();
       this.db = null;
     }
     this.initialized = false;

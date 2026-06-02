@@ -87,7 +87,7 @@ export function resolveKeytarLike(mod: unknown): KeytarLike | null {
 
 function makeFileFallback(rootDir: string, reason: string): SecretsStore {
   const store = new FileSecretsStore(rootDir);
-  // eslint-disable-next-line no-console
+   
   console.warn(
     `[cadre-host] DDNS credentials will be stored UNENCRYPTED at ` +
     `${store.filePath()} (${reason}). Install keytar's native dependencies ` +

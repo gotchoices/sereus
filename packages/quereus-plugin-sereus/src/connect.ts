@@ -1,5 +1,6 @@
 import debug from 'debug';
-import { Database, registerPlugin } from '@quereus/quereus';
+import type { Database} from '@quereus/quereus';
+import { registerPlugin } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';

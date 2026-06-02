@@ -5,7 +5,8 @@ import debug from 'debug';
 import { privateKeyFromRaw, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { StrandFilter } from '@serfab/cadre-core';
-import { CliConfigFile, ResolvedConfig, ENV_MAPPINGS } from './types.js';
+import type { CliConfigFile, ResolvedConfig} from './types.js';
+import { ENV_MAPPINGS } from './types.js';
 
 const log = debug('cadre:cli:config');
 

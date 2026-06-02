@@ -95,7 +95,7 @@ describe('browser bundle module shape', () => {
 
 		// If we did catch an error, surface it for debugging but don't fail.
 		if (caught) {
-			// eslint-disable-next-line no-console
+			 
 			console.log('expected post-storage failure:', (caught as Error).message);
 		}
 	});

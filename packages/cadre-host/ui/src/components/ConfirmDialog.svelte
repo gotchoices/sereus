@@ -10,7 +10,7 @@
 		onCancel: () => void;
 	}
 
-	let {
+	const {
 		open,
 		title,
 		message,

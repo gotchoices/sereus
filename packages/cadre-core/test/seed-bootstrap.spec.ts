@@ -688,7 +688,7 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 		return {
 			getAuthorityKeys: async () => new Set(authorityKeys),
 			getDatabase: () => ({
-				// eslint-disable-next-line require-yield
+				 
 				eval: async function* (sql: string) {
 					if (sql.includes('CadrePeer')) {
 						for (const p of cadrePeers) yield p;

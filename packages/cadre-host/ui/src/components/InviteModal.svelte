@@ -10,7 +10,7 @@
 		onClose: () => void;
 	}
 
-	let { open, onClose }: Props = $props();
+	const { open, onClose }: Props = $props();
 
 	const TTL_OPTIONS = [
 		{ label: '15 minutes', value: 15 * 60 * 1000 },

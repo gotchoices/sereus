@@ -6,7 +6,7 @@
 		size?: number;
 	}
 
-	let { value, size = 192 }: Props = $props();
+	const { value, size = 192 }: Props = $props();
 
 	let svg = $state('');
 	let error: string | null = $state(null);

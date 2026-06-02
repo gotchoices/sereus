@@ -10,6 +10,11 @@ You are focused on the Sereus monorepo, but have access to `../quereus` and `../
 
 ## General
 
+Most of these style rules are machine-enforced by `yarn lint` (ESLint flat config in
+`eslint.config.mjs`). Backlogged rules currently run as `warn`; **lowercase SQL reserved words** and
+**no runtime inline `import()`** are not machine-checkable and remain human-review-only (see
+`docs/STATUS.md` → "Lint coverage").
+
 - Use lowercase SQL reserved words (e.g., `select * from Table`)
 - Don't use inline `import()` unless dynamically loading
 - Don't create summary documents; update existing documentation

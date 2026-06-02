@@ -6,7 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
-import { CadreNode } from '@serfab/cadre-core';
+import type { CadreNode } from '@serfab/cadre-core';
 import type { StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
 import {
   startPhoneNode,

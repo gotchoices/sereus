@@ -14,7 +14,7 @@
 	import LogTail from '../components/LogTail.svelte';
 
 	interface Props { id: string }
-	let { id }: Props = $props();
+	const { id }: Props = $props();
 
 	const app = appState();
 

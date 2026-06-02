@@ -11,7 +11,7 @@ const ENV_OVERRIDE = 'OPTIMYSTIC_WS_BOOTSTRAP';
 // can't return a value from global-setup that teardown receives, so a side
 // channel is the cleanest approach.
 declare global {
-	// eslint-disable-next-line no-var
+	 
 	var __referencePeer: ReferenceMeshHandle | undefined;
 }
 

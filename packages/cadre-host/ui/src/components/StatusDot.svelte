@@ -7,7 +7,7 @@
 		size?: number;
 	}
 
-	let { status, label, size = 14 }: Props = $props();
+	const { status, label, size = 14 }: Props = $props();
 
 	const tone = $derived.by(() => {
 		switch (status) {

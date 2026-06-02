@@ -553,7 +553,7 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   async isRunning(dockerId: string): Promise<boolean> {
-    let handle: Handle | undefined = this.handles.get(dockerId);
+    const handle: Handle | undefined = this.handles.get(dockerId);
     let pid: number;
     let token: string;
     let workdir: string | undefined;

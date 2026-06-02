@@ -8,7 +8,7 @@
 		lines?: number;
 	}
 
-	let { nodeId, lines = 200 }: Props = $props();
+	const { nodeId, lines = 200 }: Props = $props();
 
 	let logLines: string[] = $state([]);
 	let loading = $state(false);

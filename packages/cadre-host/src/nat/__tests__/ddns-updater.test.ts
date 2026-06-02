@@ -67,7 +67,7 @@ describe('DdnsUpdater', () => {
   it('no-op when externallyManaged', async () => {
     const provider = makeProvider();
     const secrets = makeSecrets({ [ddnsAccount('duckdns', 'token')]: 'T' });
-    let ip: string | null = '1.2.3.4';
+    const ip: string | null = '1.2.3.4';
     const u = new DdnsUpdater({
       settings: { ...baseSettings, externallyManaged: true },
       secrets,

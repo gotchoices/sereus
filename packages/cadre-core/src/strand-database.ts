@@ -218,7 +218,7 @@ export class StrandDatabase {
       this.collectionFactory = null;
     }
     if (this.db) {
-      this.db.close();
+      void this.db.close();
       this.db = null;
     }
     this.initialized = false;

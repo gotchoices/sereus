@@ -51,7 +51,7 @@ function looksLikePeerId(id: string): boolean {
 function resolvePort(raw: string): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0 || n > 65535) {
-    // eslint-disable-next-line no-console
+     
     console.error(`Invalid --port: ${raw}`);
     process.exit(1);
   }
@@ -105,20 +105,20 @@ program
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
       });
-      // eslint-disable-next-line no-console
+       
       console.log(`cadre-host installed.`);
-      // eslint-disable-next-line no-console
+       
       console.log(`  Data dir:     ${result.dataDir}`);
-      // eslint-disable-next-line no-console
+       
       console.log(`  UI:           ${result.uiUrl}`);
-      // eslint-disable-next-line no-console
+       
       console.log(`  Service:      ${result.serviceName}`);
       if (result.enrollmentInvite) {
         printEnrollmentInvite(result.enrollmentInvite);
       }
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`install failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -161,11 +161,11 @@ program
         removeData: Boolean(opts.removeData),
         ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
       });
-      // eslint-disable-next-line no-console
+       
       console.log('cadre-host uninstalled.');
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`uninstall failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -182,13 +182,13 @@ program
     const installer = new Installer();
     try {
       const status = await installer.status();
-      // eslint-disable-next-line no-console
+       
       console.log(`Service installed: ${status.installed ? 'yes' : 'no'}`);
-      // eslint-disable-next-line no-console
+       
       console.log(`Service running:   ${status.running ? 'yes' : 'no'}`);
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`status failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -210,7 +210,7 @@ program
       const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
       const cfgPath = resolveConfigPath(dataDir);
       if (!existsSync(cfgPath)) {
-        // eslint-disable-next-line no-console
+         
         console.error(
           `cadre-host start: ${cfgPath} not found. ` +
           `Run \`cadre-host install\` first (or pass --data-dir to an existing install).`,
@@ -221,12 +221,12 @@ program
       const cfg = readHostConfig(cfgPath);
       const idPath = resolveIdentityPath(cfg.dataDir);
       if (!existsSync(idPath)) {
-        // eslint-disable-next-line no-console
+         
         console.error(`cadre-host start: identity file not found at ${idPath}. Re-run \`cadre-host install\`.`);
         process.exit(1);
         return;
       }
-      // eslint-disable-next-line no-console
+       
       console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
 
       // Update flow: notify-by-default; auto-apply opt-in via host.config.json.
@@ -258,7 +258,7 @@ program
         try {
           updateHostConfig(cfgPath, { updates: next });
         } catch (err) {
-          // eslint-disable-next-line no-console
+           
           console.error(`failed to persist updated settings to ${cfgPath}: ${(err as Error).message}`);
         }
       });
@@ -284,10 +284,10 @@ program
           partyId: cfg.installId,
           libp2pPort: cfg.libp2pPort,
         });
-        // eslint-disable-next-line no-console
+         
         console.log('cadre-host: authority node spawned');
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error(`authority node spawn failed: ${(err as Error).message}`);
       }
 
@@ -313,7 +313,7 @@ program
         try {
           await authority.pushInviteAddresses(addresses);
         } catch (err) {
-          // eslint-disable-next-line no-console
+           
           console.error(`invite-address push failed: ${(err as Error).message}`);
         }
       });
@@ -323,7 +323,7 @@ program
       try {
         await natService.start();
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error(`NAT start failed: ${(err as Error).message}`);
       }
 
@@ -339,10 +339,10 @@ program
       });
       const { url, port } = await server.start();
       if (port !== cfg.uiPort) {
-        // eslint-disable-next-line no-console
+         
         console.log(`(configured port ${cfg.uiPort} was in use — bound on ${port} instead)`);
       }
-      // eslint-disable-next-line no-console
+       
       console.log(`cadre-host local UI: ${url}`);
 
       await waitForTermination();
@@ -350,11 +350,11 @@ program
       try { await natService.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopAuthorityNode(); } catch { /* ignore */ }
       updateService.stop();
-      // eslint-disable-next-line no-console
+       
       console.log('cadre-host stopped.');
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`start failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -375,28 +375,28 @@ program
       const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
       const cfgPath = resolveConfigPath(dataDir);
       if (!existsSync(cfgPath)) {
-        // eslint-disable-next-line no-console
+         
         console.error(`cadre-host ui: ${cfgPath} not found. Run \`cadre-host install\` first.`);
         process.exit(1);
         return;
       }
       const cfg = readHostConfig(cfgPath);
       const url = `http://127.0.0.1:${cfg.uiPort}`;
-      // eslint-disable-next-line no-console
+       
       console.log(url);
       if (opts.browser !== false) {
         const res = openBrowser(url);
         if (res.spawned) {
-          // eslint-disable-next-line no-console
+           
           console.log('(Opening in your default browser...)');
         } else if (res.error) {
-          // eslint-disable-next-line no-console
+           
           console.error(`(unable to launch browser: ${res.error})`);
         }
       }
       process.exit(0);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`ui failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -446,22 +446,22 @@ const requireForQr = createRequire(import.meta.url);
 
 function printEnrollmentInvite(invite: { encodedInvite: string; expiresAt?: string }): void {
   // Best-effort QR render — fall back to the bare token if the lib chokes.
-  // eslint-disable-next-line no-console
+   
   console.log('\nEnroll your first device with this invite:');
   try {
     const qr = requireForQr('qrcode-terminal') as { generate: (text: string, opts?: { small?: boolean }, cb?: (s: string) => void) => void };
     qr.generate(invite.encodedInvite, { small: true }, (rendered) => {
-      // eslint-disable-next-line no-console
+       
       console.log(rendered);
     });
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error(`(qrcode-terminal unavailable: ${(err as Error).message})`);
   }
-  // eslint-disable-next-line no-console
+   
   console.log(`  ${invite.encodedInvite}`);
   if (invite.expiresAt) {
-    // eslint-disable-next-line no-console
+     
     console.log(`  (expires ${invite.expiresAt})`);
   }
 }
@@ -478,7 +478,7 @@ program
     try {
       ttlMs = parseDuration(opts.ttl);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`Invalid --ttl: ${(err as Error).message}`);
       process.exit(1);
       return;
@@ -495,7 +495,7 @@ program
         body: JSON.stringify({ label, ttlMs }),
       });
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(
         `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
         `Hint: is cadre-host running? Try \`cadre-host start\`.`,
@@ -506,7 +506,7 @@ program
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      // eslint-disable-next-line no-console
+       
       console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
       process.exit(1);
       return;
@@ -514,16 +514,16 @@ program
 
     const body = await response.json() as { encodedInvite?: string; expiresAt?: string; token?: string };
     if (!body.encodedInvite) {
-      // eslint-disable-next-line no-console
+       
       console.error('cadre-host returned malformed response (missing encodedInvite)');
       process.exit(1);
       return;
     }
 
-    // eslint-disable-next-line no-console
+     
     console.log(body.encodedInvite);
     if (body.expiresAt) {
-      // eslint-disable-next-line no-console
+       
       console.error(`(expires at ${body.expiresAt})`);
     }
     process.exit(0);
@@ -544,13 +544,13 @@ trust
     try {
       response = await fetch(url);
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`Failed to reach cadre-host at ${url}: ${(err as Error).message}`);
       process.exit(2);
       return;
     }
     if (!response.ok) {
-      // eslint-disable-next-line no-console
+       
       console.error(`cadre-host returned ${response.status}: ${response.statusText}`);
       process.exit(1);
       return;
@@ -559,27 +559,27 @@ trust
       members: Array<{ peerId: string; label: string; addedAt: string; self?: boolean }>;
       pending: Array<{ token: string; label: string; createdAt: string; expiresAt?: string }>;
     };
-    // eslint-disable-next-line no-console
+     
     console.log('Members:');
     if (body.members.length === 0) {
-      // eslint-disable-next-line no-console
+       
       console.log('  (none)');
     } else {
       for (const m of body.members) {
         const self = m.self ? ' [self]' : '';
-        // eslint-disable-next-line no-console
+         
         console.log(`  ${m.peerId}  ${m.label}${self}`);
       }
     }
-    // eslint-disable-next-line no-console
+     
     console.log('\nPending invites:');
     if (body.pending.length === 0) {
-      // eslint-disable-next-line no-console
+       
       console.log('  (none)');
     } else {
       for (const p of body.pending) {
         const expires = p.expiresAt ? ` (expires ${p.expiresAt})` : '';
-        // eslint-disable-next-line no-console
+         
         console.log(`  ${p.token}  ${p.label}${expires}`);
       }
     }
@@ -606,19 +606,19 @@ trust
     try {
       response = await fetch(`${base}${path}`, { method: 'DELETE' });
     } catch (err) {
-      // eslint-disable-next-line no-console
+       
       console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
       process.exit(2);
       return;
     }
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-      // eslint-disable-next-line no-console
+       
       console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
       process.exit(1);
       return;
     }
-    // eslint-disable-next-line no-console
+     
     console.log(`revoked ${kind}: ${id}`);
     process.exit(0);
   });
@@ -641,7 +641,7 @@ nat
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/status`;
     const body = await getJson(url);
     if (opts.json) {
-      // eslint-disable-next-line no-console
+       
       console.log(JSON.stringify(body, null, 2));
     } else {
       printNatStatus(body);
@@ -659,7 +659,7 @@ nat
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/test`;
     const body = await postJson(url, {});
     if (opts.json) {
-      // eslint-disable-next-line no-console
+       
       console.log(JSON.stringify(body, null, 2));
     } else {
       printNatStatus(body);
@@ -714,7 +714,7 @@ ddns
     host: string;
   }) => {
     if (!opts.hostname) {
-      // eslint-disable-next-line no-console
+       
       console.error('--hostname is required');
       process.exit(1);
       return;
@@ -724,7 +724,7 @@ ddns
 
     if (!config.token) {
       if (!process.stdin.isTTY) {
-        // eslint-disable-next-line no-console
+         
         console.error(
           'Missing --token for provider "' + provider + '" and stdin is not a TTY. ' +
           'Re-run with --token <secret>.',
@@ -735,7 +735,7 @@ ddns
       try {
         config.token = await readSecretLine('DDNS token: ');
       } catch (err) {
-        // eslint-disable-next-line no-console
+         
         console.error('Failed to read token: ' + (err as Error).message);
         process.exit(1);
         return;
@@ -814,7 +814,7 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
     }
     response = await fetch(url, init);
   } catch (err) {
-    // eslint-disable-next-line no-console
+     
     console.error(
       `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
       `Hint: is cadre-host running? Try \`cadre-host start\`.`,
@@ -824,7 +824,7 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
   }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-    // eslint-disable-next-line no-console
+     
     console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
     process.exit(1);
     throw new Error('non-ok');
@@ -834,35 +834,35 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
 }
 
 function printNatStatus(s: NatStatusLike): void {
-  // eslint-disable-next-line no-console
+   
   console.log(`Port mapping: ${s.portMode ?? '?'} (external ${s.externalPort ?? '?'} → internal ${s.internalPort ?? '?'})`);
   if (s.routerExternalIp) {
-    // eslint-disable-next-line no-console
+     
     console.log(`Router IP:    ${s.routerExternalIp}`);
   }
-  // eslint-disable-next-line no-console
+   
   console.log(`External IP:  ${s.externalIp ?? '(unknown)'}${s.cgnatDetected ? '  [CGNAT detected]' : ''}`);
-  // eslint-disable-next-line no-console
+   
   console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
   if (s.mappingLeaseExpiresAt) {
-    // eslint-disable-next-line no-console
+     
     console.log(`Lease expires: ${s.mappingLeaseExpiresAt}`);
   }
   const ddns = s.ddns ?? {};
   if (ddns.providerId || ddns.hostname) {
-    // eslint-disable-next-line no-console
+     
     console.log(`\nDDNS:`);
-    // eslint-disable-next-line no-console
+     
     console.log(`  Provider:   ${ddns.providerId ?? '(none)'}${ddns.externallyManaged ? '  [externally managed]' : ''}`);
-    // eslint-disable-next-line no-console
+     
     console.log(`  Hostname:   ${ddns.hostname ?? '(unset)'}`);
     if (ddns.lastUpdateAt) {
       const ok = ddns.lastUpdateOk ? 'OK' : 'FAIL';
-      // eslint-disable-next-line no-console
+       
       console.log(`  Last update: ${ok} at ${ddns.lastUpdateAt}${ddns.lastError ? `  — ${ddns.lastError}` : ''}`);
     }
   } else {
-    // eslint-disable-next-line no-console
+     
     console.log('\nDDNS: not configured');
   }
 }
@@ -914,4 +914,4 @@ function readSecretLine(prompt: string): Promise<string> {
   });
 }
 
-program.parseAsync();
+void program.parseAsync();

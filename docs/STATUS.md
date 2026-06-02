@@ -256,4 +256,31 @@ root against a single config (`knip.ts`, Option A) covering all nine workspaces.
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
   (integration-tests). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
 
+### Lint coverage
+
+`yarn lint` (root) is now a **real** gate. It was previously a no-op (`workspaces foreach -A run lint`
+with no package defining the script, exiting 0 in ~0s). It now runs [ESLint](https://eslint.org) 10 +
+typescript-eslint 8 from the repo root against a single flat config (`eslint.config.mjs`) covering all
+workspaces (TS, JS tooling, and Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the
+auto-fixable subset.
+
+- [x] `eslint.config.mjs` encodes the AGENTS.md style rules; the gate exits 0 on a clean checkout.
+- Rules at **`error`** (codebase already compliant or trivially fixed): `no-floating-promises`
+  (type-aware, `packages/*/src` only — the AGENTS.md "`void` unused promises" rule), `no-require-imports`
+  (ES-modules; one intentional cross-platform `require` in `control-database.ts` is `eslint-disable`d with
+  rationale), `no-case-declarations`.
+- Rules at **`warn`** (real pre-existing backlog — surfaced, non-blocking, cleanup deferred): `no-explicit-any`
+  (~67), `no-unused-vars` (~30, honors the `_`-prefix convention), `consistent-type-imports`,
+  `no-empty` (empty catch). Plus eslint-10 recommended additions that are **not** AGENTS.md rules and carry
+  their own backlog: `prefer-const`, `preserve-caught-error`, `no-useless-assignment`, `no-control-regex`,
+  `svelte/no-at-html-tags`, `svelte/prefer-svelte-reactivity`. Burning these down is a follow-up
+  (`build-health-lint-warning-cleanup`).
+- **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
+  template literals), and the "no runtime inline `import()`" rule (no clean ESLint rule;
+  `consistent-type-imports` only covers type-position imports). Tab indentation is left to `.editorconfig`,
+  not linted, to avoid a formatter war.
+- Scope notes: type-aware linting (`projectService`) is enabled only for the node/library `src` trees;
+  the bundler/expo apps (`reference-app-web`, `reference-app-rn`, `cadre-host/ui`) get non-type-aware rules.
+  `maestro/` (Maestro JS engine), `strand-proto` (deprecated), and non-package trees (`tess/`, `ops/`,
+  `scripts/`) are ignored.
 

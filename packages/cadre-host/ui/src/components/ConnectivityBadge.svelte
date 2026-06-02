@@ -6,7 +6,7 @@
 		portMode: PortForwardMode;
 	}
 
-	let { reachability, portMode }: Props = $props();
+	const { reachability, portMode }: Props = $props();
 
 	const reachLabel = $derived.by(() => {
 		switch (reachability) {

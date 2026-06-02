@@ -77,7 +77,7 @@ describe('browser bundle artifact', () => {
 		const raw = statSync(bundlePath).size;
 		const gz = gzipSync(readFileSync(bundlePath)).length;
 		// Log so reviewers see the trend.
-		// eslint-disable-next-line no-console
+		 
 		console.log(`plugin-browser.js: ${(raw / 1024).toFixed(1)} KiB raw, ${(gz / 1024).toFixed(1)} KiB gzipped`);
 		expect(raw, `${raw} bytes exceeds ${MAX_RAW_BYTES}`).toBeLessThan(MAX_RAW_BYTES);
 		expect(gz, `${gz} bytes exceeds ${MAX_GZIPPED_BYTES}`).toBeLessThan(MAX_GZIPPED_BYTES);

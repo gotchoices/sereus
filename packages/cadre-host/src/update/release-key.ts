@@ -8,7 +8,8 @@
  * For dev/CI/staging overrides see `CADRE_HOST_UPDATE_DEV_KEY`.
  */
 
-import { createPublicKey, KeyObject } from 'node:crypto';
+import type { KeyObject } from 'node:crypto';
+import { createPublicKey } from 'node:crypto';
 
 /**
  * Raw 32-byte Ed25519 public key, base64-encoded. The all-zeros value below is

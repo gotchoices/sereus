@@ -637,7 +637,7 @@ export class SeedBootstrapService {
   private registerProtocolHandler(): void {
     if (!this.libp2pNode) return;
 
-    this.libp2pNode.handle(SEED_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
+    void this.libp2pNode.handle(SEED_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
       const stream = rawStream as LibP2PStream;
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
       log('Incoming seed delivery from: %s', remotePeerId);
