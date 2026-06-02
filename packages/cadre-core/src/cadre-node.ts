@@ -19,10 +19,12 @@ import type {
   CadreInvite,
   OpenInvitation,
   FormStrandResult,
-  StrandFormationDisclosure
+  StrandFormationDisclosure,
+  StrandMode
 } from './types.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
+import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase } from './control-database.js';
@@ -399,20 +401,8 @@ export class CadreNode implements SAppIdLookup {
     }
 
     try {
-      const instance = await this.strandManager.startStrand({
-        strandRow: strand,
-        sAppConfig,
-        storage: this.config.storage,
-        network: this.config.network,
-        profile: this.config.profile,
-        defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
-        privateKey: this.config.privateKey
-      });
-
-      // Register with hibernation manager
-      this.hibernationManager.trackStrand(instance);
-
-      this.emit('strand:started', { strandId: strand.Id });
+      // Discovery path: no explicit mode — infer from cohort membership.
+      await this.launchStrand(strand, sAppConfig);
     } catch (error) {
       log('Error starting strand %s: %o', strand.Id, error);
       this.emit('strand:error', {
@@ -529,24 +519,54 @@ export class CadreNode implements SAppIdLookup {
 
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
-    log('Registered sAppConfig for strand %s (sApp: %s, mode: %s)', strandRow.Id, sAppConfig.id, mode ?? 'networked');
+    log('Registered sAppConfig for strand %s (sApp: %s, mode: %s)', strandRow.Id, sAppConfig.id, mode ?? 'inferred');
+
+    // Pass `mode` (possibly undefined) through: an explicit mode wins, while a
+    // caller that omits it gets the same cohort-inferred mode as the discovery path.
+    return await this.launchStrand(strandRow, sAppConfig, mode);
+  }
+
+  /**
+   * Shared strand launch path for both the explicit (`addStrand`) and the
+   * control-discovered (`handleStrandAdded`) entry points. Resolves the cohort
+   * seed, selects the mode, starts the strand, and registers it with the
+   * hibernation manager before emitting `strand:started`.
+   */
+  private async launchStrand(
+    strand: StrandRow,
+    sAppConfig: SAppConfig,
+    explicitMode?: StrandMode
+  ): Promise<StrandInstance> {
+    const seed = await this.resolveCohortSeed();
+    const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
 
     const instance = await this.strandManager.startStrand({
-      strandRow,
+      strandRow: strand,
       sAppConfig,
       storage: this.config.storage,
       network: this.config.network,
       profile: this.config.profile,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: this.config.privateKey,
+      bootstrapNodes: seed.bootstrapNodes,
       mode
     });
 
-    // Register with hibernation manager
     this.hibernationManager.trackStrand(instance);
-
-    this.emit('strand:started', { strandId: strandRow.Id });
+    this.emit('strand:started', { strandId: strand.Id });
     return instance;
+  }
+
+  /**
+   * Derive the cohort discovery seed from the control network's CadrePeer rows,
+   * excluding this node. Returns an empty seed when no control database exists.
+   */
+  private async resolveCohortSeed(): Promise<CohortSeed> {
+    if (!this.controlDatabase) {
+      return { bootstrapNodes: [], hasOtherPeers: false };
+    }
+    const peers = await this.controlDatabase.queryCadrePeers();
+    return deriveCohortSeed(peers, this.controlNode?.peerId.toString());
   }
 
   /**

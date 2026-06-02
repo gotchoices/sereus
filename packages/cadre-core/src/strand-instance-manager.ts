@@ -40,9 +40,12 @@ export interface StartStrandConfig {
   profile: NodeProfile;
   defaultLatencyHint: LatencyHint;
   privateKey?: PrivateKey;
+  /** Cohort-derived discovery seed (multiaddr strings). Defaults to [] when omitted. */
+  bootstrapNodes?: string[];
   /**
    * Lifecycle mode for this strand; selects the default transactor used by the
-   * StrandDatabase. Defaults to `'networked'` when omitted.
+   * StrandDatabase. When omitted, the StrandDatabase falls back to `'networked'`;
+   * callers (CadreNode) infer it from cohort membership before reaching here.
    */
   mode?: StrandMode;
 }
@@ -196,7 +199,7 @@ export class StrandInstanceManager {
       let t0 = performance.now();
       const node = await createLibp2pNode({
         port: 0, // Random port
-        bootstrapNodes: [], // Will be populated from strand cohort
+        bootstrapNodes: config.bootstrapNodes ?? [],
         networkName: `strand-${strandId}`,
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',

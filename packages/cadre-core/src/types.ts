@@ -284,8 +284,10 @@ export interface StrandConfig {
   /** sApp configuration provided by the hosting application */
   sAppConfig: SAppConfig;
   /**
-   * Lifecycle mode for this strand instance. Defaults to `'networked'` when omitted
-   * to preserve the historical behavior for multi-peer callers.
+   * Lifecycle mode for this strand instance. When omitted, CadreNode infers the
+   * mode from cohort membership (`bootstrap` for a solo/first node with no other
+   * `CadrePeer` rows, `networked` once the cohort has other members). An explicit
+   * value always wins.
    */
   mode?: StrandMode;
 }

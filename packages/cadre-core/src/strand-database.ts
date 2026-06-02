@@ -95,8 +95,10 @@ export class StrandDatabase {
     // Register optimystic plugin. In `bootstrap` mode we route through the
     // local transactor so a solo node can initialize (schema apply etc.)
     // without network round trips. In `networked` mode the network transactor
-    // is used. Mode is fixed for the lifetime of this Database instance; the
-    // caller must restart the strand to transition modes.
+    // is used. The mode is supplied by the caller; CadreNode auto-selects it
+    // from CadrePeer cohort membership when not given explicitly. Mode is fixed
+    // for the lifetime of this Database instance; the caller must restart the
+    // strand to transition modes.
     t0 = performance.now();
     const networkName = `strand-${sid}`;
     const mode: StrandMode = this.config.mode ?? 'networked';

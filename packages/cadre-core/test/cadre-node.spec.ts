@@ -144,6 +144,26 @@ describe('CadreNode', () => {
       await node.stop();
     }, 60000);
 
+    it('should cold-start a strand without an explicit mode (empty cohort → bootstrap)', async () => {
+      // Solo cold-start parity: a fresh node has no CadrePeer rows, so addStrand
+      // with no `mode` should infer `bootstrap` and still produce a working
+      // instance — no explicit mode required for a single-device cadre.
+      const config = createConfig();
+      const node = new CadreNode(config);
+
+      await node.start();
+
+      const strandConfig = createStrandConfig('cold-start-strand');
+      expect(strandConfig.mode).toBeUndefined();
+
+      const instance = await node.addStrand(strandConfig);
+
+      expect(instance.status).toBe('active');
+      expect(node.getStrand('cold-start-strand')).toBeDefined();
+
+      await node.stop();
+    }, 60000);
+
     it('should reject strand operations when not running', async () => {
       const config = createConfig();
       const node = new CadreNode(config);

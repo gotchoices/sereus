@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { StrandInstanceManager, getStrandStoragePath } from '../src/strand-instance-manager.js';
 import { signSchema, SchemaVerificationError } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -84,6 +86,25 @@ describe('StrandInstanceManager', () => {
       expect(manager.hasStrand('test-strand-1')).toBe(true);
 
       // Cleanup
+      await manager.stopAll();
+    }, 30000);
+
+    it('should accept a cohort-derived bootstrapNodes seed', async () => {
+      // Acceptance smoke: a bootstrapNodes seed is forwarded to createLibp2pNode
+      // and the strand still reaches active. The value-derivation itself is
+      // covered by strand-cohort.spec.ts (asserting the forwarded array would
+      // require mocking the @optimystic/db-p2p import — see review handoff).
+      const manager = new StrandInstanceManager();
+      // A real, parseable peer id — the libp2p bootstrap module validates it.
+      const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+      const config = createStartConfig('seeded-strand', {
+        bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${seedPeerId}`]
+      });
+
+      const instance = await manager.startStrand(config);
+
+      expect(instance.status).toBe('active');
+
       await manager.stopAll();
     }, 30000);
 
