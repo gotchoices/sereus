@@ -122,6 +122,27 @@ describe('ContainerService.provisionContainer orchestrator cleanup', () => {
     expect(removeContainer).toHaveBeenCalledWith('docker-xyz');
   });
 
+  it('does not reclaim when the orchestrator create itself fails', async () => {
+    const store = new MemoryStore();
+    const container = pendingContainer();
+    await store.saveContainer(container);
+
+    const { orchestrator, createContainer, removeContainer } = stubOrchestrator();
+    createContainer.mockImplementation(async () => { throw new Error('create failed'); });
+    const service = new ContainerService({ store, orchestrator });
+
+    await (service as unknown as ProvisionInternal).provisionContainer(container, provisionRequest);
+
+    expect(createContainer).toHaveBeenCalledTimes(1);
+    // No dockerId was produced — the orchestrator self-cleans internally, so the
+    // service must not call removeContainer with an undefined id.
+    expect(removeContainer).not.toHaveBeenCalled();
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('error');
+    expect(stored?.error).toBe('create failed');
+  });
+
   it('does not reclaim on a successful provision', async () => {
     const store = new MemoryStore();
     const container = pendingContainer();
