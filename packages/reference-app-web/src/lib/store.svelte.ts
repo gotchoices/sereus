@@ -1,86 +1,210 @@
 /**
- * Svelte 5 runes-based store wrapping the libp2p singleton.
+ * store.svelte.ts — Svelte 5 runes store owning the browser CadreNode singleton.
  *
- * Exposes peer ID, status, mode (solo vs distributed), and any startup error
- * to the UI layer so components can stay declarative. Solo mode boots on app
- * start; distributed mode is triggered by the Network panel handing over a
- * bootstrap multiaddr.
+ * Replaces the old bare-libp2p store. Exposes node status, peer id, party id,
+ * control-network connection state, chat-strand status, and the authority
+ * self-genesis outcome to the UI. Also owns a small ring buffer of CadreNode
+ * lifecycle events (`control:*`, `strand:*`, `seed:*`) that powers the Activity
+ * (`/log`) page.
+ *
+ * Phase 1 is a solo single-node cadre, so `mode` is always `'solo'` (one node,
+ * no peers). Phase 2 introduces multi-node cadres / cross-party strands.
  */
 
 import {
-	startNode,
-	stopNode,
-	getNode,
-	getMode,
-	type NodeMode,
-} from './optimystic.js';
+	startCadre,
+	stopCadre,
+	addChatStrand,
+	getCadreNode,
+	getChatStrand,
+	getChatStrandId,
+	getPartyId,
+	getAuthorityState,
+	type AuthorityState,
+} from './cadre-web.js';
+import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
 import { pushError } from './diagnostics.svelte.js';
 
 export type NodeStatus = 'idle' | 'starting' | 'running' | 'stopped' | 'error';
+/** Phase 1 is a single-node cadre. Kept for the header badge + Phase-2 growth. */
+export type CadreMode = 'solo';
 
 interface NodeState {
 	status: NodeStatus;
+	mode: CadreMode;
 	peerId: string | null;
+	partyId: string | null;
 	error: string | null;
-	mode: NodeMode;
+	controlConnected: boolean;
+	strandStatus: StrandStatus | null;
+	strandPeers: number | null;
+	strandError: string | null;
+	authority: AuthorityState;
 }
+
+export interface CadreEvent {
+	ts: number;
+	type: string;
+	detail: string;
+}
+
+const EVENT_LIMIT = 50;
+const STRAND_POLL_MS = 4_000;
 
 const state = $state<NodeState>({
 	status: 'idle',
-	peerId: null,
-	error: null,
 	mode: 'solo',
+	peerId: null,
+	partyId: null,
+	error: null,
+	controlConnected: false,
+	strandStatus: null,
+	strandPeers: null,
+	strandError: null,
+	authority: 'pending',
 });
+
+const events = $state<{ list: CadreEvent[] }>({ list: [] });
+
+let subscribed = false;
+let strandPoll: ReturnType<typeof setInterval> | null = null;
 
 export function nodeState(): NodeState {
 	return state;
 }
 
-export async function start(bootstrapNodes: string[] = []): Promise<void> {
+export function eventsState(): { list: CadreEvent[] } {
+	return events;
+}
+
+function record(type: string, detail = ''): void {
+	const entry: CadreEvent = { ts: Date.now(), type, detail };
+	const next = [entry, ...events.list];
+	if (next.length > EVENT_LIMIT) next.length = EVENT_LIMIT;
+	events.list = next;
+}
+
+export function clearEvents(): void {
+	events.list = [];
+}
+
+function subscribe(node: CadreNode): void {
+	if (subscribed) return;
+	subscribed = true;
+	node.on('control:disconnected', () => {
+		state.controlConnected = false;
+		record('control:disconnected');
+	});
+	node.on('strand:started', ({ strandId }) => {
+		record('strand:started', strandId);
+		syncStrand();
+	});
+	node.on('strand:stopped', ({ strandId }) => {
+		record('strand:stopped', strandId);
+		syncStrand();
+	});
+	node.on('strand:error', ({ strandId, error }) => {
+		state.strandError = error.message;
+		record('strand:error', `${strandId}: ${error.message}`);
+		syncStrand();
+	});
+	node.on('strand:idle', ({ strandId }) => record('strand:idle', strandId));
+	node.on('strand:hibernating', ({ strandId }) => record('strand:hibernating', strandId));
+	node.on('strand:waking', ({ strandId }) => record('strand:waking', strandId));
+	node.on('seed:received', ({ peerId }) => record('seed:received', peerId));
+	node.on('seed:applied', ({ peersAdded }) => record('seed:applied', `${peersAdded} peers`));
+	node.on('seed:error', ({ error }) => record('seed:error', error));
+}
+
+/** Pull the current chat-strand status/peers/error into reactive state. */
+function syncStrand(): void {
+	const strand = getChatStrand();
+	state.strandStatus = strand?.status ?? null;
+	state.strandPeers = strand?.connectedPeers ?? null;
+	state.strandError = strand?.error ?? state.strandError;
+}
+
+function startStrandPoll(): void {
+	if (strandPoll) return;
+	strandPoll = setInterval(syncStrand, STRAND_POLL_MS);
+}
+
+function stopStrandPoll(): void {
+	if (strandPoll) {
+		clearInterval(strandPoll);
+		strandPoll = null;
+	}
+}
+
+export async function start(): Promise<void> {
 	if (state.status === 'starting' || state.status === 'running') return;
 	state.status = 'starting';
 	state.error = null;
 	try {
-		const node = await startNode({ bootstrapNodes });
-		state.peerId = node.peerId.toString();
-		state.mode = getMode();
+		const node = await startCadre();
+		subscribe(node);
+
+		state.peerId = node.peerId?.toString() ?? null;
+		state.partyId = getPartyId();
+		state.controlConnected = node.isRunning;
+		state.authority = getAuthorityState().state;
+		// control:connected fires inside start(), before we can subscribe; record
+		// it synthetically so the event log opens with the real lifecycle step.
+		record('control:connected', state.partyId ?? '');
+		if (state.authority === 'error') {
+			record('authority:error', getAuthorityState().error ?? 'unknown');
+		} else {
+			record(`authority:${state.authority}`);
+		}
+
+		// Bring up the signed chat strand. SchemaVerificationError surfaces here.
+		await addChatStrand();
+		syncStrand();
+		startStrandPoll();
+
 		state.status = 'running';
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);
 		state.status = 'error';
-		pushError('startNode', err);
-		console.error('[reference-app-web] startNode failed:', err);
+		pushError('startCadre', err);
+		console.error('[reference-app-web] startCadre failed:', err);
 	}
 }
 
 export async function stop(): Promise<void> {
 	if (state.status !== 'running') return;
 	try {
-		await stopNode();
+		stopStrandPoll();
+		subscribed = false;
+		await stopCadre();
 		state.peerId = null;
+		state.partyId = null;
+		state.controlConnected = false;
+		state.strandStatus = null;
+		state.strandPeers = null;
+		state.strandError = null;
+		state.authority = 'pending';
 		state.status = 'stopped';
-		state.mode = 'solo';
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);
 		state.status = 'error';
-		pushError('stopNode', err);
-		console.error('[reference-app-web] stopNode failed:', err);
+		pushError('stopCadre', err);
+		console.error('[reference-app-web] stopCadre failed:', err);
 	}
 }
 
-/**
- * Restart the node with a new set of bootstrap multiaddrs. Empty array → solo.
- * Single-shot helper for the Network panel; idempotent across rapid toggles
- * because `start` early-returns when a node is already running.
- */
-export async function restart(bootstrapNodes: string[]): Promise<void> {
+/** Stop then re-start the cadre (Home's "Restart node"). */
+export async function restart(): Promise<void> {
 	if (state.status === 'running') {
 		await stop();
 	}
-	await start(bootstrapNodes);
+	await start();
 }
 
 export function currentPeerId(): string | null {
-	const node = getNode();
-	return node ? node.peerId.toString() : null;
+	return getCadreNode()?.peerId?.toString() ?? null;
+}
+
+export function currentStrandId(): string | null {
+	return getChatStrandId();
 }

@@ -760,7 +760,8 @@ const node = new CadreNode({
 |---------|-------------|-------|-------------|
 | `@optimystic/db-p2p` | All | `MemoryRawStorage` | In-memory, for testing only |
 | `@optimystic/db-p2p-storage-fs` | Node.js | `FileRawStorage` | File system persistence |
-| `@optimystic/db-p2p-storage-rn` | React Native | `RNRawStorage` | AsyncStorage-based persistence |
+| `@optimystic/db-p2p-storage-rn` | React Native | `LevelDBRawStorage` | LevelDB-backed persistence |
+| `@optimystic/db-p2p-storage-web` | Browser | `IndexedDBRawStorage` | IndexedDB persistence |
 
 The `provider` field accepts either an `IRawStorage` instance (shared across all strands) or a factory function `(strandId: string) => IRawStorage` (recommended—creates isolated storage per strand). The factory pattern ensures each strand's data is partitioned, simplifying cleanup and preventing cross-strand interference.
 
@@ -770,6 +771,27 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 
 - [Reference App: Polyfills](reference-app-rn.md#polyfills) — working implementations in `packages/reference-app-rn/polyfills/`
 - [@optimystic/db-p2p README: React Native](https://github.com/gotchoices/optimystic/blob/master/packages/db-p2p/README.md#react-native) — polyfill checklist for any RN consumer of db-p2p
+
+### Reference apps (cadre on edge platforms)
+
+Two reference apps exercise the **same** cadre/strand stack on edge platforms —
+both bring up a `CadreNode` (transaction profile), join its control network, and
+run a chat sApp strand. They are cadre references, not transport-only demos:
+
+| App | Platform | Storage | Coverage |
+|-----|----------|---------|----------|
+| `packages/reference-app-rn` | React Native (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo authority self-genesis; WebSocket/relay/WebRTC transports |
+
+The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
+is **Phase 1**: a solo single-node cadre. Consent-driven strand formation,
+closed-strand RBAC, and cross-party convergence are Phase 2. Its polyfill surface
+is much smaller than RN — modern browsers provide `crypto.subtle`, `EventTarget`,
+`ReadableStream`, etc. natively, so only `os`/`net`/`tls`/`stream`/`buffer` need
+Vite aliases (never a `crypto` shim). cadre-core pulls in `@optimystic/db-p2p`'s
+main entry (which statically imports `@libp2p/tcp`), but supplying an explicit
+browser transports array means `tcp()` is never instantiated, so no TCP transport
+reaches the bundle's runtime.
 
 ## References
 

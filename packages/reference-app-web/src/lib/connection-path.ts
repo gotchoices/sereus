@@ -8,14 +8,13 @@
  * `packages/cadre-core/src/diagnostics/connection-path.ts`. This file is a
  * line-for-line copy of its logic.
  *
- * The web reference app does **not** depend on `@serfab/cadre-core` (it builds
- * on `@optimystic/db-p2p` + `@libp2p/interface` only), so pulling cadre-core
- * into the browser bundle for a ~40-line pure function is the wrong trade. Both
- * copies operate on the `@libp2p/interface` `Connection` type, so the logic is
- * identical. Keep the function signatures and classification table in sync with
- * the cadre-core original (the e2e/parity tests guard against drift). If a
- * shared `@serfab/libp2p-diagnostics` micro-package is ever warranted, both
- * copies are a drop-in for it.
+ * NOTE: as of the cadre-node rebase the web app now DOES depend on
+ * `@serfab/cadre-core`, so this duplicate could be collapsed by importing
+ * cadre-core's `summarizeConnectionPaths` / `classifyTransport` instead. It is
+ * deliberately kept as a standalone copy for now (the ticket scoped this file as
+ * "reused, unchanged"); the e2e/parity test guards the two copies against drift.
+ * Collapsing it into a single import is a tracked follow-up cleanup. Both copies
+ * operate on the `@libp2p/interface` `Connection` type, so the logic is identical.
  */
 
 export type ConnectionPathKind = 'relayed' | 'direct';

@@ -59,10 +59,26 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 			);
 		expect(cryptoOk).toEqual([true, true, true, true, true, true, true]);
 
-		// Storage backend should be the stable, minification-safe label.
+		// Storage backend should be the stable, minification-safe label (the
+		// control network's IndexedDBRawStorage).
 		await expect(page.getByTestId('diag-storage-backend')).toHaveText(
 			'IndexedDBRawStorage',
 		);
+
+		// Cadre surface — control network connected and the signed chat strand
+		// reaches `active` on a solo node (bootstrap mode).
+		await expect(page.getByTestId('diag-control-connected')).toHaveText(
+			'connected ✓',
+			{ timeout: 30_000 },
+		);
+		await expect(page.getByTestId('diag-strand-status')).toHaveText('active', {
+			timeout: 30_000,
+		});
+		// Solo authority self-genesis must succeed (genesis on a fresh party,
+		// existing on a warm reload) — never 'error'.
+		await expect(page.getByTestId('diag-authority')).toHaveText(/genesis|existing/, {
+			timeout: 30_000,
+		});
 
 		// Recent errors list — after a clean boot we expect zero entries.
 		const errCount = await page.getByTestId('diag-errors').getAttribute('data-error-count');

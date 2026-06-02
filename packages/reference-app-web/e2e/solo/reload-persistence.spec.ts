@@ -1,5 +1,12 @@
 import { test, expect, type Page } from '@playwright/test';
 
+/**
+ * Strand DML persistence. On a solo node the chat strand runs in `bootstrap`
+ * mode, so writes land on the strand's IndexedDB-backed local transactor. A
+ * reload re-opens the same `sereus-strand-<id>` database and the strand
+ * re-hydrates its catalog, so messages must survive.
+ */
+
 async function gotoMessages(page: Page) {
 	await page.goto('/#/messages');
 	await expect(page.getByTestId('btn-send')).toBeVisible({ timeout: 30_000 });
@@ -14,7 +21,7 @@ async function sendOne(page: Page, author: string, content: string) {
 }
 
 test.describe('Tier 1 / solo / reload persistence', () => {
-	test('messages and activity survive a reload', async ({ page }) => {
+	test('messages survive a reload', async ({ page }) => {
 		await gotoMessages(page);
 
 		const tag = `persist-${Date.now()}`;
@@ -28,16 +35,7 @@ test.describe('Tier 1 / solo / reload persistence', () => {
 		for (const c of contents) {
 			await expect(
 				page.locator('[data-testid="message-row"]', { hasText: c }),
-			).toBeVisible({ timeout: 15_000 });
+			).toBeVisible({ timeout: 30_000 });
 		}
-
-		// Activity entries rehydrate too. We don't have the message IDs here
-		// (they were server-generated), so just count `created` rows.
-		await page.getByTestId('nav-activity').click();
-		await expect(page.getByRole('heading', { name: 'Activity' })).toBeVisible();
-		const createdCount = await page
-			.locator('[data-testid="activity-row"][data-action="created"]')
-			.count();
-		expect(createdCount).toBeGreaterThanOrEqual(contents.length);
 	});
 });

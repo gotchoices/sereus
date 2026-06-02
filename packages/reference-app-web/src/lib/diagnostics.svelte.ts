@@ -13,7 +13,17 @@
  * network-going belongs on a manual refresh button on the page.
  */
 
-import { getNode, getDb, getStorage, getIdentityFirstSeenMs } from './optimystic.js';
+import {
+	getControlNode,
+	getControlDbHandle,
+	getControlStorage,
+	getIdentityFirstSeenMs,
+	getPartyId,
+	getCadreNode,
+	getChatStrand,
+	getChatStrandId,
+	getAuthorityState,
+} from './cadre-web.js';
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
 import type { IRawStorage } from '@optimystic/db-p2p';
@@ -83,6 +93,27 @@ export interface StorageInfo {
 	storesError: string | null;
 }
 
+export interface CadreStrandInfo {
+	id: string | null;
+	status: string | null;
+	connectedPeers: number | null;
+	latencyHint: string | null;
+	sAppId: string | null;
+	error: string | null;
+}
+
+export interface CadreInfo {
+	partyId: string | null;
+	controlConnected: boolean;
+	controlPeerId: string | null;
+	controlPeerIdShort: string | null;
+	cadrePeerCount: number | null;
+	cadrePeerError: string | null;
+	authority: string;
+	authorityError: string | null;
+	strand: CadreStrandInfo | null;
+}
+
 export interface CryptoSanityInfo {
 	cryptoSubtle: boolean;
 	cryptoGetRandomValues: boolean;
@@ -101,6 +132,7 @@ export interface ErrorEntry {
 
 export interface DiagSnapshot {
 	updatedMs: number | null;
+	cadre: CadreInfo;
 	identity: IdentityInfo;
 	connectivity: ConnectivityInfo;
 	transports: TransportsInfo;
@@ -110,9 +142,24 @@ export interface DiagSnapshot {
 	errors: ErrorEntry[];
 }
 
+function emptyCadre(): CadreInfo {
+	return {
+		partyId: null,
+		controlConnected: false,
+		controlPeerId: null,
+		controlPeerIdShort: null,
+		cadrePeerCount: null,
+		cadrePeerError: null,
+		authority: 'pending',
+		authorityError: null,
+		strand: null,
+	};
+}
+
 function emptySnapshot(): DiagSnapshot {
 	return {
 		updatedMs: null,
+		cadre: emptyCadre(),
 		identity: {
 			peerId: null,
 			peerIdShort: null,
@@ -180,7 +227,8 @@ export async function refreshDiagnostics(): Promise<void> {
 	if (refreshInFlight) return;
 	refreshInFlight = true;
 	try {
-		const node = getNode();
+		const node = getControlNode();
+		snapshot.cadre = await collectCadre();
 		snapshot.identity = collectIdentity(node);
 		snapshot.connectivity = collectConnectivity(node);
 		snapshot.transports = collectTransports(node);
@@ -277,6 +325,54 @@ function detectCryptoSanity(): CryptoSanityInfo {
 		bufferGlobal:
 			hasGlobal &&
 			typeof (globalThis as { Buffer?: unknown }).Buffer === 'function',
+	};
+}
+
+/**
+ * Cadre-level state: party id, control connection + peer id, CadrePeer
+ * membership count, authority self-genesis outcome, and the chat strand's
+ * status / peers / latency / error. The CadrePeer count is a best-effort
+ * control-DB read (local on a solo node) guarded so a transactor hiccup never
+ * sinks the tick.
+ */
+async function collectCadre(): Promise<CadreInfo> {
+	const node = getCadreNode();
+	const control = getControlNode();
+	const strandId = getChatStrandId();
+	const strand = getChatStrand();
+	const auth = getAuthorityState();
+
+	let cadrePeerCount: number | null = null;
+	let cadrePeerError: string | null = null;
+	if (node?.isRunning) {
+		try {
+			const peers = await node.getControlDatabase()?.queryCadrePeers();
+			cadrePeerCount = peers ? peers.length : null;
+		} catch (err) {
+			cadrePeerError = err instanceof Error ? err.message : String(err);
+		}
+	}
+
+	const controlPeerId = control?.peerId.toString() ?? null;
+	return {
+		partyId: getPartyId(),
+		controlConnected: !!node?.isRunning,
+		controlPeerId,
+		controlPeerIdShort: shortPeerId(controlPeerId),
+		cadrePeerCount,
+		cadrePeerError,
+		authority: auth.state,
+		authorityError: auth.error,
+		strand: strandId
+			? {
+					id: strandId,
+					status: strand?.status ?? null,
+					connectedPeers: strand?.connectedPeers ?? null,
+					latencyHint: strand?.latencyHint ?? null,
+					sAppId: strand?.sAppInfo?.id ?? null,
+					error: strand?.error ?? null,
+				}
+			: null,
 	};
 }
 
@@ -478,8 +574,8 @@ function storageBackendLabel(storage: IRawStorage | null): string | null {
 }
 
 async function collectStorage(): Promise<StorageInfo> {
-	const storage = getStorage();
-	const db = getDb();
+	const storage = getControlStorage();
+	const db = getControlDbHandle();
 
 	const backend = storageBackendLabel(storage);
 

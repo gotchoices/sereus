@@ -10,8 +10,10 @@ import {
  *
  * `reference-app-web/src/lib/connection-path.ts` is a hand-maintained copy of
  * the cadre-core original at
- * `packages/cadre-core/src/diagnostics/connection-path.ts` (the web app does not
- * depend on cadre-core). This table is identical to the one asserted by the
+ * `packages/cadre-core/src/diagnostics/connection-path.ts`. The web app now
+ * depends on cadre-core, so the copy could be collapsed into a direct import —
+ * until it is, this guards the two against drift. This table is identical to the
+ * one asserted by the
  * cadre-core unit spec (`test/connection-path.spec.ts` → `CLASSIFIER_TABLE`).
  * If the two classifiers ever diverge, one of these two specs fails.
  *

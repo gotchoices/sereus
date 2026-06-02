@@ -1,30 +1,14 @@
 <script lang="ts">
-	import { onMount } from 'svelte';
-	import {
-		messagesState,
-		ensureReady,
-		refresh,
-		startPolling,
-		stopPolling,
-	} from './lib/messages.svelte.js';
-	import { nodeState } from './lib/store.svelte.js';
+	import { eventsState, clearEvents } from './lib/store.svelte.js';
 
-	const msgs = messagesState();
-	const node = nodeState();
+	const events = eventsState();
 
-	$effect(() => {
-		if (node.status === 'running') {
-			void ensureReady();
-		}
-	});
-
-	onMount(() => {
-		startPolling();
-		return () => stopPolling();
-	});
-
-	function formatWhen(ms: number): string {
-		return new Date(ms).toLocaleString();
+	function kindClass(type: string): string {
+		if (type.startsWith('control:')) return 'control';
+		if (type.startsWith('strand:')) return 'strand';
+		if (type.startsWith('seed:')) return 'seed';
+		if (type.startsWith('authority')) return 'authority';
+		return 'other';
 	}
 </script>
 
@@ -32,46 +16,29 @@
 	<header class="page-head">
 		<h2>Activity</h2>
 		<div class="meta">
-			<span>{msgs.activity.length} entries</span>
-			{#if msgs.updatedMs}
-				<span>refreshed {new Date(msgs.updatedMs).toLocaleTimeString()}</span>
-			{/if}
-			<button type="button" onclick={() => void refresh()} disabled={msgs.loading}>
-				Refresh
-			</button>
+			<span>{events.list.length} events</span>
+			<button type="button" onclick={clearEvents}>Clear</button>
 		</div>
 	</header>
 
-	{#if !msgs.ready}
-		<p class="empty">
-			{#if node.status === 'running'}
-				Connecting to MessageApp…
-			{:else}
-				Node not running — start it from <a href="#/">Home</a>.
-			{/if}
-		</p>
-	{/if}
+	<p class="hint">
+		CadreNode lifecycle events — control-network connection, strand
+		start/stop/error, and seed activity. Newest first.
+	</p>
 
-	{#if msgs.error}
-		<p class="error">{msgs.error}</p>
-	{/if}
-
-	{#if msgs.ready && msgs.activity.length === 0}
-		<p class="empty">No activity yet. Add a message from the Messages page.</p>
-	{/if}
-
-	{#if msgs.ready && msgs.activity.length > 0}
-		<ul class="log">
-			{#each msgs.activity as entry, i (entry.timestamp + ':' + entry.messageId + ':' + i)}
+	{#if events.list.length === 0}
+		<p class="empty">No events yet.</p>
+	{:else}
+		<ul class="log" data-testid="event-log">
+			{#each events.list as entry, i (entry.ts + ':' + i)}
 				<li
-					data-testid="activity-row"
-					data-message-id={entry.messageId}
-					data-action={entry.action}
-					data-timestamp={entry.timestamp}
+					data-testid="event-row"
+					data-type={entry.type}
+					data-timestamp={entry.ts}
 				>
-					<span class="badge action-{entry.action}">{entry.action}</span>
-					<code class="id">{entry.messageId}</code>
-					<span class="ts">{formatWhen(entry.timestamp)}</span>
+					<span class="badge kind-{kindClass(entry.type)}">{entry.type}</span>
+					{#if entry.detail}<code class="detail">{entry.detail}</code>{/if}
+					<span class="ts">{new Date(entry.ts).toLocaleTimeString()}</span>
 				</li>
 			{/each}
 		</ul>
@@ -115,15 +82,15 @@
 		font-family: inherit;
 	}
 
+	.hint {
+		font-size: 0.8125rem;
+		color: #6c6f76;
+		margin: 0;
+	}
+
 	.empty {
 		color: #6c6f76;
 		font-size: 0.875rem;
-	}
-
-	.error {
-		color: #b3261e;
-		font-size: 0.8125rem;
-		margin: 0;
 	}
 
 	.log {
@@ -136,7 +103,7 @@
 
 	.log li {
 		display: grid;
-		grid-template-columns: 5rem 1fr auto;
+		grid-template-columns: 11rem 1fr auto;
 		gap: 0.75rem;
 		align-items: baseline;
 		padding: 0.375rem 0.625rem;
@@ -149,29 +116,35 @@
 	.badge {
 		font-size: 0.7rem;
 		font-weight: 600;
-		text-transform: uppercase;
-		letter-spacing: 0.05em;
+		letter-spacing: 0.03em;
 		padding: 0.0625rem 0.375rem;
 		border-radius: 999px;
 		text-align: center;
+		font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 	}
 
-	.action-created {
-		background: #d8f1e0;
-		color: #1f7a3b;
-	}
-
-	.action-updated {
+	.kind-control {
 		background: #d3e4fd;
 		color: #1c4f9c;
 	}
-
-	.action-deleted {
-		background: #fde0dd;
-		color: #b3261e;
+	.kind-strand {
+		background: #d8f1e0;
+		color: #1f7a3b;
+	}
+	.kind-seed {
+		background: #ffe9b3;
+		color: #6b4d00;
+	}
+	.kind-authority {
+		background: #ede0fd;
+		color: #5b2c9c;
+	}
+	.kind-other {
+		background: #eef0f4;
+		color: #4a4d54;
 	}
 
-	.id {
+	.detail {
 		font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 		font-size: 0.8125rem;
 		color: #4a4d54;

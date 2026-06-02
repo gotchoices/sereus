@@ -3,9 +3,7 @@
 	import {
 		messagesState,
 		ensureReady,
-		addMessage,
-		updateMessage,
-		deleteMessage,
+		sendMessage,
 		refresh,
 		startPolling,
 		stopPolling,
@@ -18,9 +16,6 @@
 	let author = $state('');
 	let content = $state('');
 	let composeError: string | null = $state(null);
-
-	/** id → in-progress edit buffer; absent means "not editing". */
-	let editing: Record<string, string> = $state({});
 
 	$effect(() => {
 		if (node.status === 'running') {
@@ -43,53 +38,16 @@
 			return;
 		}
 		try {
-			await addMessage(a, c);
+			await sendMessage(a, c);
 			content = '';
 		} catch (err) {
 			composeError = err instanceof Error ? err.message : String(err);
 		}
 	}
 
-	function beginEdit(id: string, current: string) {
-		editing = { ...editing, [id]: current };
-	}
-
-	function cancelEdit(id: string) {
-		const next = { ...editing };
-		delete next[id];
-		editing = next;
-	}
-
-	function onEditInput(id: string, evt: Event) {
-		const target = evt.currentTarget as HTMLInputElement;
-		editing = { ...editing, [id]: target.value };
-	}
-
-	async function commitEdit(id: string) {
-		const value = editing[id];
-		if (value === undefined) return;
-		const trimmed = value.trim();
-		if (trimmed === '') return;
-		try {
-			await updateMessage(id, trimmed);
-			cancelEdit(id);
-		} catch (err) {
-			composeError = err instanceof Error ? err.message : String(err);
-		}
-	}
-
-	async function handleDelete(id: string) {
-		const ok = window.confirm('Delete this message?');
-		if (!ok) return;
-		try {
-			await deleteMessage(id);
-		} catch (err) {
-			composeError = err instanceof Error ? err.message : String(err);
-		}
-	}
-
-	function formatWhen(ms: number): string {
-		return new Date(ms).toLocaleString();
+	function formatWhen(ts: string): string {
+		// Strand timestamps are 'YYYY-MM-DD HH:MM:SS' (no zone). Render as-is.
+		return ts;
 	}
 </script>
 
@@ -97,7 +55,7 @@
 	<header class="page-head">
 		<h2>Messages</h2>
 		<div class="meta">
-			<span>mode {msgs.mode}</span>
+			<span>strand {node.strandStatus ?? '—'}</span>
 			{#if msgs.updatedMs}
 				<span>refreshed {new Date(msgs.updatedMs).toLocaleTimeString()}</span>
 			{/if}
@@ -115,7 +73,7 @@
 	{#if !msgs.ready}
 		<p class="empty">
 			{#if node.status === 'running'}
-				Connecting to MessageApp…
+				Waiting for the chat strand to become active…
 			{:else}
 				Node not running — start it from <a href="#/">Home</a>.
 			{/if}
@@ -130,7 +88,7 @@
 		<form class="compose" onsubmit={onSubmit}>
 			<input
 				type="text"
-				placeholder="Author"
+				placeholder="Your name"
 				bind:value={author}
 				disabled={msgs.loading}
 				class="author"
@@ -154,61 +112,14 @@
 			<p class="empty">No messages yet. Send the first one above.</p>
 		{:else}
 			<ul class="list">
-				{#each msgs.messages as msg (msg.id)}
-					<li data-testid="message-row" data-message-id={msg.id}>
+				{#each msgs.messages as msg (msg.Id)}
+					<li data-testid="message-row" data-message-id={msg.Id}>
 						<div class="msg-head">
-							<span class="author">{msg.author}</span>
-							<span class="ts">{formatWhen(msg.timestamp)}</span>
+							<span class="author">{msg.MemberName ?? msg.MemberId}</span>
+							<span class="ts">{formatWhen(msg.Timestamp)}</span>
 						</div>
-						{#if editing[msg.id] !== undefined}
-							<div class="edit-row">
-								<input
-									type="text"
-									value={editing[msg.id]}
-									oninput={(e) => onEditInput(msg.id, e)}
-									disabled={msgs.loading}
-									data-testid="edit-input"
-								/>
-								<button
-									type="button"
-									onclick={() => void commitEdit(msg.id)}
-									disabled={msgs.loading}
-									data-testid="btn-save"
-								>
-									Save
-								</button>
-								<button
-									type="button"
-									onclick={() => cancelEdit(msg.id)}
-									disabled={msgs.loading}
-									data-testid="btn-cancel"
-								>
-									Cancel
-								</button>
-							</div>
-						{:else}
-							<p class="body" data-testid="message-body">{msg.content}</p>
-							<div class="msg-actions">
-								<button
-									type="button"
-									onclick={() => beginEdit(msg.id, msg.content)}
-									disabled={msgs.loading}
-									data-testid="btn-edit"
-								>
-									Edit
-								</button>
-								<button
-									type="button"
-									class="danger"
-									onclick={() => void handleDelete(msg.id)}
-									disabled={msgs.loading}
-									data-testid="btn-delete"
-								>
-									Delete
-								</button>
-								<code class="id">{msg.id}</code>
-							</div>
-						{/if}
+						<p class="body" data-testid="message-body">{msg.Content}</p>
+						<code class="id">#{msg.Id}</code>
 					</li>
 				{/each}
 			</ul>
@@ -274,8 +185,7 @@
 		background: #fafbfc;
 	}
 
-	.compose input,
-	.edit-row input {
+	.compose input {
 		font: inherit;
 		font-size: 0.9rem;
 		padding: 0.375rem 0.5rem;
@@ -283,9 +193,7 @@
 		border-radius: 0.25rem;
 	}
 
-	.compose button,
-	.msg-actions button,
-	.edit-row button {
+	.compose button {
 		font: inherit;
 		font-weight: 500;
 		padding: 0.375rem 0.75rem;
@@ -296,16 +204,9 @@
 		font-size: 0.875rem;
 	}
 
-	.compose button:disabled,
-	.msg-actions button:disabled,
-	.edit-row button:disabled {
+	.compose button:disabled {
 		opacity: 0.6;
 		cursor: not-allowed;
-	}
-
-	.msg-actions button.danger {
-		color: #b3261e;
-		border-color: #f3c2bf;
 	}
 
 	.list {
@@ -349,23 +250,10 @@
 		word-break: break-word;
 	}
 
-	.msg-actions {
-		display: flex;
-		gap: 0.375rem;
-		align-items: center;
-		font-size: 0.75rem;
-	}
-
-	.msg-actions .id {
-		margin-left: auto;
+	.id {
+		justify-self: end;
 		color: #8a8d94;
 		font-family: ui-monospace, 'SFMono-Regular', Menlo, Consolas, monospace;
 		font-size: 0.7rem;
-	}
-
-	.edit-row {
-		display: grid;
-		grid-template-columns: 1fr auto auto;
-		gap: 0.375rem;
 	}
 </style>

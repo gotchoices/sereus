@@ -1,16 +1,37 @@
 # @serfab/reference-app-web
 
-Svelte 5 + Vite SPA exercising the Optimystic libp2p stack in a browser. This
-is the browser counterpart to `@serfab/reference-app-rn` (which targets phones
-via React Native), and the validation surface for "Optimystic actually works
-in a browser."
+Svelte 5 + Vite SPA that runs a real **Sereus cadre node in the browser**. It is
+the browser counterpart to `@serfab/reference-app-rn` (which targets phones via
+React Native), and the validation surface for "the Sereus cadre/strand stack
+actually works in a browser."
 
-The app boots a libp2p node in solo mode by default, persists an Ed25519
-identity across reloads, and drives `@optimystic/demo`'s `MessageApp`
-(Tree + Diary) through a transactor — local in solo mode, distributed via
-`NetworkTransactor` once you connect to a bootstrap peer. The same domain
-model is exercised by the Node reference peer; two browser tabs (or a tab
-plus the RN reference app) on the same bootstrap converge on the same data.
+The app boots a `CadreNode` from `@serfab/cadre-core`:
+
+```
+CadreNode → control network (CadreControl) → signed open chat strand (chat sApp)
+```
+
+- **Control network** — an Optimystic network named `control-<partyId>` carrying
+  the `CadreControl` schema (authority keys, cadre peers, strands).
+- **Authority self-genesis** — a solo node seeds itself as its own authority,
+  mirroring `cadre-cli start --authority` (bridge the libp2p identity into a
+  base64url authority key, idempotent genesis `AuthorityKey` insert, then
+  `initializeSeedBootstrap`).
+- **Signed chat strand** — an open strand whose chat sApp schema is **signed**;
+  `StrandInstanceManager` verifies the signature on start
+  (`assertSchemaSignature`), so the browser exercises the schema-signature gate
+  the RN reference currently skips.
+- **Strand database** — the chat `Member`/`Message` tables backed by Quereus over
+  Optimystic. On a solo node the strand runs in `bootstrap` mode, so DML lands on
+  the strand's IndexedDB-backed local transactor with no peers needed.
+
+Identity (Ed25519 peer key) and the party id persist in IndexedDB across reloads.
+
+> **Phase 1 vs Phase 2.** This is Phase 1: a **solo single-node cadre**. The
+> consent/invitation strand-formation flow, closed-strand membership, RBAC
+> demonstration, and cross-node/cross-party convergence are Phase 2
+> (`reference-app-web-strand-formation-consent-rbac`). The Home "Cadre" panel's
+> seed input and the Tier-2 distributed e2e suite are inert until then.
 
 ## Run
 
@@ -20,232 +41,154 @@ yarn workspace @serfab/reference-app-web build    # static SPA bundle in dist/
 yarn workspace @serfab/reference-app-web preview  # serve the built bundle
 ```
 
-On first page load the app generates a fresh Ed25519 keypair, stores it in
-IndexedDB (`sereus-web-reference` database, `kv` object store), and starts a
-solo libp2p node. Reload preserves the peer ID. Delete the IndexedDB
-database from DevTools → Application → Storage to rotate the identity (this
-also clears stored messages and the last-used bootstrap).
+On first page load the app generates a fresh Ed25519 keypair and a party id,
+stores both in IndexedDB (in the `sereus-strand-control` database's `kv` store),
+and starts the cadre node. Reload preserves the peer ID and party ID. Each
+control/strand network gets its own IndexedDB database:
+
+- `sereus-strand-control` — control network blocks + identity + party id.
+- `sereus-strand-sereus-web-chat` — the chat strand's blocks (members/messages).
+
+Delete those databases from DevTools → Application → Storage to reset identity
+and stored messages.
 
 ## Routes
 
-- `#/` — **Home** — node status, peer ID, mode badge, Restart, and the
-  **Network panel** for connecting to a bootstrap.
-- `#/messages` — compose / list / edit / delete messages backed by
-  `MessageApp.messages` (a `Tree<string, Message>`).
-- `#/log` — activity log backed by `MessageApp.activity` (a `Diary<Activity>`),
-  newest first.
+- `#/` — **Home** — node status, party id, peer id, control-network connection,
+  chat-strand status, authority state, Restart, and a (disabled) Phase-2 cadre
+  seed panel.
+- `#/messages` — compose / list chat messages backed by the strand's
+  `App.Member` / `App.Message` tables (Quereus SQL). The chat sApp is
+  append-only — there is no edit/delete (that belonged to the old demo app).
+- `#/log` — **Activity** — a CadreNode lifecycle event log
+  (`control:*`, `strand:*`, `seed:*`, authority genesis), newest first.
 - `#/diag` — diagnostics surface (see below).
 
-## Modes: solo vs distributed
+## Storage bridge (`lib/strand-storage.ts`)
 
-**Solo** (default): no bootstrap, `clusterSize=1`. The store wires a
-`LocalTransactor` against the node's local `storageRepo` so writes hit
-IndexedDB directly. Useful for offline development, identity persistence
-checks, and reading the entire stack without a network. Solo round-trips
-add → list → edit → delete and the data survives reload.
+`CadreNodeConfig.storage.provider` is a **synchronous** factory
+`(key) => IRawStorage`, and cadre-core partitions data by key (`'control'` for
+the control network, the strand id for each strand). `IndexedDBRawStorage`
+wraps an **already-open** handle (the opener is async) with no per-key
+namespacing. The bridge pre-opens one IndexedDB database per key
+(`sereus-strand-<key>`) **before** the synchronous provider is hit — the app
+drives control bring-up and `addStrand` explicitly, so every key is known ahead
+of time — and the provider returns a cached `IndexedDBRawStorage` per key.
 
-**Distributed**: paste a bootstrap multiaddr into the Network panel and hit
-**Connect**. The store stops the solo node, restarts with `bootstrapNodes`
-populated and `clusterSize=3`, and wraps the node's `coordinatedRepo` in a
-`NetworkTransactor` (mirroring `optimystic/packages/reference-peer/src/cli.ts`'s
-distributed branch). The last-used bootstrap is persisted in IndexedDB
-(`kv` store, key `optimystic:web-ref:last-bootstrap`) and pre-filled on
-reload. **Disconnect** drops the connection and snaps back to solo mode.
+## Solo cadre (Phase 1)
 
-The mode badge in the header and the Mode row on Home reflect the current
-state.
+No control bootstrap, no listen addresses. The node self-seeds as its own
+authority and hosts a single signed chat strand in `bootstrap` mode. Send →
+list round-trips and the data survives reload (DML persists to the strand's
+IndexedDB database). This is the single-node analogue of the RN reference's
+current coverage, plus the schema-signature gate.
 
-### Connecting to a local bootstrap
+Authority genesis is **fail-soft**: the chat round-trip runs in bootstrap mode
+and does not depend on authority, so a genesis failure is surfaced on Home /
+Diagnostics rather than aborting startup.
 
-A browser tab can only dial WebSocket transports. The optimystic
-`reference-peer` exposes a `/ws` listener via `--ws-port`:
+## Phase 2 (forthcoming)
 
-```bash
-# In the optimystic repo
-yarn workspace @optimystic/reference-peer build
-node packages/reference-peer/dist/src/cli.js interactive \
-  --ws-port 9091 \
-  --no-tcp \
-  --offline \
-  --cluster-size 3 \
-  --super-majority-threshold 0.51
-```
+Consent-driven strand formation, closed-strand membership + RBAC, joining
+another party's cadre via a signed control-network seed, and cross-node /
+cross-party convergence. The Home seed input and the distributed e2e tier are
+placeholders for this work.
 
-`--ws-port 9091` adds `/ip4/0.0.0.0/tcp/9091/ws` to the listen set,
-`--no-tcp` drops the default TCP listener so the bootstrap is browser-only,
-`--cluster-size 3` matches the browser's `clusterSize: 3` so the two ends
-agree on cluster-coordinator membership (the CLI defaults to the
-`libp2p-node-base` default of 10 otherwise),
-`--super-majority-threshold 0.51` matches the browser's distributed-mode
-default — `Math.ceil(3 * 0.67) = 3` would leave zero slack on a 3-peer
-cluster and demand unanimity, while `ceil(3 * 0.51) = 2` lets consensus
-land even when one peer doesn't co-sign,
-and `--offline` keeps the bootstrap from trying to form its own cluster.
-Circuit-relay-v2 is on by default for any peer with an inbound listen
-address (TCP or WS); pass `--no-relay` to opt out for benchmarks or
-minimal nodes. The relay is what lets browser↔browser convergence work —
-two browser tabs can only reach each other via a service peer relaying
-their `/p2p-circuit` reservations.
+## Diagnostics (`#/diag`)
 
-The peer prints its listen addrs on startup; copy the `/ws` line, append
-`/p2p/<peerId>` if it's not already on the line, and paste it into the
-Network panel. Typical shape:
+Polls every two seconds while the tab is visible. Surfaces:
 
-```
-/ip4/127.0.0.1/tcp/9091/ws/p2p/12D3KooW...
-```
+- **Cadre** — party id, control-network connection + control peer id, CadrePeer
+  membership count, authority self-genesis outcome, and the chat strand's status
+  / connected peers / latency hint / sApp id / error.
+- **Identity** — peer ID, persistence badge, first-seen timestamp and age.
+- **Connectivity** — control-node status, listen multiaddrs (empty in a browser
+  peer), per-connection peer ID / remote multiaddr / direction / open protocols,
+  and the relayed-vs-direct path summary.
+- **Transports** — names of registered libp2p transports. The healthy browser
+  bundle is **four** entries: WebSockets, circuit-relay, and the two WebRTC
+  transports. **No TCP transport should appear** — cadre-core imports
+  `@optimystic/db-p2p`'s main entry (which statically imports `@libp2p/tcp`),
+  but the explicit transports array means `tcp()` is never instantiated, so it
+  must not leak into the runtime list. Its presence indicates a Node-only
+  transport leaked into the browser bundle.
+- **FRET** — known peer count, network size estimate, churn, partition,
+  Arachnode ring membership (on the control node).
+- **Storage** — `IndexedDBRawStorage` (the control network's), quota / usage,
+  raw approximate bytes, per-object-store row counts for the control database.
+- **Crypto sanity** — host-API checks the libp2p stack relies on.
+- **Recent errors** — a ten-deep ring buffer fed by the start/stop catch blocks,
+  per-connection `close` events, and global `error` / `unhandledrejection`
+  events.
 
-For a real (non-`--offline`) cluster, drop `--offline` and bring up
-additional service nodes — see the optimystic repo for cluster recipes.
+## Vite config notes
 
-### Two-tab convergence test (acceptance check)
+Browsers natively provide `crypto.subtle`, `EventTarget`, `ReadableStream`,
+`structuredClone`, `Promise.withResolvers`, `AbortSignal.throwIfAborted`, and
+`TextEncoder`/`Decoder`, so the polyfill surface is much smaller than RN.
 
-1. Start the local bootstrap as above (`--ws-port 9091 --offline`).
-2. Open the dev server (`yarn workspace @serfab/reference-app-web dev`) in
-   two browser tabs at `http://localhost:5173/`.
-3. In tab A: paste the bootstrap multiaddr into the Network panel and click
-   **Connect**. Wait for the mode badge to flip to `distributed`.
-4. In tab B: do the same. Each tab generates its own libp2p identity.
-5. In tab A: navigate to **Messages**, send a message.
-6. In tab B: navigate to **Messages**. The next poll tick (≤ 4 s) brings the
-   message into view, or click **Refresh** to force an immediate fetch.
-7. Edit / delete from either tab and confirm the other tab sees the change.
-8. Both tabs' **Activity** pages should show the same entries.
+`vite.config.ts` aliases only the Node built-ins that transitive libp2p deps
+reach for — `os`, `net`, `tls` → empty shim; `stream` → `readable-stream`;
+`buffer` → npm `buffer`. cadre-core pulls in `@optimystic/db-p2p`'s main entry,
+which statically imports `@libp2p/tcp`; the existing `net`/`os`/`tls` aliases
+already cover its Node built-ins, and `tcp()` is never called (the app supplies
+an explicit transports array), so nothing TCP-related runs. **`node:crypto` /
+`crypto` are deliberately not aliased**: anything reaching for them in a browser
+bundle is a real bug we want surfaced.
 
-Bonus: point the RN reference app (`@serfab/reference-app-rn`) at the same
-bootstrap and confirm cross-runtime convergence.
+`src/polyfills.ts` handles the two residual gaps even modern browsers don't
+cover:
+
+- `globalThis.Buffer` — wired to the npm `buffer` package.
+- `setTimeout` / `setInterval` return values with no-op `.ref()` / `.unref()`.
+
+If you discover another missing API, add it to `polyfills.ts` with a comment
+explaining which package needs it — do not introduce a `crypto` shim.
+
+## Browser support
+
+- **Chromium / Chrome**: primary development target.
+- **Firefox**: should work — relies only on standard APIs (WebSocket, IndexedDB,
+  WebCrypto, `crypto.subtle`). Smoke-check before relying on it.
+- **Safari**: untested. `@optimystic/db-p2p-storage-web` targets Safari 14+.
+  Smoke-check before relying on it.
+
+If anything fails in Firefox / Safari, capture the console error and file a fix
+ticket rather than papering it over with a shim — the same applies as for
+`crypto`.
 
 ## Architecture
 
 ```
 src/
   App.svelte             # nav + hash route switcher (Home, Messages, Activity, Diagnostics)
-  Home.svelte            # node status + Network panel (bootstrap input, connect/disconnect)
-  Messages.svelte        # /messages — compose / list / edit / delete
-  Activity.svelte        # /log — newest-first activity diary
-  Diagnostics.svelte     # /diag — diagnostic surface
+  Home.svelte            # node status + party/peer/control/strand state + Phase-2 cadre panel
+  Messages.svelte        # /messages — chat strand send / list
+  Activity.svelte        # /log — CadreNode lifecycle event log
+  Diagnostics.svelte     # /diag — cadre + libp2p diagnostic surface
   main.ts                # mount + polyfill bootstrap
   polyfills.ts           # Buffer global + timer .ref/.unref shim
   main.css               # global styles
   lib/
-    optimystic.ts            # libp2p node + transactor lifecycle (solo: LocalTransactor, distributed: NetworkTransactor)
-    store.svelte.ts          # Svelte 5 runes wrapper around the node singleton
-    network.svelte.ts        # bootstrap input + IndexedDB persistence + connect/disconnect
-    messages.svelte.ts       # MessageApp wrapper — reactive messages / activity lists + polling
+    cadre-web.ts             # CadreNode lifecycle (control net, authority genesis, chat strand)
+    strand-storage.ts        # per-strand IndexedDB IRawStorage provider (pre-open bridge)
+    chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
+    store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
+    network.svelte.ts        # Phase-2 control-network seed input (placeholder)
+    messages.svelte.ts       # chat strand DB wrapper — reactive message list + polling
     router.svelte.ts         # tiny hash-based router (#/, #/messages, #/log, #/diag)
     diagnostics.svelte.ts    # tick-driven snapshot store powering /diag
+    connection-path.ts       # relayed-vs-direct classification (cadre-core duplicate)
+    ice-config.ts            # ICE servers from a runtime manifest
     Copyable.svelte          # copy-to-clipboard chip used in /diag
   shims/
     empty.ts             # vite alias target for node:os / node:net / node:tls
 ```
 
-### Transactor lifecycle
-
-`lib/optimystic.ts` owns one libp2p node at a time. `startNode()` reads the
-bootstrap list:
-
-- **No bootstrap** → solo: `clusterSize=1`, transactor = `LocalTransactor`
-  wrapping the node's `storageRepo`.
-- **Bootstrap given** → distributed: `clusterSize=3`, transactor =
-  `NetworkTransactor` over the node's `coordinatedRepo` + `keyNetwork`.
-
-Switching modes goes through `stopNode()` → `startNode(...)`. The
-`MessageApp` is bound to a specific transactor instance, so
-`network.svelte.ts` calls `resetMessageApp()` before each restart and
-`ensureReady()` after, which rebuilds the app against the fresh transactor.
-
-### Reactivity
-
-Svelte 5 runes (`$state` + `$effect`) hold the reactive shape. Mutations go
-through the messages store, which then calls `refresh()` to re-read both
-collections and re-publishes the arrays. A 4-second visibility-gated poll in
-`messages.svelte.ts:startPolling()` covers cross-tab convergence; real-time
-gossip / sync subscription wiring is a backlog item.
-
-## Diagnostics (`#/diag`)
-
-Polls every two seconds while the tab is visible; pauses under
-`document.visibilityState !== 'visible'`. Surfaces:
-
-- **Identity** — peer ID, persistence badge, first-seen timestamp and age.
-- **Connectivity** — node status, listen multiaddrs (empty in browser
-  peers), per-connection peer ID / remote multiaddr / direction / open
-  protocols.
-- **Transports** — names of registered libp2p transports. In a healthy
-  browser bundle this is four entries: one matching `websockets`, one
-  matching `circuit-relay`, and the two WebRTC transports (current builds
-  report `@libp2p/circuit-relay-v2-transport`, `@libp2p/webrtc`,
-  `@libp2p/webrtc-direct`, and `@libp2p/websockets`). WebRTC upgrades a
-  relayed browser↔browser pair to a direct data path once SDP is exchanged
-  over the reservation, leaving the relay as signaling-only. No TCP transport
-  should appear — its presence indicates a Node-only dep leaked into the
-  browser bundle.
-- **FRET** — known peer count, network size estimate, churn, partition,
-  Arachnode ring membership.
-- **Storage** — `IndexedDBRawStorage`, `navigator.storage.estimate()` quota
-  / usage, raw approximate bytes, per-object-store row counts.
-- **Crypto sanity** — seven boolean checks for the host APIs the libp2p
-  stack reaches for.
-- **Recent errors** — a ten-deep ring buffer fed by the start/stop catch
-  blocks, per-connection `close` events, and global `error` /
-  `unhandledrejection` window events.
-
-### Debugging recipes
-
-- **"Why won't my browser tab dial the bootstrap?"** Open `#/diag`.
-  Connectivity → status should be `running` and Transports must include
-  `WebSockets`. If a multiaddr is listed under Connections but Protocols is
-  empty, the dial succeeded but no application protocol has streamed yet —
-  give it a few seconds and click Refresh.
-- **"Did my identity persist?"** Identity → Persisted should read
-  `persisted ✓` and the first-seen timestamp must not change on reload.
-- **"Did Optimystic accidentally pull in TCP?"** Transports list. The
-  browser bundle must show only the WebSockets, circuit-relay, and the two
-  WebRTC entries — any TCP transport means a Node-only dep slipped in.
-
-## Vite config notes
-
-Browsers natively provide `crypto.subtle`, `EventTarget`, `ReadableStream`,
-`structuredClone`, `Promise.withResolvers`, `AbortSignal.throwIfAborted`,
-and `TextEncoder`/`Decoder`, so the polyfill surface is much smaller than
-RN.
-
-`vite.config.ts` aliases only the Node built-ins that transitive libp2p
-deps reach for — `os`, `net`, `tls` → empty shim; `stream` →
-`readable-stream`; `buffer` → npm `buffer`. **`node:crypto` / `crypto` are
-deliberately not aliased**: anything reaching for them in a browser bundle
-is a real bug we want surfaced.
-
-`src/polyfills.ts` handles the two residual gaps that even modern browsers
-don't cover:
-
-- `globalThis.Buffer` — wired to the npm `buffer` package.
-- `setTimeout` / `setInterval` return values with no-op `.ref()` /
-  `.unref()`. Node-targeting libraries (db-p2p's ClusterMember, libp2p
-  internals) call `.unref()` on timer handles; browsers return plain
-  numbers.
-
-If you discover another missing API, add it to `polyfills.ts` with a
-comment explaining which package needs it — do not introduce a `crypto`
-shim.
-
-## Browser support
-
-- **Chromium / Chrome**: primary development target.
-- **Firefox**: should work — relies only on standard APIs (WebSocket,
-  IndexedDB, WebCrypto, `crypto.subtle`). Smoke-check before relying on
-  it.
-- **Safari**: untested. `@optimystic/db-p2p-storage-web` targets Safari 14+.
-  Smoke-check before relying on it.
-
-If anything fails in Firefox / Safari, capture the console error and file
-a fix ticket rather than papering it over with a shim — the same applies
-as for `crypto`.
-
 ## Automated end-to-end tests
 
-A Playwright suite lives in `e2e/`. Chromium-only for now; Firefox / Safari
-are explicit non-goals at this layer.
+A Playwright suite lives in `e2e/`. Chromium-only for now; Firefox / Safari are
+explicit non-goals at this layer.
 
 ```bash
 # One-time browser install (downloads Chromium if not already cached).
@@ -253,89 +196,27 @@ yarn workspace @serfab/reference-app-web test:e2e:install
 
 # Run the suite (builds and previews the SPA automatically).
 yarn workspace @serfab/reference-app-web test:e2e
-
-# Interactive UI mode.
-yarn workspace @serfab/reference-app-web test:e2e:ui
 ```
 
-The suite splits into two tiers:
+- **Tier 1 — solo** (`e2e/solo/`) — always runs. Covers boot + identity/party
+  persistence, hash routing, the chat strand send/list round-trip, reload
+  persistence of strand DML, the schema-signature gate (a pure-Node assertion
+  that the valid signed config verifies and a tampered one throws
+  `SchemaVerificationError`), the connection-path classifier parity table, and
+  the diagnostics-surface invariants — notably the **four-transport** Transports
+  list, the canary that no TCP transport leaked into the browser bundle.
+- **Tier 2 — distributed** (`e2e/distributed/`) — **deferred to Phase 2.** These
+  specs assert membership-free Optimystic convergence on a shared network, which
+  no longer holds now that chat data lives inside a cadre **strand** cohort.
+  `e2e/global-setup.ts` writes the fixture as unavailable
+  (`TIER2_DEFERRED_TO_PHASE2`), so every distributed spec skips with a Phase-2
+  reason. Re-establishing cross-node / cross-party convergence requires
+  control-network membership or strand formation (Phase 2).
 
-- **Tier 1 — solo** (`e2e/solo/`) — always runs. Covers boot + identity
-  persistence, hash routing, messages CRUD round-trip, reload persistence,
-  and the diagnostics-surface invariants (notably the two-transport
-  Transports list — the canary that nothing pulled TCP into the browser
-  bundle).
-- **Tier 2 — distributed** (`e2e/distributed/`) — runs only when an
-  optimystic `reference-peer` fixture is available. Covers mode flip,
-  bootstrap persistence on reload, two-tab message convergence with bounded
-  waits, cross-tab activity ordering, and disconnect-mid-session behaviour.
-
-### Tier 2 fixture resolution
-
-`e2e/global-setup.ts` resolves the fixture in this order:
-
-1. If `OPTIMYSTIC_WS_BOOTSTRAP` is set, treat it as a manually-managed
-   multiaddr and skip spawning. Use this when you want to point at a
-   custom peer or your own mesh.
-2. Otherwise, look for the built reference-peer CLI at
-   `../optimystic/packages/reference-peer/dist/src/cli.js`. If present,
-   spawn a **3-node mesh** on offset WebSocket ports (9191/9192/9193) so a
-   developer can still keep a README-style manual peer alongside on 9091:
-   - `interactive --ws-port 9191 --no-tcp --offline --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
-     the bootstrap, kept `--offline` so its own REPL transactor doesn't
-     try to form a cluster before the service peers appear. Its libp2p
-     `repoService` still participates in cluster consensus on remote
-     callers' behalf. Circuit-relay-v2 is on by default — the browser
-     tabs reserve a slot here so they're dialable through it.
-   - `service --ws-port 9192 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
-     headless service peer.
-   - `service --ws-port 9193 --no-tcp --bootstrap <bootstrap> --network sereus-web-reference --cluster-size 3 --super-majority-threshold 0.51` —
-     headless service peer.
-
-   The explicit `--network sereus-web-reference` matches the browser's
-   default network name; without it the spawned peers fall back to
-   `optimystic` and the identify protocol prefix mismatches break every
-   topology — including the circuit-relay HOP discovery that grants the
-   browser its reservation. The explicit `--cluster-size 3` matches the
-   browser's distributed-mode `clusterSize: 3` (see
-   `src/lib/optimystic.ts`); without it the service peers fall back to the
-   `libp2p-node-base` default of 10 and cluster-coordinator membership
-   disagrees end-to-end. The explicit `--super-majority-threshold 0.51`
-   matches the browser's distributed-mode default — the 0.67 default
-   rounds via `Math.ceil` to 3-of-3 unanimity on a 3-peer cluster, leaving
-   zero slack; 0.51 rounds to 2-of-3 so a single non-co-signing peer
-   doesn't sink the round.
-
-   The browser tab dials all three multiaddrs up front (newline-separated
-   bootstrap input), so cluster consensus has a real 3-peer keyspace
-   without waiting on FRET discovery.
-3. If neither path works, write a `not available` marker to
-   `e2e/.fixture-state.json` and Tier 2 specs **skip** rather than fail.
-
-The manual "Two-tab convergence test (acceptance check)" above still uses
-the single `--offline` peer for a human demo — that path exercises the
-solo-mode plumbing end-to-end but cannot reproduce full cluster
-consensus, which is why the e2e fixture spawns the 3-node mesh internally.
-To reproduce what the e2e does locally, run `service --ws-port 9192/9193
---no-tcp --bootstrap <bootstrap> --network sereus-web-reference
---cluster-size 3 --super-majority-threshold 0.51` alongside the bootstrap
-and paste all three addresses into the Network panel.
-
-To force-build the sibling packages the fixture depends on (the browser
-node's `connectionGater` plumbing lives in `db-p2p`; the `--offline`
-CLI flag lives in `reference-peer`):
-
-```bash
-yarn --cwd ../optimystic workspace @optimystic/db-p2p build
-yarn --cwd ../optimystic workspace @optimystic/reference-peer build
-```
-
-Wiring this suite into CI is intentionally out of scope for the current
-ticket — it stops at "runs cleanly locally".
+Wiring this suite into CI is out of scope for the current ticket — it stops at
+"runs cleanly locally."
 
 ## Out of scope (for follow-up)
 
-- Real-time push (gossip / sync subscription wiring) — the current
-  cross-tab convergence is poll-based.
-- Conflict UI for concurrent edits — last-write-wins per the underlying
-  Tree semantics.
+- Real-time push (gossip / sync subscription wiring) — convergence is poll-based.
+- Phase 2: consent strand formation, closed-strand RBAC, cross-party convergence.

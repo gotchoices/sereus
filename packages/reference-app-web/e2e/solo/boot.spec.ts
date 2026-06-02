@@ -11,22 +11,36 @@ test.describe('Tier 1 / solo / boot', () => {
 		const peerId = await page.getByTestId('home-peer-id').textContent();
 		expect(peerId, 'home-peer-id should be set once node is running').toBeTruthy();
 		expect(peerId?.trim()).not.toBe('—');
+
+		// The cadre control network has a party id and a connected control node.
+		const partyId = (await page.getByTestId('home-party-id').textContent())?.trim();
+		expect(partyId, 'home-party-id should be set once the cadre is up').toBeTruthy();
+		expect(partyId).not.toBe('—');
+		await expect(page.getByTestId('home-control')).toHaveText('connected');
+		// The signed open chat strand reaches `active` on a solo node (bootstrap mode).
+		await expect(page.getByTestId('home-strand-status')).toContainText('active', {
+			timeout: 30_000,
+		});
 	});
 
-	test('peer ID persists across reload in the same context', async ({ page }) => {
+	test('peer ID and party ID persist across reload in the same context', async ({ page }) => {
 		await page.goto('/');
 		await expect(page.getByTestId('home-status')).toHaveText('running', {
 			timeout: 30_000,
 		});
-		const before = (await page.getByTestId('home-peer-id').textContent())?.trim();
-		expect(before).toBeTruthy();
+		const peerBefore = (await page.getByTestId('home-peer-id').textContent())?.trim();
+		const partyBefore = (await page.getByTestId('home-party-id').textContent())?.trim();
+		expect(peerBefore).toBeTruthy();
+		expect(partyBefore).toBeTruthy();
 
 		await page.reload();
 		await expect(page.getByTestId('home-status')).toHaveText('running', {
 			timeout: 30_000,
 		});
-		const after = (await page.getByTestId('home-peer-id').textContent())?.trim();
-		expect(after, 'peer id should persist across reload').toBe(before);
+		const peerAfter = (await page.getByTestId('home-peer-id').textContent())?.trim();
+		const partyAfter = (await page.getByTestId('home-party-id').textContent())?.trim();
+		expect(peerAfter, 'peer id should persist across reload').toBe(peerBefore);
+		expect(partyAfter, 'party id should persist across reload').toBe(partyBefore);
 	});
 
 	test('fresh browser context generates a fresh peer ID', async ({ browser }) => {

@@ -39,6 +39,74 @@
 	</header>
 
 	<section class="card">
+		<h3>Cadre</h3>
+		<dl>
+			<dt>Party ID</dt>
+			<dd>
+				{#if state.cadre.partyId}
+					<Copyable value={state.cadre.partyId} />
+				{:else}
+					—
+				{/if}
+			</dd>
+			<dt>Control</dt>
+			<dd>
+				<span
+					class="badge"
+					class:ok={state.cadre.controlConnected}
+					data-testid="diag-control-connected"
+					>{state.cadre.controlConnected ? 'connected ✓' : 'disconnected'}</span
+				>
+			</dd>
+			<dt>Control peer</dt>
+			<dd><code>{state.cadre.controlPeerIdShort ?? '—'}</code></dd>
+			<dt>CadrePeer count</dt>
+			<dd>
+				{#if state.cadre.cadrePeerError}
+					<span class="bad">{state.cadre.cadrePeerError}</span>
+				{:else}
+					{state.cadre.cadrePeerCount ?? '—'}
+				{/if}
+			</dd>
+			<dt>Authority</dt>
+			<dd>
+				<span
+					class="badge"
+					class:bad={state.cadre.authority === 'error'}
+					data-testid="diag-authority">{state.cadre.authority}</span
+				>
+				{#if state.cadre.authorityError}
+					<span class="bad">{state.cadre.authorityError}</span>
+				{/if}
+			</dd>
+			<dt>Chat strand</dt>
+			<dd>
+				{#if state.cadre.strand}
+					<span
+						class="badge"
+						class:ok={state.cadre.strand.status === 'active'}
+						class:bad={state.cadre.strand.status === 'error'}
+						data-testid="diag-strand-status">{state.cadre.strand.status ?? '—'}</span
+					>
+					<span class="muted">
+						· {state.cadre.strand.connectedPeers ?? 0} peers
+						· {state.cadre.strand.latencyHint ?? '—'}
+					</span>
+					{#if state.cadre.strand.error}
+						<div class="bad">{state.cadre.strand.error}</div>
+					{/if}
+					<div class="muted strand-id">
+						<code>{state.cadre.strand.id}</code>
+						{#if state.cadre.strand.sAppId}· sApp <code>{state.cadre.strand.sAppId}</code>{/if}
+					</div>
+				{:else}
+					<span class="muted">no strand</span>
+				{/if}
+			</dd>
+		</dl>
+	</section>
+
+	<section class="card">
 		<h3>Identity</h3>
 		<dl>
 			<dt>Peer ID</dt>
