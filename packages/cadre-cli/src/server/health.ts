@@ -2,8 +2,12 @@ import http from 'node:http';
 import debug from 'debug';
 import { emptyConnectionPathSummary } from '@serfab/cadre-core';
 import type { CadreNode, ConnectionPathSummary } from '@serfab/cadre-core';
+import { checkBearer } from './bearer.js';
 
 const log = debug('cadre:cli:health');
+
+/** Maximum seed request body size (256 KiB) — seeds are small. Mirrors AdminServer. */
+const MAX_SEED_BODY_BYTES = 256 * 1024;
 
 export interface HealthServerOptions {
   /** Port for health check endpoint (default: 8080) */
@@ -12,6 +16,18 @@ export interface HealthServerOptions {
   metricsPort?: number;
   /** Configured node profile (e.g. 'storage' or 'transaction'); surfaced in /status */
   profile?: string;
+  /**
+   * Bearer token that gates `POST /seed`. When empty/undefined (the default),
+   * the seed route is **not registered** — requests fall through to 404, so a
+   * node never exposes a remotely-mutable control surface unless an operator
+   * opts in. When set, `POST /seed` requires `Authorization: Bearer <token>`.
+   *
+   * NOTE: this protects the *delivery path* only. It does not establish seed
+   * *trust* — whether an applied seed is honoured is the trust-policy work
+   * (`seed-trust-policy-and-authority-identity`). A valid bearer does not mean
+   * the seed's contents are trusted.
+   */
+  seedToken?: string;
 }
 
 export interface HealthStatus {
@@ -80,6 +96,7 @@ export class HealthServer {
       healthPort: options.healthPort ?? 8080,
       metricsPort: options.metricsPort ?? 9090,
       profile: options.profile ?? '',
+      seedToken: options.seedToken ?? '',
     };
   }
 
@@ -87,6 +104,13 @@ export class HealthServer {
   attach(node: CadreNode): void {
     this.node = node;
     log('HealthServer attached to CadreNode');
+  }
+
+  /** The actually-bound health port (useful when constructed with port 0). */
+  get healthBoundPort(): number {
+    const addr = this.healthServer?.address();
+    if (addr && typeof addr === 'object') return addr.port;
+    return this.options.healthPort;
   }
 
   /** Start the health and metrics servers */
@@ -257,7 +281,9 @@ export class HealthServer {
             const status = this.getHealthStatus();
             res.writeHead(200, { 'Content-Type': 'application/json' });
             res.end(JSON.stringify(status, null, 2));
-          } else if (url.pathname === '/seed' && req.method === 'POST') {
+          } else if (url.pathname === '/seed' && req.method === 'POST' && this.options.seedToken.length > 0) {
+            // Seed delivery is registered only when a token is configured;
+            // otherwise it falls through to 404 (no remotely-mutable surface).
             await this.handleSeedRequest(req, res);
           } else {
             res.writeHead(404, { 'Content-Type': 'text/plain' });
@@ -279,16 +305,35 @@ export class HealthServer {
   }
 
   private async handleSeedRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
+    // Authenticate the *delivery path* before touching the body. A valid bearer
+    // does not imply the seed contents are trusted — that is the trust policy's
+    // job (`seed-trust-policy-and-authority-identity`); this gate only stops
+    // anonymous peers from driving applySeed / peer-store mutation.
+    if (!checkBearer(req, this.options.seedToken)) {
+      res.writeHead(401, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ success: false, error: 'unauthorized' }));
+      return;
+    }
+
     if (!this.node) {
       res.writeHead(503, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'Node not attached' }));
       return;
     }
 
-    // Read request body
+    // Read request body, bounded so an unauthenticated-sized body can't be used
+    // for memory exhaustion before the JSON parse.
     const chunks: Buffer[] = [];
+    let total = 0;
     for await (const chunk of req) {
-      chunks.push(chunk as Buffer);
+      const buf = chunk as Buffer;
+      total += buf.length;
+      if (total > MAX_SEED_BODY_BYTES) {
+        res.writeHead(413, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ success: false, error: 'Request body too large' }));
+        return;
+      }
+      chunks.push(buf);
     }
     const body = Buffer.concat(chunks).toString('utf8');
 

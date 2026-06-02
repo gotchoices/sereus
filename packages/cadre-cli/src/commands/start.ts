@@ -162,10 +162,20 @@ export const startCommand = new Command('start')
         const healthPort = parseInt(process.env.CADRE_HEALTH_PORT ?? options.healthPort, 10);
         const metricsPort = parseInt(process.env.CADRE_METRICS_PORT ?? options.metricsPort, 10);
 
-        healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile });
+        // POST /seed is registered only when CADRE_SEED_TOKEN is set; otherwise
+        // the health port serves read-only liveness/readiness probes. Keep this
+        // distinct from CADRE_STARTUP_TOKEN (PID-verify / admin-channel bearer).
+        const seedToken = process.env.CADRE_SEED_TOKEN ?? '';
+
+        healthServer = new HealthServer({ healthPort, metricsPort, profile: config.profile, seedToken });
         healthServer.attach(node);
         await healthServer.start();
         console.log(`✓ Health server on port ${healthPort}, metrics on port ${metricsPort}`);
+        if (seedToken.length > 0) {
+          console.log('✓ Seed endpoint authenticated (POST /seed requires bearer token)');
+        } else {
+          log('Seed endpoint disabled (set CADRE_SEED_TOKEN to enable authenticated POST /seed)');
+        }
       }
 
       // The admin channel is created after authority init below; declared here

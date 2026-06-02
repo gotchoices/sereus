@@ -1,7 +1,7 @@
 import http from 'node:http';
-import { timingSafeEqual } from 'node:crypto';
 import debug from 'debug';
 import type { CadreNode, CadreInvite } from '@serfab/cadre-core';
+import { checkBearer } from './bearer.js';
 
 const log = debug('cadre:cli:admin');
 
@@ -199,20 +199,9 @@ export class AdminServer {
     throw new AdminError('bad_request', `Unsupported route: ${method} ${url.pathname}`);
   }
 
-  /**
-   * Constant-time bearer-token check. Length mismatch short-circuits (the
-   * timing leak of token length is not meaningful for a fixed-length token).
-   */
+  /** Constant-time bearer-token check (see {@link checkBearer}). */
   private isAuthorized(req: http.IncomingMessage): boolean {
-    const header = req.headers['authorization'];
-    if (typeof header !== 'string') return false;
-    const prefix = 'Bearer ';
-    if (!header.startsWith(prefix)) return false;
-
-    const provided = Buffer.from(header.slice(prefix.length), 'utf8');
-    const expected = Buffer.from(this.token, 'utf8');
-    if (provided.length !== expected.length) return false;
-    return timingSafeEqual(provided, expected);
+    return checkBearer(req, this.token);
   }
 
   private async readJson(req: http.IncomingMessage): Promise<Record<string, unknown>> {
