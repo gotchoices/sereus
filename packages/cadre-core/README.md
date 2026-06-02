@@ -91,12 +91,14 @@ await node.stop();
 
 ## Node Profiles
 
-| Profile | Storage Role | Use Case | Ring Participation |
-|---------|--------------|----------|-------------------|
-| **transaction** | Ring Zulu only | Mobile devices, intermittent connectivity | Transaction verification, caching |
-| **storage** | Ring Zulu + Storage Rings | Servers, NAS, always-on nodes | Full archival storage |
+| Profile | Storage Role | Use Case | Ring Zulu |
+|---------|--------------|----------|-----------|
+| **transaction** | Arachnode disabled; transaction verification via FRET only | Mobile devices, intermittent connectivity | No |
+| **storage** | Ring Zulu + storage rings (storage rings not yet implemented — stub) | Servers, NAS, always-on nodes | Yes |
 
-Both profiles participate in transaction consensus. The distinction is long-term storage commitment.
+Transaction-profile nodes verify transactions via FRET only, with Arachnode disabled. Storage-profile nodes additionally join Ring Zulu and (when implemented) the concentric storage rings.
+
+> **Note:** The storage-ring subsystem is currently a no-op stub (`arachnode-stub.ts`). See [Node Profiles in `docs/architecture.md`](../../docs/architecture.md#node-profiles) for the full design.
 
 ## Strand Filtering
 

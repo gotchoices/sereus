@@ -151,32 +151,34 @@ Conventions:
 
 Goal: define and implement how a user manages a **cadre** (their personal cluster of nodes/devices) including membership, provisioning, enrollment, and trust boundaries.
 
+> Current sources of truth: `schemas/control.qsql` (schema `CadreControl`), `docs/architecture.md`, `docs/strands.md`, and the built `@serfab/cadre-core` package.
+
 - [ ] Create a Cadre management spec doc (suggested: `sereus/docs/cadre.md`)
-  - [ ] Definitions: cadre vs node vs device identity
+  - [x] Definitions: cadre vs node vs device identity — covered in `docs/strands.md` + `docs/architecture.md`
   - [ ] Enrollment lifecycle (invite/join/rotate/revoke)
   - [ ] Key material / identity assumptions (where keys live, recovery, rotation)
   - [ ] Transport expectations (direct vs relay, addressing, reachability)
   - [ ] Operational requirements (headless node, backups, monitoring)
 - [ ] Create an initial Cadre schema doc (suggested: `sereus/docs/cadre-schema.md`)
-  - [ ] Tables: `cadres`, `cadre_nodes`, `node_keys`, `node_capabilities`, `node_status`
+  - [~] Tables — a control/cadre schema exists at `schemas/control.qsql` (schema `CadreControl`) with `AuthorityKey`, `ValidationKey`, `Strand`, `CadrePeer`, `FormationInvite`, `FormationUsage`; the actual shape differs from the proposed `cadres`/`cadre_nodes`/`node_keys`
   - [ ] RBAC / permissions model (who can add/remove nodes)
   - [ ] Audit trail requirements
-- [ ] Decide where the schema lives long-term:
-  - [ ] As Quereus declarative schema blocks in docs
-  - [ ] As `.sql` artifacts under a dedicated schema folder (TBD)
+- [x] Decide where the schema lives long-term: as `.qsql` artifacts under `schemas/`
 
 ## Cohort Management (Specification + Schema)
 
 Goal: define and implement how a **cohort** (all nodes belonging to a strand) is tracked, managed, and evolved. This likely becomes the conceptual replacement for the current “projects/bootstrap” direction.
 
+> Current sources of truth: `schemas/control.qsql` (schema `CadreControl`), `docs/architecture.md`, `docs/strands.md`, and the built `@serfab/cadre-core` package.
+
 - [ ] Create a Cohort management spec doc (suggested: `sereus/docs/cohort.md`)
-  - [ ] Definitions: strand vs cohort vs cadre; relationship model
+  - [x] Definitions: strand vs cohort vs cadre; relationship model — covered in `docs/strands.md:6-11`
   - [ ] Cohort membership lifecycle (join/leave/ban/rehabilitate)
   - [ ] Discovery and reachability (bootstrap nodes vs relays vs “known peers”)
   - [ ] Security boundaries (cadre disclosure timing, trust levels, roles)
   - [ ] Multi-party bootstrap roadmap alignment
 - [ ] Create an initial Cohort schema doc (suggested: `sereus/docs/cohort-schema.md`)
-  - [ ] Tables: `strands`, `strand_members`, `member_nodes`, `roles`, `invitations`
+  - [~] Tables — `Strand` plus formation/invite tables exist in `schemas/control.qsql`; full `strand_members`/`roles` modelling still pending
   - [ ] Token/invitation encoding strategy (application-defined vs standardized)
   - [ ] Auditing and key rotation impacts
 

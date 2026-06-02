@@ -84,4 +84,8 @@ A single phone party connects to a more robust party with multiple nodes.
 
 ## Strand Creation
 
+_(TODO: not yet documented here. See the strand-formation and seed-bootstrap coverage in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+
 ## Inviting Parties
+
+_(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
