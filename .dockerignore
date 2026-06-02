@@ -1,0 +1,11 @@
+# Keep the Docker build context small and avoid copying host build artifacts
+# into images. The cadre-cli image builds from the repo root as its context
+# (see packages/cadre-cli/docker/docker-compose.yml) and COPYs only package
+# manifests, src/, and tsconfig files — never host node_modules or dist — so
+# excluding the following is safe and keeps the context lean.
+**/node_modules
+**/dist
+**/*.tsbuildinfo
+.yarn/cache
+.yarn/install-state.gz
+.git
