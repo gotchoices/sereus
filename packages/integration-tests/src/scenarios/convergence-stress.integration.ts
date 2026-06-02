@@ -201,10 +201,10 @@ async function setupDroneAndPhone(tag: string): Promise<TestContext> {
 	// Create strand on both nodes
 	const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
 
-	const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
+	const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, mode: 'networked' });
 	expect(droneStrand.status).toBe('active');
 
-	const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
+	const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, mode: 'networked' });
 	expect(phoneStrand.status).toBe('active');
 
 	// Connect strand-level libp2p nodes

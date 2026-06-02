@@ -379,6 +379,11 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		const receiverParty = await network.createParty({ name: 'auth-e2e-receiver' });
 		const receiverService = new SeedBootstrapService({
 			partyId: receiverParty.partyId,
+			// The receiver self-registers its own peer (registerAuthorityPeer below),
+			// which requires its own authority key for signing — independent of the
+			// pinned trust anchor used to accept the *sender's* delivered seed.
+			authorityPrivateKey: extractPrivateKeyBase64(receiverParty.authorityPrivateKey),
+			authorityPublicKey: receiverParty.authorityPublicKey,
 			trustPolicy: pinnedKeyTrustPolicy([senderParty.authorityPublicKey]),
 		});
 		receiverService.initialize(receiverParty.authorityNode.libp2p, receiverParty.controlDatabase);

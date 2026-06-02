@@ -11,7 +11,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
 import { ControlDatabase } from '@serfab/cadre-core';
-import type { Libp2p } from '@libp2p/interface';
+import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { allocatePort, releasePorts } from './port-allocator.js';
 import type { TestParty, TestCadreNode, CreatePartyOptions } from './types.js';
@@ -31,7 +31,8 @@ interface Libp2pNodeWithRepo extends Libp2p {
 async function createTestNode(
   networkName: string,
   bootstrapNodes: string[],
-  profile: 'transaction' | 'storage'
+  profile: 'transaction' | 'storage',
+  privateKey?: PrivateKey
 ): Promise<TestCadreNode> {
   const port = await allocatePort();
 
@@ -41,6 +42,7 @@ async function createTestNode(
     port,
     bootstrapNodes,
     networkName,
+    privateKey,
     storage: () => new MemoryRawStorage(),
     fretProfile: profile === 'storage' ? 'core' : 'edge',
     clusterSize: 3,
@@ -96,9 +98,15 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   const authorityPublicKey = uint8ArrayToString(rawPublicKey, 'base64url');
 
   log('Generated authority key: %s (peerId: %s)', authorityPublicKey, authorityPeerId.toString());
-  
-  // Create authority node first (no bootstrap - it IS the bootstrap)
-  const authorityNode = await createTestNode(networkName, [], 'transaction');
+
+  // Create authority node first (no bootstrap - it IS the bootstrap).
+  // The authority node MUST adopt the authority keypair as its libp2p identity:
+  // seed/CadrePeer authority marking derives each peer's ed25519 key from its
+  // transport PeerId and checks it against the AuthorityKey table
+  // (see seed-bootstrap.ts `ed25519PublicKeyB64FromPeerId` / `queryPeers`). A
+  // fresh random node key would never match, so the authority would never be
+  // marked `isAuthority` in its own seeds.
+  const authorityNode = await createTestNode(networkName, [], 'transaction', authorityKey);
   
   // Get bootstrap addresses from authority node
   const bootstrapAddrs = authorityNode.multiaddrs;
