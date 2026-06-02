@@ -11,7 +11,6 @@ const ENV_OVERRIDE = 'OPTIMYSTIC_WS_BOOTSTRAP';
 // can't return a value from global-setup that teardown receives, so a side
 // channel is the cleanest approach.
 declare global {
-	 
 	var __referencePeer: ReferenceMeshHandle | undefined;
 }
 

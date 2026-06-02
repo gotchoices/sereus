@@ -51,7 +51,6 @@ function looksLikePeerId(id: string): boolean {
 function resolvePort(raw: string): number {
   const n = Number(raw);
   if (!Number.isFinite(n) || n <= 0 || n > 65535) {
-     
     console.error(`Invalid --port: ${raw}`);
     process.exit(1);
   }
@@ -105,20 +104,15 @@ program
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
       });
-       
       console.log(`cadre-host installed.`);
-       
       console.log(`  Data dir:     ${result.dataDir}`);
-       
       console.log(`  UI:           ${result.uiUrl}`);
-       
       console.log(`  Service:      ${result.serviceName}`);
       if (result.enrollmentInvite) {
         printEnrollmentInvite(result.enrollmentInvite);
       }
       process.exit(0);
     } catch (err) {
-       
       console.error(`install failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -161,11 +155,9 @@ program
         removeData: Boolean(opts.removeData),
         ...(opts.dataDir ? { dataDir: opts.dataDir } : {}),
       });
-       
       console.log('cadre-host uninstalled.');
       process.exit(0);
     } catch (err) {
-       
       console.error(`uninstall failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -182,13 +174,10 @@ program
     const installer = new Installer();
     try {
       const status = await installer.status();
-       
       console.log(`Service installed: ${status.installed ? 'yes' : 'no'}`);
-       
       console.log(`Service running:   ${status.running ? 'yes' : 'no'}`);
       process.exit(0);
     } catch (err) {
-       
       console.error(`status failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -210,7 +199,6 @@ program
       const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
       const cfgPath = resolveConfigPath(dataDir);
       if (!existsSync(cfgPath)) {
-         
         console.error(
           `cadre-host start: ${cfgPath} not found. ` +
           `Run \`cadre-host install\` first (or pass --data-dir to an existing install).`,
@@ -221,12 +209,10 @@ program
       const cfg = readHostConfig(cfgPath);
       const idPath = resolveIdentityPath(cfg.dataDir);
       if (!existsSync(idPath)) {
-         
         console.error(`cadre-host start: identity file not found at ${idPath}. Re-run \`cadre-host install\`.`);
         process.exit(1);
         return;
       }
-       
       console.log(`cadre-host starting (dataDir=${cfg.dataDir}, uiPort=${cfg.uiPort})`);
 
       // Update flow: notify-by-default; auto-apply opt-in via host.config.json.
@@ -258,7 +244,6 @@ program
         try {
           updateHostConfig(cfgPath, { updates: next });
         } catch (err) {
-           
           console.error(`failed to persist updated settings to ${cfgPath}: ${(err as Error).message}`);
         }
       });
@@ -284,10 +269,8 @@ program
           partyId: cfg.installId,
           libp2pPort: cfg.libp2pPort,
         });
-         
         console.log('cadre-host: authority node spawned');
       } catch (err) {
-         
         console.error(`authority node spawn failed: ${(err as Error).message}`);
       }
 
@@ -313,7 +296,6 @@ program
         try {
           await authority.pushInviteAddresses(addresses);
         } catch (err) {
-           
           console.error(`invite-address push failed: ${(err as Error).message}`);
         }
       });
@@ -323,7 +305,6 @@ program
       try {
         await natService.start();
       } catch (err) {
-         
         console.error(`NAT start failed: ${(err as Error).message}`);
       }
 
@@ -339,10 +320,8 @@ program
       });
       const { url, port } = await server.start();
       if (port !== cfg.uiPort) {
-         
         console.log(`(configured port ${cfg.uiPort} was in use — bound on ${port} instead)`);
       }
-       
       console.log(`cadre-host local UI: ${url}`);
 
       await waitForTermination();
@@ -350,11 +329,9 @@ program
       try { await natService.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopAuthorityNode(); } catch { /* ignore */ }
       updateService.stop();
-       
       console.log('cadre-host stopped.');
       process.exit(0);
     } catch (err) {
-       
       console.error(`start failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -375,28 +352,23 @@ program
       const dataDir = opts.dataDir ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
       const cfgPath = resolveConfigPath(dataDir);
       if (!existsSync(cfgPath)) {
-         
         console.error(`cadre-host ui: ${cfgPath} not found. Run \`cadre-host install\` first.`);
         process.exit(1);
         return;
       }
       const cfg = readHostConfig(cfgPath);
       const url = `http://127.0.0.1:${cfg.uiPort}`;
-       
       console.log(url);
       if (opts.browser !== false) {
         const res = openBrowser(url);
         if (res.spawned) {
-           
           console.log('(Opening in your default browser...)');
         } else if (res.error) {
-           
           console.error(`(unable to launch browser: ${res.error})`);
         }
       }
       process.exit(0);
     } catch (err) {
-       
       console.error(`ui failed: ${(err as Error).message}`);
       process.exit(1);
     }
@@ -446,22 +418,17 @@ const requireForQr = createRequire(import.meta.url);
 
 function printEnrollmentInvite(invite: { encodedInvite: string; expiresAt?: string }): void {
   // Best-effort QR render — fall back to the bare token if the lib chokes.
-   
   console.log('\nEnroll your first device with this invite:');
   try {
     const qr = requireForQr('qrcode-terminal') as { generate: (text: string, opts?: { small?: boolean }, cb?: (s: string) => void) => void };
     qr.generate(invite.encodedInvite, { small: true }, (rendered) => {
-       
       console.log(rendered);
     });
   } catch (err) {
-     
     console.error(`(qrcode-terminal unavailable: ${(err as Error).message})`);
   }
-   
   console.log(`  ${invite.encodedInvite}`);
   if (invite.expiresAt) {
-     
     console.log(`  (expires ${invite.expiresAt})`);
   }
 }
@@ -478,7 +445,6 @@ program
     try {
       ttlMs = parseDuration(opts.ttl);
     } catch (err) {
-       
       console.error(`Invalid --ttl: ${(err as Error).message}`);
       process.exit(1);
       return;
@@ -495,7 +461,6 @@ program
         body: JSON.stringify({ label, ttlMs }),
       });
     } catch (err) {
-       
       console.error(
         `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
         `Hint: is cadre-host running? Try \`cadre-host start\`.`,
@@ -506,7 +471,6 @@ program
 
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-       
       console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
       process.exit(1);
       return;
@@ -514,16 +478,13 @@ program
 
     const body = await response.json() as { encodedInvite?: string; expiresAt?: string; token?: string };
     if (!body.encodedInvite) {
-       
       console.error('cadre-host returned malformed response (missing encodedInvite)');
       process.exit(1);
       return;
     }
 
-     
     console.log(body.encodedInvite);
     if (body.expiresAt) {
-       
       console.error(`(expires at ${body.expiresAt})`);
     }
     process.exit(0);
@@ -544,13 +505,11 @@ trust
     try {
       response = await fetch(url);
     } catch (err) {
-       
       console.error(`Failed to reach cadre-host at ${url}: ${(err as Error).message}`);
       process.exit(2);
       return;
     }
     if (!response.ok) {
-       
       console.error(`cadre-host returned ${response.status}: ${response.statusText}`);
       process.exit(1);
       return;
@@ -559,27 +518,21 @@ trust
       members: Array<{ peerId: string; label: string; addedAt: string; self?: boolean }>;
       pending: Array<{ token: string; label: string; createdAt: string; expiresAt?: string }>;
     };
-     
     console.log('Members:');
     if (body.members.length === 0) {
-       
       console.log('  (none)');
     } else {
       for (const m of body.members) {
         const self = m.self ? ' [self]' : '';
-         
         console.log(`  ${m.peerId}  ${m.label}${self}`);
       }
     }
-     
     console.log('\nPending invites:');
     if (body.pending.length === 0) {
-       
       console.log('  (none)');
     } else {
       for (const p of body.pending) {
         const expires = p.expiresAt ? ` (expires ${p.expiresAt})` : '';
-         
         console.log(`  ${p.token}  ${p.label}${expires}`);
       }
     }
@@ -606,19 +559,16 @@ trust
     try {
       response = await fetch(`${base}${path}`, { method: 'DELETE' });
     } catch (err) {
-       
       console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
       process.exit(2);
       return;
     }
     if (!response.ok) {
       const text = await response.text().catch(() => '');
-       
       console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
       process.exit(1);
       return;
     }
-     
     console.log(`revoked ${kind}: ${id}`);
     process.exit(0);
   });
@@ -641,7 +591,6 @@ nat
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/status`;
     const body = await getJson(url);
     if (opts.json) {
-       
       console.log(JSON.stringify(body, null, 2));
     } else {
       printNatStatus(body);
@@ -659,7 +608,6 @@ nat
     const url = `http://${opts.host}:${resolvePort(opts.port)}/nat/test`;
     const body = await postJson(url, {});
     if (opts.json) {
-       
       console.log(JSON.stringify(body, null, 2));
     } else {
       printNatStatus(body);
@@ -714,7 +662,6 @@ ddns
     host: string;
   }) => {
     if (!opts.hostname) {
-       
       console.error('--hostname is required');
       process.exit(1);
       return;
@@ -724,7 +671,6 @@ ddns
 
     if (!config.token) {
       if (!process.stdin.isTTY) {
-         
         console.error(
           'Missing --token for provider "' + provider + '" and stdin is not a TTY. ' +
           'Re-run with --token <secret>.',
@@ -735,7 +681,6 @@ ddns
       try {
         config.token = await readSecretLine('DDNS token: ');
       } catch (err) {
-         
         console.error('Failed to read token: ' + (err as Error).message);
         process.exit(1);
         return;
@@ -814,7 +759,6 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
     }
     response = await fetch(url, init);
   } catch (err) {
-     
     console.error(
       `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
       `Hint: is cadre-host running? Try \`cadre-host start\`.`,
@@ -824,7 +768,6 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
   }
   if (!response.ok) {
     const text = await response.text().catch(() => '');
-     
     console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
     process.exit(1);
     throw new Error('non-ok');
@@ -834,35 +777,25 @@ async function callJson(url: string, method: string, body?: unknown): Promise<Na
 }
 
 function printNatStatus(s: NatStatusLike): void {
-   
   console.log(`Port mapping: ${s.portMode ?? '?'} (external ${s.externalPort ?? '?'} → internal ${s.internalPort ?? '?'})`);
   if (s.routerExternalIp) {
-     
     console.log(`Router IP:    ${s.routerExternalIp}`);
   }
-   
   console.log(`External IP:  ${s.externalIp ?? '(unknown)'}${s.cgnatDetected ? '  [CGNAT detected]' : ''}`);
-   
   console.log(`Reachability: ${s.directReachability ?? 'unknown'}${s.lastTestedAt ? `  (tested ${s.lastTestedAt})` : ''}`);
   if (s.mappingLeaseExpiresAt) {
-     
     console.log(`Lease expires: ${s.mappingLeaseExpiresAt}`);
   }
   const ddns = s.ddns ?? {};
   if (ddns.providerId || ddns.hostname) {
-     
     console.log(`\nDDNS:`);
-     
     console.log(`  Provider:   ${ddns.providerId ?? '(none)'}${ddns.externallyManaged ? '  [externally managed]' : ''}`);
-     
     console.log(`  Hostname:   ${ddns.hostname ?? '(unset)'}`);
     if (ddns.lastUpdateAt) {
       const ok = ddns.lastUpdateOk ? 'OK' : 'FAIL';
-       
       console.log(`  Last update: ${ok} at ${ddns.lastUpdateAt}${ddns.lastError ? `  — ${ddns.lastError}` : ''}`);
     }
   } else {
-     
     console.log('\nDDNS: not configured');
   }
 }

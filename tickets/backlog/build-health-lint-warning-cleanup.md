@@ -40,7 +40,12 @@ eslint-10 recommended additions (not AGENTS.md rules, but worth keeping) current
 Do **not** try to machine-enforce these (documented in `eslint.config.mjs` and `docs/STATUS.md`):
 - lowercase SQL reserved words (SQL lives in template literals — no clean ESLint rule),
 - "no runtime inline `import()`",
-- tab indentation (left to `.editorconfig`).
+- tab indentation. NB: the docs say this is "left to `.editorconfig`", but **no `.editorconfig`
+  currently exists** in the repo, and indentation is in fact mixed (e.g. `cadre-host/src` uses
+  2-space, `cadre-core/test` uses tabs). So "tabs for code" is presently enforced nowhere. A
+  maintainer should decide whether to (a) add a real `.editorconfig` + reformat to tabs, or
+  (b) correct AGENTS.md/STATUS.md to reflect the actual (mixed) state. Flagged by the review of
+  `build-health-eslint`.
 
 ## Expected outcome
 
