@@ -150,7 +150,7 @@ interface SeedPeer {
   peerId: string;           // libp2p peer ID
   multiaddrs: string[];     // Dial hints (may be empty if NAT'd)
   isAuthority: boolean;     // Hint: an authority-hosting peer to prefer dialing
-  publicKey?: string;       // ed25519 public key (base64url) — present on authority peers for signerKey verification
+  publicKey?: string;       // ed25519 public key (base64url) — set on authority peers (derived from the AuthorityKey table, not used to gate the seed's own signerKey)
 }
 ```
 

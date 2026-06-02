@@ -945,6 +945,61 @@ describe('SeedBootstrapService Helper Methods', () => {
     }, 60_000);
   });
 
+  describe('applySeed — DB-anchored trust against a real control DB', () => {
+    /**
+     * End-to-end coverage the mocked unit tests can't give: a live Quereus
+     * control DB feeds `getAuthorityKeys()`, which the default
+     * `dbAnchoredTrustPolicy` consults. Proves the real `select Key from
+     * AuthorityKey` round-trips into the security gate — an anchored signer is
+     * accepted and an unanchored one rejected — with no per-call override.
+     */
+    function signSeed(privateKey: string, publicKey: string): ControlNetworkSeed {
+      const seedData = { partyId, peers: [] as SeedPeer[] };
+      const seedJson = canonicalSeedPayload(seedData);
+      const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+      const signature = sign(
+        seedDigest, privateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
+      ) as string;
+      return { ...seedData, signature, signerKey: publicKey };
+    }
+
+    it('accepts an anchored signer and rejects an unanchored one via the live AuthorityKey table', async () => {
+      const node = new CadreNode({
+        controlNetwork: {
+          partyId: 'test-party-' + Math.random().toString(36).slice(2),
+          bootstrapNodes: []
+        },
+        profile: 'transaction'
+      });
+
+      try {
+        await node.start();
+
+        const db = node.getControlDatabase();
+        expect(db).not.toBeNull();
+        await db!.insertAuthorityKey(authorityPublicKey);
+
+        node.initializeSeedBootstrap(authorityPrivateKey);
+
+        // The live table returns exactly the inserted key.
+        expect(await db!.getAuthorityKeys()).toEqual(new Set([authorityPublicKey]));
+
+        // Anchored signer → accepted by the default DB-anchored policy, no override.
+        const accepted = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+        expect(accepted.success).toBe(true);
+
+        // Unanchored signer → rejected by the same default against the live table.
+        const attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+        const attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+        const rejected = await node.applySeed(signSeed(attackerPrivateKey, attackerPublicKey));
+        expect(rejected.success).toBe(false);
+        expect(rejected.error).toMatch(/trust policy/i);
+      } finally {
+        await node.stop();
+      }
+    }, 60_000);
+  });
+
   describe('createInvite — inviteAddressResolver hook', () => {
     function makeMockLibp2p(rawAddrs: string[]) {
       return {
