@@ -275,6 +275,39 @@ describe('StrandWatcher Filters', () => {
       expect(removed).toEqual([]);
       await watcher.stop();
     });
+
+    it('removes and prunes a still-deferred strand when it disappears from the network', async () => {
+      let strands = [createStrand('late-strand')];
+      const queryable: StrandQueryable = { queryStrands: async () => strands };
+      // sAppId never resolves - the strand stays provisional until it disappears.
+      const sAppIdLookup: SAppIdLookup = { getSAppId: () => undefined };
+      const added: string[] = [];
+      const removed: string[] = [];
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async (s) => { added.push(s.Id); },
+        onStrandRemoved: async (id) => { removed.push(id); }
+      };
+      const watcher = new StrandWatcher(
+        queryable, callbacks, { mode: 'sAppId', sAppId: 'target-app' }, 60000, sAppIdLookup
+      );
+      await watcher.start();
+      await watcher.forcePoll();
+      expect(added).toEqual(['late-strand']);     // deferred admission
+      strands = [];                                // strand leaves the control network
+      await watcher.forcePoll();
+      expect(removed).toEqual(['late-strand']);
+      expect(watcher.getKnownStrands().has('late-strand')).toBe(false);
+
+      // Provisional entry must have been pruned: a further poll fires nothing,
+      // and re-introducing the same id is treated as a fresh deferred admission.
+      await watcher.forcePoll();
+      expect(removed).toEqual(['late-strand']);
+      strands = [createStrand('late-strand')];
+      await watcher.forcePoll();
+      expect(added).toEqual(['late-strand', 'late-strand']);
+      expect(removed).toEqual(['late-strand']);
+      await watcher.stop();
+    });
   });
 });
 
