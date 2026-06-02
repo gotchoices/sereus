@@ -456,6 +456,54 @@ describe('CadreNode', () => {
       expect(quiesceCalls).toHaveLength(0);
       expect(waking).toEqual(['checkin-active']);
     });
+
+    it('check-in that fails to resume leaves the strand hibernating so the manager retries on backoff', async () => {
+      // A flaky-network resume failure is exactly what hibernation targets. The
+      // real StrandInstanceManager.resumeStrand flips status to 'error' and
+      // rethrows on failure. handleStrandCheckIn must NOT let that 'error' status
+      // escape: HibernationManager reads instance.status after onCheckIn and
+      // treats anything non-'hibernating' as "woke", which would stop the
+      // check-in chain and strand the strand. It must end 'hibernating'.
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true, checkInWindowMs: 0 } }));
+
+      const instance: StrandInstance = {
+        strandId: 'checkin-fail',
+        status: 'hibernating',
+        connectedPeers: 0,
+        lastActivity: new Date(1000),
+        latencyHint: 'interactive'
+      };
+
+      const quiesceCalls: string[] = [];
+      const fakeManager = {
+        getInstance: (id: string) => (id === 'checkin-fail' ? instance : undefined),
+        resumeStrand: async () => {
+          // Mirror resumeStrand's failure: runtime rolled back, status 'error', throw.
+          instance.libp2pNode = undefined;
+          instance.database = undefined;
+          instance.status = 'error';
+          throw new Error('resume boom (flaky network)');
+        },
+        quiesceStrand: async (id: string) => { quiesceCalls.push(id); }
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
+      (node as unknown as { controlNode: unknown }).controlNode = {
+        peerId: { toString: () => 'self-peer' }
+      };
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => []
+      };
+
+      const callCheckIn = (node as unknown as {
+        handleStrandCheckIn: (id: string) => Promise<void>;
+      }).handleStrandCheckIn.bind(node);
+
+      // Must swallow the failure (so the manager's await resolves) and leave the
+      // strand hibernating, with a best-effort cleanup quiesce.
+      await expect(callCheckIn('checkin-fail')).resolves.toBeUndefined();
+      expect(instance.status).toBe('hibernating');
+      expect(quiesceCalls).toEqual(['checkin-fail']);
+    });
   });
 
   describe('enrollment service', () => {

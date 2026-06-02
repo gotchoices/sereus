@@ -352,6 +352,9 @@ export class HibernationManager {
     if (instance.status !== 'hibernating') {
       log('Check-in woke strand %s; backoff resets on next hibernation', strandId);
       this.checkInTimers.delete(strandId);
+      // The chain is stopping; drop the now-stale next-check-in advertisement so
+      // `getStrand` doesn't report a phantom check-in for a strand that is awake.
+      instance.nextCheckIn = undefined;
       return;
     }
 

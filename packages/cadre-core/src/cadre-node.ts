@@ -586,36 +586,54 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
-    // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
-    //    seed + mode, then rebuild the runtime.
-    log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
-    const seed = await this.resolveCohortSeed();
-    const mode = selectStrandMode(undefined, seed.hasOtherPeers);
-    await this.strandManager.resumeStrand(strandId, {
-      bootstrapNodes: seed.bootstrapNodes,
-      mode
-    });
+    try {
+      // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
+      //    seed + mode, then rebuild the runtime.
+      log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
+      const seed = await this.resolveCohortSeed();
+      const mode = selectStrandMode(undefined, seed.hasOtherPeers);
+      await this.strandManager.resumeStrand(strandId, {
+        bootstrapNodes: seed.bootstrapNodes,
+        mode
+      });
 
-    // Capture the post-resume activity marker. recordActivity assigns a FRESH
-    // Date object, so a changed reference after the window means real activity
-    // was recorded during it — not millisecond-resolution noise.
-    const activityMark = instance.lastActivity;
+      // Capture the post-resume activity marker. recordActivity assigns a FRESH
+      // Date object, so a changed reference after the window means real activity
+      // was recorded during it — not millisecond-resolution noise.
+      const activityMark = instance.lastActivity;
 
-    // 2. Bounded window for the strand network to connect + the app to act.
-    await this.runCheckInWindow(instance);
+      // 2. Bounded window for the strand network to connect + the app to act.
+      await this.runCheckInWindow(instance);
 
-    // 3. Decide based on whether activity landed during the window.
-    const sawActivity = instance.lastActivity !== activityMark;
-    if (sawActivity) {
-      instance.status = 'active';
-      this.emit('strand:waking', { strandId });
-      log('Check-in: strand %s saw activity during the window; staying active', strandId);
-      return;
+      // 3. Decide based on whether activity landed during the window.
+      const sawActivity = instance.lastActivity !== activityMark;
+      if (sawActivity) {
+        instance.status = 'active';
+        this.emit('strand:waking', { strandId });
+        log('Check-in: strand %s saw activity during the window; staying active', strandId);
+        return;
+      }
+
+      log('Check-in: no activity for strand %s; re-hibernating', strandId);
+      await this.strandManager.quiesceStrand(strandId);
+      instance.status = 'hibernating';
+    } catch (err) {
+      // A check-in that throws part-way — resume failing on a flaky network (the
+      // very scenario hibernation targets), the window rejecting, or quiesce
+      // throwing — must leave the strand HIBERNATING, not in the `error` status
+      // that `resumeStrand` sets on failure. `HibernationManager.runCheckIn`
+      // decides wake-vs-escalate purely from `instance.status` after this
+      // resolves: an `error` status reads as "woke", which STOPS the check-in
+      // chain and strands the strand with no runtime and no future check-in.
+      // Forcing it back to `hibernating` (after a best-effort quiesce to release
+      // any partially-rebuilt runtime) makes the manager escalate the backoff and
+      // retry on the next tick.
+      log('Check-in failed for strand %s; re-hibernating to retry on backoff: %o', strandId, err);
+      await this.strandManager.quiesceStrand(strandId).catch((cleanupErr) => {
+        log('Check-in cleanup quiesce for strand %s failed: %o', strandId, cleanupErr);
+      });
+      instance.status = 'hibernating';
     }
-
-    log('Check-in: no activity for strand %s; re-hibernating', strandId);
-    await this.strandManager.quiesceStrand(strandId);
-    instance.status = 'hibernating';
   }
 
   /**
