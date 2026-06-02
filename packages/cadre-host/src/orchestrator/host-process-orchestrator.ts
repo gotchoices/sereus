@@ -456,6 +456,8 @@ export class HostProcessOrchestrator implements Orchestrator {
       dockerId,
       healthEndpoint: `http://localhost:${ports.health}/health`,
       metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
+      // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
+      seedEndpoint: `http://localhost:${ports.health}/seed`,
       p2pPort: ports.p2p,
     };
   }
