@@ -37,6 +37,14 @@ const LOG_PREFIX = '[reference-app-web] ice-config:';
 export const ICE_CONFIG_URL_STORAGE_KEY = 'ice-config-url';
 
 /**
+ * Manifest-fetch deadline. `loadIceConfig` is awaited during node startup
+ * (`optimystic.ts` → `startNode`), so an unbounded fetch against a misbehaving
+ * manifest host would stall boot indefinitely. Cap it: on timeout we abort and
+ * fall back to the STUN-less-but-safe `[]` path, the same as any other failure.
+ */
+const FETCH_TIMEOUT_MS = 5_000;
+
+/**
  * Runtime ICE-config manifest. Deliberately shaped like the W3C `RTCIceServer[]`
  * container so `iceServers` drops straight into `rtcConfiguration`. Mirrors
  * `ops/docker/coturn/ice-servers.example.json`.
@@ -150,8 +158,17 @@ export async function loadIceConfig(url?: string): Promise<RTCIceServer[]> {
     return [];
   }
 
+  // Bound the fetch so a hung manifest host can't stall node startup. Abort on
+  // the deadline; the catch below turns the resulting AbortError into the safe
+  // `[]` fallback. `clearTimeout` in `finally` avoids a dangling timer on the
+  // happy path.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
   try {
-    const res = await fetch(target, { headers: { accept: 'application/json' } });
+    const res = await fetch(target, {
+      headers: { accept: 'application/json' },
+      signal: controller.signal,
+    });
     if (!res.ok) {
       console.warn(`${LOG_PREFIX} fetch ${target} returned HTTP ${res.status}`);
       return [];
@@ -161,5 +178,7 @@ export async function loadIceConfig(url?: string): Promise<RTCIceServer[]> {
   } catch (err) {
     console.warn(`${LOG_PREFIX} failed to load manifest from ${target}`, err);
     return [];
+  } finally {
+    clearTimeout(timer);
   }
 }

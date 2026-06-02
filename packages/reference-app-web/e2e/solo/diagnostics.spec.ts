@@ -8,18 +8,21 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 		// Wait for the diagnostics tick to populate.
 		await expect(page.getByTestId('diag-transports')).toBeVisible({ timeout: 30_000 });
 
-		// Transports — must be exactly the two-name browser bundle. Order-tolerant.
-		// The libp2p package names changed at some point: older docs show
+		// Transports — the four-name browser bundle. Order-tolerant. The libp2p
+		// package names changed at some point: older docs show
 		// `WebSockets, circuit-relay-v2`, current builds emit
 		// `@libp2p/websockets, @libp2p/circuit-relay-v2-transport`. Either
-		// shape is accepted; what matters is that there are exactly two and
-		// no TCP transport leaked into the browser bundle.
+		// shape is accepted. The WebRTC ticket added `@libp2p/webrtc` and
+		// `@libp2p/webrtc-direct` to the transports array (registered in solo as
+		// well as distributed — only `listenAddrs` is mode-gated), so the healthy
+		// bundle now carries four transports. What matters is that all four are
+		// present and no TCP transport leaked into the browser bundle.
 		const transportNames = await page
 			.locator('[data-testid="diag-transports"] li')
 			.evaluateAll((nodes) =>
 				nodes.map((n) => ((n as HTMLElement).dataset.transportName ?? '').trim()),
 			);
-		expect(transportNames).toHaveLength(2);
+		expect(transportNames).toHaveLength(4);
 		expect(
 			transportNames.some((n) => /websockets/i.test(n)),
 			`expected a websockets transport in ${JSON.stringify(transportNames)}`,
@@ -27,6 +30,14 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 		expect(
 			transportNames.some((n) => /circuit[- ]?relay/i.test(n)),
 			`expected a circuit-relay transport in ${JSON.stringify(transportNames)}`,
+		).toBe(true);
+		expect(
+			transportNames.some((n) => /webrtc(?!-direct)/i.test(n)),
+			`expected a webrtc transport in ${JSON.stringify(transportNames)}`,
+		).toBe(true);
+		expect(
+			transportNames.some((n) => /webrtc-direct/i.test(n)),
+			`expected a webrtc-direct transport in ${JSON.stringify(transportNames)}`,
 		).toBe(true);
 		expect(
 			transportNames.some((n) => /(^|[^a-z])tcp([^a-z]|$)/i.test(n)),

@@ -172,11 +172,14 @@ Polls every two seconds while the tab is visible; pauses under
   peers), per-connection peer ID / remote multiaddr / direction / open
   protocols.
 - **Transports** — names of registered libp2p transports. In a healthy
-  browser bundle this is exactly two entries: one matching `websockets`
-  and one matching `circuit-relay` (current builds report
-  `@libp2p/websockets` and `@libp2p/circuit-relay-v2-transport`). No TCP
-  transport should appear — its presence indicates a Node-only dep leaked
-  into the browser bundle.
+  browser bundle this is four entries: one matching `websockets`, one
+  matching `circuit-relay`, and the two WebRTC transports (current builds
+  report `@libp2p/circuit-relay-v2-transport`, `@libp2p/webrtc`,
+  `@libp2p/webrtc-direct`, and `@libp2p/websockets`). WebRTC upgrades a
+  relayed browser↔browser pair to a direct data path once SDP is exchanged
+  over the reservation, leaving the relay as signaling-only. No TCP transport
+  should appear — its presence indicates a Node-only dep leaked into the
+  browser bundle.
 - **FRET** — known peer count, network size estimate, churn, partition,
   Arachnode ring membership.
 - **Storage** — `IndexedDBRawStorage`, `navigator.storage.estimate()` quota
@@ -197,8 +200,8 @@ Polls every two seconds while the tab is visible; pauses under
 - **"Did my identity persist?"** Identity → Persisted should read
   `persisted ✓` and the first-seen timestamp must not change on reload.
 - **"Did Optimystic accidentally pull in TCP?"** Transports list. The
-  browser bundle must show only a WebSockets entry and a circuit-relay
-  entry — any TCP transport means a Node-only dep slipped in.
+  browser bundle must show only the WebSockets, circuit-relay, and the two
+  WebRTC entries — any TCP transport means a Node-only dep slipped in.
 
 ## Vite config notes
 
