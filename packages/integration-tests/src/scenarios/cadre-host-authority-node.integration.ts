@@ -203,7 +203,7 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
       token: 'definitely-not-the-token',
     });
 
-    await expect(badClient.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+    // Single round-trip: assert both the error type and its node code.
     try {
       await badClient.getPeerId();
       expect.unreachable('bad bearer should have thrown');
