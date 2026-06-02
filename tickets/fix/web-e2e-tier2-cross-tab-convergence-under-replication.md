@@ -76,6 +76,13 @@ write: tab B never sees tab A's freshly-sent row within the 20–30 s budget, an
   so replication is restored and subsequent reads find it. Today the member
   only logs `consensus-commit-diverged` and relies on lazy read-repair, which
   cannot help when no reachable peer has the newer rev.
+  - While here, fix the **propagate-vs-tolerate split keying off throw-vs-return**
+    rather than the failure's nature (flagged in review of the prereq): a genuine
+    `internalCommit` fault surfaces as `CommitResult.success:false` (with `reason`,
+    no `missing`) and is currently tolerated like divergence, whereas the same
+    fault *thrown* propagates. `CommitResult` already distinguishes the cases
+    (`missing` ⇒ stale/ahead divergence; bare `reason` ⇒ genuine failure) — use it
+    so genuine commit failures aren't silently swallowed as divergence.
 - **Exclude ephemeral/browser peers from being counted as durable cluster
   replicas**, or evict disconnected browser-tab peer-ids on per-spec teardown
   (`_helpers.ts`).
