@@ -49,13 +49,13 @@
 					<Label text="Multiaddr" class="label" />
 					<TextField text="{{ peerAddr }}" hint="/ip4/…/tcp/…/ws/p2p/…" class="input"
 						automationText="input-add-peer" />
-					<Button text="Dial Peer" tap="onDialPeer" class="btn" automationText="btn-add-peer" />
+					<Button text="Dial Peer" tap="onDialPeer" isEnabled="{{ canDialPeer }}" class="btn" automationText="btn-add-peer" />
 
 					<Label text="Seed Bootstrap" class="section-title" />
 					<Label text="Paste seed" class="label" />
 					<TextView text="{{ seedInput }}" hint="base64url seed string" class="input textarea"
 						automationText="input-seed" />
-					<Button text="Apply Seed" tap="onApplySeed" class="btn" automationText="btn-apply-seed" />
+					<Button text="Apply Seed" tap="onApplySeed" isEnabled="{{ canApplySeed }}" class="btn" automationText="btn-apply-seed" />
 
 					<Label text="Strands" class="section-title" />
 					<Repeater items="{{ cadre.strandItems }}">

@@ -61,6 +61,7 @@ export class SettingsViewModel extends Observable {
 		if (value === this._seedInput) return;
 		this._seedInput = value;
 		this.notifyPropertyChange('seedInput', value);
+		this.notifyPropertyChange('canApplySeed', this.canApplySeed);
 	}
 
 	get peerAddr(): string {
@@ -70,6 +71,17 @@ export class SettingsViewModel extends Observable {
 		if (value === this._peerAddr) return;
 		this._peerAddr = value;
 		this.notifyPropertyChange('peerAddr', value);
+		this.notifyPropertyChange('canDialPeer', this.canDialPeer);
+	}
+
+	/** `isEnabled` for the Apply Seed button — mirrors RN's `disabled={!seedInput.trim()}`. */
+	get canApplySeed(): boolean {
+		return this._seedInput.trim().length > 0;
+	}
+
+	/** `isEnabled` for the Dial Peer button — mirrors RN's `disabled={!peerAddr.trim()}`. */
+	get canDialPeer(): boolean {
+		return this._peerAddr.trim().length > 0;
 	}
 
 	// ── Modal ───────────────────────────────────────────────────────────────
