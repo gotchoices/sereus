@@ -141,6 +141,22 @@ describe('StrandWakeService.handleStream — framing round-trip', () => {
     expect(ack.accepted).toBe(false);
     expect(ack.reason).toBeTruthy();
   });
+
+  it('replies accepted:false when streamed bytes exceed the 64KB cap (accumulation guard)', async () => {
+    const service = makeService(makeInstance(), { wake: async () => { throw new Error('should not wake'); } });
+
+    // Stream many chunks whose running total passes MAX_WAKE_SIZE (64KB) before
+    // EOF — this trips readFrame's per-chunk accumulation cap, a distinct path
+    // from the length-prefix guard above (which rejects a *declared* length).
+    const chunks = Array.from({ length: 9 }, () => new Uint8Array(8 * 1024));
+    const stream = new CapturingStream(chunks);
+
+    await runHandleStream(service, stream, 'member-peer');
+
+    const ack = decodeFrames<WakeAck>(stream.sent);
+    expect(ack.accepted).toBe(false);
+    expect(ack.reason).toMatch(/too large/i);
+  });
 });
 
 describe('dialWake — sender round-trip against a live receiver', () => {
