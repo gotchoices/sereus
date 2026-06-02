@@ -1,0 +1,48 @@
+{
+  "name": "@serfab/reference-app-ns",
+  "version": "0.7.1",
+  "private": true,
+  "main": "app/app.ts",
+  "description": "NativeScript Core reference app — runtime validation of the cadre/db-p2p/Quereus/Optimystic stack on V8/JSC",
+  "scripts": {
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test:bundle": "node scripts/bundle-check.js",
+    "test:bundle:native": "ns prepare android",
+    "clean": "rimraf platforms hooks",
+    "android": "ns run android",
+    "ios": "ns run ios"
+  },
+  "dependencies": {
+    "@libp2p/circuit-relay-v2": "^4.1.3",
+    "@libp2p/interface": "^3.1.0",
+    "@libp2p/websockets": "^10.1.3",
+    "@multiformats/multiaddr": "^12.5.1",
+    "@nativescript-community/sqlite": "^3.5.0",
+    "@nativescript/core": "~8.9.0",
+    "@noble/hashes": "^2.0.0",
+    "@optimystic/db-core": "^0.13.5",
+    "@optimystic/db-p2p": "^0.13.5",
+    "@optimystic/db-p2p-storage-ns": "^0.13.5",
+    "@quereus/quereus": "^3.2.1",
+    "@serfab/cadre-core": "workspace:^",
+    "@ungap/structured-clone": "^1.3.0",
+    "@valor/nativescript-websockets": "^2.0.3",
+    "buffer": "^6.0.3",
+    "event-target-polyfill": "^0.0.4",
+    "readable-stream": "^4.7.0",
+    "util": "^0.12.5",
+    "web-streams-polyfill": "^4.1.0"
+  },
+  "devDependencies": {
+    "@nativescript/android": "~8.9.0",
+    "@nativescript/types": "~8.9.0",
+    "@nativescript/webpack": "~5.0.35",
+    "@types/readable-stream": "^4",
+    "esbuild-loader": "^4.3.0",
+    "rimraf": "^6.1.2",
+    "typescript": "~5.9.3"
+  },
+  "installConfig": {
+    "hoistingLimits": "workspaces"
+  }
+}

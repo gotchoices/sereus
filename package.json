@@ -13,6 +13,7 @@
     "@optimystic/db-core": "link:../optimystic/packages/db-core",
     "@optimystic/demo": "link:../optimystic/packages/demo",
     "@optimystic/db-p2p": "link:../optimystic/packages/db-p2p",
+    "@optimystic/db-p2p-storage-ns": "link:../optimystic/packages/db-p2p-storage-ns",
     "@optimystic/db-p2p-storage-rn": "link:../optimystic/packages/db-p2p-storage-rn",
     "@optimystic/db-p2p-storage-web": "link:../optimystic/packages/db-p2p-storage-web",
     "@quereus/quereus": "link:../quereus/packages/quereus"

@@ -1,0 +1,19 @@
+/*
+Minimal app styles. The real UI / theme lands in reference-app-ns-chat — this
+package only needs a bootable shell to drive the solo runtime smoke.
+*/
+Page {
+	font-size: 16;
+}
+
+Button {
+	margin: 8 0;
+	padding: 12;
+	background-color: #1a1a2e;
+	color: #ffffff;
+	border-radius: 6;
+}
+
+Label {
+	color: #1a1a2e;
+}
