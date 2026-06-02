@@ -26,7 +26,7 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { multiaddr } from '@multiformats/multiaddr';
 import { TestCadreNetwork } from '../harness/index.js';
-import { SeedBootstrapService, SEED_PROTOCOL } from '@serfab/cadre-core';
+import { SeedBootstrapService, SEED_PROTOCOL, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { TestParty } from '../harness/types.js';
 import type { Libp2p, Stream, Connection } from '@libp2p/interface';
 
@@ -372,9 +372,17 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		const senderService = createSeedService(senderParty);
 		await registerAuthorityPeer(senderService, senderParty);
 
-		// Receiver party (has its own SeedBootstrapService with registered handler)
+		// Receiver party (has its own SeedBootstrapService with registered handler).
+		// The receiver is cold-start with respect to the *sender's* authority key,
+		// so it must pin that key out-of-band (as a CadreInvite would) for the
+		// DB-anchored default policy not to reject the delivered seed.
 		const receiverParty = await network.createParty({ name: 'auth-e2e-receiver' });
-		const receiverService = createSeedService(receiverParty);
+		const receiverService = new SeedBootstrapService({
+			partyId: receiverParty.partyId,
+			trustPolicy: pinnedKeyTrustPolicy([senderParty.authorityPublicKey]),
+		});
+		receiverService.initialize(receiverParty.authorityNode.libp2p, receiverParty.controlDatabase);
+		// Register the receiver's own handler + peer entry.
 		await registerAuthorityPeer(receiverService, receiverParty);
 
 		// Authorize receiver's peer on sender side so the seed includes it

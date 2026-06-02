@@ -31,6 +31,10 @@ import type {
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
+import {
+  type SeedTrustPolicy,
+  dbAnchoredTrustPolicy,
+} from './seed-trust-policy.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -67,6 +71,28 @@ export function decodeLengthPrefixedFrame(data: Uint8Array, maxLength = MAX_SEED
 }
 
 /**
+ * Derive the base64url ed25519 public key embedded in an Ed25519 libp2p PeerId.
+ *
+ * An Ed25519 PeerId is an identity multihash of the public key, so
+ * `peerIdFromString(id).publicKey.raw` is the 32-byte ed25519 key whose
+ * base64url form matches the `AuthorityKey.Key` representation (and
+ * `authorityKeyFromLibp2p().publicKeyB64`). Returns null for a non-Ed25519
+ * id, a missing embedded key, or any parse failure — callers treat null as
+ * "not an authority" rather than throwing.
+ */
+export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
+  try {
+    const parsed = peerIdFromString(peerId);
+    if (parsed.type !== 'Ed25519' || !parsed.publicKey) {
+      return null;
+    }
+    return uint8ArrayToString(parsed.publicKey.raw, 'base64url');
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Canonical byte representation of the authenticated seed fields.
  *
  * Routes both the creator (`createSeed`) and the verifier
@@ -99,6 +125,14 @@ export interface SeedBootstrapConfig {
    * DDNS hostname and externally-mapped port.
    */
   inviteAddressResolver?: () => Promise<string[]>;
+  /**
+   * Trust anchor for incoming seeds. Decides whether a signature-verified
+   * `signerKey` should be trusted, against the receiver's known authority
+   * keys (NOT the seed body). Defaults to `dbAnchoredTrustPolicy()`, which
+   * rejects any signer not already in the `AuthorityKey` table. An enrollment
+   * caller can pass a per-seed override to `applySeed` instead.
+   */
+  trustPolicy?: SeedTrustPolicy;
 }
 
 /**
@@ -125,10 +159,12 @@ export class SeedBootstrapService {
   private libp2pNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
   private readonly authorityPublicKey: string | null;
+  private readonly trustPolicy: SeedTrustPolicy;
   private eventCallbacks: SeedEventCallbacks = {};
 
   constructor(config: SeedBootstrapConfig) {
     this.config = config;
+    this.trustPolicy = config.trustPolicy ?? dbAnchoredTrustPolicy();
 
     // Derive public key from private key if not provided
     if (config.authorityPrivateKey && !config.authorityPublicKey) {
@@ -294,9 +330,23 @@ export class SeedBootstrapService {
 
   /**
    * Apply a seed to populate the peer cache and enable connections.
-   * Validates the seed signature before applying.
+   *
+   * Validates the seed signature, then evaluates a trust anchor for the
+   * `signerKey` that does NOT come from the seed body: the receiver's
+   * `AuthorityKey` table (DB-anchored), optionally augmented by pinned keys or
+   * TOFU via the configured/overriding `SeedTrustPolicy`. A forged
+   * self-asserting seed — one that merely lists its own signer as an authority
+   * peer — no longer passes.
+   *
+   * @param seed - The seed to apply (already transport-decoded).
+   * @param options.trustPolicy - Per-call policy override (e.g. a
+   *   `pinnedKeyTrustPolicy` derived from a `CadreInvite`) used instead of the
+   *   service-configured default for this seed only.
    */
-  async applySeed(seed: ControlNetworkSeed): Promise<ApplySeedResult> {
+  async applySeed(
+    seed: ControlNetworkSeed,
+    options?: { trustPolicy?: SeedTrustPolicy }
+  ): Promise<ApplySeedResult> {
     if (!this.libp2pNode) {
       return { success: false, peersAdded: 0, error: 'Service not initialized' };
     }
@@ -308,12 +358,24 @@ export class SeedBootstrapService {
       return { success: false, peersAdded: 0, error: 'Invalid seed signature' };
     }
 
-    // Verify the signer's key matches an authority peer's public key
-    const signerIsAuthority = seed.peers.some(
-      p => p.isAuthority && p.publicKey === seed.signerKey
-    );
-    if (!signerIsAuthority) {
-      return { success: false, peersAdded: 0, error: 'Signer key does not match any authority peer' };
+    // Evaluate the trust anchor for the signer key. The known-authority set is
+    // sourced from the receiver's control DB, never from the seed itself; a
+    // cold-start node with no DB and no override therefore sees an empty set.
+    const knownAuthorityKeys = this.controlDatabase
+      ? await this.controlDatabase.getAuthorityKeys()
+      : new Set<string>();
+    const policy = options?.trustPolicy ?? this.trustPolicy;
+    const decision = await policy.evaluate({
+      partyId: seed.partyId,
+      signerKey: seed.signerKey,
+      knownAuthorityKeys,
+    });
+    if (!decision.trusted) {
+      return {
+        success: false,
+        peersAdded: 0,
+        error: decision.reason ?? 'Signer key not trusted by trust policy',
+      };
     }
 
     let peersAdded = 0;
@@ -485,34 +547,39 @@ export class SeedBootstrapService {
 
   /**
    * Query peers from the control database.
+   *
+   * Authority identity is sourced from the `AuthorityKey` table, not from the
+   * transport peer ID. An Ed25519 libp2p PeerId embeds its public key (identity
+   * multihash), so each peer's ed25519 key is derivable from its `PeerId`; a
+   * peer is an authority iff that derived key is in the `AuthorityKey` set.
+   * This makes any authority node markable — not just the local one — and ties
+   * `isAuthority` to the control table rather than to `peerId === self`.
    */
   private async queryPeers(): Promise<SeedPeer[]> {
     if (!this.controlDatabase) {
       return [];
     }
 
+    const authorityKeys = await this.controlDatabase.getAuthorityKeys();
     const db = this.controlDatabase.getDatabase();
     const peers: SeedPeer[] = [];
-
-    // First, get all authority keys
-    const authorityKeys = new Set<string>();
-    for await (const row of db.eval('select Key from CadreControl.AuthorityKey')) {
-      authorityKeys.add(row.Key as string);
-    }
 
     // Query CadrePeer table
     for await (const row of db.eval('select PeerId, Multiaddr from CadreControl.CadrePeer')) {
       const peerId = row.PeerId as string;
       const multiaddr = row.Multiaddr as string | null;
 
-      // Mark peer as authority if it matches the service's own peer ID
-      const isAuthority = peerId === this.libp2pNode?.peerId.toString();
+      // Derive the peer's ed25519 key from its PeerId; a non-Ed25519 peer or an
+      // unparsable id yields null and is treated as a non-authority rather than
+      // failing the whole seed creation.
+      const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
+      const isAuthority = pubKeyB64 !== null && authorityKeys.has(pubKeyB64);
 
       peers.push({
         peerId,
         multiaddrs: multiaddr ? multiaddr.split(',') : [],
         isAuthority,
-        ...(isAuthority && this.authorityPublicKey ? { publicKey: this.authorityPublicKey } : {}),
+        ...(isAuthority ? { publicKey: pubKeyB64 } : {}),
       });
     }
 
@@ -702,10 +769,17 @@ export class SeedBootstrapService {
       authorityAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
     }
 
+    // Carry the cadre's authority keys out-of-band so a cold-start invitee can
+    // pin the trusted authority set before applying any seed.
+    const authorityKeys = this.controlDatabase
+      ? Array.from(await this.controlDatabase.getAuthorityKeys())
+      : [];
+
     const now = Date.now();
     const invite: CadreInvite = {
       partyId: this.config.partyId,
       authorityAddrs,
+      authorityKeys: authorityKeys.length ? authorityKeys : undefined,
       token,
       createdAt: now,
       expiresAt: expiresIn ? now + expiresIn : undefined,
@@ -713,7 +787,7 @@ export class SeedBootstrapService {
 
     const encodedInvite = this.encodeInvite(invite);
 
-    log('Invite created with %d authority addresses', authorityAddrs.length);
+    log('Invite created with %d authority addresses, %d authority keys', authorityAddrs.length, authorityKeys.length);
 
     return { invite, encodedInvite };
   }

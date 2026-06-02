@@ -67,9 +67,20 @@ export {
 export {
   SeedBootstrapService,
   SEED_PROTOCOL,
+  ed25519PublicKeyB64FromPeerId,
   type SeedBootstrapConfig,
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
+
+// Seed trust policy (trust anchor for incoming seeds)
+export {
+  dbAnchoredTrustPolicy,
+  pinnedKeyTrustPolicy,
+  tofuTrustPolicy,
+  type SeedTrustPolicy,
+  type SeedTrustContext,
+  type SeedTrustDecision
+} from './seed-trust-policy.js';
 
 // Schema Verification
 export {

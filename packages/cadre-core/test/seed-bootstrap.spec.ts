@@ -6,8 +6,14 @@ import {
   SeedBootstrapService,
   SEED_PROTOCOL,
   canonicalSeedPayload,
-  decodeLengthPrefixedFrame
+  decodeLengthPrefixedFrame,
+  ed25519PublicKeyB64FromPeerId
 } from '../src/seed-bootstrap.js';
+import {
+  dbAnchoredTrustPolicy,
+  pinnedKeyTrustPolicy,
+  tofuTrustPolicy
+} from '../src/seed-trust-policy.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type {
   ControlNetworkSeed,
@@ -469,7 +475,7 @@ describe('Seed Types', () => {
   });
 });
 
-describe('Seed authority validation', () => {
+describe('Seed trust policy', () => {
 	let authorityPrivateKey: string;
 	let authorityPublicKey: string;
 	let attackerPrivateKey: string;
@@ -511,83 +517,154 @@ describe('Seed authority validation', () => {
 		};
 	}
 
-	it('should accept seed signed by authority key with matching publicKey', async () => {
+	/** Inject a fake control DB exposing only the authority-key set used by applySeed. */
+	function withKnownAuthorityKeys(service: SeedBootstrapService, keys: string[]) {
+		(service as any).controlDatabase = {
+			getAuthorityKeys: async () => new Set(keys),
+		};
+	}
+
+	it('rejects a forged self-asserting seed against an empty AuthorityKey table (default policy)', async () => {
+		// The regression: attacker signs a seed that names its own key as an
+		// authority peer. Signature is valid, but the receiver has no anchor.
 		const service = new SeedBootstrapService({ partyId });
 		(service as any).libp2pNode = createMockLibp2p();
+		// No control DB → empty known-authority set, default dbAnchoredTrustPolicy.
 
 		const peers: SeedPeer[] = [
 			{
-				peerId: '12D3KooWAuthority',
+				peerId: '12D3KooWAttacker',
 				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
 				isAuthority: true,
-				publicKey: authorityPublicKey,
+				publicKey: attackerPublicKey,
 			},
 		];
 
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, peers);
+		const forged = createSignedSeed(attackerPrivateKey, attackerPublicKey, peers);
+		const result = await service.applySeed(forged);
+
+		expect(result.success).toBe(false);
+		expect(result.error).toMatch(/trust policy/i);
+	});
+
+	it('DB-anchored accept: signer key present in the AuthorityKey table is trusted', async () => {
+		const service = new SeedBootstrapService({ partyId });
+		(service as any).libp2pNode = createMockLibp2p();
+		withKnownAuthorityKeys(service, [authorityPublicKey]);
+
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
 		const result = await service.applySeed(seed);
 
 		expect(result.success).toBe(true);
 	});
 
-	it('should reject seed signed by non-authority key', async () => {
+	it('pinned-key accept: signer supplied via pinnedKeyTrustPolicy is trusted with an empty DB', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		(service as any).libp2pNode = createMockLibp2p();
+		// Empty DB; pin the authority key as if carried by a CadreInvite.
 
-		const peers: SeedPeer[] = [
-			{
-				peerId: '12D3KooWAuthority',
-				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
-				isAuthority: true,
-				publicKey: authorityPublicKey,  // Real authority's key
-			},
-		];
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const result = await service.applySeed(seed, {
+			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+		});
 
-		// Attacker signs with their own key — signerKey won't match authority publicKey
-		const forgedSeed = createSignedSeed(attackerPrivateKey, attackerPublicKey, peers);
-		const result = await service.applySeed(forgedSeed);
-
-		expect(result.success).toBe(false);
-		expect(result.error).toBe('Signer key does not match any authority peer');
+		expect(result.success).toBe(true);
 	});
 
-	it('should reject seed when authority peer has no publicKey', async () => {
+	it('pinned-key reject: a signer not in the pinned set is rejected', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		(service as any).libp2pNode = createMockLibp2p();
 
-		const peers: SeedPeer[] = [
-			{
-				peerId: '12D3KooWAuthority',
-				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
-				isAuthority: true,
-				// No publicKey — can't verify signerKey
-			},
-		];
-
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, peers);
-		const result = await service.applySeed(seed);
+		const seed = createSignedSeed(attackerPrivateKey, attackerPublicKey, []);
+		const result = await service.applySeed(seed, {
+			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+		});
 
 		expect(result.success).toBe(false);
-		expect(result.error).toBe('Signer key does not match any authority peer');
+		expect(result.error).toMatch(/trust policy/i);
 	});
 
-	it('should reject seed with no authority peers', async () => {
+	it('TOFU: confirm=false rejects, confirm=true accepts, and confirm is called once with the unknown key', async () => {
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+
+		// confirm returns false → rejected
+		const declineCalls: string[] = [];
+		const declineService = new SeedBootstrapService({ partyId });
+		(declineService as any).libp2pNode = createMockLibp2p();
+		const declined = await declineService.applySeed(seed, {
+			trustPolicy: tofuTrustPolicy(async (ctx) => {
+				declineCalls.push(ctx.signerKey);
+				return false;
+			}),
+		});
+		expect(declined.success).toBe(false);
+		expect(declineCalls).toEqual([authorityPublicKey]);
+
+		// confirm returns true → accepted, invoked exactly once
+		const acceptCalls: string[] = [];
+		const acceptService = new SeedBootstrapService({ partyId });
+		(acceptService as any).libp2pNode = createMockLibp2p();
+		const accepted = await acceptService.applySeed(seed, {
+			trustPolicy: tofuTrustPolicy(async (ctx) => {
+				acceptCalls.push(ctx.signerKey);
+				return true;
+			}),
+		});
+		expect(accepted.success).toBe(true);
+		expect(acceptCalls).toEqual([authorityPublicKey]);
+	});
+
+	it('TOFU does not consult confirm when the key is already DB-anchored', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		(service as any).libp2pNode = createMockLibp2p();
+		withKnownAuthorityKeys(service, [authorityPublicKey]);
 
-		const peers: SeedPeer[] = [
-			{
-				peerId: '12D3KooWRegularPeer',
-				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
-				isAuthority: false,
-			},
-		];
+		let confirmCalls = 0;
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const result = await service.applySeed(seed, {
+			trustPolicy: tofuTrustPolicy(async () => {
+				confirmCalls++;
+				return false;
+			}),
+		});
 
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, peers);
-		const result = await service.applySeed(seed);
+		expect(result.success).toBe(true);
+		expect(confirmCalls).toBe(0);
+	});
+
+	it('signature is still required even with a valid trust anchor', async () => {
+		const service = new SeedBootstrapService({ partyId });
+		(service as any).libp2pNode = createMockLibp2p();
+		withKnownAuthorityKeys(service, [authorityPublicKey]);
+
+		// Valid signer key, but a corrupted signature.
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const tampered: ControlNetworkSeed = { ...seed, signature: 'not-a-valid-signature' };
+		const result = await service.applySeed(tampered);
 
 		expect(result.success).toBe(false);
-		expect(result.error).toBe('Signer key does not match any authority peer');
+		expect(result.error).toBe('Invalid seed signature');
+	});
+
+	it('the configured default policy is used when no per-call override is given', async () => {
+		// dbAnchoredTrustPolicy is the documented default; assert behaviourally
+		// by configuring an explicit pinned default and omitting the override.
+		const service = new SeedBootstrapService({
+			partyId,
+			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+		});
+		(service as any).libp2pNode = createMockLibp2p();
+
+		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const result = await service.applySeed(seed);
+
+		expect(result.success).toBe(true);
+		// Sanity: the same default rejects a different signer.
+		expect(dbAnchoredTrustPolicy().evaluate({
+			partyId,
+			signerKey: attackerPublicKey,
+			knownAuthorityKeys: new Set(),
+		})).toMatchObject({ trusted: false });
 	});
 
 	it('SeedPeer should support publicKey field for authority peers', () => {
@@ -599,6 +676,91 @@ describe('Seed authority validation', () => {
 		};
 
 		expect(peer.publicKey).toBe(authorityPublicKey);
+	});
+});
+
+describe('queryPeers — authority identity from the AuthorityKey table', () => {
+	/** Build a fake control DB exposing the two surfaces queryPeers consumes. */
+	function makeMockControlDb(
+		authorityKeys: string[],
+		cadrePeers: Array<{ PeerId: string; Multiaddr: string | null }>
+	) {
+		return {
+			getAuthorityKeys: async () => new Set(authorityKeys),
+			getDatabase: () => ({
+				// eslint-disable-next-line require-yield
+				eval: async function* (sql: string) {
+					if (sql.includes('CadrePeer')) {
+						for (const p of cadrePeers) yield p;
+					}
+				},
+			}),
+		};
+	}
+
+	async function peerIdFor(): Promise<{ id: string; keyB64: string }> {
+		const key = await generateKeyPair('Ed25519');
+		const id = peerIdFromPrivateKey(key).toString();
+		const keyB64 = ed25519PublicKeyB64FromPeerId(id);
+		expect(keyB64).not.toBeNull();
+		return { id, keyB64: keyB64 as string };
+	}
+
+	it('derives the same ed25519 key from a PeerId as the libp2p public key bytes', async () => {
+		const { id, keyB64 } = await peerIdFor();
+		// Round-trip stability: parsing the string twice yields the same key.
+		expect(ed25519PublicKeyB64FromPeerId(id)).toBe(keyB64);
+	});
+
+	it('marks two distinct authority peers, even though only one could match a local peerId', async () => {
+		const a = await peerIdFor();
+		const b = await peerIdFor();
+		const service = new SeedBootstrapService({ partyId: 'p' });
+		(service as any).libp2pNode = { peerId: { toString: () => a.id } };
+		(service as any).controlDatabase = makeMockControlDb(
+			[a.keyB64, b.keyB64],
+			[
+				{ PeerId: a.id, Multiaddr: '/ip4/1.1.1.1/tcp/4001' },
+				{ PeerId: b.id, Multiaddr: '/ip4/2.2.2.2/tcp/4001' },
+			]
+		);
+
+		const peers: SeedPeer[] = await (service as any).queryPeers();
+		expect(peers).toHaveLength(2);
+		const byId = new Map(peers.map((p) => [p.peerId, p]));
+		expect(byId.get(a.id)).toMatchObject({ isAuthority: true, publicKey: a.keyB64 });
+		expect(byId.get(b.id)).toMatchObject({ isAuthority: true, publicKey: b.keyB64 });
+	});
+
+	it('marks a peer whose key is absent from AuthorityKey as non-authority with no publicKey', async () => {
+		const authority = await peerIdFor();
+		const plain = await peerIdFor();
+		const service = new SeedBootstrapService({ partyId: 'p' });
+		(service as any).libp2pNode = { peerId: { toString: () => authority.id } };
+		(service as any).controlDatabase = makeMockControlDb(
+			[authority.keyB64], // plain's key is NOT present
+			[{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]
+		);
+
+		const peers: SeedPeer[] = await (service as any).queryPeers();
+		expect(peers).toHaveLength(1);
+		expect(peers[0].isAuthority).toBe(false);
+		expect(peers[0].publicKey).toBeUndefined();
+	});
+
+	it('treats a non-Ed25519 / unparsable peerId as non-authority without throwing', async () => {
+		const service = new SeedBootstrapService({ partyId: 'p' });
+		(service as any).libp2pNode = { peerId: { toString: () => 'self' } };
+		(service as any).controlDatabase = makeMockControlDb(
+			['some-authority-key'],
+			[{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]
+		);
+
+		const peers: SeedPeer[] = await (service as any).queryPeers();
+		expect(peers).toHaveLength(1);
+		expect(peers[0].isAuthority).toBe(false);
+		expect(peers[0].publicKey).toBeUndefined();
+		expect(peers[0].multiaddrs).toEqual([]);
 	});
 });
 
@@ -814,6 +976,31 @@ describe('SeedBootstrapService Helper Methods', () => {
 
       const { invite } = await service.createInvite();
       expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+    });
+
+    it('carries the AuthorityKey table as invite.authorityKeys', async () => {
+      const service = new SeedBootstrapService({ partyId });
+      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      (service as any).controlDatabase = {
+        getAuthorityKeys: async () => new Set([authorityPublicKey, 'second-authority-key']),
+      };
+
+      const { invite } = await service.createInvite();
+      expect(invite.authorityKeys).toBeDefined();
+      expect(new Set(invite.authorityKeys)).toEqual(
+        new Set([authorityPublicKey, 'second-authority-key'])
+      );
+    });
+
+    it('omits authorityKeys when the AuthorityKey table is empty', async () => {
+      const service = new SeedBootstrapService({ partyId });
+      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      (service as any).controlDatabase = {
+        getAuthorityKeys: async () => new Set<string>(),
+      };
+
+      const { invite } = await service.createInvite();
+      expect(invite.authorityKeys).toBeUndefined();
     });
   });
 });

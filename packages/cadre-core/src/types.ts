@@ -534,6 +534,13 @@ export interface CadreInvite {
   partyId: string;
   /** Multiaddrs to dial the authority */
   authorityAddrs: string[];
+  /**
+   * Authority ed25519 public keys (base64url) of the cadre, carried out-of-band
+   * so a cold-start invitee can pin the trusted authority set before applying
+   * any seed (the seed itself cannot vouch for its own signer). Populated by
+   * `createInvite` from the issuer's `AuthorityKey` table.
+   */
+  authorityKeys?: string[];
   /** Optional invite token for validation */
   token?: string;
   /** Timestamp when invite was created */

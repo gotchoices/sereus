@@ -331,6 +331,23 @@ export class ControlDatabase {
   }
 
   /**
+   * Collect every authority key (`CadreControl.AuthorityKey.Key`) as a set.
+   *
+   * This is the steady-state trust anchor for seeds: a seed's signer key is
+   * trusted only if it is already enrolled here (see `SeedTrustPolicy`). It is
+   * also the authority-identity source for `queryPeers`, decoupling authority
+   * status from the libp2p transport peer ID.
+   */
+  async getAuthorityKeys(): Promise<Set<string>> {
+    this.ensureInitialized();
+    const keys = new Set<string>();
+    for await (const row of this.db!.eval('select Key from CadreControl.AuthorityKey')) {
+      keys.add(row.Key as string);
+    }
+    return keys;
+  }
+
+  /**
    * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
    */
   async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {

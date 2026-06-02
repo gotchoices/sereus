@@ -25,9 +25,12 @@ describe('CadreNode invite-address push model', () => {
       unhandle: async () => {},
     };
 
-    // Stub the internals normally set during start().
+    // Stub the internals normally set during start(). createInvite reads the
+    // AuthorityKey table to populate invite.authorityKeys, so expose that.
     (node as unknown as { controlNode: unknown }).controlNode = mockLibp2p;
-    (node as unknown as { controlDatabase: ControlDatabase }).controlDatabase = {} as ControlDatabase;
+    (node as unknown as { controlDatabase: ControlDatabase }).controlDatabase = {
+      getAuthorityKeys: async () => new Set<string>(),
+    } as unknown as ControlDatabase;
 
     return node;
   }

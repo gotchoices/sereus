@@ -292,8 +292,12 @@ interface SeedAckMessage {
 **Validation**:
 - The `signature` is an ed25519 signature over `digest(canonicalJson({partyId, peers, transactions}), 'sha256')` — a canonical (recursively key-sorted, `undefined`-dropped, whitespace-free) serialization shared with cadre-host's update-manifest signing. Both signer and verifier route through the same `canonicalSeedPayload` builder so the signed bytes are independent of key insertion order and optional-field presence (`transactions` is folded in identically whether absent or present)
 - New node verifies `signature` using `signerKey` (ed25519)
-- `signerKey` must match the `publicKey` of a peer with `isAuthority: true` in the seed's peer list — this ensures only actual authority holders can produce valid seeds
-- TODO: enforce a trust policy for `signerKey` (e.g. pinned authority keys per party, or TOFU with explicit user confirmation)
+- `signerKey` must clear a **trust anchor that does not come from the seed body** — a signature only proves the seed is internally consistent, and both `signerKey` and the seed's own `isAuthority` peer flags are attacker-supplied, so a forged self-asserting seed must not be able to vouch for itself. The receiver evaluates a `SeedTrustPolicy` against its *own* known authority keys (`CadreControl.AuthorityKey`), in priority order:
+  - **DB-anchored** (default): the signer is trusted iff its key is already in the receiver's `AuthorityKey` table (steady state — the node is enrolled / has synced control state).
+  - **Pinned out-of-band**: authority keys delivered outside the seed — carried by `CadreInvite.authorityKeys`, or pinned by operator config — let a cold-start invitee accept its first seed.
+  - **TOFU (opt-in)**: an interactive confirmation callback invoked on first sight of an unknown signer key; off by default.
+  - **Secure default**: a cold-start node with an empty `AuthorityKey` table, no pinned keys, and no TOFU confirmation **rejects** the seed.
+- Authority identity is sourced from the `AuthorityKey` table, **not** from the libp2p `peerId`. An Ed25519 PeerId embeds its public key, so each peer's ed25519 key is derived from its `PeerId` and a peer is marked `isAuthority` iff that derived key is in `AuthorityKey` — making multi-authority cadres representable and decoupling authority status from the transport identity.
 - For additional security, seeds can include `transactions[]` with signed Optimystic entries
 
 **Alternative Delivery Mechanisms**:

@@ -29,6 +29,7 @@ import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase } from './control-database.js';
 import { SeedBootstrapService } from './seed-bootstrap.js';
+import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
@@ -829,9 +830,17 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Apply a seed to populate the peer cache and enable connections.
-   * Validates the seed signature before applying.
+   *
+   * Validates the seed signature, then evaluates a trust anchor for the signer
+   * key (see `SeedTrustPolicy`). An enrollment caller can pass a per-seed
+   * `trustPolicy` override — e.g. a `pinnedKeyTrustPolicy` built from a
+   * `CadreInvite.authorityKeys` — so a cold-start node can accept its first
+   * seed without reconfiguring the service.
    */
-  async applySeed(seed: ControlNetworkSeed): Promise<ApplySeedResult> {
+  async applySeed(
+    seed: ControlNetworkSeed,
+    options?: { trustPolicy?: SeedTrustPolicy }
+  ): Promise<ApplySeedResult> {
     if (!this.seedBootstrapService) {
       // Create a temporary service for applying seeds (doesn't need authority key)
       const tempService = new SeedBootstrapService({
@@ -840,9 +849,9 @@ export class CadreNode implements SAppIdLookup {
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase);
       }
-      return await tempService.applySeed(seed);
+      return await tempService.applySeed(seed, options);
     }
-    return await this.seedBootstrapService.applySeed(seed);
+    return await this.seedBootstrapService.applySeed(seed, options);
   }
 
   /**

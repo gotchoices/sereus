@@ -17,7 +17,7 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { TestCadreNetwork, waitUntil } from '../harness/index.js';
-import { SeedBootstrapService } from '@serfab/cadre-core';
+import { SeedBootstrapService, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { TestParty, TestCadreNode } from '../harness/types.js';
 import type { ControlNetworkSeed } from '@serfab/cadre-core';
 
@@ -122,8 +122,12 @@ describe('E2E Enrollment', () => {
 		// Validate seed signature before applying
 		expect(authService.validateSeedSignature(seed)).toBe(true);
 
-		// Drone applies the seed (validates signature, populates peer store, dials authority)
-		const result = await droneService.applySeed(seed);
+		// Drone applies the seed. It is cold-start (empty AuthorityKey table), so it
+		// pins the authority key out-of-band (as a CadreInvite would carry it);
+		// otherwise the DB-anchored default policy would reject the seed.
+		const result = await droneService.applySeed(seed, {
+			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+		});
 		expect(result.success).toBe(true);
 		expect(result.peersAdded).toBeGreaterThanOrEqual(1);
 
@@ -174,8 +178,10 @@ describe('E2E Enrollment', () => {
 		const isValid = authService.validateSeedSignature(decoded);
 		expect(isValid).toBe(true);
 
-		// Drone applies the decoded seed
-		const applyResult = await droneService.applySeed(decoded);
+		// Drone applies the decoded seed (cold-start → pin the authority key).
+		const applyResult = await droneService.applySeed(decoded, {
+			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+		});
 		expect(applyResult.success).toBe(true);
 		expect(applyResult.peersAdded).toBeGreaterThanOrEqual(1);
 
@@ -263,7 +269,9 @@ describe('E2E Enrollment', () => {
 			multiaddrs: drone1.authorityNode.multiaddrs,
 		});
 		const seed1 = await authService.createSeed();
-		const result1 = await drone1Service.applySeed(seed1);
+		const result1 = await drone1Service.applySeed(seed1, {
+			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+		});
 		expect(result1.success).toBe(true);
 
 		// Enroll drone-2: authorize, create seed (now includes drone-1), apply
@@ -272,7 +280,9 @@ describe('E2E Enrollment', () => {
 			multiaddrs: drone2.authorityNode.multiaddrs,
 		});
 		const seed2 = await authService.createSeed();
-		const result2 = await drone2Service.applySeed(seed2);
+		const result2 = await drone2Service.applySeed(seed2, {
+			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+		});
 		expect(result2.success).toBe(true);
 
 		// seed2 should reflect all 3 peers (authority + drone1 + drone2)
@@ -322,7 +332,11 @@ describe('E2E Enrollment', () => {
 			expect(result.error).toContain('Invalid seed signature');
 		});
 
-		it('should reject seed with no authority peer matching signer', async () => {
+		it('should reject a valid self-asserting seed at a cold-start node with no trust anchor', async () => {
+			// Regression: a signature-valid seed signed by the authority must NOT be
+			// accepted by a cold-start node (empty AuthorityKey table, no pinned keys
+			// and the default DB-anchored policy). A seed can no longer vouch for its
+			// own signer.
 			const authority = await network.createParty({ name: 'auth-noauth' });
 			const drone = await network.createParty({ name: 'drone-noauth' });
 
@@ -331,22 +345,20 @@ describe('E2E Enrollment', () => {
 
 			await registerAuthorityPeer(authService, authority);
 
+			// A fully valid, untampered seed — its signature verifies and it names the
+			// authority as an authority peer with a matching publicKey.
 			const seed = await authService.createSeed();
+			expect(authService.validateSeedSignature(seed)).toBe(true);
 
-			// Strip authority info from all peers — signature covers peers, so
-			// modifying them invalidates it. Either path (bad sig or missing authority)
-			// results in rejection.
-			const strippedSeed: ControlNetworkSeed = {
-				...seed,
-				peers: seed.peers.map(p => ({
-					...p,
-					isAuthority: false,
-					publicKey: undefined,
-				})),
-			};
-
-			const result = await droneService.applySeed(strippedSeed);
+			const result = await droneService.applySeed(seed);
 			expect(result.success).toBe(false);
+			expect(result.error).toMatch(/trust policy/i);
+
+			// With the authority key pinned out-of-band, the same seed is accepted.
+			const pinned = await droneService.applySeed(seed, {
+				trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+			});
+			expect(pinned.success).toBe(true);
 		});
 
 		it('should reject expired invite via dialInvite', async () => {
