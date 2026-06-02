@@ -102,4 +102,34 @@ describe('ContainerService seed endpoint provisioning', () => {
     expect(result).toEqual({ success: false, error: 'Container does not have a seed endpoint' });
     expect(globalThis.fetch).not.toHaveBeenCalled();
   });
+
+  it('applySeed forwards while the container is still enrolling (cold-start flow)', async () => {
+    // docs/architecture.md Provider Flow steps 6-8 forward the seed during
+    // enrollment, before the node is fully running — the guard allows 'enrolling'.
+    const { service } = await makeService(pendingContainer({
+      status: 'enrolling',
+      seedEndpoint: 'http://localhost:8081/seed',
+    }));
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => jsonResponse({ success: true, peersAdded: 1 }));
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');
+
+    expect(result).toEqual({ success: true, peersAdded: 1 });
+    expect(String(fetchMock.mock.calls[0]?.[0])).toBe('http://localhost:8081/seed');
+  });
+
+  it('applySeed surfaces a non-OK node response as an error', async () => {
+    const { service } = await makeService(pendingContainer({
+      status: 'running',
+      seedEndpoint: 'http://localhost:8081/seed',
+    }));
+    globalThis.fetch = vi.fn(async () =>
+      jsonResponse({ error: 'bad seed' }, false)) as typeof globalThis.fetch;
+
+    const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');
+
+    expect(result.success).toBe(false);
+    expect(result.error).toMatch(/^Seed endpoint returned 500:/);
+  });
 });
