@@ -1,0 +1,7 @@
+{
+  "iceServers": [
+    { "urls": ["stun:stun.sereus.org:3478"] }
+  ],
+  "turnPolicy": "off",
+  "generatedAt": "2026-06-02T00:00:00Z"
+}

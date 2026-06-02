@@ -6,6 +6,7 @@ These scripts are meant for ops validation of:
 - relay nodes
 - bootstrap nodes
 - combined bootstrap-relay nodes
+- STUN servers (coturn) — see "STUN check" below
 
 ### Usage
 
@@ -34,6 +35,21 @@ yarn workspace @serfab/ops-test check-node -- --target /ip4/203.0.113.10/tcp/400
 - identify succeeds (protocols are learned)
 - ping succeeds (RTT reported)
 - optionally: DHT query succeeds (`dht.findPeer(<remotePeerId>)`)
+
+### STUN check (coturn)
+Validate a deployed **STUN** server (`ops/docker/coturn/`) by sending a STUN
+Binding request and printing the mapped (server-reflexive) address it sees you
+coming from — the address-discovery step a WebRTC peer uses to attempt a **direct**
+connection.
+
+```bash
+yarn workspace @serfab/ops-test check-stun -- --host stun.sereus.org --port 3478
+```
+
+> Requires a **deployed, publicly reachable** STUN server — there is no local STUN
+> server to bind against, so this is **not** runnable in CI / by agents. Run it
+> manually after deploying coturn. A timeout almost always means UDP `3478` isn't
+> reachable (firewall / security group) or the server isn't up.
 
 ### Advanced: NAT-to-NAT test pair (bootstrap + relay)
 Goal: validate a real-world scenario where **both devices are behind NAT/firewalls**:

@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check-node": "node check-node.mjs",
+    "check-stun": "node check-stun.mjs",
     "pair:listen": "node relay-bootstrap-pair/listener.mjs",
     "pair:dial": "node relay-bootstrap-pair/dialer.mjs"
   },

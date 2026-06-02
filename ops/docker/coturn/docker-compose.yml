@@ -1,0 +1,55 @@
+services:
+  coturn:
+    # NOTE: distinct upstream image — NOT the sereus-libp2p-infra:local image the
+    # relay/bootstrap services build. coturn provides STUN/TURN (ICE assistance),
+    # which is unrelated to libp2p circuit relay.
+    image: coturn/coturn:4.6
+    container_name: sereus_coturn
+    # Force bash so a missing +x bit on the bind-mounted script is harmless.
+    entrypoint: ["/bin/bash", "/opt/sereus/entrypoint.sh"]
+    environment:
+      - LISTENING_PORT=${LISTENING_PORT:-3478}
+      - HOST_BIND_IP=${HOST_BIND_IP:-0.0.0.0}
+      - STUN_PUBLIC_HOST=${STUN_PUBLIC_HOST:-}
+      - EXTERNAL_IP=${EXTERNAL_IP:-}
+      - TURN_ENABLED=${TURN_ENABLED:-false}
+      - TURN_SECRET=${TURN_SECRET:-}
+      - TURN_REALM=${TURN_REALM:-}
+      - TLS_CERT=${TLS_CERT:-}
+      - TLS_KEY=${TLS_KEY:-}
+      - TLS_LISTENING_PORT=${TLS_LISTENING_PORT:-5349}
+      - MIN_RELAY_PORT=${MIN_RELAY_PORT:-49160}
+      - MAX_RELAY_PORT=${MAX_RELAY_PORT:-49200}
+      - TOTAL_QUOTA=${TOTAL_QUOTA:-0}
+      - USER_QUOTA=${USER_QUOTA:-0}
+      - MAX_BPS=${MAX_BPS:-0}
+    volumes:
+      # Repo-resident template + entrypoint (paths resolve relative to this
+      # compose file). data/ holds the rendered active config + any TLS certs.
+      - "./entrypoint.sh:/opt/sereus/entrypoint.sh:ro"
+      - "./turnserver.conf:/opt/sereus/turnserver.conf:ro"
+      - "${HOST_DATA_DIR:-./data}:/data"
+    ports:
+      # STUN — the only on-by-default listener. UDP is the primary STUN path;
+      # TCP is a fallback for UDP-blocked networks.
+      - "${HOST_BIND_IP:-0.0.0.0}:${LISTENING_PORT:-3478}:3478/udp"
+      - "${HOST_BIND_IP:-0.0.0.0}:${LISTENING_PORT:-3478}:3478/tcp"
+      # --- OPTIONAL, manual: TLS (stuns:/turns:) — uncomment when you set
+      #     TLS_CERT/TLS_KEY in env.local. Inert without certs.
+      # - "${HOST_BIND_IP:-0.0.0.0}:${TLS_LISTENING_PORT:-5349}:5349/udp"
+      # - "${HOST_BIND_IP:-0.0.0.0}:${TLS_LISTENING_PORT:-5349}:5349/tcp"
+      # --- OPTIONAL, manual: TURN relay port range — uncomment ONLY when
+      #     TURN_ENABLED=true. Keep MIN/MAX_RELAY_PORT in sync with env.local.
+      # - "${HOST_BIND_IP:-0.0.0.0}:${MIN_RELAY_PORT:-49160}-${MAX_RELAY_PORT:-49200}:${MIN_RELAY_PORT:-49160}-${MAX_RELAY_PORT:-49200}/udp"
+    restart: unless-stopped
+
+# ── TURN-enabled deployments: prefer host networking ─────────────────────────
+# Docker bridge networking masquerades/relays poorly for TURN relay allocations
+# (coturn must advertise a reachable relay IP/port range). It can also obscure the
+# real client source IP, which breaks STUN reflexive-address discovery on some
+# setups. For a production TURN server on a Linux host, replace the `ports:` block
+# above with host networking so coturn binds the host stack directly:
+#
+#   network_mode: host
+#   # (remove the `ports:` list; coturn binds LISTENING_PORT + the relay range
+#   #  on the host directly. Linux only — not supported on Docker Desktop.)

@@ -11,6 +11,7 @@ Docker-related operational resources for Sereus.
 - `relay/`: Docker Compose resources for running a **libp2p relay (v2) node** (connectivity assist/NAT traversal).
 - `bootstrap-relay/`: A **combined bootstrap + relay node** (single process) for smaller deployments.
 - `sereus-node/`: A **headless Optimystic node** intended to be added to a user's **cadre** (personal infrastructure cluster).
+- `coturn/`: A **STUN server** (optionally TURN) for WebRTC ICE assistance — lets browser/mobile peers form **direct** connections instead of relaying. Distinct purpose and distinct upstream image (`coturn/coturn`), not the shared `sereus-libp2p-infra:local` image. See `../docs/ice-servers.md`.
 
 ### Recommended production layout (site directories)
 
@@ -20,6 +21,7 @@ Docker-related operational resources for Sereus.
   relay/                # site instance
   bootstrap/            # site instance
   bootstrap-relay/      # site instance
+  coturn/               # site instance (STUN/TURN — ICE assistance)
 ```
 
 Each site instance folder typically contains:
@@ -44,6 +46,7 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 ./sereus/ops/scripts/install docker relay
 ./sereus/ops/scripts/install docker bootstrap
 ./sereus/ops/scripts/install docker bootstrap-relay
+./sereus/ops/scripts/install docker coturn
 ```
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `svc`, and `data/`.
@@ -82,8 +85,12 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 - `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
 - `ANNOUNCE_ADDRS`: advanced; leave empty unless troubleshooting reachability
 
+`coturn` uses a different knob set (`STUN_PUBLIC_HOST`, `LISTENING_PORT=3478`, `TURN_ENABLED`, …) — see `coturn/env.example` and `coturn/README.md`.
+
 ### Image/build note
 `relay`, `bootstrap`, and `bootstrap-relay` all run the same image (`sereus-libp2p-infra:local`) built from `ops/docker/libp2p-infra/`.
+
+`coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.
@@ -98,6 +105,7 @@ See `../test/README.md`.
 - `quickstarts/relay.md`: run a **public relay**
 - `quickstarts/bootstrap.md`: run a **private bootstrap** peer (discovery seed)
 - `quickstarts/bootstrap-relay.md`: run a **combined** bootstrap + relay node
+- `quickstarts/coturn.md`: run a **public STUN server** (coturn) for WebRTC ICE assistance
 
 ### Installing Docker (optional)
 If you already have Docker + Compose installed and working, you can skip this section.
