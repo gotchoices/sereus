@@ -156,7 +156,7 @@ All ports are unprivileged (>1024) — no root or special capabilities needed:
 |------|---------|
 | 4001 | libp2p P2P networking |
 | 8080 | Health probes (`/health`, `/ready`, `/status`) — read-only by default. `POST /seed` is authenticated and **off unless `CADRE_SEED_TOKEN` is set** (then requires `Authorization: Bearer <token>`) |
-| 9090 | Prometheus metrics (`/metrics`) |
+| 9090 | Prometheus metrics (`/metrics`) — read-only; keep off the public internet |
 
 Only port **4001** should be reachable from the public internet:
 
