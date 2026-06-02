@@ -134,6 +134,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
+| `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
 
 Environment variables override config file values.
 
@@ -154,14 +155,22 @@ All ports are unprivileged (>1024) — no root or special capabilities needed:
 | Port | Purpose |
 |------|---------|
 | 4001 | libp2p P2P networking |
-| 8080 | Health endpoint (`/health`, `/ready`, `/status`) |
+| 8080 | Health probes (`/health`, `/ready`, `/status`) — read-only by default. `POST /seed` is authenticated and **off unless `CADRE_SEED_TOKEN` is set** (then requires `Authorization: Bearer <token>`) |
 | 9090 | Prometheus metrics (`/metrics`) |
 
-Open port 4001 in your firewall:
+Only port **4001** should be reachable from the public internet:
 
 ```bash
 sudo ufw allow 4001/tcp comment "Sereus libp2p"
 ```
+
+**Do not** open 8080 (health/seed) or 9090 (metrics) to the public internet —
+keep them on loopback or a trusted management network. The Docker Compose
+template binds both to `127.0.0.1` by default (override per port with
+`HOST_HEALTH_BIND` / `HOST_METRICS_BIND`, e.g. `0.0.0.0`, only behind a
+firewall). `POST /seed` is additionally bearer-gated and is not registered at
+all unless `CADRE_SEED_TOKEN` is set, so the health port carries no
+remotely-mutable surface in the default configuration.
 
 ### Dedicated User vs Regular User
 
