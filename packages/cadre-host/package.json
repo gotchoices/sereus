@@ -38,6 +38,7 @@
     "build:server": "tsc -p tsconfig.build.json",
     "build:ui": "vite build --config ui/vite.config.ts",
     "dev:ui": "vite --config ui/vite.config.ts",
+    "typecheck": "tsc -p tsconfig.build.json --noEmit",
     "test": "vitest run --passWithNoTests",
     "dev:test": "vitest",
     "start": "node dist/bin/host.js"

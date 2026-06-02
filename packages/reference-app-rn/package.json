@@ -5,6 +5,7 @@
   "main": "./index.js",
   "scripts": {
     "eas-build-pre-install": "bash scripts/eas-build-pre-install.sh",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
     "start": "expo start --dev-client",
     "android": "expo run:android",
     "ios": "expo run:ios",
