@@ -50,7 +50,7 @@
     "@libp2p/tcp": "^11.0.10",
     "@types/debug": "^4.1.12",
     "@types/node": "^25.0.10",
-    "aegir": "^45.2.1",
+    "@vitest/coverage-v8": "^4.0.17",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
@@ -59,6 +59,7 @@
     "@libp2p/crypto": "^5.1.13",
     "@libp2p/interface": "^3.1.0",
     "@libp2p/peer-id": "^6.0.4",
+    "@multiformats/multiaddr": "^12.5.1",
     "@optimystic/db-core": "^0.13.5",
     "@optimystic/db-p2p": "^0.13.5",
     "@optimystic/quereus-plugin-crypto": "^0.13.5",

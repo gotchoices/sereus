@@ -223,4 +223,26 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   - `cadre-provider` has no test files, so its `tsconfig.build.json` scope already covers everything; `strand-proto`
     is deprecated so left source-only by design. Neither needs a widened-test config.
 
+### Dependency-check coverage
+
+`yarn dep-check` (root) is now a **real** gate. It was previously a no-op (`workspaces foreach -A run dep-check`
+with no package defining the script, exiting 0 in ~0s). It now runs [knip](https://knip.dev) from the repo
+root against a single config (`knip.ts`, Option A) covering all nine workspaces.
+
+- [x] `dep-check` detects unused, missing (phantom/unlisted), and unresolved deps/binaries across all workspaces.
+- Gate semantics (`knip.ts` `rules`): dependency-class issues are `error` (fail the gate); dead-code classes
+  (unused **files / exports / types**) are `warn` (surfaced but non-blocking). Cleaning the existing dead-code
+  backlog (~15 files, ~40 exports, ~29 exported types, mostly in the reference apps and host UI) is **deferred** —
+  out of scope for the dep-check ticket.
+- Phantom deps fixed (added as direct deps where production/test code imports them transitively):
+  `@multiformats/multiaddr` (cadre-core, integration-tests, reference-app-rn), `@libp2p/crypto` + `@libp2p/interface`
+  (cadre-cli, cadre-host), `@libp2p/peer-id` (cadre-cli, cadre-host), and `@vitest/coverage-v8` (cadre-core,
+  integration-tests, quereus-plugin-sereus, strand-proto — coverage is configured in their vitest configs).
+- Truly-unused deps removed: root `esbuild`, `aegir` (cadre-cli/core/provider — no longer used now that build/test
+  run `tsc`/`vitest` directly), and `@serfab/cadre-core` from cadre-provider (never imported).
+- Documented framework/dynamic false-positive ignores live in `knip.ts` with rationale: Expo/Metro-implicit
+  (reference-app-rn), Vite-config-implicit (reference-app-web), dynamic-`import()`/runtime-`resolve` deps
+  (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
+  (integration-tests). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
+
 

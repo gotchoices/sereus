@@ -45,14 +45,12 @@
     "@types/dockerode": "^3.3.31",
     "@types/js-yaml": "^4.0.9",
     "@types/node": "^25.0.10",
-    "aegir": "^45.2.1",
     "rimraf": "^6.1.2",
     "typescript": "^5.9.3",
     "vitest": "^4.0.17"
   },
   "dependencies": {
     "@fastify/cors": "^11.2.0",
-    "@serfab/cadre-core": "workspace:^",
     "commander": "^14.0.2",
     "debug": "^4.4.3",
     "dockerode": "^4.0.9",
