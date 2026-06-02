@@ -348,6 +348,114 @@ describe('CadreNode', () => {
       expect(instance.status).toBe('active');
       expect(waking).toEqual(['idle-strand']);
     });
+
+    it('check-in resumes then re-hibernates when no activity is found', async () => {
+      // checkInWindowMs:0 → the resume-and-probe window resolves immediately, so
+      // no activity lands and the strand re-hibernates.
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true, checkInWindowMs: 0 } }));
+
+      // A quiesced (hibernating) instance: no libp2pNode/database.
+      const instance: StrandInstance = {
+        strandId: 'checkin-strand',
+        status: 'hibernating',
+        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        connectedPeers: 0,
+        lastActivity: new Date(1000),
+        latencyHint: 'interactive'
+      };
+
+      const resumeCalls: Array<{ id: string; overrides: unknown }> = [];
+      const quiesceCalls: string[] = [];
+      const fakeManager = {
+        getInstance: (id: string) => (id === 'checkin-strand' ? instance : undefined),
+        resumeStrand: async (id: string, overrides: unknown) => {
+          resumeCalls.push({ id, overrides });
+          instance.libp2pNode = {} as never;
+          instance.database = {} as never;
+          instance.status = 'active';
+          return instance;
+        },
+        quiesceStrand: async (id: string) => {
+          quiesceCalls.push(id);
+          instance.libp2pNode = undefined;
+          instance.database = undefined;
+          instance.connectedPeers = 0;
+        }
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
+      (node as unknown as { controlNode: unknown }).controlNode = {
+        peerId: { toString: () => 'self-peer' }
+      };
+      // Solo cohort (only self) → bootstrap mode, empty seed.
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => [
+          { peerId: 'self-peer', multiaddr: '/ip4/1.1.1.1/tcp/4001/p2p/self-peer' }
+        ]
+      };
+
+      const callCheckIn = (node as unknown as {
+        handleStrandCheckIn: (id: string) => Promise<void>;
+      }).handleStrandCheckIn.bind(node);
+
+      await callCheckIn('checkin-strand');
+
+      // Resumed once (with a freshly re-resolved seed), then quiesced again.
+      expect(resumeCalls).toHaveLength(1);
+      expect(resumeCalls[0]!.overrides).toEqual({ bootstrapNodes: [], mode: 'bootstrap' });
+      expect(quiesceCalls).toEqual(['checkin-strand']);
+      expect(instance.status).toBe('hibernating');
+      expect(instance.libp2pNode).toBeUndefined();
+    });
+
+    it('check-in keeps the strand active when activity arrives during the window', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+
+      const instance: StrandInstance = {
+        strandId: 'checkin-active',
+        status: 'hibernating',
+        connectedPeers: 0,
+        lastActivity: new Date(1000),
+        latencyHint: 'interactive'
+      };
+
+      const quiesceCalls: string[] = [];
+      const fakeManager = {
+        getInstance: (id: string) => (id === 'checkin-active' ? instance : undefined),
+        resumeStrand: async () => {
+          instance.libp2pNode = {} as never;
+          instance.database = {} as never;
+          instance.status = 'active';
+          return instance;
+        },
+        quiesceStrand: async (id: string) => { quiesceCalls.push(id); }
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
+      (node as unknown as { controlNode: unknown }).controlNode = {
+        peerId: { toString: () => 'self-peer' }
+      };
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => []
+      };
+
+      // Simulate the app recording activity during the window: assign a fresh
+      // Date so the reference differs from the post-resume activity marker.
+      (node as unknown as { runCheckInWindow: (i: StrandInstance) => Promise<void> }).runCheckInWindow =
+        async () => { instance.lastActivity = new Date(2000); };
+
+      const waking: string[] = [];
+      node.on('strand:waking', (d) => waking.push(d.strandId));
+
+      const callCheckIn = (node as unknown as {
+        handleStrandCheckIn: (id: string) => Promise<void>;
+      }).handleStrandCheckIn.bind(node);
+
+      await callCheckIn('checkin-active');
+
+      // Activity found → strand stays active, never re-hibernates, emits waking.
+      expect(instance.status).toBe('active');
+      expect(quiesceCalls).toHaveLength(0);
+      expect(waking).toEqual(['checkin-active']);
+    });
   });
 
   describe('enrollment service', () => {

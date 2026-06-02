@@ -16,6 +16,17 @@ export interface HibernationCallbacks {
   onIdle: (strandId: string) => Promise<void>;
   onHibernate: (strandId: string) => Promise<void>;
   onWake: (strandId: string) => Promise<void>;
+  /**
+   * Perform a real cohort check-in for a hibernating strand. The implementation
+   * (`CadreNode.handleStrandCheckIn`) resumes the strand, gives it a bounded
+   * window to connect to reachable cohort peers and surface pending activity,
+   * then re-hibernates if still idle. The manager AWAITS this before scheduling
+   * the next (longer-delayed) check-in, so a slow check-in never overlaps the
+   * next tick. After it resolves the manager inspects `instance.status`: a
+   * strand left non-`hibernating` is treated as woken (backoff resets on the
+   * next hibernation); a strand left `hibernating` escalates the backoff.
+   */
+  onCheckIn: (strandId: string) => Promise<void>;
 }
 
 /**
@@ -31,7 +42,13 @@ export class HibernationManager {
   private readonly config: HibernationConfig;
   private readonly callbacks: HibernationCallbacks;
   private readonly timers: Map<string, ReturnType<typeof setTimeout>> = new Map();
-  private readonly checkInTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /**
+   * Pending check-in timers, one per hibernating strand. Unlike the old fixed
+   * `setInterval`, these are single-shot `setTimeout`s rescheduled by
+   * {@link runCheckIn} with an escalating delay — so a long-running `onCheckIn`
+   * can never overlap the next tick, and the period adapts to the backoff.
+   */
+  private readonly checkInTimers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   /**
    * In-flight wake promises keyed by strandId. Coalesces overlapping wake
    * triggers (two near-simultaneous activities, or activity racing a force wake)
@@ -55,11 +72,13 @@ export class HibernationManager {
     const custom = this.config.customTimeouts?.[hint];
     
     if (!custom) return defaults;
-    
+
     return {
       idleTimeout: custom.idleTimeout ?? defaults.idleTimeout,
       hibernateTimeout: custom.hibernateTimeout ?? defaults.hibernateTimeout,
-      checkInInterval: custom.checkInInterval ?? defaults.checkInInterval
+      checkInInterval: custom.checkInInterval ?? defaults.checkInInterval,
+      checkInBackoffFactor: custom.checkInBackoffFactor ?? defaults.checkInBackoffFactor,
+      checkInMaxInterval: custom.checkInMaxInterval ?? defaults.checkInMaxInterval
     };
   }
 
@@ -86,7 +105,7 @@ export class HibernationManager {
     this.timers.clear();
     
     for (const timer of this.checkInTimers.values()) {
-      clearInterval(timer);
+      clearTimeout(timer);
     }
     this.checkInTimers.clear();
 
@@ -140,7 +159,21 @@ export class HibernationManager {
       this.clearTimers(strandId);
       // Fire-and-forget; force-wake awaiters see errors, so swallow (and log)
       // here to avoid an unhandled rejection on this best-effort path.
-      void this.beginWake(strandId).catch((err) => {
+      //
+      // Once the wake settles (CadreNode rebuilds the runtime and marks the
+      // strand `active`), re-arm the idle→hibernate→check-in cycle. Without this
+      // a strand that wakes then goes quiet stays `active` forever and never
+      // re-hibernates — so the check-in backoff could never restart at base.
+      // Guarded on `active` so a wake that did not transition (a coalesced
+      // no-op, or a still-mid-flight rebuild) never arms a stray timer.
+      void this.beginWake(strandId).then(() => {
+        if (this.running && instance.status === 'active') {
+          const timeouts = this.getTimeouts(instance.latencyHint);
+          if (timeouts.idleTimeout !== Infinity) {
+            this.scheduleIdleTransition(instance);
+          }
+        }
+      }).catch((err) => {
         log('Activity-driven wake failed for strand %s: %o', strandId, err);
       });
       return;
@@ -257,32 +290,77 @@ export class HibernationManager {
     });
   }
 
-  private scheduleCheckIn(instance: StrandInstance): void {
+  /**
+   * Arm the next check-in for a hibernating strand. Each call is a single-shot
+   * `setTimeout` (not a fixed `setInterval`) so the period escalates per
+   * {@link runCheckIn} and a slow `onCheckIn` never overlaps the next tick.
+   *
+   * `delay` is omitted by the chain start ({@link handleHibernateTimeout}),
+   * defaulting to the base `checkInInterval` — which is why backoff naturally
+   * resets to base each fresh hibernation cycle, with no per-strand counter to
+   * clear on wake. Subsequent ticks pass the escalated, capped delay.
+   */
+  private scheduleCheckIn(instance: StrandInstance, delay?: number): void {
     const { strandId, latencyHint } = instance;
     const timeouts = this.getTimeouts(latencyHint);
+    const currentDelay = delay ?? timeouts.checkInInterval;
 
-    // Clear existing check-in timer
+    // Replace any existing check-in timer (no-op if the firing timer rescheduled us).
     const existing = this.checkInTimers.get(strandId);
     if (existing) {
-      clearInterval(existing);
+      clearTimeout(existing);
     }
 
-    // Schedule periodic check-ins
-    const timer = setInterval(() => {
-      if (!this.running) {
-        clearInterval(timer);
-        return;
-      }
-
-      log('Check-in for hibernating strand %s', strandId);
-      instance.nextCheckIn = new Date(Date.now() + timeouts.checkInInterval);
-
-      // In a real implementation, this would query the cohort for pending activity
-      // For now, we just update the nextCheckIn timestamp
-    }, timeouts.checkInInterval);
+    const timer = setTimeout(() => {
+      void this.runCheckIn(instance, currentDelay);
+    }, currentDelay);
 
     this.checkInTimers.set(strandId, timer);
-    instance.nextCheckIn = new Date(Date.now() + timeouts.checkInInterval);
+    instance.nextCheckIn = new Date(Date.now() + currentDelay);
+  }
+
+  /**
+   * Run a single check-in tick: invoke `onCheckIn` (a real resume → bounded
+   * sync window → re-hibernate-if-idle cycle in `CadreNode`) and AWAIT it before
+   * deciding the next step.
+   *
+   * - If the strand woke during the check-in (`onCheckIn` left it non-
+   *   `hibernating`), stop the chain — the activity path has re-armed the
+   *   idle/hibernate timers, and the next hibernation restarts the chain at the
+   *   base delay (backoff reset).
+   * - Otherwise escalate the delay by `checkInBackoffFactor`, capped at
+   *   `checkInMaxInterval`, and reschedule.
+   */
+  private async runCheckIn(instance: StrandInstance, currentDelay: number): Promise<void> {
+    const { strandId, latencyHint } = instance;
+    if (!this.running) return;
+
+    log('Check-in for hibernating strand %s (delay=%dms)', strandId, currentDelay);
+
+    try {
+      await this.callbacks.onCheckIn(strandId);
+    } catch (err) {
+      // A failed check-in (e.g. resume threw) must not break the chain — log and
+      // fall through to reschedule the next, longer-delayed attempt.
+      log('onCheckIn failed for strand %s: %o', strandId, err);
+    }
+
+    if (!this.running) return;
+
+    // The check-in either woke the strand (CadreNode left it active) or left it
+    // hibernating. Inspect the shared instance the callback just mutated.
+    if (instance.status !== 'hibernating') {
+      log('Check-in woke strand %s; backoff resets on next hibernation', strandId);
+      this.checkInTimers.delete(strandId);
+      return;
+    }
+
+    const timeouts = this.getTimeouts(latencyHint);
+    const nextDelay = Math.min(
+      currentDelay * timeouts.checkInBackoffFactor,
+      timeouts.checkInMaxInterval
+    );
+    this.scheduleCheckIn(instance, nextDelay);
   }
 
   private clearTimer(strandId: string): void {
@@ -298,7 +376,7 @@ export class HibernationManager {
 
     const checkInTimer = this.checkInTimers.get(strandId);
     if (checkInTimer) {
-      clearInterval(checkInTimer);
+      clearTimeout(checkInTimer);
       this.checkInTimers.delete(strandId);
     }
   }

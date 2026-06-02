@@ -29,33 +29,61 @@ export interface HibernationTimeouts {
   idleTimeout: number;
   /** Time before transitioning from idle to hibernating */
   hibernateTimeout: number;
-  /** Interval for check-ins while hibernating */
+  /**
+   * Base interval for the FIRST check-in after hibernating. Successive
+   * no-activity check-ins escalate this delay by {@link checkInBackoffFactor}
+   * (see {@link HibernationManager}'s self-rescheduling check-in chain).
+   */
   checkInInterval: number;
+  /**
+   * Multiplier applied to the check-in delay after each check-in that finds no
+   * pending activity (must be >= 1; 1 disables escalation). Default 2 →
+   * doubling: base, base×2, base×4, … until {@link checkInMaxInterval}.
+   */
+  checkInBackoffFactor: number;
+  /**
+   * Upper bound on the escalating check-in delay — the concrete realization of
+   * the architecture's "minutes → hours → days" ceiling for this hint. Backoff
+   * never schedules a delay longer than this.
+   */
+  checkInMaxInterval: number;
 }
 
 /**
- * Default hibernation timeouts per latency hint
+ * Default hibernation timeouts per latency hint.
+ *
+ * `checkInInterval` is the BASE delay; `checkInMaxInterval` is the per-hint
+ * ceiling the exponential backoff escalates toward (interactive minutes→~1h,
+ * background minutes→~6h, archive ~1h→~3 days).
  */
 export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
   realtime: {
     idleTimeout: Infinity,        // Never idle
     hibernateTimeout: Infinity,   // Never hibernate
-    checkInInterval: Infinity     // N/A
+    checkInInterval: Infinity,    // N/A
+    checkInBackoffFactor: 2,
+    checkInMaxInterval: Infinity  // N/A
   },
   interactive: {
     idleTimeout: 5 * 60 * 1000,   // 5 minutes
     hibernateTimeout: 15 * 60 * 1000, // 15 minutes after idle
-    checkInInterval: 30 * 1000    // 30 seconds
+    checkInInterval: 30 * 1000,   // base: 30 seconds
+    checkInBackoffFactor: 2,
+    checkInMaxInterval: 60 * 60 * 1000 // cap: ~1 hour
   },
   background: {
     idleTimeout: 1 * 60 * 1000,   // 1 minute
     hibernateTimeout: 5 * 60 * 1000,  // 5 minutes after idle
-    checkInInterval: 5 * 60 * 1000    // 5 minutes
+    checkInInterval: 5 * 60 * 1000,   // base: 5 minutes
+    checkInBackoffFactor: 2,
+    checkInMaxInterval: 6 * 60 * 60 * 1000 // cap: ~6 hours
   },
   archive: {
     idleTimeout: 10 * 1000,       // 10 seconds
     hibernateTimeout: 30 * 1000,  // 30 seconds after idle
-    checkInInterval: 60 * 60 * 1000   // 1 hour
+    checkInInterval: 60 * 60 * 1000,  // base: 1 hour
+    checkInBackoffFactor: 2,
+    checkInMaxInterval: 3 * 24 * 60 * 60 * 1000 // cap: ~3 days
   }
 };
 
@@ -141,7 +169,20 @@ export interface HibernationConfig {
   defaultLatencyHint?: LatencyHint;
   /** Custom timeouts per latency hint (overrides defaults) */
   customTimeouts?: Partial<Record<LatencyHint, Partial<HibernationTimeouts>>>;
+  /**
+   * How long a hibernating strand stays resumed during a check-in to let its
+   * strand network connect to reachable cohort peers (and the app drive
+   * pull-on-read activity) before re-hibernating if still idle. Defaults to
+   * {@link DEFAULT_CHECKIN_WINDOW_MS}.
+   */
+  checkInWindowMs?: number;
 }
+
+/**
+ * Default duration of the resume-and-probe window during a strand check-in.
+ * See {@link HibernationConfig.checkInWindowMs}.
+ */
+export const DEFAULT_CHECKIN_WINDOW_MS = 15 * 1000;
 
 /**
  * Control network configuration

@@ -22,6 +22,7 @@ import type {
   StrandFormationDisclosure,
   StrandMode
 } from './types.js';
+import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
 import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
@@ -86,7 +87,8 @@ export class CadreNode implements SAppIdLookup {
     const hibernationCallbacks: HibernationCallbacks = {
       onIdle: async (strandId) => this.handleStrandIdle(strandId),
       onHibernate: async (strandId) => this.handleStrandHibernate(strandId),
-      onWake: async (strandId) => this.handleStrandWake(strandId)
+      onWake: async (strandId) => this.handleStrandWake(strandId),
+      onCheckIn: async (strandId) => this.handleStrandCheckIn(strandId)
     };
     this.hibernationManager = new HibernationManager(
       config.hibernation ?? { enabled: false },
@@ -550,6 +552,84 @@ export class CadreNode implements SAppIdLookup {
     instance.lastActivity = new Date();
     this.emit('strand:waking', { strandId });
     log('Strand %s awake (resources rebuilt, mode=%s)', strandId, mode);
+  }
+
+  /**
+   * Real cohort check-in for a hibernating strand (the `onCheckIn` callback).
+   *
+   * Optimystic syncs pull-on-read, not on connect, and exposes no cheap
+   * repo-level "pull pending" hook (`IRepo` is get/pend/commit/cancel only —
+   * see the review handoff). So "query the cohort for pending activity" is
+   * realized as a resume → bounded window → re-hibernate-if-idle cycle that
+   * reuses the existing quiesce/resume primitives rather than a bespoke probe:
+   *
+   *   1. Resume the strand (rebuild node + db, re-resolve cohort seed/mode) so
+   *      its strand network can reach cohort peers — exactly as a wake does.
+   *   2. Hold it resumed for a bounded window, during which the app may drive
+   *      reads (pull-on-read) and record activity.
+   *   3. If activity was recorded during the window, leave the strand `active`
+   *      (the idle/hibernate timers + backoff reset take over). Otherwise
+   *      quiesce again and leave it `hibernating`, so `HibernationManager`
+   *      schedules the next, longer-delayed check-in.
+   *
+   * No-ops unless the strand is currently `hibernating` — a concurrent wake may
+   * have already resumed it.
+   */
+  private async handleStrandCheckIn(strandId: string): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (!instance) {
+      log('handleStrandCheckIn: strand %s not found', strandId);
+      return;
+    }
+    if (instance.status !== 'hibernating') {
+      log('handleStrandCheckIn: strand %s not hibernating (status=%s); skipping', strandId, instance.status);
+      return;
+    }
+
+    // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
+    //    seed + mode, then rebuild the runtime.
+    log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
+    const seed = await this.resolveCohortSeed();
+    const mode = selectStrandMode(undefined, seed.hasOtherPeers);
+    await this.strandManager.resumeStrand(strandId, {
+      bootstrapNodes: seed.bootstrapNodes,
+      mode
+    });
+
+    // Capture the post-resume activity marker. recordActivity assigns a FRESH
+    // Date object, so a changed reference after the window means real activity
+    // was recorded during it — not millisecond-resolution noise.
+    const activityMark = instance.lastActivity;
+
+    // 2. Bounded window for the strand network to connect + the app to act.
+    await this.runCheckInWindow(instance);
+
+    // 3. Decide based on whether activity landed during the window.
+    const sawActivity = instance.lastActivity !== activityMark;
+    if (sawActivity) {
+      instance.status = 'active';
+      this.emit('strand:waking', { strandId });
+      log('Check-in: strand %s saw activity during the window; staying active', strandId);
+      return;
+    }
+
+    log('Check-in: no activity for strand %s; re-hibernating', strandId);
+    await this.strandManager.quiesceStrand(strandId);
+    instance.status = 'hibernating';
+  }
+
+  /**
+   * Hold a just-resumed strand live for the check-in window so its strand
+   * network can connect to reachable cohort peers and the app can drive
+   * pull-on-read activity. Resolves after
+   * {@link HibernationConfig.checkInWindowMs} (default
+   * {@link DEFAULT_CHECKIN_WINDOW_MS}); a non-positive window resolves
+   * immediately. Extracted as its own method so tests can stub the wait.
+   */
+  private async runCheckInWindow(_instance: StrandInstance): Promise<void> {
+    const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+    if (windowMs <= 0) return;
+    await new Promise<void>((resolve) => { setTimeout(resolve, windowMs); });
   }
 
   /**

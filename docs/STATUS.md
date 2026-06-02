@@ -195,7 +195,17 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     wake triggers coalesce in `HibernationManager` so only one runtime is rebuilt.
 - [x] `idle` is a lightweight status flag (node + DB still running)
   - [ ] Trim connections while `idle` ("minimal connections") — parked to backlog (`3-mobile-resource-awareness`)
-- [ ] Cohort-querying check-in (check-in wake) — timer exists but only refreshes `nextCheckIn`
+- [x] Cohort-querying check-in (check-in wake) on exponential backoff
+  - `HibernationManager` replaces the fixed `setInterval` with a self-rescheduling `setTimeout` chain:
+    base `checkInInterval` × `checkInBackoffFactor` per idle check-in, capped at the per-hint
+    `checkInMaxInterval` (interactive 30s→~1h, background 5m→~6h, archive 1h→~3d). The next tick is
+    scheduled only after `onCheckIn` resolves (no overlap); backoff resets to base on the next hibernation.
+  - `CadreNode.handleStrandCheckIn` performs the real check-in: resume (reusing `resumeStrand`, re-resolving
+    cohort seed/mode) → bounded `checkInWindowMs` window → re-hibernate via `quiesceStrand` if idle, else stay active.
+  - Known gap: Optimystic syncs **pull-on-read** with no cheap repo-level "pull pending" hook (`IRepo` =
+    get/pend/commit/cancel), so the check-in is a resume-as-reachability cycle relying on app-driven reads to
+    surface activity — not a bespoke head/version probe. Lighter control-network pre-check parked to backlog
+    (`hibernation-control-network-pending-precheck`).
 - [ ] Push-wake via the control network
 
 ## Testing / CI

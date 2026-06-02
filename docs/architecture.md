@@ -500,19 +500,21 @@ stateDiagram-v2
 
 **Wake Mechanisms:**
 1. **Local wake** (implemented): application activity (`recordStrandActivity`) on a hibernating strand, or an explicit `wakeStrand()` call, rehydrates it. Overlapping wake triggers are coalesced by `HibernationManager` so only one runtime is rebuilt.
-2. **Check-in wake** (planned): periodic check-in queries the cohort for pending activity. The check-in timer exists today but only refreshes `nextCheckIn`; the cohort query is not yet implemented.
+2. **Check-in wake** (implemented): while hibernating, a self-rescheduling check-in timer fires on an **exponential backoff** — the base `checkInInterval` multiplied by `checkInBackoffFactor` after each idle check-in, capped at the per-hint `checkInMaxInterval` (the concrete "minutes → hours → days" ceiling). Each tick invokes `CadreNode.handleStrandCheckIn`, which **resumes** the strand, holds it live for a bounded window (`checkInWindowMs`) so its strand network can reach cohort peers and the app can drive reads, then **re-hibernates** if nothing surfaced (escalating the next delay) or stays `active` if activity landed (backoff resets on the next hibernation). The manager awaits each check-in before scheduling the next, so a slow check-in never overlaps. Because Optimystic syncs **pull-on-read** and exposes no cheap repo-level "pull pending" hook (`IRepo` is get/pend/commit/cancel only), the check-in realizes "query the cohort for pending activity" as this resume-as-reachability cycle — using machinery that exists and never reporting a false "synced" — rather than a bespoke strand head/version probe. A lighter same-cadre control-network pre-check that avoids a full resume is a future optimization (see backlog).
 3. **Push wake** (planned): another cadre member with incoming connectivity receives a wake request and propagates it via the control network.
 
 **sApp Latency Hints:**
 
 Applications can provide latency hints in the strand header that influence hibernation behavior:
 
-| Hint | Idle Timeout | Check-in Interval | Use Case |
-|------|--------------|-------------------|----------|
+The check-in column shows the **base** interval (first check-in after hibernating) and the **cap** the exponential backoff escalates toward:
+
+| Hint | Idle Timeout | Check-in (base → cap) | Use Case |
+|------|--------------|-----------------------|----------|
 | `realtime` | Never hibernate | N/A | Messaging, live collaboration |
-| `interactive` | 5 minutes | 30 seconds | Active apps, transactions |
-| `background` | 1 minute | 5 minutes | Social feeds, notifications |
-| `archive` | 10 seconds | 1 hour | Rarely accessed data |
+| `interactive` | 5 minutes | 30 seconds → ~1 hour | Active apps, transactions |
+| `background` | 1 minute | 5 minutes → ~6 hours | Social feeds, notifications |
+| `archive` | 10 seconds | 1 hour → ~3 days | Rarely accessed data |
 
 ## Network Isolation
 
