@@ -1,5 +1,16 @@
 import { spawn, type ChildProcess } from 'node:child_process';
 
+/**
+ * When `OPTIMYSTIC_E2E_DEBUG=1`, spawned peers run with these debug namespaces and
+ * their stdout/stderr are forwarded to the parent (Playwright) console. This makes
+ * the service-side cluster view — notably the `db-p2p:cluster` update-error log and
+ * the coordinator's `optimystic:db-p2p:cluster` lines — observable end-to-end. It is
+ * belt-and-suspenders: the structured error envelope already surfaces the real cause
+ * to the browser coordinator without needing service-peer debug.
+ */
+const E2E_DEBUG = process.env.OPTIMYSTIC_E2E_DEBUG === '1';
+const E2E_DEBUG_NAMESPACES = 'optimystic:*,db-p2p:*,libp2p:circuit*,libp2p:dial*';
+
 export interface SpawnReferenceMeshOptions {
 	cliPath: string;
 	/** WS port for the bootstrap peer (interactive --offline). */
@@ -84,6 +95,7 @@ export async function spawnReferenceMesh(
 			],
 			startupTimeoutMs,
 			label: 'bootstrap',
+			debugPrefix: `svc-${bootstrapWsPort}`,
 		});
 		children.push(bootstrap);
 
@@ -107,6 +119,7 @@ export async function spawnReferenceMesh(
 				],
 				startupTimeoutMs,
 				label: `service-${port}`,
+				debugPrefix: `svc-${port}`,
 			});
 			children.push(svc);
 			serviceMultiaddrs.push(svc.multiaddr);
@@ -128,17 +141,26 @@ interface SpawnSingleNodeOptions {
 	args: string[];
 	startupTimeoutMs: number;
 	label: string;
+	/** Prefix for forwarded child output under OPTIMYSTIC_E2E_DEBUG, e.g. `svc-9192`. */
+	debugPrefix: string;
 }
 
 function spawnSingleNode(options: SpawnSingleNodeOptions): Promise<SingleNodeHandle> {
-	const { cliPath, args, startupTimeoutMs, label } = options;
+	const { cliPath, args, startupTimeoutMs, label, debugPrefix } = options;
 	return new Promise((resolvePromise, rejectPromise) => {
 		const child: ChildProcess = spawn(
 			process.execPath,
 			[cliPath, ...args],
 			{
 				stdio: ['ignore', 'pipe', 'pipe'],
-				env: { ...process.env, FORCE_COLOR: '0' },
+				env: {
+					...process.env,
+					FORCE_COLOR: '0',
+					// Turn on libp2p/optimystic debug in the spawned peer so its
+					// service-side cluster logs exist to be forwarded below. Respect an
+					// explicit parent DEBUG if one is already set.
+					...(E2E_DEBUG ? { DEBUG: process.env.DEBUG || E2E_DEBUG_NAMESPACES } : {}),
+				},
 			},
 		);
 
@@ -152,8 +174,10 @@ function spawnSingleNode(options: SpawnSingleNodeOptions): Promise<SingleNodeHan
 		const cleanup = () => {
 			clearTimeout(timeoutHandle);
 			if (chooseTimer) clearTimeout(chooseTimer);
-			child.stdout?.removeAllListeners('data');
-			child.stderr?.removeAllListeners('data');
+			// Detach only the startup buffer/scan listeners; the debug-forwarding
+			// listeners attached below intentionally persist for the child's lifetime.
+			child.stdout?.removeListener('data', onStdoutData);
+			child.stderr?.removeListener('data', onStderrData);
 		};
 
 		const stop = async (): Promise<void> => {
@@ -209,21 +233,37 @@ function spawnSingleNode(options: SpawnSingleNodeOptions): Promise<SingleNodeHan
 			}
 		};
 
-		child.stdout?.on('data', (data: Buffer) => {
+		const onStdoutData = (data: Buffer) => {
 			const s = data.toString('utf8');
 			stdoutBuffer += s;
 			if (stdoutBuffer.length > 64 * 1024) {
 				stdoutBuffer = stdoutBuffer.slice(-32 * 1024);
 			}
 			scan(s);
-		});
-		child.stderr?.on('data', (data: Buffer) => {
+		};
+		const onStderrData = (data: Buffer) => {
 			const s = data.toString('utf8');
 			stderrBuffer += s;
 			if (stderrBuffer.length > 64 * 1024) {
 				stderrBuffer = stderrBuffer.slice(-32 * 1024);
 			}
-		});
+		};
+		child.stdout?.on('data', onStdoutData);
+		child.stderr?.on('data', onStderrData);
+
+		// Under e2e debug, mirror child output to the parent console for the full
+		// lifetime of the child. The buffer/scan listeners above are detached once
+		// the multiaddr is found (see cleanup), so without these the service peers'
+		// libp2p/optimystic logs would never reach the Playwright stdout capture.
+		if (E2E_DEBUG) {
+			const forward = (write: (line: string) => void) => (data: Buffer) => {
+				for (const rawLine of data.toString('utf8').split(/\r?\n/)) {
+					if (rawLine.length > 0) write(`[${debugPrefix}] ${rawLine}`);
+				}
+			};
+			child.stdout?.on('data', forward((line) => console.log(line)));
+			child.stderr?.on('data', forward((line) => console.error(line)));
+		}
 
 		child.once('error', (err) => {
 			if (resolved) return;
