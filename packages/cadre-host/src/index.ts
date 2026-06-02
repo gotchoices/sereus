@@ -84,12 +84,17 @@ export {
   fetchManifest,
   verifyManifest,
   canonicalJson,
-  signManifestForTesting,
+  signManifest,
+  validateManifestFields,
+  buildManifest,
+  derivePublicKeyBase64,
+  signAndSelfVerify,
   compareVersions,
   parseVersion,
   getReleasePublicKey,
   getReleasePublicKeyBase64,
   ed25519FromRaw,
+  isPlaceholderReleaseKey,
 } from './update/index.js';
 export type {
   UpdateServiceOptions,
@@ -100,6 +105,7 @@ export type {
   UpdateSettings,
   UpdateManifest,
   UpdateErrorCode,
+  ManifestFields,
   NpmExecutor,
   ServiceRestarter,
 } from './update/index.js';

@@ -23,6 +23,7 @@ import {
   DEFAULT_MANIFEST_URL,
   fetchManifest,
 } from './manifest.js';
+import { isPlaceholderReleaseKey } from './release-key.js';
 import { UpdateStateStore } from './store.js';
 import {
   UpdateErrorException,
@@ -153,6 +154,12 @@ export class UpdateService {
    * debug; signature failures are recorded as `lastError` so the UI can warn.
    */
   async check(): Promise<void> {
+    if (isPlaceholderReleaseKey()) {
+      // A build that shipped the all-zeros placeholder rejects every authentic
+      // manifest as signature_invalid; surface that here so it's diagnosable
+      // from logs rather than only as an opaque verification failure.
+      log('release verification key is the all-zeros placeholder; production manifests will fail signature_invalid (set CADRE_HOST_UPDATE_DEV_KEY for dev/CI only)');
+    }
     let manifest: UpdateManifest;
     try {
       manifest = await fetchManifest({
@@ -322,7 +329,13 @@ function resolveManifestUrl(explicit: string | undefined, fromSettings: string |
 export type { UpdateState, UpdateApplyResult, UpdateSettings, UpdateManifest, SignedManifest } from './types.js';
 export { UpdateErrorException, type UpdateErrorCode } from './types.js';
 export { compareVersions, parseVersion } from './version.js';
-export { fetchManifest, verifyManifest, canonicalJson, signManifestForTesting } from './manifest.js';
+export { fetchManifest, verifyManifest, canonicalJson, signManifest, validateManifestFields } from './manifest.js';
 export { UpdateStateStore } from './store.js';
 export { applyUpdate, defaultNpmExecutor, type NpmExecutor, type ServiceRestarter } from './apply.js';
-export { getReleasePublicKey, getReleasePublicKeyBase64, ed25519FromRaw } from './release-key.js';
+export {
+  getReleasePublicKey,
+  getReleasePublicKeyBase64,
+  ed25519FromRaw,
+  isPlaceholderReleaseKey,
+} from './release-key.js';
+export { buildManifest, derivePublicKeyBase64, signAndSelfVerify, type ManifestFields } from './sign.js';

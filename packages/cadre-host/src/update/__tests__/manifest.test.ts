@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 
-import { canonicalJson, signManifestForTesting, verifyManifest } from '../manifest.js';
+import { canonicalJson, signManifest, verifyManifest } from '../manifest.js';
 import type { UpdateManifest } from '../types.js';
 
 /** Generate a fresh Ed25519 keypair and surface the raw 32-byte public key. */
@@ -47,19 +47,19 @@ describe('verifyManifest', () => {
   });
 
   it('round-trips: sign + verify', () => {
-    const envelope = signManifestForTesting(sampleManifest, kp.privateKey);
+    const envelope = signManifest(sampleManifest, kp.privateKey);
     const out = verifyManifest(envelope);
     expect(out).toEqual(sampleManifest);
   });
 
   it('rejects a mutated payload (signature_invalid)', () => {
-    const envelope = signManifestForTesting(sampleManifest, kp.privateKey);
+    const envelope = signManifest(sampleManifest, kp.privateKey);
     const tampered = { ...envelope, manifest: { ...envelope.manifest, version: '99.0.0' } };
     expect(() => verifyManifest(tampered)).toThrow(/signature/i);
   });
 
   it('rejects a mutated signature (signature_invalid)', () => {
-    const envelope = signManifestForTesting(sampleManifest, kp.privateKey);
+    const envelope = signManifest(sampleManifest, kp.privateKey);
     const sigBytes = Buffer.from(envelope.sig.slice('ed25519:'.length), 'base64');
     sigBytes[0] ^= 0xff;
     const tampered = { ...envelope, sig: `ed25519:${sigBytes.toString('base64')}` };
@@ -67,7 +67,7 @@ describe('verifyManifest', () => {
   });
 
   it('rejects an envelope signed by a different key (signature_invalid)', () => {
-    const envelope = signManifestForTesting(sampleManifest, kp.privateKey);
+    const envelope = signManifest(sampleManifest, kp.privateKey);
     // Swap the env-configured public key to a different fresh one.
     const other = freshKeypair();
     process.env.CADRE_HOST_UPDATE_DEV_KEY = other.publicRawB64;
@@ -86,13 +86,13 @@ describe('verifyManifest', () => {
   });
 
   it('rejects unsupported signature schemes', () => {
-    const envelope = signManifestForTesting(sampleManifest, kp.privateKey);
+    const envelope = signManifest(sampleManifest, kp.privateKey);
     const tampered = { ...envelope, sig: envelope.sig.replace('ed25519:', 'rsa:') };
     expect(() => verifyManifest(tampered)).toThrow(/unsupported signature scheme/);
   });
 
   it('rejects non-semver manifest.version (manifest_invalid)', () => {
-    const envelope = signManifestForTesting(
+    const envelope = signManifest(
       { ...sampleManifest, version: 'not-a-semver' },
       kp.privateKey,
     );
@@ -100,7 +100,7 @@ describe('verifyManifest', () => {
   });
 
   it('rejects non-semver minPreviousVersion (manifest_invalid)', () => {
-    const envelope = signManifestForTesting(
+    const envelope = signManifest(
       { ...sampleManifest, minPreviousVersion: '0.6' },
       kp.privateKey,
     );
@@ -108,7 +108,7 @@ describe('verifyManifest', () => {
   });
 
   it('rejects publishedAt that is not a round-trippable ISO-8601 string', () => {
-    const envelope = signManifestForTesting(
+    const envelope = signManifest(
       { ...sampleManifest, publishedAt: 'sometime last week' },
       kp.privateKey,
     );
@@ -116,7 +116,7 @@ describe('verifyManifest', () => {
   });
 
   it('rejects an npm package name that fails the naming regex', () => {
-    const envelope = signManifestForTesting(
+    const envelope = signManifest(
       {
         ...sampleManifest,
         channels: { npm: { package: 'BAD CHARS!', tag: 'latest' } },

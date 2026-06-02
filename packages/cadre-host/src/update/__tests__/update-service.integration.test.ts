@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 
-import { signManifestForTesting } from '../manifest.js';
+import { signManifest } from '../manifest.js';
 import { UpdateService } from '../index.js';
 import { UpdateStateStore } from '../store.js';
 import type { UpdateManifest } from '../types.js';
@@ -51,7 +51,7 @@ describe('UpdateService', () => {
   });
 
   it('check(): records an available update when manifest > current', async () => {
-    const envelope = signManifestForTesting(manifest('0.7.0', { releaseNotesUrl: 'https://x' }), kp.privateKey);
+    const envelope = signManifest(manifest('0.7.0', { releaseNotesUrl: 'https://x' }), kp.privateKey);
     const svc = new UpdateService({
       dataDir: tmp,
       currentVersion: '0.6.0',
@@ -70,7 +70,7 @@ describe('UpdateService', () => {
   });
 
   it('check(): clears stale available when up-to-date', async () => {
-    const envelope = signManifestForTesting(manifest('0.6.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.6.0'), kp.privateKey);
     const svc = new UpdateService({
       dataDir: tmp,
       currentVersion: '0.7.0',
@@ -97,7 +97,7 @@ describe('UpdateService', () => {
   });
 
   it('check(): records signature_invalid as lastError', async () => {
-    const envelope = signManifestForTesting(manifest('0.7.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.7.0'), kp.privateKey);
     // Swap the trusted key after signing.
     const other = freshKeypair();
     process.env.CADRE_HOST_UPDATE_DEV_KEY = other.publicRawB64;
@@ -114,7 +114,7 @@ describe('UpdateService', () => {
   });
 
   it('apply(): records applyInProgress, calls npm + restart, clears on success', async () => {
-    const envelope = signManifestForTesting(manifest('0.7.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.7.0'), kp.privateKey);
     const calls: string[][] = [];
     const svc = new UpdateService({
       dataDir: tmp,
@@ -133,7 +133,7 @@ describe('UpdateService', () => {
   });
 
   it('apply(): rejects when current is below minPreviousVersion', async () => {
-    const envelope = signManifestForTesting(manifest('0.8.0', { minPreviousVersion: '0.7.0' }), kp.privateKey);
+    const envelope = signManifest(manifest('0.8.0', { minPreviousVersion: '0.7.0' }), kp.privateKey);
     const svc = new UpdateService({
       dataDir: tmp,
       currentVersion: '0.6.0',
@@ -144,7 +144,7 @@ describe('UpdateService', () => {
   });
 
   it('apply(): rejects when current >= latest', async () => {
-    const envelope = signManifestForTesting(manifest('0.6.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.6.0'), kp.privateKey);
     const svc = new UpdateService({
       dataDir: tmp,
       currentVersion: '0.7.0',
@@ -155,7 +155,7 @@ describe('UpdateService', () => {
   });
 
   it('apply(): records lastError + clears applyInProgress when npm install fails', async () => {
-    const envelope = signManifestForTesting(manifest('0.7.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.7.0'), kp.privateKey);
     let installCount = 0;
     const svc = new UpdateService({
       dataDir: tmp,
@@ -189,7 +189,7 @@ describe('UpdateService', () => {
   });
 
   it('autoApply: check() triggers apply when settings.autoApply is true', async () => {
-    const envelope = signManifestForTesting(manifest('0.7.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.7.0'), kp.privateKey);
     const calls: string[][] = [];
     const svc = new UpdateService({
       dataDir: tmp,
@@ -228,7 +228,7 @@ describe('UpdateService', () => {
 
     // Now apply() must not short-circuit on apply_in_progress; with a stub
     // manifest mismatch we expect the usual no_update_available path instead.
-    const envelope = signManifestForTesting(manifest('0.6.0'), kp.privateKey);
+    const envelope = signManifest(manifest('0.6.0'), kp.privateKey);
     const svc2 = new UpdateService({
       dataDir: tmp,
       currentVersion: '0.7.0',

@@ -216,6 +216,40 @@ cadre-host fetches a signed manifest from `https://releases.serfab.io/cadre-host
 
 `UpdateService` lives in `src/update/` and exposes `createUpdateHandlers(service)` for the local-UI HTTP routes (`GET /update`, `POST /update/apply`, `GET/PUT /update/settings`); `cadre-host start` constructs the service so the daily timer and `update-state.json` are populated regardless of whether the UI has bound its routes yet.
 
+### Release signing & key management
+
+Manifests are verified against an Ed25519 public key embedded in source (`PROD_KEY_BASE64` in `src/update/release-key.ts`). Public keys are not secret, so the *public* half is committed; the private half is the release-signing secret and is custodied **offline by the release operator — never committed**. Until the operator embeds a real key, the source ships an all-zeros placeholder, and a build/publish guard refuses to ship it (see below).
+
+The repo provides the full pipeline; the operator runs a couple of mechanical commands:
+
+1. **Generate the keypair (offline, once).** On a trusted machine, from a checkout:
+
+   ```sh
+   node packages/cadre-host/scripts/release-keygen.mjs --write-source
+   ```
+
+   This writes the PKCS#8 PEM private key to `./cadre-host-release.key` (mode `0600`, refuses to overwrite) and — with `--write-source` — atomically rewrites `PROD_KEY_BASE64` with the new public key. Omit `--write-source` to print the public key and embed it by hand. **Move the private key to offline custody and never commit it.** Commit the `PROD_KEY_BASE64` change.
+
+2. **Sign `latest.json` (offline, per release).** With the private key present and the package built (`yarn build:server`):
+
+   ```sh
+   node packages/cadre-host/scripts/sign-manifest.mjs \
+     --key ./cadre-host-release.key \
+     --version 0.7.0 --package @serfab/cadre-host --tag latest \
+     --published-at 2026-05-15T18:00:00.000Z \
+     --out latest.json
+   ```
+
+   The signer reuses the exact field-validation the verifier applies (`buildManifest`) and **self-verifies** the signature against the key derived from the private key before emitting, so it can never produce a manifest the client would later reject. Fields may instead come from `--manifest <file.json>`.
+
+3. **Publish `latest.json`.** Upload the signed envelope to the static host so it is served at `https://releases.serfab.io/cadre-host/latest.json`. This is plain static-file hosting — no code in this repo.
+
+4. **Publish the binary.** `scripts/publish-package.js cadre-host` builds then **aborts if the embedded key is still the placeholder** (`isPlaceholderReleaseKey`), so a real release can never silently ship the dead key. Internal/test publishes that intentionally keep the placeholder set `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` to bypass.
+
+**Rotation** is the same loop: re-run keygen (`--write-source`), commit the new public key, re-sign and re-publish `latest.json`, publish a new binary. Clients that already trust the old key will see `signature_invalid` until they upgrade to the binary carrying the new public key — so rotate by shipping the new public key in a release *before* signing manifests with the new private key.
+
+**`CADRE_HOST_UPDATE_DEV_KEY`** overrides the embedded key for **development / CI / staging only** — it lets tests and smoke runs sign with an ephemeral keypair without touching source. It is never the production verification path and must not be set on deployed nodes. The signing tools live under `packages/cadre-host/scripts/` and are intentionally **not** part of the published package (the binary never carries signing code or the private key).
+
 ## Local UI server
 
 The local-UI server (`6.5.1-cadre-host-local-ui-server`) is the long-lived HTTP listener launched by `cadre-host start`. The Svelte SPA that consumes it ships in `6.5.2-cadre-host-local-ui-spa`.

@@ -19,7 +19,7 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { generateKeyPairSync, type KeyObject } from 'node:crypto';
 
-import { signManifestForTesting, type SignedManifest, type UpdateManifest } from '@serfab/cadre-host';
+import { signManifest, type SignedManifest, type UpdateManifest } from '@serfab/cadre-host';
 
 import { createTestCadreHost, type TestCadreHost } from '../harness/index.js';
 import { startManifestServer, type ManifestFixtureServer } from '../harness/fixtures/manifest-server.js';
@@ -49,7 +49,7 @@ describe('cadre-host update notify', () => {
 	beforeEach(async () => {
 		kp = freshKeypair();
 		process.env.CADRE_HOST_UPDATE_DEV_KEY = kp.publicRawB64;
-		envelope = signManifestForTesting(manifest('0.7.0', { releaseNotesUrl: 'https://example.com/release' }), kp.privateKey);
+		envelope = signManifest(manifest('0.7.0', { releaseNotesUrl: 'https://example.com/release' }), kp.privateKey);
 		manifestServer = await startManifestServer(envelope);
 		host = await createTestCadreHost({ manifestUrl: manifestServer.url });
 	});
@@ -86,7 +86,7 @@ describe('cadre-host update notify', () => {
 	});
 
 	it('manifest at the same version → no `available` is recorded', async () => {
-		manifestServer.setManifest(signManifestForTesting(manifest('0.0.0-test'), kp.privateKey));
+		manifestServer.setManifest(signManifest(manifest('0.0.0-test'), kp.privateKey));
 		await host.update!.check();
 		const state = await host.update!.getState();
 		expect(state.available).toBeUndefined();

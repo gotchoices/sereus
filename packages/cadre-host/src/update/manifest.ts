@@ -83,7 +83,7 @@ export function verifyManifest(
   if (!isUpdateManifest(body.manifest)) {
     throw new UpdateErrorException('manifest_invalid', 'manifest payload is missing required fields');
   }
-  assertManifestFieldsWellFormed(body.manifest);
+  validateManifestFields(body.manifest);
 
   const sig = parseSignature(body.sig);
   const canonical = Buffer.from(canonicalJson(body.manifest), 'utf8');
@@ -104,8 +104,15 @@ export function verifyManifest(
   return body.manifest;
 }
 
-/** Exposed for test signers. */
-export function signManifestForTesting(manifest: UpdateManifest, privateKey: KeyObject): SignedManifest {
+/**
+ * Sign a manifest with the release private key, producing the `{ manifest, sig }`
+ * envelope published as `latest.json`. This is the production signing operation:
+ * it canonicalizes with the same `canonicalJson` that `verifyManifest` consumes
+ * and emits a detached `ed25519:<base64>` signature. The private key never ships
+ * in the binary — signing runs offline on the release operator's machine (see
+ * `scripts/sign-manifest.mjs`).
+ */
+export function signManifest(manifest: UpdateManifest, privateKey: KeyObject): SignedManifest {
   const canonical = Buffer.from(canonicalJson(manifest), 'utf8');
   const sig = cryptoSign(null, canonical, privateKey).toString('base64');
   return { manifest, sig: `ed25519:${sig}` };
@@ -145,8 +152,12 @@ function isSignedManifest(v: unknown): v is SignedManifest {
  * the publish timestamp, and the npm naming regex on the package name. A
  * signed-but-malformed manifest would otherwise surface as a confusing
  * `compareVersions` throw further downstream.
+ *
+ * Exported so the offline signing tool (`sign.ts` / `sign-manifest.mjs`) runs
+ * the *exact same* rules before it signs — the signer can never emit a
+ * manifest that `verifyManifest` would later reject as `manifest_invalid`.
  */
-function assertManifestFieldsWellFormed(m: UpdateManifest): void {
+export function validateManifestFields(m: UpdateManifest): void {
   try {
     parseVersion(m.version);
   } catch (err) {
