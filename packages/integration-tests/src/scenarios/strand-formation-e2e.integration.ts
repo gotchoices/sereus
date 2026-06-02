@@ -23,7 +23,7 @@ import {
 	type StrandProvisioner,
 } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { CadreNodeConfig, StrandRow, SAppConfig } from '@serfab/cadre-core';
+import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure } from '@serfab/cadre-core';
 import { TestCadreNetwork, waitUntil } from '../harness/index.js';
 
 // ── Mock implementations ────────────────────────────────────────────────────
@@ -231,73 +231,63 @@ describe('E2E Strand Formation', () => {
 			aliceService.unregisterResponder(alice.authorityNode.libp2p);
 		}, 20_000);
 
-		// ── 3. Disclosure validation (partyId allowlist) ────────────────
+		// ── 3. Disclosure validation (real disclosed identity) ──────────
 
-		it('should accept allowed parties and reject unknown ones', async () => {
+		it('should transmit the real disclosure and accept/reject on it', async () => {
 			const alice = await network.createParty({ name: 'alice-disc' });
 			const bob = await network.createParty({ name: 'bob-disc' });
 			const carol = await network.createParty({ name: 'carol-disc' });
 
 			const mockProvisioner = createMockProvisioner('disc');
 
-			// The identity bundle sent over the protocol contains { partyId: sessionId }.
-			// The sessionId for the DialerSession is the formStrand caller's partyId
-			// (passed through the manager). We can't predict the exact sessionId,
-			// so we use a validator that accepts everything to verify Bob succeeds,
-			// then use a reject-all validator to verify Carol is rejected.
-
-			// First: Bob with accept-all validator
-			const acceptAllValidator: DisclosureValidator = {
-				validateDisclosure: async () => true,
+			// The disclosure is now carried end-to-end (real token + real disclosure),
+			// so the responder validates against it directly — an allowlist keyed on the
+			// real disclosed `purpose`. We also capture what arrives to assert the real
+			// token and the initiator's real member-key partyId reach the responder
+			// (no synthetic { partyId: sessionId } bundle).
+			let seen: { token: string; disclosure: StrandFormationDisclosure } | null = null;
+			const allowlistValidator: DisclosureValidator = {
+				validateDisclosure: async (token, disclosure) => {
+					seen = { token, disclosure };
+					return disclosure.purpose === 'authorized-collaboration';
+				},
 			};
 
-			const aliceServiceAccept = new StrandSolicitationService({
+			const aliceService = new StrandSolicitationService({
 				partyId: alice.partyId,
 				cadrePeerAddrs: alice.authorityNode.multiaddrs,
 				strandProvisioner: mockProvisioner,
-				disclosureValidator: acceptAllValidator,
+				disclosureValidator: allowlistValidator,
 			});
-			aliceServiceAccept.registerResponder(alice.authorityNode.libp2p);
+			aliceService.registerResponder(alice.authorityNode.libp2p);
 
-			const invitation1 = await aliceServiceAccept.createOpenInvitation(
+			const invitation = await aliceService.createOpenInvitation(
 				'test-sapp',
 				60_000,
 				alice.authorityNode.multiaddrs,
 			);
 
+			// Bob discloses the allowed purpose → accepted.
 			const bobService = new StrandSolicitationService({
 				partyId: bob.partyId,
 				cadrePeerAddrs: bob.authorityNode.multiaddrs,
 			});
 
 			const bobResult = await bobService.formStrand(
-				invitation1,
-				{ partyId: bob.partyId, purpose: 'Collaboration' },
+				invitation,
+				{ partyId: bob.partyId, purpose: 'authorized-collaboration' },
 				bob.authorityNode.libp2p,
 			);
 			expect(bobResult.strandId).toBeDefined();
 
-			aliceServiceAccept.unregisterResponder(alice.authorityNode.libp2p);
+			// The responder saw the REAL token + disclosure, and the disclosed partyId
+			// is Bob's generated member key (not a synthetic session id).
+			expect(seen).not.toBeNull();
+			expect(seen!.token).toBe(invitation.token);
+			expect(seen!.disclosure.purpose).toBe('authorized-collaboration');
+			expect(seen!.disclosure.partyId).toBe(bobResult.memberKey);
 
-			// Second: Carol with reject-all validator
-			const rejectAllValidator: DisclosureValidator = {
-				validateDisclosure: async () => false,
-			};
-
-			const aliceServiceReject = new StrandSolicitationService({
-				partyId: alice.partyId,
-				cadrePeerAddrs: alice.authorityNode.multiaddrs,
-				strandProvisioner: mockProvisioner,
-				disclosureValidator: rejectAllValidator,
-			});
-			aliceServiceReject.registerResponder(alice.authorityNode.libp2p);
-
-			const invitation2 = await aliceServiceReject.createOpenInvitation(
-				'test-sapp',
-				60_000,
-				alice.authorityNode.multiaddrs,
-			);
-
+			// Carol discloses a non-allowed purpose → rejected by the same allowlist.
 			const carolService = new StrandSolicitationService({
 				partyId: carol.partyId,
 				cadrePeerAddrs: carol.authorityNode.multiaddrs,
@@ -305,13 +295,13 @@ describe('E2E Strand Formation', () => {
 
 			await expect(
 				carolService.formStrand(
-					invitation2,
-					{ partyId: carol.partyId },
+					invitation,
+					{ partyId: carol.partyId, purpose: 'unsolicited' },
 					carol.authorityNode.libp2p,
 				),
 			).rejects.toThrow();
 
-			aliceServiceReject.unregisterResponder(alice.authorityNode.libp2p);
+			aliceService.unregisterResponder(alice.authorityNode.libp2p);
 		}, 20_000);
 	});
 

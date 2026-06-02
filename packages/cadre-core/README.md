@@ -242,7 +242,6 @@ Available storage implementations:
 
 ## Related Packages
 
-- **[@serfab/strand-proto](../strand-proto/)** - Strand initialization protocol
 - **[@optimystic/db-core](https://github.com/gotchoices/optimystic)** - Distributed database core
 - **[@optimystic/db-p2p](https://github.com/gotchoices/optimystic)** - libp2p integration for Optimystic
 - **[@optimystic/db-p2p-storage-fs](https://github.com/gotchoices/optimystic)** - File system storage (Node.js)

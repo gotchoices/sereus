@@ -888,7 +888,7 @@ export class CadreNode implements SAppIdLookup {
   }
 
   // ============================================================================
-  // Strand Solicitation API (strand-proto integration)
+  // Strand Solicitation API (native cadre-core formation transport)
   // ============================================================================
 
   /**

@@ -443,12 +443,14 @@ In `bootstrap` mode the same `IRawStorage` instance handed to `createLibp2pNode`
 
 ### Strand Formation
 
-When forming a new strand with another party, the bootstrap protocol (`strand-proto`) negotiates provisioning. The `StrandFormationManager` bridges `cadre-core` interfaces with `strand-proto`'s `SessionManager`:
+When forming a new strand with another party, a native cadre-core formation transport (`strand-formation-protocol.ts`, protocol id `/sereus/formation/1.0.0`) negotiates provisioning. It mirrors the non-deprecated seed-bootstrap service (length-prefixed JSON frames over libp2p streams) and replaces the deprecated `strand-proto`. The `StrandFormationManager` drives it from the `cadre-core` interfaces, carrying the caller's **real** invitation token + `StrandFormationDisclosure` and **both** parties' real cadre peer addresses end-to-end:
 
-- **`StrandFormationManager`**: Implements `SessionHooks` by delegating to `DisclosureValidator`, `FormationUsageRecorder`, and `StrandProvisioner`
+- **`StrandFormationManager`**: Responder side wires the inbound `FormationListener` to `DisclosureValidator` (identity), `FormationUsageRecorder` (token), and `StrandProvisioner` (provisioning); initiator side validates the responder's result via `FormationResponseValidator`
 - **`StrandSolicitationService.registerResponder(node)`**: Registers the libp2p node to handle incoming formation requests
 - **`StrandSolicitationService.formStrand(invitation, disclosure, node)`**: Initiates strand formation over the real protocol
 - **`CadreNode` high-level API**: `createOpenInvitation()`, `formStrand()`, `encodeInvitation()`, `decodeInvitation()`
+
+Cadre-disclosure timing is enforced: the responder reveals its own party id + cadre addresses only after the token and disclosure validate; a rejection discloses neither. The initiator's `FormationResponseValidator` (built-in structural default) rejects a responder that omits its disclosed identity/cadre or returns an empty/non-responder-created strand.
 
 ```mermaid
 sequenceDiagram
@@ -610,7 +612,7 @@ graph TD
     CC --> MOB
     CC --> CTR
     CC --> HOST
-    CC -.->|depends on| DEP["@optimystic/db-p2p · @quereus/quereus<br/>@optimystic/fret · @serfab/strand-proto"]
+    CC -.->|depends on| DEP["@optimystic/db-p2p · @quereus/quereus<br/>@optimystic/fret"]
 ```
 
 ## Key Data Structures
@@ -785,7 +787,7 @@ React Native (Hermes engine) requires polyfills for several Web/Node.js APIs tha
 ### Existing Implementations
 
 - `@gotchoices/optimystic/packages/db-p2p` - libp2p node creation with Optimystic integration
-- `packages/strand-proto` - Bootstrap session management
+- `packages/strand-proto` - Bootstrap session management (**deprecated**; the formation transport is now native in `cadre-core`'s `strand-formation-protocol.ts`)
 - `packages/cadre-core` - Core cadre node library
 - `packages/cadre-cli` - CLI wrapper for cadre nodes
 - `packages/cadre-provider` - Reference provider service for hosting cadre nodes

@@ -1,17 +1,5 @@
 import debug from 'debug';
 import type { Libp2p } from '@libp2p/interface';
-import {
-  SessionManager,
-  createBootstrapManager,
-  DEFAULT_PROTOCOL_ID,
-  type SessionHooks,
-  type SessionConfig,
-  type BootstrapLink,
-  type BootstrapResult,
-  type BootstrapMode,
-  type DialogParty,
-  type ProvisionResult
-} from '@serfab/strand-proto';
 import type {
   OpenInvitation,
   FormStrandResult,
@@ -20,8 +8,18 @@ import type {
 import type {
   DisclosureValidator,
   FormationUsageRecorder,
-  StrandProvisioner
+  StrandProvisioner,
+  FormationResponseValidator
 } from './strand-solicitation.js';
+import {
+  FormationListener,
+  dialFormation,
+  isValidResponderCreatesResult,
+  type FormationContactMessage,
+  type FormationProvisionResult,
+  type FormationResultMessage,
+  type FormationMode
+} from './strand-formation-protocol.js';
 
 const log = debug('sereus:cadre:formation-manager');
 
@@ -45,12 +43,14 @@ export interface StrandFormationManagerConfig {
  * Options for creating a StrandFormationManager
  */
 export interface StrandFormationManagerOptions {
-  /** Validates disclosures from initiators */
+  /** Validates disclosures from initiators (responder side) */
   disclosureValidator?: DisclosureValidator;
-  /** Records and validates token usage */
+  /** Records and validates token usage (responder side) */
   formationUsageRecorder?: FormationUsageRecorder;
-  /** Provisions strands after validation */
+  /** Provisions strands after validation (responder side) */
   strandProvisioner?: StrandProvisioner;
+  /** Validates the responder's result (initiator side); defaults to a structural check */
+  formationResponseValidator?: FormationResponseValidator;
   /** This party's ID for identification */
   partyId: string;
   /** This party's cadre peer addresses */
@@ -60,43 +60,49 @@ export interface StrandFormationManagerOptions {
 }
 
 /**
- * StrandFormationManager bridges cadre-core's strand solicitation interfaces
- * with strand-proto's SessionManager for actual protocol handling over libp2p.
+ * StrandFormationManager drives the native cadre-core formation transport
+ * (`strand-formation-protocol.ts`) from cadre-core's strand-solicitation interfaces.
  *
- * It implements SessionHooks by delegating to the existing interfaces:
- * - DisclosureValidator -> validateIdentity
- * - FormationUsageRecorder -> validateToken
- * - StrandProvisioner -> provisionStrand
+ * Responder side: a {@link FormationListener} wires the inbound protocol to
+ * {@link FormationUsageRecorder} (token), {@link DisclosureValidator} (identity),
+ * and {@link StrandProvisioner} (provisioning), disclosing this party's real
+ * identity + cadre only after validation.
+ *
+ * Initiator side: {@link formStrand} dials the responder carrying the real
+ * disclosure/token/cadre, then validates the responder's result via the
+ * {@link FormationResponseValidator} (or a built-in structural check).
  */
 export class StrandFormationManager {
-  private readonly sessionManager: SessionManager;
   private readonly disclosureValidator?: DisclosureValidator;
   private readonly formationUsageRecorder?: FormationUsageRecorder;
   private readonly strandProvisioner?: StrandProvisioner;
+  private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
-  private registeredNodes: Set<Libp2p> = new Set();
+  private readonly config: StrandFormationManagerConfig;
+  private readonly listener: FormationListener;
+  private readonly registeredNodes = new Set<Libp2p>();
+  private dialerSessions = 0;
 
   constructor(options: StrandFormationManagerOptions) {
     this.disclosureValidator = options.disclosureValidator;
     this.formationUsageRecorder = options.formationUsageRecorder;
     this.strandProvisioner = options.strandProvisioner;
+    this.formationResponseValidator = options.formationResponseValidator;
     this.partyId = options.partyId;
     this.cadrePeerAddrs = options.cadrePeerAddrs ?? [];
+    this.config = options.config ?? {};
 
-    // Create SessionHooks that delegate to our interfaces
-    const hooks = this.createSessionHooks();
+    this.listener = new FormationListener({
+      validateToken: (token) => this.validateToken(token),
+      validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
+      provisionStrand: (initiatorPartyId) => this.provisionAsResponder(initiatorPartyId),
+      getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
+      sessionTimeoutMs: this.config.sessionTimeoutMs,
+      stepTimeoutMs: this.config.stepTimeoutMs,
+      maxConcurrentSessions: this.config.maxConcurrentSessions
+    });
 
-    // Create the underlying SessionManager
-    const config: Partial<SessionConfig> = {
-      sessionTimeoutMs: options.config?.sessionTimeoutMs ?? 30000,
-      stepTimeoutMs: options.config?.stepTimeoutMs ?? 5000,
-      maxConcurrentSessions: options.config?.maxConcurrentSessions ?? 100,
-      enableDebugLogging: options.config?.enableDebugLogging ?? false,
-      protocolId: options.config?.protocolId ?? DEFAULT_PROTOCOL_ID
-    };
-
-    this.sessionManager = createBootstrapManager(hooks, config);
     log('StrandFormationManager created for party: %s', this.partyId);
   }
 
@@ -109,7 +115,7 @@ export class StrandFormationManager {
       log('Node already registered');
       return;
     }
-    this.sessionManager.register(node, protocolId);
+    this.listener.register(node, protocolId ?? this.config.protocolId);
     this.registeredNodes.add(node);
     log('Registered as responder on node');
   }
@@ -121,18 +127,17 @@ export class StrandFormationManager {
     if (!this.registeredNodes.has(node)) {
       return;
     }
-    this.sessionManager.unregister(node, protocolId);
+    this.listener.unregister(node, protocolId ?? this.config.protocolId);
     this.registeredNodes.delete(node);
     log('Unregistered from node');
   }
 
   /**
-   * Form a strand with a responder via an open invitation.
+   * Form a strand with a responder via an open invitation (initiator side).
    *
-   * This is the initiator-side operation. It:
-   * 1. Converts the OpenInvitation to a BootstrapLink
-   * 2. Calls SessionManager.initiateBootstrap()
-   * 3. Returns the result as a FormStrandResult
+   * Builds a contact message carrying the real token + disclosure + this party's
+   * real cadre addresses, dials the responder over the native protocol, and
+   * validates the responder's result before returning.
    */
   async formStrand(
     invitation: OpenInvitation,
@@ -141,128 +146,103 @@ export class StrandFormationManager {
   ): Promise<FormStrandResult> {
     log('Forming strand with invitation token: %s', invitation.token);
 
-    // Convert OpenInvitation to BootstrapLink
-    const link: BootstrapLink = {
-      responderPeerAddrs: invitation.bootstrap,
+    const contact: FormationContactMessage = {
       token: invitation.token,
-      tokenExpiryUtc: invitation.expiration.toISOString(),
-      mode: 'responderCreates' // Responder provisions the strand
+      partyId: disclosure.partyId ?? this.partyId,
+      disclosure,
+      cadrePeerAddrs: this.cadrePeerAddrs
     };
 
-    // The disclosure is passed via the identityBundle in the contact message
-    // We store it temporarily so the hooks can access it
-    // Note: strand-proto's DialerSession constructs the contact message internally
-    // We need to extend this to pass the disclosure - for now we use partyId
+    this.dialerSessions++;
+    try {
+      const provision = await dialFormation(node, {
+        contact,
+        responderAddrs: invitation.bootstrap,
+        mode: 'responderCreates',
+        validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
+        sessionTimeoutMs: this.config.sessionTimeoutMs,
+        stepTimeoutMs: this.config.stepTimeoutMs,
+        protocolId: this.config.protocolId
+      });
 
-    const result = await this.sessionManager.initiateBootstrap(link, node as any);
+      log('Strand formed: %s', provision.strand.strandId);
 
-    log('Strand formed: %s', result.strand.strandId);
-
-    return {
-      memberKey: this.partyId, // The initiator's member key
-      invitePrivateKey: '', // Would come from key generation
-      strandId: result.strand.strandId
-    };
+      return {
+        memberKey: contact.partyId,
+        invitePrivateKey: '',
+        strandId: provision.strand.strandId
+      };
+    } finally {
+      this.dialerSessions--;
+    }
   }
 
   /**
    * Get the number of active sessions
    */
   getActiveSessionCounts(): { listeners: number; dialers: number } {
-    return this.sessionManager.getActiveSessionCounts();
+    return { listeners: this.listener.activeCount, dialers: this.dialerSessions };
   }
 
-  /**
-   * Create SessionHooks that delegate to our interfaces
-   */
-  private createSessionHooks(): SessionHooks {
+  // ── Responder-side hooks ─────────────────────────────────────────────────────
+
+  private async validateToken(token: string): Promise<{ valid: boolean; mode: FormationMode }> {
+    const mode: FormationMode = 'responderCreates';
+    if (!this.formationUsageRecorder) {
+      // No recorder configured — accept all tokens.
+      return { valid: true, mode };
+    }
+
+    const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
+    if (!tokenCheck.valid) {
+      log('Token invalid: %s', token);
+      return { valid: false, mode };
+    }
+
+    if (await this.formationUsageRecorder.isTokenUsed(token)) {
+      log('Token already used: %s', token);
+      return { valid: false, mode };
+    }
+
+    return { valid: true, mode };
+  }
+
+  private async validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean> {
+    if (!this.disclosureValidator) {
+      // No validator configured — accept all disclosures.
+      return true;
+    }
+    return this.disclosureValidator.validateDisclosure(token, disclosure);
+  }
+
+  private async provisionAsResponder(initiatorPartyId: string): Promise<FormationProvisionResult> {
+    if (!this.strandProvisioner) {
+      // No provisioner — return a structural placeholder the initiator can still validate.
+      const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+      return {
+        strand: { strandId, createdBy: 'responder' },
+        dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+      };
+    }
+
+    const result = await this.strandProvisioner.provisionStrand('', initiatorPartyId, this.partyId);
     return {
-      validateToken: async (token: string, sessionId: string) => {
-        log('validateToken: %s (session: %s)', token, sessionId);
-
-        if (!this.formationUsageRecorder) {
-          // No recorder configured - accept all tokens
-          return { mode: 'responderCreates' as BootstrapMode, valid: true };
-        }
-
-        const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
-        if (!tokenCheck.valid) {
-          log('Token invalid: %s', token);
-          return { mode: 'responderCreates' as BootstrapMode, valid: false };
-        }
-
-        const isUsed = await this.formationUsageRecorder.isTokenUsed(token);
-        if (isUsed) {
-          log('Token already used: %s', token);
-          return { mode: 'responderCreates' as BootstrapMode, valid: false };
-        }
-
-        return { mode: 'responderCreates' as BootstrapMode, valid: true };
-      },
-
-      validateIdentity: async (identity: unknown, sessionId: string) => {
-        log('validateIdentity (session: %s)', sessionId);
-
-        if (!this.disclosureValidator) {
-          // No validator configured - accept all identities
-          return true;
-        }
-
-        // Extract disclosure from identity bundle
-        const disclosure = identity as StrandFormationDisclosure;
-        // We need the token here - it's passed via the contact message
-        // For now, use a placeholder - this will be refined
-        const token = (identity as any)?.token ?? '';
-
-        return this.disclosureValidator.validateDisclosure(token, disclosure);
-      },
-
-      provisionStrand: async (
-        creator: DialogParty,
-        creatorPartyId: string,
-        otherPartyId: string,
-        sessionId: string
-      ): Promise<ProvisionResult> => {
-        log('provisionStrand: creator=%s, other=%s (session: %s)',
-          creatorPartyId, otherPartyId, sessionId);
-
-        if (!this.strandProvisioner) {
-          // No provisioner - return a placeholder
-          const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-          return {
-            strand: { strandId, createdBy: creator },
-            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-          };
-        }
-
-        // Determine initiator/responder keys based on creator
-        const initiatorKey = creator === 'initiator' ? creatorPartyId : otherPartyId;
-        const responderKey = creator === 'responder' ? creatorPartyId : otherPartyId;
-
-        const result = await this.strandProvisioner.provisionStrand(
-          '', // sAppId - would come from invitation
-          initiatorKey,
-          responderKey
-        );
-
-        return {
-          strand: { strandId: result.strandId, createdBy: creator },
-          dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-        };
-      },
-
-      validateResponse: async (response: unknown, sessionId: string) => {
-        log('validateResponse (session: %s)', sessionId);
-        // Accept all responses for now
-        return true;
-      },
-
-      validateDatabaseResult: async (result: unknown, sessionId: string) => {
-        log('validateDatabaseResult (session: %s)', sessionId);
-        // Accept all database results for now
-        return true;
-      }
+      strand: { strandId: result.strandId, createdBy: 'responder' },
+      dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
     };
+  }
+
+  // ── Initiator-side result validation ─────────────────────────────────────────
+
+  private async validateResponse(
+    invitation: OpenInvitation,
+    disclosure: StrandFormationDisclosure,
+    response: FormationResultMessage
+  ): Promise<boolean> {
+    if (this.formationResponseValidator) {
+      return this.formationResponseValidator.validateResponse({ invitation, disclosure, response });
+    }
+    return isValidResponderCreatesResult(response);
   }
 }
 
@@ -274,4 +254,3 @@ export function createStrandFormationManager(
 ): StrandFormationManager {
   return new StrandFormationManager(options);
 }
-

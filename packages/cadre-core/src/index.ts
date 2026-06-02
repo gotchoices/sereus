@@ -53,10 +53,12 @@ export {
 // Strand Solicitation
 export {
   StrandSolicitationService,
+  createDefaultFormationResponseValidator,
   type DisclosureValidator,
   type FormationUsageRecorder,
   type StrandProvisioner,
   type FormationSigner,
+  type FormationResponseValidator,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 
@@ -76,7 +78,25 @@ export {
   SchemaVerificationError
 } from './schema-verification.js';
 
-// Strand Formation (strand-proto integration)
+// Strand Formation transport (native cadre-core protocol)
+export {
+  FormationListener,
+  dialFormation,
+  isValidResponderCreatesResult,
+  FORMATION_PROTOCOL,
+  type FormationMode,
+  type FormationParty,
+  type FormationContactMessage,
+  type FormationResultMessage,
+  type FormationDatabaseMessage,
+  type FormationProvisionResult,
+  type FormationStrandInfo,
+  type FormationDbConnectionInfo,
+  type FormationListenerOptions,
+  type FormationDialOptions
+} from './strand-formation-protocol.js';
+
+// Strand Formation manager (drives the native transport)
 export {
   StrandFormationManager,
   createStrandFormationManager,

@@ -9,6 +9,7 @@ import {
   type DisclosureValidator,
   type FormationUsageRecorder,
   type FormationSigner,
+  type FormationResponseValidator,
   type StrandProvisioner
 } from '../src/strand-solicitation.js';
 import {
@@ -281,6 +282,7 @@ describe('StrandFormationManager Integration', () => {
 
     const responderService = new StrandSolicitationService({
       partyId: 'responder-party',
+      cadrePeerAddrs: nodeA.getMultiaddrs().map(ma => ma.toString()),
       strandProvisioner: mockProvisioner,
       formationUsageRecorder: mockRecorder
     });
@@ -344,4 +346,156 @@ describe('StrandFormationManager Integration', () => {
 
     responderService.unregisterResponder(nodeA);
   }, 10000);
+});
+
+// ── Real disclosure + result validation over the native transport ─────────────
+//
+// These promote the confirmed reproduction (disclosure/token/cadre-addrs were
+// never carried end-to-end, result validation was stubbed) into permanent tests.
+describe('StrandFormationManager transport: real disclosure + result validation', () => {
+  let nodeA: Libp2p;
+  let nodeB: Libp2p;
+
+  beforeEach(async () => {
+    nodeA = await createLibp2pNodeWithKeys();
+    nodeB = await createLibp2pNodeWithKeys();
+    await nodeA.start();
+    await nodeB.start();
+  });
+
+  afterEach(async () => {
+    try { await nodeA?.stop(); } catch {}
+    try { await nodeB?.stop(); } catch {}
+  });
+
+  it('transmits the real token and disclosure to the responder', async () => {
+    let captured: { token: string; disclosure: StrandFormationDisclosure } | null = null;
+    const capturingValidator: DisclosureValidator = {
+      validateDisclosure: async (token, disclosure) => {
+        captured = { token, disclosure };
+        return true;
+      }
+    };
+
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: nodeA.getMultiaddrs().map(ma => ma.toString()),
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-real-1' }) },
+      disclosureValidator: capturingValidator
+    });
+    responder.registerResponder(nodeA);
+
+    const invitation = await responder.createOpenInvitation(
+      'test-sapp',
+      60000,
+      nodeA.getMultiaddrs().map(ma => ma.toString())
+    );
+
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    const result = await initiator.formStrand(
+      invitation,
+      { partyId: 'ignored-overridden-by-memberkey', purpose: 'real-purpose' },
+      nodeB
+    );
+
+    // The responder saw the REAL token + disclosure — not '' + { partyId: sessionId }.
+    expect(captured).not.toBeNull();
+    expect(captured!.token).toBe(invitation.token);
+    expect(captured!.disclosure.purpose).toBe('real-purpose');
+    expect(captured!.disclosure.partyId).toBe(result.memberKey);
+
+    responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('delivers the responder real cadre addresses to the initiator (no placeholders)', async () => {
+    const responderAddrs = nodeA.getMultiaddrs().map(ma => ma.toString());
+    let receivedAddrs: string[] | undefined;
+    const captureResponse: FormationResponseValidator = {
+      validateResponse: async ({ response }) => {
+        receivedAddrs = response.cadrePeerAddrs;
+        return true;
+      }
+    };
+
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: responderAddrs,
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-addr-1' }) }
+    });
+    responder.registerResponder(nodeA);
+
+    const invitation = await responder.createOpenInvitation('test-sapp', 60000, responderAddrs);
+
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString()),
+      formationResponseValidator: captureResponse
+    });
+
+    await initiator.formStrand(invitation, { purpose: 'addr-check' }, nodeB);
+
+    expect(receivedAddrs).toEqual(responderAddrs);
+    expect(receivedAddrs?.length).toBeGreaterThan(0);
+    expect(receivedAddrs?.some(a => a.includes('.local'))).toBe(false);
+
+    responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('rejects a responder that returns an empty strandId', async () => {
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      cadrePeerAddrs: nodeA.getMultiaddrs().map(ma => ma.toString()),
+      // Malicious/stub responder: provisions an empty strand id.
+      strandProvisioner: { provisionStrand: async () => ({ strandId: '' }) }
+    });
+    responder.registerResponder(nodeA);
+
+    const invitation = await responder.createOpenInvitation(
+      'test-sapp',
+      60000,
+      nodeA.getMultiaddrs().map(ma => ma.toString())
+    );
+
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    await expect(
+      initiator.formStrand(invitation, { purpose: 'reject-empty-strand' }, nodeB)
+    ).rejects.toThrow();
+
+    responder.unregisterResponder(nodeA);
+  }, 15000);
+
+  it('rejects a responder that discloses no cadre addresses', async () => {
+    const responder = new StrandSolicitationService({
+      partyId: 'responder-party',
+      // Omits its disclosed cadre entirely.
+      cadrePeerAddrs: [],
+      strandProvisioner: { provisionStrand: async () => ({ strandId: 'strand-nocadre-1' }) }
+    });
+    responder.registerResponder(nodeA);
+
+    const invitation = await responder.createOpenInvitation(
+      'test-sapp',
+      60000,
+      nodeA.getMultiaddrs().map(ma => ma.toString())
+    );
+
+    const initiator = new StrandSolicitationService({
+      partyId: 'initiator-party',
+      cadrePeerAddrs: nodeB.getMultiaddrs().map(ma => ma.toString())
+    });
+
+    await expect(
+      initiator.formStrand(invitation, { purpose: 'reject-no-cadre' }, nodeB)
+    ).rejects.toThrow();
+
+    responder.unregisterResponder(nodeA);
+  }, 15000);
 });

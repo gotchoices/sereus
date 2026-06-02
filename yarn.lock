@@ -5270,7 +5270,6 @@ __metadata:
     "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
     "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
     "@quereus/quereus": "npm:^3.2.1"
-    "@serfab/strand-proto": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     aegir: "npm:^45.2.1"
@@ -5466,7 +5465,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@serfab/strand-proto@workspace:^, @serfab/strand-proto@workspace:packages/strand-proto":
+"@serfab/strand-proto@workspace:packages/strand-proto":
   version: 0.0.0-use.local
   resolution: "@serfab/strand-proto@workspace:packages/strand-proto"
   dependencies:
