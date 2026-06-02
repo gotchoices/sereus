@@ -60,6 +60,10 @@ RUN yarn workspaces foreach -At run build
 # ============================================================================
 FROM node:22-alpine AS prod-deps
 WORKDIR /app
+# Same toolchain as `deps`: a production dep with no musl prebuild compiles from
+# source here, so node-gyp's python3/make/g++ must be present (this stage is
+# discarded — only its node_modules is copied — so it adds no final-image bulk).
+RUN apk add --no-cache python3 make g++
 RUN corepack enable
 COPY packages/cadre-cli/docker/workspace-root.package.json ./package.json
 COPY packages/cadre-cli/docker/workspace.yarnrc.yml ./.yarnrc.yml

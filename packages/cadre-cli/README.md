@@ -46,8 +46,8 @@ npm install @serfab/cadre-cli @serfab/cadre-core
 ```bash
 git clone https://github.com/gotchoices/sereus.git /opt/sereus
 cd /opt/sereus
-npm install
-npm run build -w @serfab/cadre-core -w @serfab/cadre-cli
+yarn install
+yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
 ```
 
 **Paths (git):**
@@ -63,8 +63,8 @@ npm run build -w @serfab/cadre-core -w @serfab/cadre-cli
 ```bash
 cd /opt/sereus
 git pull
-npm install
-npm run build -w @serfab/cadre-core -w @serfab/cadre-cli
+yarn install
+yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
 sudo systemctl restart cadre-node  # if running as service
 ```
 
@@ -214,8 +214,9 @@ sudo npm install @serfab/cadre-cli @serfab/cadre-core
 ```bash
 sudo git clone https://github.com/gotchoices/sereus.git /opt/sereus
 cd /opt/sereus
-sudo npm install
-sudo npm run build -w @serfab/cadre-core -w @serfab/cadre-cli
+sudo corepack enable
+sudo yarn install
+sudo yarn workspaces foreach -Rt --from '@serfab/cadre-cli' run build
 sudo chown -R root:root /opt/sereus
 ```
 
@@ -288,7 +289,7 @@ Edit `/etc/systemd/system/cadre-node.service` to customize resource limits.
 
 ## Docker Deployment
 
-See [docker/README.md](./docker/) for Docker Compose deployment, or use:
+See the [`docker/`](./docker/) directory (`Dockerfile`, `docker-compose.yml`, `env.example`) for Docker Compose deployment, or use:
 
 ```bash
 cd packages/cadre-cli/docker  # or node_modules/@serfab/cadre-cli/docker
