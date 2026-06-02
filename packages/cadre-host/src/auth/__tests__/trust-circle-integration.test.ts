@@ -101,12 +101,11 @@ describe('TrustCircleService — real CadreNode integration', () => {
     expect(snap.pending).toHaveLength(0);
   }, 90_000);
 
-  // The signed `CadrePeer` DELETE currently throws a Quereus deferred-constraint
+  // The signed `CadrePeer` DELETE previously threw a Quereus deferred-constraint
   // error ("No row context found for column PeerId") inside cadre-core's
-  // removePeer — a pre-existing upstream bug tracked by the fix ticket
-  // `quereus-cadrepeer-delete-no-row-context` (also flagged by the 6.6 review).
-  // Skipped until that lands; unskip to validate the full remove cycle.
-  it.skip('removes a member from CadrePeer (blocked on quereus-cadrepeer-delete-no-row-context)', async () => {
+  // removePeer. That upstream bug is fixed (`quereus-cadrepeer-delete-no-row-context`,
+  // landed), so the full issue → redeem → remove cycle is now exercised here.
+  it('removes a member from CadrePeer', async () => {
     const phoneKey = await generateKeyPair('Ed25519');
     const phonePeerId = peerIdFromPrivateKey(phoneKey).toString();
 
