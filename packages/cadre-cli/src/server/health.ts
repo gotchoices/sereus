@@ -1,6 +1,7 @@
 import http from 'node:http';
 import debug from 'debug';
-import type { CadreNode } from '@serfab/cadre-core';
+import { emptyConnectionPathSummary } from '@serfab/cadre-core';
+import type { CadreNode, ConnectionPathSummary } from '@serfab/cadre-core';
 
 const log = debug('cadre:cli:health');
 
@@ -30,6 +31,11 @@ export interface HealthStatus {
       idle: number;
       hibernating: number;
     };
+    /**
+     * Connection-path counts (relayed vs direct, per transport, stuck-on-relay).
+     * Counts only — the full `paths[]` array is omitted to keep the probe cheap.
+     */
+    connectionPaths: Omit<ConnectionPathSummary, 'paths'>;
   };
 }
 
@@ -37,15 +43,22 @@ export interface MetricsData {
   // Node metrics
   cadre_node_running: number;
   cadre_node_uptime_seconds: number;
-  
+
   // Strand metrics
   cadre_strands_total: number;
   cadre_strands_active: number;
   cadre_strands_idle: number;
   cadre_strands_hibernating: number;
-  
-  // Connection metrics (placeholder for future)
+
+  // Connection metrics (sourced from CadreNode.getConnectionPaths())
+  /** Total connected peers; kept for back-compat with existing scrape configs (== cadre_connections_total). */
   cadre_peers_connected: number;
+  cadre_connections_total: number;
+  cadre_connections_relayed: number;
+  cadre_connections_direct: number;
+  cadre_connections_stuck_on_relay: number;
+  /** One entry per transport with a non-zero count; emitted as a labelled series. */
+  cadre_connections_by_transport: Record<string, number>;
 }
 
 /**
@@ -110,6 +123,10 @@ export class HealthServer {
     const peerId = this.node?.peerId?.toString() ?? null;
     const multiaddrs = this.node?.getMultiaddrs() ?? [];
 
+    // Counts only — drop the per-connection `paths[]` array to keep /status cheap.
+    const { paths: _paths, ...connectionPaths } =
+      this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
+
     return {
       status: isRunning ? 'healthy' : 'starting',
       timestamp: new Date().toISOString(),
@@ -122,6 +139,7 @@ export class HealthServer {
         partyId: this.node?.partyId ?? '',
         profile: this.options.profile,
         strands: { total: strands.size, active, idle, hibernating },
+        connectionPaths,
       },
     };
   }
@@ -136,6 +154,13 @@ export class HealthServer {
       else if (strand.status === 'hibernating') hibernating++;
     }
 
+    const paths = this.node?.getConnectionPaths() ?? emptyConnectionPathSummary();
+    // Only emit labelled series for transports actually in use.
+    const byTransport: Record<string, number> = {};
+    for (const [transport, count] of Object.entries(paths.byTransport)) {
+      if (count > 0) byTransport[transport] = count;
+    }
+
     return {
       cadre_node_running: this.node?.isRunning ? 1 : 0,
       cadre_node_uptime_seconds: (Date.now() - this.startTime.getTime()) / 1000,
@@ -143,7 +168,12 @@ export class HealthServer {
       cadre_strands_active: active,
       cadre_strands_idle: idle,
       cadre_strands_hibernating: hibernating,
-      cadre_peers_connected: 0, // Placeholder
+      cadre_peers_connected: paths.total, // back-compat alias for cadre_connections_total
+      cadre_connections_total: paths.total,
+      cadre_connections_relayed: paths.relayed,
+      cadre_connections_direct: paths.direct,
+      cadre_connections_stuck_on_relay: paths.stuckOnRelay,
+      cadre_connections_by_transport: byTransport,
     };
   }
 
@@ -160,8 +190,11 @@ export class HealthServer {
       '# HELP cadre_strands_total Total number of strands',
       '# TYPE cadre_strands_total gauge',
     ];
-    // Continued in next section due to line limit
-    return lines.concat(this.formatStrandMetrics(data)).join('\n');
+    // Continued in next sections due to line limit
+    return lines
+      .concat(this.formatStrandMetrics(data))
+      .concat(this.formatConnectionMetrics(data))
+      .join('\n');
   }
 
   private formatStrandMetrics(data: MetricsData): string[] {
@@ -177,6 +210,32 @@ export class HealthServer {
       '# TYPE cadre_strands_hibernating gauge',
       `cadre_strands_hibernating ${data.cadre_strands_hibernating}`,
     ];
+  }
+
+  private formatConnectionMetrics(data: MetricsData): string[] {
+    const lines = [
+      '', '# HELP cadre_peers_connected Number of connected peers (alias of cadre_connections_total)',
+      '# TYPE cadre_peers_connected gauge',
+      `cadre_peers_connected ${data.cadre_peers_connected}`,
+      '', '# HELP cadre_connections_total Total open connections',
+      '# TYPE cadre_connections_total gauge',
+      `cadre_connections_total ${data.cadre_connections_total}`,
+      '', '# HELP cadre_connections_relayed Connections via a /p2p-circuit relay',
+      '# TYPE cadre_connections_relayed gauge',
+      `cadre_connections_relayed ${data.cadre_connections_relayed}`,
+      '', '# HELP cadre_connections_direct Direct (non-relayed) connections',
+      '# TYPE cadre_connections_direct gauge',
+      `cadre_connections_direct ${data.cadre_connections_direct}`,
+      '', '# HELP cadre_connections_stuck_on_relay Relayed connections past the settle window with no direct sibling',
+      '# TYPE cadre_connections_stuck_on_relay gauge',
+      `cadre_connections_stuck_on_relay ${data.cadre_connections_stuck_on_relay}`,
+      '', '# HELP cadre_connections_by_transport Open connections by transport',
+      '# TYPE cadre_connections_by_transport gauge',
+    ];
+    for (const [transport, count] of Object.entries(data.cadre_connections_by_transport)) {
+      lines.push(`cadre_connections_by_transport{transport="${transport}"} ${count}`);
+    }
+    return lines;
   }
 
   private async startHealthServer(): Promise<void> {

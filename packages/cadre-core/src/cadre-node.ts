@@ -31,6 +31,10 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+import {
+  summarizeConnectionPaths,
+  type ConnectionPathSummary
+} from './diagnostics/connection-path.js';
 
 const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
@@ -123,6 +127,21 @@ export class CadreNode implements SAppIdLookup {
    */
   get isRunning(): boolean {
     return this.running;
+  }
+
+  /**
+   * Classify every open control-network connection as relayed
+   * (`/p2p-circuit`) vs direct, tag its transport, and summarise counts plus a
+   * stuck-on-relay condition. Pure, read-only snapshot over
+   * `controlNode.getConnections()`. Returns an empty (all-zero) summary when
+   * the node has not been started.
+   *
+   * @param settleWindowMs - grace period before a relayed connection with no
+   *   direct sibling is considered stuck (default 10_000ms)
+   */
+  getConnectionPaths(settleWindowMs?: number): ConnectionPathSummary {
+    const conns = this.controlNode?.getConnections() ?? [];
+    return summarizeConnectionPaths(conns, settleWindowMs);
   }
 
   /**

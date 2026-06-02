@@ -103,3 +103,17 @@ export {
   type StrandFormationManagerConfig,
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';
+
+// Connection-path diagnostics (relayed vs direct classification + summary)
+export {
+  classifyTransport,
+  classifyConnectionPath,
+  summarizeConnectionPaths,
+  emptyConnectionPathSummary,
+  DEFAULT_SETTLE_WINDOW_MS,
+  type ConnectionPathKind,
+  type ConnectionTransport,
+  type ConnectionPath,
+  type ConnectionPathSummary,
+  type ConnectionLike
+} from './diagnostics/connection-path.js';

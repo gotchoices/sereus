@@ -91,6 +91,41 @@
 					</ul>
 				{/if}
 			</dd>
+			<dt>Paths</dt>
+			<dd>
+				<div class="path-summary" data-testid="diag-path-summary">
+					<span class="badge" data-testid="diag-path-relayed"
+						>relayed {state.connectivity.paths.relayed}</span
+					>
+					<span class="badge ok" data-testid="diag-path-direct"
+						>direct {state.connectivity.paths.direct}</span
+					>
+					<span
+						class="badge"
+						class:bad={state.connectivity.paths.stuckOnRelay > 0}
+						data-testid="diag-path-stuck"
+						>stuck-on-relay {state.connectivity.paths.stuckOnRelay}</span
+					>
+					{#each Object.entries(state.connectivity.paths.byTransport) as [transport, count] (transport)}
+						{#if count > 0}
+							<span class="badge" data-transport={transport}
+								><code>{transport}</code> {count}</span
+							>
+						{/if}
+					{/each}
+				</div>
+				{#if state.connectivity.paths.stuckOnRelay > 0}
+					<p class="bad warn-row" data-testid="diag-stuck-warning">
+						⚠ {state.connectivity.paths.stuckOnRelay} connection{state.connectivity
+							.paths.stuckOnRelay === 1
+							? ''
+							: 's'} stuck on relay — direct upgrade (WebRTC/DCUtR) did not
+						complete within {Math.round(
+							state.connectivity.paths.settleWindowMs / 1000,
+						)}s.
+					</p>
+				{/if}
+			</dd>
 			<dt>Connections</dt>
 			<dd>
 				{#if state.connectivity.connections.length === 0}
@@ -101,6 +136,7 @@
 							<thead>
 								<tr>
 									<th>Peer</th>
+									<th>Path</th>
 									<th>Remote</th>
 									<th>Dir</th>
 									<th>Protocols</th>
@@ -108,9 +144,26 @@
 							</thead>
 							<tbody>
 								{#each state.connectivity.connections as c (c.peerId + c.remoteAddr)}
-									<tr data-testid="diag-connection-row" data-peer-id={c.peerId}>
+									<tr
+										data-testid="diag-connection-row"
+										data-peer-id={c.peerId}
+										data-kind={c.kind}
+										data-transport={c.transport}
+										data-stuck={c.stuckOnRelay}
+									>
 										<td>
 											<Copyable value={c.peerId} label={c.peerIdShort} />
+										</td>
+										<td class="path-cell">
+											<span
+												class="badge"
+												class:ok={c.kind === 'direct'}
+												class:bad={c.stuckOnRelay}>{c.kind}</span
+											>
+											<code class="transport">{c.transport}</code>
+											{#if c.stuckOnRelay}
+												<span class="badge bad">stuck</span>
+											{/if}
 										</td>
 										<td>
 											<Copyable value={c.remoteAddr} />
@@ -497,6 +550,30 @@
 		background: #eef0f4;
 		padding: 0.0625rem 0.375rem;
 		border-radius: 0.25rem;
+	}
+
+	.path-summary {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.375rem;
+		align-items: center;
+	}
+
+	.warn-row {
+		margin: 0.5rem 0 0 0;
+		font-size: 0.8125rem;
+		font-weight: 500;
+	}
+
+	.path-cell {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.25rem;
+		align-items: center;
+	}
+
+	.path-cell .transport {
+		color: #6c6f76;
 	}
 
 	.conn-table {

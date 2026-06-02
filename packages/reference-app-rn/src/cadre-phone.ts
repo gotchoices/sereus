@@ -14,6 +14,7 @@ import type {
   ApplySeedResult,
   StrandInstance,
   StrandConfig,
+  ConnectionPathSummary,
 } from '@serfab/cadre-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
@@ -148,6 +149,18 @@ export async function dialPeer(addr: string): Promise<void> {
 	const libp2p = node.getControlNode();
 	if (!libp2p) throw new Error('Control network not available');
 	await libp2p.dial(multiaddr(addr));
+}
+
+// ── Diagnostics helpers ───────────────────────────────────────────────────────
+
+/**
+ * Classify the phone node's open connections as relayed vs direct (by transport)
+ * and surface a stuck-on-relay condition. Read this from the RN debug screen.
+ * Throws if the node has not been started, matching the other helpers.
+ */
+export function getConnectionPaths(settleWindowMs?: number): ConnectionPathSummary {
+  if (!node) throw new Error('Phone node not started');
+  return node.getConnectionPaths(settleWindowMs);
 }
 
 // ── Strand helpers ───────────────────────────────────────────────────────────

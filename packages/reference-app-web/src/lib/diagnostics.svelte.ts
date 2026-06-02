@@ -17,6 +17,13 @@ import { getNode, getDb, getStorage, getIdentityFirstSeenMs } from './optimystic
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
 import type { IRawStorage } from '@optimystic/db-p2p';
+import {
+	summarizeConnectionPaths,
+	emptyConnectionPathSummary,
+	type ConnectionPathSummary,
+	type ConnectionPathKind,
+	type ConnectionTransport,
+} from './connection-path.js';
 
 const ERROR_BUFFER_LIMIT = 10;
 const POLL_INTERVAL_MS = 2_000;
@@ -38,7 +45,12 @@ export interface ConnectivityInfo {
 		remoteAddr: string;
 		direction: 'inbound' | 'outbound' | string;
 		protocols: string[];
+		kind: ConnectionPathKind;
+		transport: ConnectionTransport;
+		stuckOnRelay: boolean;
 	}>;
+	/** Relayed-vs-direct path summary (counts, per-transport, stuck-on-relay). */
+	paths: ConnectionPathSummary;
 }
 
 export interface TransportsInfo {
@@ -108,7 +120,12 @@ function emptySnapshot(): DiagSnapshot {
 			firstSeenMs: null,
 			ageMs: null,
 		},
-		connectivity: { status: null, listenAddrs: [], connections: [] },
+		connectivity: {
+			status: null,
+			listenAddrs: [],
+			connections: [],
+			paths: emptyConnectionPathSummary(),
+		},
 		transports: { names: [] },
 		fret: {
 			available: false,
@@ -291,23 +308,37 @@ function collectIdentity(node: Libp2p | null): IdentityInfo {
 }
 
 function collectConnectivity(node: Libp2p | null): ConnectivityInfo {
-	if (!node) return { status: null, listenAddrs: [], connections: [] };
+	if (!node) {
+		return {
+			status: null,
+			listenAddrs: [],
+			connections: [],
+			paths: emptyConnectionPathSummary(),
+		};
+	}
 	const status = typeof node.status === 'string' ? node.status : 'unknown';
 	const listenAddrs = (node.getMultiaddrs?.() ?? []).map((ma) => ma.toString());
 	const conns = node.getConnections?.() ?? [];
-	const connections = conns.map((c: Connection) => {
+	// Classify all connections in one pass — `paths[i]` lines up with `conns[i]`,
+	// so we can zip the per-connection path facts back onto the table rows.
+	const paths = summarizeConnectionPaths(conns);
+	const connections = conns.map((c: Connection, i: number) => {
 		const peerId = c.remotePeer.toString();
 		const remoteAddr = c.remoteAddr?.toString?.() ?? '';
 		const protocols = streamProtocols(c);
+		const path = paths.paths[i];
 		return {
 			peerId,
 			peerIdShort: shortPeerId(peerId) ?? peerId,
 			remoteAddr,
 			direction: c.direction ?? 'unknown',
 			protocols,
+			kind: path?.kind ?? 'direct',
+			transport: path?.transport ?? 'unknown',
+			stuckOnRelay: path?.stuckOnRelay ?? false,
 		};
 	});
-	return { status, listenAddrs, connections };
+	return { status, listenAddrs, connections, paths };
 }
 
 function streamProtocols(connection: Connection): string[] {

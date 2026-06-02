@@ -46,6 +46,10 @@ import {
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import type { Libp2p } from 'libp2p';
+import {
+	summarizeConnectionPaths,
+	type ConnectionPathSummary,
+} from './connection-path.js';
 
 export type NodeMode = 'solo' | 'distributed';
 
@@ -289,6 +293,10 @@ export async function stopNode(): Promise<void> {
  * state. Returns the node's current multiaddrs, peer id, and connection
  * count — enough to verify a circuit-relay reservation has been published
  * (`/p2p-circuit` in the multiaddrs) before the spec presses forward.
+ *
+ * `getConnectionPaths()` additionally classifies every open connection as
+ * relayed vs direct (per transport) and surfaces a stuck-on-relay condition, so
+ * specs can assert on connection-path classification without scraping the DOM.
  */
 function exposeDebugHook(libp2p: Libp2p): void {
 	if (typeof window === 'undefined') return;
@@ -296,6 +304,8 @@ function exposeDebugHook(libp2p: Libp2p): void {
 		getMultiaddrs: () => libp2p.getMultiaddrs().map((ma) => ma.toString()),
 		getPeerId: () => libp2p.peerId.toString(),
 		getConnectionCount: () => libp2p.getConnections().length,
+		getConnectionPaths: (settleWindowMs?: number): ConnectionPathSummary =>
+			summarizeConnectionPaths(libp2p.getConnections(), settleWindowMs),
 	};
 }
 
