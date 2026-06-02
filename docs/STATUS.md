@@ -182,6 +182,22 @@ Goal: define and implement how a **cohort** (all nodes belonging to a strand) is
   - [ ] Token/invitation encoding strategy (application-defined vs standardized)
   - [ ] Auditing and key rotation impacts
 
+## Strand Hibernation (cadre-core)
+
+Strand lifecycle resource management in `@serfab/cadre-core`
+(`hibernation-manager.ts`, `strand-instance-manager.ts`, `cadre-node.ts`).
+
+- [x] Hibernation releases strand resources and rehydrates on wake
+  - `StrandInstanceManager.quiesceStrand` stops the libp2p node + closes the `StrandDatabase`
+    while retaining the instance record + launch config; `resumeStrand` rebuilds them via the
+    shared `buildStrandRuntime`, re-resolving the cohort seed + mode (`bootstrap → networked`).
+  - `CadreNode.handleStrandHibernate`/`handleStrandWake` wire the orchestration; overlapping
+    wake triggers coalesce in `HibernationManager` so only one runtime is rebuilt.
+- [x] `idle` is a lightweight status flag (node + DB still running)
+  - [ ] Trim connections while `idle` ("minimal connections") — parked to backlog (`3-mobile-resource-awareness`)
+- [ ] Cohort-querying check-in (check-in wake) — timer exists but only refreshes `nextCheckIn`
+- [ ] Push-wake via the control network
+
 ## Testing / CI
 
 - [ ] Wire `@serfab/strand-proto` tests into workspace CI

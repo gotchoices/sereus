@@ -27,6 +27,7 @@ export {
 export {
   StrandInstanceManager,
   type StartStrandConfig,
+  type ResumeStrandOverrides,
   getStrandStoragePath
 } from './strand-instance-manager.js';
 

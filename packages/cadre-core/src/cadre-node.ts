@@ -484,26 +484,71 @@ export class CadreNode implements SAppIdLookup {
     }
   }
 
+  /**
+   * Hibernate a strand: release its strand-network resources via the strand
+   * manager (stop the libp2p node, close the StrandDatabase) and mark it
+   * `hibernating`. A quiesced strand holds no open strand-network connections,
+   * transports, or DB handles. No-ops if the strand is missing; if already
+   * quiesced (defensive), just marks status and emits.
+   */
   private async handleStrandHibernate(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
-    if (instance) {
-      instance.status = 'hibernating';
-
-      // Optionally disconnect libp2p to save resources
-      // For now we keep it connected but could stop it here
-      log('Strand %s transitioned to hibernating', strandId);
-      this.emit('strand:hibernating', { strandId });
+    if (!instance) {
+      log('handleStrandHibernate: strand %s not found', strandId);
+      return;
     }
+
+    if (!instance.libp2pNode && !instance.database) {
+      // Already quiesced — only the status flag needs updating.
+      instance.status = 'hibernating';
+      log('Strand %s already quiesced; marked hibernating', strandId);
+      this.emit('strand:hibernating', { strandId });
+      return;
+    }
+
+    log('Hibernating strand %s — releasing strand-network resources', strandId);
+    await this.strandManager.quiesceStrand(strandId);
+    instance.status = 'hibernating';
+    this.emit('strand:hibernating', { strandId });
+    log('Strand %s hibernating (resources released)', strandId);
   }
 
+  /**
+   * Wake a strand. If it was hibernating (quiesced — no libp2p node), re-resolve
+   * the cohort discovery seed and mode exactly as `launchStrand` does and rebuild
+   * its runtime via the strand manager. If it is still live (e.g. waking an idle
+   * strand, which retains its resources), just flip the status. Overlapping wake
+   * triggers are coalesced upstream by `HibernationManager`, so this runs once
+   * per wake; `resumeStrand` is itself idempotent as a backstop.
+   */
   private async handleStrandWake(strandId: string): Promise<void> {
     const instance = this.strandManager.getInstance(strandId);
-    if (instance) {
+    if (!instance) {
+      log('handleStrandWake: strand %s not found', strandId);
+      return;
+    }
+
+    // Still live (idle wake, or defensive double-wake): no rebuild needed.
+    if (instance.libp2pNode || instance.database) {
       instance.status = 'active';
       instance.lastActivity = new Date();
-      log('Strand %s woke up', strandId);
+      log('Strand %s woke (already live)', strandId);
       this.emit('strand:waking', { strandId });
+      return;
     }
+
+    // Quiesced: re-resolve volatile cohort inputs (the seed may have grown, the
+    // mode may have shifted bootstrap → networked) and rebuild the runtime.
+    log('Waking strand %s — rebuilding strand-network resources', strandId);
+    const seed = await this.resolveCohortSeed();
+    const mode = selectStrandMode(undefined, seed.hasOtherPeers);
+    await this.strandManager.resumeStrand(strandId, {
+      bootstrapNodes: seed.bootstrapNodes,
+      mode
+    });
+    instance.lastActivity = new Date();
+    this.emit('strand:waking', { strandId });
+    log('Strand %s awake (resources rebuilt, mode=%s)', strandId, mode);
   }
 
   /**

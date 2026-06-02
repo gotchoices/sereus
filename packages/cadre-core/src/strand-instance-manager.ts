@@ -51,6 +51,18 @@ export interface StartStrandConfig {
 }
 
 /**
+ * Volatile inputs re-resolved when resuming a quiesced strand. These may have
+ * changed since the strand first launched — the cohort discovery seed grows as
+ * peers are learned, and cohort membership can push a strand `bootstrap → networked`.
+ */
+export interface ResumeStrandOverrides {
+  /** Freshly-resolved cohort discovery seed (multiaddr strings). */
+  bootstrapNodes?: string[];
+  /** Freshly-resolved lifecycle mode. */
+  mode?: StrandMode;
+}
+
+/**
  * Get the isolated storage path for a specific strand.
  *
  * @deprecated This function uses Node.js path module which is not available in React Native.
@@ -105,6 +117,12 @@ function resolveStrandStorage(
  */
 export class StrandInstanceManager {
   private instances: Map<string, StrandInstance> = new Map();
+  /**
+   * Retained launch config per strand, captured in `startStrand` and cleared in
+   * `stopStrand`. `resumeStrand` reuses it to rebuild a quiesced strand's runtime
+   * without the caller re-threading storage/network/profile/key/sApp config.
+   */
+  private launchConfigs: Map<string, StartStrandConfig> = new Map();
   private stopping = false;
 
   constructor() {
@@ -177,78 +195,174 @@ export class StrandInstanceManager {
     };
 
     this.instances.set(strandId, instance);
+    this.launchConfigs.set(strandId, config);
 
     try {
-      // Resolve storage for this strand
-      // If a factory function is provided, it will be called with the strandId
-      // to create strand-specific storage (e.g., strand-isolated directories)
-      const strandStorage = resolveStrandStorage(config.storage?.provider, strandId);
-      if (strandStorage) {
-        log('Strand %s using provided storage provider', strandId);
-      }
-
-      // Create isolated libp2p node for this strand
-      // Note: protocolPrefix would be used by libp2p services, but createLibp2pNode
-      // may not support it yet - tracked for future implementation
-      const _protocolPrefix = `/sereus/strand/${strandId}`;
-
-      // Determine relay mode: if explicitly set in config, use that;
-      // otherwise default to true for storage profile nodes
-      const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
-
-      let t0 = performance.now();
-      const node = await createLibp2pNode({
-        port: 0, // Random port
-        bootstrapNodes: config.bootstrapNodes ?? [],
-        networkName: `strand-${strandId}`,
-        storage: strandStorage,
-        fretProfile: config.profile === 'storage' ? 'core' : 'edge',
-        relay: enableRelay,
-        clusterSize: 3,
-        clusterPolicy: {
-          allowDownsize: true,
-          sizeTolerance: 0.5
-        },
-        arachnode: {
-          enableRingZulu: config.profile === 'storage'
-        },
-        ...(config.privateKey && { privateKey: config.privateKey }),
-        ...(config.network?.transports && { transports: config.network.transports }),
-        ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs })
-      }) as Libp2pNodeWithRepo;
-      timing('[startStrand:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
-
-      instance.libp2pNode = node;
-
-      // Create and initialize the StrandDatabase. In bootstrap mode the same
-      // strandStorage instance also backs the optimystic local transactor so
-      // DML lands on the host's persistent storage (e.g. MMKV on RN). Sharing
-      // the instance — not creating a second one over the same id+prefix —
-      // avoids cache divergence between the libp2p and database paths.
-      t0 = performance.now();
-      const strandDb = new StrandDatabase({
-        strandId,
-        sAppConfig,
-        libp2pNode: node,
-        coordinatedRepo: node.coordinatedRepo,
-        mode: config.mode ?? 'networked',
-        rawStorage: strandStorage
-      });
-      await strandDb.initialize();
-      timing('[startStrand:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
-      instance.database = strandDb;
-
-      instance.status = 'active';
-      instance.lastActivity = new Date();
-
+      await this.buildStrandRuntime(instance, config);
       timing('[startStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
       log('Strand %s started successfully with sApp %s', strandId, sAppConfig.id);
       return instance;
-
     } catch (error) {
       instance.status = 'error';
       instance.error = error instanceof Error ? error.message : String(error);
       log('Failed to start strand %s: %s', strandId, instance.error);
+      throw error;
+    }
+  }
+
+  /**
+   * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
+   * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
+   * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
+   * volatile inputs (bootstrapNodes, mode, storage, network, profile,
+   * privateKey, sApp config) from `config`, so the caller controls the
+   * cohort-derived values.
+   */
+  private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
+    const strandId = instance.strandId;
+    const { sAppConfig } = config;
+
+    // Resolve storage for this strand. If a factory function is provided, it is
+    // called with the strandId to create strand-specific storage (e.g.,
+    // strand-isolated directories).
+    const strandStorage = resolveStrandStorage(config.storage?.provider, strandId);
+    if (strandStorage) {
+      log('Strand %s using provided storage provider', strandId);
+    }
+
+    // Note: protocolPrefix would be used by libp2p services, but createLibp2pNode
+    // may not support it yet - tracked for future implementation.
+    const _protocolPrefix = `/sereus/strand/${strandId}`;
+
+    // Determine relay mode: if explicitly set in config, use that;
+    // otherwise default to true for storage profile nodes.
+    const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
+
+    let t0 = performance.now();
+    const node = await createLibp2pNode({
+      port: 0, // Random port
+      bootstrapNodes: config.bootstrapNodes ?? [],
+      networkName: `strand-${strandId}`,
+      storage: strandStorage,
+      fretProfile: config.profile === 'storage' ? 'core' : 'edge',
+      relay: enableRelay,
+      clusterSize: 3,
+      clusterPolicy: {
+        allowDownsize: true,
+        sizeTolerance: 0.5
+      },
+      arachnode: {
+        enableRingZulu: config.profile === 'storage'
+      },
+      ...(config.privateKey && { privateKey: config.privateKey }),
+      ...(config.network?.transports && { transports: config.network.transports }),
+      ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs })
+    }) as Libp2pNodeWithRepo;
+    timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
+
+    instance.libp2pNode = node;
+
+    // Create and initialize the StrandDatabase. In bootstrap mode the same
+    // strandStorage instance also backs the optimystic local transactor so
+    // DML lands on the host's persistent storage (e.g. MMKV on RN). Sharing
+    // the instance — not creating a second one over the same id+prefix —
+    // avoids cache divergence between the libp2p and database paths.
+    t0 = performance.now();
+    const strandDb = new StrandDatabase({
+      strandId,
+      sAppConfig,
+      libp2pNode: node,
+      coordinatedRepo: node.coordinatedRepo,
+      mode: config.mode ?? 'networked',
+      rawStorage: strandStorage
+    });
+    await strandDb.initialize();
+    timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
+    instance.database = strandDb;
+
+    instance.status = 'active';
+    instance.lastActivity = new Date();
+  }
+
+  /**
+   * Quiesce a strand: release its strand-network resources (stop the libp2p node,
+   * close the StrandDatabase) while RETAINING the instance record — identity,
+   * sAppInfo, keys, latency hint, metadata — and its launch config so it can be
+   * resumed later. Mechanically this is `stopStrand` minus the instance/config
+   * deletion. The caller sets the post-quiesce status (e.g. `hibernating`).
+   * No-ops when the strand is missing or already quiesced.
+   */
+  async quiesceStrand(strandId: string): Promise<void> {
+    const instance = this.instances.get(strandId);
+    if (!instance) {
+      log('quiesceStrand: strand %s not found', strandId);
+      return;
+    }
+    if (!instance.libp2pNode && !instance.database) {
+      log('quiesceStrand: strand %s already quiesced', strandId);
+      return;
+    }
+
+    log('Quiescing strand instance: %s', strandId);
+    // Close the database before stopping libp2p (mirrors stopStrand ordering).
+    if (instance.database) {
+      await instance.database.close();
+      instance.database = undefined;
+    }
+    if (instance.libp2pNode) {
+      await instance.libp2pNode.stop();
+      instance.libp2pNode = undefined;
+    }
+    instance.connectedPeers = 0;
+    log('Strand %s quiesced (resources released, instance retained)', strandId);
+  }
+
+  /**
+   * Resume a previously-quiesced strand: rebuild its libp2p node + StrandDatabase
+   * from the retained launch config and re-attach them, transitioning it back to
+   * `active`. `overrides` re-applies volatile inputs that may have changed since
+   * launch (cohort `bootstrapNodes`, lifecycle `mode`) and updates the retained
+   * config so a later resume reuses the latest values. Returns the live instance
+   * unchanged if it is already running.
+   */
+  async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
+    if (this.stopping) {
+      throw new Error('StrandInstanceManager is stopping');
+    }
+    const instance = this.instances.get(strandId);
+    if (!instance) {
+      throw new Error(`Cannot resume strand ${strandId}: not tracked`);
+    }
+    const launchConfig = this.launchConfigs.get(strandId);
+    if (!launchConfig) {
+      throw new Error(`Cannot resume strand ${strandId}: no retained launch config`);
+    }
+    if (instance.libp2pNode || instance.database) {
+      log('resumeStrand: strand %s already live', strandId);
+      return instance;
+    }
+
+    log('Resuming strand instance: %s', strandId);
+    const tTotal = performance.now();
+
+    // Re-apply volatile inputs and persist them so a subsequent resume reuses them.
+    const resumeConfig: StartStrandConfig = {
+      ...launchConfig,
+      bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes,
+      mode: overrides?.mode ?? launchConfig.mode
+    };
+    this.launchConfigs.set(strandId, resumeConfig);
+
+    instance.status = 'starting';
+    try {
+      await this.buildStrandRuntime(instance, resumeConfig);
+      timing('[resumeStrand:%s] total: %dms', strandId, Math.round(performance.now() - tTotal));
+      log('Strand %s resumed successfully', strandId);
+      return instance;
+    } catch (error) {
+      instance.status = 'error';
+      instance.error = error instanceof Error ? error.message : String(error);
+      log('Failed to resume strand %s: %s', strandId, instance.error);
       throw error;
     }
   }
@@ -278,6 +392,7 @@ export class StrandInstanceManager {
       }
       instance.status = 'stopped';
       this.instances.delete(strandId);
+      this.launchConfigs.delete(strandId);
       log('Strand %s stopped successfully', strandId);
     } catch (error) {
       instance.status = 'error';

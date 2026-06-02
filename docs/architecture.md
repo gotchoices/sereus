@@ -473,11 +473,11 @@ A party may participate in many strands (potentially hundreds), but most are ina
 
 **Strand States:**
 
-| State | Description | Connections |
-|-------|-------------|-------------|
-| `active` | Actively transacting, recent activity | Full libp2p node running |
-| `idle` | No recent activity, monitoring for wake | Minimal or no connections |
-| `hibernating` | Long-term inactive | No connections, wake via control network |
+| State | Description | Strand-network resources |
+|-------|-------------|--------------------------|
+| `active` | Actively transacting, recent activity | Full libp2p node + `StrandDatabase` running |
+| `idle` | No recent activity (lightweight status flag) | Still fully running — node + DB retained. Connection trimming while idle is a planned refinement, not yet implemented |
+| `hibernating` | Long-term inactive | **Released** — libp2p node stopped, `StrandDatabase` closed, zero strand-network connections/transports/DB handles. Instance identity + metadata retained for rehydration |
 
 **Activity-Based Transitions:**
 
@@ -486,18 +486,18 @@ stateDiagram-v2
     active --> idle : idle timeout (configurable)
     idle --> active : incoming activity
     idle --> hibernating : extended idle + backoff
-    hibernating --> active : wake signal
+    hibernating --> active : wake signal (rebuild node + DB)
 ```
 
-**Idle Strand Behavior:**
-- Disconnect from strand peers but retain local state
-- Periodic check-in with exponential backoff (minutes → hours → days)
-- Check-in queries cohort for pending transactions
+**Idle vs. Hibernating Behavior:**
+- `idle` is currently a lightweight status flag: the strand keeps its libp2p node and `StrandDatabase` fully running. Trimming connections while idle ("minimal connections") is a planned refinement, not yet implemented.
+- `hibernating` releases the strand's resources: `CadreNode.handleStrandHibernate` quiesces the strand via `StrandInstanceManager.quiesceStrand` (stops the libp2p node, closes the `StrandDatabase`), so it holds no open strand-network connections, transports, or DB handles. The instance record — strand id, sApp info, member key, latency hint — is retained so the strand can be rehydrated.
+- Waking a hibernating strand rebuilds it: `handleStrandWake` re-resolves the cohort discovery seed and mode (a strand may have grown `bootstrap → networked` since launch) and calls `StrandInstanceManager.resumeStrand`, which reconstructs the libp2p node + `StrandDatabase`.
 
 **Wake Mechanisms:**
-1. **Local wake**: Application explicitly activates the strand
-2. **Check-in wake**: Periodic check-in discovers pending activity
-3. **Push wake**: Another cadre member (with incoming connectivity) receives wake request and propagates via control network
+1. **Local wake** (implemented): application activity (`recordStrandActivity`) on a hibernating strand, or an explicit `wakeStrand()` call, rehydrates it. Overlapping wake triggers are coalesced by `HibernationManager` so only one runtime is rebuilt.
+2. **Check-in wake** (planned): periodic check-in queries the cohort for pending activity. The check-in timer exists today but only refreshes `nextCheckIn`; the cohort query is not yet implemented.
+3. **Push wake** (planned): another cadre member with incoming connectivity receives a wake request and propagates it via the control network.
 
 **sApp Latency Hints:**
 

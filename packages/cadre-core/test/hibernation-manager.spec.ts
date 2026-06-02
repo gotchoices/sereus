@@ -154,7 +154,77 @@ describe('HibernationManager', () => {
       // Fast forward again to just before new idle timeout
       await vi.advanceTimersByTimeAsync(timeouts.idleTimeout - 1000);
       expect(callbacks.idleCalls).not.toContain('strand-1');
-      
+
+      manager.stop();
+    });
+  });
+
+  describe('hibernate + wake coalescing', () => {
+    it('fires onHibernate after idle+hibernate timeouts', async () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-hib', 'interactive');
+      manager.trackStrand(instance);
+
+      const timeouts = HIBERNATION_TIMEOUTS.interactive;
+
+      // Drive past the idle timeout, then past the hibernate timeout.
+      await vi.advanceTimersByTimeAsync(timeouts.idleTimeout + 100);
+      expect(callbacks.idleCalls).toContain('strand-hib');
+
+      await vi.advanceTimersByTimeAsync(timeouts.hibernateTimeout + 100);
+      expect(callbacks.hibernateCalls).toContain('strand-hib');
+
+      manager.stop();
+    });
+
+    it('fires onWake exactly once for two near-simultaneous activities', async () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-hib', 'interactive');
+      manager.trackStrand(instance);
+
+      const timeouts = HIBERNATION_TIMEOUTS.interactive;
+      await vi.advanceTimersByTimeAsync(timeouts.idleTimeout + timeouts.hibernateTimeout + 200);
+      expect(callbacks.hibernateCalls).toContain('strand-hib');
+
+      // The real CadreNode hibernate callback marks the instance hibernating; the
+      // mock here only records calls, so simulate that state transition.
+      instance.status = 'hibernating';
+
+      // Two activities arriving back-to-back (before the wake settles) must
+      // coalesce into a single onWake — otherwise two libp2p nodes get built.
+      manager.recordActivity(instance);
+      manager.recordActivity(instance);
+
+      // Let the in-flight wake settle (and its cleanup run).
+      await vi.advanceTimersByTimeAsync(0);
+
+      expect(callbacks.wakeCalls).toEqual(['strand-hib']);
+      expect(callbacks.onWake).toHaveBeenCalledTimes(1);
+
+      manager.stop();
+    });
+
+    it('force wakeStrand coalesces with an in-flight activity wake', async () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-hib', 'interactive');
+      manager.trackStrand(instance);
+      instance.status = 'hibernating';
+
+      // Kick off an activity-driven wake, then force-wake before it settles.
+      manager.recordActivity(instance);
+      await manager.wakeStrand('strand-hib');
+
+      expect(callbacks.onWake).toHaveBeenCalledTimes(1);
+
       manager.stop();
     });
   });

@@ -3,7 +3,7 @@ import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-cry
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
 import { signSchema } from '../src/schema-verification.js';
-import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig } from '../src/types.js';
+import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance } from '../src/types.js';
 
 describe('CadreNode', () => {
   let authorPrivateKey: string;
@@ -230,6 +230,124 @@ describe('CadreNode', () => {
 
       await node.stop();
     }, 60000);
+  });
+
+  describe('hibernation orchestration', () => {
+    it('hibernate quiesces, wake resumes with a freshly re-resolved cohort seed', async () => {
+      const node = new CadreNode(createConfig());
+
+      // A live (post-launch) strand instance the fake manager hands back. The
+      // fake quiesce/resume mutate it the way the real StrandInstanceManager does.
+      const instance: StrandInstance = {
+        strandId: 'hib-strand',
+        status: 'active',
+        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        connectedPeers: 3,
+        lastActivity: new Date(0),
+        latencyHint: 'interactive',
+        libp2pNode: {} as never,
+        database: {} as never
+      };
+
+      const quiesceCalls: string[] = [];
+      const resumeCalls: Array<{ id: string; overrides: unknown }> = [];
+      const fakeManager = {
+        getInstance: (id: string) => (id === 'hib-strand' ? instance : undefined),
+        quiesceStrand: async (id: string) => {
+          quiesceCalls.push(id);
+          instance.libp2pNode = undefined;
+          instance.database = undefined;
+          instance.connectedPeers = 0;
+        },
+        resumeStrand: async (id: string, overrides: unknown) => {
+          resumeCalls.push({ id, overrides });
+          instance.libp2pNode = {} as never;
+          instance.database = {} as never;
+          instance.status = 'active';
+          return instance;
+        }
+      };
+
+      // Inject the fake strand manager plus a control DB/node so resolveCohortSeed
+      // returns a non-trivial, freshly-resolved seed at wake time (self excluded).
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
+      (node as unknown as { controlNode: unknown }).controlNode = {
+        peerId: { toString: () => 'self-peer' }
+      };
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => [
+          { peerId: 'self-peer', multiaddr: '/ip4/1.1.1.1/tcp/4001/p2p/self-peer' },
+          { peerId: 'other-peer', multiaddr: '/ip4/9.9.9.9/tcp/4001/p2p/other-peer' }
+        ]
+      };
+
+      const hibernating: string[] = [];
+      const waking: string[] = [];
+      node.on('strand:hibernating', (d) => hibernating.push(d.strandId));
+      node.on('strand:waking', (d) => waking.push(d.strandId));
+
+      const callHibernate = (node as unknown as {
+        handleStrandHibernate: (id: string) => Promise<void>;
+      }).handleStrandHibernate.bind(node);
+      const callWake = (node as unknown as {
+        handleStrandWake: (id: string) => Promise<void>;
+      }).handleStrandWake.bind(node);
+
+      // Hibernate: quiesce + mark status + emit.
+      await callHibernate('hib-strand');
+      expect(quiesceCalls).toEqual(['hib-strand']);
+      expect(instance.status).toBe('hibernating');
+      expect(instance.libp2pNode).toBeUndefined();
+      expect(hibernating).toEqual(['hib-strand']);
+
+      // Wake: cohort now has another peer → networked; resume with that seed.
+      await callWake('hib-strand');
+      expect(resumeCalls).toHaveLength(1);
+      expect(resumeCalls[0]!.id).toBe('hib-strand');
+      expect(resumeCalls[0]!.overrides).toEqual({
+        bootstrapNodes: ['/ip4/9.9.9.9/tcp/4001/p2p/other-peer'],
+        mode: 'networked'
+      });
+      expect(instance.status).toBe('active');
+      expect(instance.libp2pNode).toBeDefined();
+      expect(waking).toEqual(['hib-strand']);
+    });
+
+    it('wake on a still-live (idle) strand flips status without rebuilding', async () => {
+      const node = new CadreNode(createConfig());
+
+      const instance: StrandInstance = {
+        strandId: 'idle-strand',
+        status: 'idle',
+        connectedPeers: 1,
+        lastActivity: new Date(0),
+        latencyHint: 'interactive',
+        libp2pNode: {} as never,
+        database: {} as never
+      };
+
+      const resumeCalls: string[] = [];
+      const fakeManager = {
+        getInstance: (id: string) => (id === 'idle-strand' ? instance : undefined),
+        quiesceStrand: async () => {},
+        resumeStrand: async (id: string) => { resumeCalls.push(id); return instance; }
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
+
+      const waking: string[] = [];
+      node.on('strand:waking', (d) => waking.push(d.strandId));
+
+      const callWake = (node as unknown as {
+        handleStrandWake: (id: string) => Promise<void>;
+      }).handleStrandWake.bind(node);
+
+      await callWake('idle-strand');
+
+      // Live strand: no resume rebuild, just a status flip + event.
+      expect(resumeCalls).toHaveLength(0);
+      expect(instance.status).toBe('active');
+      expect(waking).toEqual(['idle-strand']);
+    });
   });
 
   describe('enrollment service', () => {

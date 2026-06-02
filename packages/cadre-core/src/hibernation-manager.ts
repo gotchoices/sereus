@@ -32,6 +32,13 @@ export class HibernationManager {
   private readonly callbacks: HibernationCallbacks;
   private readonly timers: Map<string, ReturnType<typeof setTimeout>> = new Map();
   private readonly checkInTimers: Map<string, ReturnType<typeof setInterval>> = new Map();
+  /**
+   * In-flight wake promises keyed by strandId. Coalesces overlapping wake
+   * triggers (two near-simultaneous activities, or activity racing a force wake)
+   * so `onWake` — and the libp2p-node rebuild it drives — runs at most once per
+   * concurrent wake.
+   */
+  private readonly wakePromises: Map<string, Promise<void>> = new Map();
   private running = false;
 
   constructor(config: HibernationConfig, callbacks: HibernationCallbacks) {
@@ -82,7 +89,11 @@ export class HibernationManager {
       clearInterval(timer);
     }
     this.checkInTimers.clear();
-    
+
+    // In-flight wakes clean themselves up via their finally; drop the references
+    // so a fresh start coalesces cleanly.
+    this.wakePromises.clear();
+
     log('HibernationManager stopped');
   }
 
@@ -122,13 +133,19 @@ export class HibernationManager {
     const { strandId, status, latencyHint } = instance;
     instance.lastActivity = new Date();
     
-    // If idle or hibernating, wake up
+    // If idle or hibernating, wake up. Coalesce so two near-simultaneous
+    // activities don't each fire onWake (which would rebuild two libp2p nodes).
     if (status === 'idle' || status === 'hibernating') {
       log('Activity on %s strand %s - waking', status, strandId);
       this.clearTimers(strandId);
-      void this.callbacks.onWake(strandId);
+      // Fire-and-forget; force-wake awaiters see errors, so swallow (and log)
+      // here to avoid an unhandled rejection on this best-effort path.
+      void this.beginWake(strandId).catch((err) => {
+        log('Activity-driven wake failed for strand %s: %o', strandId, err);
+      });
+      return;
     }
-    
+
     // Reschedule idle transition if active
     if (status === 'active') {
       const timeouts = this.getTimeouts(latencyHint);
@@ -143,7 +160,30 @@ export class HibernationManager {
    */
   async wakeStrand(strandId: string): Promise<void> {
     this.clearTimers(strandId);
-    await this.callbacks.onWake(strandId);
+    await this.beginWake(strandId);
+  }
+
+  /**
+   * Begin a wake for a strand, or coalesce with one already in flight. Ensures
+   * `onWake` runs at most once per concurrent wake — the returned promise is
+   * shared by all overlapping callers and cleared once it settles. Force-wake
+   * callers await it; activity-driven callers fire-and-forget.
+   */
+  private beginWake(strandId: string): Promise<void> {
+    const existing = this.wakePromises.get(strandId);
+    if (existing) {
+      return existing;
+    }
+
+    const wake = (async () => {
+      try {
+        await this.callbacks.onWake(strandId);
+      } finally {
+        this.wakePromises.delete(strandId);
+      }
+    })();
+    this.wakePromises.set(strandId, wake);
+    return wake;
   }
 
   private scheduleIdleTransition(instance: StrandInstance): void {
