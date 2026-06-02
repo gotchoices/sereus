@@ -4,7 +4,9 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   SeedBootstrapService,
-  SEED_PROTOCOL
+  SEED_PROTOCOL,
+  canonicalSeedPayload,
+  decodeLengthPrefixedFrame
 } from '../src/seed-bootstrap.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type {
@@ -114,8 +116,8 @@ describe('SeedBootstrapService', () => {
         ]
       };
 
-      // Sign the seed
-      const seedJson = JSON.stringify(seedData);
+      // Sign the seed over the canonical payload (key-order independent)
+      const seedJson = canonicalSeedPayload(seedData);
       const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
       const signature = sign(
         seedDigest,
@@ -153,7 +155,7 @@ describe('SeedBootstrapService', () => {
 
       // Create and sign original seed
       const originalData = { partyId, peers: [] };
-      const seedJson = JSON.stringify(originalData);
+      const seedJson = canonicalSeedPayload(originalData);
       const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
       const signature = sign(
         seedDigest,
@@ -173,6 +175,117 @@ describe('SeedBootstrapService', () => {
       };
 
       expect(service.validateSeedSignature(tamperedSeed)).toBe(false);
+    });
+  });
+
+  describe('canonical seed signing', () => {
+    function signSeed(privateKey: string, publicKey: string, seedData: {
+      partyId: string;
+      peers: SeedPeer[];
+      transactions?: ControlNetworkSeed['transactions'];
+    }): ControlNetworkSeed {
+      const seedDigest = digest(canonicalSeedPayload(seedData), 'sha256', 'utf8', 'base64url') as string;
+      const signature = sign(
+        seedDigest,
+        privateKey,
+        'ed25519',
+        'base64url',
+        'base64url',
+        'base64url'
+      ) as string;
+      return { ...seedData, signature, signerKey: publicKey };
+    }
+
+    it('is independent of peer key insertion order', () => {
+      const service = new SeedBootstrapService({ partyId });
+
+      // Same peer, fields inserted in different orders — canonical form sorts
+      // keys, so both must validate against one signature.
+      const peerA: SeedPeer = {
+        peerId: '12D3KooWTestPeer1',
+        multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
+        isAuthority: true,
+        publicKey: authorityPublicKey,
+      };
+      const seed = signSeed(authorityPrivateKey, authorityPublicKey, { partyId, peers: [peerA] });
+
+      // Rebuild the peer with keys in a different insertion order.
+      const reordered: ControlNetworkSeed = {
+        ...seed,
+        peers: [{
+          publicKey: authorityPublicKey,
+          isAuthority: true,
+          multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
+          peerId: '12D3KooWTestPeer1',
+        }],
+      };
+
+      expect(service.validateSeedSignature(seed)).toBe(true);
+      expect(service.validateSeedSignature(reordered)).toBe(true);
+    });
+
+    it('validates a seed that carries transactions (regression for verifier/creator mismatch)', () => {
+      const service = new SeedBootstrapService({ partyId });
+
+      const seed = signSeed(authorityPrivateKey, authorityPublicKey, {
+        partyId,
+        peers: [],
+        transactions: [{ id: 'tx-1', data: 'data-1', signature: 'sig-1' }],
+      });
+
+      expect(service.validateSeedSignature(seed)).toBe(true);
+    });
+
+    it('treats absent and undefined transactions identically', () => {
+      // {partyId, peers} and {partyId, peers, transactions: undefined} must
+      // canonicalize to the same bytes.
+      const without = canonicalSeedPayload({ partyId, peers: [] });
+      const withUndefined = canonicalSeedPayload({ partyId, peers: [], transactions: undefined });
+      expect(without).toBe(withUndefined);
+    });
+  });
+
+  describe('decodeLengthPrefixedFrame', () => {
+    function frame(body: Uint8Array, declaredLength = body.length): Uint8Array {
+      const out = new Uint8Array(4 + body.length);
+      new DataView(out.buffer).setUint32(0, declaredLength, false);
+      out.set(body, 4);
+      return out;
+    }
+
+    it('decodes a valid frame', () => {
+      const body = new TextEncoder().encode('{"accepted":true}');
+      const decoded = decodeLengthPrefixedFrame(frame(body));
+      expect(new TextDecoder().decode(decoded)).toBe('{"accepted":true}');
+    });
+
+    it('rejects a buffer too short for the length prefix', () => {
+      expect(() => decodeLengthPrefixedFrame(new Uint8Array([0, 0, 0])))
+        .toThrow(/too short/);
+    });
+
+    it('rejects a declared length exceeding the bytes present', () => {
+      // 6-byte buffer (2 body bytes) declaring length 200.
+      const buf = new Uint8Array(6);
+      new DataView(buf.buffer).setUint32(0, 200, false);
+      expect(() => decodeLengthPrefixedFrame(buf))
+        .toThrow(/only 2 body bytes present/);
+    });
+
+    it('rejects a declared length exceeding maxLength', () => {
+      const body = new Uint8Array(8);
+      expect(() => decodeLengthPrefixedFrame(frame(body, 8), 4))
+        .toThrow(/exceeding max 4/);
+    });
+
+    it('honours a non-zero byteOffset view', () => {
+      const body = new TextEncoder().encode('hi');
+      const f = frame(body);
+      // Embed the frame inside a larger buffer at a non-zero offset.
+      const backing = new Uint8Array(f.length + 3);
+      backing.set(f, 3);
+      const view = backing.subarray(3);
+      expect(new TextDecoder().decode(decodeLengthPrefixedFrame(view))).toBe('hi');
     });
   });
 
@@ -357,7 +470,7 @@ describe('Seed authority validation', () => {
 		peers: SeedPeer[]
 	): ControlNetworkSeed {
 		const seedData = { partyId, peers };
-		const seedJson = JSON.stringify(seedData);
+		const seedJson = canonicalSeedPayload(seedData);
 		const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
 		const signature = sign(
 			seedDigest,

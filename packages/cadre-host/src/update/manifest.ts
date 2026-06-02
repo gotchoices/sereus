@@ -5,12 +5,14 @@
  * detached Ed25519 signature of `canonicalJson(manifest)`. cadre-host only
  * trusts manifests whose signature matches the embedded release public key.
  *
- * Canonical serialization is a tiny local impl — depending on
- * `json-canonicalize` (or similar) for a single call site is overkill, and
- * the shape is fixed (`UpdateManifest`).
+ * Canonical serialization (`canonicalJson`) is shared from `@serfab/cadre-core`
+ * so the seed-signing path and this manifest-signing path agree on the signed
+ * byte representation; the shape we sign here is fixed (`UpdateManifest`).
  */
 
 import { sign as cryptoSign, verify as cryptoVerify, type KeyObject } from 'node:crypto';
+
+import { canonicalJson } from '@serfab/cadre-core';
 
 import { ed25519FromRaw, getReleasePublicKey, getReleasePublicKeyBase64 } from './release-key.js';
 import {
@@ -194,26 +196,8 @@ function isUpdateManifest(v: unknown): v is UpdateManifest {
 }
 
 /**
- * Canonical JSON: recursively sort object keys, no whitespace, no trailing
- * newline. Matches a typical RFC 8785 subset for the fixed shape we sign.
- * Arrays preserve order.
+ * Canonical JSON serializer used to define the signed byte representation.
+ * The implementation lives in `@serfab/cadre-core` (cadre-host depends on
+ * cadre-core); re-exported here so existing import sites stay stable.
  */
-export function canonicalJson(value: unknown): string {
-  if (value === null) return 'null';
-  if (typeof value === 'number') {
-    if (!Number.isFinite(value)) throw new Error('cannot serialize non-finite number');
-    return JSON.stringify(value);
-  }
-  if (typeof value === 'string' || typeof value === 'boolean') {
-    return JSON.stringify(value);
-  }
-  if (Array.isArray(value)) {
-    return '[' + value.map((v) => canonicalJson(v)).join(',') + ']';
-  }
-  if (typeof value === 'object') {
-    const obj = value as Record<string, unknown>;
-    const keys = Object.keys(obj).filter((k) => obj[k] !== undefined).sort();
-    return '{' + keys.map((k) => JSON.stringify(k) + ':' + canonicalJson(obj[k])).join(',') + '}';
-  }
-  throw new Error(`cannot serialize value of type ${typeof value}`);
-}
+export { canonicalJson } from '@serfab/cadre-core';

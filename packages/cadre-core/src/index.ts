@@ -1,6 +1,9 @@
 // Core types
 export * from './types.js';
 
+// Canonical JSON serialization (shared signing payload format)
+export { canonicalJson } from './canonical-json.js';
+
 // Main CadreNode class
 export { CadreNode } from './cadre-node.js';
 

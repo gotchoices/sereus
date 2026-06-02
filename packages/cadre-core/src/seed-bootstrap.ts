@@ -30,6 +30,7 @@ import type {
   CadreInvite
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
+import { canonicalJson } from './canonical-json.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -38,6 +39,48 @@ export const SEED_PROTOCOL = '/sereus/seed/1.0.0';
 
 /** Maximum seed message size (1MB) */
 const MAX_SEED_SIZE = 1024 * 1024;
+
+/**
+ * Decode a 4-byte big-endian length-prefixed frame; returns the body bytes.
+ *
+ * Guards every parse site against malformed input: a buffer too short to hold
+ * the prefix, a declared length exceeding `maxLength`, and a declared length
+ * exceeding the bytes actually present. Returns a view (`subarray`, no copy) —
+ * the body is handed straight to `TextDecoder`.
+ */
+export function decodeLengthPrefixedFrame(data: Uint8Array, maxLength = MAX_SEED_SIZE): Uint8Array {
+  if (data.length < 4) {
+    throw new Error(`Seed frame too short: ${data.length} bytes, need ≥4 for length prefix`);
+  }
+  // Pass the full (buffer, byteOffset, byteLength) triple so the read is correct
+  // even for a non-zero-offset view, not just the fresh zero-offset arrays
+  // current callers pass.
+  const length = new DataView(data.buffer, data.byteOffset, data.byteLength).getUint32(0, false);
+  const available = data.length - 4;
+  if (length > maxLength) {
+    throw new Error(`Seed frame declares length ${length} exceeding max ${maxLength}`);
+  }
+  if (length > available) {
+    throw new Error(`Seed frame declares length ${length} but only ${available} body bytes present`);
+  }
+  return data.subarray(4, 4 + length);
+}
+
+/**
+ * Canonical byte representation of the authenticated seed fields.
+ *
+ * Routes both the creator (`createSeed`) and the verifier
+ * (`validateSeedSignature`) through one builder so the signed bytes are
+ * identical regardless of key insertion order or optional-field presence.
+ * `canonicalJson` sorts keys and drops `undefined`, so `{partyId, peers}` and
+ * `{partyId, peers, transactions: undefined}` serialize identically — and a
+ * seed that does carry `transactions` is signed/verified over the same bytes.
+ */
+export function canonicalSeedPayload(
+  seed: Pick<ControlNetworkSeed, 'partyId' | 'peers' | 'transactions'>
+): string {
+  return canonicalJson({ partyId: seed.partyId, peers: seed.peers, transactions: seed.transactions });
+}
 
 /**
  * Configuration for the SeedBootstrapService
@@ -227,8 +270,8 @@ export class SeedBootstrapService {
       peers,
     };
     
-    // Sign the seed
-    const seedJson = JSON.stringify(seedData);
+    // Sign the seed over its canonical byte representation
+    const seedJson = canonicalSeedPayload(seedData);
     const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
     const signature = sign(
       seedDigest,
@@ -385,8 +428,8 @@ export class SeedBootstrapService {
       }
 
       // Parse length-prefixed response
-      const responseLength = new DataView(responseData.buffer, responseData.byteOffset).getUint32(0, false);
-      const responseJson = new TextDecoder().decode(responseData.slice(4, 4 + responseLength));
+      const responseBody = decodeLengthPrefixedFrame(responseData);
+      const responseJson = new TextDecoder().decode(responseBody);
       const ack = JSON.parse(responseJson) as SeedAckMessage;
 
       log('Seed delivery response: accepted=%s', ack.accepted);
@@ -420,14 +463,9 @@ export class SeedBootstrapService {
    */
   validateSeedSignature(seed: ControlNetworkSeed): boolean {
     try {
-      // Reconstruct the signed data (seed without signature fields)
-      const seedData = {
-        partyId: seed.partyId,
-        peers: seed.peers,
-        ...(seed.transactions ? { transactions: seed.transactions } : {}),
-      };
-
-      const seedJson = JSON.stringify(seedData);
+      // Reconstruct the signed bytes via the shared canonical payload builder so
+      // verification is independent of key order and optional-field presence.
+      const seedJson = canonicalSeedPayload(seed);
       const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
 
       return verify(
@@ -514,8 +552,8 @@ export class SeedBootstrapService {
         }
 
         // Parse length-prefixed message
-        const messageLength = new DataView(data.buffer, data.byteOffset).getUint32(0, false);
-        const messageJson = new TextDecoder().decode(data.slice(4, 4 + messageLength));
+        const messageBody = decodeLengthPrefixedFrame(data);
+        const messageJson = new TextDecoder().decode(messageBody);
         const message = JSON.parse(messageJson) as SeedMessage;
 
         // Emit seed received event
