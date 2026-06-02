@@ -25,6 +25,14 @@ export const CLASSIFIER_TABLE: Array<{
     transport: 'circuit-relay',
   },
   {
+    // Browser-to-browser WebRTC dialed over a relay: the connection keeps the
+    // circuit prefix but its data path is direct, so it must classify as
+    // direct/webrtc (WebRTC checks precede /p2p-circuit). Regression guard.
+    addr: '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/webrtc/p2p/QmTarget',
+    kind: 'direct',
+    transport: 'webrtc',
+  },
+  {
     addr: '/ip4/1.2.3.4/udp/9/webrtc-direct/certhash/uEiAabc/p2p/QmTarget',
     kind: 'direct',
     transport: 'webrtc-direct',
@@ -92,6 +100,9 @@ function makeConn(opts: MakeConnOpts): ConnectionLike {
 
 const RELAY_ADDR = '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/p2p/QmPeerA';
 const WEBRTC_ADDR = '/ip4/1.2.3.4/udp/9/webrtc/p2p/QmPeerA';
+// Browser-to-browser WebRTC keeps the relay's circuit prefix but is direct.
+const WEBRTC_OVER_CIRCUIT_ADDR =
+  '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/webrtc/p2p/QmPeerA';
 const WS_ADDR = '/ip4/127.0.0.1/tcp/4001/ws/p2p/QmPeerB';
 
 describe('summarizeConnectionPaths', () => {
@@ -144,6 +155,28 @@ describe('summarizeConnectionPaths', () => {
     expect(summary.stuckOnRelay).toBe(0);
     const relayedPath = summary.paths.find((p) => p.kind === 'relayed');
     expect(relayedPath!.stuckOnRelay).toBe(false);
+  });
+
+  it('treats an aged webrtc-over-circuit conn as direct, never stuck (hole-punch succeeded)', () => {
+    // The successful WebRTC connection retains the circuit prefix in its
+    // remoteAddr; it must still be classified direct/webrtc and never flagged
+    // stuck, even with no separate direct sibling and an age past the window.
+    const conn = makeConn({
+      peerId: 'QmPeerA',
+      remoteAddr: WEBRTC_OVER_CIRCUIT_ADDR,
+      openedAtMs: Date.now() - 20_000,
+    });
+    const summary = summarizeConnectionPaths([conn], 10_000);
+
+    expect(summary.total).toBe(1);
+    expect(summary.direct).toBe(1);
+    expect(summary.relayed).toBe(0);
+    expect(summary.stuckOnRelay).toBe(0);
+    expect(summary.byTransport.webrtc).toBe(1);
+    expect(summary.byTransport['circuit-relay']).toBe(0);
+    expect(summary.paths[0]!.kind).toBe('direct');
+    expect(summary.paths[0]!.transport).toBe('webrtc');
+    expect(summary.paths[0]!.stuckOnRelay).toBe(false);
   });
 
   it('does NOT flag a relayed conn younger than the settle window (still settling)', () => {

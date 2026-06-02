@@ -30,6 +30,13 @@ const CLASSIFIER_TABLE: Array<{
 		transport: 'circuit-relay',
 	},
 	{
+		// Browser-to-browser WebRTC over a relay keeps the circuit prefix but is
+		// a direct data path — must classify direct/webrtc. Regression guard.
+		addr: '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/webrtc/p2p/QmTarget',
+		kind: 'direct',
+		transport: 'webrtc',
+	},
+	{
 		addr: '/ip4/1.2.3.4/udp/9/webrtc-direct/certhash/uEiAabc/p2p/QmTarget',
 		kind: 'direct',
 		transport: 'webrtc-direct',

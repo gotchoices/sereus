@@ -86,24 +86,27 @@ interface TransportClass {
  *
  * | multiaddr contains            | kind    | transport      |
  * |-------------------------------|---------|----------------|
- * | `/p2p-circuit`                | relayed | circuit-relay  |
  * | `/webrtc-direct`              | direct  | webrtc-direct  |
  * | `/webrtc`                     | direct  | webrtc         |
- * | `/ws` or `/wss`               | direct  | websocket      |
+ * | `/p2p-circuit` (no webrtc)    | relayed | circuit-relay  |
+ * | `/ws` (or `/wss`)             | direct  | websocket      |
  * | `/tcp` (and none of the above)| direct  | tcp            |
  * | _none_                        | direct  | unknown        |
  *
- * Note the ordering: a hole-punched WebRTC connection that used a relay only
- * for signaling ends up with a **direct** `/webrtc` remoteAddr (the
- * `/p2p-circuit` connection is a *separate* connection). So per-connection
- * classification is correct.
+ * Note the ordering: a browser-to-browser WebRTC connection is dialed *over* a
+ * relay for SDP signalling and js-libp2p keeps the circuit prefix in the
+ * connection's remoteAddr — a successful hole-punch reads as
+ * `…/p2p-circuit/webrtc/p2p/…`, i.e. it contains BOTH `/p2p-circuit` and
+ * `/webrtc`. Its data path is nevertheless **direct**, so the WebRTC checks
+ * must come *before* `/p2p-circuit`. Only a connection with no transport after
+ * `/p2p-circuit` (`…/p2p-circuit/p2p/…`) is genuinely relay-carried.
  */
 export function classifyTransport(remoteAddr: string): TransportClass {
   const addr = remoteAddr ?? '';
-  if (addr.includes('/p2p-circuit')) return { kind: 'relayed', transport: 'circuit-relay' };
   if (addr.includes('/webrtc-direct')) return { kind: 'direct', transport: 'webrtc-direct' };
   if (addr.includes('/webrtc')) return { kind: 'direct', transport: 'webrtc' };
-  if (addr.includes('/ws') || addr.includes('/wss')) return { kind: 'direct', transport: 'websocket' };
+  if (addr.includes('/p2p-circuit')) return { kind: 'relayed', transport: 'circuit-relay' };
+  if (addr.includes('/ws')) return { kind: 'direct', transport: 'websocket' };
   if (addr.includes('/tcp')) return { kind: 'direct', transport: 'tcp' };
   return { kind: 'direct', transport: 'unknown' };
 }

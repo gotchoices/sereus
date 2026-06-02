@@ -86,13 +86,16 @@ interface TransportClass {
 /**
  * Classify a remote multiaddr string into a (kind, transport) pair. Order
  * matters — first match wins (see cadre-core original for the full table).
+ * WebRTC is checked before `/p2p-circuit`: a browser-to-browser WebRTC
+ * connection keeps the relay's circuit prefix in its remoteAddr
+ * (`…/p2p-circuit/webrtc/…`) yet its data path is direct.
  */
 export function classifyTransport(remoteAddr: string): TransportClass {
   const addr = remoteAddr ?? '';
-  if (addr.includes('/p2p-circuit')) return { kind: 'relayed', transport: 'circuit-relay' };
   if (addr.includes('/webrtc-direct')) return { kind: 'direct', transport: 'webrtc-direct' };
   if (addr.includes('/webrtc')) return { kind: 'direct', transport: 'webrtc' };
-  if (addr.includes('/ws') || addr.includes('/wss')) return { kind: 'direct', transport: 'websocket' };
+  if (addr.includes('/p2p-circuit')) return { kind: 'relayed', transport: 'circuit-relay' };
+  if (addr.includes('/ws')) return { kind: 'direct', transport: 'websocket' };
   if (addr.includes('/tcp')) return { kind: 'direct', transport: 'tcp' };
   return { kind: 'direct', transport: 'unknown' };
 }
