@@ -205,6 +205,34 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(await node.resolvePeerAddrs(otherPeerId)).toEqual([]);
   }, 60_000);
 
+  it('lets a NON-authority member self-update its own row with its OWN key, then resolves', async () => {
+    const { node } = booted;
+    // Authority inserts a drone with a derived PublicKey but no Sig (Sig = null):
+    // it is a member but does not resolve until it self-publishes.
+    const drone = await generateKeyPair('Ed25519');
+    const { privateKeyB64: dronePriv, publicKeyB64: dronePub } = authorityKeyFromLibp2p(drone);
+    const dronePeerId = peerIdFromPrivateKey(drone).toString();
+    await node.authorizePeer(dronePeerId, []);
+    expect(await node.resolvePeerAddrs(dronePeerId)).toEqual([]);
+
+    // The drone signs an update to its OWN row with its own peer key — no authority
+    // context — exercising the AuthorizedUpdate self-branch with a key distinct
+    // from the authority key (the authority node's own self-update happens to sign
+    // with the authority key, so this is the only coverage of a true drone refresh).
+    const current = await node.getControlDatabase()!.queryPeerRecord(dronePeerId);
+    const droneSig = circuitAddr(dronePeerId);
+    const direct = '/ip4/10.0.0.1/tcp/4001';
+    const record = signPeerRecord(
+      { peerId: dronePeerId, publicKey: dronePub, addrs: [droneSig, direct], updatedAt: current!.updatedAt + 1 },
+      dronePriv
+    );
+    await node.getControlDatabase()!.updateSelfPeerRecord(record);
+
+    const resolved = (await node.resolvePeerAddrs(dronePeerId)).map((m) => m.toString());
+    expect(resolved[0]).toContain('/p2p-circuit');
+    expect(new Set(resolved)).toEqual(new Set([droneSig, direct]));
+  }, 60_000);
+
   it('resolves to empty for a non-member', async () => {
     const { node } = booted;
     const stranger = await generateKeyPair('Ed25519');
