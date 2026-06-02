@@ -1,0 +1,89 @@
+<Page navigatingTo="onNavigatingTo" xmlns="http://schemas.nativescript.org/tns.xsd">
+	<ActionBar title="Settings" class="action-bar" />
+
+	<GridLayout rows="*">
+		<ScrollView row="0">
+			<StackLayout class="content">
+
+				<!-- ── Node ─────────────────────────────────────────────── -->
+				<Label text="Node" class="section-title" />
+
+				<!-- Connected -->
+				<StackLayout visibility="{{ cadre.connectedVisibility }}">
+					<GridLayout columns="auto, *" class="row">
+						<Label col="0" text="Status" class="label" />
+						<Label col="1" text="Connected" class="value value-ok" textAlignment="right" />
+					</GridLayout>
+					<GridLayout columns="auto, *" class="row">
+						<Label col="0" text="Peer ID" class="label" />
+						<Label col="1" text="{{ cadre.peerIdDisplay }}" class="value" textWrap="true"
+							textAlignment="right" automationText="value-peer-id" />
+					</GridLayout>
+					<GridLayout columns="auto, *" class="row">
+						<Label col="0" text="Strands" class="label" />
+						<Label col="1" text="{{ cadre.strandCount }}" class="value" textAlignment="right" />
+					</GridLayout>
+					<Button text="Disconnect" tap="onDisconnect" class="btn btn-danger"
+						automationText="btn-disconnect" />
+				</StackLayout>
+
+				<!-- Disconnected -->
+				<StackLayout visibility="{{ cadre.disconnectedVisibility }}">
+					<GridLayout columns="auto, *" class="row">
+						<Label col="0" text="Status" class="label" />
+						<Label col="1" text="{{ cadre.status }}" class="value value-warn" textAlignment="right" />
+					</GridLayout>
+					<Label text="Party ID" class="label" />
+					<TextField text="{{ partyId }}" hint="auto-generated if empty" class="input"
+						automationText="input-party-id" />
+					<Label text="Bootstrap addr" class="label" />
+					<TextField text="{{ bootstrapAddr }}" hint="/ip4/…/tcp/…/ws/p2p/…" class="input"
+						automationText="input-bootstrap-addr" />
+					<Button text="Connect" tap="onConnect" isEnabled="{{ cadre.notConnecting }}"
+						class="btn" automationText="btn-connect" />
+				</StackLayout>
+
+				<!-- ── Connected-only sections ──────────────────────────── -->
+				<StackLayout visibility="{{ cadre.connectedVisibility }}">
+					<Label text="Add Peer" class="section-title" />
+					<Label text="Multiaddr" class="label" />
+					<TextField text="{{ peerAddr }}" hint="/ip4/…/tcp/…/ws/p2p/…" class="input"
+						automationText="input-add-peer" />
+					<Button text="Dial Peer" tap="onDialPeer" class="btn" automationText="btn-add-peer" />
+
+					<Label text="Seed Bootstrap" class="section-title" />
+					<Label text="Paste seed" class="label" />
+					<TextView text="{{ seedInput }}" hint="base64url seed string" class="input textarea"
+						automationText="input-seed" />
+					<Button text="Apply Seed" tap="onApplySeed" class="btn" automationText="btn-apply-seed" />
+
+					<Label text="Strands" class="section-title" />
+					<Repeater items="{{ cadre.strandItems }}">
+						<Repeater.itemTemplate>
+							<GridLayout columns="auto, *" class="row">
+								<Label col="0" text="{{ title }}" class="label" />
+								<Label col="1" text="{{ status }}" class="value" textAlignment="right" />
+							</GridLayout>
+						</Repeater.itemTemplate>
+					</Repeater>
+					<Button text="Create Chat Strand" tap="onCreateStrand" class="btn"
+						automationText="btn-create-strand" />
+				</StackLayout>
+
+				<Label text="{{ cadre.error }}" class="error-text" textWrap="true"
+					visibility="{{ cadre.disconnectedVisibility }}" />
+
+			</StackLayout>
+		</ScrollView>
+
+		<!-- ── Status modal overlay ─────────────────────────────────── -->
+		<GridLayout row="0" class="modal-overlay" visibility="{{ modalVisibility }}">
+			<StackLayout class="modal-box" verticalAlignment="center" horizontalAlignment="center">
+				<Label text="{{ modalTitle }}" class="modal-title" textWrap="true"
+					automationText="modal-title" />
+				<Label text="{{ modalMessage }}" class="modal-message" textWrap="true" />
+				<Button text="OK" tap="onModalOk" class="btn" automationText="btn-modal-ok" />
+			</StackLayout>
+		</GridLayout>
+	</GridLayout>
+</Page>

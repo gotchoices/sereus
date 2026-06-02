@@ -1,8 +1,8 @@
 /**
  * Entry point. Polyfills and the global WebSocket MUST load before any
  * cadre/libp2p code — libp2p and its dependencies reference Web APIs at import
- * time. The heavy cadre/db-p2p graph is pulled in lazily by the main page
- * (app/main) on navigation, after the audit below has run.
+ * time. The heavy cadre/db-p2p graph is pulled in lazily by the Chat / Settings
+ * pages (via cadre-vm → cadre-phone) on navigation, after the audit below runs.
  */
 
 // 1. Runtime globals (Buffer, crypto.subtle.digest, TextDecoder, streams, …).

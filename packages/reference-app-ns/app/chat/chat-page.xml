@@ -1,0 +1,34 @@
+<Page navigatingTo="onNavigatingTo" navigatingFrom="onNavigatingFrom" unloaded="onUnloaded"
+	xmlns="http://schemas.nativescript.org/tns.xsd">
+	<ActionBar title="Chat" class="action-bar" />
+
+	<GridLayout rows="auto, auto, *, auto">
+		<!-- Status bar -->
+		<Label row="0" text="{{ statusText }}" class="status-bar" textWrap="true"
+			textAlignment="center" automationText="status-bar" />
+
+		<!-- Error bar -->
+		<Label row="1" text="{{ error }}" class="error-bar" textWrap="true"
+			textAlignment="center" visibility="{{ errorVisibility }}" />
+
+		<!-- Message list -->
+		<ListView row="2" id="messageList" items="{{ messages }}" class="list"
+			automationText="message-list">
+			<ListView.itemTemplate>
+				<StackLayout class="bubble" automationText="{{ rowId }}">
+					<Label text="{{ sender }}" class="sender" visibility="{{ senderVisibility }}" />
+					<Label text="{{ content }}" class="msg-text" textWrap="true" />
+					<Label text="{{ time }}" class="time" textAlignment="right" />
+				</StackLayout>
+			</ListView.itemTemplate>
+		</ListView>
+
+		<!-- Composer -->
+		<GridLayout row="3" columns="*, auto" class="composer">
+			<TextField col="0" text="{{ draft }}" hint="Message…" class="input"
+				isEnabled="{{ inputEnabled }}" returnPress="onSend" automationText="input-message" />
+			<Button col="1" text="Send" tap="onSend" isEnabled="{{ canSend }}"
+				class="btn send-btn" automationText="btn-send" />
+		</GridLayout>
+	</GridLayout>
+</Page>

@@ -1,19 +1,173 @@
 /*
-Minimal app styles. The real UI / theme lands in reference-app-ns-chat — this
-package only needs a bootable shell to drive the solo runtime smoke.
+App theme for the reference chat UI (Chat + Settings tabs). Dark palette mirrors
+reference-app-rn's screens; the cadre/db-p2p plumbing is the real payload, but a
+coherent surface keeps the Maestro e2e (reference-app-ns-e2e) legible.
 */
+
 Page {
-	font-size: 16;
+	background-color: #0f0f1a;
+	color: #ffffff;
+	font-size: 15;
 }
 
-Button {
-	margin: 8 0;
-	padding: 12;
+.action-bar {
 	background-color: #1a1a2e;
 	color: #ffffff;
-	border-radius: 6;
 }
 
-Label {
-	color: #1a1a2e;
+.tabs {
+	tab-background-color: #1a1a2e;
+	tab-text-color: #888888;
+	selected-tab-text-color: #6c63ff;
+}
+
+/* ── Shared ──────────────────────────────────────────────────────────────── */
+
+.content {
+	padding: 16;
+}
+
+.section-title {
+	color: #6c63ff;
+	font-size: 16;
+	font-weight: 700;
+	margin: 16 0 8 0;
+}
+
+.label {
+	color: #aaaaaa;
+	font-size: 13;
+	margin: 6 0 2 0;
+}
+
+.value {
+	color: #ffffff;
+	font-size: 13;
+}
+
+.value-ok {
+	color: #4caf50;
+}
+
+.value-warn {
+	color: #ff9800;
+}
+
+.row {
+	margin: 2 0;
+}
+
+.input {
+	background-color: #2a2a3e;
+	color: #ffffff;
+	border-radius: 8;
+	padding: 8 12;
+	margin: 2 0 6 0;
+}
+
+.textarea {
+	height: 80;
+}
+
+.btn {
+	background-color: #6c63ff;
+	color: #ffffff;
+	font-weight: 600;
+	border-radius: 8;
+	padding: 10;
+	margin: 8 0 0 0;
+}
+
+.btn:disabled {
+	opacity: 0.4;
+}
+
+.btn-danger {
+	background-color: #f44336;
+}
+
+.error-text {
+	color: #f44336;
+	text-align: center;
+	margin-top: 12;
+}
+
+/* ── Chat ────────────────────────────────────────────────────────────────── */
+
+.status-bar {
+	background-color: #2a2a3e;
+	color: #ffffff;
+	font-size: 12;
+	padding: 8 12;
+}
+
+.error-bar {
+	background-color: #f44336;
+	color: #ffffff;
+	font-size: 12;
+	padding: 4 12;
+}
+
+.list {
+	background-color: #0f0f1a;
+}
+
+.bubble {
+	background-color: #2a2a3e;
+	border-radius: 12;
+	padding: 10;
+	margin: 6 12;
+}
+
+.sender {
+	color: #aaaaaa;
+	font-size: 11;
+}
+
+.msg-text {
+	color: #ffffff;
+	font-size: 15;
+}
+
+.time {
+	color: #777777;
+	font-size: 10;
+	margin-top: 2;
+}
+
+.composer {
+	background-color: #1a1a2e;
+	padding: 8;
+}
+
+.send-btn {
+	margin: 0 0 0 8;
+	padding: 10 16;
+	vertical-align: center;
+}
+
+/* ── Status modal ────────────────────────────────────────────────────────── */
+
+.modal-overlay {
+	background-color: rgba(0, 0, 0, 0.6);
+}
+
+.modal-box {
+	background-color: #1e1e2e;
+	border-radius: 12;
+	padding: 20;
+	width: 85%;
+}
+
+.modal-title {
+	color: #ffffff;
+	font-size: 16;
+	font-weight: 700;
+	margin-bottom: 12;
+}
+
+.modal-message {
+	color: #cccccc;
+	font-size: 14;
+	margin-bottom: 8;
 }

@@ -1,1 +1,8 @@
-<Frame defaultPage="main/main-page" />
+<TabView androidTabsPosition="bottom" class="tabs" xmlns="http://schemas.nativescript.org/tns.xsd">
+	<TabViewItem title="Chat">
+		<Frame defaultPage="chat/chat-page" />
+	</TabViewItem>
+	<TabViewItem title="Settings">
+		<Frame defaultPage="settings/settings-page" />
+	</TabViewItem>
+</TabView>

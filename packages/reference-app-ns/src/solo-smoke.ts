@@ -4,7 +4,8 @@
  * Boots a CadreNode in solo/forming mode (no drone, no network), creates a
  * local chat strand, inserts a message, and reads it back — proving the full
  * cadre / db-p2p / Quereus / Optimystic stack runs on the NativeScript V8/JSC
- * runtime. Driven from the minimal UI (app/main) and intended to be run on a
+ * runtime. A programmatic helper (the chat UI now exercises the same path via
+ * Settings → Connect → Create Strand → Chat); intended to be run on a
  * device/emulator (out-of-band — see README).
  */
 
