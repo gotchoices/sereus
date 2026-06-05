@@ -23,7 +23,8 @@ docker compose up -d
 # 4. Check logs
 docker compose logs -f
 
-# 5. Check health
+# 5. Check health (works from the host loopback by default — 8080 is bound to
+#    127.0.0.1, not the public internet)
 curl http://localhost:8080/health
 ```
 
@@ -35,7 +36,15 @@ curl http://localhost:8080/health
 | 8080 | /health  | Liveness probe (returns 200 when running) |
 | 8080 | /ready   | Readiness probe (returns 200 when connected) |
 | 8080 | /status  | Detailed JSON status |
+| 8080 | POST /seed | Authenticated seed delivery — **off unless `CADRE_SEED_TOKEN` is set** (then requires `Authorization: Bearer <token>`) |
 | 9090 | /metrics | Prometheus metrics |
+
+> Only port **4001** should be reachable from the public internet. Do **not**
+> open 8080 (health/seed) or 9090 (metrics) publicly — the compose template binds
+> both to `127.0.0.1` by default (override per port with `HOST_HEALTH_BIND` /
+> `HOST_METRICS_BIND`, e.g. `0.0.0.0`, only behind a firewall). `POST /seed` is
+> additionally bearer-gated and is not registered unless `CADRE_SEED_TOKEN` is
+> set, so the health port carries no remotely-mutable surface by default.
 
 ### Configuration
 

@@ -44,10 +44,22 @@ services:
       - CADRE_HEALTH_PORT=8080
       - CADRE_METRICS_PORT=9090
 
+      # Seed delivery (optional, OFF by default). When CADRE_SEED_TOKEN is set,
+      # the node registers an authenticated POST /seed (Authorization: Bearer
+      # <token>); leave it unset to keep the health port read-only. See env.example.
+      - CADRE_SEED_TOKEN=${CADRE_SEED_TOKEN:-}
+
     ports:
+      # libp2p network port — the only port that needs to reach the public internet.
       - "${HOST_P2P_PORT:-4001}:4001/tcp"
-      - "${HOST_HEALTH_PORT:-8080}:8080/tcp"
-      - "${HOST_METRICS_PORT:-9090}:9090/tcp"
+      # Health/probe endpoint. Bound to loopback by default: serves read-only
+      # /health, /ready, /status. POST /seed is NOT served unless CADRE_SEED_TOKEN
+      # is set (above), and even then requires Authorization: Bearer <token>.
+      # Do NOT expose 8080 to the public internet — set HOST_HEALTH_BIND=0.0.0.0
+      # only behind a firewall / trusted management network if you need remote probes.
+      - "${HOST_HEALTH_BIND:-127.0.0.1}:${HOST_HEALTH_PORT:-8080}:8080/tcp"
+      # Prometheus metrics — likewise loopback by default; keep off the public internet.
+      - "${HOST_METRICS_BIND:-127.0.0.1}:${HOST_METRICS_PORT:-9090}:9090/tcp"
 
     volumes:
       - cadre_data:/data
