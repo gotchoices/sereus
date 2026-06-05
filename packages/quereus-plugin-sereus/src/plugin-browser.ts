@@ -15,6 +15,10 @@ export { parseConfig };
 
 /**
  * Default export: Quereus plugin registration function (browser).
+ *
+ * Note: the `storage_path` setting is Node-only (it resolves to a filesystem
+ * `FileRawStorage` in `./plugin`). The browser entry ignores it and defaults
+ * storage to IndexedDB via `connectToStrandBrowser`.
  */
 export default async function register(
 	db: Database,

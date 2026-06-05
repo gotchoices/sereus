@@ -23,6 +23,23 @@ export function parseConfig(config: Record<string, SqlValue>): StrandConnectionO
 	const enableCache = config.enable_cache !== false && config.enable_cache !== 0;
 	const fretProfile = config.fret_profile === 'core' ? 'core' as const : 'edge' as const;
 
+	// Lifecycle mode: selects bootstrap (local transactor) vs networked. Only the
+	// two known values are honored; anything else falls through to the default.
+	const mode = config.mode === 'bootstrap' || config.mode === 'networked'
+		? config.mode
+		: undefined;
+
+	// Internal transactor override (e.g. `'test'`). Applies only when `mode` is
+	// unset — see `StrandConnectionOptions.transactor`.
+	const transactor = typeof config.transactor === 'string' && config.transactor
+		? config.transactor
+		: undefined;
+
+	// NOTE: persistent storage cannot ride a `Record<string, SqlValue>` — an
+	// `IRawStorage` is not an `SqlValue`. The Node loader (`plugin.ts`) reads the
+	// platform-only `storage_path` key directly and resolves it to a concrete
+	// `FileRawStorage`; it is intentionally NOT parsed into the typed options here.
+
 	return {
 		strandId,
 		bootstrapNodes,
@@ -32,5 +49,7 @@ export function parseConfig(config: Record<string, SqlValue>): StrandConnectionO
 		port,
 		enableCache,
 		fretProfile,
+		...(mode && { mode }),
+		...(transactor && { transactor }),
 	};
 }

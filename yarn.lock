@@ -5075,6 +5075,7 @@ __metadata:
     "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
     "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
     "@quereus/quereus": "npm:^3.2.1"
+    "@serfab/quereus-plugin-sereus": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     "@vitest/coverage-v8": "npm:^4.0.17"
@@ -5183,7 +5184,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@serfab/quereus-plugin-sereus@workspace:packages/quereus-plugin-sereus":
+"@serfab/quereus-plugin-sereus@workspace:^, @serfab/quereus-plugin-sereus@workspace:packages/quereus-plugin-sereus":
   version: 0.0.0-use.local
   resolution: "@serfab/quereus-plugin-sereus@workspace:packages/quereus-plugin-sereus"
   dependencies:

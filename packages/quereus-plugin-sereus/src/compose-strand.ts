@@ -1,0 +1,289 @@
+import debug from 'debug';
+import type { Database } from '@quereus/quereus';
+import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
+import type { Libp2p } from '@libp2p/interface';
+import type { IRepo } from '@optimystic/db-core';
+import type { IRawStorage } from '@optimystic/db-p2p';
+import type { StrandConnectionOptions, SereusPluginResult, Libp2pNodeWithRepo } from './types.js';
+
+const log = debug('sereus:plugin:strand');
+const timing = debug('sereus:plugin:strand:timing');
+
+/**
+ * Minimal interface for the CollectionFactory returned by the optimystic plugin.
+ * We only need the methods this composition actually uses.
+ */
+interface CollectionFactory {
+	registerLibp2pNode(networkName: string, node: Libp2p, coordinatedRepo: IRepo): void;
+	shutdown(): Promise<void>;
+}
+
+/**
+ * Result of registering the optimystic plugin. The published plugin signature
+ * does not surface `collectionFactory` / `hydrate`, so this is the local shim
+ * over what `@optimystic/quereus-plugin-optimystic/plugin` actually returns
+ * (see its `plugin.ts` — `hydrate` delegates to `optimysticModule.hydrateCatalog`).
+ */
+interface OptimysticPluginResult {
+	collectionFactory: CollectionFactory;
+	vtables: Array<{ name: string; module: unknown; auxData: unknown }>;
+	functions: Array<{ schema: unknown }>;
+	collations?: Array<{ name: string; func: unknown; normalizer?: unknown }>;
+	/**
+	 * Hydrate Quereus's in-memory catalog from persisted optimystic vtab schemas.
+	 * Must run BEFORE `apply schema App;` on a warm restart so the declarative
+	 * diff sees the existing tables and skips re-emitting CREATE TABLE / CREATE
+	 * INDEX for each persisted object. Idempotent; `{ tables: 0, indexes: 0 }`
+	 * on cold start.
+	 */
+	hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
+	[key: string]: unknown;
+}
+
+/** Registration shape shared by the crypto and optimystic plugin results. */
+interface PluginRegistrations {
+	vtables?: Array<{ name: string; module: unknown; auxData: unknown }>;
+	functions?: Array<{ schema: unknown }>;
+	collations?: Array<{ name: string; func: unknown; normalizer?: unknown }>;
+}
+
+/**
+ * Inline equivalent of `@quereus/quereus`'s `registerPlugin` for plugins that
+ * only return functions/vtables/collations. Used directly for the optimystic
+ * result (so the composition can read `collectionFactory` off the same object),
+ * and by the browser crypto strategy to keep the browser bundle from pulling a
+ * duplicate `@quereus/quereus` next to the host's instance.
+ */
+export function applyRegistrations(db: Database, result: PluginRegistrations): void {
+	for (const vtable of result.vtables ?? []) {
+		db.registerModule(vtable.name, vtable.module as any, vtable.auxData);
+	}
+	for (const func of result.functions ?? []) {
+		db.registerFunction(func.schema as any);
+	}
+	for (const collation of result.collations ?? []) {
+		db.registerCollation(collation.name, collation.func as any, collation.normalizer as any);
+	}
+}
+
+/** Context passed to the platform's node-creation strategy. */
+export interface CreateNodeContext {
+	networkName: string;
+	bootstrapNodes: string[];
+	fretProfile: 'edge' | 'core';
+	/** libp2p listening port (Node TCP). Browser transports ignore it. */
+	port: number;
+	/** Resolved persistent storage to back the node, if any. */
+	storage?: IRawStorage;
+}
+
+/** Context passed to the platform's storage-resolution strategy. */
+export interface ResolveStorageContext {
+	strandId: string;
+	resolvedTransactor: string;
+	/** The storage the caller passed in `options.storage`, if any. */
+	requestedStorage?: IRawStorage;
+}
+
+/**
+ * Platform-specific seams the shared composition delegates to. Everything else
+ * (transactor resolution, plugin config, registration, default vtab, hydrate,
+ * schema apply, cleanup/shutdown) is identical across Node and browser and lives
+ * in {@link composeStrand}.
+ */
+export interface StrandPlatform {
+	/**
+	 * Register the crypto plugin against `db`. Node uses `@quereus/quereus`'s
+	 * `registerPlugin`; the browser inlines `applyRegistrations` to avoid bundling
+	 * a second `@quereus/quereus`.
+	 */
+	registerCrypto(db: Database): void | Promise<void>;
+	/**
+	 * Resolve the persistent storage to use. Optional — when omitted the caller's
+	 * `options.storage` is used verbatim (Node). The browser supplies this to
+	 * default to IndexedDB so a reload survives.
+	 */
+	resolveStorage?(ctx: ResolveStorageContext): Promise<IRawStorage | undefined> | IRawStorage | undefined;
+	/**
+	 * Create a libp2p node. Called only when no node is injected and the
+	 * transactor needs one. Node creates a TCP node via `@optimystic/db-p2p`;
+	 * the browser creates a WebSockets + circuit-relay node via the `/rn` entry.
+	 * Returns the created node (its `coordinatedRepo` is read by the composition).
+	 */
+	createNode(ctx: CreateNodeContext): Promise<Libp2p>;
+}
+
+/**
+ * Connect a Quereus `Database` to a Sereus strand. This is the single shared
+ * SQL-surface composition: `connectToStrand` (Node), `connectToStrandBrowser`
+ * (browser), and `cadre-core`'s `StrandDatabase` all flow through here, so the
+ * hydrate-before-apply fix and any future schema wiring land in one place.
+ *
+ * Steps: resolve transactor + storage, register crypto + optimystic plugins,
+ * acquire (inject or create) the libp2p node, set optimystic as the default
+ * vtab, hydrate the catalog, then apply the sApp schema.
+ */
+export async function composeStrand(
+	db: Database,
+	options: StrandConnectionOptions,
+	platform: StrandPlatform,
+): Promise<SereusPluginResult> {
+	const {
+		strandId,
+		bootstrapNodes = [],
+		schema,
+		port = 0,
+		enableCache = true,
+		fretProfile = 'edge',
+		mode,
+	} = options;
+
+	// Resolve the transactor. `mode` is the public knob: bootstrap -> local,
+	// networked -> network. The legacy `transactor` override (used by unit
+	// tests with `'test'`) only applies when `mode` is unspecified.
+	let resolvedTransactor: string;
+	if (mode !== undefined) {
+		resolvedTransactor = mode === 'bootstrap' ? 'local' : 'network';
+	} else if (options.transactor !== undefined) {
+		resolvedTransactor = options.transactor;
+	} else {
+		resolvedTransactor = 'network';
+	}
+
+	const networkName = `strand-${strandId}`;
+	log('Connecting to strand %s (network: %s, mode=%s, transactor=%s)',
+		strandId, networkName, mode ?? '(default)', resolvedTransactor);
+
+	// Resolve storage. Node passes `options.storage` through; the browser
+	// defaults to IndexedDB. The resolved instance feeds BOTH the plugin's
+	// bootstrap `rawStorageFactory` and node creation, so it must be decided up
+	// front (before pluginConfig is built).
+	const storage = platform.resolveStorage
+		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
+		: options.storage;
+
+	// 1. Register crypto plugin (digest, sign, verify, etc.)
+	await platform.registerCrypto(db);
+	log('Registered crypto plugin');
+
+	// 2. Register optimystic plugin with transactor defaults. In local mode with
+	// persistent storage, hand the same instance to the plugin so the local
+	// transactor persists DML on the host backend (not in-memory).
+	const pluginConfig: Record<string, unknown> = {
+		default_transactor: resolvedTransactor,
+		default_key_network: 'libp2p',
+		default_network_name: networkName,
+		enable_cache: enableCache,
+	};
+	if (resolvedTransactor === 'local' && storage) {
+		pluginConfig.rawStorageFactory = () => storage;
+	}
+	// The plugin's published signature is `Record<string, SqlValue>` but it
+	// also reads `rawStorageFactory` (a function reference) from the same map.
+	// Cast through unknown rather than widen the public type.
+	const pluginResult = optimysticPlugin(
+		db,
+		pluginConfig as unknown as Parameters<typeof optimysticPlugin>[1],
+	) as OptimysticPluginResult;
+	applyRegistrations(db, pluginResult);
+	log('Registered optimystic vtables and functions');
+
+	const { collectionFactory } = pluginResult;
+
+	let createdNode: Libp2p | null = null;
+	let hydrated: { tables: number; indexes: number } | undefined;
+
+	try {
+		// 3. Acquire the libp2p node. Skip only when this is the unit-test fake
+		// transactor with no injected node — every real path needs a node.
+		if (resolvedTransactor !== 'test' || options.libp2pNode) {
+			let node: Libp2p;
+			let coordinatedRepo: IRepo;
+
+			if (options.libp2pNode) {
+				node = options.libp2pNode;
+				if (!options.coordinatedRepo) {
+					throw new Error('coordinatedRepo is required when libp2pNode is provided');
+				}
+				coordinatedRepo = options.coordinatedRepo;
+				log('Using injected libp2p node');
+			} else {
+				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, storage });
+				createdNode = created;
+				node = created;
+				const repo = (created as Libp2pNodeWithRepo).coordinatedRepo;
+				if (!repo) {
+					throw new Error('coordinatedRepo not available on created libp2p node');
+				}
+				coordinatedRepo = repo;
+				log('Created libp2p node (port: %d, fretProfile: %s, storage=%s)', port, fretProfile, !!storage);
+			}
+
+			collectionFactory.registerLibp2pNode(networkName, node, coordinatedRepo);
+			log('Registered libp2p node with collection factory');
+		}
+
+		// 4. Set optimystic as default vtab so `declare schema` tables use it.
+		db.setDefaultVtabName('optimystic');
+		db.setDefaultVtabArgs({
+			networkName,
+			transactor: resolvedTransactor,
+			keyNetwork: 'libp2p',
+		});
+		log('Set default vtab to optimystic (networkName=%s, transactor=%s)', networkName, resolvedTransactor);
+
+		// 5. Hydrate Quereus's catalog from persisted optimystic vtab schemas
+		// BEFORE applying the sApp schema. Without this, a warm restart diffs the
+		// wrapped DDL against an empty catalog and re-emits CREATE TABLE / CREATE
+		// INDEX for every persisted object — each round-tripping through optimystic
+		// storage (the measured ~160s warm-start regression). No-op on first launch.
+		const t0 = performance.now();
+		hydrated = await pluginResult.hydrate(db);
+		timing('[strand:%s] hydrate: %dms (tables=%d, indexes=%d)',
+			strandId, Math.round(performance.now() - t0), hydrated.tables, hydrated.indexes);
+		log('Hydrated catalog for strand %s (tables=%d, indexes=%d)', strandId, hydrated.tables, hydrated.indexes);
+
+		// 6. Apply the sApp schema, if provided.
+		//
+		// SEAM: this is the single composition point where strand-level DDL is
+		// applied. The strand membership/RBAC schema (`schemas/strand.qsql`) will
+		// be applied here in addition to the sApp schema — see ticket
+		// `strand-membership-rbac-schema-not-applied`. Keep this the one place
+		// declarative schema is applied so that change stays a one-location edit.
+		if (schema) {
+			log('Applying sApp schema for strand %s', strandId);
+			await db.exec(`
+				declare schema App {
+					${schema}
+				}
+				apply schema App;
+			`);
+			log('sApp schema applied');
+		}
+	} catch (err) {
+		// Clean up resources if setup fails after partial initialization.
+		await collectionFactory.shutdown();
+		if (createdNode) {
+			await createdNode.stop();
+		}
+		throw err;
+	}
+
+	// 7. Return result with hydrate counts + shutdown handler. When the node was
+	// injected (`createdNode === null`), shutdown does NOT stop it — the caller
+	// owns the injected node's lifecycle.
+	return {
+		vtables: [],
+		functions: [],
+		collations: [],
+		hydrated,
+		async shutdown() {
+			log('Shutting down strand connection %s', strandId);
+			await collectionFactory.shutdown();
+			if (createdNode) {
+				await createdNode.stop();
+			}
+			log('Strand connection %s shut down', strandId);
+		},
+	};
+}

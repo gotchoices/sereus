@@ -128,6 +128,69 @@ describe('connectToStrand (bootstrap e2e)', () => {
 		expect(rows[0]).toEqual({ Id: 42, Body: 'persisted' });
 	});
 
+	it('hydrates the catalog from a persisted multi-table+index schema on warm restart', async () => {
+		const strandId = randomUUID();
+
+		// A non-trivial schema: two tables plus an explicit index. This is what a
+		// 2-column single-table schema (the `persists DML` case above) cannot
+		// catch — the regression is that without a pre-`apply schema` hydrate, a
+		// warm restart re-emits CREATE TABLE / CREATE INDEX for every persisted
+		// object instead of seeing them already in the catalog.
+		const HYDRATE_SCHEMA = `
+			table Account (Id integer primary key, Name text not null);
+			table Post (Id integer primary key, AccountId integer not null, Body text not null);
+			index PostByAccount on Post (AccountId);
+		`;
+
+		// First (cold) session: apply schema + insert, then shut down. Cold start
+		// has nothing persisted yet, so hydrate is a no-op.
+		{
+			const storage1 = new FileRawStorage(storageDir);
+			const db1 = new Database();
+			const r1 = await connectToStrand(db1, {
+				strandId,
+				mode: 'bootstrap',
+				storage: storage1,
+				schema: HYDRATE_SCHEMA,
+			});
+			try {
+				expect(r1.hydrated).toEqual({ tables: 0, indexes: 0 });
+				await db1.exec(`insert into App.Account(Id, Name) values (1, 'alice')`);
+				await db1.exec(`insert into App.Post(Id, AccountId, Body) values (1, 1, 'hello')`);
+			} finally {
+				await r1.shutdown();
+				db1.close();
+			}
+		}
+
+		// Second (warm) session: fresh Database + FileRawStorage over the same dir,
+		// same strandId. Hydrate MUST prime the catalog from the persisted vtab
+		// schemas before `apply schema App;` so the declarative diff is a no-op.
+		const storage2 = new FileRawStorage(storageDir);
+		db = new Database();
+		result = await connectToStrand(db, {
+			strandId,
+			mode: 'bootstrap',
+			storage: storage2,
+			schema: HYDRATE_SCHEMA,
+		});
+
+		// The headline regression assertion: hydration actually ran on reopen and
+		// surfaced the persisted tables AND the index.
+		expect(result.hydrated).toBeDefined();
+		expect(result.hydrated!.tables).toBeGreaterThan(0);
+		expect(result.hydrated!.indexes).toBeGreaterThan(0);
+
+		// Persisted data survives and both hydrated tables are queryable via a join.
+		const rows: Array<{ Name: string; Body: string }> = [];
+		for await (const row of db.eval(
+			'select A.Name as Name, P.Body as Body from App.Post P join App.Account A on A.Id = P.AccountId',
+		)) {
+			rows.push(row as { Name: string; Body: string });
+		}
+		expect(rows).toEqual([{ Name: 'alice', Body: 'hello' }]);
+	});
+
 	it('rejects queries against App.* when schema is omitted in bootstrap mode', async () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);

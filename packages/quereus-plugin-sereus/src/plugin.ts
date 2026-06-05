@@ -23,5 +23,17 @@ export default async function register(
 	config: Record<string, SqlValue> = {},
 ): Promise<SereusPluginResult> {
 	const options = parseConfig(config);
+
+	// `storage_path` is a Node-only loader convenience: a `Record<string, SqlValue>`
+	// cannot carry an `IRawStorage`, so the path is resolved to a concrete
+	// `FileRawStorage` here (not in the platform-agnostic `parseConfig`). The
+	// dynamic import keeps `@optimystic/db-p2p-storage-fs` (and its `node:fs`
+	// dependency) out of the browser/RN module graph.
+	const storagePath = config.storage_path;
+	if (typeof storagePath === 'string' && storagePath) {
+		const { FileRawStorage } = await import('@optimystic/db-p2p-storage-fs');
+		options.storage = new FileRawStorage(storagePath);
+	}
+
 	return connectToStrand(db, options);
 }

@@ -48,6 +48,14 @@ export interface SereusPluginResult {
 	vtables: [];
 	functions: [];
 	collations: [];
+	/**
+	 * Catalog-hydration counts from the warm-restart hydrate that runs before
+	 * `apply schema App;`. On a cold start (empty storage) both are 0; on a warm
+	 * restart they report the persisted tables/indexes the catalog was primed
+	 * with — so a test can assert hydration actually ran. `undefined` only if
+	 * composition threw before hydrate.
+	 */
+	hydrated?: { tables: number; indexes: number };
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }

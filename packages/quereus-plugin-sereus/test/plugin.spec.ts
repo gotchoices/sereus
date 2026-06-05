@@ -115,6 +115,21 @@ describe('parseConfig', () => {
 		expect(parseConfig({ strand_id: 'abc', fret_profile: 'edge' }).fretProfile).toBe('edge');
 		expect(parseConfig({ strand_id: 'abc', fret_profile: 'unknown' }).fretProfile).toBe('edge');
 	});
+
+	it('should parse mode when it is a known value', () => {
+		expect(parseConfig({ strand_id: 'abc', mode: 'bootstrap' }).mode).toBe('bootstrap');
+		expect(parseConfig({ strand_id: 'abc', mode: 'networked' }).mode).toBe('networked');
+	});
+
+	it('should ignore an unknown or absent mode', () => {
+		expect(parseConfig({ strand_id: 'abc', mode: 'sideways' }).mode).toBeUndefined();
+		expect(parseConfig({ strand_id: 'abc' }).mode).toBeUndefined();
+	});
+
+	it('should parse the transactor override', () => {
+		expect(parseConfig({ strand_id: 'abc', transactor: 'test' }).transactor).toBe('test');
+		expect(parseConfig({ strand_id: 'abc' }).transactor).toBeUndefined();
+	});
 });
 
 describe('connectToStrand', () => {
@@ -267,9 +282,15 @@ describe('connectToStrand', () => {
 		await result.shutdown();
 	});
 
-	it('should create node for network transactor', async () => {
+	it('should create a node for a real (non-test) transactor', async () => {
+		// `bootstrap` exercises the same "non-test transactor ⇒ create a node"
+		// branch but routes the shared composition's catalog hydrate through the
+		// in-memory local transactor. The default `network` transactor would drive
+		// hydrate into a real libp2p coordinator lookup the mock node cannot
+		// satisfy; that path is covered with real nodes in networked.e2e.spec.ts.
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-net',
+			mode: 'bootstrap',
 		});
 
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
@@ -281,6 +302,7 @@ describe('connectToStrand', () => {
 	it('should stop created node on shutdown', async () => {
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-9',
+			mode: 'bootstrap',
 		});
 
 		await result.shutdown();

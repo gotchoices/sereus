@@ -65,6 +65,7 @@
     "@optimystic/quereus-plugin-crypto": "^0.13.5",
     "@optimystic/quereus-plugin-optimystic": "^0.13.5",
     "@quereus/quereus": "^3.2.1",
+    "@serfab/quereus-plugin-sereus": "workspace:^",
     "debug": "^4.4.3",
     "libp2p": "^3.1.3",
     "uint8arrays": "^5.1.0"

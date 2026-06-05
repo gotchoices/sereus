@@ -55,7 +55,7 @@ Each strand is an independent Optimystic network with its own:
 - Application schema
 - Peer cohort (union of all member cadres)
 
-**Note:** the repository contains a proposed strand membership schema in `schemas/strand.qsql`, but the current `StrandDatabase` implementation applies only the sApp DDL under `declare schema App { ... }` (i.e. the `Strand` membership schema is not yet applied automatically).
+**Note:** the repository contains a proposed strand membership schema in `schemas/strand.qsql`, but the strand SQL surface currently applies only the sApp DDL under `declare schema App { ... }` (i.e. the `Strand` membership schema is not yet applied automatically). The cadre-core `StrandDatabase` and the `@serfab/quereus-plugin-sereus` connectors (`connectToStrand` / `connectToStrandBrowser`) share **one** composition — `composeStrand` — so plugin registration, node wiring, the warm-restart catalog hydrate, and schema apply all live in a single place. `StrandDatabase` owns only the `Database` lifecycle and delegates the rest to `connectToStrand` with its injected libp2p node. The single point where declarative schema is applied — immediately after the catalog hydrate and before `apply schema App;` — is the seam where the `Strand` membership schema will later be wired in.
 
 ### Cadre Node
 
