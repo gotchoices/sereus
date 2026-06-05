@@ -209,4 +209,50 @@ describe('permission scope enforcement', () => {
     expect(body.data.plans.length).toBeGreaterThan(0);
     await server.stop();
   });
+
+  it('scope and ownership compose: a fully-scoped caller still cannot reach another customer\'s container', async () => {
+    // Two identities distinguished by their bearer key, both with wildcard scope.
+    const server = await makeServer(
+      { mode: 'api-key' },
+      { validateApiKey: async (key) => ({ customerId: key === 'key-a' ? 'cust-A' : 'cust-B', permissions: ['*'] }) }
+    );
+
+    const created = await server.app.inject({
+      method: 'POST', url: '/api/v1/containers',
+      headers: { authorization: 'Bearer key-a' }, payload: VALID_CREATE,
+    });
+    expect(created.statusCode).toBe(201);
+    const id = (created.json() as { data: { container: { id: string } } }).data.container.id;
+
+    // cust-B clears the scope gate (wildcard) but does not own the container, so
+    // the ownership check must still deny — 403 FORBIDDEN, *not* INSUFFICIENT_SCOPE.
+    const res = await server.app.inject({
+      method: 'GET', url: `/api/v1/containers/${id}`,
+      headers: { authorization: 'Bearer key-b' },
+    });
+    expect(res.statusCode).toBe(403);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('FORBIDDEN');
+
+    await server.stop();
+  });
+
+  it('oauth/JWT identities are scope-enforced identically to api-key', async () => {
+    // The oauth branch builds a CustomerIdentity via validateJwt; the scope gate
+    // downstream is shared, so a narrowed JWT identity must be enforced the same way.
+    const server = await makeServer(
+      { mode: 'oauth' },
+      { validateJwt: async () => ({ customerId: 'cust-jwt', permissions: ['containers:read'] }) }
+    );
+
+    const list = await server.app.inject({ method: 'GET', url: '/api/v1/containers', headers: AUTH });
+    expect(list.statusCode).toBe(200);
+
+    const create = await server.app.inject({
+      method: 'POST', url: '/api/v1/containers', headers: AUTH, payload: VALID_CREATE,
+    });
+    expect(create.statusCode).toBe(403);
+    expect((create.json() as { error: { code: string } }).error.code).toBe('INSUFFICIENT_SCOPE');
+
+    await server.stop();
+  });
 });
