@@ -269,9 +269,14 @@ export async function composeStrand(
 		throw err;
 	}
 
-	// 7. Return result with hydrate counts + shutdown handler. When the node was
-	// injected (`createdNode === null`), shutdown does NOT stop it — the caller
-	// owns the injected node's lifecycle.
+	// 7. Return result with hydrate counts + shutdown handler. `shutdown` tears
+	// down the collection factory, and `collectionFactory.shutdown()` stops EVERY
+	// node registered with it — including an injected one (registered via
+	// `registerLibp2pNode`). So an injected node IS stopped on `shutdown`; the
+	// `createdNode` guard below only avoids a redundant second `stop()` on a node
+	// we created ourselves, it is not what spares an injected node. A caller that
+	// needs an injected node to outlive `shutdown` must re-create it (cadre-core's
+	// `StrandInstanceManager` instead re-stops it, which is idempotent).
 	return {
 		vtables: [],
 		functions: [],

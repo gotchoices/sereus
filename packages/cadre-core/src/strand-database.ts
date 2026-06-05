@@ -44,8 +44,10 @@ export interface StrandDatabaseConfig {
  * but delegates the actual SQL-surface composition — plugin registration, node
  * wiring, catalog hydration, schema apply — to `connectToStrand` from
  * `@serfab/quereus-plugin-sereus`, the single shared composition. The libp2p
- * node is injected here, so `connectToStrand` never creates (and its `shutdown`
- * never stops) the node; `StrandInstanceManager` owns the node lifecycle.
+ * node is injected here, so `connectToStrand` never *creates* the node;
+ * `StrandInstanceManager` owns the node lifecycle. (The strand connection's
+ * `shutdown` still stops the injected node via the collection factory, so the
+ * manager's own `node.stop()` is an idempotent second stop — see `close()`.)
  */
 export class StrandDatabase {
   private db: Database | null = null;
@@ -76,9 +78,10 @@ export class StrandDatabase {
     this.db = new Database();
 
     // Delegate to the shared composition. The node is injected, so:
-    //  - `connectToStrand` never creates a node (its `createdNode` is null), and
-    //    so its `shutdown` will not stop the node — correct, since
-    //    `StrandInstanceManager.stopStrand` owns the node lifecycle;
+    //  - `connectToStrand` never creates a node (its `createdNode` stays null);
+    //    `StrandInstanceManager` owns the node lifecycle. Its `shutdown` does
+    //    still stop the injected node via the collection factory, so the
+    //    manager's later `node.stop()` is an idempotent second stop;
     //  - `storage` (the strand's raw storage, same instance the node uses) is
     //    handed to the plugin's local transactor in bootstrap mode so DML lands
     //    on the host backend rather than in-memory.
@@ -111,8 +114,9 @@ export class StrandDatabase {
 
   /**
    * Close the database and cleanup resources. Runs the strand-connection
-   * shutdown (collection-factory teardown; the injected node is left alone),
-   * then closes the `Database`.
+   * shutdown (collection-factory teardown, which also stops the injected node),
+   * then closes the `Database`. `StrandInstanceManager.releaseRuntime` issues a
+   * further idempotent `node.stop()` after this returns.
    */
   async close(): Promise<void> {
     if (this.shutdownStrand) {
