@@ -71,9 +71,10 @@ export interface ResumeStrandOverrides {
 /**
  * Get the isolated storage path for a specific strand.
  *
- * @deprecated This function uses Node.js path module which is not available in React Native.
- * Use a storage provider factory function instead, which receives the strandId and can
- * create strand-specific storage paths using platform-appropriate methods.
+ * @deprecated This helper is Node-only and throws in React Native (it assumes a
+ * filesystem layout). Use a storage provider factory function instead, which
+ * receives the strandId and can create strand-specific storage paths using
+ * platform-appropriate methods.
  *
  * @example
  * // Instead of using getStrandStoragePath, use a storage provider factory:
@@ -90,13 +91,16 @@ export function getStrandStoragePath(basePath: string, strandId: string): string
     );
   }
 
-  // Dynamically require path only in Node.js
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  const path = require('path');
-
   // Sanitize strandId for filesystem safety (UUIDs should be safe, but just in case)
   const safeId = strandId.replace(/[^a-zA-Z0-9-]/g, '_');
-  return path.join(basePath, 'strands', safeId);
+
+  // Build the path with plain string joins rather than the Node `path` module.
+  // A static `require('path')` forces RN bundlers (e.g. Metro) to *resolve* the
+  // module at bundle time even though this Node-only helper throws above before
+  // ever reaching here — joining by hand keeps the module free of any Node
+  // built-in reference, so RN bundles need no `path` shim.
+  const trimmedBase = basePath.replace(/[\\/]+$/, '');
+  return `${trimmedBase}/strands/${safeId}`;
 }
 
 /**
