@@ -352,6 +352,12 @@ export class HostProcessOrchestrator implements Orchestrator {
     mkdirSync(join(workdir, 'storage'), { recursive: true });
 
     const token = randomBytes(16).toString('hex');
+    // Per-container secret gating the node's `POST /seed` route. The node
+    // refuses seed delivery unless the caller presents this as a bearer token
+    // (and unregisters the route entirely when the env var is empty), so we
+    // mint a fresh high-entropy value per child and hand it back on the result
+    // for `ContainerService.applySeed` to send.
+    const seedToken = randomBytes(32).toString('base64url');
     const tokenPath = join(workdir, STARTUP_TOKEN_FILE);
     // Ensure stale token from a previous container with the same id is cleared.
     if (existsSync(tokenPath)) {
@@ -371,6 +377,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       CADRE_HEALTH_PORT: String(ports.health),
       CADRE_METRICS_PORT: String(ports.metrics),
       CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${ports.p2p}`,
+      CADRE_SEED_TOKEN: seedToken,
     };
     if (heapMB !== undefined) {
       env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${heapMB}`.trim();
@@ -458,6 +465,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       metricsEndpoint: `http://localhost:${ports.metrics}/metrics`,
       // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
       seedEndpoint: `http://localhost:${ports.health}/seed`,
+      seedToken,
       p2pPort: ports.p2p,
     };
   }

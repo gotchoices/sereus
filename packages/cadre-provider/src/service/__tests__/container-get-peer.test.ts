@@ -95,6 +95,28 @@ describe('ContainerService.getPeerInfo', () => {
     expect(result).toBeUndefined();
   });
 
+  it('returns undefined when /status has a peerId but no multiaddrs', async () => {
+    const { service } = await makeService(runningContainer());
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      status: 'healthy', uptime: 1, peerId: '12D3KooWPeer', multiaddrs: [],
+    })) as typeof globalThis.fetch;
+
+    const result = await service.getPeerInfo('ctr_1');
+
+    expect(result).toBeUndefined();
+  });
+
+  it('returns undefined when the /status response is not OK', async () => {
+    const { service } = await makeService(runningContainer());
+    globalThis.fetch = vi.fn(async () => jsonResponse({
+      status: 'unhealthy', uptime: 1, peerId: '12D3KooWPeer', multiaddrs: ['/ip4/10.0.0.1/tcp/4001'],
+    }, false)) as typeof globalThis.fetch;
+
+    const result = await service.getPeerInfo('ctr_1');
+
+    expect(result).toBeUndefined();
+  });
+
   it('returns undefined when /status omits peer fields entirely', async () => {
     const { service } = await makeService(runningContainer());
     globalThis.fetch = vi.fn(async () => jsonResponse({
