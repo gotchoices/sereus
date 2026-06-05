@@ -7,7 +7,7 @@
  * - Authority role: the phone holds the signing keys
  */
 
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
 import type {
   CadreNodeConfig,
   ControlNetworkSeed,
@@ -111,7 +111,42 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 
   node = new CadreNode(config);
   await node.start();
+  await runAuthorityGenesis(node, privateKey);
   return node;
+}
+
+/**
+ * Self-genesis the phone as its own party authority. A node must enroll an
+ * authority key before it can author control-network writes — notably the
+ * authority-signed `Strand` INSERT that {@link CadreNode.publishStrand} performs
+ * when the phone creates a strand. This mirrors `cadre-cli start --authority`
+ * and the web reference app's `runAuthorityGenesis`: bridge the libp2p identity
+ * into a base64url authority keypair, run the idempotent genesis `AuthorityKey`
+ * insert, then bring up seed-bootstrap (which also lets the node author its own
+ * `CadrePeer` row via {@link CadreNode.registerSelf}).
+ *
+ * Authority model (demo): the FIRST node to enroll its key into the shared
+ * control DB becomes the founding authority; `ensureAuthorityKey` is then a
+ * no-op for later joiners that have already synced it. A second phone can always
+ * JOIN a discovered strand (joining needs no authority), but only an enrolled
+ * authority can publish NEW strands.
+ *
+ * Fail-soft: a genesis failure is logged but does not abort startup — the phone
+ * can still join discovered strands and sync. The failure resurfaces loudly at
+ * {@link CadreNode.publishStrand} time if the phone later tries to create one.
+ */
+async function runAuthorityGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
+  try {
+    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(privateKey);
+    const controlDb = cadre.getControlDatabase();
+    if (!controlDb) {
+      throw new Error('control database unavailable after start; cannot run authority genesis');
+    }
+    await controlDb.ensureAuthorityKey(publicKeyB64);
+    cadre.initializeSeedBootstrap(privateKeyB64);
+  } catch (err) {
+    console.warn('[cadre-phone] authority self-genesis failed:', err);
+  }
 }
 
 /**

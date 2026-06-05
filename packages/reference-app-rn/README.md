@@ -132,9 +132,21 @@ Each phone runs its own CadreNode. To chat between two phones:
 
 1. Start the drone — it acts as the rendezvous point
 2. Both phones connect to the same Party ID and drone bootstrap address (at startup or via **Add Peer** later)
-3. Phone A creates a strand
-4. Phone B sees the strand via control network sync and auto-joins
-5. Both phones can now send and receive messages on the shared strand
+3. Phone A creates a strand — the app **publishes** its `Strand` row to the shared
+   control database (an authority-signed insert; each phone self-genesis as its
+   own authority at startup, so the first node to enroll its key is the founding
+   authority)
+4. Phone B's node observes the new row via control-network sync and emits
+   `strand:discovered`; the app auto-joins it via `joinChatStrand`
+5. Both phones can now send and receive messages on the shared strand — once the
+   strand-level cohort converges (peers find each other through the control
+   network's `CadrePeer` records; see the cohort-bootstrap wiring)
+
+> **Note:** joining a discovered strand needs no authority, but publishing a
+> **new** strand does. In a shared party the founding authority is whichever node
+> enrolled its key first, so a second phone may be able to join strands without
+> being able to create its own. This is a demo simplification of the authority
+> model.
 
 ## Scripts
 
@@ -218,7 +230,7 @@ reference-app-rn/
 
 ## Key Concepts
 
-**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands.
+**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an authority-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event.
 
 **Strand** — An isolated P2P database. The chat app creates strands of type `'o'` (open), meaning any connected node can participate.
 

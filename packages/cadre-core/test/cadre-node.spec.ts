@@ -6,7 +6,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { CadreNode } from '../src/cadre-node.js';
 import { StrandWakeService } from '../src/strand-wake-protocol.js';
 import { signSchema } from '../src/schema-verification.js';
-import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance } from '../src/types.js';
+import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance, CadreNodeEvents } from '../src/types.js';
 import { duplexPair } from './wake-stream-helpers.js';
 
 describe('CadreNode', () => {
@@ -234,6 +234,56 @@ describe('CadreNode', () => {
 
       await node.stop();
     }, 60000);
+
+    it('emits strand:discovered when a watched strand has no registered config', () => {
+      // The discovery seam: a control-network strand with no local sAppConfig
+      // must surface as strand:discovered (carrying the full row) instead of
+      // being silently dropped, so the hosting app can decide whether to join.
+      const node = new CadreNode(createConfig());
+
+      const discovered: Array<CadreNodeEvents['strand:discovered']> = [];
+      node.on('strand:discovered', (d) => discovered.push(d));
+
+      const strand = createStrandRow('discovered-strand');
+      const callHandle = (node as unknown as {
+        handleStrandAdded: (s: StrandRow) => Promise<void>;
+      }).handleStrandAdded.bind(node);
+
+      // No node start / control DB needed: the no-config branch only reads the
+      // (empty) sAppConfigs map and emits.
+      void callHandle(strand);
+
+      expect(discovered).toHaveLength(1);
+      expect(discovered[0]!.strandId).toBe('discovered-strand');
+      expect(discovered[0]!.strand).toEqual(strand);
+    });
+
+    it('does not emit strand:discovered for a strand that has a registered config (auto-start path)', async () => {
+      // A self-configured strand (config already present from addStrand) must keep
+      // taking the auto-start path, NOT the discovery path. Stub launchStrand so
+      // we can assert the branch without booting a real strand instance.
+      const node = new CadreNode(createConfig());
+
+      const launched: string[] = [];
+      (node as unknown as {
+        launchStrand: (s: StrandRow, c: SAppConfig) => Promise<void>;
+      }).launchStrand = async (s) => { launched.push(s.Id); };
+
+      (node as unknown as { sAppConfigs: Map<string, SAppConfig> })
+        .sAppConfigs.set('configured-strand', createSAppConfig());
+
+      const discovered: string[] = [];
+      node.on('strand:discovered', (d) => discovered.push(d.strandId));
+
+      const callHandle = (node as unknown as {
+        handleStrandAdded: (s: StrandRow) => Promise<void>;
+      }).handleStrandAdded.bind(node);
+
+      await callHandle(createStrandRow('configured-strand'));
+
+      expect(discovered).toHaveLength(0);
+      expect(launched).toEqual(['configured-strand']);
+    });
   });
 
   describe('hibernation orchestration', () => {

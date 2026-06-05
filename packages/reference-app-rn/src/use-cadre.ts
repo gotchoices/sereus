@@ -15,7 +15,7 @@ import {
   dialPeer as dialPeerImpl,
   type PhoneNodeOptions,
 } from './cadre-phone';
-import { createChatStrand } from './chat-strand';
+import { createChatStrand, joinChatStrand } from './chat-strand';
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -83,14 +83,32 @@ export function useCadreInternal(): UseCadreResult {
       refreshStrands();
     };
 
+    // A strand created by another member arrived over the control network. Join
+    // it (register the chat config + addStrand), then refresh. Guard against a
+    // double-join (we may already host it — e.g. our own just-published strand,
+    // or a re-fire) and surface failures rather than eating them.
+    const onDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
+      if (node.getStrands().has(strandId)) return;
+      void (async () => {
+        try {
+          await joinChatStrand(node, strand);
+          refreshStrands();
+        } catch (err) {
+          console.warn(`Failed to auto-join discovered strand ${strandId}:`, err);
+        }
+      })();
+    };
+
     node.on('strand:started', onStarted);
     node.on('strand:stopped', onStopped);
     node.on('strand:error', onError);
+    node.on('strand:discovered', onDiscovered);
 
     return () => {
       node.off('strand:started', onStarted);
       node.off('strand:stopped', onStopped);
       node.off('strand:error', onError);
+      node.off('strand:discovered', onDiscovered);
     };
   }, [node, refreshStrands]);
 

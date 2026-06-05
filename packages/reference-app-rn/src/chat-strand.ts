@@ -52,6 +52,17 @@ export function getChatSAppConfig(): SAppConfig {
 /**
  * Create a new chat strand on the given cadre node.
  *
+ * Two steps, in order:
+ *   1. Publish the `Strand` row to the shared control database so other cadre
+ *      members discover it via control-network sync (their node fires
+ *      `strand:discovered`). This is an authority-signed insert — the phone must
+ *      be an enrolled authority (see `runAuthorityGenesis` in cadre-phone.ts).
+ *   2. Start the local strand instance with the chat sApp config.
+ *
+ * Publishing FIRST means a publish failure (e.g. this node is not an enrolled
+ * authority) surfaces as a thrown error and we never start a local-only strand
+ * that no peer could ever join — the masked-failure mode this replaces.
+ *
  * @param cadreNode  Running CadreNode
  * @param strandId   Unique strand identifier (caller-generated UUID)
  * @returns          The active StrandInstance with its Quereus database
@@ -65,6 +76,8 @@ export async function createChatStrand(
     MemberPrivateKey: null,
     Type: 'o', // open — anyone can participate
   };
+
+  await cadreNode.publishStrand(strandId, 'o');
 
   return cadreNode.addStrand({
     strandRow,

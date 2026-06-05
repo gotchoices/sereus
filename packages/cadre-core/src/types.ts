@@ -461,6 +461,14 @@ export interface CadreNodeEvents {
   'strand:idle': { strandId: string };
   'strand:hibernating': { strandId: string };
   'strand:waking': { strandId: string };
+  /**
+   * Emitted when the control network advertises a strand this node has no
+   * registered `sAppConfig` for — i.e. a strand created by another member. The
+   * hosting app decides whether to join it (register a config + `addStrand`,
+   * e.g. via a chat `joinChatStrand` helper). Carries the full {@link StrandRow}
+   * so the app can join without re-querying the control DB.
+   */
+  'strand:discovered': { strandId: string; strand: StrandRow };
   'control:connected': void;
   'control:disconnected': void;
   /** Emitted when a seed is received via the seed protocol */

@@ -27,6 +27,7 @@ import type {
   SelfRegistrationOutcome
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { sign } from '@optimystic/quereus-plugin-crypto';
 import { authorityKeyFromLibp2p } from './authority-key.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -646,9 +647,13 @@ export class CadreNode implements SAppIdLookup {
     // Check if we have sApp config for this strand
     const sAppConfig = this.sAppConfigs.get(strand.Id);
     if (!sAppConfig) {
-      log('No sAppConfig registered for strand %s - skipping auto-start', strand.Id);
-      // Strand detected in control network but not yet configured via addStrand
-      // This is normal - the app will call addStrand with the config
+      log('No sAppConfig registered for strand %s - emitting strand:discovered', strand.Id);
+      // Strand created by another member and not yet configured locally. Surface
+      // it as a discovery event so the hosting app can decide whether to join
+      // (register a config + addStrand); the strand-agnostic seam keeps this
+      // class free of any app's join policy. A self-configured strand (config
+      // already present) keeps auto-starting below, unchanged.
+      this.emit('strand:discovered', { strandId: strand.Id, strand });
       return;
     }
 
@@ -927,6 +932,53 @@ export class CadreNode implements SAppIdLookup {
     // Pass `mode` (possibly undefined) through: an explicit mode wins, while a
     // caller that omits it gets the same cohort-inferred mode as the discovery path.
     return await this.launchStrand(strandRow, sAppConfig, mode);
+  }
+
+  /**
+   * Publish a strand row to the shared control database under this node's own
+   * authority identity, so other cadre members discover it via control-network
+   * sync (their {@link StrandWatcher} fires `strand:discovered`).
+   *
+   * This is the authority-signed `Strand` INSERT that {@link addStrand}
+   * deliberately omits: `addStrand` only starts the LOCAL strand instance,
+   * whereas publishing makes the strand visible cadre-wide. A typical creator
+   * does both (start locally + publish); a discovering peer only does
+   * `addStrand` (the row already exists).
+   *
+   * The insert is signed with the ed25519 key behind this node's PeerId — which
+   * {@link authorityKeyFromLibp2p} also exposes as the node's authority keypair,
+   * so peer identity and authority key are one and the same. That key must be
+   * enrolled in `AuthorityKey` (e.g. via {@link ControlDatabase.ensureAuthorityKey}
+   * at genesis) or the schema's `Strand.Authorized` constraint rejects the write.
+   * Failing loudly here is intentional: a silently-unpublished strand would run
+   * as a local-only island that no peer could ever discover or join.
+   *
+   * @param strandId - Unique strand identifier (typically the same id passed to
+   *   {@link addStrand}).
+   * @param type - `'o'` for open (default) or `'c'` for closed.
+   * @param memberPrivateKey - Optional membership key for a closed strand.
+   * @throws if the node is not started, exposes no authority signing key, or the
+   *   control DB rejects the (unauthorized) insert.
+   */
+  async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
+    if (!this.running || !this.controlDatabase) {
+      throw new Error('CadreNode must be started before publishing a strand');
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      throw new Error(
+        `Cannot publish strand ${strandId}: no authority signing key available ` +
+        '(config.privateKey is unset or does not match the node PeerId). Run authority ' +
+        'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
+      );
+    }
+    // insertStrand hands this callback the canonical row-bound message BYTES (see
+    // buildAuthorizationMessage); ed25519-sign them directly (no pre-hash) with
+    // the authority private key, returning a base64url signature.
+    const signMessage = (message: Uint8Array): string =>
+      sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    await this.controlDatabase.insertStrand(strandId, type, signingKey.publicKeyB64, signMessage, memberPrivateKey);
+    log('Published strand %s (type %s) to control DB under authority %s', strandId, type, signingKey.publicKeyB64);
   }
 
   /**
