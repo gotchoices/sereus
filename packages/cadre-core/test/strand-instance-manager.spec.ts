@@ -94,11 +94,21 @@ describe('StrandInstanceManager', () => {
       // and the strand still reaches active. The value-derivation itself is
       // covered by strand-cohort.spec.ts (asserting the forwarded array would
       // require mocking the @optimystic/db-p2p import — see review handoff).
+      //
+      // Bring-up runs in `bootstrap` (local-transactor) mode: every strand now
+      // applies the `Strand` membership schema at bring-up (in addition to the
+      // sApp schema), and in `networked` mode creating those tables needs cohort
+      // consensus — which this BOGUS, unreachable seed can never provide (the
+      // seed is a phantom 2nd cluster member, so a seed-owned collection's create
+      // blocks on an approval that never comes). `bootstrap` keeps the create
+      // local while still forwarding the seed to createLibp2pNode, which is what
+      // this smoke test actually verifies.
       const manager = new StrandInstanceManager();
       // A real, parseable peer id — the libp2p bootstrap module validates it.
       const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
       const config = createStartConfig('seeded-strand', {
-        bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${seedPeerId}`]
+        bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${seedPeerId}`],
+        mode: 'bootstrap'
       });
 
       const instance = await manager.startStrand(config);

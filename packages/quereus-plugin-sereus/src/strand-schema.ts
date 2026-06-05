@@ -1,22 +1,33 @@
--- A strand schema is present in all Sereus strands (distributed database instances).
---
--- This is the on-disk canonical copy of the `Strand` membership/RBAC schema. The
--- runtime copy is the embedded `STRAND_SCHEMA` constant in
--- `packages/quereus-plugin-sereus/src/strand-schema.ts`; the shared composition
--- (`composeStrand`) wraps that constant in `declare schema Strand { ... } apply
--- schema Strand;` and applies it to every strand, alongside the sApp schema.
---
--- The body below (the table declarations inside `declare schema Strand { ... }`)
--- MUST stay byte-equivalent to `STRAND_SCHEMA` — mirror any edit in both places.
---
--- Signed writes use the same crypto idiom as schemas/control.qsql:
---   verify(digest(<concatenated payload>, 'sha256', 'utf8'), <signature>, <pubkey>, 'ed25519')
--- Member keys are ed25519, so the explicit 'ed25519' curve arg is required.
---
--- Population of these tables (Header, founding Authority/Member, invite/peer
--- flows) is a separate concern owned by strand-membership-lifecycle-population.
-declare schema Strand {
-    table Header (
+/**
+ * Embedded strand membership/RBAC schema for cross-platform compatibility.
+ *
+ * This is the authoritative runtime copy of the `Strand` membership schema. It
+ * is duplicated from `schemas/strand.qsql` so that React Native and other
+ * filesystem-less environments get the schema without a runtime file read —
+ * the same pattern `CONTROL_SCHEMA` (cadre-core) uses for the control schema.
+ *
+ * `STRAND_SCHEMA` holds only the *body* (the inner table declarations). The
+ * shared composition (`composeStrand`) wraps it in
+ * `declare schema Strand { ... } apply schema Strand;`, mirroring how the sApp
+ * schema is wrapped in `declare schema App { ... }`.
+ *
+ * Drift discipline: the table declarations here MUST stay byte-equivalent to the
+ * body of `schemas/strand.qsql` (the on-disk canonical copy). Any edit here must
+ * be mirrored there and vice versa — the same invariant the planned
+ * `control-schema-drift-guard` enforces for the control schema.
+ *
+ * Crypto idiom (matches `schemas/control.qsql` and the sApp RBAC fixture
+ * `packages/integration-tests/fixtures/simple-sapp.qsql`): every signed write
+ * proves itself with `verify(digest(<concatenated payload>, 'sha256', 'utf8'),
+ * <signature>, <pubkey>, 'ed25519')`. Member keys are ed25519, so the explicit
+ * curve arg is REQUIRED (verify() otherwise defaults to secp256k1).
+ *
+ * Population note: this ticket applies the schema and makes its constraints
+ * active — it does NOT write membership rows at runtime. Inserting the `Header`,
+ * the founding `Authority`/`Member`, and the invite/peer flows is owned by
+ * `strand-membership-lifecycle-population`.
+ */
+export const STRAND_SCHEMA = `    table Header (
         Id text,    -- UUID of this network - generated at inception - immutable
 
         -- Types: 'o' = Open, 'c' = Closed
@@ -146,4 +157,4 @@ declare schema Strand {
                 )
         )
     ) with context (AuthorityKey text null, Signature text null);
-}
+`;

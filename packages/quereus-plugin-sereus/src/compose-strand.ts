@@ -5,6 +5,7 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, Libp2pNodeWithRepo } from './types.js';
+import { STRAND_SCHEMA } from './strand-schema.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -243,13 +244,32 @@ export async function composeStrand(
 			strandId, Math.round(performance.now() - t0), hydrated.tables, hydrated.indexes);
 		log('Hydrated catalog for strand %s (tables=%d, indexes=%d)', strandId, hydrated.tables, hydrated.indexes);
 
-		// 6. Apply the sApp schema, if provided.
+		// 6. Apply the strand membership/RBAC schema (`schemas/strand.qsql`,
+		// embedded as STRAND_SCHEMA) UNCONDITIONALLY — every strand has membership
+		// semantics whether or not an sApp schema is supplied. There are no
+		// cross-schema references between `Strand` and `App`, so order is
+		// irrelevant; apply `Strand` first for clarity. Because this runs AFTER
+		// hydrate, a warm restart diffs the membership DDL against the already-
+		// hydrated catalog and re-emits nothing (same fix as the sApp apply).
 		//
-		// SEAM: this is the single composition point where strand-level DDL is
-		// applied. The strand membership/RBAC schema (`schemas/strand.qsql`) will
-		// be applied here in addition to the sApp schema — see ticket
-		// `strand-membership-rbac-schema-not-applied`. Keep this the one place
-		// declarative schema is applied so that change stays a one-location edit.
+		// This ticket only makes the tables present and their constraints active;
+		// nothing here writes membership rows. Founder bootstrap (Header, founding
+		// Authority/Member, invite/peer flows) is owned by the lifecycle ticket
+		// `strand-membership-lifecycle-population`.
+		log('Applying Strand membership schema for strand %s', strandId);
+		await db.exec(`
+			declare schema Strand {
+				${STRAND_SCHEMA}
+			}
+			apply schema Strand;
+		`);
+		log('Strand membership schema applied');
+
+		// 7. Apply the sApp schema, if provided.
+		//
+		// SEAM: this and the Strand apply above are the single composition point
+		// where strand-level declarative DDL is applied. Keep new schema wiring
+		// here so it stays a one-location edit across Node, browser, and cadre-core.
 		if (schema) {
 			log('Applying sApp schema for strand %s', strandId);
 			await db.exec(`
