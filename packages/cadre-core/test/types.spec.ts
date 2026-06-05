@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import type {
   CadreNodeConfig,
   StrandFilter,
@@ -25,9 +26,10 @@ describe('Types', () => {
       expect(config.strandFilter).toBeUndefined();
     });
 
-    it('should allow full configuration', () => {
+    it('should allow full configuration', async () => {
+      const privateKey = await generateKeyPair('Ed25519');
       const config: CadreNodeConfig = {
-        privateKey: new Uint8Array([1, 2, 3]),
+        privateKey,
         controlNetwork: {
           partyId: 'test-party-id',
           bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/QmTest']
@@ -50,7 +52,7 @@ describe('Types', () => {
         strandWatchInterval: 10000
       };
 
-      expect(config.privateKey).toEqual(new Uint8Array([1, 2, 3]));
+      expect(config.privateKey).toBe(privateKey);
       expect(config.profile).toBe('storage');
       expect(config.storage?.provider).toBeDefined();
       expect(config.hibernation?.enabled).toBe(true);

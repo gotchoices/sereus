@@ -85,7 +85,7 @@ const SAMPLE_NODE: ManagedNodeInfo = {
   status: 'running',
   spawnedAt: '2025-01-01T00:00:00Z',
   workdir: '',
-  ports: { health: 11, metrics: 12, p2p: 13 },
+  ports: { health: 11, metrics: 12, p2p: 13, admin: 14 },
 };
 
 describe('/api/nodes routes', () => {

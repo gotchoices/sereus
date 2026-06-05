@@ -349,7 +349,7 @@ describe('NatService — async channel node + onAddressesChanged', () => {
 
     expect(fired.length).toBeGreaterThanOrEqual(2);
     // The pushed addresses carry the node's peer ID.
-    expect(fired.at(-1)!.every((a) => a.includes('12D3KooWHook'))).toBe(true);
+    expect(fired[fired.length - 1]!.every((a: string) => a.includes('12D3KooWHook'))).toBe(true);
   });
 
   it('onAddressesChanged unsubscribe stops further notifications', async () => {

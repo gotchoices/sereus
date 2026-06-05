@@ -64,7 +64,7 @@ describe('GET /api/status', () => {
           status: 'running',
           spawnedAt: '2025-01-01T00:00:00Z',
           workdir: '/tmp/alice',
-          ports: { health: 1, metrics: 2, p2p: 3 },
+          ports: { health: 1, metrics: 2, p2p: 3, admin: 4 },
         },
       ]),
       trustCircle: fakeTrustCircle({

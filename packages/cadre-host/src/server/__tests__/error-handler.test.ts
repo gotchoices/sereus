@@ -1,4 +1,4 @@
-import Fastify from 'fastify';
+import Fastify, { type FastifyRequest } from 'fastify';
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 
 import { TrustCircleError } from '../../auth/types.js';
@@ -12,15 +12,15 @@ describe('error handler', () => {
   beforeEach(async () => {
     app = Fastify();
     registerErrorHandler(app);
-    app.get('/trust/:code', async (req) => {
+    app.get('/trust/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
       throw new TrustCircleError(code as never, `trust err: ${code}`);
     });
-    app.get('/nat/:code', async (req) => {
+    app.get('/nat/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
       throw new NatError(code as never, `nat err: ${code}`);
     });
-    app.get('/update/:code', async (req) => {
+    app.get('/update/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
       throw new UpdateErrorException(code as never, `update err: ${code}`);
     });

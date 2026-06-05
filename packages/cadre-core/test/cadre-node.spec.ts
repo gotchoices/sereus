@@ -1,5 +1,6 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { multiaddr } from '@multiformats/multiaddr';
 import { CadreNode } from '../src/cadre-node.js';
@@ -68,7 +69,7 @@ describe('CadreNode', () => {
       const config = createConfig({
         profile: 'storage',
         strandFilter: { mode: 'all' },
-        storage: { type: 'memory' },
+        storage: { provider: () => new MemoryRawStorage() },
         hibernation: { enabled: true, defaultLatencyHint: 'interactive' },
         strandWatchInterval: 10000
       });

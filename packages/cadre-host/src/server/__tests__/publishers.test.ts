@@ -131,7 +131,7 @@ describe('publisher wiring', () => {
       status: 'stopped',
       spawnedAt: 'x',
       workdir: '/tmp',
-      ports: { health: 1, metrics: 2, p2p: 3 },
+      ports: { health: 1, metrics: 2, p2p: 3, admin: 4 },
     });
     expect(received).toContainEqual({
       type: 'node-state-changed',

@@ -25,12 +25,7 @@ describe('HibernationManager', () => {
     };
   }
 
-  function createCallbacks(): HibernationCallbacks & {
-    idleCalls: string[];
-    hibernateCalls: string[];
-    wakeCalls: string[];
-    checkInCalls: string[];
-  } {
+  function createCallbacks() {
     const callbacks = {
       idleCalls: [] as string[],
       hibernateCalls: [] as string[],

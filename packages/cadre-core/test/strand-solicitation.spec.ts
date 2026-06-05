@@ -3,7 +3,7 @@ import { createLibp2p, type Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
 import { yamux } from '@chainsafe/libp2p-yamux';
-import { createEd25519PeerId, exportToProtobuf, createFromProtobuf } from '@libp2p/peer-id-factory';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import {
   StrandSolicitationService,
   type DisclosureValidator,
@@ -20,10 +20,9 @@ import type { StrandFormationDisclosure, OpenInvitation } from '../src/types.js'
 
 // Helper to create libp2p nodes with proper keys for Noise
 async function createLibp2pNodeWithKeys(port: number = 0): Promise<Libp2p> {
-  const generated = await createEd25519PeerId();
-  const reimported = await createFromProtobuf(exportToProtobuf(generated));
+  const privateKey = await generateKeyPair('Ed25519');
   return createLibp2p({
-    peerId: reimported,
+    privateKey,
     addresses: { listen: [`/ip4/127.0.0.1/tcp/${port}`] },
     transports: [tcp()],
     connectionEncrypters: [noise()],
