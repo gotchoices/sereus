@@ -17,7 +17,7 @@ import type {
 } from '@serfab/cadre-core';
 import { generateStrandMemberKey } from '@serfab/cadre-core';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import { insertMember, type ChatRole } from './chat-operations';
+import { insertMember, memberDisplayName, type ChatRole } from './chat-operations';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
 // Matches schemas/chat-simple.qsql.  Embedded as a string constant so the RN
@@ -227,7 +227,7 @@ async function assignLocalMemberRole(
     return;
   }
   try {
-    await insertMember(instance, id, id, role);
+    await insertMember(instance, id, memberDisplayName(id), role);
   } catch (err) {
     console.warn(`[chat-strand] failed to assign ${role} role:`, err);
   }

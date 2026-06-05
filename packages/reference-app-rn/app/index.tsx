@@ -15,7 +15,7 @@ import {
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
 import { useChat } from '../src/use-chat';
-import type { ChatMessage } from '../src/chat-operations';
+import { memberDisplayName, type ChatMessage } from '../src/chat-operations';
 import { TEST_IDS } from '../src/test-ids';
 
 export default function ChatScreen() {
@@ -25,7 +25,7 @@ export default function ChatScreen() {
   const chat = useChat({
     strand: firstStrand,
     memberId: cadre.peerId,
-    memberName: cadre.peerId ? `User-${cadre.peerId.slice(-4)}` : undefined,
+    memberName: cadre.peerId ? memberDisplayName(cadre.peerId) : undefined,
   });
 
   const [draft, setDraft] = useState('');

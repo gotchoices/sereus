@@ -38,6 +38,17 @@ export interface ChatMember {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
+/**
+ * Friendly display name for a peer. The chat UI and the closed-strand role
+ * assignment both register the local member, and `insertMember` is idempotent on
+ * `Id` — whichever runs first pins the `Name`. Deriving the name from the peerId
+ * here (instead of each call site passing the raw peerId or its own format) keeps
+ * the member list consistent no matter which insert lands first.
+ */
+export function memberDisplayName(peerId: string): string {
+  return `User-${peerId.slice(-4)}`;
+}
+
 function getDb(strand: StrandInstance): Database {
   if (!strand.database) {
     throw new Error(`Strand ${strand.strandId} database not available (status: ${strand.status})`);
