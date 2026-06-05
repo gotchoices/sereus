@@ -142,8 +142,9 @@ export class TestCadreNetwork {
     // Persist an authority-signed FormationInvite into the INVITING party's control
     // network (the consent tables are intra-cadre). TotalUses is left null
     // (unlimited) so multi-party join scenarios can redeem the same invite more
-    // than once. The signer mirrors createStrand: ed25519 over the canonical
-    // digest of the StampId, verified by FormationInvite.AuthorizedAddOrRemove.
+    // than once. The signer mirrors createStrand: ed25519 over the raw row-bound
+    // authorization message insertFormationInvite builds (Token, sAppId, ExpiresAt,
+    // TotalUses, ValidationUrl, StampId), verified by FormationInvite.AuthorizedAddOrRemove.
     await party.controlDatabase.insertFormationInvite(
       token,
       strand.sAppId,

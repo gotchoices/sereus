@@ -98,11 +98,21 @@ declare schema CadreControl {
         ExpiresAt datetime null,
         TotalUses int null check (TotalUses >= 0),
         ValidationUrl text null,   -- Web hook - send disclosure, IP address...
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint AuthorizedAddOrRemove check on insert, delete (
-            -- Authorized by an authority key to add or remove this invite
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+            -- Authorized by an authority signing over THIS row
+            -- (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId); single-use via unique StampId.
+            -- coalesce(new.F, old.F) binds the NEW row on insert and the OLD row on delete (cf. CadrePeer).
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(
+                digest(coalesce(new.Token, old.Token), 'sha256', 'utf8', 'hex')
+                    || digest(coalesce(new.sAppId, old.sAppId), 'sha256', 'utf8', 'hex')
+                    || digest(coalesce(cast(coalesce(new.ExpiresAt, old.ExpiresAt) as text), ''), 'sha256', 'utf8', 'hex')
+                    || digest(coalesce(cast(coalesce(new.TotalUses, old.TotalUses) as text), ''), 'sha256', 'utf8', 'hex')
+                    || digest(coalesce(coalesce(new.ValidationUrl, old.ValidationUrl), ''), 'sha256', 'utf8', 'hex')
+                    || digest(coalesce(new.StampId, old.StampId), 'sha256', 'utf8', 'hex'),
+                context.Signature, A.Key, 'ed25519', 'hex'))
         )
-    ) with context (AuthorityKey text, StampId text, Signature text);
+    ) with context (AuthorityKey text, Signature text);
 
     table FormationUsage (
         Token text,

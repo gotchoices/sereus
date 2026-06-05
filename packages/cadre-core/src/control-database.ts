@@ -508,15 +508,24 @@ export class ControlDatabase {
    * The invite is the on-network record that later authorizes an
    * authority-signature-FREE `Strand` creation: an invited cadre peer redeems it
    * by inserting a matching `FormationUsage` row (see {@link redeemInvitation}),
-   * which satisfies the consent branch of `Strand.Authorized`. Adding/removing
-   * the invite is gated by `FormationInvite.AuthorizedAddOrRemove`, an authority
-   * signature over `digest(StampId, 'sha256', 'utf8')` verified with `'ed25519'`.
+   * which satisfies the consent branch of `Strand.Authorized`.
    *
-   * Unlike `Strand`/`AuthorityKey`/`ValidationKey`, the `FormationInvite`
-   * signature binds only to a bare `StampId` nonce (a context value, not a unique
-   * column) — so it carries neither row-binding nor single-use replay protection.
-   * That matches the schema this ticket fixes; hardening it to the row-bound +
-   * single-use stamp scheme the privileged tables use is a documented follow-up.
+   * Like {@link insertStrand}/{@link insertValidationKey}, the authority signs the
+   * canonical row-bound authorization message (see {@link buildAuthorizationMessage})
+   * over (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId) — NOT a bare
+   * stamp — so the signature is bound to this invite's contents and cannot be
+   * transplanted onto an attacker-chosen row. The StampId is persisted as a unique
+   * column for single-use anti-replay. `FormationInvite.AuthorizedAddOrRemove` gates
+   * both insert and delete; its `coalesce(new, old)` verify binds the NEW row on
+   * insert and the OLD row on delete.
+   *
+   * The ExpiresAt and TotalUses message fields must byte-match what the (auto-deferred,
+   * because it has a subquery) CHECK sees AFTER column coercion: TotalUses becomes a
+   * decimal string (`String(totalUses)` ⇔ `cast(new.TotalUses as text)`) and ExpiresAt
+   * becomes the engine's canonical `PlainDateTime` string — sourced here from
+   * {@link canonicalDatetime} (a `select datetime(?)` round-trip) rather than a hand-rolled
+   * ISO formatter, so signer and verifier agree exactly. A null ExpiresAt / TotalUses /
+   * ValidationUrl signs as `''`, matching the schema's `coalesce(..., '')`.
    *
    * @param token - Invitation token (the `FormationInvite` primary key)
    * @param sAppId - The sApp a redeemed strand will use
@@ -537,26 +546,57 @@ export class ControlDatabase {
 
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
 
-    // Schema verifies `verify(digest(context.StampId,'sha256','utf8'), Signature, A.Key, 'ed25519')`,
-    // so the signer signs the sha256(utf8(StampId)) bytes directly with the authority ed25519 key.
-    const message = digest(stampId, 'sha256', 'utf8', 'bytes') as Uint8Array;
+    // Build each bound field exactly as the deferred CHECK sees it post-coercion:
+    //   - ExpiresAt: engine-canonical datetime string (or '' when absent), sourced from
+    //     the engine so it byte-matches the column's stored/coerced form.
+    //   - TotalUses: decimal string via String(...) (⇔ cast(new.TotalUses as text)), '' when absent.
+    //   - ValidationUrl: the url or '' when absent.
+    const expiresAtCanonical = options.expiresAtMs == null
+      ? null
+      : await this.canonicalDatetime(options.expiresAtMs);
+    const expiresAtField = expiresAtCanonical ?? '';
+    const totalUsesField = options.totalUses == null ? '' : String(options.totalUses);
+    const validationUrlField = options.validationUrl ?? '';
+
+    // Field order MUST match the schema's FormationInvite `AuthorizedAddOrRemove` verify:
+    // Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId.
+    const message = buildAuthorizationMessage([
+      token, sAppId, expiresAtField, totalUsesField, validationUrlField, stampId,
+    ]);
     const signature = signMessage(message);
 
-    // ExpiresAt is a `datetime` column; an epoch-ms number is canonicalised to an
-    // ISO string on insert (Quereus DATETIME parse).
+    // Persist the canonical ExpiresAt string (datetime parse is idempotent on it) so the
+    // signed source-of-truth and the stored value are produced once. StampId is a real,
+    // unique column (single-use anti-replay), no longer a context value.
     await this.db!.exec(`
-      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl)
-        with context AuthorityKey = ?, StampId = ?, Signature = ?
-        values (?, ?, ?, ?, ?)
+      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId)
+        with context AuthorityKey = ?, Signature = ?
+        values (?, ?, ?, ?, ?, ?)
     `, [
-      authorityKey, stampId, signature,
+      authorityKey, signature,
       token, sAppId,
-      options.expiresAtMs ?? null,
+      expiresAtCanonical,
       options.totalUses ?? null,
       options.validationUrl ?? null,
+      stampId,
     ]);
 
     log('Formation invite inserted: %s', token);
+  }
+
+  /**
+   * Canonicalise an epoch-ms timestamp to the exact `datetime` string Quereus stores,
+   * by round-tripping through the engine's own `datetime(?)` scalar — the same parse the
+   * `datetime` column coercion uses. This avoids a hand-rolled ISO formatter whose
+   * fractional-second handling could diverge from Temporal, keeping the signed ExpiresAt
+   * field byte-identical to the value the deferred CHECK verifies. Pure scalar eval (no
+   * network), mirroring the {@link nextUseNumber} eval pattern.
+   */
+  private async canonicalDatetime(epochMs: number): Promise<string> {
+    for await (const row of this.db!.eval('select datetime(?) as Canonical', [epochMs])) {
+      return row.Canonical as string;
+    }
+    throw new Error('datetime() canonicalisation returned no row');
   }
 
   /**
