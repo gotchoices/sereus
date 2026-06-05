@@ -1000,12 +1000,13 @@ export class CadreNode implements SAppIdLookup {
    * @param token - Invitation token (the `FormationInvite` primary key); use the
    *   `token` of the {@link OpenInvitation} from {@link createOpenInvitation}.
    * @param sAppId - The sApp a redeemed strand will use.
-   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`.
+   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`,
+   *   `strandId` (bind a closed/pre-existing host strand for provision-then-record).
    */
   async publishFormationInvite(
     token: string,
     sAppId: string,
-    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string } = {}
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
     if (!this.running || !this.controlDatabase) {
       throw new Error('CadreNode must be started before publishing a formation invite');

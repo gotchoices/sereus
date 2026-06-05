@@ -96,7 +96,8 @@ export class StrandFormationManager {
     this.listener = new FormationListener({
       validateToken: (token) => this.validateToken(token),
       validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
-      provisionStrand: (initiatorPartyId) => this.provisionAsResponder(initiatorPartyId),
+      provisionStrand: (token, initiatorPartyId, disclosure) =>
+        this.provisionAsResponder(token, initiatorPartyId, disclosure),
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
@@ -170,7 +171,11 @@ export class StrandFormationManager {
       return {
         memberKey: contact.partyId,
         invitePrivateKey: '',
-        strandId: provision.strand.strandId
+        strandId: provision.strand.strandId,
+        // The host strand's membership key, delivered through the protocol (provision-then-record).
+        // Undefined for an open strand. Kept separate from invitePrivateKey (the initiator's
+        // generated signing key), which is set by the StrandSolicitationService layer.
+        memberPrivateKey: provision.memberPrivateKey
       };
     } finally {
       this.dialerSessions--;
@@ -215,7 +220,38 @@ export class StrandFormationManager {
     return this.disclosureValidator.validateDisclosure(token, disclosure);
   }
 
-  private async provisionAsResponder(initiatorPartyId: string): Promise<FormationProvisionResult> {
+  /**
+   * Responder-side provisioning. Two paths, selected by whether the invite binds a
+   * host strand:
+   *
+   * 1. **Provision-then-record** (invite carries a `StrandId`): the host strand already
+   *    exists, so resolve it via the recorder, write the single `FormationUsage` consent
+   *    row against it (record-only), and return that strand + its membership key. The
+   *    key is a read-gating secret disclosed only here — `runSession` already gated this
+   *    call behind token + disclosure validation.
+   * 2. **Responder-provisions** fallback (no binding): provision a NEW strand via the
+   *    wired {@link StrandProvisioner}, threading the invite's REAL `sAppId` (no longer
+   *    `''`), or a structural placeholder when no provisioner is wired.
+   */
+  private async provisionAsResponder(
+    token: string,
+    initiatorPartyId: string,
+    _disclosure: StrandFormationDisclosure
+  ): Promise<FormationProvisionResult> {
+    const recorder = this.formationUsageRecorder;
+    if (recorder?.resolveStrand) {
+      const resolved = await recorder.resolveStrand(token);
+      if (resolved) {
+        // Write the single FormationUsage consent row against the pre-existing host strand.
+        await recorder.recordUsage(token, initiatorPartyId, resolved.strandId);
+        return {
+          strand: { strandId: resolved.strandId, createdBy: 'responder' },
+          memberPrivateKey: resolved.memberPrivateKey ?? undefined,
+          dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+        };
+      }
+    }
+
     if (!this.strandProvisioner) {
       // No provisioner — return a structural placeholder the initiator can still validate.
       const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
@@ -225,11 +261,23 @@ export class StrandFormationManager {
       };
     }
 
-    const result = await this.strandProvisioner.provisionStrand('', initiatorPartyId, this.partyId);
+    const sAppId = await this.resolveInviteSAppId(token);
+    const result = await this.strandProvisioner.provisionStrand(sAppId, initiatorPartyId, this.partyId);
     return {
       strand: { strandId: result.strandId, createdBy: 'responder' },
       dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
     };
+  }
+
+  /**
+   * The invite's authoritative `sAppId` for the responder-provisions fallback, read back
+   * from the recorder's `isTokenValid` invitation (the real `FormationInvite.sAppId`).
+   * Empty string when no recorder is wired or the invitation omits it.
+   */
+  private async resolveInviteSAppId(token: string): Promise<string> {
+    if (!this.formationUsageRecorder) return '';
+    const check = await this.formationUsageRecorder.isTokenValid(token);
+    return check.invitation?.sAppId ?? '';
   }
 
   // ── Initiator-side result validation ─────────────────────────────────────────

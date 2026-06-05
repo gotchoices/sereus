@@ -16,8 +16,9 @@
  *   live stream so the responder validates it against the session it approved.
  *
  * Cadre-disclosure timing (see docs/strand-proto.md "Security & Privacy"): the
- * responder reveals its own party id + cadre addresses ONLY after the token and
- * disclosure validate; a rejection discloses neither.
+ * responder reveals its own party id + cadre addresses — and, for a closed strand
+ * returned via provision-then-record, that strand's membership key — ONLY after the
+ * token and disclosure validate; a rejection discloses none of them.
  */
 
 import debug from 'debug';
@@ -65,6 +66,13 @@ export interface FormationDbConnectionInfo {
 
 export interface FormationProvisionResult {
   strand: FormationStrandInfo;
+  /**
+   * The strand's membership key (closed-strand read-gating secret), delivered to a
+   * validated invitee for provision-then-record formation. Disclosed only AFTER token
+   * + disclosure validation, exactly like the responder identity/cadre — a rejected or
+   * already-used token discloses neither identity nor key. Absent for open strands.
+   */
+  memberPrivateKey?: string;
   dbConnectionInfo: FormationDbConnectionInfo;
 }
 
@@ -191,7 +199,12 @@ const PLACEHOLDER_CADRE_ADDR = /^cadre-[ab]-\d+\.local$/;
 /**
  * Structural check on a `responderCreates` result: the responder must have approved,
  * disclosed a non-empty real identity + cadre (not the deprecated `cadre-*.local`
- * placeholders), and returned a strand it (the responder) created with a real id.
+ * placeholders), and returned a strand vouched for by the responder party with a real id.
+ *
+ * `createdBy: 'responder'` means "the responder party vouches for / returns this strand."
+ * Under provision-then-record that strand was minted authority-signed earlier (not created
+ * in-session), but it is still the responder party returning its own strand, so the marker
+ * — and this structural validator — stay unchanged.
  *
  * The behavioral floor for the initiator: a responder that returns an arbitrary/empty
  * `strandId` or omits its disclosed identity is rejected, not silently accepted.
@@ -215,8 +228,12 @@ export interface FormationListenerOptions {
   validateToken(token: string): Promise<{ valid: boolean; mode: FormationMode }>;
   /** Validate the initiator's disclosure with the REAL token + disclosure. */
   validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean>;
-  /** Provision a strand (`responderCreates`) for the given initiator. */
-  provisionStrand(initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<FormationProvisionResult>;
+  /**
+   * Provision (or, for provision-then-record, resolve + record consent against) the
+   * strand (`responderCreates`) for the given initiator. The REAL token is threaded
+   * in so the hook can map it to the bound host strand and its membership key.
+   */
+  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<FormationProvisionResult>;
   /** Validate the db result echoed back by the initiator (`initiatorCreates`). */
   validateDatabaseResult?(message: FormationDatabaseMessage): Promise<boolean>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
@@ -314,7 +331,7 @@ export class FormationListener {
     const identity = this.options.getResponderIdentity();
 
     if (tokenResult.mode === 'responderCreates') {
-      const provisionResult = await this.options.provisionStrand(contact.partyId, contact.disclosure);
+      const provisionResult = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
       const result: FormationResultMessage = {
         approved: true,
         partyId: identity.partyId,

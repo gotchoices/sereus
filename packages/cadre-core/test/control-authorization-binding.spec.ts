@@ -89,11 +89,13 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
 
   /**
    * Build the FormationInvite row-bound authorization message in the schema's field
-   * order: Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId. Null/absent
-   * ExpiresAt/TotalUses/ValidationUrl sign as '' (matching the schema's coalesce(...,'')),
-   * and TotalUses is the decimal string (matching cast(new.TotalUses as text)). Tests pass
-   * an already-canonical datetime literal for ExpiresAt (DATETIME parse is idempotent on it),
-   * so no per-test engine canonicalisation is needed.
+   * order: Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId.
+   * Null/absent ExpiresAt/TotalUses/ValidationUrl/StrandId sign as '' (matching the
+   * schema's coalesce(...,'')), and TotalUses is the decimal string (matching
+   * cast(new.TotalUses as text)). Tests pass an already-canonical datetime literal for
+   * ExpiresAt (DATETIME parse is idempotent on it), so no per-test engine
+   * canonicalisation is needed. The raw inserts below omit the StrandId column (defaults
+   * null → signs as ''), so these tests exercise the unbound/legacy path.
    */
   function inviteMessage(fields: {
     token: string;
@@ -101,6 +103,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     expiresAt?: string;
     totalUses?: number;
     validationUrl?: string;
+    strandId?: string;
     stampId: string;
   }): Uint8Array {
     return buildAuthorizationMessage([
@@ -109,6 +112,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
       fields.expiresAt ?? '',
       fields.totalUses == null ? '' : String(fields.totalUses),
       fields.validationUrl ?? '',
+      fields.strandId ?? '',
       fields.stampId,
     ]);
   }

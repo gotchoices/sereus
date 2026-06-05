@@ -409,6 +409,13 @@ export interface FormStrandResult {
   invitePrivateKey: string;
   /** The strand that was created */
   strandId: string;
+  /**
+   * The strand's membership key (closed-strand read-gating secret), delivered through
+   * the formation protocol after consent (provision-then-record). Present only for a
+   * closed strand the responder returned with its key; undefined otherwise. Distinct
+   * from {@link invitePrivateKey} (the initiator's own generated signing key).
+   */
+  memberPrivateKey?: string;
 }
 
 /**

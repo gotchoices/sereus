@@ -209,21 +209,53 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect((await recorder.isTokenValid(expired)).valid).toBe(false);
     });
 
-    it('isTokenUsed: respects TotalUses, and recordUsage redeems (creates strand + usage)', async () => {
+    it('isTokenUsed: respects TotalUses, and recordUsage records consent against a pre-existing strand', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
-      // Single-use invite: not used until its one redemption lands.
+      // provision-then-record: the host strand is minted authority-signed UP FRONT, so
+      // recordUsage is record-only (no Strand insert). Single-use invite: not used until
+      // its one consent row lands.
       const single = 'invite-single-' + rand();
+      const singleStrand = 'strand-su-' + rand();
+      await db.insertStrand(singleStrand, 'o', authorityPublicKey, signMessage);
       await db.insertFormationInvite(single, 'sapp-su', authorityPublicKey, signMessage, { totalUses: 1 });
       expect(await recorder.isTokenUsed(single)).toBe(false);
-      await recorder.recordUsage(single, 'peer-x', 'strand-su-' + rand());
+      await recorder.recordUsage(single, 'peer-x', singleStrand);
       expect(await recorder.isTokenUsed(single)).toBe(true);
 
       // Unlimited invite (null TotalUses): never "used up".
       const unlimited = 'invite-unl-' + rand();
+      const unlimitedStrand = 'strand-unl-' + rand();
+      await db.insertStrand(unlimitedStrand, 'o', authorityPublicKey, signMessage);
       await db.insertFormationInvite(unlimited, 'sapp-unl', authorityPublicKey, signMessage);
-      await recorder.recordUsage(unlimited, 'peer-y', 'strand-unl-' + rand());
+      await recorder.recordUsage(unlimited, 'peer-y', unlimitedStrand);
       expect(await recorder.isTokenUsed(unlimited)).toBe(false);
+    });
+
+    it('resolveStrand: returns the bound host strand + its membership key, null when unbound', async () => {
+      const recorder = new ControlFormationUsageRecorder(db);
+
+      // Bound closed strand: the invite names the pre-existing host strand, and
+      // resolveStrand hands back that strand id + its MemberPrivateKey.
+      const hostStrand = 'strand-bound-' + rand();
+      const hostMemberKey = 'memkey-' + rand();
+      await db.insertStrand(hostStrand, 'c', authorityPublicKey, signMessage, hostMemberKey);
+      const bound = 'invite-bound-' + rand();
+      await db.insertFormationInvite(bound, 'sapp-bound', authorityPublicKey, signMessage, {
+        strandId: hostStrand,
+      });
+      const resolved = await recorder.resolveStrand(bound);
+      expect(resolved).not.toBeNull();
+      expect(resolved?.strandId).toBe(hostStrand);
+      expect(resolved?.memberPrivateKey).toBe(hostMemberKey);
+
+      // Unbound invite (legacy/open path): no StrandId → resolveStrand returns null.
+      const unbound = 'invite-unbound-' + rand();
+      await db.insertFormationInvite(unbound, 'sapp-unbound', authorityPublicKey, signMessage);
+      expect(await recorder.resolveStrand(unbound)).toBeNull();
+
+      // Unknown token resolves to null too.
+      expect(await recorder.resolveStrand('nope-' + rand())).toBeNull();
     });
   });
 });

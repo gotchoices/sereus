@@ -52,6 +52,17 @@ export interface FormationUsageRecorder {
    * Check if a token is valid and not expired
    */
   isTokenValid(token: string): Promise<{ valid: boolean; invitation?: OpenInvitation }>;
+
+  /**
+   * Resolve the host strand an invite binds to (provision-then-record), returning
+   * its id plus the strand's membership key (the closed-strand read-gating secret),
+   * or null when the invite carries no strand binding — the legacy/open
+   * responder-provisions path. Optional: a recorder that does not bind strands omits
+   * it, and {@link StrandFormationManager} then falls back to its provisioner. Keeping
+   * resolution behind this interface keeps the manager DB-agnostic and unit-testable
+   * with an in-memory fake.
+   */
+  resolveStrand?(token: string): Promise<{ strandId: string; memberPrivateKey: string | null } | null>;
 }
 
 /**
@@ -252,7 +263,10 @@ export class StrandSolicitationService {
       return {
         memberKey,
         invitePrivateKey,
-        strandId: result.strandId
+        strandId: result.strandId,
+        // Carry the host strand's membership key delivered over the protocol (closed-strand
+        // provision-then-record). invitePrivateKey stays the initiator's generated signing key.
+        memberPrivateKey: result.memberPrivateKey
       };
     }
 

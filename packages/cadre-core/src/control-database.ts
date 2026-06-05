@@ -263,6 +263,27 @@ export class ControlDatabase {
   }
 
   /**
+   * Read a single strand row by id, or null when absent. Single-row sibling of
+   * {@link queryStrands}; the responder uses it to read a host strand's
+   * `MemberPrivateKey` (the closed-strand read-gating secret) for delivery to a
+   * validated invitee during provision-then-record formation.
+   */
+  async queryStrand(strandId: string): Promise<StrandRow | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval(
+      'select Id, MemberPrivateKey, Type from CadreControl.Strand where Id = ?',
+      [strandId]
+    )) {
+      return {
+        Id: row.Id as string,
+        MemberPrivateKey: row.MemberPrivateKey as string | null,
+        Type: row.Type as 'o' | 'c',
+      };
+    }
+    return null;
+  }
+
+  /**
    * Count rows in a CadreControl table as seen by THIS database instance.
    *
    * `table` is validated against {@link CONTROL_TABLES} before it is interpolated
@@ -512,12 +533,18 @@ export class ControlDatabase {
    *
    * Like {@link insertStrand}/{@link insertValidationKey}, the authority signs the
    * canonical row-bound authorization message (see {@link buildAuthorizationMessage})
-   * over (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId) — NOT a bare
-   * stamp — so the signature is bound to this invite's contents and cannot be
+   * over (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId) — NOT a
+   * bare stamp — so the signature is bound to this invite's contents and cannot be
    * transplanted onto an attacker-chosen row. The StampId is persisted as a unique
    * column for single-use anti-replay. `FormationInvite.AuthorizedAddOrRemove` gates
    * both insert and delete; its `coalesce(new, old)` verify binds the NEW row on
    * insert and the OLD row on delete.
+   *
+   * `StrandId` binds the invite to a pre-existing host strand (provision-then-record):
+   * when set, a responder redeeming this token records a `FormationUsage` against that
+   * strand and returns it (see {@link ControlFormationUsageRecorder.resolveStrand}); a
+   * null `StrandId` (the default) leaves the legacy responder-provisions path in place.
+   * Like ValidationUrl it is a nullable bound field, signed as `''` when absent.
    *
    * The ExpiresAt and TotalUses message fields must byte-match what the (auto-deferred,
    * because it has a subquery) CHECK sees AFTER column coercion: TotalUses becomes a
@@ -532,14 +559,15 @@ export class ControlDatabase {
    * @param authorityKey - Public key of the authorizing authority
    * @param signMessage - ed25519-signs the raw message bytes (no pre-hash),
    *   returning a base64url signature — the same callback shape {@link insertStrand} uses
-   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`
+   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`,
+   *   `strandId` (bind to a pre-existing host strand for provision-then-record)
    */
   async insertFormationInvite(
     token: string,
     sAppId: string,
     authorityKey: string,
     signMessage: (message: Uint8Array) => string,
-    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string } = {}
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
     this.ensureInitialized();
     log('Inserting formation invite: %s', token);
@@ -551,17 +579,19 @@ export class ControlDatabase {
     //     the engine so it byte-matches the column's stored/coerced form.
     //   - TotalUses: decimal string via String(...) (⇔ cast(new.TotalUses as text)), '' when absent.
     //   - ValidationUrl: the url or '' when absent.
+    //   - StrandId: the host strand id or '' when absent (text column, no coercion).
     const expiresAtCanonical = options.expiresAtMs == null
       ? null
       : await this.canonicalDatetime(options.expiresAtMs);
     const expiresAtField = expiresAtCanonical ?? '';
     const totalUsesField = options.totalUses == null ? '' : String(options.totalUses);
     const validationUrlField = options.validationUrl ?? '';
+    const strandIdField = options.strandId ?? '';
 
     // Field order MUST match the schema's FormationInvite `AuthorizedAddOrRemove` verify:
-    // Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId.
+    // Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId.
     const message = buildAuthorizationMessage([
-      token, sAppId, expiresAtField, totalUsesField, validationUrlField, stampId,
+      token, sAppId, expiresAtField, totalUsesField, validationUrlField, strandIdField, stampId,
     ]);
     const signature = signMessage(message);
 
@@ -569,15 +599,16 @@ export class ControlDatabase {
     // signed source-of-truth and the stored value are produced once. StampId is a real,
     // unique column (single-use anti-replay), no longer a context value.
     await this.db!.exec(`
-      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId)
+      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
         with context AuthorityKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?, ?)
+        values (?, ?, ?, ?, ?, ?, ?)
     `, [
       authorityKey, signature,
       token, sAppId,
       expiresAtCanonical,
       options.totalUses ?? null,
       options.validationUrl ?? null,
+      options.strandId ?? null,
       stampId,
     ]);
 
@@ -752,10 +783,11 @@ export class ControlDatabase {
     expiresAtMs: number | null;
     totalUses: number | null;
     validationUrl: string | null;
+    strandId: string | null;
   } | null> {
     this.ensureInitialized();
     for await (const row of this.db!.eval(
-      'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl from CadreControl.FormationInvite where Token = ?',
+      'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?',
       [token]
     )) {
       const expiresAt = row.ExpiresAt as string | number | null;
@@ -768,6 +800,7 @@ export class ControlDatabase {
         expiresAtMs: expiresAtMs !== null && Number.isNaN(expiresAtMs) ? null : expiresAtMs,
         totalUses: (row.TotalUses as number | null) ?? null,
         validationUrl: (row.ValidationUrl as string | null) ?? null,
+        strandId: (row.StrandId as string | null) ?? null,
       };
     }
     return null;

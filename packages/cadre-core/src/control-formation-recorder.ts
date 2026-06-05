@@ -12,10 +12,12 @@ const NEVER_EXPIRES = new Date(8640000000000000);
  * {@link FormationUsageRecorder} backed by the real `CadreControl` tables.
  *
  * It reads `FormationInvite` / `FormationUsage` to answer token-validity and
- * usage questions, and redeems an invite by inserting the `Strand` + matching
- * `FormationUsage` row atomically (the consent branch of `Strand.Authorized`).
- * This replaces the in-memory stubs used by the formation tests so the consent
- * path is exercised against the persisted control network.
+ * usage questions. Under the picked **provision-then-record** model the host
+ * strand already exists (authority-signed up front and named by the invite's
+ * `StrandId`), so {@link recordUsage} writes the consent row against that
+ * pre-existing strand (record-only) rather than inserting a new `Strand`. This
+ * replaces the in-memory stubs used by the formation tests so the consent path
+ * is exercised against the persisted control network.
  *
  * Usage accounting follows the schema's `FormationUsage.Authorized` semantics:
  * a null `TotalUses` means unlimited uses; otherwise the invite is "used up"
@@ -60,11 +62,37 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }
 
   /**
-   * Record a redemption: insert the `Strand` row + a matching `FormationUsage`
-   * row atomically. `initiatorKey` is carried as the usage `PeerId` (advisory).
+   * Record consent against an **already-existing** host strand (record-only): the
+   * single `FormationUsage` insert auto-commits and the deferred `StrandExists`
+   * CHECK is satisfied by the pre-existing strand. This is the provision-then-record
+   * commitment — the strand was minted authority-signed up front, so we do NOT
+   * re-insert it (which would double-insert the same PK). `initiatorKey` is carried
+   * as the usage `PeerId` (advisory). Use {@link ControlDatabase.redeemInvitation}
+   * for the consent-creates-strand path instead.
    */
   async recordUsage(token: string, initiatorKey: string, strandId: string): Promise<void> {
-    await this.controlDatabase.redeemInvitation({ token, strandId, peerId: initiatorKey });
-    log('Recorded redemption: token=%s strand=%s', token, strandId);
+    await this.controlDatabase.recordFormationUsage({ token, strandId, peerId: initiatorKey });
+    log('Recorded formation usage: token=%s strand=%s', token, strandId);
+  }
+
+  /**
+   * Resolve the host strand this invite binds to, for provision-then-record. Reads
+   * the invite's `StrandId`, then the strand's `MemberPrivateKey` (the closed-strand
+   * read-gating secret) to deliver to a validated invitee. Returns null when the
+   * invite carries no strand binding (legacy/open responder-provisions path) or the
+   * named strand is missing.
+   */
+  async resolveStrand(
+    token: string
+  ): Promise<{ strandId: string; memberPrivateKey: string | null } | null> {
+    const invite = await this.controlDatabase.queryFormationInvite(token);
+    if (!invite || !invite.strandId) {
+      return null;
+    }
+    const strand = await this.controlDatabase.queryStrand(invite.strandId);
+    return {
+      strandId: invite.strandId,
+      memberPrivateKey: strand?.MemberPrivateKey ?? null,
+    };
   }
 }
