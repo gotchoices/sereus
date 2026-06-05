@@ -90,6 +90,45 @@ describe('ContainerService seed endpoint provisioning', () => {
     expect(String(seedUrl)).toMatch(/\/seed$/);
     expect(init?.method).toBe('POST');
     expect(JSON.parse(init?.body as string)).toEqual({ seed: 'encoded-seed-xyz' });
+    // The container gates POST /seed behind a bearer token; the MockOrchestrator
+    // hands back `mock-seed-token-1` for the first container, so applySeed must
+    // present it verbatim.
+    const headers = init?.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer mock-seed-token-1');
+  });
+
+  it('applySeed sends the persisted seed token as a bearer header', async () => {
+    const { service } = await makeService(pendingContainer({
+      status: 'running',
+      seedEndpoint: 'http://localhost:8081/seed',
+      seedToken: 'secret-token-abc',
+    }));
+    const fetchMock = vi.fn(async () => jsonResponse({ success: true, peersAdded: 1 }));
+    globalThis.fetch = fetchMock as typeof globalThis.fetch;
+
+    const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');
+
+    expect(result).toEqual({ success: true, peersAdded: 1 });
+    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const headers = init.headers as Record<string, string>;
+    expect(headers.Authorization).toBe('Bearer secret-token-abc');
+    expect(headers['Content-Type']).toBe('application/json');
+  });
+
+  it('applySeed fails with a clear error when the container has no seed token', async () => {
+    // An endpoint but no token (e.g. a legacy record provisioned before token
+    // injection) can never authenticate — fail loudly rather than hit a 401.
+    const { service } = await makeService(pendingContainer({
+      status: 'running',
+      seedEndpoint: 'http://localhost:8081/seed',
+      seedToken: undefined,
+    }));
+    globalThis.fetch = vi.fn() as typeof globalThis.fetch;
+
+    const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');
+
+    expect(result).toEqual({ success: false, error: 'Container does not have a seed token' });
+    expect(globalThis.fetch).not.toHaveBeenCalled();
   });
 
   it('applySeed still guards containers that were never provisioned with a seed endpoint', async () => {
@@ -109,6 +148,7 @@ describe('ContainerService seed endpoint provisioning', () => {
     const { service } = await makeService(pendingContainer({
       status: 'enrolling',
       seedEndpoint: 'http://localhost:8081/seed',
+      seedToken: 'enrolling-token',
     }));
     const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) => jsonResponse({ success: true, peersAdded: 1 }));
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
@@ -123,6 +163,7 @@ describe('ContainerService seed endpoint provisioning', () => {
     const { service } = await makeService(pendingContainer({
       status: 'running',
       seedEndpoint: 'http://localhost:8081/seed',
+      seedToken: 'running-token',
     }));
     globalThis.fetch = vi.fn(async () =>
       jsonResponse({ error: 'bad seed' }, false)) as typeof globalThis.fetch;

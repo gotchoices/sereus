@@ -109,6 +109,7 @@ export class ContainerService {
       updated.healthEndpoint = result.healthEndpoint;
       updated.metricsEndpoint = result.metricsEndpoint;
       updated.seedEndpoint = result.seedEndpoint;
+      updated.seedToken = result.seedToken;
       updated.status = 'enrolling';
       updated.updatedAt = new Date();
       await this.store.saveContainer(updated);
@@ -263,12 +264,23 @@ export class ContainerService {
       return { success: false, error: 'Container does not have a seed endpoint' };
     }
 
+    // The container gates `POST /seed` behind `Authorization: Bearer <token>`; a
+    // record with an endpoint but no token (e.g. a legacy container provisioned
+    // before token injection) can never authenticate, so fail loudly here rather
+    // than letting the node reject the request with an opaque 401.
+    if (!container.seedToken) {
+      return { success: false, error: 'Container does not have a seed token' };
+    }
+
     log('Applying seed to container %s', id);
 
     try {
       const response = await fetch(container.seedEndpoint, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          Authorization: `Bearer ${container.seedToken}`,
+        },
         body: JSON.stringify({ seed: encodedSeed }),
       });
 

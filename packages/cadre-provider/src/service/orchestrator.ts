@@ -31,6 +31,12 @@ export interface OrchestratorCreateResult {
   metricsEndpoint: string;
   /** The URL of the node's seed API (`POST /seed`), served on the health server's port */
   seedEndpoint: string;
+  /**
+   * Per-container secret injected as `CADRE_SEED_TOKEN`. The container gates
+   * `POST /seed` behind `Authorization: Bearer <seedToken>`, so the provider must
+   * present this token when delivering a seed (see `ContainerService.applySeed`).
+   */
+  seedToken: string;
   /** P2P listening port */
   p2pPort: number;
 }
@@ -87,6 +93,7 @@ export class MockOrchestrator implements Orchestrator {
       healthEndpoint: `http://localhost:${8080 + this.idCounter}/health`,
       metricsEndpoint: `http://localhost:${9090 + this.idCounter}/metrics`,
       seedEndpoint: `http://localhost:${8080 + this.idCounter}/seed`,
+      seedToken: `mock-seed-token-${this.idCounter}`,
       p2pPort: 4000 + this.idCounter,
     };
   }

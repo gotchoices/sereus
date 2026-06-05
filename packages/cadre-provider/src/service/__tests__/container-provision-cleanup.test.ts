@@ -37,6 +37,7 @@ const createResult: OrchestratorCreateResult = {
   healthEndpoint: 'http://localhost:18080/health',
   metricsEndpoint: 'http://localhost:19090/metrics',
   seedEndpoint: 'http://localhost:18080/seed',
+  seedToken: 'seed-token-xyz',
   p2pPort: 14001,
 };
 

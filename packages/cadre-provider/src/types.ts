@@ -80,6 +80,12 @@ export interface Container {
   metricsEndpoint?: string;
   /** Seed API endpoint URL (for applying seeds) */
   seedEndpoint?: string;
+  /**
+   * Bearer token gating the container's `POST /seed` route (injected as
+   * `CADRE_SEED_TOKEN` at provision time). `applySeed` presents it as
+   * `Authorization: Bearer <seedToken>`; without it the container rejects the seed.
+   */
+  seedToken?: string;
 }
 
 /** Container status response */

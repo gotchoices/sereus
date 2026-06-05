@@ -4,6 +4,7 @@
 
 import Docker from 'dockerode';
 import debug from 'debug';
+import { randomBytes } from 'node:crypto';
 import type { DockerConfig } from '../config/types.js';
 import type {
   Orchestrator,
@@ -89,6 +90,13 @@ export class DockerOrchestrator implements Orchestrator {
 
     const resources = request.resources ?? this.config.defaultResources ?? {};
 
+    // Per-container secret gating the node's `POST /seed` route. The container
+    // refuses seed delivery unless the caller presents this as a bearer token
+    // (and the route is unregistered entirely when the env var is empty), so we
+    // mint a fresh high-entropy value per container and hand it back on the
+    // result for `ContainerService.applySeed` to send.
+    const seedToken = randomBytes(32).toString('base64url');
+
     // Anything that throws between allocation and the successful record below
     // must release the ports and best-effort remove a partially-created
     // container — otherwise the bounded host-port range leaks permanently.
@@ -105,13 +113,20 @@ export class DockerOrchestrator implements Orchestrator {
           `CADRE_HEALTH_PORT=8080`,
           `CADRE_METRICS_PORT=9090`,
           `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001`,
+          `CADRE_SEED_TOKEN=${seedToken}`,
           request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
           resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
         ].filter(Boolean),
         HostConfig: {
+          // Health (which also serves the authenticated `POST /seed`) and metrics
+          // are bound to the host's loopback only: the provider reaches them via
+          // `http://localhost:<port>` and nothing off-box should touch the seed
+          // surface. A bare `HostPort` would bind `0.0.0.0` and expose the seed
+          // route to the network. The p2p port (4001) intentionally stays on all
+          // interfaces — libp2p peers must reach it remotely.
           PortBindings: {
-            '8080/tcp': [{ HostPort: String(healthPort) }],
-            '9090/tcp': [{ HostPort: String(metricsPort) }],
+            '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: String(healthPort) }],
+            '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
             '4001/tcp': [{ HostPort: String(p2pPort) }],
           },
           Memory: this.parseMemoryLimit(resources.memoryLimit),
@@ -152,6 +167,7 @@ export class DockerOrchestrator implements Orchestrator {
       metricsEndpoint: `http://localhost:${metricsPort}/metrics`,
       // The node's seed API (`POST /seed`) is bound to the same server/port as `/health`.
       seedEndpoint: `http://localhost:${healthPort}/seed`,
+      seedToken,
       p2pPort,
     };
   }
