@@ -7,10 +7,15 @@ import { execFileSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binPath = resolve(here, '../../dist/bin/host.js');
+
+// These smoke tests cold-start the built CLI as a child process (Node boot +,
+// for some, an HTTP server). That comfortably exceeds vitest's 5s default under
+// heavy parallel load, so give the subprocess generous headroom.
+vi.setConfig({ testTimeout: 30000 });
 
 describe('cadre-host CLI smoke test', () => {
   it('prints help with all subcommands', () => {

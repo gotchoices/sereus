@@ -15,10 +15,15 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const binPath = resolve(here, '../../dist/bin/host.js');
+
+// These smoke tests cold-start the built CLI as a child process (Node boot +,
+// for some, an HTTP server). That comfortably exceeds vitest's 5s default under
+// heavy parallel load, so give the subprocess generous headroom.
+vi.setConfig({ testTimeout: 30000 });
 
 interface StubServer {
   server: Server;
