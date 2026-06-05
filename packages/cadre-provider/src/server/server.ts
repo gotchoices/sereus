@@ -108,14 +108,15 @@ export async function createProviderServer(
     hooks: billingHooks,
   });
 
+  const basePath = config.server.basePath ?? '/api/v1';
+
   // Register auth middleware
   registerAuth(app, {
     config: config.auth,
     store,
     hooks: authHooks,
+    basePath,
   });
-
-  const basePath = config.server.basePath ?? '/api/v1';
 
   let shuttingDown = false;
 

@@ -25,6 +25,12 @@ export interface AuthContext {
   config: AuthConfig;
   store: ProviderStore;
   hooks?: AuthHooks;
+  /**
+   * API base path (e.g. '/api/v1'). Used to recognize the unauthenticated
+   * health endpoints precisely, so customer-scoped routes that merely end in
+   * '/status' (e.g. '/billing/status') are still authenticated.
+   */
+  basePath: string;
 }
 
 /** Hash an API key for storage/comparison */
@@ -34,15 +40,18 @@ export function hashApiKey(key: string): string {
 
 /** Register authentication middleware */
 export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
-  const { config, store, hooks } = ctx;
+  const { config, store, hooks, basePath } = ctx;
 
   // Defense in depth: programmatic construction that bypasses loadConfig must
   // not silently go fully open in 'none' mode without an explicit opt-in.
   validateAuthConfig(config);
 
   app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
-    // Skip auth for health/status endpoints
-    if (request.url.endsWith('/status') || request.url.endsWith('/health')) {
+    // Skip auth for the health/status endpoints only. Match the exact paths
+    // (ignoring any query string) so customer-scoped routes that merely end in
+    // '/status' — e.g. '/billing/status' — are not accidentally left open.
+    const path = request.url.split('?', 1)[0];
+    if (path === `${basePath}/status` || path === `${basePath}/health`) {
       return;
     }
 
