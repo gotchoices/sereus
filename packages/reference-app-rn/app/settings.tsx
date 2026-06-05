@@ -14,14 +14,7 @@ import {
 } from 'react-native';
 import { useCadre } from '../src/cadre-context';
 import { TEST_IDS } from '../src/test-ids';
-
-/** Generate a simple random UUID (good enough for demo). */
-function uuid(): string {
-  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, (c) => {
-    const r = (Math.random() * 16) | 0;
-    return (c === 'x' ? r : (r & 0x3) | 0x8).toString(16);
-  });
-}
+import { uuid } from '../src/uuid';
 
 export default function SettingsScreen() {
   const cadre = useCadre();
