@@ -288,10 +288,13 @@ export class ContainerService {
 
   /**
    * Get the peer info for a container (peerId and multiaddrs).
-   * Fetches from the container's health endpoint.
+   *
+   * Reads the live `/status` payload (peerId/multiaddrs live there — `/health`
+   * carries only `{ status }`), reusing the shared `fetchContainerHealthStatus`
+   * helper so the `/status` URL derivation and wire shape stay in one place.
    *
    * @param id - Container ID
-   * @returns Peer info or undefined if not available
+   * @returns Peer info, or undefined when the node has no peer identity yet
    */
   async getPeerInfo(id: string): Promise<{ peerId: string; multiaddrs: string[] } | undefined> {
     const container = await this.store.getContainer(id);
@@ -302,28 +305,18 @@ export class ContainerService {
       return { peerId: container.peerId, multiaddrs: container.multiaddrs };
     }
 
-    // Fetch from health endpoint
-    if (!container.healthEndpoint) return undefined;
+    // Fetch the live `/status` payload. `peerId` is `null` while the node is
+    // still starting — treat that (and missing multiaddrs) as "not available".
+    const status = await fetchContainerHealthStatus(container);
+    if (!status?.peerId || !status.multiaddrs?.length) return undefined;
 
-    try {
-      const response = await fetch(container.healthEndpoint);
-      if (!response.ok) return undefined;
+    // Cache the values for subsequent lookups.
+    container.peerId = status.peerId;
+    container.multiaddrs = status.multiaddrs;
+    container.updatedAt = new Date();
+    await this.store.saveContainer(container);
 
-      const health = await response.json() as { peerId?: string; multiaddrs?: string[] };
-      if (health.peerId && health.multiaddrs) {
-        // Cache the values
-        container.peerId = health.peerId;
-        container.multiaddrs = health.multiaddrs;
-        container.updatedAt = new Date();
-        await this.store.saveContainer(container);
-
-        return { peerId: health.peerId, multiaddrs: health.multiaddrs };
-      }
-    } catch {
-      // Health fetch failed
-    }
-
-    return undefined;
+    return { peerId: status.peerId, multiaddrs: status.multiaddrs };
   }
 }
 

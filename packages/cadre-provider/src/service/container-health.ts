@@ -21,11 +21,15 @@ export interface ContainerStrandCounts {
 /**
  * Subset of the cadre-cli `/status` (`HealthStatus`) payload the provider
  * consumes. Strands live under `node.strands` in the real payload — NOT at the
- * top level. Typed locally because cadre-provider does not depend on cadre-cli.
+ * top level. `peerId`/`multiaddrs` are top-level and may be absent (`peerId`
+ * is `null` while the node is still acquiring a libp2p identity). Typed locally
+ * because cadre-provider does not depend on cadre-cli.
  */
 export interface ContainerHealthStatus {
   status: 'healthy' | 'unhealthy' | 'starting';
   uptime: number;
+  peerId?: string | null;
+  multiaddrs?: string[];
   node?: {
     strands?: ContainerStrandCounts;
   };
