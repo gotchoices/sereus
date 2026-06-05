@@ -64,14 +64,28 @@ export function verifySchema(schema: string, version: string, signature: string,
  * Assert that an SAppConfig has a valid schema signature.
  * Throws SchemaVerificationError on failure.
  *
+ * Fail-closed by default: when `options.requireSignature` is not explicitly
+ * `false`, an absent signature is rejected with reason `'missing signature'`,
+ * distinct from the `'invalid signature'` (tampered/wrong-key) case. The
+ * relaxation (`requireSignature: false`) only excuses *absence* of a signature;
+ * a present-but-bad signature still throws.
+ *
  * @param sAppConfig - The sApp configuration to verify
- * @throws SchemaVerificationError if the signature is invalid
+ * @param options - Verification policy; `requireSignature` defaults to `true`
+ * @throws SchemaVerificationError if the signature is missing (when required) or invalid
  */
-export function assertSchemaSignature(sAppConfig: SAppConfig): void {
+export function assertSchemaSignature(
+  sAppConfig: SAppConfig,
+  options?: { requireSignature?: boolean }
+): void {
   const { id, version, schema, signature } = sAppConfig;
+  const requireSignature = options?.requireSignature ?? true;
 
   if (!signature) {
-    log('No signature provided for %s v%s — skipping verification', id, version);
+    if (requireSignature) {
+      throw new SchemaVerificationError(id ?? '', version, 'missing signature');
+    }
+    log('No signature provided for %s v%s — skipping verification (policy relaxed)', id, version);
     return;
   }
 

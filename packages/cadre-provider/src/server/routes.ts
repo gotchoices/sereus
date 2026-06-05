@@ -7,6 +7,7 @@ import debug from 'debug';
 import type { ContainerService } from '../service/container-service.js';
 import type { BillingService } from '../service/billing-service.js';
 import type { CreateContainerRequest } from '../types.js';
+import { Scope, hasPermission } from './permissions.js';
 
 const log = debug('cadre:provider:routes');
 
@@ -44,6 +45,17 @@ function errorResponse(reply: FastifyReply, code: string, message: string, statu
   });
 }
 
+/**
+ * Enforce a permission scope on an authenticated identity. Sends a
+ * `403 INSUFFICIENT_SCOPE` response and returns false when the scope is
+ * missing; returns true (no response sent) when granted.
+ */
+function requireScope(reply: FastifyReply, customer: CustomerIdentity, scope: string): boolean {
+  if (hasPermission(customer.permissions, scope)) return true;
+  errorResponse(reply, 'INSUFFICIENT_SCOPE', `Missing required scope: ${scope}`, 403);
+  return false;
+}
+
 /** Register all routes */
 export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
   const { basePath, containerService, billingService, requestShutdown } = ctx;
@@ -62,6 +74,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersCreate)) return reply;
 
     const body = request.body as Partial<CreateContainerRequest> & { shutdownAfter?: unknown };
 
@@ -115,6 +128,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersRead)) return reply;
 
     const containers = await containerService.listContainers(customer.customerId);
 
@@ -133,6 +147,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersRead)) return reply;
 
     const status = await containerService.getContainerStatus(id);
     if (!status) {
@@ -159,6 +174,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersDelete)) return reply;
 
     const container = await containerService.getContainer(id);
     if (!container) {
@@ -204,6 +220,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersRead)) return reply;
 
     const container = await containerService.getContainer(id);
     if (!container) {
@@ -235,6 +252,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.ContainersSeed)) return reply;
 
     const container = await containerService.getContainer(id);
     if (!container) {
@@ -278,6 +296,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
+    if (!requireScope(reply, customer, Scope.BillingRead)) return reply;
 
     const billing = await billingService.getCustomerBilling(customer.customerId);
     return reply.send({ ok: true, data: { billing } });

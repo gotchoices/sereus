@@ -80,23 +80,45 @@ describe('schema-verification', () => {
       expect(() => assertSchemaSignature(config)).toThrow('invalid signature');
     });
 
-    it('should skip verification when signature is omitted', () => {
+    it('should throw missing signature when omitted under default (fail-closed) policy', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
         schema: testSchema,
       };
-      expect(() => assertSchemaSignature(config)).not.toThrow();
+      expect(() => assertSchemaSignature(config)).toThrow(SchemaVerificationError);
+      expect(() => assertSchemaSignature(config)).toThrow('missing signature');
     });
 
-    it('should skip verification when signature is empty string', () => {
+    it('should throw missing signature when empty string under default policy', () => {
       const config: SAppConfig = {
         id: authorPublicKey,
         version: testVersion,
         schema: testSchema,
         signature: '',
       };
-      expect(() => assertSchemaSignature(config)).not.toThrow();
+      expect(() => assertSchemaSignature(config)).toThrow(SchemaVerificationError);
+      expect(() => assertSchemaSignature(config)).toThrow('missing signature');
+    });
+
+    it('should skip verification when signature omitted and policy relaxed', () => {
+      const config: SAppConfig = {
+        id: authorPublicKey,
+        version: testVersion,
+        schema: testSchema,
+      };
+      expect(() => assertSchemaSignature(config, { requireSignature: false })).not.toThrow();
+    });
+
+    it('should still reject an invalid signature even when policy relaxed', () => {
+      const config: SAppConfig = {
+        id: authorPublicKey,
+        version: testVersion,
+        schema: testSchema,
+        signature: 'invalid-signature',
+      };
+      expect(() => assertSchemaSignature(config, { requireSignature: false })).toThrow(SchemaVerificationError);
+      expect(() => assertSchemaSignature(config, { requireSignature: false })).toThrow('invalid signature');
     });
 
     it('should throw SchemaVerificationError for missing author key', () => {

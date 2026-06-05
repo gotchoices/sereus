@@ -8,6 +8,7 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 import debug from 'debug';
 import { type ProviderConfig, type PartialProviderConfig, DEFAULT_CONFIG } from './types.js';
+import { validateAuthConfig } from './validate.js';
 
 const log = debug('cadre:provider:config');
 
@@ -72,6 +73,7 @@ export function loadEnvConfig(): PartialProviderConfig {
   // Auth config
   if (process.env.PROVIDER_AUTH_MODE) {
     config.auth = { mode: process.env.PROVIDER_AUTH_MODE as 'none' | 'api-key' | 'oauth' };
+    if (process.env.PROVIDER_ALLOW_INSECURE_NO_AUTH === 'true') config.auth.allowInsecureNoAuth = true;
     if (process.env.PROVIDER_JWKS_URI) config.auth.jwksUri = process.env.PROVIDER_JWKS_URI;
     if (process.env.PROVIDER_ISSUER) config.auth.issuer = process.env.PROVIDER_ISSUER;
     if (process.env.PROVIDER_AUDIENCE) config.auth.audience = process.env.PROVIDER_AUDIENCE;
@@ -135,6 +137,9 @@ export function loadConfig(options: LoadConfigOptions = {}): ProviderConfig {
   if (options.overrides) {
     config = deepMerge(config, options.overrides as any);
   }
+
+  // Fail closed: reject an implicit/unacknowledged fully-open auth config.
+  validateAuthConfig(config.auth);
 
   log('Loaded configuration: %O', config);
   return config;

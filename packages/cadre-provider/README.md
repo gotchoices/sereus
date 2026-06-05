@@ -66,7 +66,14 @@ server:
   basePath: /api/v1
 
 auth:
-  mode: api-key  # none, api-key, or oauth
+  mode: api-key  # none, api-key, or oauth (default: api-key)
+  # api-key with no keys configured rejects every privileged call (401).
+  # apiKeyHashes: [<sha256-hex>, ...]   # static admin keys, granted '*'
+  #
+  # mode: none disables auth entirely (every caller becomes a wildcard
+  # 'dev-customer'). It is fully open, so it must be acknowledged explicitly:
+  # mode: none
+  # allowInsecureNoAuth: true
 
 docker:
   socketPath: /var/run/docker.sock
@@ -92,10 +99,58 @@ storage:
 |----------|-------------|
 | `PROVIDER_HOST` | Server host |
 | `PROVIDER_PORT` | Server port |
-| `PROVIDER_AUTH_MODE` | Authentication mode |
+| `PROVIDER_AUTH_MODE` | Authentication mode (`none`, `api-key`, `oauth`) |
+| `PROVIDER_ALLOW_INSECURE_NO_AUTH` | Set to `true` to acknowledge running fully open with `PROVIDER_AUTH_MODE=none` |
 | `PROVIDER_DOCKER_SOCKET` | Docker socket path |
 | `PROVIDER_DOCKER_IMAGE` | Container image |
 | `STRIPE_SECRET_KEY` | Stripe API key |
+
+## Authentication & permissions
+
+The provider is **closed by default**. The default mode is `api-key`, and with
+no keys configured every authenticated route returns `401` — a freshly started
+provider is reachable but rejects all privileged calls.
+
+### Insecure no-auth mode
+
+`mode: none` disables authentication and grants every caller a wildcard
+identity (`dev-customer` with `['*']`). Because that is fully open, it is **not
+reachable implicitly**: the provider refuses to start in `none` mode unless the
+insecure setting is explicitly acknowledged.
+
+```yaml
+auth:
+  mode: none
+  allowInsecureNoAuth: true   # required, or the provider refuses to start
+```
+
+…or via environment: `PROVIDER_AUTH_MODE=none PROVIDER_ALLOW_INSECURE_NO_AUTH=true`.
+Without the acknowledgement, both `cadre-provider start` and `cadre-provider
+check` fail with a clear error. Use this only for local/dev.
+
+### Permission scopes
+
+Each authenticated identity carries a `permissions` array. Privileged routes
+require a matching scope; a request that authenticates but lacks the scope
+returns `403 INSUFFICIENT_SCOPE`. Wildcards are supported: `*` grants
+everything, and `<resource>:*` (e.g. `containers:*`) grants every scope under
+that resource. Static `apiKeyHashes` admin keys and `none`-mode callers carry
+`['*']`, so they pass every check; store/JWT identities can be scoped down.
+
+| Route | Required scope |
+|-------|----------------|
+| `POST /containers` | `containers:create` |
+| `GET /containers` | `containers:read` |
+| `GET /containers/:id` | `containers:read` |
+| `GET /containers/:id/peer` | `containers:read` |
+| `DELETE /containers/:id` | `containers:delete` |
+| `PUT /containers/:id/seed` | `containers:seed` |
+| `GET /billing/status` | `billing:read` |
+| `GET /billing/plans` | none (public listing) |
+| `GET /status` | none (skipped by auth) |
+
+Scope enforcement is orthogonal to ownership: per-container routes still verify
+that the container belongs to the calling customer regardless of scope.
 
 ## Custom Authentication
 

@@ -221,6 +221,14 @@ export interface CadreNodeConfig {
 
   /** Polling interval for strand watcher in ms (default: 5000) */
   strandWatchInterval?: number;
+
+  /**
+   * Require a valid author signature on every sApp schema before a strand is
+   * formed or joined. Defaults to true (fail closed): an unsigned schema is
+   * rejected before any libp2p node or schema DDL is brought up. Set false ONLY
+   * for dev/test where unsigned demo schemas are used.
+   */
+  requireSignedSchemas?: boolean;
 }
 
 /**
@@ -295,7 +303,13 @@ export interface SAppConfig {
   version: string;
   /** The declarative schema DDL */
   schema: string;
-  /** Author's signature over the schema for verification (omit to skip verification) */
+  /**
+   * Author's signature over the schema for verification. Required under the
+   * default `requireSignedSchemas` node policy — a config without it is rejected
+   * before strand bring-up. Optional in the type because authoring/serialization
+   * must represent an as-yet-unsigned config; omitting it is honored only when
+   * the node explicitly relaxes the policy (`requireSignedSchemas: false`, dev/test).
+   */
   signature?: string;
   /** Latency hint for hibernation behavior (optional, defaults to config) */
   latencyHint?: LatencyHint;

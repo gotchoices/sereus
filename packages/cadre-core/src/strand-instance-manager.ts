@@ -48,6 +48,12 @@ export interface StartStrandConfig {
    * callers (CadreNode) infer it from cohort membership before reaching here.
    */
   mode?: StrandMode;
+  /**
+   * Require a valid author signature on the sApp schema before bring-up.
+   * Defaults to true (fail closed) when omitted; set false only for dev/test
+   * with unsigned demo schemas. Mirrors {@link CadreNodeConfig.requireSignedSchemas}.
+   */
+  requireSignedSchemas?: boolean;
 }
 
 /**
@@ -169,8 +175,9 @@ export class StrandInstanceManager {
     log('Starting strand instance: %s (sApp: %s v%s)', strandId, sAppConfig.id, sAppConfig.version);
     const tTotal = performance.now();
 
-    // Verify schema signature before proceeding
-    assertSchemaSignature(sAppConfig);
+    // Verify schema signature before proceeding (fail-closed by default)
+    const requireSignature = config.requireSignedSchemas ?? true;
+    assertSchemaSignature(sAppConfig, { requireSignature });
     log('Strand %s sApp schema signature verified (author: %s)', strandId, sAppConfig.id);
 
     // Convert SAppConfig to SAppInfo for the instance

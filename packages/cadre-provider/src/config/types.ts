@@ -44,6 +44,12 @@ export interface ServerConfig {
 export interface AuthConfig {
   /** Auth mode: none, api-key, oauth */
   mode: 'none' | 'api-key' | 'oauth';
+  /**
+   * Required to run with mode 'none'. When mode is 'none' and this is not
+   * true, the provider refuses to start. 'none' disables authentication and
+   * grants every caller a wildcard identity — only for local/dev use.
+   */
+  allowInsecureNoAuth?: boolean;
   /** For api-key mode: list of valid keys (hashed) */
   apiKeyHashes?: string[];
   /** For oauth mode: JWKS endpoint */
@@ -115,7 +121,7 @@ export const DEFAULT_CONFIG: ProviderConfig = {
     },
   },
   auth: {
-    mode: 'none',
+    mode: 'api-key',
   },
   docker: {
     socketPath: '/var/run/docker.sock',

@@ -6,6 +6,7 @@ import { createHash } from 'node:crypto';
 import type { FastifyInstance, FastifyRequest, FastifyReply } from 'fastify';
 import debug from 'debug';
 import type { AuthConfig } from '../config/types.js';
+import { validateAuthConfig } from '../config/validate.js';
 import type { ProviderStore } from '../service/store.js';
 import type { CustomerIdentity } from './routes.js';
 
@@ -34,6 +35,10 @@ export function hashApiKey(key: string): string {
 /** Register authentication middleware */
 export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
   const { config, store, hooks } = ctx;
+
+  // Defense in depth: programmatic construction that bypasses loadConfig must
+  // not silently go fully open in 'none' mode without an explicit opt-in.
+  validateAuthConfig(config);
 
   app.addHook('preHandler', async (request: FastifyRequest, reply: FastifyReply) => {
     // Skip auth for health/status endpoints

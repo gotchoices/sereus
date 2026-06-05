@@ -13,7 +13,7 @@ async function makeServer(overrides?: {
   const config: ProviderConfig = {
     ...DEFAULT_CONFIG,
     server: { ...DEFAULT_CONFIG.server, port: 0 },
-    auth: { mode: 'none' },
+    auth: { mode: 'none', allowInsecureNoAuth: true },
     docker: { ...DEFAULT_CONFIG.docker, socketPath: undefined as unknown as string },
     billing: { enabled: false },
     storage: { type: 'memory' },

@@ -86,6 +86,36 @@ function createSignedSAppConfig(schema: string, version: string): SAppConfig {
 	};
 }
 
+/** Create an unsigned sApp config (no `signature`) — rejected under the default policy. */
+function createUnsignedSAppConfig(schema: string, version: string): SAppConfig {
+	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+	return { id: authorPublicKey, version, schema, latencyHint: 'interactive' as const };
+}
+
+/**
+ * Create a tampered sApp config: a valid signature over the original schema, but
+ * the `schema` field mutated after signing — verification must reject it.
+ */
+function createTamperedSAppConfig(schema: string, version: string): SAppConfig {
+	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+	const signature = signSchema(schema, version, authorPrivateKey);
+	return { id: authorPublicKey, version, schema: schema + ' -- injected', signature, latencyHint: 'interactive' as const };
+}
+
+/**
+ * Create a wrong-key sApp config: `signature` produced by a different author
+ * private key than the one whose public key is in `id` — verification rejects it.
+ */
+function createWrongKeySAppConfig(schema: string, version: string): SAppConfig {
+	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+	const otherPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+	const signature = signSchema(schema, version, otherPrivateKey);
+	return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
+}
+
 // Create two distinct signed sApp configs for isolation tests
 const SAPP_CONFIG_A = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 const SAPP_CONFIG_B = createSignedSAppConfig(SIMPLE_SCHEMA, '0.2.0');
@@ -662,5 +692,45 @@ describe('E2E Strand Formation', () => {
 				await aliceNode?.stop();
 			}
 		}, 60_000);
+	});
+
+	// ═════════════════════════════════════════════════════════════════════════════
+	// Phase 3: Schema-signature gate fail-closed (enforcing default policy)
+	// ═════════════════════════════════════════════════════════════════════════════
+	//
+	// Drive each unsafe config through the real addStrand creation/join path and
+	// assert it is rejected BEFORE strand bring-up — no instance ever reaches
+	// `active`. The node config leaves `requireSignedSchemas` unset, so the
+	// fail-closed default (`true`) applies.
+
+	describe('Phase 3: Schema-signature gate (fail-closed default)', () => {
+		const cases: Array<{ name: string; config: SAppConfig; reason: string }> = [
+			{ name: 'unsigned', config: createUnsignedSAppConfig(SIMPLE_SCHEMA, '0.1.0'), reason: 'missing signature' },
+			{ name: 'tampered', config: createTamperedSAppConfig(SIMPLE_SCHEMA, '0.1.0'), reason: 'invalid signature' },
+			{ name: 'wrong-key', config: createWrongKeySAppConfig(SIMPLE_SCHEMA, '0.1.0'), reason: 'invalid signature' },
+		];
+
+		for (const { name, config, reason } of cases) {
+			it(`should reject a ${name} sApp config before bring-up`, async () => {
+				let node: CadreNode | undefined;
+				try {
+					const partyId = `gate-${name}-${Date.now()}`;
+					node = new CadreNode(createTestNodeConfig(`solo-${partyId}`));
+					await node.start();
+
+					const strandId = `strand-gate-${name}`;
+					const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
+
+					await expect(
+						node.addStrand({ strandRow, sAppConfig: config, mode: 'networked' }),
+					).rejects.toThrow(reason);
+
+					// The strand instance must never have been brought up.
+					expect(node.getStrand(strandId)).toBeUndefined();
+				} finally {
+					await node?.stop();
+				}
+			}, 30_000);
+		}
 	});
 });

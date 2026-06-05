@@ -179,6 +179,41 @@ describe('StrandInstanceManager', () => {
 
       await expect(manager.startStrand(config)).rejects.toThrow(SchemaVerificationError);
     });
+
+    it('should reject unsigned config under default (fail-closed) policy', async () => {
+      const manager = new StrandInstanceManager();
+      const config = createStartConfig('unsigned-strand', {
+        sAppConfig: {
+          id: authorPublicKey,
+          version: testVersion,
+          schema: testSchema
+          // no signature
+        }
+      });
+
+      await expect(manager.startStrand(config)).rejects.toThrow(SchemaVerificationError);
+      await expect(manager.startStrand(config)).rejects.toThrow('missing signature');
+      // No libp2p node / DB should have been created.
+      expect(manager.getInstance('unsigned-strand')).toBeUndefined();
+    });
+
+    it('should accept unsigned config when requireSignedSchemas is false', async () => {
+      const manager = new StrandInstanceManager();
+      const config = createStartConfig('relaxed-strand', {
+        sAppConfig: {
+          id: authorPublicKey,
+          version: testVersion,
+          schema: testSchema
+          // no signature
+        },
+        requireSignedSchemas: false
+      });
+
+      const instance = await manager.startStrand(config);
+      expect(instance.status).toBe('active');
+
+      await manager.stopAll();
+    }, 30000);
   });
 
   describe('stopStrand', () => {

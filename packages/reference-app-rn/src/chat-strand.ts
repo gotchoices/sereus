@@ -31,6 +31,13 @@ table Message (
 const CHAT_SAPP_ID = 'sereus-chat-simple';
 const CHAT_SAPP_VERSION = '0.1.0';
 
+/**
+ * Demo chat sApp config. NOTE: this config is **unsigned** and its `id` is a
+ * human-readable name (`sereus-chat-simple`), not an ed25519 author public key.
+ * It therefore only works under a relaxed node policy (`requireSignedSchemas:
+ * false` — see {@link startPhoneNode}). Under the default fail-closed policy a
+ * strand using this config would be rejected at bring-up.
+ */
 export function getChatSAppConfig(): SAppConfig {
   return {
     id: CHAT_SAPP_ID,

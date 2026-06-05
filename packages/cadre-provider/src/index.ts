@@ -121,3 +121,8 @@ export {
   hashApiKey,
 } from './server/auth.js';
 
+export {
+  Scope,
+  hasPermission,
+} from './server/permissions.js';
+

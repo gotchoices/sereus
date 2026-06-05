@@ -952,7 +952,8 @@ export class CadreNode implements SAppIdLookup {
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: this.config.privateKey,
       bootstrapNodes: seed.bootstrapNodes,
-      mode
+      mode,
+      requireSignedSchemas: this.config.requireSignedSchemas
     });
 
     this.hibernationManager.trackStrand(instance);
