@@ -289,7 +289,7 @@ export async function composeStrand(
 		throw err;
 	}
 
-	// 7. Return result with hydrate counts + shutdown handler. `shutdown` tears
+	// 8. Return result with hydrate counts + shutdown handler. `shutdown` tears
 	// down the collection factory, and `collectionFactory.shutdown()` stops EVERY
 	// node registered with it — including an injected one (registered via
 	// `registerLibp2pNode`). So an injected node IS stopped on `shutdown`; the
