@@ -596,25 +596,10 @@ export interface ControlNetworkSeed {
   partyId: string;
   /** Known peers in the cadre */
   peers: SeedPeer[];
-  /** Optional signed transactions to pre-populate the cache */
-  transactions?: SignedTransaction[];
   /** Signature over the seed by an authority key */
   signature: string;
   /** The authority key that signed this seed */
   signerKey: string;
-}
-
-/**
- * A signed transaction for inclusion in seeds.
- * Allows pre-populating the control network cache.
- */
-export interface SignedTransaction {
-  /** Transaction ID */
-  id: string;
-  /** Serialized transaction data */
-  data: string;
-  /** Signature over the transaction */
-  signature: string;
 }
 
 /**
@@ -626,8 +611,6 @@ export interface SeedMessage {
   partyId: string;
   /** Known peers in the cadre */
   peers: SeedPeer[];
-  /** Optional transactions to pre-populate cache */
-  transactions?: SignedTransaction[];
   /** Signature by an authority key */
   signature: string;
   /** The authority key that signed this message */

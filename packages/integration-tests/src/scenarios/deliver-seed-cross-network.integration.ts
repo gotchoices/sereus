@@ -232,7 +232,6 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		const seedMessage = JSON.stringify({
 			partyId: seed.partyId,
 			peers: seed.peers,
-			transactions: seed.transactions,
 			signature: seed.signature,
 			signerKey: seed.signerKey,
 		});

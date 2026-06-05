@@ -135,11 +135,7 @@ interface ControlNetworkSeed {
   // Authorization cache entries for peer validation
   peers: SeedPeer[];
 
-  // Optional: signed Optimystic transactions for log consistency
-  // (allows verification rather than blind trust)
-  transactions?: SignedTransaction[];
-
-  // Signature over { partyId, peers, transactions? }
+  // Signature over { partyId, peers }
   signature: string;
 
   // ed25519 public key (base64url) used to verify `signature`
@@ -291,7 +287,6 @@ sequenceDiagram
 interface SeedMessage {
   partyId: string;                    // Control network to join
   peers: SeedPeer[];                  // Authorization cache entries
-  transactions?: SignedTransaction[]; // Optional: verifiable log entries
   signature: string;                  // Signed by an authority key
   signerKey: string;                  // Authority ed25519 public key (base64url)
 }
@@ -304,7 +299,7 @@ interface SeedAckMessage {
 ```
 
 **Validation**:
-- The `signature` is an ed25519 signature over `digest(canonicalJson({partyId, peers, transactions}), 'sha256')` — a canonical (recursively key-sorted, `undefined`-dropped, whitespace-free) serialization shared with cadre-host's update-manifest signing. Both signer and verifier route through the same `canonicalSeedPayload` builder so the signed bytes are independent of key insertion order and optional-field presence (`transactions` is folded in identically whether absent or present)
+- The `signature` is an ed25519 signature over `digest(canonicalJson({partyId, peers}), 'sha256')` — a canonical (recursively key-sorted, `undefined`-dropped, whitespace-free) serialization shared with cadre-host's update-manifest signing. Both signer and verifier route through the same `canonicalSeedPayload` builder so the signed bytes are independent of key insertion order
 - New node verifies `signature` using `signerKey` (ed25519)
 - `signerKey` must clear a **trust anchor that does not come from the seed body** — a signature only proves the seed is internally consistent, and both `signerKey` and the seed's own `isAuthority` peer flags are attacker-supplied, so a forged self-asserting seed must not be able to vouch for itself. The receiver evaluates a `SeedTrustPolicy` against its *own* known authority keys (`CadreControl.AuthorityKey`), in priority order:
   - **DB-anchored** (default): the signer is trusted iff its key is already in the receiver's `AuthorityKey` table (steady state — the node is enrolled / has synced control state).
@@ -312,7 +307,7 @@ interface SeedAckMessage {
   - **TOFU (opt-in)**: an interactive confirmation callback invoked on first sight of an unknown signer key; off by default.
   - **Secure default**: a cold-start node with an empty `AuthorityKey` table, no pinned keys, and no TOFU confirmation **rejects** the seed.
 - Authority identity is sourced from the `AuthorityKey` table, **not** from the libp2p `peerId`. An Ed25519 PeerId embeds its public key, so each peer's ed25519 key is derived from its `PeerId` and a peer is marked `isAuthority` iff that derived key is in `AuthorityKey` — making multi-authority cadres representable and decoupling authority status from the transport identity.
-- For additional security, seeds can include `transactions[]` with signed Optimystic entries
+- A seed carries only peer-address hints (`peers[]`); warm-cache prepopulation with signed Optimystic log entries is deferred (see backlog `seed-warm-cache-prepopulation`)
 
 **Alternative Delivery Mechanisms**:
 

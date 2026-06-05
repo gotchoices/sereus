@@ -22,7 +22,6 @@ import type {
   SeedAckMessage,
   AuthorizePeerOptions,
   ApplySeedResult,
-  SignedTransaction,
   AddDroneOptions,
   AddPhoneOptions,
   DroneInitResult,
@@ -99,15 +98,14 @@ export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
  *
  * Routes both the creator (`createSeed`) and the verifier
  * (`validateSeedSignature`) through one builder so the signed bytes are
- * identical regardless of key insertion order or optional-field presence.
- * `canonicalJson` sorts keys and drops `undefined`, so `{partyId, peers}` and
- * `{partyId, peers, transactions: undefined}` serialize identically — and a
- * seed that does carry `transactions` is signed/verified over the same bytes.
+ * identical regardless of key insertion order. `canonicalJson` sorts keys and
+ * drops `undefined`, so the signed payload is exactly `{ partyId, peers }` —
+ * the fields the producer actually emits.
  */
 export function canonicalSeedPayload(
-  seed: Pick<ControlNetworkSeed, 'partyId' | 'peers' | 'transactions'>
+  seed: Pick<ControlNetworkSeed, 'partyId' | 'peers'>
 ): string {
-  return canonicalJson({ partyId: seed.partyId, peers: seed.peers, transactions: seed.transactions });
+  return canonicalJson({ partyId: seed.partyId, peers: seed.peers });
 }
 
 /**
@@ -154,7 +152,7 @@ export interface SeedEventCallbacks {
  *
  * Seeds solve the cold-start problem: new nodes need control data to validate
  * connections, but can't get data without connecting first. Seeds pre-populate
- * the new node's cache with peer information and optionally transactions.
+ * the new node's cache with peer information.
  */
 export class SeedBootstrapService {
   private readonly config: SeedBootstrapConfig;
@@ -506,7 +504,6 @@ export class SeedBootstrapService {
       const message: SeedMessage = {
         partyId: seed.partyId,
         peers: seed.peers,
-        transactions: seed.transactions,
         signature: seed.signature,
         signerKey: seed.signerKey,
       };
@@ -575,7 +572,8 @@ export class SeedBootstrapService {
   validateSeedSignature(seed: ControlNetworkSeed): boolean {
     try {
       // Reconstruct the signed bytes via the shared canonical payload builder so
-      // verification is independent of key order and optional-field presence.
+      // verification is independent of key order. The payload is the fixed
+      // `{ partyId, peers }` the producer emits.
       const seedJson = canonicalSeedPayload(seed);
       const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
 
@@ -679,7 +677,6 @@ export class SeedBootstrapService {
         const seed: ControlNetworkSeed = {
           partyId: message.partyId,
           peers: message.peers,
-          transactions: message.transactions,
           signature: message.signature,
           signerKey: message.signerKey,
         };

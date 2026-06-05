@@ -87,24 +87,6 @@ describe('SeedBootstrapService', () => {
       const decoded = service.decodeSeed(encoded);
       expect(decoded).toEqual(seed);
     });
-
-    it('should handle seeds with transactions', () => {
-      const service = new SeedBootstrapService({ partyId });
-
-      const seed: ControlNetworkSeed = {
-        partyId,
-        peers: [],
-        transactions: [
-          { id: 'tx-1', data: 'data-1', signature: 'sig-1' }
-        ],
-        signature: 'test-signature',
-        signerKey: authorityPublicKey
-      };
-
-      const encoded = service.encodeSeed(seed);
-      const decoded = service.decodeSeed(encoded);
-      expect(decoded.transactions).toEqual(seed.transactions);
-    });
   });
 
   describe('validateSeedSignature', () => {
@@ -189,7 +171,6 @@ describe('SeedBootstrapService', () => {
     function signSeed(privateKey: string, publicKey: string, seedData: {
       partyId: string;
       peers: SeedPeer[];
-      transactions?: ControlNetworkSeed['transactions'];
     }): ControlNetworkSeed {
       const seedDigest = digest(canonicalSeedPayload(seedData), 'sha256', 'utf8', 'base64url') as string;
       const signature = sign(
@@ -229,26 +210,6 @@ describe('SeedBootstrapService', () => {
 
       expect(service.validateSeedSignature(seed)).toBe(true);
       expect(service.validateSeedSignature(reordered)).toBe(true);
-    });
-
-    it('validates a seed that carries transactions (regression for verifier/creator mismatch)', () => {
-      const service = new SeedBootstrapService({ partyId });
-
-      const seed = signSeed(authorityPrivateKey, authorityPublicKey, {
-        partyId,
-        peers: [],
-        transactions: [{ id: 'tx-1', data: 'data-1', signature: 'sig-1' }],
-      });
-
-      expect(service.validateSeedSignature(seed)).toBe(true);
-    });
-
-    it('treats absent and undefined transactions identically', () => {
-      // {partyId, peers} and {partyId, peers, transactions: undefined} must
-      // canonicalize to the same bytes.
-      const without = canonicalSeedPayload({ partyId, peers: [] });
-      const withUndefined = canonicalSeedPayload({ partyId, peers: [], transactions: undefined });
-      expect(without).toBe(withUndefined);
     });
   });
 
@@ -360,20 +321,6 @@ describe('Seed Types', () => {
       expect(seed.peers).toEqual([]);
       expect(seed.signature).toBe('sig');
       expect(seed.signerKey).toBe('key');
-    });
-
-    it('should allow optional transactions', () => {
-      const seed: ControlNetworkSeed = {
-        partyId: 'test-party',
-        peers: [],
-        transactions: [
-          { id: 'tx-1', data: 'data', signature: 'sig' }
-        ],
-        signature: 'sig',
-        signerKey: 'key'
-      };
-
-      expect(seed.transactions).toHaveLength(1);
     });
   });
 
