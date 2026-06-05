@@ -1,0 +1,131 @@
+/**
+ * Embedded control schema for cross-platform compatibility.
+ *
+ * This is the authoritative runtime copy of the CadreControl authorization
+ * schema. It is duplicated from `schemas/control.qsql` so that React Native and
+ * other filesystem-less environments get the schema without a runtime file read.
+ *
+ * The two copies MUST stay identical — `control-schema-drift.spec.ts` fails the
+ * build if they drift. Any edit here must be mirrored in `schemas/control.qsql`
+ * and vice versa.
+ */
+export const CONTROL_SCHEMA = `-- This manages a Sereus party's cadre, or set of nodes, and their participation in strands (networks)
+declare schema CadreControl {
+    -- A key that can authorize various control changes
+    table AuthorityKey (
+        Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
+        constraint Authorized check (
+            -- Bootstrap: first authority key needs no existing authorization
+            (select count(1) from AuthorityKey) <= 1
+
+                -- Old authority authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
+                or (old.Key is not null and old.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, old.Key, 'ed25519', 'hex'))
+
+                -- or other authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
+        )
+    ) with context (AuthorityKey text null, Signature text null);
+
+    -- A key that can validate a strand formation disclosure
+    table ValidationKey (
+        Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
+        constraint Authorized check (
+            -- Authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
+        )
+    ) with context (AuthorityKey text, Signature text);
+
+    -- A network of members sharing an sApp database, each contributing peer nodes (their cadre) to the overall cohort
+    -- Cadre peers should participate in each of these strands
+    table Strand (
+        Id text primary key,    -- UUID
+        MemberPrivateKey text null unique,   -- Our private key as a member of this strand
+        Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
+        constraint Authorized check (
+            -- Authorized by an authority signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Id, 'sha256', 'utf8', 'hex') || digest(new.Type, 'sha256', 'utf8', 'hex') || digest(coalesce(new.MemberPrivateKey, ''), 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
+
+                -- or authorized by a cadre peer who has received a valid formation invitation.
+                -- That path has no signed writer yet; when one is built it must still supply a
+                -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
+                or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
+        ),
+        -- TODO: constraint to ensure member private key only if closed
+    ) with context (AuthorityKey text, Signature text);
+
+    -- A peer (node) that is part of the cadre, carrying a self-published,
+    -- freshness-stamped, self-signed address record (see PeerAddressRecord in cadre-core).
+    -- The row IS the peer-address record: a resolver reads it, re-verifies Sig against
+    -- PublicKey, checks freshness (UpdatedAt) and trust, then dials the addrs.
+    table CadrePeer (
+        PeerId text primary key,
+        PublicKey text null,            -- ed25519 (base64url) whose libp2p identity == PeerId (null if non-Ed25519)
+        Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
+        UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay/rollback guard)
+        Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
+        constraint AuthorizedInsert check on insert, delete (
+            -- Authorized by an authority key, which vouches both membership and the
+            -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
+            -- Use utf8 input encoding since peer IDs are base58btc strings, not base64url
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(new.PeerId, old.PeerId), 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedUpdate check on update (
+            -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
+            -- (the key behind PeerId). PeerId/PublicKey are immutable on self-update, UpdatedAt
+            -- must strictly increase (replay guard), and Sig is verified against the stored
+            -- PublicKey over the same payload the publish path signs
+            -- (cadre-core peer-record.ts:peerRecordSignedPayload).
+            (
+                new.PeerId = old.PeerId
+                and new.PublicKey = old.PublicKey
+                and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
+                and verify(
+                        digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text), 'sha256', 'utf8'),
+                        new.Sig, new.PublicKey, 'ed25519')
+            )
+                -- or an authority re-authorizes (rotation / correction)
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+        )
+    ) with context (AuthorityKey text null, Signature text);
+
+    -- An open invitation to form a strand with this party
+    table FormationInvite (
+        Token text primary key, -- Just a random string
+        sAppId text, -- The app for the strand that will be formed
+        ExpiresAt datetime null,
+        TotalUses int null check (TotalUses >= 0),
+        ValidationUrl text null,   -- Web hook - send disclosure, IP address...
+        constraint AuthorizedAddOrRemove check on insert, delete (
+            -- Authorized by an authority key to add or remove this invite
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId), context.Signature, A.Key))
+        )
+    ) with context (AuthorityKey text, StampId text, Signature text);
+
+    table FormationUsage (
+        Token text,
+        UseNumber int,
+        Disclosure text,
+        StrandId text,
+        primary key (Token, UseNumber),
+        constraint InsertOnly check on update, delete (false),
+        constraint Monotonic check (
+            new.UseNumber = coalesce((select max(UseNumber) from FormationUsage U where U.Token = new.Token), 0) + 1
+        ),
+        constraint Authorized check on insert (
+            -- Satisfies an invitation
+            exists (
+                select 1 from FormationInvite FI
+                    where FI.Token = new.Token
+                        and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
+                        and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
+                        and (FI.ValidationUrl is null or verify(digest(new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey))
+            )
+        ),
+        constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),
+    ) with context (PeerId text, PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
+}
+
+apply schema CadreControl;`;
