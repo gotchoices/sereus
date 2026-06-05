@@ -4,7 +4,11 @@
 
 table Member (
     Id text primary key,
-    Name text not null check (length(Name) between 1 and 100)
+    Name text not null check (length(Name) between 1 and 100),
+    -- App-level role (owner | member). Not a cadre-core RBAC primitive: strand
+    -- membership is MemberPrivateKey-granular at the control-network layer; this
+    -- role lives in the chat app and is assigned on closed-strand create/join.
+    Role text not null default 'member' check (Role in ('owner', 'member'))
 );
 
 table Message (

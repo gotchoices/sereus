@@ -41,6 +41,7 @@
     "react-native-screens": "~4.11.0",
     "readable-stream": "^4.7.0",
     "rn-leveldb": "^3.11.0",
+    "uint8arrays": "^5.1.0",
     "web-streams-polyfill": "^4.1.0"
   },
   "devDependencies": {

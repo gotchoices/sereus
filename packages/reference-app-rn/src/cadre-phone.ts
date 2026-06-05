@@ -7,7 +7,7 @@
  * - Authority role: the phone holds the signing keys
  */
 
-import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, authorityKeyFromLibp2p, ControlFormationUsageRecorder } from '@serfab/cadre-core';
 import type {
   CadreNodeConfig,
   ControlNetworkSeed,
@@ -15,6 +15,9 @@ import type {
   StrandInstance,
   StrandConfig,
   ConnectionPathSummary,
+  OpenInvitation,
+  FormStrandResult,
+  StrandFormationDisclosure,
 } from '@serfab/cadre-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
@@ -112,7 +115,40 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   node = new CadreNode(config);
   await node.start();
   await runAuthorityGenesis(node, privateKey);
+  initializeFormationResponder(node);
   return node;
+}
+
+/**
+ * Wire this node as a strand-formation **responder** so an invitee's
+ * {@link CadreNode.formStrand} dial can be validated against the host's
+ * `FormationInvite` rows.
+ *
+ * `createOpenInvitation`/`formStrand` lazily bring up the solicitation service
+ * with NO recorder if it isn't already initialized — which would accept every
+ * token blindly. Initializing it here with a {@link ControlFormationUsageRecorder}
+ * (backed by the live `CadreControl.FormationInvite`/`FormationUsage` tables)
+ * makes token validity + single-use enforcement real: the consent gate of the
+ * closed-strand flow.
+ *
+ * Fail-soft: a wiring failure is logged, not thrown — minting/joining surfaces
+ * the real error later. NOTE: this wires only the responder's token-validation
+ * gate; the formation protocol does not yet thread the redeemed token to a
+ * provisioner nor write the `FormationUsage` consent record on the wire (a
+ * cadre-core follow-up — see the README "Trust model" section).
+ */
+function initializeFormationResponder(cadre: CadreNode): void {
+  try {
+    const controlDb = cadre.getControlDatabase();
+    if (!controlDb) {
+      throw new Error('control database unavailable after start; cannot wire formation responder');
+    }
+    cadre.initializeStrandSolicitation({
+      formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
+    });
+  } catch (err) {
+    console.warn('[cadre-phone] formation responder init failed:', err);
+  }
 }
 
 /**
@@ -211,5 +247,46 @@ export function getConnectionPaths(settleWindowMs?: number): ConnectionPathSumma
 export async function addStrand(config: StrandConfig): Promise<StrandInstance> {
   if (!node) throw new Error('Phone node not started');
   return node.addStrand(config);
+}
+
+// ── Formation helpers (closed-strand consent flow) ────────────────────────────
+
+/**
+ * Mint an out-of-band {@link OpenInvitation} for a closed strand. Thin
+ * pass-through to {@link CadreNode.createOpenInvitation}.
+ */
+export async function createOpenInvitation(
+  sAppId: string,
+  expirationMs?: number,
+): Promise<OpenInvitation> {
+  if (!node) throw new Error('Phone node not started');
+  return node.createOpenInvitation(sAppId, expirationMs);
+}
+
+/**
+ * Persist the authority-signed `FormationInvite` row backing a minted
+ * invitation token, so a later redemption validates. Thin pass-through to
+ * {@link CadreNode.publishFormationInvite}.
+ */
+export async function publishFormationInvite(
+  token: string,
+  sAppId: string,
+  options?: { expiresAtMs?: number; totalUses?: number; validationUrl?: string },
+): Promise<void> {
+  if (!node) throw new Error('Phone node not started');
+  return node.publishFormationInvite(token, sAppId, options);
+}
+
+/**
+ * Perform the invitee-side consent handshake: dial the host's cadre with our
+ * disclosure and let the host validate the formation token. Thin pass-through
+ * to {@link CadreNode.formStrand}.
+ */
+export async function formStrand(
+  invitation: OpenInvitation,
+  disclosure?: StrandFormationDisclosure,
+): Promise<FormStrandResult> {
+  if (!node) throw new Error('Phone node not started');
+  return node.formStrand(invitation, disclosure);
 }
 

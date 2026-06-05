@@ -22,9 +22,18 @@ export interface ChatMessage {
   MemberName?: string;
 }
 
+/**
+ * App-level chat role. NOT a cadre-core RBAC primitive — strand membership is
+ * `MemberPrivateKey`-granular at the control-network layer; this role lives in
+ * the chat `Member` table only. `owner` is assigned to the closed-strand
+ * creator; everyone else is a `member`.
+ */
+export type ChatRole = 'owner' | 'member';
+
 export interface ChatMember {
   Id: string;
   Name: string;
+  Role: ChatRole;
 }
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
@@ -41,16 +50,29 @@ function getDb(strand: StrandInstance): Database {
 /**
  * Register a member in the chat strand.
  *
+ * `insert or ignore` is idempotent on the member `Id`, so a role assigned at
+ * create/join time (e.g. `owner`) is NOT clobbered by a later default-`member`
+ * registration. Omit `role` to take the schema default (`member`).
+ *
  * @param strand  Active strand instance
  * @param id      Unique member identifier (typically peerId or a UUID)
  * @param name    Display name
+ * @param role    App-level role (defaults to `member` via the schema)
  */
 export async function insertMember(
   strand: StrandInstance,
   id: string,
   name: string,
+  role?: ChatRole,
 ): Promise<void> {
   const db = getDb(strand);
+  if (role) {
+    await db.exec(
+      'insert or ignore into App.Member (Id, Name, Role) values (?, ?, ?)',
+      [id, name, role],
+    );
+    return;
+  }
   await db.exec(
     'insert or ignore into App.Member (Id, Name) values (?, ?)',
     [id, name],
@@ -63,8 +85,12 @@ export async function insertMember(
 export async function queryMembers(strand: StrandInstance): Promise<ChatMember[]> {
   const db = getDb(strand);
   const members: ChatMember[] = [];
-  for await (const row of db.eval('select Id, Name from App.Member')) {
-    members.push({ Id: row.Id as string, Name: row.Name as string });
+  for await (const row of db.eval('select Id, Name, Role from App.Member')) {
+    members.push({
+      Id: row.Id as string,
+      Name: row.Name as string,
+      Role: (row.Role as ChatRole) ?? 'member',
+    });
   }
   return members;
 }

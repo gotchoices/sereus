@@ -23,6 +23,7 @@ export default function SettingsScreen() {
   const [bootstrapAddr, setBootstrapAddr] = useState('');
   const [seedInput, setSeedInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
+  const [inviteInput, setInviteInput] = useState('');
   const [modal, setModal] = useState<{ title: string; message: string } | null>(null);
 
   const showAlert = useCallback((title: string, message: string) => {
@@ -86,6 +87,29 @@ export default function SettingsScreen() {
     }
   };
 
+  // ── Closed strand (trust model) ─────────────────────────────────────────
+
+  const handleCreateClosedStrand = async () => {
+    try {
+      const encoded = await cadre.createClosedStrandWithInvite();
+      showAlert('Closed strand + invite', encoded);
+    } catch (err) {
+      showAlert('Closed strand failed', String(err));
+    }
+  };
+
+  const handleJoinViaInvite = async () => {
+    const encoded = inviteInput.trim();
+    if (!encoded) return;
+    try {
+      await cadre.joinViaInvite(encoded);
+      setInviteInput('');
+      showAlert('Joined closed strand', 'Consent handshake completed; strand attached');
+    } catch (err) {
+      showAlert('Join via invite failed', String(err));
+    }
+  };
+
   // ── Render ─────────────────────────────────────────────────────────────
 
   const connected = cadre.status === 'connected';
@@ -134,6 +158,20 @@ export default function SettingsScreen() {
             <InfoRow key={id} label={id.slice(0, 8)} value={s.status} />
           ))}
           <Btn label="Create Chat Strand" onPress={handleCreateStrand} testID={TEST_IDS.settings.createStrandBtn} />
+        </Section>
+      )}
+
+      {/* Closed strand (trust model) */}
+      {connected && (
+        <Section title="Closed Strand (Invite-Only)">
+          <Text style={styles.hint}>
+            Host: create a closed strand and an invitation to share out-of-band.
+            Invitee: paste an invitation to consent + join. Requires the host
+            reachable via a relay/drone.
+          </Text>
+          <Btn label="Create Closed Strand + Invite" onPress={handleCreateClosedStrand} testID={TEST_IDS.settings.createClosedStrandBtn} />
+          <LabelledInput label="Paste invite" value={inviteInput} onChangeText={setInviteInput} placeholder="base64url invitation" multiline testID={TEST_IDS.settings.inviteInput} />
+          <Btn label="Join via Invite" onPress={handleJoinViaInvite} disabled={!inviteInput.trim()} testID={TEST_IDS.settings.joinViaInviteBtn} />
         </Section>
       )}
 
@@ -201,6 +239,7 @@ const styles = StyleSheet.create({
   sectionTitle: { color: '#6c63ff', fontSize: 16, fontWeight: '700', marginBottom: 12 },
   row: { flexDirection: 'row', justifyContent: 'space-between', marginBottom: 6 },
   label: { color: '#aaa', fontSize: 13, marginBottom: 4 },
+  hint: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
   value: { color: '#fff', fontSize: 13, flexShrink: 1, textAlign: 'right' },
   input: { backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14 },
   btn: { borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 8 },

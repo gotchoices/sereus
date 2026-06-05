@@ -148,6 +148,72 @@ Each phone runs its own CadreNode. To chat between two phones:
 > being able to create its own. This is a demo simplification of the authority
 > model.
 
+> **On Party IDs:** a Party ID names **one party's private control network** —
+> not a shared public room. The open quick-start above has everyone join the
+> *same* party (`reference-chat-party`) purely for convenience: that conflates
+> several users into a single party's control network. The closed-strand flow
+> below demonstrates the real model — **cross-party consent**, where a host
+> party invites an invitee (a different party) into one strand without merging
+> control networks.
+
+## Trust model / closed strands
+
+The quick-start uses **open** strands (`Type:'o'`): any connected node can join.
+Sereus's actual trust model is **invitation-only** strands (`Type:'c'`) formed
+through an explicit host→invitee consent handshake. The Settings screen's
+**"Closed Strand (Invite-Only)"** section demonstrates all four pillars:
+
+1. **FormationInvite issuance (host).** *"Create Closed Strand + Invite"*:
+   - mints a `MemberPrivateKey` and creates a closed strand
+     (`publishStrand(id, 'c', memberKey)` + local `addStrand` with `Type:'c'`),
+   - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`) and
+     **persists** the matching `FormationInvite` row under the host's authority
+     (`publishFormationInvite`) so the token is redeemable,
+   - shows a single copyable, base64url-encoded invitation envelope (carrying
+     the `OpenInvitation`, the strand id, and the membership key) for out-of-band
+     delivery (paste / link / QR).
+
+2. **Invitee consent.** *"Join via Invite"* decodes the envelope and calls
+   `formStrand(invitation, disclosure)` — the explicit consent step. The
+   `disclosure` carries the invitee's `partyId` + `purpose`; the host's responder
+   validates the formation token (via a `ControlFormationUsageRecorder` backed by
+   the live `FormationInvite`/`FormationUsage` tables) before the join proceeds.
+   The handshake **requires the host reachable** (over a relay/drone), so it
+   correctly fails on a single device with no peer — you cannot join a closed
+   strand without the host's consent.
+
+3. **Schema-gated join.** After consent, the invitee attaches the host's closed
+   strand by id + membership key under the chat `sAppConfig`. The strand's DDL is
+   the chat schema, so bring-up is gated by schema verification — not an open
+   free-for-all.
+
+4. **Role assignment.** The creator is assigned the app-level role `owner`; a
+   joiner is assigned `member` (the `Member.Role` column in the chat schema).
+
+### Where the boundaries are (honest scope)
+
+- **Role granularity is app-level, not cadre-level.** Sereus's control network
+  has **no first-class per-strand RBAC primitive** — membership is
+  `MemberPrivateKey`-granular (member vs non-member). `owner`/`member` therefore
+  lives in the chat `Member.Role` column and is assigned on create/join, *not* in
+  the control network. Fine-grained strand RBAC as a cadre-core primitive is not
+  yet implemented.
+
+- **The on-the-wire consent handshake is partially wired in cadre-core.** The
+  DB-level consent path (`insertFormationInvite` / `recordFormationUsage` /
+  `redeemInvitation`) is functional and exercised by the integration harness, and
+  the host's `formStrand` responder validates the invite **token**. But the
+  formation *protocol* does not yet thread the redeemed token to a provisioner nor
+  write the `FormationUsage` consent record over libp2p, and `OpenInvitation`
+  carries no strand id — which is why this app delivers the strand id + membership
+  key in an out-of-band envelope alongside the invitation. Closing that gap (so a
+  pure `formStrand` round-trip records consent and returns the host's strand) is
+  a tracked cadre-core follow-up
+  (`formstrand-protocol-thread-consent-and-provision`).
+
+- **Two-device only.** The full handshake needs the host and invitee on separate,
+  mutually reachable nodes; it cannot be exercised on a single device.
+
 ## Scripts
 
 | Script | Description |
@@ -232,7 +298,7 @@ reference-app-rn/
 
 **Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an authority-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event.
 
-**Strand** — An isolated P2P database. The chat app creates strands of type `'o'` (open), meaning any connected node can participate.
+**Strand** — An isolated P2P database. The quick-start creates strands of type `'o'` (open), meaning any connected node can participate. The trust-model demo also creates type `'c'` (closed) strands, which are invitation-only and gated by a membership key — see "Trust model / closed strands" below.
 
 **Transaction vs storage profile** — Transaction nodes (phones) participate in consensus but don't persist long-term; storage nodes (drones) archive everything and stay online.
 

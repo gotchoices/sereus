@@ -31,7 +31,8 @@ const HTTP_PORT = parseInt(process.env.DRONE_HTTP_PORT ?? '4080', 10);
 const CHAT_SCHEMA = `
 table Member (
     Id text primary key,
-    Name text not null check (length(Name) between 1 and 100)
+    Name text not null check (length(Name) between 1 and 100),
+    Role text not null default 'member' check (Role in ('owner', 'member'))
 );
 
 table Message (

@@ -982,6 +982,49 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Publish an authority-signed `FormationInvite` (open-invitation token) to the
+   * shared control database, so a later {@link formStrand} redemption can be
+   * validated against it (the consent branch of `Strand.Authorized`).
+   *
+   * Counterpart to {@link createOpenInvitation}, which only mints the
+   * out-of-band {@link OpenInvitation} envelope: persisting the matching
+   * `FormationInvite` row is what makes the token *redeemable* — the host's
+   * {@link ControlFormationUsageRecorder} answers `isTokenValid`/`isTokenUsed`
+   * from this row. A host minting a closed-strand invite does both (mint +
+   * publish), exactly as the integration harness's `createInvitation` does.
+   *
+   * Signs with the same self-authority key as {@link publishStrand} (the ed25519
+   * key behind this node's PeerId, which must be an enrolled `AuthorityKey`).
+   * Throws loudly if the node isn't started or exposes no signing key.
+   *
+   * @param token - Invitation token (the `FormationInvite` primary key); use the
+   *   `token` of the {@link OpenInvitation} from {@link createOpenInvitation}.
+   * @param sAppId - The sApp a redeemed strand will use.
+   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`.
+   */
+  async publishFormationInvite(
+    token: string,
+    sAppId: string,
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string } = {}
+  ): Promise<void> {
+    if (!this.running || !this.controlDatabase) {
+      throw new Error('CadreNode must be started before publishing a formation invite');
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      throw new Error(
+        `Cannot publish formation invite ${token}: no authority signing key available ` +
+        '(config.privateKey is unset or does not match the node PeerId). Run authority ' +
+        'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
+      );
+    }
+    const signMessage = (message: Uint8Array): string =>
+      sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    await this.controlDatabase.insertFormationInvite(token, sAppId, signingKey.publicKeyB64, signMessage, options);
+    log('Published formation invite %s (sApp %s) under authority %s', token, sAppId, signingKey.publicKeyB64);
+  }
+
+  /**
    * Shared strand launch path for both the explicit (`addStrand`) and the
    * control-discovered (`handleStrandAdded`) entry points. Resolves the cohort
    * seed, selects the mode, starts the strand, and registers it with the

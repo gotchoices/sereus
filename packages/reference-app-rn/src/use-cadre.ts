@@ -7,15 +7,30 @@
 
 import { useEffect, useRef, useState, useCallback } from 'react';
 import type { CadreNode } from '@serfab/cadre-core';
-import type { StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
+import type { StrandInstance, CadreNodeEvents, StrandFormationDisclosure } from '@serfab/cadre-core';
 import {
   startPhoneNode,
   stopPhoneNode,
   getPhoneNode,
   dialPeer as dialPeerImpl,
+  createOpenInvitation,
+  publishFormationInvite,
+  formStrand,
   type PhoneNodeOptions,
 } from './cadre-phone';
-import { createChatStrand, joinChatStrand } from './chat-strand';
+import {
+  createChatStrand,
+  joinChatStrand,
+  createClosedChatStrand,
+  joinClosedChatStrand,
+  encodeClosedStrandInvite,
+  decodeClosedStrandInvite,
+  CHAT_SAPP_ID,
+} from './chat-strand';
+import { uuid } from './uuid';
+
+/** How long a closed-strand invitation stays valid (24h). */
+const INVITE_EXPIRY_MS = 24 * 60 * 60 * 1000;
 
 // ── Types ────────────────────────────────────────────────────────────────────
 
@@ -42,6 +57,16 @@ export interface UseCadreResult {
   dialPeer: (addr: string) => Promise<void>;
   /** Create a new chat strand and return its instance */
   createStrand: (strandId: string) => Promise<StrandInstance>;
+  /**
+   * Create a CLOSED chat strand, mint + publish a formation invite for it, and
+   * return the encoded invitation envelope to hand an invitee out-of-band.
+   */
+  createClosedStrandWithInvite: () => Promise<string>;
+  /**
+   * Join a closed strand from an encoded invitation envelope: run the consent
+   * handshake (`formStrand`), then attach the host's closed strand.
+   */
+  joinViaInvite: (encoded: string) => Promise<StrandInstance>;
 }
 
 // ── Hook ─────────────────────────────────────────────────────────────────────
@@ -162,6 +187,49 @@ export function useCadreInternal(): UseCadreResult {
     return instance;
   }, [refreshStrands]);
 
-  return { status, node, peerId, strands, error, start, stop, applySeed, dialPeer, createStrand };
+  // ── Closed-strand consent flow ─────────────────────────────────────────
+
+  // Host: create a closed strand, then mint + persist a formation invite for it.
+  // Both the OpenInvitation envelope and the persisted FormationInvite row are
+  // required — the envelope so the invitee can reach + attach the strand, the
+  // row so the host's recorder validates the token at redemption.
+  const createClosedStrandWithInvite = useCallback(async () => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    const strandId = uuid();
+    const { memberPrivateKey } = await createClosedChatStrand(current, strandId);
+    const invitation = await createOpenInvitation(CHAT_SAPP_ID, INVITE_EXPIRY_MS);
+    await publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
+      expiresAtMs: invitation.expiration.getTime(),
+    });
+    const encoded = encodeClosedStrandInvite(current, { invitation, strandId, memberPrivateKey });
+    refreshStrands();
+    return encoded;
+  }, [refreshStrands]);
+
+  // Invitee: decode the envelope, run the explicit consent handshake against the
+  // host (formStrand validates our disclosure + the token), then attach the
+  // host's closed strand locally (schema-gated). A failed handshake throws —
+  // joining a closed strand REQUIRES the host's consent and reachability.
+  const joinViaInvite = useCallback(async (encoded: string) => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    const invite = decodeClosedStrandInvite(current, encoded);
+    const disclosure: StrandFormationDisclosure = {
+      partyId: current.peerId?.toString(),
+      purpose: 'join closed chat strand',
+      metadata: { app: CHAT_SAPP_ID },
+    };
+    await formStrand(invite.invitation, disclosure);
+    const instance = await joinClosedChatStrand(current, invite.strandId, invite.memberPrivateKey);
+    refreshStrands();
+    return instance;
+  }, [refreshStrands]);
+
+  return {
+    status, node, peerId, strands, error,
+    start, stop, applySeed, dialPeer, createStrand,
+    createClosedStrandWithInvite, joinViaInvite,
+  };
 }
 

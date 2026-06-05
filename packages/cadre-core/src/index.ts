@@ -66,6 +66,9 @@ export {
 // DB-backed FormationUsageRecorder (reads/writes the real CadreControl tables)
 export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 
+// Closed-strand member key generation (ed25519 protobuf, base64)
+export { generateStrandMemberKey } from './strand-member-key.js';
+
 // Seed Bootstrap
 export {
   SeedBootstrapService,

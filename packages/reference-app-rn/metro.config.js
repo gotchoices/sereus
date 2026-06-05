@@ -33,7 +33,12 @@ config.resolver.nodeModulesPaths = nodeModulesPaths;
 // Polyfill Node.js built-ins for React Native.
 //   os, crypto       — real shims providing subset APIs via react-native / @noble/hashes
 //   stream, buffer   — npm packages providing Node-equivalent APIs
-//   net, tls         — empty stubs (imported by transitive libp2p deps but never called at runtime)
+//   net, tls, path   — empty stubs (imported by transitive deps but never called at runtime)
+//
+// `path` is statically referenced by cadre-core's deprecated, RN-incompatible
+// `getStrandStoragePath` (it `require('path')`s but throws on RN before calling
+// it). Metro must resolve the import to bundle; the empty stub is safe because
+// the function is never reached at RN runtime.
 const emptyShim = path.resolve(__dirname, 'polyfills/empty.js');
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),
@@ -43,12 +48,14 @@ config.resolver.extraNodeModules = {
   'node:crypto': path.resolve(__dirname, 'polyfills/node-crypto.js'),
   'node:net': emptyShim,
   'node:tls': emptyShim,
+  'node:path': emptyShim,
   os: path.resolve(__dirname, 'polyfills/node-os.js'),
   stream: require.resolve('readable-stream'),
   buffer: require.resolve('buffer'),
   crypto: path.resolve(__dirname, 'polyfills/node-crypto.js'),
   net: emptyShim,
   tls: emptyShim,
+  path: emptyShim,
 };
 
 // @libp2p/crypto ships parallel `.browser.js` variants of its Node-using
