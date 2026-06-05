@@ -85,6 +85,10 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },
+		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
+		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
+		// policy so the demo can form strands. Production nodes must leave this unset.
+		requireSignedSchemas: false,
 	};
 
 	node = new CadreNode(config);

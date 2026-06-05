@@ -2,6 +2,26 @@ description: Make provider auth closed-by-default, gate 'none' mode behind expli
 files: packages/cadre-provider/src/config/types.ts, packages/cadre-provider/src/config/loader.ts, packages/cadre-provider/src/server/auth.ts, packages/cadre-provider/src/server/server.ts, packages/cadre-provider/src/server/routes.ts, packages/cadre-provider/src/server/permissions.ts (new), packages/cadre-provider/src/bin/provider.ts, packages/cadre-provider/README.md, packages/cadre-provider/src/server/__tests__/shutdown-after.test.ts, packages/cadre-provider/src/service/__tests__/container-seed-endpoint.test.ts
 ----
 
+<!-- RECONCILIATION NOTE (added by review of sapp-schema-signature-gate-enforce) -->
+> **The source/docs changes for this ticket already landed** in commit `eeee104`
+> (`ticket(implement): sapp-schema-signature-gate-enforce`), where they were
+> committed alongside an unrelated ticket by mistake (scope leak). Specifically,
+> already DONE and verified (provider build exit 0, provider vitest 38 passed):
+> `config/types.ts` (`allowInsecureNoAuth` + `DEFAULT_CONFIG.auth.mode → 'api-key'`),
+> `config/loader.ts` (env override + `validateAuthConfig` call), `config/validate.ts`
+> (new), `server/auth.ts` (`validateAuthConfig` defense-in-depth), `server/permissions.ts`
+> (new `Scope` + `hasPermission`), `server/routes.ts` (`requireScope` + route mapping),
+> `index.ts` (exports), `README.md`, and the `shutdown-after.test.ts` opt-in fix.
+>
+> **Do NOT re-apply those edits** — they are present in the tree; re-doing them
+> will no-op or conflict. The ONLY remaining work is the **test coverage** under
+> "Key tests (add)" below (none of it was committed). Re-verify the existing
+> source against this spec, then add the missing tests. Note `server.ts` and
+> `bin/provider.ts` did not require source edits (they already route through
+> `loadConfig`/`registerAuth`, both of which now call `validateAuthConfig`).
+> `service/__tests__/container-seed-endpoint.test.ts` needed no change (it is a
+> service-layer test that never constructs an auth config).
+
 `@serfab/cadre-provider` is the multi-tenant Docker host. Today a provider launched with no config runs fully open: `DEFAULT_CONFIG.auth.mode` is `'none'` (`config/types.ts:117-119`), and in `'none'` mode `registerAuth` injects a synthetic wildcard identity `{ customerId: 'dev-customer', permissions: ['*'] }` into every request (`server/auth.ts:45-51`). Because `cadre-provider start` falls back to `DEFAULT_CONFIG` when no `--config` is given (`bin/provider.ts:37-45`), every caller becomes the same all-powerful customer — authentication and per-customer isolation are both bypassed. Separately, permission scopes are never enforced: routes check only the *presence* of `request.customer`, never whether the identity holds a scope for the action.
 
 This ticket closes both gaps. The work is independent of the port-leak ticket and can land in either order.
@@ -118,12 +138,12 @@ In the spirit of TDD, the implementation should be covered by:
 
 ## TODO
 
-- [ ] Add `allowInsecureNoAuth?: boolean` to `AuthConfig` (`config/types.ts`); change `DEFAULT_CONFIG.auth.mode` to `'api-key'`.
-- [ ] `loadEnvConfig`: set `auth.allowInsecureNoAuth = true` when `PROVIDER_ALLOW_INSECURE_NO_AUTH === 'true'` (inside the existing `PROVIDER_AUTH_MODE` block).
-- [ ] Add `validateAuthConfig(auth)`; call it in `loadConfig` (post-merge) and in `registerAuth`/`createProviderServer`.
-- [ ] New `server/permissions.ts` with `Scope` constants + `hasPermission`; unit-test it.
-- [ ] Add `requireScope` guard in `routes.ts` and apply the route→scope mapping above; return `403 INSUFFICIENT_SCOPE`.
-- [ ] Update `README.md` (closed default, opt-in for `none`, scope table).
-- [ ] Fix existing tests that use `mode: 'none'` to add `allowInsecureNoAuth: true`.
-- [ ] Add the scope-enforcement and default-closed tests above.
-- [ ] Run `yarn workspace @serfab/cadre-provider build` and the package's vitest suite; ensure type-check and tests pass. Stream output with `| tee`.
+- [x] Add `allowInsecureNoAuth?: boolean` to `AuthConfig` (`config/types.ts`); change `DEFAULT_CONFIG.auth.mode` to `'api-key'`. *(landed in eeee104)*
+- [x] `loadEnvConfig`: set `auth.allowInsecureNoAuth = true` when `PROVIDER_ALLOW_INSECURE_NO_AUTH === 'true'` (inside the existing `PROVIDER_AUTH_MODE` block). *(landed in eeee104)*
+- [x] Add `validateAuthConfig(auth)`; call it in `loadConfig` (post-merge) and in `registerAuth`/`createProviderServer`. *(landed in eeee104 as `config/validate.ts`)*
+- [x] New `server/permissions.ts` with `Scope` constants + `hasPermission`. *(landed in eeee104 — but NOT yet unit-tested; see below)*
+- [x] Add `requireScope` guard in `routes.ts` and apply the route→scope mapping above; return `403 INSUFFICIENT_SCOPE`. *(landed in eeee104)*
+- [x] Update `README.md` (closed default, opt-in for `none`, scope table). *(landed in eeee104)*
+- [x] Fix existing tests that use `mode: 'none'` to add `allowInsecureNoAuth: true`. *(landed in eeee104 — `shutdown-after.test.ts`; seed-endpoint test needed no change)*
+- [ ] **REMAINING:** Add the scope-enforcement and default-closed tests + `hasPermission` unit tests above. None were committed.
+- [ ] **REMAINING:** Run `yarn workspace @serfab/cadre-provider build` and the package's vitest suite; ensure type-check and tests pass. Stream output with `| tee`.
