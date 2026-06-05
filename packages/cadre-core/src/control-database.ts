@@ -36,6 +36,20 @@ function generateStampId(peerId: string): string {
 }
 
 /**
+ * Parse a stored Quereus `datetime` value into epoch milliseconds.
+ *
+ * Quereus canonicalises a `datetime` column to a bare UTC `PlainDateTime` string
+ * (e.g. `2026-06-04T12:34:56`, no `Z`). JS `Date` reads a timezone-less
+ * date-time as LOCAL, so we append `Z` when no offset/zone is present to keep the
+ * value anchored to UTC. Numbers (already epoch ms) pass through.
+ */
+function parseStoredDatetimeMs(value: string | number): number {
+  if (typeof value === 'number') return value;
+  const hasZone = /[zZ]$|[+-]\d\d:?\d\d$/.test(value);
+  return new Date(hasZone ? value : `${value}Z`).getTime();
+}
+
+/**
  * Build the canonical authorization message that authority signatures are bound to.
  *
  * The message is the byte concatenation of the per-field SHA-256 digests, in a fixed
@@ -440,6 +454,262 @@ export class ControlDatabase {
     `, [authorityKey, signature, key, stampId]);
 
     log('Validation key inserted: %s', key);
+  }
+
+  /**
+   * Insert an authority-signed `FormationInvite` (open invitation token).
+   *
+   * The invite is the on-network record that later authorizes an
+   * authority-signature-FREE `Strand` creation: an invited cadre peer redeems it
+   * by inserting a matching `FormationUsage` row (see {@link redeemInvitation}),
+   * which satisfies the consent branch of `Strand.Authorized`. Adding/removing
+   * the invite is gated by `FormationInvite.AuthorizedAddOrRemove`, an authority
+   * signature over `digest(StampId, 'sha256', 'utf8')` verified with `'ed25519'`.
+   *
+   * Unlike `Strand`/`AuthorityKey`/`ValidationKey`, the `FormationInvite`
+   * signature binds only to a bare `StampId` nonce (a context value, not a unique
+   * column) — so it carries neither row-binding nor single-use replay protection.
+   * That matches the schema this ticket fixes; hardening it to the row-bound +
+   * single-use stamp scheme the privileged tables use is a documented follow-up.
+   *
+   * @param token - Invitation token (the `FormationInvite` primary key)
+   * @param sAppId - The sApp a redeemed strand will use
+   * @param authorityKey - Public key of the authorizing authority
+   * @param signMessage - ed25519-signs the raw message bytes (no pre-hash),
+   *   returning a base64url signature — the same callback shape {@link insertStrand} uses
+   * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`
+   */
+  async insertFormationInvite(
+    token: string,
+    sAppId: string,
+    authorityKey: string,
+    signMessage: (message: Uint8Array) => string,
+    options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string } = {}
+  ): Promise<void> {
+    this.ensureInitialized();
+    log('Inserting formation invite: %s', token);
+
+    const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
+
+    // Schema verifies `verify(digest(context.StampId,'sha256','utf8'), Signature, A.Key, 'ed25519')`,
+    // so the signer signs the sha256(utf8(StampId)) bytes directly with the authority ed25519 key.
+    const message = digest(stampId, 'sha256', 'utf8', 'bytes') as Uint8Array;
+    const signature = signMessage(message);
+
+    // ExpiresAt is a `datetime` column; an epoch-ms number is canonicalised to an
+    // ISO string on insert (Quereus DATETIME parse).
+    await this.db!.exec(`
+      insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl)
+        with context AuthorityKey = ?, StampId = ?, Signature = ?
+        values (?, ?, ?, ?, ?)
+    `, [
+      authorityKey, stampId, signature,
+      token, sAppId,
+      options.expiresAtMs ?? null,
+      options.totalUses ?? null,
+      options.validationUrl ?? null,
+    ]);
+
+    log('Formation invite inserted: %s', token);
+  }
+
+  /**
+   * Redeem a `FormationInvite` by inserting the `Strand` row and a matching
+   * `FormationUsage` row **atomically, in one transaction**.
+   *
+   * The two CHECK constraints are mutually circular under immediate evaluation:
+   * `Strand.Authorized`'s consent branch requires the `FormationUsage` row, while
+   * `FormationUsage.StrandExists` requires the `Strand` row. Both CHECKs contain
+   * subqueries, so Quereus auto-defers them to transaction commit — wrapping both
+   * inserts in a single explicit `begin … commit` lets both deferred CHECKs see
+   * both rows at commit. The strand is authorised WITHOUT an authority signature
+   * (the `FormationUsage` branch of `Strand.Authorized`) but still gets a fresh,
+   * unique `StampId` column to satisfy the not-null/unique anti-replay column.
+   *
+   * `UseNumber` is computed as `max(UseNumber)+1` for the token (the `Monotonic`
+   * constraint); callers redeeming concurrently against the same token must
+   * serialise, since the next use number is read before the insert.
+   */
+  async redeemInvitation(params: {
+    token: string;
+    strandId: string;
+    type?: 'o' | 'c';
+    memberPrivateKey?: string;
+    disclosure?: string;
+    peerId?: string;
+    peerSignature?: string;
+    nowMs?: number;
+    validationKey?: string;
+    validationSignature?: string;
+  }): Promise<void> {
+    this.ensureInitialized();
+    const {
+      token, strandId, type = 'o',
+      memberPrivateKey, disclosure = '',
+      peerId, peerSignature,
+      nowMs, validationKey, validationSignature,
+    } = params;
+    log('Redeeming invitation %s -> strand %s', token, strandId);
+
+    const localPeerId = this.config.libp2pNode.peerId.toString();
+    const strandStampId = generateStampId(localPeerId);
+    const useNumber = await this.nextUseNumber(token);
+
+    // `context.Now` is NOT type-coerced (only column values are), so it must be a
+    // string to compare (TEXT vs TEXT) against the datetime-coerced `ExpiresAt`;
+    // an epoch-ms number would land in a different storage class and mis-order.
+    const nowIso = new Date(nowMs ?? Date.now()).toISOString();
+
+    await this.db!.beginTransaction();
+    try {
+      // 1. Strand row — authorised by the FormationUsage branch (no authority sig),
+      //    still carrying a fresh unique StampId for the anti-replay column.
+      await this.db!.exec(`
+        insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+          with context AuthorityKey = null, Signature = null
+          values (?, ?, ?, ?)
+      `, [strandId, type, memberPrivateKey ?? null, strandStampId]);
+
+      // 2. FormationUsage row — authorised by the matching FormationInvite.
+      await this.execFormationUsageInsert({
+        token, useNumber, disclosure, strandId,
+        peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowIso,
+        validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
+      });
+
+      await this.db!.commit();
+      log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
+    } catch (error) {
+      // A failed commit() already tears down the transaction, so rollback() would
+      // throw "No transaction active" and mask the real cause — swallow only that.
+      try {
+        await this.db!.rollback();
+      } catch (rollbackError) {
+        log('Rollback after redemption failure was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
+  }
+
+  /**
+   * Record a `FormationUsage` against an **already-existing** `Strand` (no strand
+   * insert). This is the redemption path when the strand was provisioned
+   * separately (e.g. authority-signed) and the consent record is added after the
+   * fact: the single insert auto-commits, and the deferred `StrandExists` CHECK
+   * is satisfied by the pre-existing committed strand row. Returns the assigned
+   * `UseNumber`.
+   *
+   * Use {@link redeemInvitation} instead when the strand must be created by
+   * consent atomically with the usage.
+   */
+  async recordFormationUsage(params: {
+    token: string;
+    strandId: string;
+    disclosure?: string;
+    peerId?: string;
+    peerSignature?: string;
+    nowMs?: number;
+    validationKey?: string;
+    validationSignature?: string;
+  }): Promise<number> {
+    this.ensureInitialized();
+    const {
+      token, strandId, disclosure = '',
+      peerId, peerSignature, nowMs, validationKey, validationSignature,
+    } = params;
+
+    const localPeerId = this.config.libp2pNode.peerId.toString();
+    const useNumber = await this.nextUseNumber(token);
+    const nowIso = new Date(nowMs ?? Date.now()).toISOString();
+
+    await this.execFormationUsageInsert({
+      token, useNumber, disclosure, strandId,
+      peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowIso,
+      validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
+    });
+
+    log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
+    return useNumber;
+  }
+
+  /** Parameterised `FormationUsage` insert shared by redeem + record paths. */
+  private execFormationUsageInsert(opts: {
+    token: string;
+    useNumber: number;
+    disclosure: string;
+    strandId: string;
+    peerId: string;
+    peerSignature: string | null;
+    nowIso: string;
+    validationKey: string | null;
+    validationSignature: string | null;
+  }): Promise<void> {
+    return this.db!.exec(`
+      insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId)
+        with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
+        values (?, ?, ?, ?)
+    `, [
+      opts.peerId, opts.peerSignature, opts.nowIso,
+      opts.validationKey, opts.validationSignature,
+      opts.token, opts.useNumber, opts.disclosure, opts.strandId,
+    ]);
+  }
+
+  /**
+   * Read a `FormationInvite` row by token, or null when absent. `expiresAtMs` is
+   * the parsed epoch-ms of the stored `datetime` (null when the invite never
+   * expires); the caller compares it against the wall clock for freshness.
+   */
+  async queryFormationInvite(token: string): Promise<{
+    token: string;
+    sAppId: string;
+    expiresAtMs: number | null;
+    totalUses: number | null;
+    validationUrl: string | null;
+  } | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval(
+      'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl from CadreControl.FormationInvite where Token = ?',
+      [token]
+    )) {
+      const expiresAt = row.ExpiresAt as string | number | null;
+      const expiresAtMs = expiresAt === null || expiresAt === undefined
+        ? null
+        : parseStoredDatetimeMs(expiresAt);
+      return {
+        token: row.Token as string,
+        sAppId: row.sAppId as string,
+        expiresAtMs: expiresAtMs !== null && Number.isNaN(expiresAtMs) ? null : expiresAtMs,
+        totalUses: (row.TotalUses as number | null) ?? null,
+        validationUrl: (row.ValidationUrl as string | null) ?? null,
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Count `FormationUsage` rows recorded against a token (uses consumed so far).
+   */
+  async countFormationUsage(token: string): Promise<number> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval(
+      'select count(1) as Count from CadreControl.FormationUsage where Token = ?',
+      [token]
+    )) {
+      return (row.Count as number) ?? 0;
+    }
+    return 0;
+  }
+
+  /** Next `UseNumber` for a token = max(existing)+1, per the `Monotonic` constraint. */
+  private async nextUseNumber(token: string): Promise<number> {
+    for await (const row of this.db!.eval(
+      'select coalesce(max(UseNumber), 0) as MaxUse from CadreControl.FormationUsage where Token = ?',
+      [token]
+    )) {
+      return (row.MaxUse as number) + 1;
+    }
+    return 1;
   }
 
   /**

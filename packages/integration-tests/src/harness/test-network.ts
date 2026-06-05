@@ -135,10 +135,22 @@ export class TestCadreNetwork {
     expirationMs: number = 300_000
   ): Promise<TestOpenInvitation> {
     const token = `invite-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
-    
+
     log('Creating invitation for strand %s from party %s', strand.strandId, party.name);
-    
-    // TODO: Insert into FormationInvite table via ControlDatabase
+
+    // Persist an authority-signed FormationInvite into the INVITING party's control
+    // network (the consent tables are intra-cadre). TotalUses is left null
+    // (unlimited) so multi-party join scenarios can redeem the same invite more
+    // than once. The signer mirrors createStrand: ed25519 over the canonical
+    // digest of the StampId, verified by FormationInvite.AuthorizedAddOrRemove.
+    await party.controlDatabase.insertFormationInvite(
+      token,
+      strand.sAppId,
+      party.authorityPublicKey,
+      (message: Uint8Array) => signMessageEd25519(message, party.authorityPrivateKey),
+      { expiresAtMs: Date.now() + expirationMs }
+    );
+
     const invitation: TestOpenInvitation = {
       token,
       sAppId: strand.sAppId,
@@ -146,7 +158,7 @@ export class TestCadreNetwork {
       expiration: new Date(Date.now() + expirationMs),
       bootstrap: party.bootstrapAddrs
     };
-    
+
     log('Invitation created: %s', token);
     return invitation;
   }
@@ -164,12 +176,22 @@ export class TestCadreNetwork {
     if (!strand) {
       throw new Error(`Strand ${invitation.strandId} not found`);
     }
-    
-    // TODO: Implement actual strand joining:
-    // 1. Insert FormationUsage record
-    // 2. Insert Strand row in joiner's control network
-    // 3. Wait for strand instance to start
-    
+
+    // The FormationInvite + Strand both live in the INVITING party's control
+    // network — the first party recorded against the strand is its inviter. Record
+    // a FormationUsage there against the existing strand to consume the invitation:
+    // the consent record authorising the joiner's membership. (Cross-party strand
+    // transport/replication is handled by the formation protocol, not here.)
+    const inviter = this.parties.get(strand.parties[0]!);
+    if (!inviter) {
+      throw new Error(`Inviting party ${strand.parties[0]} not found for strand ${invitation.strandId}`);
+    }
+    await inviter.controlDatabase.recordFormationUsage({
+      token: invitation.token,
+      strandId: invitation.strandId,
+      peerId: joiner.partyId,
+    });
+
     strand.parties.push(joiner.partyId);
     log('Party %s joined strand %s', joiner.name, invitation.strandId);
   }

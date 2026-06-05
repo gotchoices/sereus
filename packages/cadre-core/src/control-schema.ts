@@ -100,7 +100,7 @@ declare schema CadreControl {
         ValidationUrl text null,   -- Web hook - send disclosure, IP address...
         constraint AuthorizedAddOrRemove check on insert, delete (
             -- Authorized by an authority key to add or remove this invite
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId), context.Signature, A.Key))
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (AuthorityKey text, StampId text, Signature text);
 
@@ -112,7 +112,13 @@ declare schema CadreControl {
         primary key (Token, UseNumber),
         constraint InsertOnly check on update, delete (false),
         constraint Monotonic check (
-            new.UseNumber = coalesce((select max(UseNumber) from FormationUsage U where U.Token = new.Token), 0) + 1
+            -- Read the PRE-transaction snapshot (committed.*): this CHECK auto-defers
+            -- to commit (it has a subquery), by which point the row being inserted is
+            -- live, so a plain from-FormationUsage would count this row itself and make
+            -- UseNumber = max+1 unsatisfiable. committed.* excludes the in-flight row,
+            -- giving sequential 1,2,3... per token (cross-transaction; concurrent
+            -- redemptions of the same token collide on the (Token, UseNumber) PK).
+            new.UseNumber = coalesce((select max(UseNumber) from committed.FormationUsage U where U.Token = new.Token), 0) + 1
         ),
         constraint Authorized check on insert (
             -- Satisfies an invitation
@@ -121,7 +127,7 @@ declare schema CadreControl {
                     where FI.Token = new.Token
                         and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
-                        and (FI.ValidationUrl is null or verify(digest(new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey))
+                        and (FI.ValidationUrl is null or verify(digest(new.Token || new.Disclosure, 'sha256', 'utf8'), context.ValidationSignature, context.ValidationKey, 'ed25519'))
             )
         ),
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),

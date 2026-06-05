@@ -63,6 +63,9 @@ export {
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 
+// DB-backed FormationUsageRecorder (reads/writes the real CadreControl tables)
+export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
+
 // Seed Bootstrap
 export {
   SeedBootstrapService,
