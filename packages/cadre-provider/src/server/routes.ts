@@ -6,7 +6,7 @@ import type { FastifyInstance, FastifyReply } from 'fastify';
 import debug from 'debug';
 import type { ContainerService } from '../service/container-service.js';
 import type { BillingService } from '../service/billing-service.js';
-import type { CreateContainerRequest } from '../types.js';
+import type { Container, CreateContainerRequest } from '../types.js';
 import { Scope, hasPermission } from './permissions.js';
 
 const log = debug('cadre:provider:routes');
@@ -22,6 +22,18 @@ export interface RouteContext {
    * `shutdownAfter: true`. Idempotent and asynchronous (fire-and-forget).
    */
   requestShutdown: (reason: string) => void;
+}
+
+/**
+ * Strip secrets from a Container before it crosses the API boundary. The
+ * per-container `seedToken` gates the node's `POST /seed` route — the provider
+ * presents it on the customer's behalf, so it must never appear in a response
+ * (the customer never needs it, and it is a credential). All other fields,
+ * including the loopback-only endpoint URLs, are unchanged.
+ */
+function redactContainer(container: Container): Omit<Container, 'seedToken'> {
+  const { seedToken: _seedToken, ...rest } = container;
+  return rest;
 }
 
 /** Coerce an arbitrary value to a strict boolean for the shutdownAfter flag */
@@ -105,9 +117,9 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const container = await containerService.createContainer(createRequest);
 
     const shutdownAfter = parseShutdownFlag(body.shutdownAfter);
-    const payload: { ok: true; data: { container: typeof container }; shutdownInitiated?: true } = {
+    const payload: { ok: true; data: { container: Omit<Container, 'seedToken'> }; shutdownInitiated?: true } = {
       ok: true,
-      data: { container },
+      data: { container: redactContainer(container) },
     };
     if (shutdownAfter) {
       payload.shutdownInitiated = true;
@@ -134,7 +146,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     return reply.send({
       ok: true,
-      data: { containers },
+      data: { containers: containers.map(redactContainer) },
     });
   });
 
@@ -161,7 +173,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
 
     return reply.send({
       ok: true,
-      data: status,
+      data: { ...status, container: redactContainer(status.container) },
     });
   });
 
