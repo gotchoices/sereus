@@ -94,6 +94,30 @@ interface OptimysticPluginResult {
   [key: string]: unknown;
 }
 
+/**
+ * Names of the CadreControl tables that {@link ControlDatabase.countRows} can
+ * read. Constraining to this union keeps the dynamic `from` clause off the
+ * SQL-injection surface and hands callers (e.g. the integration harness's
+ * `waitForControlSync`) a typo-proof table argument.
+ */
+export type ControlTable =
+  | 'AuthorityKey'
+  | 'ValidationKey'
+  | 'Strand'
+  | 'CadrePeer'
+  | 'FormationInvite'
+  | 'FormationUsage';
+
+/** Runtime guard mirroring {@link ControlTable} for the dynamic-`from` count. */
+const CONTROL_TABLES: ReadonlySet<ControlTable> = new Set<ControlTable>([
+  'AuthorityKey',
+  'ValidationKey',
+  'Strand',
+  'CadrePeer',
+  'FormationInvite',
+  'FormationUsage',
+]);
+
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
   partyId: string;
@@ -236,6 +260,28 @@ export class ControlDatabase {
       });
     }
     return results;
+  }
+
+  /**
+   * Count rows in a CadreControl table as seen by THIS database instance.
+   *
+   * `table` is validated against {@link CONTROL_TABLES} before it is interpolated
+   * into the `from` clause: the names are not user input, but the check keeps the
+   * dynamic query off the injection surface and fails loudly on a typo instead of
+   * emitting a malformed statement. The count reflects only the rows this node's
+   * control DB has converged on — in the integration harness that is the authority
+   * node (one ControlDatabase per party), i.e. the authoritative control-network
+   * view, not a per-drone convergence guarantee.
+   */
+  async countRows(table: ControlTable): Promise<number> {
+    this.ensureInitialized();
+    if (!CONTROL_TABLES.has(table)) {
+      throw new Error(`Unknown CadreControl table: ${table}`);
+    }
+    for await (const row of this.db!.eval(`select count(1) as Count from CadreControl.${table}`)) {
+      return (row.Count as number) ?? 0;
+    }
+    return 0;
   }
 
   /**

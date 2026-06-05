@@ -504,12 +504,20 @@ export async function attemptUnauthorizedStrandWrite(): Promise<AuthorityGatePro
 	if (!controlDb) throw new Error('control database unavailable');
 	const db = controlDb.getDatabase();
 	const probeId = `rbac-probe-${node.peerId?.toString() ?? 'anon'}`;
+	// Mirror the canonical authorized insert (control-database.ts `insertStrand`):
+	// the `Strand` context is exactly `(AuthorityKey, Signature)` and `StampId` is a
+	// real `not null unique` column supplied in `values`. Providing a fresh StampId
+	// keeps the not-null/anti-replay column satisfied so the ONLY failing condition
+	// is the `Authorized` check — no enrolled authority matches the bogus key and no
+	// `FormationUsage` row consents — proving the rejection is the authority gate
+	// itself, not an incidental column/context error.
+	const stampId = `rbac-probe-stamp-${crypto.randomUUID()}`;
 	try {
 		await db.exec(
-			`insert into CadreControl.Strand (Id, Type, MemberPrivateKey)
-				with context AuthorityKey = ?, Signature = ?, StampId = ?
-				values (?, 'o', null)`,
-			['not-an-authority-key', 'bogus-signature', probeId, probeId],
+			`insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+				with context AuthorityKey = ?, Signature = ?
+				values (?, 'o', null, ?)`,
+			['not-an-authority-key', 'bogus-signature', probeId, stampId],
 		);
 		// Reaching here means the gate let an unauthorized write through. Best-effort
 		// cleanup is not attempted (the row is itself a regression marker).

@@ -61,6 +61,12 @@ test.describe('Tier 1 / solo / formation + RBAC', () => {
 		await expect(page.getByTestId('diag-gate-result')).toContainText('rejected', {
 			timeout: 15_000,
 		});
+
+		// The rejection must be the `Strand.Authorized` CHECK firing — not an
+		// incidental column/context error (e.g. a missing not-null StampId). Assert
+		// the surfaced error names the authority constraint so the demonstration
+		// can't silently regress to a masked rejection.
+		await expect(page.getByTestId('diag-gate-detail')).toContainText('Authorized');
 	});
 
 	test('the authorization surface reflects genesis authority and no formation rows', async ({

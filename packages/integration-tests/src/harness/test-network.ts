@@ -8,9 +8,10 @@
 import debug from 'debug';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { toString as uint8ArrayToString } from 'uint8arrays';
+import type { ControlTable } from '@serfab/cadre-core';
 import { createTestParty, shutdownTestParty } from './test-party.js';
 import { releaseAllPorts } from './port-allocator.js';
-import { waitUntil, waitForCount, sleep } from './wait-utils.js';
+import { waitForCount } from './wait-utils.js';
 import type {
   TestParty,
   TestStrand,
@@ -197,19 +198,35 @@ export class TestCadreNetwork {
   }
 
   /**
-   * Wait for control network sync across a party's nodes
+   * Wait until a party's control database has converged to at least
+   * `expectedRows` rows in `table`.
+   *
+   * SCOPE — authoritative view only: the harness builds ONE `ControlDatabase`
+   * per party, on the authority node (`createTestParty` in test-party.ts). Drone
+   * nodes are libp2p peers in the same `control-<partyId>` network but have no
+   * `ControlDatabase` instance, so this polls the AUTHORITY's control DB only. It
+   * proves the authoritative control-network view holds the rows — NOT that any
+   * drone has converged. That is sufficient for the current scenarios; proving
+   * drone-side convergence would require standing up a `ControlDatabase` on a
+   * drone node and polling it here as well.
    */
   async waitForControlSync(
     party: TestParty,
-    table: string,
+    table: ControlTable,
     expectedRows: number,
     timeoutMs?: number
   ): Promise<void> {
-    log('Waiting for control sync: %s.%s >= %d rows', party.name, table, expectedRows);
-    
-    // TODO: Query each node's control database and wait for convergence
-    await sleep(100); // Placeholder
-    
+    log('Waiting for control sync (authority view): %s.%s >= %d rows', party.name, table, expectedRows);
+
+    await waitForCount(
+      () => party.controlDatabase.countRows(table),
+      expectedRows,
+      {
+        timeoutMs: timeoutMs ?? this.options.defaultTimeoutMs,
+        description: `${party.name} control DB ${table} >= ${expectedRows} rows`
+      }
+    );
+
     log('Control sync complete for %s.%s', party.name, table);
   }
 

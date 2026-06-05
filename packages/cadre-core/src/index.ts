@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig } from './control-database.js';
+export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig, type ControlTable } from './control-database.js';
 
 // Authority key bridge (libp2p Ed25519 -> base64url authority keypair)
 export { authorityKeyFromLibp2p, type AuthorityKeyPair } from './authority-key.js';

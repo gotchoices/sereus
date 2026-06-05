@@ -165,7 +165,7 @@
 							: 'unauthorized write ACCEPTED ✗'}</span
 					>
 					{#if diag.authorization.gateProbe.error}
-						<div class="muted gate-detail">{diag.authorization.gateProbe.error}</div>
+						<div class="muted gate-detail" data-testid="diag-gate-detail">{diag.authorization.gateProbe.error}</div>
 					{/if}
 				{:else}
 					<span class="muted">not run — click “Verify authority gate”</span>

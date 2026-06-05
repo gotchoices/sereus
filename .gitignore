@@ -6,6 +6,7 @@ tmp/
 .yarn
 .pnp.*
 *.tsbuildinfo
+.in-progress
 
 # Expo prebuild artifacts (managed workflow — EAS generates these)
 packages/reference-app-rn/android/
