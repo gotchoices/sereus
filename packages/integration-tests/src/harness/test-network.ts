@@ -7,7 +7,6 @@
 
 import debug from 'debug';
 import { ed25519 } from '@noble/curves/ed25519.js';
-import { sha256 } from '@noble/hashes/sha2.js';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { createTestParty, shutdownTestParty } from './test-party.js';
 import { releaseAllPorts } from './port-allocator.js';
@@ -22,16 +21,18 @@ import type {
 } from './types.js';
 
 /**
- * Sign data with Ed25519 private key and return base64url signature
+ * Ed25519-sign the canonical authorization message bytes and return a base64url signature.
+ *
+ * The control schema's `Authorized` constraints now bind the signature to the row's
+ * contents (see `buildAuthorizationMessage` in cadre-core): the signer receives the raw
+ * message bytes and signs them DIRECTLY — no SHA-256 pre-hash and no re-encode, since
+ * ed25519 hashes internally and the bytes are already canonical.
  */
-function signData(data: string, privateKey: Uint8Array): string {
-  const dataBytes = new TextEncoder().encode(data);
-  const hash = sha256(dataBytes);
-  // Ed25519 private key from libp2p is in protobuf format, extract the raw 32-byte seed
+function signMessageEd25519(message: Uint8Array, privateKey: Uint8Array): string {
+  // Ed25519 private key from libp2p is in protobuf format, extract the raw 32-byte seed.
   // The protobuf format is: type (1 byte) + length (1 byte) + key data (32 bytes) + public key...
-  // For Ed25519, the raw seed is typically the first 32 bytes after the type/length prefix
   const rawPrivateKey = privateKey.slice(4, 36); // Skip protobuf header
-  const signature = ed25519.sign(hash, rawPrivateKey);
+  const signature = ed25519.sign(message, rawPrivateKey);
   // Use uint8ArrayToString to get raw base64url without multiformat prefix
   return uint8ArrayToString(signature, 'base64url');
 }
@@ -100,13 +101,14 @@ export class TestCadreNetwork {
 
     log('Creating strand %s for party %s', strandId, party.name);
 
-    // Insert strand into the party's control database
-    // The signStampId callback signs the transaction's stamp ID for authorization
+    // Insert strand into the party's control database.
+    // The callback signs the canonical row-bound authorization message (built inside
+    // insertStrand) directly — binding the signature to this strand's contents + stamp.
     await party.controlDatabase.insertStrand(
       strandId,
       strandType,
       party.authorityPublicKey,
-      (stampId: string) => signData(stampId, party.authorityPrivateKey)
+      (message: Uint8Array) => signMessageEd25519(message, party.authorityPrivateKey)
     );
 
     // Track locally for test assertions

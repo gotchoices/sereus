@@ -3,26 +3,28 @@ declare schema CadreControl {
     -- A key that can authorize various control changes
     table AuthorityKey (
         Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
             -- Bootstrap: first authority key needs no existing authorization
             (select count(1) from AuthorityKey) <= 1
 
-                -- Old authority can authorize by signature and transaction stamp id (not repeatable)
-                or (old.Key is not null and old.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, old.Key, 'ed25519'))
+                -- Old authority authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
+                or (old.Key is not null and old.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, old.Key, 'ed25519', 'hex'))
 
-                -- or other authorities can authorize by signature and transaction stamp id (not repeatable)
-                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+                -- or other authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
         )
-    ) with context (AuthorityKey text null, Signature text null, StampId text);
+    ) with context (AuthorityKey text null, Signature text null);
 
     -- A key that can validate a strand formation disclosure
     table ValidationKey (
         Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
-            -- Authorities can authorize by signature and transaction stamp id (not repeatable)
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+            -- Authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
         )
-    ) with context (AuthorityKey text, StampId text, Signature text);
+    ) with context (AuthorityKey text, Signature text);
 
     -- A network of members sharing an sApp database, each contributing peer nodes (their cadre) to the overall cohort
     -- Cadre peers should participate in each of these strands
@@ -30,15 +32,18 @@ declare schema CadreControl {
         Id text primary key,    -- UUID
         MemberPrivateKey text null unique,   -- Our private key as a member of this strand
         Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
-            -- Authorized by authority signature and transaction stamp id (not repeatable)
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+            -- Authorized by an authority signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Id, 'sha256', 'utf8', 'hex') || digest(new.Type, 'sha256', 'utf8', 'hex') || digest(coalesce(new.MemberPrivateKey, ''), 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
 
-                -- or authorized by a cadre peer who has received a valid formation invitation
+                -- or authorized by a cadre peer who has received a valid formation invitation.
+                -- That path has no signed writer yet; when one is built it must still supply a
+                -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
                 or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
         ),
         -- TODO: constraint to ensure member private key only if closed
-    ) with context (AuthorityKey text, StampId text, Signature text);
+    ) with context (AuthorityKey text, Signature text);
 
     -- A peer (node) that is part of the cadre, carrying a self-published,
     -- freshness-stamped, self-signed address record (see PeerAddressRecord in cadre-core).

@@ -21,26 +21,28 @@ declare schema CadreControl {
     -- A key that can authorize various control changes
     table AuthorityKey (
         Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
             -- Bootstrap: first authority key needs no existing authorization
             (select count(1) from AuthorityKey) <= 1
 
-                -- Old authority can authorize by signature and transaction stamp id (not repeatable)
-                or (old.Key is not null and old.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, old.Key, 'ed25519'))
+                -- Old authority authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
+                or (old.Key is not null and old.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, old.Key, 'ed25519', 'hex'))
 
-                -- or other authorities can authorize by signature and transaction stamp id (not repeatable)
-                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+                -- or other authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
         )
-    ) with context (AuthorityKey text null, Signature text null, StampId text);
+    ) with context (AuthorityKey text null, Signature text null);
 
     -- A key that can validate a strand formation disclosure
     table ValidationKey (
         Key text primary key,
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
-            -- Authorities can authorize by signature and transaction stamp id (not repeatable)
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+            -- Authorities authorize by signing over THIS row (Key, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Key, 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
         )
-    ) with context (AuthorityKey text, StampId text, Signature text);
+    ) with context (AuthorityKey text, Signature text);
 
     -- A network of members sharing an sApp database, each contributing peer nodes (their cadre) to the overall cohort
     -- Cadre peers should participate in each of these strands
@@ -48,15 +50,18 @@ declare schema CadreControl {
         Id text primary key,    -- UUID
         MemberPrivateKey text null unique,   -- Our private key as a member of this strand
         Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
-            -- Authorized by authority signature and transaction stamp id (not repeatable)
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(context.StampId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+            -- Authorized by an authority signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.Id, 'sha256', 'utf8', 'hex') || digest(new.Type, 'sha256', 'utf8', 'hex') || digest(coalesce(new.MemberPrivateKey, ''), 'sha256', 'utf8', 'hex') || digest(new.StampId, 'sha256', 'utf8', 'hex'), context.Signature, A.Key, 'ed25519', 'hex'))
 
-                -- or authorized by a cadre peer who has received a valid formation invitation
+                -- or authorized by a cadre peer who has received a valid formation invitation.
+                -- That path has no signed writer yet; when one is built it must still supply a
+                -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
                 or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
         ),
         -- TODO: constraint to ensure member private key only if closed
-    ) with context (AuthorityKey text, StampId text, Signature text);
+    ) with context (AuthorityKey text, Signature text);
 
     -- A peer (node) that is part of the cadre, carrying a self-published,
     -- freshness-stamped, self-signed address record (see PeerAddressRecord).
@@ -153,6 +158,34 @@ function generateStampId(peerId: string): string {
 
   // Convert to base64url
   return uint8ArrayToString(combined, 'base64url');
+}
+
+/**
+ * Build the canonical authorization message that authority signatures are bound to.
+ *
+ * The message is the byte concatenation of the per-field SHA-256 digests, in a fixed
+ * field order, with the single-use StampId as the final field:
+ *
+ *   message = sha256(utf8(field_1)) ++ sha256(utf8(field_2)) ++ ... ++ sha256(utf8(StampId))
+ *
+ * ed25519 signs these raw bytes DIRECTLY (no pre-hash). The SQL constraints verify the
+ * identical bytes by concatenating the hex-encoded digests
+ * (`digest(field, 'sha256', 'utf8', 'hex') || ...`) and decoding with verify's `'hex'`
+ * input encoding — so signer and verifier operate on the same bytes. This binds the
+ * signature to the row contents (not a bare stamp), closing the captured-stamp replay /
+ * privilege-escalation hole. Single source of truth: every signed writer (and every
+ * test/harness signer) MUST build the message through this function in the schema's field
+ * order, or `verify` will reject the row.
+ */
+export function buildAuthorizationMessage(fields: string[]): Uint8Array {
+  const parts = fields.map(field => digest(field, 'sha256', 'utf8', 'bytes') as Uint8Array);
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) {
+    out.set(part, offset);
+    offset += part.length;
+  }
+  return out;
 }
 
 /**
@@ -440,32 +473,39 @@ export class ControlDatabase {
     this.ensureInitialized();
     log('Inserting authority key: %s', key);
 
-    // For bootstrap, context values are not verified since no existing authorities
-    // Use fully qualified table name since schema is CadreControl
-    // StampId() provides the transaction's unique stamp from the optimystic transaction
+    // Bootstrap is authorized by the schema's `(select count(1) from AuthorityKey) <= 1`
+    // branch, so no signature is needed. We still persist a fresh, unique StampId in the
+    // row's own column to satisfy the not-null/unique anti-replay constraint — the StampId
+    // is now a real column value, not the optimystic `StampId()` SQL function.
+    const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
     await this.db!.exec(`
-      insert into CadreControl.AuthorityKey (Key)
-        with context AuthorityKey = null, Signature = null, StampId = StampId()
-        values (?)
-    `, [key]);
+      insert into CadreControl.AuthorityKey (Key, StampId)
+        with context AuthorityKey = null, Signature = null
+        values (?, ?)
+    `, [key, stampId]);
     log('Authority key inserted');
   }
 
   /**
-   * Insert a strand into the control database using authority signature.
-   * This starts a transaction, gets the StampId, signs it, and inserts the strand.
+   * Insert a strand into the control database using an authority signature.
+   *
+   * The authority signs the canonical row-bound authorization message (see
+   * {@link buildAuthorizationMessage}) — NOT a bare stamp — so the signature is bound to
+   * this strand's contents and cannot be transplanted onto an attacker-chosen row. The
+   * StampId is persisted as a unique column for single-use anti-replay.
    *
    * @param strandId - Unique identifier for the strand
    * @param type - Strand type: 'o' for open, 'c' for closed
    * @param authorityKey - Public key of the authorizing authority
-   * @param signStampId - Function to sign the stamp ID with the authority's private key
+   * @param signMessage - Function that ed25519-signs the raw message bytes (no pre-hash)
+   *   with the authority's private key, returning a base64url signature
    * @param memberPrivateKey - Optional private key for membership in closed strands
    */
   async insertStrand(
     strandId: string,
     type: 'o' | 'c',
     authorityKey: string,
-    signStampId: (stampId: string) => string,
+    signMessage: (message: Uint8Array) => string,
     memberPrivateKey?: string
   ): Promise<void> {
     this.ensureInitialized();
@@ -475,17 +515,56 @@ export class ControlDatabase {
     const peerId = this.config.libp2pNode.peerId.toString();
     const stampId = generateStampId(peerId);
 
-    // Sign the stamp ID with the authority key
-    const signature = signStampId(stampId);
+    // Field order MUST match the schema's Strand `Authorized` verify:
+    // Id, Type, MemberPrivateKey ('' when null), StampId.
+    const message = buildAuthorizationMessage([strandId, type, memberPrivateKey ?? '', stampId]);
+    const signature = signMessage(message);
 
-    // Insert with the signed stamp ID
+    // StampId is a real, unique column (single-use anti-replay), no longer a context value.
     await this.db!.exec(`
-      insert into CadreControl.Strand (Id, Type, MemberPrivateKey)
-        with context AuthorityKey = ?, Signature = ?, StampId = ?
-        values (?, ?, ?)
-    `, [authorityKey, signature, stampId, strandId, type, memberPrivateKey ?? null]);
+      insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+        with context AuthorityKey = ?, Signature = ?
+        values (?, ?, ?, ?)
+    `, [authorityKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
 
     log('Strand inserted: %s', strandId);
+  }
+
+  /**
+   * Insert a validation key into the control database using an authority signature.
+   *
+   * Mirrors {@link insertStrand}: the authority signs the canonical row-bound
+   * authorization message over (Key, StampId), and the StampId is persisted as a unique
+   * column for single-use anti-replay. A `ValidationKey` authorizes verifying strand
+   * formation disclosures.
+   *
+   * @param key - The validation public key to enroll
+   * @param authorityKey - Public key of the authorizing authority
+   * @param signMessage - Function that ed25519-signs the raw message bytes (no pre-hash)
+   *   with the authority's private key, returning a base64url signature
+   */
+  async insertValidationKey(
+    key: string,
+    authorityKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    this.ensureInitialized();
+    log('Inserting validation key: %s', key);
+
+    const peerId = this.config.libp2pNode.peerId.toString();
+    const stampId = generateStampId(peerId);
+
+    // Field order MUST match the schema's ValidationKey `Authorized` verify: Key, StampId.
+    const message = buildAuthorizationMessage([key, stampId]);
+    const signature = signMessage(message);
+
+    await this.db!.exec(`
+      insert into CadreControl.ValidationKey (Key, StampId)
+        with context AuthorityKey = ?, Signature = ?
+        values (?, ?)
+    `, [authorityKey, signature, key, stampId]);
+
+    log('Validation key inserted: %s', key);
   }
 
   /**
