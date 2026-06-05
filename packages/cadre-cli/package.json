@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-cli",
-  "version": "0.7.1",
+  "version": "0.8.0",
   "type": "module",
   "description": "CLI wrapper for Sereus cadre nodes - start, monitor, and manage cadre node instances",
   "main": "dist/index.js",
