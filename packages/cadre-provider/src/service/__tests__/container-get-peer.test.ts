@@ -67,21 +67,26 @@ describe('ContainerService.getPeerInfo', () => {
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:8080/status');
   });
 
-  it('caches peer info on the container so a second call skips the fetch', async () => {
-    const { service, store } = await makeService(runningContainer());
-    const fetchMock = vi.fn(async () => jsonResponse({
-      status: 'healthy', uptime: 1,
-      peerId: '12D3KooWPeer', multiaddrs: ['/ip4/10.0.0.1/tcp/4001'],
-    }));
+  it('re-fetches live every call, reflecting peer info that changed after a restart', async () => {
+    const { service } = await makeService(runningContainer());
+    // Simulate a restart re-keying identity / remapping multiaddrs between calls.
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({
+        status: 'healthy', uptime: 1,
+        peerId: '12D3KooWOld', multiaddrs: ['/ip4/10.0.0.1/tcp/4001'],
+      }))
+      .mockResolvedValueOnce(jsonResponse({
+        status: 'healthy', uptime: 1,
+        peerId: '12D3KooWNew', multiaddrs: ['/ip4/10.0.0.2/tcp/5002'],
+      }));
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
-    await service.getPeerInfo('ctr_1');
+    const first = await service.getPeerInfo('ctr_1');
     const second = await service.getPeerInfo('ctr_1');
 
-    expect(second).toEqual({ peerId: '12D3KooWPeer', multiaddrs: ['/ip4/10.0.0.1/tcp/4001'] });
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-    const stored = await store.getContainer('ctr_1');
-    expect(stored?.peerId).toBe('12D3KooWPeer');
+    expect(first).toEqual({ peerId: '12D3KooWOld', multiaddrs: ['/ip4/10.0.0.1/tcp/4001'] });
+    expect(second).toEqual({ peerId: '12D3KooWNew', multiaddrs: ['/ip4/10.0.0.2/tcp/5002'] });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('returns undefined when /status reports a null peerId (node still starting)', async () => {

@@ -58,10 +58,6 @@ export interface Container {
   profile: 'storage' | 'transaction';
   /** Current status */
   status: ContainerStatus;
-  /** Peer ID once enrolled */
-  peerId?: string;
-  /** Multiaddrs for the container's libp2p node */
-  multiaddrs?: string[];
   /** Docker container ID */
   dockerId?: string;
   /** Resource specifications */

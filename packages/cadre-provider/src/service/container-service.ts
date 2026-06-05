@@ -301,9 +301,14 @@ export class ContainerService {
   /**
    * Get the peer info for a container (peerId and multiaddrs).
    *
-   * Reads the live `/status` payload (peerId/multiaddrs live there — `/health`
-   * carries only `{ status }`), reusing the shared `fetchContainerHealthStatus`
-   * helper so the `/status` URL derivation and wire shape stay in one place.
+   * Reads the live `/status` payload on **every** call with no cache — matching
+   * `getContainerStatus`'s freshness model so both `/status` read paths agree.
+   * Caching peerId/multiaddrs warm-once served stale dial info forever after a
+   * restart re-keyed the node's libp2p identity or remapped its multiaddrs.
+   *
+   * peerId/multiaddrs live in `/status` (not `/health`, which carries only
+   * `{ status }`); the shared `fetchContainerHealthStatus` helper keeps the
+   * `/status` URL derivation and wire shape in one place.
    *
    * @param id - Container ID
    * @returns Peer info, or undefined when the node has no peer identity yet
@@ -312,21 +317,10 @@ export class ContainerService {
     const container = await this.store.getContainer(id);
     if (!container) return undefined;
 
-    // Return cached values if available
-    if (container.peerId && container.multiaddrs?.length) {
-      return { peerId: container.peerId, multiaddrs: container.multiaddrs };
-    }
-
     // Fetch the live `/status` payload. `peerId` is `null` while the node is
     // still starting — treat that (and missing multiaddrs) as "not available".
     const status = await fetchContainerHealthStatus(container);
     if (!status?.peerId || !status.multiaddrs?.length) return undefined;
-
-    // Cache the values for subsequent lookups.
-    container.peerId = status.peerId;
-    container.multiaddrs = status.multiaddrs;
-    container.updatedAt = new Date();
-    await this.store.saveContainer(container);
 
     return { peerId: status.peerId, multiaddrs: status.multiaddrs };
   }
