@@ -6,7 +6,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { TestCadreNetwork, waitUntil, sleep } from '../harness/index.js';
+import { TestCadreNetwork } from '../harness/index.js';
 import { MINIMAL_SAPP_LOGIC } from '../fixtures/index.js';
 
 describe('Strand Creation', () => {
@@ -32,7 +32,13 @@ describe('Strand Creation', () => {
     expect(strand.strandId).toMatch(/^strand-/);
     expect(strand.sAppId).toBe(alice.authorityPublicKey);
     expect(strand.type).toBe('o');
-    expect(strand.parties).toContain(alice.partyId);
+
+    // Real control-DB read: the row really landed in Alice's CadreControl.Strand
+    // (createStrand inserts through the schema's Authorized constraint), rather
+    // than asserting harness membership bookkeeping.
+    await network.waitForControlSync(alice, 'Strand', 1);
+    const aliceStrands = await alice.controlDatabase.queryStrands();
+    expect(aliceStrands.some(s => s.Id === strand.strandId)).toBe(true);
   });
 
   it('should create multiple strands for the same party', async () => {
@@ -81,12 +87,14 @@ describe('Strand Creation', () => {
     // Dave creates an invitation
     const invitation = await network.createInvitation(dave, strand);
     
-    // Eve joins via the invitation
+    // Eve redeems the invitation. In the harness this records a FormationUsage
+    // against the strand in DAVE's control network (the intra-cadre consent
+    // record), NOT cross-party transport into Eve's network. Assert that real
+    // row instead of harness membership bookkeeping. A genuine cross-party join
+    // is covered by strand-formation-e2e.integration.ts.
     await network.joinStrand(eve, invitation);
-    
-    // Verify Eve is now in the strand's parties list
-    expect(strand.parties).toContain(dave.partyId);
-    expect(strand.parties).toContain(eve.partyId);
+    await network.waitForControlSync(dave, 'FormationUsage', 1);
+    expect(await dave.controlDatabase.countFormationUsage(invitation.token)).toBe(1);
   });
 
   it('should track strand with custom sAppId', async () => {

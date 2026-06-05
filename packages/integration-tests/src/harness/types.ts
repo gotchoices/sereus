@@ -74,9 +74,16 @@ export interface TestStrand {
   
   /** Type: open or closed */
   type: 'o' | 'c';
-  
-  /** Parties participating in this strand */
-  parties: string[];
+
+  /**
+   * Party that created the strand and owns its control network (the inviter).
+   * This is the ONLY real membership fact the harness tracks: the strand,
+   * its invites, and its usages all live in this party's ControlDatabase, so
+   * `joinStrand` needs it to locate the inviter's DB. It is deliberately NOT a
+   * roster of joiners — joiners are recorded as real FormationUsage rows in the
+   * inviter's control DB, which is what tests assert.
+   */
+  inviterPartyId: string;
 }
 
 /**

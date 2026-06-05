@@ -118,7 +118,7 @@ export class TestCadreNetwork {
       sAppId,
       schema: options.schema,
       type: strandType,
-      parties: [party.partyId]
+      inviterPartyId: party.partyId
     };
 
     this.strands.set(strandId, strand);
@@ -179,13 +179,14 @@ export class TestCadreNetwork {
     }
 
     // The FormationInvite + Strand both live in the INVITING party's control
-    // network — the first party recorded against the strand is its inviter. Record
-    // a FormationUsage there against the existing strand to consume the invitation:
-    // the consent record authorising the joiner's membership. (Cross-party strand
-    // transport/replication is handled by the formation protocol, not here.)
-    const inviter = this.parties.get(strand.parties[0]!);
+    // network. Record a FormationUsage there against the existing strand to
+    // consume the invitation: the consent record authorising the joiner's
+    // membership. (Cross-party strand transport/replication is handled by the
+    // formation protocol, not here.) Nothing tracks a local joiner roster — the
+    // real, asserted membership fact is the FormationUsage row written below.
+    const inviter = this.parties.get(strand.inviterPartyId);
     if (!inviter) {
-      throw new Error(`Inviting party ${strand.parties[0]} not found for strand ${invitation.strandId}`);
+      throw new Error(`Inviting party ${strand.inviterPartyId} not found for strand ${invitation.strandId}`);
     }
     await inviter.controlDatabase.recordFormationUsage({
       token: invitation.token,
@@ -193,7 +194,6 @@ export class TestCadreNetwork {
       peerId: joiner.partyId,
     });
 
-    strand.parties.push(joiner.partyId);
     log('Party %s joined strand %s', joiner.name, invitation.strandId);
   }
 
