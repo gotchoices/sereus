@@ -128,6 +128,27 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     expect((row?.StampId as string).length).toBeGreaterThan(0);
   });
 
+  it('happy path: a closed strand carrying a real MemberPrivateKey round-trips (non-null coalesce path)', async () => {
+    // The negative tamper test only proves verify *fails* for a mutated member key; it
+    // cannot prove the legitimate non-empty `coalesce(new.MemberPrivateKey, '')` path —
+    // where buildAuthorizationMessage and the SQL coalesce must agree on the actual key
+    // bytes — actually round-trips. This is the only positive exercise of that path.
+    const before = await strandCount();
+    const strandId = 'strand-closed-' + Math.random().toString(36).slice(2);
+    const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+
+    await db.insertStrand(strandId, 'c', authorityPublicKey, signMessage, memberPrivateKey);
+
+    expect(await strandCount()).toBe(before + 1);
+    const row = await rawDb.get(
+      'select Type, MemberPrivateKey, StampId from CadreControl.Strand where Id = ?',
+      [strandId],
+    );
+    expect(row?.Type).toBe('c');
+    expect(row?.MemberPrivateKey).toBe(memberPrivateKey);
+    expect((row?.StampId as string).length).toBeGreaterThan(0);
+  });
+
   it('transplant rejected: a valid Strand signature cannot be moved onto a different row (privilege escalation)', async () => {
     const stamp = freshStamp();
     const s1 = 'strand-src-' + Math.random().toString(36).slice(2);
