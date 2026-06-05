@@ -139,6 +139,13 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     );
   }
 
+  function rawUpdateInviteTotalUses(token: string, totalUses: number): Promise<void> {
+    return rawDb.exec(
+      `update CadreControl.FormationInvite set TotalUses = ? where Token = ?`,
+      [totalUses, token],
+    );
+  }
+
   beforeAll(async () => {
     authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -505,5 +512,17 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await expect(rawInsertStrand(inviteSig, attackerStrand, 'o', null, stamp)).rejects.toThrow();
     expect(await strandCount()).toBe(before);
     expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [attackerStrand])).toBeUndefined();
+  });
+
+  it('FormationInvite tamper-via-update rejected: a row cannot be mutated after insertion (no unauthorized update)', async () => {
+    // Row-binding only guards inserts/deletes; without an update guard an attacker could
+    // insert a legit invite then UPDATE the consent parameters (TotalUses / ExpiresAt) with
+    // NO signature, defeating the whole point. FormationInvite rows are insert/delete only.
+    const token = 'fi-noupd-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(token, 'sapp-noupd', authorityPublicKey, signMessage, { totalUses: 1 });
+
+    await expect(rawUpdateInviteTotalUses(token, 999999)).rejects.toThrow();
+    const row = await rawDb.get('select TotalUses from CadreControl.FormationInvite where Token = ?', [token]);
+    expect(Number(row?.TotalUses)).toBe(1);
   });
 });

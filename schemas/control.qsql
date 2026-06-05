@@ -100,7 +100,13 @@ declare schema CadreControl {
                     || digest(coalesce(coalesce(new.ValidationUrl, old.ValidationUrl), ''), 'sha256', 'utf8', 'hex')
                     || digest(coalesce(new.StampId, old.StampId), 'sha256', 'utf8', 'hex'),
                 context.Signature, A.Key, 'ed25519', 'hex'))
-        )
+        ),
+        -- Invites are insert/delete only: forbid in-place mutation so the row-bound
+        -- AuthorizedAddOrRemove signature cannot be sidestepped by updating consent
+        -- parameters (TotalUses/ExpiresAt/...) after a legitimate insert. A bare check
+        -- defaults to insert+update; the check on insert, delete above excludes update,
+        -- so this guard is required. Mirrors FormationUsage.InsertOnly.
+        constraint Immutable check on update (false)
     ) with context (AuthorityKey text, Signature text);
 
     table FormationUsage (
