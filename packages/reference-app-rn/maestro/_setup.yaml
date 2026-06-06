@@ -6,6 +6,9 @@ appId: ${MAESTRO_APP_ID}
 #
 # Env vars (injected by scripts/run-e2e.mjs):
 #   PARTY_ID, BOOTSTRAP_ADDR, SEED — from test-data.json
+#   ENROLL_INVITE                  — drone's enrollment invite (pins the drone
+#                                    authority key so the cold phone trusts the
+#                                    seed signer under the secure-default policy)
 #   STRAND_ID                      — drone's pre-created strand
 #   SIDECAR_URL                    — drone HTTP base URL
 #   MAESTRO_APP_ID                 — phone app bundle id
@@ -41,6 +44,12 @@ appId: ${MAESTRO_APP_ID}
 - tapOn:
     id: "input-seed"
 - inputText: ${SEED}
+- hideKeyboard
+# Pin the drone's authority out-of-band so the cold phone trusts the seed's
+# signer under the secure-default policy (no control-sync race).
+- tapOn:
+    id: "input-enroll-invite"
+- inputText: ${ENROLL_INVITE}
 - hideKeyboard
 - tapOn:
     id: "btn-apply-seed"

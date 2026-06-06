@@ -14,7 +14,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, authorityPublicKeyFromPrivate } from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
@@ -96,6 +96,17 @@ async function main() {
 	// Seed bootstrap — allows creating + delivering seeds
 	node.initializeSeedBootstrap(authorityPrivateKey);
 
+	// Enroll the drone's own authority key so a cold-start invitee can pin it
+	// out-of-band. Without this, getAuthorityKeys() is empty and the minted
+	// invite carries no authorityKeys (undefined) — useless for trust anchoring.
+	const authorityPublicKey = authorityPublicKeyFromPrivate(authorityPrivateKey);
+	const controlDb = node.getControlDatabase();
+	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone authority');
+	await controlDb.ensureAuthorityKey(authorityPublicKey);
+
+	// Mint an enrollment invite carrying the drone authority key out-of-band.
+	const { encodedInvite } = await node.createInvite();
+
 	// Create pre-configured chat strand
 	const strand = await node.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
@@ -132,6 +143,7 @@ async function main() {
 		droneBootstrapAddr: bootstrapAddr,
 		seed: encodedSeed,
 		strandId,
+		enrollInvite: encodedInvite,
 	};
 	const testDataPath = join(__dirname, 'test-data.json');
 	await writeFile(testDataPath, JSON.stringify(testData, null, '\t'));

@@ -1,4 +1,5 @@
 import { toString as uint8ArrayToString } from 'uint8arrays';
+import { getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { PrivateKey } from '@libp2p/interface';
 
 /**
@@ -48,4 +49,20 @@ export function authorityKeyFromLibp2p(privateKey: PrivateKey): AuthorityKeyPair
     privateKeyB64: uint8ArrayToString(seed, 'base64url'),
     publicKeyB64: uint8ArrayToString(publicKeyRaw, 'base64url'),
   };
+}
+
+/**
+ * Derive the base64url Ed25519 public key from a base64url 32-byte private seed
+ * — the same derivation the seed-bootstrap signer uses internally
+ * (`SeedBootstrapService` constructor). Use this to enroll a standalone
+ * (non-libp2p) authority key into the control DB via
+ * `ControlDatabase.ensureAuthorityKey` before minting an invite, when the
+ * authority key is *not* the node's peer identity (so `authorityKeyFromLibp2p`,
+ * which needs a libp2p key object, does not apply).
+ *
+ * @param privateKeyB64 - The base64url-encoded 32-byte Ed25519 seed.
+ * @returns The base64url-encoded Ed25519 public key.
+ */
+export function authorityPublicKeyFromPrivate(privateKeyB64: string): string {
+  return getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
 }

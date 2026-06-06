@@ -214,6 +214,7 @@ async function main() {
 		PARTY_ID: testData.partyId,
 		BOOTSTRAP_ADDR: testData.droneBootstrapAddr,
 		SEED: testData.seed,
+		ENROLL_INVITE: testData.enrollInvite,
 		STRAND_ID: testData.strandId,
 		SIDECAR_URL,
 		MAESTRO_APP_ID,
