@@ -1329,12 +1329,19 @@ export class CadreNode implements SAppIdLookup {
       // partyId is the attacker-influenced seed.partyId — it only labels logs; the
       // trust decision rests solely on signerKey vs the anchor set (configured
       // default below, or the per-call options.trustPolicy override).
+      //
+      // This temp service is discarded after the call, so it must NOT own the shared
+      // node's inbound seed handler: pass { registerHandler: false }. That keeps
+      // repeated service-less applySeed/dialInvite idempotent (no handler leak, no
+      // DuplicateProtocolHandlerError). The temp service still applies this seed; a
+      // node that wants to RECEIVE inbound seeds needs a persistent service
+      // (enableSeedListener / initializeSeedBootstrap) to own the handler.
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
         trustPolicy: this.config.seedTrustPolicy,
       });
       if (this.controlNode && this.controlDatabase) {
-        tempService.initialize(this.controlNode, this.controlDatabase);
+        tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
       return await tempService.applySeed(seed, options);
     }
@@ -1454,17 +1461,19 @@ export class CadreNode implements SAppIdLookup {
    */
   async dialInvite(invite: CadreInvite): Promise<void> {
     if (!this.seedBootstrapService) {
-      // Create a temporary service for dialing. Its initialize() registers the
-      // inbound seed protocol handler, which applies network-delivered seeds
-      // against this service's policy — so forward the node-wide default here too,
-      // otherwise that handler would silently fall back to dbAnchoredTrustPolicy()
-      // and reject a legitimately-pinned cold-start seed.
+      // Create a temporary service that only dials the invite. It is discarded after
+      // the call, so it does NOT own the shared node's inbound seed handler:
+      // initialize with { registerHandler: false }. This temp dialInvite never
+      // applies a seed itself — a node that wants to RECEIVE an inbound seed back
+      // must have a persistent service (enableSeedListener / initializeSeedBootstrap)
+      // own the /sereus/seed/1.0.0 handler. trustPolicy is therefore effectively dead
+      // on this dial-only path; it is kept for symmetry with the applySeed temp site.
       const tempService = new SeedBootstrapService({
         partyId: invite.partyId,
         trustPolicy: this.config.seedTrustPolicy,
       });
       if (this.controlNode && this.controlDatabase) {
-        tempService.initialize(this.controlNode, this.controlDatabase);
+        tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
       await tempService.dialInvite(invite);
       return;

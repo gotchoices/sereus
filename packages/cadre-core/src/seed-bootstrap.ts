@@ -194,15 +194,30 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Initialize the service with libp2p node and control database
+   * Initialize the service with libp2p node and control database.
+   *
+   * `registerHandler` (default true) gates registration of the shared inbound
+   * `/sereus/seed/1.0.0` handler on `libp2pNode`. Persistent services
+   * (`initializeSeedBootstrap`, `enableSeedListener`) own that handler and leave
+   * it on. The throwaway temp services CadreNode builds in `applySeed` /
+   * `dialInvite` pass `false`: they only need the stored `libp2pNode` /
+   * `controlDatabase` for dialing and known-key lookup, and must NOT bind a
+   * discarded closure to the shared node (a handler leak, and a second
+   * `handle()` of the same protocol throws `DuplicateProtocolHandlerError`).
    */
-  initialize(libp2pNode: Libp2p, controlDatabase: ControlDatabase): void {
+  initialize(
+    libp2pNode: Libp2p,
+    controlDatabase: ControlDatabase,
+    options?: { registerHandler?: boolean }
+  ): void {
     this.libp2pNode = libp2pNode;
     this.controlDatabase = controlDatabase;
-    
-    // Register the seed protocol handler
-    this.registerProtocolHandler();
-    
+
+    // Register the seed protocol handler unless the caller opted out (temp services).
+    if (options?.registerHandler ?? true) {
+      this.registerProtocolHandler();
+    }
+
     log('SeedBootstrapService initialized');
   }
 
