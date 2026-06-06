@@ -4,8 +4,10 @@ import debug from 'debug';
 import {
   CadreNode,
   authorityKeyFromLibp2p,
+  pinnedKeyTrustPolicy,
   type CadreNodeConfig,
   type ControlNetworkSeed,
+  type SeedTrustPolicy,
   type StorageConfig,
 } from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
@@ -52,6 +54,29 @@ function decodeSeed(encoded: string): ControlNetworkSeed {
   return JSON.parse(json) as ControlNetworkSeed;
 }
 
+/** Commander collector for the repeatable `--pin-authority-key` option. */
+function collectPinKey(value: string, previous: string[]): string[] {
+  return [...previous, value];
+}
+
+/**
+ * Union the operator's pinned authority keys from the repeatable
+ * `--pin-authority-key` flag and the comma-separated `CADRE_AUTHORITY_KEYS`
+ * env var. Trims each entry, drops empties, and dedupes — so the same key via
+ * both sources appears once and a whitespace-only env (`",, "`) yields `[]`.
+ *
+ * Keys are NOT validated here: a malformed (non-base64url / wrong-length) pin
+ * simply never matches a real `signerKey`, so the seed is rejected by the trust
+ * policy with its reason rather than silently accepted.
+ */
+export function collectPinnedAuthorityKeys(
+  flagKeys: string[] | undefined,
+  env: string | undefined,
+): string[] {
+  const fromEnv = (env ?? '').split(',');
+  return [...new Set([...(flagKeys ?? []), ...fromEnv].map(k => k.trim()).filter(k => k.length > 0))];
+}
+
 export const startCommand = new Command('start')
   .description('Start the cadre node with the specified configuration')
   .option('-c, --config <path>', 'Path to config file (YAML or JSON)', 'cadre.yaml')
@@ -66,6 +91,7 @@ export const startCommand = new Command('start')
   .option('--identity-protobuf <path>', 'Load the node identity from a libp2p protobuf private key file (e.g. cadre-host\'s identity.key). Takes precedence over config identity.')
   .option('--authority', 'Run as the authority node: initialize seed-bootstrap from the node identity and perform the idempotent genesis AuthorityKey insert on a fresh party.')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
+  .option('--pin-authority-key <b64url>', 'Pin a base64url authority key as a cold-start seed-trust anchor (repeatable; unions with CADRE_AUTHORITY_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
   .action(async (options) => {
     if (options.debug) {
       debug.enable('cadre:*,sereus:*');
@@ -99,6 +125,17 @@ export const startCommand = new Command('start')
         }
       }
 
+      // Operator-pinned authority keys anchor cold-start seed trust. Build the
+      // policy BEFORE constructing CadreNode so every later service-construction
+      // site (seed listener, temp-service for applySeed / POST /seed) captures
+      // it as the node-wide default — it is read at construction time.
+      const pinnedKeys = collectPinnedAuthorityKeys(options.pinAuthorityKey, process.env.CADRE_AUTHORITY_KEYS);
+      const seedTrustPolicy: SeedTrustPolicy | undefined =
+        pinnedKeys.length > 0 ? pinnedKeyTrustPolicy(pinnedKeys) : undefined;
+      if (pinnedKeys.length > 0) {
+        console.log(`✓ Pinned ${pinnedKeys.length} authority key(s) for cold-start seed trust`);
+      }
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         controlNetwork: config.controlNetwork,
@@ -108,6 +145,7 @@ export const startCommand = new Command('start')
         network: config.network,
         hibernation: config.hibernation,
         strandWatchInterval: config.strandWatchInterval,
+        seedTrustPolicy,
       };
 
       const node = new CadreNode(nodeConfig);
@@ -278,7 +316,11 @@ export const startCommand = new Command('start')
         try {
           const seed = decodeSeed(options.seed);
           log('Applying seed for party: %s', seed.partyId);
-          const result = await node.applySeed(seed);
+          // Pass the pinned policy as the per-call override too: self-documenting,
+          // and covers the cold path where neither --authority nor
+          // --listen-for-seeds initialized a service (temp-service reads the
+          // configured default, but the explicit override is unambiguous).
+          const result = await node.applySeed(seed, seedTrustPolicy ? { trustPolicy: seedTrustPolicy } : undefined);
           if (result.success) {
             console.log(`✓ Seed applied: ${result.peersAdded} peers added`);
           } else {

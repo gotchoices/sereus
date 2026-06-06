@@ -22,10 +22,12 @@ export interface HealthServerOptions {
    * node never exposes a remotely-mutable control surface unless an operator
    * opts in. When set, `POST /seed` requires `Authorization: Bearer <token>`.
    *
-   * NOTE: this protects the *delivery path* only. It does not establish seed
-   * *trust* — whether an applied seed is honoured is the trust-policy work
-   * (`seed-trust-policy-and-authority-identity`). A valid bearer does not mean
-   * the seed's contents are trusted.
+   * NOTE: this protects the *delivery path* only — it is independent from seed
+   * *trust*. Whether an applied seed is honoured is anchored by the node's
+   * `seedTrustPolicy` (operator-pinned via `CADRE_AUTHORITY_KEYS` /
+   * `--pin-authority-key`, unioned with DB-known authority keys). A request must
+   * clear BOTH layers: a valid bearer does not imply the seed's contents are
+   * trusted, and a trusted seed still requires a valid bearer to be delivered.
    */
   seedToken?: string;
 }
@@ -305,10 +307,12 @@ export class HealthServer {
   }
 
   private async handleSeedRequest(req: http.IncomingMessage, res: http.ServerResponse): Promise<void> {
-    // Authenticate the *delivery path* before touching the body. A valid bearer
-    // does not imply the seed contents are trusted — that is the trust policy's
-    // job (`seed-trust-policy-and-authority-identity`); this gate only stops
-    // anonymous peers from driving applySeed / peer-store mutation.
+    // Authenticate the *delivery path* before touching the body. This gate only
+    // stops anonymous peers from driving applySeed / peer-store mutation; it does
+    // NOT imply the seed contents are trusted. Trust is anchored separately by
+    // the node's `seedTrustPolicy` (operator-pinned authority keys unioned with
+    // DB-known keys), evaluated inside the applySeed call below — so a cold node
+    // with no pin rejects the seed even with a valid bearer.
     if (!checkBearer(req, this.options.seedToken)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'unauthorized' }));
