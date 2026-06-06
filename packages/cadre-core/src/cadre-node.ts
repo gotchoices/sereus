@@ -1454,9 +1454,14 @@ export class CadreNode implements SAppIdLookup {
    */
   async dialInvite(invite: CadreInvite): Promise<void> {
     if (!this.seedBootstrapService) {
-      // Create a temporary service for dialing
+      // Create a temporary service for dialing. Its initialize() registers the
+      // inbound seed protocol handler, which applies network-delivered seeds
+      // against this service's policy — so forward the node-wide default here too,
+      // otherwise that handler would silently fall back to dbAnchoredTrustPolicy()
+      // and reject a legitimately-pinned cold-start seed.
       const tempService = new SeedBootstrapService({
         partyId: invite.partyId,
+        trustPolicy: this.config.seedTrustPolicy,
       });
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase);
