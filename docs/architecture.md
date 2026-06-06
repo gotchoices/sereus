@@ -460,23 +460,22 @@ When a strand is launched without an explicit mode — the control-discovered (`
 
 When forming a new strand with another party, a native cadre-core formation transport (`strand-formation-protocol.ts`, protocol id `/sereus/formation/1.0.0`) negotiates provisioning. It mirrors the non-deprecated seed-bootstrap service (length-prefixed JSON frames over libp2p streams) and replaces the deprecated `strand-proto`. The `StrandFormationManager` drives it from the `cadre-core` interfaces, carrying the caller's **real** invitation token + `StrandFormationDisclosure` and **both** parties' real cadre peer addresses end-to-end:
 
-- **`StrandFormationManager`**: Responder side wires the inbound `FormationListener` to `DisclosureValidator` (identity), `FormationUsageRecorder` (token), and `StrandProvisioner` (provisioning); initiator side validates the responder's result via `FormationResponseValidator`. `ControlFormationUsageRecorder` (`control-formation-recorder.ts`) is the DB-backed `FormationUsageRecorder`: it persists authority-signed `FormationInvite` rows and redeems them by inserting the `Strand` + `FormationUsage` rows atomically (the authority-signature-free consent branch of `Strand.Authorized`), replacing the earlier in-memory stubs.
+- **`StrandFormationManager`**: Responder side wires the inbound `FormationListener` to `DisclosureValidator` (identity), `FormationUsageRecorder` (token), and `StrandProvisioner` (provisioning); initiator side validates the responder's result via `FormationResponseValidator`. `ControlFormationUsageRecorder` (`control-formation-recorder.ts`) is the DB-backed `FormationUsageRecorder`. It follows the **provision-then-record** model: the host pre-creates the (closed) strand authority-signed and mints a `FormationInvite` **bound to it** via the invite's `StrandId` column (signed into the row-bound authorization). When an invitee redeems a bound invite, the recorder resolves that pre-existing host strand (`resolveStrand`) and writes exactly **one** `FormationUsage` consent row against it (record-only — no new `Strand` insert), returning the host strand id **and its `MemberPrivateKey`** (the closed-strand read-gating secret) back through the protocol for delivery to the validated invitee. An unbound invite (`StrandId` null) leaves the legacy responder-provisions path, which provisions a new strand via the wired `StrandProvisioner`.
 - **`StrandSolicitationService.registerResponder(node)`**: Registers the libp2p node to handle incoming formation requests
 - **`StrandSolicitationService.formStrand(invitation, disclosure, node)`**: Initiates strand formation over the real protocol
 - **`CadreNode` high-level API**: `createOpenInvitation()`, `formStrand()`, `encodeInvitation()`, `decodeInvitation()`
 
-Cadre-disclosure timing is enforced: the responder reveals its own party id + cadre addresses only after the token and disclosure validate; a rejection discloses neither. The initiator's `FormationResponseValidator` (built-in structural default) rejects a responder that omits its disclosed identity/cadre or returns an empty/non-responder-created strand.
+Cadre-disclosure timing is enforced: the responder reveals its own party id + cadre addresses — and, for a bound (closed) strand, that strand's membership key — only after the token and disclosure validate; a rejection discloses none of them. The initiator's `FormationResponseValidator` (built-in structural default) rejects a responder that omits its disclosed identity/cadre or returns an empty/non-responder-created strand.
 
 ```mermaid
 sequenceDiagram
     participant A as Party A (Responder)
     participant B as Party B (Initiator)
-    Note over A: FormationInvite token created
+    Note over A: Strand pre-created; FormationInvite<br/>bound to it (StrandId) created
     Note over B: Receives invitation out-of-band
     B->>A: formStrand(token, disclosure)
-    Note over A: Validate token, validate identity,<br/>record FormationUsage
-    Note over A: Provision strand (responderCreates mode)
-    A->>B: Response with strand info
+    Note over A: Validate token, validate identity,<br/>resolve bound strand, record FormationUsage
+    A->>B: Response with strand info + membership key
     Note over A,B: Both add to Strand table →<br/>triggers node participation
 ```
 
