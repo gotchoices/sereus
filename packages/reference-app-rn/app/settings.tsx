@@ -60,8 +60,9 @@ export default function SettingsScreen() {
     const seed = seedInput.trim();
     if (!seed) return;
     try {
-      const pins = enrollInviteInput.trim()
-        ? cadre.authorityKeysFromInvite(enrollInviteInput.trim())
+      const enrollInvite = enrollInviteInput.trim();
+      const pins = enrollInvite
+        ? cadre.authorityKeysFromInvite(enrollInvite)
         : undefined;
       await cadre.applySeed(seed, pins);
       setSeedInput('');

@@ -442,6 +442,8 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`dbAnchoredTrustPolicy`) trusts only authority keys already in the phone's `AuthorityKey` table. A cold-start phone that has not yet synced the issuing cadre's authority will therefore **reject** a seed signed by that cadre. To anchor trust out-of-band, paste the issuer's `CadreInvite` (which carries `authorityKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that one apply via `pinnedKeyTrustPolicy`. Leave it blank when the phone already trusts the signer.
+
 ### Step 5: Create a Strand
 
 1. On the phone's **Settings** tab, tap **Create Strand**
