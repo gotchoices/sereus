@@ -25,7 +25,12 @@
  * cross-cohort convergence still needs relay infra + a dialable second cadre.
  */
 
-import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
+import {
+	CadreNode,
+	authorityKeyFromLibp2p,
+	ControlFormationUsageRecorder,
+	generateStrandMemberKey,
+} from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
 	StrandInstance,
@@ -400,11 +405,27 @@ function delay(ms: number): Promise<void> {
  * Lazily bring up the strand solicitation service (responder + initiator
  * transport). Idempotent; called by both {@link createInvitation} and
  * {@link joinViaInvitation}.
+ *
+ * Wires a {@link ControlFormationUsageRecorder} backed by the live control
+ * database, mirroring RN's `initializeFormationResponder`
+ * (`reference-app-rn/src/cadre-phone.ts`). Without it the responder accepts every
+ * token blindly AND never resolves the host's bound strand — so a redeeming
+ * `formStrand` would fall through to the responder-provisions placeholder and
+ * return no `memberPrivateKey`. The recorder makes token validity + single-use
+ * real and threads the bound host strand back (provision-then-record). The
+ * control database must exist post-start, so its absence throws rather than
+ * silently degrading to the no-recorder path.
  */
 function ensureSolicitation(): CadreNode {
 	if (!node) throw new Error('CadreNode not started');
 	if (!solicitationReady) {
-		node.initializeStrandSolicitation();
+		const controlDb = node.getControlDatabase();
+		if (!controlDb) {
+			throw new Error('control database unavailable after start; cannot wire formation responder');
+		}
+		node.initializeStrandSolicitation({
+			formationUsageRecorder: new ControlFormationUsageRecorder(controlDb),
+		});
 		solicitationReady = true;
 	}
 	return node;
@@ -417,13 +438,59 @@ export interface CreatedInvitation {
 	token: string;
 	sAppId: string;
 	expiration: string;
+	/**
+	 * Id of the host closed strand the invite is bound to. A redeeming
+	 * `formStrand` provisions THIS strand and returns its membership key
+	 * (provision-then-record), so the host UI can track/render it.
+	 */
+	strandId: string;
 }
 
 /**
- * Responder side: mint an open invitation for the chat sApp and encode it for
- * out-of-band (copy/paste) delivery. Requires the tab to be **dialable** — the
- * invitation embeds this cadre's multiaddrs, so `createOpenInvitation` throws
- * when no relay reservation has produced a `/p2p-circuit` address.
+ * Host side of closed-strand formation: mint a membership key, publish the
+ * `Strand` row (`Type:'c'`) under this node's authority, and attach the local
+ * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
+ * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no member
+ * role column, so unlike RN there is no owner/member role assignment to mirror —
+ * bring-up is just `publishStrand` + `addStrand`.
+ *
+ * The strand's raw storage is pre-opened before `addStrand` (the provider is
+ * synchronous), mirroring the Phase-1 chat-strand bring-up in {@link addChatStrand}.
+ *
+ * Returns the generated strand id + membership key so the caller can bind a
+ * `FormationInvite` to the strand (provision-then-record) and track it.
+ */
+async function createClosedChatStrand(
+	cadre: CadreNode,
+): Promise<{ strandId: string; memberPrivateKey: string }> {
+	const strandId = crypto.randomUUID();
+	const memberPrivateKey = await generateStrandMemberKey();
+	await openStores([strandId]);
+	await cadre.publishStrand(strandId, 'c', memberPrivateKey);
+	await cadre.addStrand({
+		strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
+		sAppConfig: getChatSAppConfig(),
+	});
+	return { strandId, memberPrivateKey };
+}
+
+/**
+ * Responder/host side: provision a closed strand bound to a fresh open
+ * invitation for the chat sApp, then encode that invitation for out-of-band
+ * (copy/paste) delivery. Mirrors RN's `createClosedStrandWithInvite`
+ * (`reference-app-rn/src/use-cadre.ts`):
+ *
+ *   1. create the host closed strand (mint member key + publish `Type:'c'` row +
+ *      attach the local instance) so the invite has a real strand to bind to,
+ *   2. mint the `OpenInvitation`, then
+ *   3. publish a `FormationInvite` **bound to that strand id** so a redeeming
+ *      `formStrand` resolves the host strand and returns its real membership key
+ *      (provision-then-record), rather than the responder minting a fresh one.
+ *
+ * Requires the tab to be **dialable** — the invitation embeds this cadre's
+ * multiaddrs, so `createOpenInvitation` throws when no relay reservation has
+ * produced a `/p2p-circuit` address. The dialability guard runs before any
+ * strand is published so an undialable tab leaves no dangling host strand.
  */
 export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
@@ -437,19 +504,29 @@ export async function createInvitation(
 				(relayState.error ? ` (${relayState.error})` : ''),
 		);
 	}
+	const { strandId, memberPrivateKey } = await createClosedChatStrand(cadre);
 	const invitation = await cadre.createOpenInvitation(CHAT_SAPP_ID, expirationMs);
+	await cadre.publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
+		expiresAtMs: invitation.expiration.getTime(),
+		strandId,
+	});
+	// Track the host strand so diagnostics / getFormedStrands() stay consistent
+	// with the joiner side (both record `type:'c'` + the gating member key).
+	formedStrands.set(strandId, { strandId, memberKey: memberPrivateKey, type: 'c' });
 	return {
 		encoded: cadre.encodeInvitation(invitation),
 		token: invitation.token,
 		sAppId: invitation.sAppId,
 		expiration: invitation.expiration.toISOString(),
+		strandId,
 	};
 }
 
 /**
  * Initiator side: decode an out-of-band invitation, run the formation protocol
  * against the responder's cadre, then launch the resulting **closed** strand
- * against the same signed chat schema using the minted member key.
+ * against the same signed chat schema using the host's read-gating membership key
+ * (`FormStrandResult.memberPrivateKey`, delivered after consent).
  *
  * The closed strand's raw storage is pre-opened before `addStrand` (the provider
  * is synchronous), mirroring the Phase-1 chat-strand bring-up.
@@ -466,12 +543,26 @@ export async function joinViaInvitation(
 	});
 
 	// Provision the closed strand locally: pre-open its IndexedDB store, then add
-	// it with the responder-minted member key so reads are authorized.
+	// it with the host's read-gating membership key. That key is `memberPrivateKey`
+	// — the closed strand's secret the host provisions and returns over the
+	// formation protocol after consent (provision-then-record) — NOT
+	// `invitePrivateKey` (the initiator's own generated signing key, which is `''`
+	// on the manager's dial path and cannot authorize reads). A closed-strand
+	// `formStrand` always returns this key; its absence means the host strand was
+	// not closed or the responder provisioned none, so fail loudly rather than
+	// attach with a key that cannot read. Mirrors RN
+	// `joinClosedChatStrandFromFormation` (`reference-app-rn/src/chat-strand.ts`).
+	if (!result.memberPrivateKey) {
+		throw new Error(
+			'formStrand returned no membership key — the host strand is not closed or the ' +
+				'responder provisioned no member key; cannot attach a closed chat strand',
+		);
+	}
 	await openStores([result.strandId]);
 	await cadre.addStrand({
 		strandRow: {
 			Id: result.strandId,
-			MemberPrivateKey: result.invitePrivateKey,
+			MemberPrivateKey: result.memberPrivateKey,
 			Type: 'c',
 		},
 		sAppConfig: getChatSAppConfig(),
