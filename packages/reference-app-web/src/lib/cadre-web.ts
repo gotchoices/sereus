@@ -96,7 +96,12 @@ export interface RelayState {
 /** A strand this tab joined via the consent/invitation formation flow. */
 export interface FormedStrand {
 	strandId: string;
-	/** Member (peer) key minted for this strand membership. */
+	/**
+	 * The closed strand's read-gating membership key (`MemberPrivateKey`) this tab
+	 * attached with. Host and joiner record the **same** secret, so
+	 * {@link getFormedStrands} surfaces both sides symmetrically (e.g. an e2e
+	 * convergence check can assert the two memberKeys match).
+	 */
 	memberKey: string;
 	/** Membership type — formed strands are closed (`'c'`). */
 	type: 'o' | 'c';
@@ -570,7 +575,10 @@ export async function joinViaInvitation(
 
 	const formed: FormedStrand = {
 		strandId: result.strandId,
-		memberKey: result.memberKey,
+		// The read-gating membership key we attached with — the SAME secret the host
+		// published (provision-then-record), NOT `result.memberKey` (our own partyId,
+		// set on the manager's dial path). Keeps host/joiner `formedStrands` symmetric.
+		memberKey: result.memberPrivateKey,
 		type: 'c',
 	};
 	formedStrands.set(result.strandId, formed);
