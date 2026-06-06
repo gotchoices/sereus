@@ -531,6 +531,7 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 | `flows/3-round-trip.yaml` | Bidirectional: phone send seen by drone; drone send seen by phone; both visible |
 
 All three flows share `_setup.yaml` for the connect/seed/strand bootstrap.
+
 Under the secure-default seed-trust policy (`dbAnchoredTrustPolicy`), the cold
 phone would reject the drone's seed because the drone's authority key is not yet
 in its `AuthorityKey` table — a race against control-sync. To make the apply step
@@ -541,6 +542,7 @@ this as `enrollInvite`, the orchestrator threads it in as `ENROLL_INVITE`, and
 so the phone pins the drone authority out-of-band (`pinnedKeyTrustPolicy`) for
 that one apply. The success-modal title stays `"Seed applied"` (only the body
 text changes), so the assertion is unchanged.
+
 After the phone creates its strand, `_helpers/discover-phone-strand.js`
 polls the drone's `/status` endpoint to discover the strand the drone has
 joined via `strandFilter:all` control-network sync — drone-side inserts
