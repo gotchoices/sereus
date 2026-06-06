@@ -22,9 +22,7 @@ import {
   createChatStrand,
   joinChatStrand,
   createClosedChatStrand,
-  joinClosedChatStrand,
-  encodeClosedStrandInvite,
-  decodeClosedStrandInvite,
+  joinClosedChatStrandFromFormation,
   CHAT_SAPP_ID,
 } from './chat-strand';
 import { uuid } from './uuid';
@@ -58,13 +56,14 @@ export interface UseCadreResult {
   /** Create a new chat strand and return its instance */
   createStrand: (strandId: string) => Promise<StrandInstance>;
   /**
-   * Create a CLOSED chat strand, mint + publish a formation invite for it, and
-   * return the encoded invitation envelope to hand an invitee out-of-band.
+   * Create a CLOSED chat strand, mint + publish a formation invite bound to it,
+   * and return the encoded `OpenInvitation` to hand an invitee out-of-band.
    */
   createClosedStrandWithInvite: () => Promise<string>;
   /**
-   * Join a closed strand from an encoded invitation envelope: run the consent
-   * handshake (`formStrand`), then attach the host's closed strand.
+   * Join a closed strand from an encoded `OpenInvitation`: run the consent
+   * handshake (`formStrand`), then attach the host's closed strand using the
+   * strand id + membership key the result carries.
    */
   joinViaInvite: (encoded: string) => Promise<StrandInstance>;
 }
@@ -189,39 +188,43 @@ export function useCadreInternal(): UseCadreResult {
 
   // ── Closed-strand consent flow ─────────────────────────────────────────
 
-  // Host: create a closed strand, then mint + persist a formation invite for it.
-  // Both the OpenInvitation envelope and the persisted FormationInvite row are
-  // required — the envelope so the invitee can reach + attach the strand, the
-  // row so the host's recorder validates the token at redemption.
+  // Host: create a closed strand, then mint + persist a formation invite BOUND to
+  // that strand (the `strandId` option threads onto the FormationInvite row so the
+  // responder provisions the host's actual strand at redemption). The OpenInvitation
+  // alone is handed out — it carries the formation token + the host's bootstrap
+  // addrs; the strand id + membership key are delivered over the protocol after
+  // consent, no side-channel envelope.
   const createClosedStrandWithInvite = useCallback(async () => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     const strandId = uuid();
-    const { memberPrivateKey } = await createClosedChatStrand(current, strandId);
+    await createClosedChatStrand(current, strandId);
     const invitation = await createOpenInvitation(CHAT_SAPP_ID, INVITE_EXPIRY_MS);
     await publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
       expiresAtMs: invitation.expiration.getTime(),
+      strandId,
     });
-    const encoded = encodeClosedStrandInvite(current, { invitation, strandId, memberPrivateKey });
+    const encoded = current.encodeInvitation(invitation);
     refreshStrands();
     return encoded;
   }, [refreshStrands]);
 
-  // Invitee: decode the envelope, run the explicit consent handshake against the
-  // host (formStrand validates our disclosure + the token), then attach the
-  // host's closed strand locally (schema-gated). A failed handshake throws —
-  // joining a closed strand REQUIRES the host's consent and reachability.
+  // Invitee: decode the OpenInvitation, run the explicit consent handshake against
+  // the host (formStrand validates our disclosure + the token, and the host
+  // provisions + returns its strand id + membership key), then attach that closed
+  // strand locally (schema-gated). A failed handshake throws — joining a closed
+  // strand REQUIRES the host's consent and reachability.
   const joinViaInvite = useCallback(async (encoded: string) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    const invite = decodeClosedStrandInvite(current, encoded);
+    const invitation = current.decodeInvitation(encoded);
     const disclosure: StrandFormationDisclosure = {
       partyId: current.peerId?.toString(),
       purpose: 'join closed chat strand',
       metadata: { app: CHAT_SAPP_ID },
     };
-    await formStrand(invite.invitation, disclosure);
-    const instance = await joinClosedChatStrand(current, invite.strandId, invite.memberPrivateKey);
+    const formResult = await formStrand(invitation, disclosure);
+    const instance = await joinClosedChatStrandFromFormation(current, formResult);
     refreshStrands();
     return instance;
   }, [refreshStrands]);

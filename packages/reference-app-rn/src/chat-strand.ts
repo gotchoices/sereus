@@ -12,11 +12,9 @@ import type {
   StrandInstance,
   SAppConfig,
   StrandRow,
-  OpenInvitation,
   FormStrandResult,
 } from '@serfab/cadre-core';
 import { generateStrandMemberKey } from '@serfab/cadre-core';
-import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { insertMember, memberDisplayName, type ChatRole } from './chat-operations';
 
 // ── Embedded schema ──────────────────────────────────────────────────────────
@@ -201,12 +199,26 @@ export async function joinClosedChatStrand(
  * Attach the closed strand produced by {@link CadreNode.formStrand}. Thin
  * convenience over {@link joinClosedChatStrand} that reads the strand id +
  * membership key out of a {@link FormStrandResult}.
+ *
+ * Reads {@link FormStrandResult.memberPrivateKey} — the closed strand's
+ * read-gating secret the responder provisions and returns over the formation
+ * protocol after consent — NOT `invitePrivateKey` (the initiator's own generated
+ * signing key, which would not authorize reads). A closed-strand `formStrand`
+ * always returns this key; its absence means the host strand was not closed (or
+ * the responder provisioned none), so we fail loudly rather than attach with a
+ * key that cannot read.
  */
 export async function joinClosedChatStrandFromFormation(
   cadreNode: CadreNode,
   formResult: FormStrandResult,
 ): Promise<StrandInstance> {
-  return joinClosedChatStrand(cadreNode, formResult.strandId, formResult.invitePrivateKey);
+  if (!formResult.memberPrivateKey) {
+    throw new Error(
+      'formStrand returned no membership key — the host strand is not closed or the ' +
+        'responder provisioned no member key; cannot attach a closed chat strand',
+    );
+  }
+  return joinClosedChatStrand(cadreNode, formResult.strandId, formResult.memberPrivateKey);
 }
 
 /**
@@ -231,65 +243,4 @@ async function assignLocalMemberRole(
   } catch (err) {
     console.warn(`[chat-strand] failed to assign ${role} role:`, err);
   }
-}
-
-// ── Closed-strand invitation envelope ─────────────────────────────────────────
-
-/**
- * Out-of-band envelope a host hands an invitee to join a closed strand.
- *
- * The cadre-core {@link OpenInvitation} carries the formation token, sApp, and
- * the host's bootstrap addrs — but NOT which strand to attach or its membership
- * key, because in the canonical formation protocol the responder discloses the
- * strand only after validating consent. The reference app delivers those out of
- * band alongside the invitation (the same shape the integration harness's
- * `TestOpenInvitation` uses), so the invitee can attach the host's actual
- * closed strand after the consent handshake.
- */
-export interface ClosedStrandInvite {
-  /** The cadre-core open invitation (formation token + bootstrap + sApp). */
-  invitation: OpenInvitation;
-  /** The host's closed strand id to attach. */
-  strandId: string;
-  /** The membership key gating the closed strand. */
-  memberPrivateKey: string;
-}
-
-/**
- * Encode a {@link ClosedStrandInvite} to a single copyable base64url string for
- * out-of-band delivery (paste, link, or QR). The inner {@link OpenInvitation}
- * is serialized via {@link CadreNode.encodeInvitation}; the envelope wraps that
- * with the strand id + membership key.
- */
-export function encodeClosedStrandInvite(cadreNode: CadreNode, invite: ClosedStrandInvite): string {
-  const envelope = {
-    v: 1,
-    inviteCode: cadreNode.encodeInvitation(invite.invitation),
-    strandId: invite.strandId,
-    memberPrivateKey: invite.memberPrivateKey,
-  };
-  const json = JSON.stringify(envelope);
-  return uint8ArrayToString(new TextEncoder().encode(json), 'base64url');
-}
-
-/**
- * Decode a base64url {@link ClosedStrandInvite} produced by
- * {@link encodeClosedStrandInvite}. Throws on a malformed envelope rather than
- * returning a partial object.
- */
-export function decodeClosedStrandInvite(cadreNode: CadreNode, encoded: string): ClosedStrandInvite {
-  const json = new TextDecoder().decode(uint8ArrayFromString(encoded.trim(), 'base64url'));
-  const env = JSON.parse(json) as {
-    inviteCode?: string;
-    strandId?: string;
-    memberPrivateKey?: string;
-  };
-  if (!env.inviteCode || !env.strandId || !env.memberPrivateKey) {
-    throw new Error('Malformed closed-strand invite (missing inviteCode/strandId/memberPrivateKey)');
-  }
-  return {
-    invitation: cadreNode.decodeInvitation(env.inviteCode),
-    strandId: env.strandId,
-    memberPrivateKey: env.memberPrivateKey,
-  };
 }

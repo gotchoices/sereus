@@ -167,25 +167,30 @@ through an explicit host→invitee consent handshake. The Settings screen's
    - mints a `MemberPrivateKey` and creates a closed strand
      (`publishStrand(id, 'c', memberKey)` + local `addStrand` with `Type:'c'`),
    - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`) and
-     **persists** the matching `FormationInvite` row under the host's authority
-     (`publishFormationInvite`) so the token is redeemable,
-   - shows a single copyable, base64url-encoded invitation envelope (carrying
-     the `OpenInvitation`, the strand id, and the membership key) for out-of-band
-     delivery (paste / link / QR).
+     **persists** the matching `FormationInvite` row under the host's authority,
+     **bound to that strand** (`publishFormationInvite(token, sApp, { strandId })`),
+     so the token is redeemable and the responder knows which strand to provision,
+   - shows a single copyable, base64url-encoded `OpenInvitation` code
+     (`encodeInvitation`) for out-of-band delivery (paste / link / QR). The strand
+     id and membership key are **not** in this code — they travel back over the
+     formation protocol after consent.
 
-2. **Invitee consent.** *"Join via Invite"* decodes the envelope and calls
-   `formStrand(invitation, disclosure)` — the explicit consent step. The
-   `disclosure` carries the invitee's `partyId` + `purpose`; the host's responder
-   validates the formation token (via a `ControlFormationUsageRecorder` backed by
-   the live `FormationInvite`/`FormationUsage` tables) before the join proceeds.
-   The handshake **requires the host reachable** (over a relay/drone), so it
-   correctly fails on a single device with no peer — you cannot join a closed
-   strand without the host's consent.
+2. **Invitee consent.** *"Join via Invite"* decodes the `OpenInvitation`
+   (`decodeInvitation`) and calls `formStrand(invitation, disclosure)` — the
+   explicit consent step. The `disclosure` carries the invitee's `partyId` +
+   `purpose`; the host's responder validates the formation token (via a
+   `ControlFormationUsageRecorder` backed by the live
+   `FormationInvite`/`FormationUsage` tables), writes the `FormationUsage` consent
+   row against the bound strand, and returns the host's real strand id + membership
+   key in the `FormStrandResult`. The handshake **requires the host reachable**
+   (over a relay/drone), so it correctly fails on a single device with no peer —
+   you cannot join a closed strand without the host's consent.
 
 3. **Schema-gated join.** After consent, the invitee attaches the host's closed
-   strand by id + membership key under the chat `sAppConfig`. The strand's DDL is
-   the chat schema, so bring-up is gated by schema verification — not an open
-   free-for-all.
+   strand using the id + membership key the `FormStrandResult` now carries
+   (`joinClosedChatStrandFromFormation`), under the chat `sAppConfig`. The strand's
+   DDL is the chat schema, so bring-up is gated by schema verification — not an
+   open free-for-all.
 
 4. **Role assignment.** The creator is assigned the app-level role `owner`; a
    joiner is assigned `member` (the `Member.Role` column in the chat schema).
@@ -199,17 +204,18 @@ through an explicit host→invitee consent handshake. The Settings screen's
   the control network. Fine-grained strand RBAC as a cadre-core primitive is not
   yet implemented.
 
-- **The on-the-wire consent handshake is partially wired in cadre-core.** The
-  DB-level consent path (`insertFormationInvite` / `recordFormationUsage` /
+- **The on-the-wire consent handshake is wired in cadre-core.** The DB-level
+  consent path (`insertFormationInvite` / `recordFormationUsage` /
   `redeemInvitation`) is functional and exercised by the integration harness, and
-  the host's `formStrand` responder validates the invite **token**. But the
-  formation *protocol* does not yet thread the redeemed token to a provisioner nor
-  write the `FormationUsage` consent record over libp2p, and `OpenInvitation`
-  carries no strand id — which is why this app delivers the strand id + membership
-  key in an out-of-band envelope alongside the invitation. Closing that gap (so a
-  pure `formStrand` round-trip records consent and returns the host's strand) is
-  a tracked cadre-core follow-up
-  (`formstrand-protocol-thread-consent-and-provision`).
+  a pure `formStrand` round-trip now closes the loop over libp2p: binding the
+  invite to a host strand (`publishFormationInvite(..., { strandId })`) lets the
+  responder resolve that strand, write the `FormationUsage` consent record against
+  it, and return the host's real strand id + membership key in the
+  `FormStrandResult` (provision-then-record). That is why this app hands out a
+  single `encodeInvitation` code with **no** side-channel envelope — the strand id
+  and membership key are delivered by the protocol after consent, not pasted
+  alongside the invitation. (This closed the former gap tracked as
+  `formstrand-protocol-thread-consent-and-provision`.)
 
 - **Two-device only.** The full handshake needs the host and invitee on separate,
   mutually reachable nodes; it cannot be exercised on a single device.

@@ -132,10 +132,12 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
  * closed-strand flow.
  *
  * Fail-soft: a wiring failure is logged, not thrown — minting/joining surfaces
- * the real error later. NOTE: this wires only the responder's token-validation
- * gate; the formation protocol does not yet thread the redeemed token to a
- * provisioner nor write the `FormationUsage` consent record on the wire (a
- * cadre-core follow-up — see the README "Trust model" section).
+ * the real error later. On a successful `formStrand`, the responder now both
+ * provisions the bound host strand and writes its `FormationUsage` consent
+ * record over libp2p (the recorder threads the redeemed token through to
+ * `redeemInvitation`), and returns the host's real strand id + membership key in
+ * the `FormStrandResult` — so the invite is a single `OpenInvitation` with no
+ * side-channel envelope. See the README "Trust model" section.
  */
 function initializeFormationResponder(cadre: CadreNode): void {
   try {
@@ -267,11 +269,15 @@ export async function createOpenInvitation(
  * Persist the authority-signed `FormationInvite` row backing a minted
  * invitation token, so a later redemption validates. Thin pass-through to
  * {@link CadreNode.publishFormationInvite}.
+ *
+ * `strandId` binds the invite to a pre-existing host strand so a redeeming
+ * `formStrand` provisions THAT strand (provision-then-record) and returns its
+ * membership key, rather than the responder minting a fresh one.
  */
 export async function publishFormationInvite(
   token: string,
   sAppId: string,
-  options?: { expiresAtMs?: number; totalUses?: number; validationUrl?: string },
+  options?: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string },
 ): Promise<void> {
   if (!node) throw new Error('Phone node not started');
   return node.publishFormationInvite(token, sAppId, options);
