@@ -131,6 +131,10 @@ export interface SeedBootstrapConfig {
    * keys (NOT the seed body). Defaults to `dbAnchoredTrustPolicy()`, which
    * rejects any signer not already in the `AuthorityKey` table. An enrollment
    * caller can pass a per-seed override to `applySeed` instead.
+   *
+   * A `CadreNode` forwards its node-wide `CadreNodeConfig.seedTrustPolicy` here
+   * — that is the only seam the inbound libp2p seed-protocol handler can use,
+   * since a network-delivered seed has no per-call override.
    */
   trustPolicy?: SeedTrustPolicy;
 }

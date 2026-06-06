@@ -1,6 +1,7 @@
 import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { StrandDatabase } from './strand-database.js';
+import type { SeedTrustPolicy } from './seed-trust-policy.js';
 
 /**
  * Node profile determines storage participation
@@ -229,6 +230,19 @@ export interface CadreNodeConfig {
    * for dev/test where unsigned demo schemas are used.
    */
   requireSignedSchemas?: boolean;
+
+  /**
+   * Node-wide default trust anchor for INBOUND control-network seeds. Forwarded
+   * into every SeedBootstrapService this node constructs (authority, receive-only
+   * listener, and the temp service used by applySeed when no service exists), and
+   * used as the service-level default the libp2p seed-protocol handler relies on
+   * (that path has no per-call override seam). Defaults to dbAnchoredTrustPolicy()
+   * inside SeedBootstrapService when unset — a cold-start node then rejects every
+   * seed. A per-call `applySeed(seed, { trustPolicy })` override still wins over
+   * this default for callers that hold out-of-band material (e.g. a pinned key
+   * from a CadreInvite).
+   */
+  seedTrustPolicy?: SeedTrustPolicy;
 }
 
 /**

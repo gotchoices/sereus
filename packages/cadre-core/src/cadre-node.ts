@@ -1151,6 +1151,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       authorityPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
+      trustPolicy: this.config.seedTrustPolicy,
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -1252,6 +1253,7 @@ export class CadreNode implements SAppIdLookup {
       partyId: this.config.controlNetwork.partyId,
       // No authority key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
+      trustPolicy: this.config.seedTrustPolicy,
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -1323,9 +1325,13 @@ export class CadreNode implements SAppIdLookup {
     options?: { trustPolicy?: SeedTrustPolicy }
   ): Promise<ApplySeedResult> {
     if (!this.seedBootstrapService) {
-      // Create a temporary service for applying seeds (doesn't need authority key)
+      // Create a temporary service for applying seeds (doesn't need authority key).
+      // partyId is the attacker-influenced seed.partyId — it only labels logs; the
+      // trust decision rests solely on signerKey vs the anchor set (configured
+      // default below, or the per-call options.trustPolicy override).
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
+        trustPolicy: this.config.seedTrustPolicy,
       });
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase);
