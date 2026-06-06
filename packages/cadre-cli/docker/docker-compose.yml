@@ -55,6 +55,12 @@ services:
       # <token>); leave it unset to keep the health port read-only. See env.example.
       - CADRE_SEED_TOKEN=${CADRE_SEED_TOKEN:-}
 
+      # Seed trust anchor (independent of the bearer above). Comma-separated
+      # base64url authority keys pinned for cold-start trust. A cold node REJECTS
+      # every seed unless its signer is pinned here or already DB-known. Leave
+      # unset on an enrolled node (DB-anchored trust applies). See env.example.
+      - CADRE_AUTHORITY_KEYS=${CADRE_AUTHORITY_KEYS:-}
+
     ports:
       # libp2p network port — the only port that needs to reach the public internet.
       - "${HOST_P2P_PORT:-4001}:4001/tcp"

@@ -1,6 +1,24 @@
 import { describe, it, expect } from 'vitest';
 import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
-import { collectPinnedAuthorityKeys } from '../src/commands/start.js';
+import { collectPinnedAuthorityKeys, startCommand } from '../src/commands/start.js';
+
+describe('--pin-authority-key option wiring', () => {
+  // Exercises the actual registered commander option (not a stand-in), so the
+  // repeatable-flag contract the action depends on is locked: the option exists,
+  // defaults to [], and its collector accumulates each occurrence into the array
+  // that `options.pinAuthorityKey` later hands to collectPinnedAuthorityKeys.
+  const option = startCommand.options.find(o => o.long === '--pin-authority-key');
+
+  it('is registered with an empty-array default', () => {
+    expect(option).toBeDefined();
+    expect(option?.defaultValue).toEqual([]);
+  });
+
+  it('accumulates repeated occurrences via its collector', () => {
+    const parseArg = option?.parseArg as (value: string, previous: string[]) => string[];
+    expect(parseArg('keyB', parseArg('keyA', []))).toEqual(['keyA', 'keyB']);
+  });
+});
 
 describe('collectPinnedAuthorityKeys', () => {
   it('returns flag keys when no env is set', () => {
