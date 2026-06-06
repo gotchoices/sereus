@@ -6,6 +6,7 @@
  */
 
 import { useEffect, useRef, useState, useCallback } from 'react';
+import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { CadreNode } from '@serfab/cadre-core';
 import type { StrandInstance, CadreNodeEvents, StrandFormationDisclosure } from '@serfab/cadre-core';
 import {
@@ -49,8 +50,10 @@ export interface UseCadreResult {
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
   stop: () => Promise<void>;
-  /** Apply a base64url-encoded seed string */
-  applySeed: (encoded: string) => Promise<void>;
+  /** Apply a base64url-encoded seed, optionally pinning authority keys (e.g. from a CadreInvite). */
+  applySeed: (encoded: string, pinnedAuthorityKeys?: string[]) => Promise<void>;
+  /** Decode a pasted base64url CadreInvite and return its pinned authority keys (empty if none). */
+  authorityKeysFromInvite: (encodedInvite: string) => string[];
   /** Dial a peer by multiaddr while already connected */
   dialPeer: (addr: string) => Promise<void>;
   /** Create a new chat strand and return its instance */
@@ -164,14 +167,27 @@ export function useCadreInternal(): UseCadreResult {
     setStatus('idle');
   }, []);
 
-  const applySeed = useCallback(async (encoded: string) => {
+  const applySeed = useCallback(async (encoded: string, pinnedAuthorityKeys?: string[]) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     const seed = current.decodeSeed(encoded);
-    const result = await current.applySeed(seed);
+    const trustPolicy = pinnedAuthorityKeys?.length
+      ? pinnedKeyTrustPolicy(pinnedAuthorityKeys)
+      : undefined;
+    const result = await current.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
     if (!result.success) {
       throw new Error(result.error ?? 'Seed application failed');
     }
+  }, []);
+
+  // Decode a pasted CadreInvite and surface its pinned authority keys so the
+  // caller can anchor a cold-start seed against `pinnedKeyTrustPolicy`. An older
+  // invite without `authorityKeys` yields `[]` (no pin). Guard ordering matches
+  // `applySeed`: throw 'Node not started' before touching the node.
+  const authorityKeysFromInvite = useCallback((encodedInvite: string): string[] => {
+    const current = nodeRef.current;
+    if (!current) throw new Error('Node not started');
+    return current.decodeInvite(encodedInvite).authorityKeys ?? [];
   }, []);
 
   const dialPeer = useCallback(async (addr: string) => {
@@ -231,7 +247,7 @@ export function useCadreInternal(): UseCadreResult {
 
   return {
     status, node, peerId, strands, error,
-    start, stop, applySeed, dialPeer, createStrand,
+    start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };
 }

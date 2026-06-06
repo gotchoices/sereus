@@ -22,6 +22,7 @@ export default function SettingsScreen() {
   const [partyId, setPartyId] = useState('');
   const [bootstrapAddr, setBootstrapAddr] = useState('');
   const [seedInput, setSeedInput] = useState('');
+  const [enrollInviteInput, setEnrollInviteInput] = useState('');
   const [peerAddr, setPeerAddr] = useState('');
   const [inviteInput, setInviteInput] = useState('');
   const [modal, setModal] = useState<{ title: string; message: string } | null>(null);
@@ -49,13 +50,28 @@ export default function SettingsScreen() {
 
   // ── Seed ───────────────────────────────────────────────────────────────
 
+  // Apply a cold-start seed, optionally anchoring trust on the authority keys
+  // carried by a pasted CadreInvite. A cold node has no foreign authority key in
+  // its AuthorityKey table, so the secure default rejects a seed signed by
+  // another cadre; pinning the invite's keys lets the first seed through. An
+  // empty/older invite yields no pins — the alert says so rather than implying a
+  // pin succeeded.
   const handleApplySeed = async () => {
     const seed = seedInput.trim();
     if (!seed) return;
     try {
-      await cadre.applySeed(seed);
+      const pins = enrollInviteInput.trim()
+        ? cadre.authorityKeysFromInvite(enrollInviteInput.trim())
+        : undefined;
+      await cadre.applySeed(seed, pins);
       setSeedInput('');
-      showAlert('Seed applied', 'Peer cache updated');
+      setEnrollInviteInput('');
+      showAlert(
+        'Seed applied',
+        pins?.length
+          ? `Pinned ${pins.length} authority key(s); peer cache updated`
+          : 'Peer cache updated (no authority keys pinned)',
+      );
     } catch (err) {
       showAlert('Seed failed', String(err));
     }
@@ -147,6 +163,13 @@ export default function SettingsScreen() {
       {connected && (
         <Section title="Seed Bootstrap">
           <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
+          <Text style={styles.hint}>
+            Optional: paste an enrollment invite (CadreInvite) to pin its
+            authority keys as the trust anchor for this seed. A cold node rejects
+            a seed signed by another cadre unless its key is pinned. Distinct from
+            the closed-strand "Paste invite" below.
+          </Text>
+          <LabelledInput label="Paste enrollment invite (for trust)" value={enrollInviteInput} onChangeText={setEnrollInviteInput} placeholder="base64url CadreInvite (optional)" multiline testID={TEST_IDS.settings.enrollInviteInput} />
           <Btn label="Apply Seed" onPress={handleApplySeed} disabled={!seedInput.trim()} testID={TEST_IDS.settings.applySeedBtn} />
         </Section>
       )}
