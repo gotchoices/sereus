@@ -64,7 +64,47 @@ function parseEnvValue(envVar: string, value: string): unknown {
   if (envVar.includes('_ENABLED') || envVar.includes('_RELAY')) {
     return value.toLowerCase() === 'true' || value === '1';
   }
+  // The strand filter may be a scalar (`all`/`none`) or a JSON object form,
+  // so it needs dedicated parsing rather than passing the raw string through.
+  if (envVar === 'CADRE_STRAND_FILTER') {
+    return parseStrandFilterEnv(value);
+  }
   return value;
+}
+
+/**
+ * Parse the `CADRE_STRAND_FILTER` environment value into the shape
+ * {@link parseStrandFilter} expects.
+ *
+ * Bare `all`/`none` (case-insensitive, trimmed) are kept as scalar strings. An
+ * empty value (e.g. the `CADRE_STRAND_FILTER=` default that docker-compose
+ * passes) is treated as `all`. Object filters must be supplied as **JSON** —
+ * e.g. `{"sAppId":"myapp"}` or `{"strandId":"<id>"}` — mirroring the explicit
+ * encoding precedent of the `_NODES`/`_ADDRS` vars. A `{`-leading value that
+ * fails to parse throws, rather than degrading to a raw string that
+ * {@link parseStrandFilter} would later reject.
+ */
+function parseStrandFilterEnv(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed === '') return 'all';
+
+  const lower = trimmed.toLowerCase();
+  if (lower === 'all' || lower === 'none') return lower;
+
+  try {
+    return JSON.parse(trimmed);
+  } catch (err) {
+    if (trimmed.startsWith('{')) {
+      throw new Error(
+        `Invalid CADRE_STRAND_FILTER ${JSON.stringify(value)}: expected JSON object ` +
+        `(e.g. {"sAppId":"myapp"} or {"strandId":"<id>"})`,
+        { cause: err },
+      );
+    }
+    // Any other unrecognized scalar passes through for parseStrandFilter to
+    // reject loudly with the full list of accepted forms.
+    return trimmed;
+  }
 }
 
 function setNestedValue(obj: Record<string, unknown>, pathStr: string, value: unknown): void {
@@ -123,16 +163,38 @@ export function loadProtobufPrivateKey(keyPath: string): PrivateKey {
 }
 
 /**
- * Parse strand filter from config format to StrandFilter type
+ * Parse a strand filter (from a config file or an env override) into a
+ * {@link StrandFilter}.
+ *
+ * This is the single validation point for both env-driven and file-loaded
+ * configs, so it takes `unknown`: env overrides inject already-parsed JSON
+ * ahead of the narrow {@link CliConfigFile} type. Accepted forms are `all`,
+ * `none`, `{ sAppId }`, and `{ strandId }` (each object carrying exactly one
+ * discriminant with a non-empty string value). Anything else throws — a
+ * misconfigured node must refuse to start rather than silently over-subscribe
+ * to every strand.
  */
-export function parseStrandFilter(filter: CliConfigFile['strandFilter']): StrandFilter {
-  if (!filter || filter === 'all') return { mode: 'all' };
+export function parseStrandFilter(filter: unknown): StrandFilter {
+  if (filter === undefined || filter === null || filter === 'all') return { mode: 'all' };
   if (filter === 'none') return { mode: 'none' };
   if (typeof filter === 'object') {
-    if ('sAppId' in filter) return { mode: 'sAppId', sAppId: filter.sAppId };
-    if ('strandId' in filter) return { mode: 'strandId', strandId: filter.strandId };
+    const obj = filter as Record<string, unknown>;
+    const sAppId = obj.sAppId;
+    const strandId = obj.strandId;
+    const hasSAppId = sAppId !== undefined;
+    const hasStrandId = strandId !== undefined;
+    if (hasSAppId && !hasStrandId && typeof sAppId === 'string' && sAppId.length > 0) {
+      return { mode: 'sAppId', sAppId };
+    }
+    if (hasStrandId && !hasSAppId && typeof strandId === 'string' && strandId.length > 0) {
+      return { mode: 'strandId', strandId };
+    }
   }
-  return { mode: 'all' };
+  throw new Error(
+    `Invalid strandFilter ${JSON.stringify(filter)}: expected "all", "none", ` +
+    `{"sAppId":"..."}, or {"strandId":"..."} (object forms carry exactly one ` +
+    `non-empty string discriminant)`,
+  );
 }
 
 /**

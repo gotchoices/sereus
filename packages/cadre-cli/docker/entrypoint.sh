@@ -90,7 +90,13 @@ hibernation:
 strandWatchInterval: ${CADRE_STRAND_WATCH_INTERVAL:-5000}
 EOF
 
-  # Add strand filter if specified
+  # Add strand filter if specified.
+  # Accepts bare `all`/`none`, or a JSON object for the sApp/strand forms, e.g.
+  # CADRE_STRAND_FILTER='{"sAppId":"myapp"}' or '{"strandId":"<id>"}'. JSON
+  # object syntax is valid YAML flow, so the verbatim write below stays
+  # parseable. The env override is the authoritative source at startup (the CLI
+  # re-applies CADRE_STRAND_FILTER over the loaded config), so this write only
+  # mirrors the effective config into the file for debugging.
   if [ -n "$CADRE_STRAND_FILTER" ]; then
     echo "" >> "$CADRE_CONFIG_FILE"
     echo "strandFilter: $CADRE_STRAND_FILTER" >> "$CADRE_CONFIG_FILE"
