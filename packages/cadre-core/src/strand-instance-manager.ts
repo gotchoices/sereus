@@ -1,7 +1,6 @@
 import debug from 'debug';
-import type { Libp2p, PrivateKey } from '@libp2p/interface';
+import type { PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import type { IRepo } from '@optimystic/db-core';
 import { StrandDatabase } from './strand-database.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import type {
@@ -14,16 +13,9 @@ import type {
   SAppConfig,
   SAppInfo,
   RawStorageProvider,
-  StrandMode
+  StrandMode,
+  Libp2pNodeWithRepo
 } from './types.js';
-
-/**
- * Extended Libp2p node with coordinatedRepo attached by createLibp2pNode.
- * The db-p2p createLibp2pNode function attaches these properties after node creation.
- */
-interface Libp2pNodeWithRepo extends Libp2p {
-  coordinatedRepo: IRepo;
-}
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');

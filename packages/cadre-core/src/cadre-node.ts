@@ -2,7 +2,6 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import { createLibp2pNode } from '@optimystic/db-p2p';
-import type { IRepo } from '@optimystic/db-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -24,7 +23,8 @@ import type {
   StrandFormationDisclosure,
   StrandMode,
   ResolveOpts,
-  SelfRegistrationOutcome
+  SelfRegistrationOutcome,
+  Libp2pNodeWithRepo
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
@@ -63,11 +63,6 @@ const log = debug('sereus:cadre:node');
 const timing = debug('sereus:cadre:timing');
 
 type EventHandler<T> = (data: T) => void;
-
-/** Libp2p node with the coordinatedRepo attached by createLibp2pNode. */
-interface Libp2pNodeWithRepo extends Libp2p {
-  coordinatedRepo: IRepo;
-}
 
 /**
  * CadreNode is the main entry point for a cadre member.

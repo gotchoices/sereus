@@ -1,7 +1,16 @@
 import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
+import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
+
+/**
+ * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
+ * createLibp2pNode after node creation (not surfaced on the base Libp2p type).
+ */
+export interface Libp2pNodeWithRepo extends Libp2p {
+  coordinatedRepo: IRepo;
+}
 
 /**
  * Node profile determines storage participation
