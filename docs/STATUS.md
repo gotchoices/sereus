@@ -275,16 +275,19 @@ workspaces (TS, JS tooling, and Svelte UIs via `eslint-plugin-svelte`). `yarn li
 auto-fixable subset.
 
 - [x] `eslint.config.mjs` encodes the AGENTS.md style rules; the gate exits 0 on a clean checkout.
-- Rules at **`error`** (codebase already compliant or trivially fixed): `no-floating-promises`
+- Rules at **`error`** (codebase already compliant, trivially fixed, or backlog burned down): `no-floating-promises`
   (type-aware, `packages/*/src` only — the AGENTS.md "`void` unused promises" rule), `no-require-imports`
   (ES-modules; one intentional cross-platform `require` in `control-database.ts` is `eslint-disable`d with
-  rationale), `no-case-declarations`.
+  rationale), `no-case-declarations`, `no-unused-vars` (honors the `_`-prefix convention),
+  `consistent-type-imports`, `no-empty` (empty catch). Plus eslint-10 recommended additions that are **not**
+  AGENTS.md rules: `prefer-const`, `preserve-caught-error`, `no-useless-assignment`, `no-control-regex`
+  (one deliberate control-char guard in `update/apply.ts` is `eslint-disable`d with rationale). The
+  mechanical backlog for these was burned down in `lint-cleanup-mechanical`; `preserve-caught-error`'s
+  `new Error(msg, { cause })` fix required bumping `lib` to `ES2022` (target unchanged at `ES2020`) in
+  `cadre-core`/`cadre-host` tsconfigs.
 - Rules at **`warn`** (real pre-existing backlog — surfaced, non-blocking, cleanup deferred): `no-explicit-any`
-  (~67), `no-unused-vars` (~30, honors the `_`-prefix convention), `consistent-type-imports`,
-  `no-empty` (empty catch). Plus eslint-10 recommended additions that are **not** AGENTS.md rules and carry
-  their own backlog: `prefer-const`, `preserve-caught-error`, `no-useless-assignment`, `no-control-regex`,
-  `svelte/no-at-html-tags`, `svelte/prefer-svelte-reactivity`. Burning these down is a follow-up
-  (`build-health-lint-warning-cleanup`).
+  (~68, tracked in `lint-cleanup-no-explicit-any`) and the svelte rules `svelte/no-at-html-tags` /
+  `svelte/prefer-svelte-reactivity` (tracked in `lint-cleanup-svelte`).
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
   template literals), and the "no runtime inline `import()`" rule (no clean ESLint rule;
   `consistent-type-imports` only covers type-position imports). Tab indentation is left to `.editorconfig`,
