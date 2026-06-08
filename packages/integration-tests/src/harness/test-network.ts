@@ -17,8 +17,7 @@ import type {
   TestStrand,
   TestOpenInvitation,
   CreatePartyOptions,
-  CreateStrandOptions,
-  QueryResult
+  CreateStrandOptions
 } from './types.js';
 
 /**

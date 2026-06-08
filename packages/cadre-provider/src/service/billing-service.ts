@@ -3,7 +3,7 @@
  */
 
 import debug from 'debug';
-import type { Container, UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
+import type { UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
 import { fetchContainerHealthStatus } from './container-health.js';

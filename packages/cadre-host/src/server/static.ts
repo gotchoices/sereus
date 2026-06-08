@@ -17,9 +17,6 @@ import { dirname, extname, isAbsolute, join, normalize, relative, resolve, sep }
 import { fileURLToPath } from 'node:url';
 
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
-import debug from 'debug';
-
-const log = debug('cadre:host:static');
 
 const MIME_TYPES: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',

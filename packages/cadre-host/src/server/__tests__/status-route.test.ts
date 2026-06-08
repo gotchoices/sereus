@@ -1,5 +1,5 @@
 import Fastify from 'fastify';
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, afterEach } from 'vitest';
 
 import { registerErrorHandler } from '../error-handler.js';
 import { registerStatusRoute } from '../routes/status.js';

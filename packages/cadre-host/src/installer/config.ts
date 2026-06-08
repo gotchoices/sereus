@@ -75,7 +75,7 @@ export function readHostConfig(filePath: string): HostConfigFile {
   try {
     parsed = JSON.parse(raw);
   } catch (err) {
-    throw new Error(`Failed to parse host.config.json at ${filePath}: ${(err as Error).message}`);
+    throw new Error(`Failed to parse host.config.json at ${filePath}: ${(err as Error).message}`, { cause: err });
   }
   if (!parsed || typeof parsed !== 'object') {
     throw new Error(`host.config.json at ${filePath} is not a JSON object`);

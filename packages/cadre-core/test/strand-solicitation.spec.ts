@@ -12,10 +12,6 @@ import {
   type FormationResponseValidator,
   type StrandProvisioner
 } from '../src/strand-solicitation.js';
-import {
-  StrandFormationManager,
-  createStrandFormationManager
-} from '../src/strand-formation-manager.js';
 import type { StrandFormationDisclosure, OpenInvitation } from '../src/types.js';
 
 // Helper to create libp2p nodes with proper keys for Noise
@@ -206,14 +202,14 @@ describe('StrandFormationManager Integration', () => {
   });
 
   afterEach(async () => {
-    try { await nodeA?.stop(); } catch {}
-    try { await nodeB?.stop(); } catch {}
+    try { await nodeA?.stop(); } catch { /* best-effort teardown */ }
+    try { await nodeB?.stop(); } catch { /* best-effort teardown */ }
   });
 
   it('should form strand via real protocol', async () => {
     // Create mock provisioner that returns a strand
     const mockProvisioner: StrandProvisioner = {
-      provisionStrand: async (sAppId, initiatorKey, responderKey) => ({
+      provisionStrand: async () => ({
         strandId: `strand-${Date.now()}-test`
       })
     };
@@ -276,7 +272,7 @@ describe('StrandFormationManager Integration', () => {
     const mockRecorder: FormationUsageRecorder = {
       recordUsage: async () => {},
       isTokenUsed: async () => false,
-      isTokenValid: async (token) => ({ valid: true })
+      isTokenValid: async () => ({ valid: true })
     };
 
     const responderService = new StrandSolicitationService({
@@ -363,8 +359,8 @@ describe('StrandFormationManager transport: real disclosure + result validation'
   });
 
   afterEach(async () => {
-    try { await nodeA?.stop(); } catch {}
-    try { await nodeB?.stop(); } catch {}
+    try { await nodeA?.stop(); } catch { /* best-effort teardown */ }
+    try { await nodeB?.stop(); } catch { /* best-effort teardown */ }
   });
 
   it('transmits the real token and disclosure to the responder', async () => {

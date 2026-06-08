@@ -83,6 +83,6 @@ function run(cmd: string, args: string[]): void {
   try {
     execFileSync(cmd, args, { stdio: 'inherit' });
   } catch (err) {
-    throw new Error(`${cmd} ${args.join(' ')} failed: ${(err as Error).message}`);
+    throw new Error(`${cmd} ${args.join(' ')} failed: ${(err as Error).message}`, { cause: err });
   }
 }

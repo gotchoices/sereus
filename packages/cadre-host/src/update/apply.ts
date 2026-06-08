@@ -170,6 +170,9 @@ export function buildNpmSpawnSpec(args: string[]): { command: string; args: stri
 
 /** cmd.exe quoting — wrap args containing whitespace or shell metachars. */
 export function quoteWindowsArg(arg: string): string {
+  // \x00 is an intentional security guard: reject NUL/CR/LF in args before they
+  // reach the cmd.exe command line. The control char is the point of the check.
+  // eslint-disable-next-line no-control-regex
   if (/[\x00\r\n]/.test(arg)) {
     throw new Error('refusing to spawn npm with control character in argument');
   }

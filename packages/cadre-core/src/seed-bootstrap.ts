@@ -1,9 +1,8 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { Libp2p, PeerId, Connection } from '@libp2p/interface';
+import type { Libp2p, Connection } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
-import type { Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
 
 /**

@@ -11,7 +11,6 @@
 
 import { existsSync, mkdirSync, readFileSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
-import { join } from 'node:path';
 import debug from 'debug';
 
 import { NatStore } from '../nat/index.js';

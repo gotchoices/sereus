@@ -377,7 +377,6 @@ describe('HibernationManager', () => {
     });
 
     it('a check-in that wakes the strand resets backoff to base on the next hibernation', async () => {
-      let manager!: HibernationManager;
       const hibTimes: number[] = [];
       const checkInTimes: number[] = [];
       let wakeThisCheckIn = false;
@@ -399,7 +398,7 @@ describe('HibernationManager', () => {
         })
       };
 
-      manager = new HibernationManager(FAST_BACKOFF, callbacks);
+      const manager = new HibernationManager(FAST_BACKOFF, callbacks);
       manager.start();
       manager.trackStrand(instance);
 

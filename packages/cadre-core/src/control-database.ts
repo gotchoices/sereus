@@ -227,7 +227,8 @@ export class ControlDatabase {
           schemaContent = await fs.readFile(this.config.schemaPath, 'utf-8');
         } catch (error) {
           throw new Error(
-            `Failed to load schema from ${this.config.schemaPath}: ${error instanceof Error ? error.message : String(error)}`
+            `Failed to load schema from ${this.config.schemaPath}: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error }
           );
         }
       } else {

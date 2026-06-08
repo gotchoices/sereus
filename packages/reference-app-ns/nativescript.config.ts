@@ -1,4 +1,4 @@
-import { NativeScriptConfig } from '@nativescript/core';
+import type { NativeScriptConfig } from '@nativescript/core';
 
 export default {
 	id: 'org.gotchoices.sereus.chat.ns',

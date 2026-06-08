@@ -119,7 +119,7 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
       // Surface the child log to make a startup failure debuggable in CI.
       let log = '';
       try { log = await orchestrator.getLogs(node.dockerId, 200); } catch { /* ignore */ }
-      throw new Error(`authority node never became ready: ${(err as Error).message}\n--- node.log ---\n${log}`);
+      throw new Error(`authority node never became ready: ${(err as Error).message}\n--- node.log ---\n${log}`, { cause: err });
     }
   }, STARTUP_MS + 10_000);
 

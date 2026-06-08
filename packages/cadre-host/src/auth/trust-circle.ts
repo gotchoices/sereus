@@ -256,7 +256,7 @@ export class TrustCircleService {
     // Consult the control DB over the admin channel. A node-unavailable error
     // is non-fatal — fall back to the local labels rather than 503-ing a
     // read-only listing.
-    let controlMembers: Array<{ peerId: string }> | null = null;
+    let controlMembers: Array<{ peerId: string }> | null;
     try {
       controlMembers = await this.cadreNode.listMembers();
     } catch (err) {

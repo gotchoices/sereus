@@ -735,6 +735,7 @@ function resolveCadreCliBin(): string {
       `Unable to resolve @serfab/cadre-cli bin from cadre-host. ` +
       `Ensure cadre-cli is built (yarn workspace @serfab/cadre-cli build) ` +
       `and listed as a dependency. Underlying error: ${(err as Error).message}`,
+      { cause: err },
     );
   }
 }
@@ -757,7 +758,7 @@ function tokenMatches(workdir: string, expected: string): boolean {
  */
 function maybeRotateAtSpawn(logPath: string, maxBytes: number, maxFiles: number): void {
   if (maxBytes <= 0 || maxFiles < 1) return;
-  let size = 0;
+  let size: number;
   try {
     size = statSync(logPath).size;
   } catch {

@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import { generatePrivateKey, getPublicKey, digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
@@ -22,8 +22,6 @@ import type {
   SeedMessage,
   SeedAckMessage,
   CadreInvite,
-  AddDroneOptions,
-  AddPhoneOptions,
   DroneInitResult,
   InviteResult
 } from '../src/types.js';

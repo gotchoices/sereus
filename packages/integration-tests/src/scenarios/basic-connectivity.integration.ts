@@ -8,7 +8,7 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { TestCadreNetwork, waitForCount, sleep } from '../harness/index.js';
+import { TestCadreNetwork, waitForCount } from '../harness/index.js';
 
 describe('Basic Connectivity', () => {
   let network: TestCadreNetwork;

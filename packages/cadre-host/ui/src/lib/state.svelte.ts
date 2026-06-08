@@ -276,7 +276,7 @@ export async function refreshUpdate(): Promise<void> {
 		const r = await apiFetch<UpdateState>('/update');
 		state.update = r;
 		recomputeStatus();
-	} catch (err) {
+	} catch {
 		// /update may be absent if UpdateService isn't wired (older host); silent.
 		state.update = null;
 	}
@@ -294,7 +294,7 @@ export async function refreshSettings(): Promise<void> {
 // --- Event dispatcher — wired in App.svelte to subscribeEvents() ---
 
 export function applyEvent(event: { type: string; data: string }): void {
-	let payload: Record<string, unknown> = {};
+	let payload: Record<string, unknown>;
 	try {
 		payload = JSON.parse(event.data) as Record<string, unknown>;
 	} catch {

@@ -5,17 +5,21 @@
 // eslint config at all, so this is a *gate*, not a cleanup pass. Rules that the
 // codebase already satisfies (or that auto-fix cleanly) are `error`; rules with a
 // large pre-existing backlog are `warn` so the gate stays green while the backlog
-// is burned down separately. See the review handoff for the error/warn rationale
-// and the list of AGENTS.md rules that are NOT enforceable here.
+// is burned down separately. The mechanical backlog (unused-vars, preserve-caught-
+// error, no-empty, no-useless-assignment, no-control-regex, prefer-const,
+// consistent-type-imports) has been burned down and is now enforced as `error`;
+// only `no-explicit-any` and the svelte reactivity rules remain `warn` (tracked in
+// the lint-cleanup-no-explicit-any and lint-cleanup-svelte tickets). See the review
+// handoff for the error/warn rationale and the AGENTS.md rules NOT enforceable here.
 //
 // AGENTS.md rule coverage (see tickets/review handoff for the full table):
 //   - "avoid `any`"                  -> @typescript-eslint/no-explicit-any   (warn: backlog)
 //   - "`void` unused promises"       -> @typescript-eslint/no-floating-promises (error, type-aware, src only)
-//   - "`_` prefix unused args"       -> @typescript-eslint/no-unused-vars    (warn: backlog)
+//   - "`_` prefix unused args"       -> @typescript-eslint/no-unused-vars    (error)
 //   - "braces around case w/ locals" -> no-case-declarations                 (error, built-in)
 //   - "ES modules"                   -> sourceType:module + no-require-imports (error)
-//   - "no inline import()"           -> consistent-type-imports (partial; runtime inline import NOT enforceable)
-//   - "don't eat exceptions"         -> no-empty allowEmptyCatch:false       (warn, partial)
+//   - "no inline import()"           -> consistent-type-imports (error, partial; runtime inline import NOT enforceable)
+//   - "don't eat exceptions"         -> no-empty allowEmptyCatch:false       (error, partial)
 //   - "lowercase SQL reserved words" -> NOT machine-enforceable (SQL in template literals) — human review only
 //   - "tabs for code"                -> deferred to .editorconfig, not enforced here (avoid formatter war)
 
@@ -81,8 +85,8 @@ export default tseslint.config(
 		rules: {
 			// "Don't be type lazy - avoid `any`" — large pre-existing backlog -> warn.
 			'@typescript-eslint/no-explicit-any': 'warn',
-			// "Prefix unused arguments with `_`" — backlog -> warn, but honor the `_` convention.
-			'@typescript-eslint/no-unused-vars': ['warn', {
+			// "Prefix unused arguments with `_`" — enforced as error; honors the `_` convention.
+			'@typescript-eslint/no-unused-vars': ['error', {
 				args: 'all',
 				argsIgnorePattern: '^_',
 				varsIgnorePattern: '^_',
@@ -93,14 +97,14 @@ export default tseslint.config(
 			}],
 			// "ES Modules" — flag CommonJS require() in source.
 			'@typescript-eslint/no-require-imports': 'error',
-			// "Don't use inline `import()` unless dynamically loading" — partial: discourages
-			// type-position import(); auto-fixable so kept as warn.
-			'@typescript-eslint/consistent-type-imports': ['warn', {
+			// "Don't use inline `import()` unless dynamically loading" — partial: enforces
+			// type-position `import type`; runtime inline import() remains human-review-only.
+			'@typescript-eslint/consistent-type-imports': ['error', {
 				prefer: 'type-imports',
 				disallowTypeAnnotations: false,
 			}],
 			// "exceptions should be exceptional - not control flow / don't eat exceptions" — partial.
-			'no-empty': ['warn', { allowEmptyCatch: false }],
+			'no-empty': ['error', { allowEmptyCatch: false }],
 			// "Enclose `case` blocks in braces if any consts/variables" (built-in, in js.recommended) — keep explicit.
 			'no-case-declarations': 'error',
 		},
@@ -160,7 +164,7 @@ export default tseslint.config(
 		files: ['**/*.{js,cjs,mjs}'],
 		rules: {
 			'@typescript-eslint/no-require-imports': 'off',
-			'@typescript-eslint/no-unused-vars': ['warn', {
+			'@typescript-eslint/no-unused-vars': ['error', {
 				argsIgnorePattern: '^_',
 				varsIgnorePattern: '^_',
 				caughtErrorsIgnorePattern: '^_',
@@ -168,17 +172,20 @@ export default tseslint.config(
 		},
 	},
 
-	// ---- Downgrade eslint-10 recommended additions with a pre-existing backlog ----
+	// ---- eslint-10 recommended additions ----
 	// These are NOT AGENTS.md rules; they ship as `error` in eslint 10's recommended
-	// set. Keep them visible as `warn` (gate stays green) and burn the backlog down
-	// in a follow-up — see the review handoff.
+	// set. Their pre-existing backlog has been burned down (lint-cleanup-mechanical),
+	// so they are enforced as `error`.
 	{
 		rules: {
-			'preserve-caught-error': 'warn',  // throw new Error(...) without { cause } — backlog
-			'no-useless-assignment': 'warn',
-			'no-control-regex': 'warn',
-			// Flags `let` assigned once; false-positives on test `let x; beforeEach(() => x = …)` lifecycles.
-			'prefer-const': 'warn',
+			'preserve-caught-error': 'error',  // throw new Error(...) must forward { cause }
+			'no-useless-assignment': 'error',
+			// Enforced; the one deliberate control-char guard (npm spawn-arg validation
+			// in update/apply.ts) carries a scoped eslint-disable with a rationale.
+			'no-control-regex': 'error',
+			// Can false-positive on `let x!; beforeEach(() => x = …)` test lifecycles —
+			// none exist today; if one appears, use a scoped disable rather than `const`.
+			'prefer-const': 'error',
 		},
 	},
 
