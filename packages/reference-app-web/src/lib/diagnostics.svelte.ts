@@ -529,6 +529,7 @@ function collectConnectivity(node: Libp2p | null): ConnectivityInfo {
 }
 
 function streamProtocols(connection: Connection): string[] {
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient local dedup set, converted to a sorted array and discarded; never held in reactive $state.
 	const seen = new Set<string>();
 	const streams = (connection as unknown as { streams?: Array<{ protocol?: string }> }).streams ?? [];
 	for (const stream of streams) {
@@ -638,6 +639,7 @@ function extractArachnode(
 function collectKnownRings(
 	peers: Array<{ metadata?: Record<string, unknown> }>,
 ): number[] {
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient local dedup set, converted to a sorted array and discarded; never held in reactive $state.
 	const rings = new Set<number>();
 	for (const peer of peers) {
 		const info = peer.metadata?.['arachnode'] as ArachnodeShape | undefined;
@@ -802,5 +804,6 @@ export function formatDuration(ms: number | null | undefined): string {
 
 export function formatTimestamp(ms: number | null | undefined): string {
 	if (ms == null) return '—';
+	// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient Date, immediately serialized to a string and discarded; never held or mutated in reactive state.
 	return new Date(ms).toLocaleString();
 }

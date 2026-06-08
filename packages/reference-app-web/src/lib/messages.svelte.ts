@@ -140,6 +140,7 @@ export async function sendMessage(author: string, content: string): Promise<void
 		]);
 
 		// Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS' — not ISO 8601 with 'T'/'Z'.
+		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient Date, immediately serialized to a string and discarded; never held or mutated in reactive state.
 		const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 		// Generate the primary key locally as a UUID. A read-then-increment of
 		// max(Id) would collide when two peers post concurrently into a shared

@@ -43,6 +43,7 @@
 	<p class="muted">QR unavailable: {error}</p>
 {:else if svg}
 	<div class="qr" style="width: {size}px; height: {size}px;">
+		<!-- eslint-disable-next-line svelte/no-at-html-tags -- `svg` is markup generated locally by the qrcode library (QRCode.toString), not user-supplied/network content, so there is no XSS surface here. -->
 		{@html svg}
 	</div>
 {:else}

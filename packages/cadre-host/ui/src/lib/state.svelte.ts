@@ -327,6 +327,7 @@ export function applyEvent(event: { type: string; data: string }): void {
 					...(state.update ?? { version: 1 }),
 					available: {
 						version,
+						// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient Date, immediately serialized to a string and discarded; never held or mutated in reactive state.
 						publishedAt: state.update?.available?.publishedAt ?? new Date().toISOString(),
 						...(releaseNotesUrl ? { releaseNotesUrl } : {}),
 					},

@@ -279,15 +279,19 @@ auto-fixable subset.
   (type-aware, `packages/*/src` only — the AGENTS.md "`void` unused promises" rule), `no-require-imports`
   (ES-modules; one intentional cross-platform `require` in `control-database.ts` is `eslint-disable`d with
   rationale), `no-case-declarations`, `no-unused-vars` (honors the `_`-prefix convention),
-  `consistent-type-imports`, `no-empty` (empty catch). Plus eslint-10 recommended additions that are **not**
+  `consistent-type-imports`, `no-empty` (empty catch), `no-explicit-any` (the AGENTS.md "avoid `any`" rule —
+  ~68-site backlog burned down in `lint-cleanup-no-explicit-any`), and the Svelte UI rules
+  `svelte/no-at-html-tags` / `svelte/prefer-svelte-reactivity` (burned down in `lint-cleanup-svelte`; the
+  remaining sites — a locally-generated QR SVG, plus transient/replace-only Set/Date instances — are false
+  positives carrying scoped `eslint-disable` + rationale). Plus eslint-10 recommended additions that are **not**
   AGENTS.md rules: `prefer-const`, `preserve-caught-error`, `no-useless-assignment`, `no-control-regex`
   (one deliberate control-char guard in `update/apply.ts` is `eslint-disable`d with rationale). The
   mechanical backlog for these was burned down in `lint-cleanup-mechanical`; `preserve-caught-error`'s
   `new Error(msg, { cause })` fix required bumping `lib` to `ES2022` (target unchanged at `ES2020`) in
   `cadre-core`/`cadre-host` tsconfigs.
-- Rules at **`warn`** (real pre-existing backlog — surfaced, non-blocking, cleanup deferred): `no-explicit-any`
-  (~68, tracked in `lint-cleanup-no-explicit-any`) and the svelte rules `svelte/no-at-html-tags` /
-  `svelte/prefer-svelte-reactivity` (tracked in `lint-cleanup-svelte`).
+- Rules at **`warn`**: none. The lint-cleanup epic (`lint-cleanup-mechanical` → `lint-cleanup-no-explicit-any`
+  → `lint-cleanup-svelte`) is complete; there is no remaining `warn` backlog and `yarn lint` exits 0 with
+  **0 warnings, 0 errors**. Every rule the config encodes is now a hard `error` gate.
 - **Not machine-enforceable** here (remain human-review-only): lowercase SQL reserved words (SQL lives in
   template literals), and the "no runtime inline `import()`" rule (no clean ESLint rule;
   `consistent-type-imports` only covers type-position imports). Tab indentation is left to `.editorconfig`,

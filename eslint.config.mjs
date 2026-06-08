@@ -2,15 +2,15 @@
 // Flat ESLint config for the Sereus monorepo (eslint 10 / typescript-eslint 8).
 //
 // Goal: machine-enforce the style rules in AGENTS.md. The repo previously had no
-// eslint config at all, so this is a *gate*, not a cleanup pass. Rules that the
-// codebase already satisfies (or that auto-fix cleanly) are `error`; rules with a
-// large pre-existing backlog are `warn` so the gate stays green while the backlog
-// is burned down separately. The mechanical backlog (unused-vars, preserve-caught-
-// error, no-empty, no-useless-assignment, no-control-regex, prefer-const,
-// consistent-type-imports) and `no-explicit-any` have been burned down and are now
-// enforced as `error`; only the svelte reactivity rules remain `warn` (tracked in
-// the lint-cleanup-svelte ticket). See the review handoff for the error/warn
-// rationale and the AGENTS.md rules NOT enforceable here.
+// eslint config at all, so this started as a *gate*, not a cleanup pass: rules the
+// codebase already satisfied (or that auto-fixed cleanly) shipped as `error`, while
+// rules with a large pre-existing backlog shipped as `warn` and were burned down
+// separately. That cleanup epic is now complete — the mechanical backlog (unused-
+// vars, preserve-caught-error, no-empty, no-useless-assignment, no-control-regex,
+// prefer-const, consistent-type-imports), `no-explicit-any`, and the svelte rules
+// (no-at-html-tags, prefer-svelte-reactivity) are all enforced as `error`. There is
+// no remaining `warn` backlog; every rule below is a hard gate. See the review
+// handoff for the rationale and the AGENTS.md rules NOT enforceable here.
 //
 // AGENTS.md rule coverage (see tickets/review handoff for the full table):
 //   - "avoid `any`"                  -> @typescript-eslint/no-explicit-any   (error)
@@ -148,11 +148,15 @@ export default tseslint.config(
 			},
 		},
 		rules: {
-			// {@html ...} is used deliberately in the diagnostics UIs; flag for review, don't block.
-			'svelte/no-at-html-tags': 'warn',
-			// Plain Set/Date inside .svelte.ts rune modules — a svelte-5 reactivity
-			// correctness lint with a real backlog. Surface it, don't block the gate.
-			'svelte/prefer-svelte-reactivity': 'warn',
+			// {@html ...} XSS guard — enforced. The sole deliberate use (QrCode.svelte,
+			// rendering a locally-generated QR SVG) carries a scoped eslint-disable + rationale.
+			'svelte/no-at-html-tags': 'error',
+			// Plain Set/Date/Map inside .svelte.ts rune modules — a svelte-5 reactivity
+			// correctness lint. Enforced; the existing sites were all transient/replace-only
+			// false positives (local dedup sets, transient Dates serialized to strings) and
+			// carry scoped eslint-disable + rationale. Genuine in-place-mutation state must
+			// use SvelteSet/SvelteDate/SvelteMap from svelte/reactivity.
+			'svelte/prefer-svelte-reactivity': 'error',
 		},
 	},
 
