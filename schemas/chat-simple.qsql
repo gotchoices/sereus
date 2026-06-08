@@ -12,7 +12,10 @@ table Member (
 );
 
 table Message (
-    Id integer primary key,
+    -- Text UUID primary key: generated locally by each peer so concurrent posts
+    -- into a shared strand never collide. A max(Id)+1 integer key read from the
+    -- local replica would collide when two peers post before either replicates.
+    Id text primary key,
     MemberId text not null,
     Content text not null,
     Timestamp datetime not null,

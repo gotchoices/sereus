@@ -39,7 +39,7 @@ table Member (
 );
 
 table Message (
-    Id integer primary key,
+    Id text primary key,
     MemberId text not null,
     Content text not null,
     Timestamp datetime not null,
@@ -241,16 +241,18 @@ describe('Multi-Party Strand Workflows', () => {
 				// Party A inserts a member + message
 				const dbA = strandA.database!.getDatabase();
 				await dbA.exec("insert into App.Member (Id, Name) values ('a-1', 'Alice')");
+				// Message.Id is a text primary key (collision-free across concurrent
+				// peers); fixed text ids keep these replication assertions deterministic.
 				await dbA.exec(
 					`insert into App.Message (Id, MemberId, Content, Timestamp)
-					 values (1, 'a-1', 'Hello from Party A', '${nowTimestamp()}')`,
+					 values ('msg-a-1', 'a-1', 'Hello from Party A', '${nowTimestamp()}')`,
 				);
 
 				// Assert: replicates to Party B
 				const dbB = strandB.database!.getDatabase();
 				await waitUntil(
 					async () => {
-						const row = await dbB.get('select Content from App.Message where Id = 1');
+						const row = await dbB.get("select Content from App.Message where Id = 'msg-a-1'");
 						return row?.Content === 'Hello from Party A';
 					},
 					{ timeoutMs: 15_000, intervalMs: 250, description: 'message replicates A→B' },
@@ -260,13 +262,13 @@ describe('Multi-Party Strand Workflows', () => {
 				await dbB.exec("insert into App.Member (Id, Name) values ('b-1', 'Bob')");
 				await dbB.exec(
 					`insert into App.Message (Id, MemberId, Content, Timestamp)
-					 values (2, 'b-1', 'Reply from Party B', '${nowTimestamp()}')`,
+					 values ('msg-b-1', 'b-1', 'Reply from Party B', '${nowTimestamp()}')`,
 				);
 
 				// Assert: reply replicates to Party A
 				await waitUntil(
 					async () => {
-						const row = await dbA.get('select Content from App.Message where Id = 2');
+						const row = await dbA.get("select Content from App.Message where Id = 'msg-b-1'");
 						return row?.Content === 'Reply from Party B';
 					},
 					{ timeoutMs: 15_000, intervalMs: 250, description: 'message replicates B→A' },

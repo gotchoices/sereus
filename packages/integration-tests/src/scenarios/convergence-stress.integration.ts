@@ -23,6 +23,7 @@ import { CadreNode, signSchema } from '@serfab/cadre-core';
 import type { CadreNodeConfig, StrandRow, StrandInstance, SAppConfig } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { waitUntil, sleep } from '../harness/wait-utils.js';
+import { randomUUID } from 'node:crypto';
 
 // ── Chat schema (mirrors websocket-chat.integration.ts) ─────────────────
 
@@ -33,7 +34,7 @@ table Member (
 );
 
 table Message (
-    Id integer primary key,
+    Id text primary key,
     MemberId text not null,
     Content text not null,
     Timestamp datetime not null,
@@ -75,8 +76,10 @@ async function queryAll(
 }
 
 /**
- * Insert N messages rapidly on a strand using auto-increment IDs.
- * Each insert awaits completion (Optimystic synchronous replication).
+ * Insert N messages rapidly on a strand using locally-generated UUID keys.
+ * Each insert awaits completion (Optimystic synchronous replication). The UUID
+ * key is collision-free across concurrent peers — a max(Id)+1 read would collide
+ * when both nodes post before either replicates.
  */
 async function insertBatch(
 	strand: StrandInstance,
@@ -88,8 +91,8 @@ async function insertBatch(
 	for (let i = 0; i < count; i++) {
 		await db.exec(
 			`insert into App.Message (Id, MemberId, Content, Timestamp)
-			 values ((select coalesce(max(Id), 0) + 1 from App.Message), ?, ?, ?)`,
-			[memberId, `${prefix}-${i}`, nowTimestamp()],
+			 values (?, ?, ?, ?)`,
+			[randomUUID(), memberId, `${prefix}-${i}`, nowTimestamp()],
 		);
 	}
 }
@@ -303,19 +306,30 @@ describe('Convergence Stress Tests', () => {
 			const droneDb = ctx.droneStrand.database!.getDatabase();
 			const phoneDb = ctx.phoneStrand.database!.getDatabase();
 
-			// Interleave: odd on drone, even on phone, auto-increment IDs
+			// Interleave: odd on drone, even on phone, collision-free UUID keys.
+			//
+			// Each iteration reads before it writes. Optimystic convergence is
+			// read-driven: a peer observes another peer's appends when it reads,
+			// so a write-only loop never pulls the other side's rows. This mirrors
+			// the real chat app, where every peer polls queryMessages on a timer
+			// (useChat / messages.svelte) between sends. The previous version got
+			// this read for free from the `select max(Id)+1` subquery it used to
+			// pick the key; now that the key is a locally-generated UUID (no read),
+			// the poll is explicit. Reading the full list, as the app's poll does.
 			for (let i = 1; i <= 20; i++) {
 				if (i % 2 === 1) {
+					await queryAll(droneDb, 'select Id from App.Message');
 					await droneDb.exec(
 						`insert into App.Message (Id, MemberId, Content, Timestamp)
-						 values ((select coalesce(max(Id), 0) + 1 from App.Message), 'drone-1', ?, ?)`,
-						[`interleaved-${i}`, nowTimestamp()],
+						 values (?, 'drone-1', ?, ?)`,
+						[randomUUID(), `interleaved-${i}`, nowTimestamp()],
 					);
 				} else {
+					await queryAll(phoneDb, 'select Id from App.Message');
 					await phoneDb.exec(
 						`insert into App.Message (Id, MemberId, Content, Timestamp)
-						 values ((select coalesce(max(Id), 0) + 1 from App.Message), 'phone-1', ?, ?)`,
-						[`interleaved-${i}`, nowTimestamp()],
+						 values (?, 'phone-1', ?, ?)`,
+						[randomUUID(), `interleaved-${i}`, nowTimestamp()],
 					);
 				}
 				// Random delay 0-50ms between inserts

@@ -22,3 +22,6 @@ the file.
   (`git mv agents.md tmp` → `git mv tmp AGENTS.md`) or `git mv -f`, then verify with
   `git ls-files | grep -i agents.md` that the index shows the uppercase name.
 - Confirm `tickets/AGENTS.md` (the separate ticket-rules file) is unaffected.
+
+
+Don't bother pushing this through to review; go right to complete.

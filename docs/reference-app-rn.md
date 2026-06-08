@@ -129,7 +129,10 @@ declare schema Chat {
     );
 
     table Message (
-        Id integer primary key,
+        -- Text UUID primary key: each peer generates it locally so concurrent
+        -- posts into a shared strand never collide. A max(Id)+1 integer key read
+        -- from the local replica would collide before either side replicates.
+        Id text primary key,
         MemberId text not null,
         Content text not null,
         Timestamp datetime not null,

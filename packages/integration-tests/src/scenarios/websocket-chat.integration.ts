@@ -30,7 +30,7 @@ table Member (
 );
 
 table Message (
-    Id integer primary key,
+    Id text primary key,
     MemberId text not null,
     Content text not null,
     Timestamp datetime not null,
@@ -152,15 +152,17 @@ describe('WebSocket Chat (server-to-server)', () => {
       "insert into App.Member (Id, Name) values ('drone-1', 'Drone')",
     );
     // Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS' — NOT ISO 8601 with 'Z'.
-    // (Note: reference-app-rn chat-operations.ts has the same bug — uses toISOString())
     const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+    // Message.Id is a text primary key (collision-free across concurrent peers);
+    // a fixed text id keeps the replication assertions below deterministic.
+    const messageId = 'msg-drone-1';
     await droneDb.exec(
       `insert into App.Message (Id, MemberId, Content, Timestamp)
-       values (1, 'drone-1', 'Hello from drone', '${now}')`,
+       values ('${messageId}', 'drone-1', 'Hello from drone', '${now}')`,
     );
 
     // Verify local write succeeded
-    const localRow = await droneDb.get('select Content from App.Message where Id = 1');
+    const localRow = await droneDb.get(`select Content from App.Message where Id = '${messageId}'`);
     expect(localRow?.Content).toBe('Hello from drone');
 
     // ── 5. Verify the message replicates to the phone ──────────────────
@@ -169,13 +171,13 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     await waitUntil(
       async () => {
-        const row = await phoneDb.get('select Content from App.Message where Id = 1');
+        const row = await phoneDb.get(`select Content from App.Message where Id = '${messageId}'`);
         return row?.Content === 'Hello from drone';
       },
       { timeoutMs: 15_000, intervalMs: 250, description: 'message replicates to phone' },
     );
 
-    const replicated = await phoneDb.get('select Content from App.Message where Id = 1');
+    const replicated = await phoneDb.get(`select Content from App.Message where Id = '${messageId}'`);
     expect(replicated?.Content).toBe('Hello from drone');
 
     console.log('✓ Message replicated over WebSocket successfully');

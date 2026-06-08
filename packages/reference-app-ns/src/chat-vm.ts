@@ -25,7 +25,8 @@ const DEFAULT_POLL_INTERVAL_MS = 2000;
 
 /** Row shape bound by the chat ListView item template. */
 export interface ChatRow {
-	id: number;
+	/** Text UUID message id (collision-free across concurrent peers). */
+	id: string;
 	content: string;
 	sender: string;
 	time: string;

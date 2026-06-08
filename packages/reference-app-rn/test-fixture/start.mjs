@@ -36,7 +36,7 @@ table Member (
 );
 
 table Message (
-    Id integer primary key,
+    Id text primary key,
     MemberId text not null,
     Content text not null,
     Timestamp datetime not null,

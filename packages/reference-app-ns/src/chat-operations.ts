@@ -13,7 +13,8 @@ import type { Database } from '@quereus/quereus';
 // ── Types ────────────────────────────────────────────────────────────────────
 
 export interface ChatMessage {
-	Id: number;
+	/** Globally-unique text id (UUID) — generated locally, collision-free across peers. */
+	Id: string;
 	MemberId: string;
 	Content: string;
 	Timestamp: string;
@@ -86,17 +87,20 @@ export async function insertMessage(
 	// Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS', not ISO 8601 with 'T' / 'Z'.
 	const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 
-	const maxRow = await db.get('select max(Id) as MaxId from App.Message');
-	const nextId = ((maxRow?.MaxId as number | null) ?? 0) + 1;
+	// Generate the primary key locally as a UUID. A read-then-increment of
+	// max(Id) would collide when two peers post concurrently into a shared
+	// strand, since each reads the same local max before either replicates.
+	// NativeScript 8.8+ exposes crypto.randomUUID natively.
+	const id = crypto.randomUUID();
 
 	await db.exec(
 		`insert into App.Message (Id, MemberId, Content, Timestamp)
      values (?, ?, ?, ?)`,
-		[nextId, memberId, content, now],
+		[id, memberId, content, now],
 	);
 
 	return {
-		Id: nextId,
+		Id: id,
 		MemberId: memberId,
 		Content: content,
 		Timestamp: now,
@@ -116,16 +120,20 @@ export async function queryMessages(
 	const db = getDb(strand);
 	const messages: ChatMessage[] = [];
 
+	// Order by Timestamp (the text UUID Id is not chronologically sortable).
+	// Id is only a stable tiebreak: Timestamp has second resolution, so two
+	// peers posting within the same second converge to an arbitrary-but-stable
+	// order. Acceptable for the reference app.
 	for await (const row of db.eval(
 		`select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
      from App.Message M
      left join App.Member Mem on Mem.Id = M.MemberId
-     order by M.Id asc
+     order by M.Timestamp asc, M.Id asc
      limit ?`,
 		[limit],
 	)) {
 		messages.push({
-			Id: row.Id as number,
+			Id: row.Id as string,
 			MemberId: row.MemberId as string,
 			Content: row.Content as string,
 			Timestamp: row.Timestamp as string,

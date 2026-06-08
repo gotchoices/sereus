@@ -119,15 +119,16 @@ async function insertMessage(node, strandId, memberId, content) {
 	// Quereus DATETIME format: 'YYYY-MM-DD HH:MM:SS'
 	const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
 
-	const maxRow = await db.get('select max(Id) as MaxId from App.Message');
-	const nextId = ((maxRow?.MaxId) ?? 0) + 1;
+	// Collision-free text UUID key (matches the phone app's chat-operations.ts) —
+	// a max(Id)+1 read would collide when this drone and the phone post concurrently.
+	const id = randomUUID();
 
 	await db.exec(
 		'insert into App.Message (Id, MemberId, Content, Timestamp) values (?, ?, ?, ?)',
-		[nextId, memberId, content, now],
+		[id, memberId, content, now],
 	);
 
-	return { Id: nextId, MemberId: memberId, Content: content, Timestamp: now };
+	return { Id: id, MemberId: memberId, Content: content, Timestamp: now };
 }
 
 async function queryMessages(node, strandId) {
@@ -137,7 +138,7 @@ async function queryMessages(node, strandId) {
 		`select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
 		 from App.Message M
 		 left join App.Member Mem on Mem.Id = M.MemberId
-		 order by M.Id asc
+		 order by M.Timestamp asc, M.Id asc
 		 limit 1000`,
 	)) {
 		messages.push({
