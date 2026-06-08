@@ -110,11 +110,16 @@ export function useCadreInternal(): UseCadreResult {
       refreshStrands();
     };
 
-    // A strand created by another member arrived over the control network. Join
-    // it (register the chat config + addStrand), then refresh. Guard against a
-    // double-join (we may already host it — e.g. our own just-published strand,
-    // or a re-fire) and surface failures rather than eating them.
+    // A strand created by another member arrived over the control network. Only
+    // OPEN strands (`Type:'o'`) are auto-joined — "anyone can participate". A
+    // CLOSED strand (`Type:'c'`) is invitation-only by design and must go through
+    // the explicit consent handshake (`joinViaInvite` → `formStrand`); blindly
+    // attaching it here would bypass that flow. Join the open one (register the
+    // chat config + addStrand), then refresh. Guard against a double-join (we may
+    // already host it — e.g. our own just-published strand, or a re-fire) and
+    // surface failures rather than eating them.
     const onDiscovered = ({ strandId, strand }: CadreNodeEvents['strand:discovered']) => {
+      if (strand.Type !== 'o') return;
       if (node.getStrands().has(strandId)) return;
       void (async () => {
         try {
