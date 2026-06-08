@@ -97,4 +97,11 @@ describe('CADRE_STRAND_FILTER env override', () => {
   it('throws on a JSON object with no recognized discriminant', () => {
     expect(() => resolveFromEnv('{"foo":"bar"}')).toThrow(/Invalid strandFilter/);
   });
+
+  it('throws on a JSON scalar/array that is not a recognized filter', () => {
+    // A bare number or array is valid JSON but not a strand filter; it must fail
+    // loudly rather than slip through as a truthy override.
+    expect(() => resolveFromEnv('42')).toThrow(/Invalid strandFilter/);
+    expect(() => resolveFromEnv('["x"]')).toThrow(/Invalid strandFilter/);
+  });
 });
