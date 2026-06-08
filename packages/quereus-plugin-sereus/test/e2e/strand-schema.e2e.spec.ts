@@ -209,14 +209,11 @@ describe('Strand membership schema (apply e2e)', () => {
 		// by Member.Authorized (count is now 2, no matching Authority for a null key,
 		// no ConsumedInvite). The reject IS the proof the constraint is active — it
 		// fires the same SQL shape the accepted bootstrap case above used, so this is
-		// a genuine constraint failure, not a parse/no-op artifact.
-		//
-		// KNOWN GAP (not asserted, owned elsewhere): the optimystic LOCAL/bootstrap
-		// transactor does not roll back a *deferred* (subquery-bearing) CHECK rejection
-		// — the violating row is left committed even though `exec` throws. So we cannot
-		// assert the table is unchanged here. This is a transactor-layer atomicity bug,
-		// not a schema-layer one (the control schema's subquery constraints leak the
-		// same way), tracked by `optimystic-deferred-constraint-rejection-not-rolled-back`.
+		// a genuine constraint failure, not a parse/no-op artifact. The deferred
+		// (subquery-bearing) CHECK rejection is also atomic: the optimystic transactor
+		// rolls the violating row back, so the Member count is unchanged afterward
+		// (regression guard for optimystic-deferred-constraint-rejection-not-rolled-back).
+		const memberCountBefore = await selectCount(db, 'select count(*) as c from Strand.Member');
 		await expect(
 			db.exec(
 				`insert into Strand.Member (Key)
@@ -225,9 +222,11 @@ describe('Strand membership schema (apply e2e)', () => {
 				['m2'],
 			),
 		).rejects.toThrow();
+		expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(memberCountBefore);
 
 		// An Invite with no valid issuing Authority: rejected by Invite.InviteValid
-		// (no Authority row matches the non-existent AuthorityKey).
+		// (no Authority row matches the non-existent AuthorityKey). The rejected row
+		// must not survive the deferred-constraint rollback.
 		await expect(
 			db.exec(
 				`insert into Strand.Invite (Key, Expiration)
@@ -236,13 +235,15 @@ describe('Strand membership schema (apply e2e)', () => {
 				['nobody', 'inv1'],
 			),
 		).rejects.toThrow();
+		expect(await selectCount(db, 'select count(*) as c from Strand.Invite')).toBe(0);
 	});
 
 	it('enforces OnlyClosed: membership inserts fail in an open strand, succeed in a closed one', async () => {
 		// Open strand: OnlyClosed must reject Member / Authority / Invite inserts even
-		// though the row would otherwise satisfy its bootstrap branch. (Same KNOWN GAP
-		// as above: a deferred-constraint rejection is not rolled back by the bootstrap
-		// transactor, so we assert the reject fires, not that the row is absent.)
+		// though the row would otherwise satisfy its bootstrap branch. Each rejection
+		// is a deferred-constraint failure that the optimystic transactor rolls back,
+		// so the target table is left empty (regression guard for
+		// optimystic-deferred-constraint-rejection-not-rolled-back).
 		{
 			const strandId = randomUUID();
 			const storage = new FileRawStorage(storageDir);
@@ -259,6 +260,8 @@ describe('Strand membership schema (apply e2e)', () => {
 						['m1'],
 					),
 				).rejects.toThrow();
+				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Member')).toBe(0);
+
 				await expect(
 					dbOpen.exec(
 						`insert into Strand.Authority (MemberKey)
@@ -267,6 +270,8 @@ describe('Strand membership schema (apply e2e)', () => {
 						['m1'],
 					),
 				).rejects.toThrow();
+				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Authority')).toBe(0);
+
 				await expect(
 					dbOpen.exec(
 						`insert into Strand.Invite (Key, Expiration)
@@ -275,6 +280,7 @@ describe('Strand membership schema (apply e2e)', () => {
 						['inv1'],
 					),
 				).rejects.toThrow();
+				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Invite')).toBe(0);
 			} finally {
 				await rOpen.shutdown();
 				dbOpen.close();
