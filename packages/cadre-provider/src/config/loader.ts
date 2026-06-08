@@ -12,12 +12,23 @@ import { validateAuthConfig } from './validate.js';
 
 const log = debug('cadre:provider:config');
 
-/** Deep merge two objects */
-function deepMerge<T extends Record<string, any>>(target: T, source: Partial<T>): T {
-  const result = { ...target };
-  for (const key in source) {
-    const sourceVal = source[key];
-    const targetVal = target[key];
+/** Recursively-optional view of T — a config layer may override any leaf without supplying siblings. */
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends ReadonlyArray<unknown>
+    ? T[K]
+    : T[K] extends object
+      ? DeepPartial<T[K]>
+      : T[K];
+};
+
+/** Deep merge two objects, with `source` values overriding `target`. */
+function deepMerge<T extends object>(target: T, source: DeepPartial<T>): T {
+  const targetRecord = target as Record<string, unknown>;
+  const sourceRecord = source as Record<string, unknown>;
+  const result: Record<string, unknown> = { ...targetRecord };
+  for (const key in sourceRecord) {
+    const sourceVal = sourceRecord[key];
+    const targetVal = targetRecord[key];
     if (
       sourceVal &&
       typeof sourceVal === 'object' &&
@@ -26,15 +37,15 @@ function deepMerge<T extends Record<string, any>>(target: T, source: Partial<T>)
       typeof targetVal === 'object' &&
       !Array.isArray(targetVal)
     ) {
-      (result as any)[key] = deepMerge(
-        targetVal as Record<string, any>,
-        sourceVal as Record<string, any>
+      result[key] = deepMerge(
+        targetVal as Record<string, unknown>,
+        sourceVal as Record<string, unknown>
       );
     } else if (sourceVal !== undefined) {
-      (result as any)[key] = sourceVal;
+      result[key] = sourceVal;
     }
   }
-  return result;
+  return result as T;
 }
 
 /** Load configuration from a file */
@@ -126,16 +137,16 @@ export function loadConfig(options: LoadConfigOptions = {}): ProviderConfig {
   // Load from file if provided
   if (options.configFile) {
     const fileConfig = loadConfigFile(options.configFile);
-    config = deepMerge(config, fileConfig as any);
+    config = deepMerge(config, fileConfig);
   }
 
   // Apply environment variables
   const envConfig = loadEnvConfig();
-  config = deepMerge(config, envConfig as any);
+  config = deepMerge(config, envConfig);
 
   // Apply overrides
   if (options.overrides) {
-    config = deepMerge(config, options.overrides as any);
+    config = deepMerge(config, options.overrides);
   }
 
   // Fail closed: reject an implicit/unacknowledged fully-open auth config.

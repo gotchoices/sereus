@@ -26,6 +26,31 @@ import type {
   InviteResult
 } from '../src/types.js';
 
+/**
+ * Test-only window into the private SeedBootstrapService surface these specs
+ * inject mocks into / invoke. The injected mocks are deliberately partial, so
+ * the fields are typed `unknown`; we cast through `unknown` because the real
+ * fields are private on the service.
+ */
+interface SeedServiceTestInternals {
+  libp2pNode: unknown;
+  controlDatabase: unknown;
+  queryPeers(): Promise<SeedPeer[]>;
+}
+
+function serviceInternals(service: SeedBootstrapService): SeedServiceTestInternals {
+  return service as unknown as SeedServiceTestInternals;
+}
+
+/** Test-only window into the private CadreNode timer these specs neutralize. */
+interface CadreNodeTestInternals {
+  selfRegistrationTimer: ReturnType<typeof setTimeout> | null;
+}
+
+function cadreNodeInternals(node: CadreNode): CadreNodeTestInternals {
+  return node as unknown as CadreNodeTestInternals;
+}
+
 describe('SeedBootstrapService', () => {
   let authorityPrivateKey: string;
   let authorityPublicKey: string;
@@ -465,7 +490,7 @@ describe('Seed trust policy', () => {
 
 	/** Inject a fake control DB exposing only the authority-key set used by applySeed. */
 	function withKnownAuthorityKeys(service: SeedBootstrapService, keys: string[]) {
-		(service as any).controlDatabase = {
+		serviceInternals(service).controlDatabase = {
 			getAuthorityKeys: async () => new Set(keys),
 		};
 	}
@@ -474,7 +499,7 @@ describe('Seed trust policy', () => {
 		// The regression: attacker signs a seed that names its own key as an
 		// authority peer. Signature is valid, but the receiver has no anchor.
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 		// No control DB → empty known-authority set, default dbAnchoredTrustPolicy.
 
 		const peers: SeedPeer[] = [
@@ -495,7 +520,7 @@ describe('Seed trust policy', () => {
 
 	it('DB-anchored accept: signer key present in the AuthorityKey table is trusted', async () => {
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 		withKnownAuthorityKeys(service, [authorityPublicKey]);
 
 		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
@@ -506,7 +531,7 @@ describe('Seed trust policy', () => {
 
 	it('pinned-key accept: signer supplied via pinnedKeyTrustPolicy is trusted with an empty DB', async () => {
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 		// Empty DB; pin the authority key as if carried by a CadreInvite.
 
 		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
@@ -519,7 +544,7 @@ describe('Seed trust policy', () => {
 
 	it('pinned-key reject: a signer not in the pinned set is rejected', async () => {
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 
 		const seed = createSignedSeed(attackerPrivateKey, attackerPublicKey, []);
 		const result = await service.applySeed(seed, {
@@ -536,7 +561,7 @@ describe('Seed trust policy', () => {
 		// confirm returns false → rejected
 		const declineCalls: string[] = [];
 		const declineService = new SeedBootstrapService({ partyId });
-		(declineService as any).libp2pNode = createMockLibp2p();
+		serviceInternals(declineService).libp2pNode = createMockLibp2p();
 		const declined = await declineService.applySeed(seed, {
 			trustPolicy: tofuTrustPolicy(async (ctx) => {
 				declineCalls.push(ctx.signerKey);
@@ -549,7 +574,7 @@ describe('Seed trust policy', () => {
 		// confirm returns true → accepted, invoked exactly once
 		const acceptCalls: string[] = [];
 		const acceptService = new SeedBootstrapService({ partyId });
-		(acceptService as any).libp2pNode = createMockLibp2p();
+		serviceInternals(acceptService).libp2pNode = createMockLibp2p();
 		const accepted = await acceptService.applySeed(seed, {
 			trustPolicy: tofuTrustPolicy(async (ctx) => {
 				acceptCalls.push(ctx.signerKey);
@@ -562,7 +587,7 @@ describe('Seed trust policy', () => {
 
 	it('TOFU does not consult confirm when the key is already DB-anchored', async () => {
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 		withKnownAuthorityKeys(service, [authorityPublicKey]);
 
 		let confirmCalls = 0;
@@ -580,7 +605,7 @@ describe('Seed trust policy', () => {
 
 	it('signature is still required even with a valid trust anchor', async () => {
 		const service = new SeedBootstrapService({ partyId });
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 		withKnownAuthorityKeys(service, [authorityPublicKey]);
 
 		// Valid signer key, but a corrupted signature.
@@ -599,7 +624,7 @@ describe('Seed trust policy', () => {
 			partyId,
 			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
 		});
-		(service as any).libp2pNode = createMockLibp2p();
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 
 		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
 		const result = await service.applySeed(seed);
@@ -661,8 +686,8 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 		const a = await peerIdFor();
 		const b = await peerIdFor();
 		const service = new SeedBootstrapService({ partyId: 'p' });
-		(service as any).libp2pNode = { peerId: { toString: () => a.id } };
-		(service as any).controlDatabase = makeMockControlDb(
+		serviceInternals(service).libp2pNode = { peerId: { toString: () => a.id } };
+		serviceInternals(service).controlDatabase = makeMockControlDb(
 			[a.keyB64, b.keyB64],
 			[
 				{ PeerId: a.id, Multiaddr: '/ip4/1.1.1.1/tcp/4001' },
@@ -670,7 +695,7 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 			]
 		);
 
-		const peers: SeedPeer[] = await (service as any).queryPeers();
+		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(2);
 		const byId = new Map(peers.map((p) => [p.peerId, p]));
 		expect(byId.get(a.id)).toMatchObject({ isAuthority: true, publicKey: a.keyB64 });
@@ -681,13 +706,13 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 		const authority = await peerIdFor();
 		const plain = await peerIdFor();
 		const service = new SeedBootstrapService({ partyId: 'p' });
-		(service as any).libp2pNode = { peerId: { toString: () => authority.id } };
-		(service as any).controlDatabase = makeMockControlDb(
+		serviceInternals(service).libp2pNode = { peerId: { toString: () => authority.id } };
+		serviceInternals(service).controlDatabase = makeMockControlDb(
 			[authority.keyB64], // plain's key is NOT present
 			[{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]
 		);
 
-		const peers: SeedPeer[] = await (service as any).queryPeers();
+		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(1);
 		expect(peers[0].isAuthority).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();
@@ -695,13 +720,13 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 
 	it('treats a non-Ed25519 / unparsable peerId as non-authority without throwing', async () => {
 		const service = new SeedBootstrapService({ partyId: 'p' });
-		(service as any).libp2pNode = { peerId: { toString: () => 'self' } };
-		(service as any).controlDatabase = makeMockControlDb(
+		serviceInternals(service).libp2pNode = { peerId: { toString: () => 'self' } };
+		serviceInternals(service).controlDatabase = makeMockControlDb(
 			['some-authority-key'],
 			[{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]
 		);
 
-		const peers: SeedPeer[] = await (service as any).queryPeers();
+		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(1);
 		expect(peers[0].isAuthority).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();
@@ -954,7 +979,7 @@ describe('SeedBootstrapService Helper Methods', () => {
 
     it('uses libp2pNode.getMultiaddrs() when no resolver is configured', async () => {
       const service = new SeedBootstrapService({ partyId });
-      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
       expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
@@ -963,7 +988,7 @@ describe('SeedBootstrapService Helper Methods', () => {
     it('uses the resolver when configured (NAT host substitutes DDNS hostname)', async () => {
       const resolver = async () => ['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost'];
       const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
-      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
       expect(invite.authorityAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
@@ -972,7 +997,7 @@ describe('SeedBootstrapService Helper Methods', () => {
     it('falls back to libp2pNode.getMultiaddrs() when the resolver throws', async () => {
       const resolver = async () => { throw new Error('boom'); };
       const service = new SeedBootstrapService({ partyId, inviteAddressResolver: resolver });
-      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
       expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
@@ -980,8 +1005,8 @@ describe('SeedBootstrapService Helper Methods', () => {
 
     it('carries the AuthorityKey table as invite.authorityKeys', async () => {
       const service = new SeedBootstrapService({ partyId });
-      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-      (service as any).controlDatabase = {
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).controlDatabase = {
         getAuthorityKeys: async () => new Set([authorityPublicKey, 'second-authority-key']),
       };
 
@@ -994,8 +1019,8 @@ describe('SeedBootstrapService Helper Methods', () => {
 
     it('omits authorityKeys when the AuthorityKey table is empty', async () => {
       const service = new SeedBootstrapService({ partyId });
-      (service as any).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-      (service as any).controlDatabase = {
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).controlDatabase = {
         getAuthorityKeys: async () => new Set<string>(),
       };
 
@@ -1050,8 +1075,8 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
       // outcomes are then deterministic (no timer racing an INSERT in). The
       // single-flight guard in registerSelf is what makes that race harmless in
       // production; here we simply remove it for a clean assertion.
-      clearTimeout((node as any).selfRegistrationTimer);
-      (node as any).selfRegistrationTimer = null;
+      clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
+      cadreNodeInternals(node).selfRegistrationTimer = null;
 
       node.initializeSeedBootstrap(privateKeyB64);
 
@@ -1080,7 +1105,7 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
       // A second node accepts the seed once it trusts the signer (pinned key) —
       // the signer is now backed by an authority peer the seed carries.
       const receiver = new SeedBootstrapService({ partyId: after.partyId });
-      (receiver as any).libp2pNode = makeReceiverLibp2p();
+      serviceInternals(receiver).libp2pNode = makeReceiverLibp2p();
       const applied = await receiver.applySeed(after, {
         trustPolicy: pinnedKeyTrustPolicy([after.signerKey]),
       });
@@ -1118,8 +1143,8 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
     try {
       await node.start();
       const selfPeerId = node.peerId!.toString();
-      clearTimeout((node as any).selfRegistrationTimer);
-      (node as any).selfRegistrationTimer = null;
+      clearTimeout(cadreNodeInternals(node).selfRegistrationTimer ?? undefined);
+      cadreNodeInternals(node).selfRegistrationTimer = null;
 
       node.initializeSeedBootstrap(privateKeyB64);
       const db = node.getControlDatabase();

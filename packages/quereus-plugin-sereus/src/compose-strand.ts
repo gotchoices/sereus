@@ -1,5 +1,5 @@
 import debug from 'debug';
-import type { Database } from '@quereus/quereus';
+import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
@@ -27,9 +27,9 @@ interface CollectionFactory {
  */
 interface OptimysticPluginResult {
 	collectionFactory: CollectionFactory;
-	vtables: Array<{ name: string; module: unknown; auxData: unknown }>;
-	functions: Array<{ schema: unknown }>;
-	collations?: Array<{ name: string; func: unknown; normalizer?: unknown }>;
+	vtables: VTablePluginInfo[];
+	functions: FunctionPluginInfo[];
+	collations?: CollationPluginInfo[];
 	/**
 	 * Hydrate Quereus's in-memory catalog from persisted optimystic vtab schemas.
 	 * Must run BEFORE `apply schema App;` on a warm restart so the declarative
@@ -43,9 +43,9 @@ interface OptimysticPluginResult {
 
 /** Registration shape shared by the crypto and optimystic plugin results. */
 interface PluginRegistrations {
-	vtables?: Array<{ name: string; module: unknown; auxData: unknown }>;
-	functions?: Array<{ schema: unknown }>;
-	collations?: Array<{ name: string; func: unknown; normalizer?: unknown }>;
+	vtables?: VTablePluginInfo[];
+	functions?: FunctionPluginInfo[];
+	collations?: CollationPluginInfo[];
 }
 
 /**
@@ -57,13 +57,13 @@ interface PluginRegistrations {
  */
 export function applyRegistrations(db: Database, result: PluginRegistrations): void {
 	for (const vtable of result.vtables ?? []) {
-		db.registerModule(vtable.name, vtable.module as any, vtable.auxData);
+		db.registerModule(vtable.name, vtable.module, vtable.auxData);
 	}
 	for (const func of result.functions ?? []) {
-		db.registerFunction(func.schema as any);
+		db.registerFunction(func.schema);
 	}
 	for (const collation of result.collations ?? []) {
-		db.registerCollation(collation.name, collation.func as any, collation.normalizer as any);
+		db.registerCollation(collation.name, collation.func, collation.normalizer);
 	}
 }
 
@@ -185,7 +185,7 @@ export async function composeStrand(
 	const pluginResult = optimysticPlugin(
 		db,
 		pluginConfig as unknown as Parameters<typeof optimysticPlugin>[1],
-	) as OptimysticPluginResult;
+	) as unknown as OptimysticPluginResult;
 	applyRegistrations(db, pluginResult);
 	log('Registered optimystic vtables and functions');
 

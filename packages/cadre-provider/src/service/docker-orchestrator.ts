@@ -202,8 +202,8 @@ export class DockerOrchestrator implements Orchestrator {
     return {
       cpuPercent,
       memoryBytes: stats.memory_stats.usage ?? 0,
-      networkRxBytes: Object.values(stats.networks ?? {}).reduce((sum: number, n: any) => sum + (n.rx_bytes ?? 0), 0) as number,
-      networkTxBytes: Object.values(stats.networks ?? {}).reduce((sum: number, n: any) => sum + (n.tx_bytes ?? 0), 0) as number,
+      networkRxBytes: Object.values(stats.networks ?? {}).reduce((sum, n) => sum + (n.rx_bytes ?? 0), 0),
+      networkTxBytes: Object.values(stats.networks ?? {}).reduce((sum, n) => sum + (n.tx_bytes ?? 0), 0),
     };
   }
 

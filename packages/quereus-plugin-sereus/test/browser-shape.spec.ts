@@ -25,6 +25,16 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const pkgRoot = resolve(__dirname, '..');
 const bundlePath = resolve(pkgRoot, 'dist', 'plugin-browser.js');
 
+/** Shape of the prebuilt browser bundle: a default plugin-registration export. */
+interface BrowserPluginModule {
+	default: (db: unknown, config: Record<string, unknown>) => Promise<unknown>;
+}
+
+/** Minimal `indexedDB` surface this smoke test reads (installed by fake-indexeddb). */
+interface IndexedDBLike {
+	databases?(): Promise<Array<{ name?: string }>>;
+}
+
 beforeAll(() => {
 	if (!existsSync(bundlePath)) {
 		const r = spawnSync('node', ['scripts/build-browser.mjs'], {
@@ -63,17 +73,17 @@ function stubDatabase() {
 describe('browser bundle module shape', () => {
 	// 2.5 MiB ESM parses in roughly 1-5s on a cold cache; give it headroom.
 	it('default export is a function', { timeout: 30_000 }, async () => {
-		const mod: any = await import(pathToFileURL(bundlePath).href);
+		const mod = await import(pathToFileURL(bundlePath).href) as BrowserPluginModule;
 		expect(typeof mod.default).toBe('function');
 	});
 
 	it('invoking default reaches IndexedDB open before failing on libp2p', { timeout: 30_000 }, async () => {
-		const mod: any = await import(pathToFileURL(bundlePath).href);
+		const mod = await import(pathToFileURL(bundlePath).href) as BrowserPluginModule;
 		const db = stubDatabase();
 
 		let caught: unknown;
 		try {
-			await mod.default(db as any, { strand_id: 'shape-test' });
+			await mod.default(db, { strand_id: 'shape-test' });
 		} catch (err) {
 			caught = err;
 		}
@@ -89,8 +99,9 @@ describe('browser bundle module shape', () => {
 		// which goes through `idb` → `indexedDB.open(...)`. After that, depending
 		// on jsdom/libp2p quirks, the libp2p creation may or may not fail; either
 		// outcome is fine for this smoke test.
-		const dbs = await (globalThis as any).indexedDB.databases?.() ?? [];
-		const names = dbs.map((d: { name?: string }) => d.name);
+		const indexedDB = (globalThis as { indexedDB: IndexedDBLike }).indexedDB;
+		const dbs = await indexedDB.databases?.() ?? [];
+		const names = dbs.map((d) => d.name);
 		expect(names).toContain('sereus-strand-shape-test');
 
 		// If we did catch an error, surface it for debugging but don't fail.

@@ -57,10 +57,10 @@ export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
 
     // No auth mode - for development
     if (config.mode === 'none') {
-      (request as any).customer = {
+      request.customer = {
         customerId: 'dev-customer',
         permissions: ['*'],
-      } as CustomerIdentity;
+      };
       return;
     }
 
@@ -135,7 +135,7 @@ export function registerAuth(app: FastifyInstance, ctx: AuthContext): void {
         });
       }
 
-      (request as any).customer = customer;
+      request.customer = customer;
       log('Authenticated customer: %s', customer.customerId);
 
     } catch (error) {

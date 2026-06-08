@@ -49,6 +49,14 @@ export interface CustomerIdentity {
   permissions: string[];
 }
 
+// The auth preHandler (see auth.ts) attaches the authenticated identity to the
+// request; declare it on Fastify's request type so handlers read it type-safely.
+declare module 'fastify' {
+  interface FastifyRequest {
+    customer?: CustomerIdentity;
+  }
+}
+
 /** Helper for error responses */
 function errorResponse(reply: FastifyReply, code: string, message: string, status = 400) {
   return reply.status(status).send({
@@ -82,7 +90,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.post(`${basePath}/containers`, async (request, reply) => {
     log('POST %s/containers', basePath);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -136,7 +144,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.get(`${basePath}/containers`, async (request, reply) => {
     log('GET %s/containers', basePath);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -155,7 +163,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const { id } = request.params as { id: string };
     log('GET %s/containers/%s', basePath, id);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -182,7 +190,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const { id } = request.params as { id: string };
     log('DELETE %s/containers/%s', basePath, id);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -228,7 +236,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const { id } = request.params as { id: string };
     log('GET %s/containers/%s/peer', basePath, id);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -260,7 +268,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     const { id } = request.params as { id: string };
     log('PUT %s/containers/%s/seed', basePath, id);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }
@@ -304,7 +312,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
   app.get(`${basePath}/billing/status`, async (request, reply) => {
     log('GET %s/billing/status', basePath);
 
-    const customer = (request as any).customer as CustomerIdentity | undefined;
+    const customer = request.customer;
     if (!customer) {
       return errorResponse(reply, 'UNAUTHORIZED', 'Authentication required', 401);
     }

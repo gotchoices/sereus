@@ -64,6 +64,11 @@ const timing = debug('sereus:cadre:timing');
 
 type EventHandler<T> = (data: T) => void;
 
+/** Libp2p node with the coordinatedRepo attached by createLibp2pNode. */
+interface Libp2pNodeWithRepo extends Libp2p {
+  coordinatedRepo: IRepo;
+}
+
 /**
  * CadreNode is the main entry point for a cadre member.
  * It manages:
@@ -85,7 +90,7 @@ export class CadreNode implements SAppIdLookup {
   private strandSolicitationService: StrandSolicitationService | null = null;
   private strandWakeService: StrandWakeService | null = null;
   private running = false;
-  private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<any>>> = new Map();
+  private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<never>>> = new Map();
 
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
   private sAppConfigs: Map<string, SAppConfig> = new Map();
@@ -225,7 +230,7 @@ export class CadreNode implements SAppIdLookup {
       log('Control node started with ID: %s', this.controlNode.peerId.toString());
 
       // Extract coordinatedRepo from the node (attached by createLibp2pNode)
-      const coordinatedRepo = (this.controlNode as any).coordinatedRepo as IRepo;
+      const coordinatedRepo = (this.controlNode as Libp2pNodeWithRepo).coordinatedRepo;
       if (!coordinatedRepo) {
         throw new Error('coordinatedRepo not available on control node');
       }
@@ -333,7 +338,9 @@ export class CadreNode implements SAppIdLookup {
     data: CadreNodeEvents[K]
   ): void {
     this.eventHandlers.get(event)?.forEach(handler => {
-      try { handler(data); } catch (e) { log('Event handler error: %o', e); }
+      try {
+        (handler as EventHandler<CadreNodeEvents[K]>)(data);
+      } catch (e) { log('Event handler error: %o', e); }
     });
   }
 

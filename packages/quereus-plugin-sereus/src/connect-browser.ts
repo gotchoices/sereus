@@ -1,4 +1,4 @@
-import type { Database } from '@quereus/quereus';
+import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInfo } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import { createLibp2pNode } from '@optimystic/db-p2p/rn';
 import { webSockets } from '@libp2p/websockets';
@@ -10,9 +10,9 @@ import { composeStrand, applyRegistrations } from './compose-strand.js';
 
 /** The subset of the crypto plugin result we register inline in the browser. */
 interface CryptoPluginResult {
-	vtables: Array<{ name: string; module: unknown; auxData: unknown }>;
-	functions: Array<{ schema: unknown }>;
-	collations: Array<{ name: string; func: unknown; normalizer?: unknown }>;
+	vtables: VTablePluginInfo[];
+	functions: FunctionPluginInfo[];
+	collations: CollationPluginInfo[];
 }
 
 /**
@@ -32,7 +32,7 @@ export async function connectToStrandBrowser(
 ): Promise<SereusPluginResult> {
 	return composeStrand(db, options, {
 		registerCrypto(database) {
-			applyRegistrations(database, cryptoPlugin(database, {}) as CryptoPluginResult);
+			applyRegistrations(database, cryptoPlugin(database, {}) as unknown as CryptoPluginResult);
 		},
 		async resolveStorage({ strandId, resolvedTransactor, requestedStorage }) {
 			if (requestedStorage) return requestedStorage;

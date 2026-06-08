@@ -7,13 +7,13 @@
 // large pre-existing backlog are `warn` so the gate stays green while the backlog
 // is burned down separately. The mechanical backlog (unused-vars, preserve-caught-
 // error, no-empty, no-useless-assignment, no-control-regex, prefer-const,
-// consistent-type-imports) has been burned down and is now enforced as `error`;
-// only `no-explicit-any` and the svelte reactivity rules remain `warn` (tracked in
-// the lint-cleanup-no-explicit-any and lint-cleanup-svelte tickets). See the review
-// handoff for the error/warn rationale and the AGENTS.md rules NOT enforceable here.
+// consistent-type-imports) and `no-explicit-any` have been burned down and are now
+// enforced as `error`; only the svelte reactivity rules remain `warn` (tracked in
+// the lint-cleanup-svelte ticket). See the review handoff for the error/warn
+// rationale and the AGENTS.md rules NOT enforceable here.
 //
 // AGENTS.md rule coverage (see tickets/review handoff for the full table):
-//   - "avoid `any`"                  -> @typescript-eslint/no-explicit-any   (warn: backlog)
+//   - "avoid `any`"                  -> @typescript-eslint/no-explicit-any   (error)
 //   - "`void` unused promises"       -> @typescript-eslint/no-floating-promises (error, type-aware, src only)
 //   - "`_` prefix unused args"       -> @typescript-eslint/no-unused-vars    (error)
 //   - "braces around case w/ locals" -> no-case-declarations                 (error, built-in)
@@ -83,8 +83,8 @@ export default tseslint.config(
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {
-			// "Don't be type lazy - avoid `any`" — large pre-existing backlog -> warn.
-			'@typescript-eslint/no-explicit-any': 'warn',
+			// "Don't be type lazy - avoid `any`" — backlog burned down, enforced as error.
+			'@typescript-eslint/no-explicit-any': 'error',
 			// "Prefix unused arguments with `_`" — enforced as error; honors the `_` convention.
 			'@typescript-eslint/no-unused-vars': ['error', {
 				args: 'all',

@@ -1,5 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { Database } from '@quereus/quereus';
+import { Database, type SqlValue } from '@quereus/quereus';
+import type { Libp2p } from '@libp2p/interface';
+import type { IRepo } from '@optimystic/db-core';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
 
@@ -40,7 +42,7 @@ function createMockNode() {
 		getConnections: () => [],
 		addEventListener: vi.fn(),
 		removeEventListener: vi.fn(),
-	} as any;
+	} as unknown as Libp2p;
 }
 
 describe('parseConfig', () => {
@@ -152,7 +154,7 @@ describe('connectToStrand', () => {
 		});
 
 		// Verify crypto functions are registered by calling digest
-		const rows: any[] = [];
+		const rows: Array<Record<string, SqlValue>> = [];
 		for await (const row of db.eval("select digest('hello', 'sha256', 'utf8') as h")) {
 			rows.push(row);
 		}
@@ -169,7 +171,7 @@ describe('connectToStrand', () => {
 		});
 
 		// StampId() returns null outside a transaction context, but the function should exist
-		const rows: any[] = [];
+		const rows: Array<Record<string, SqlValue>> = [];
 		for await (const row of db.eval('select StampId() as sid')) {
 			rows.push(row);
 		}
@@ -186,7 +188,7 @@ describe('connectToStrand', () => {
 		});
 
 		// The App.Message table should exist and be queryable
-		const rows: any[] = [];
+		const rows: Array<Record<string, SqlValue>> = [];
 		for await (const row of db.eval('select * from App.Message')) {
 			rows.push(row);
 		}
@@ -219,7 +221,7 @@ describe('connectToStrand', () => {
 			strandId: 'test-strand-5',
 			transactor: 'test',
 			libp2pNode: mockNode,
-			coordinatedRepo: mockRepo as any,
+			coordinatedRepo: mockRepo as unknown as IRepo,
 		});
 
 		// createLibp2pNode should NOT have been called
@@ -261,7 +263,7 @@ describe('connectToStrand', () => {
 
 		// If default vtab is set correctly, tables created via `declare schema`
 		// (which omit USING) are backed by the optimystic module.
-		const rows: any[] = [];
+		const rows: Array<Record<string, SqlValue>> = [];
 		for await (const row of db.eval('select * from App.TestTable')) {
 			rows.push(row);
 		}

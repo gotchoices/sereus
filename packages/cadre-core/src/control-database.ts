@@ -1,6 +1,7 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { Database, registerPlugin } from '@quereus/quereus';
+import type { VTablePluginInfo, FunctionPluginInfo } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
@@ -89,8 +90,8 @@ interface CollectionFactory {
 /** Result of registering the optimystic plugin */
 interface OptimysticPluginResult {
   collectionFactory: CollectionFactory;
-  vtables: Array<{ name: string; module: unknown; auxData: unknown }>;
-  functions: Array<{ schema: unknown }>;
+  vtables: VTablePluginInfo[];
+  functions: FunctionPluginInfo[];
   [key: string]: unknown;
 }
 
@@ -175,14 +176,14 @@ export class ControlDatabase {
       default_key_network: 'libp2p',
       default_network_name: networkName,
       enable_cache: true,
-    }) as OptimysticPluginResult;
+    }) as unknown as OptimysticPluginResult;
 
     // Register vtables and functions manually since we need access to collectionFactory
-    for (const vtable of pluginResult.vtables as Array<{ name: string; module: unknown; auxData: unknown }>) {
-      this.db.registerModule(vtable.name, vtable.module as any, vtable.auxData);
+    for (const vtable of pluginResult.vtables) {
+      this.db.registerModule(vtable.name, vtable.module, vtable.auxData);
     }
-    for (const func of pluginResult.functions as Array<{ schema: unknown }>) {
-      this.db.registerFunction(func.schema as any);
+    for (const func of pluginResult.functions) {
+      this.db.registerFunction(func.schema);
     }
     timing('[controlDb] optimysticPlugin: %dms', Math.round(performance.now() - t0));
 
