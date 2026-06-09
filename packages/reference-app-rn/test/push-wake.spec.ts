@@ -241,6 +241,54 @@ describe('createPushWakeHandler', () => {
       vi.useRealTimers();
     }
   });
+
+  it('foreground with no node → no-node no-op (never throws, no node calls)', async () => {
+    const handler = createPushWakeHandler({ getNode: () => null, isForeground: () => true });
+    const outcome = await handler.handle(VALID);
+    expect(outcome).toEqual({ handled: false, reason: 'no-node' });
+    expect(node.serviceWake).not.toHaveBeenCalled();
+    expect(node.wakeStrand).not.toHaveBeenCalled();
+  });
+
+  it('foreground wakeStrand failure is swallowed → still handled, no recordStrandActivity', async () => {
+    node.wakeStrand.mockRejectedValueOnce(new Error('strand gone'));
+    const handler = createPushWakeHandler({ getNode: () => asNode(node), isForeground: () => true });
+    const outcome = await handler.handle(VALID);
+    expect(outcome).toMatchObject({ handled: true, mode: 'foreground' });
+    // The throw short-circuits before recordStrandActivity; serviceWake is never reached.
+    expect(node.recordStrandActivity).not.toHaveBeenCalled();
+    expect(node.serviceWake).not.toHaveBeenCalled();
+  });
+
+  it('cold start: a stopped (not-running) node is restarted via ensureNode before serviceWake', async () => {
+    node.running = false;
+    const ensureNode = vi.fn(async () => {
+      node.running = true;
+    });
+    const handler = createPushWakeHandler({
+      getNode: () => asNode(node),
+      ensureNode,
+      isForeground: () => false,
+    });
+    const outcome = await handler.handle(VALID);
+    expect(ensureNode).toHaveBeenCalledTimes(1);
+    expect(node.serviceWake).toHaveBeenCalledTimes(1);
+    expect(outcome).toMatchObject({ handled: true, mode: 'service-wake' });
+  });
+
+  it('background: ensureNode that fails to bring a node up → no-node no-op', async () => {
+    const ensureNode = vi.fn(async () => {
+      /* never starts a node */
+    });
+    const handler = createPushWakeHandler({
+      getNode: () => null,
+      ensureNode,
+      isForeground: () => false,
+    });
+    const outcome = await handler.handle(VALID);
+    expect(ensureNode).toHaveBeenCalledTimes(1);
+    expect(outcome).toEqual({ handled: false, reason: 'no-node' });
+  });
 });
 
 // ── Registrar ────────────────────────────────────────────────────────────────
