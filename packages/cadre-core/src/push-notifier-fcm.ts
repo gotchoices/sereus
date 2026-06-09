@@ -18,6 +18,7 @@ import { sign } from 'node:crypto';
 import debug from 'debug';
 import type { FcmCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
+import { MAX_REASON_LEN, b64urlJson, errText, redact } from './push-notifier-shared.js';
 
 const TOKEN_ENDPOINT = 'https://oauth2.googleapis.com/token';
 const FCM_SCOPE = 'https://www.googleapis.com/auth/firebase.messaging';
@@ -26,8 +27,6 @@ const JWT_BEARER_GRANT = 'urn:ietf:params:oauth:grant-type:jwt-bearer';
 const TOKEN_REFRESH_SKEW_MS = 60_000;
 /** OAuth2 access tokens are short-lived (≤1h); assume 1h when unstated. */
 const DEFAULT_TOKEN_TTL_MS = 3_600_000;
-/** Defensive cap on the free-form `reason` carried in the data payload. */
-const MAX_REASON_LEN = 256;
 
 const debugFcm = debug('sereus:cadre:push:fcm');
 
@@ -206,23 +205,10 @@ function errorSummary(status: number, body: string): string {
   return code ? `fcm ${status} ${code}` : `fcm ${status}`;
 }
 
-function b64urlJson(obj: unknown): string {
-  return Buffer.from(JSON.stringify(obj)).toString('base64url');
-}
-
 async function safeText(res: FcmResponseLike): Promise<string> {
   try {
     return await res.text();
   } catch {
     return '';
   }
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** Redact a device token to a short non-reversible prefix for debug lines. */
-function redact(token: string): string {
-  return token.length <= 8 ? '…' : `${token.slice(0, 6)}…`;
 }

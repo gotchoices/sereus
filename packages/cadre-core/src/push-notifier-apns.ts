@@ -24,13 +24,12 @@ import * as http2 from 'node:http2';
 import debug from 'debug';
 import type { ApnsCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
+import { MAX_REASON_LEN, b64urlJson, errText, redact } from './push-notifier-shared.js';
 
 const APNS_PROD_HOST = 'https://api.push.apple.com';
 const APNS_SANDBOX_HOST = 'https://api.sandbox.push.apple.com';
 /** Apple requires the provider token be 20–60 min old; refresh well inside that. */
 const PROVIDER_TOKEN_TTL_MS = 45 * 60_000;
-/** Defensive cap on the free-form `reason` carried in the payload. */
-const MAX_REASON_LEN = 256;
 
 const debugApns = debug('sereus:cadre:push:apns');
 
@@ -237,17 +236,4 @@ function apnsReason(body: string): string | null {
   } catch {
     return null;
   }
-}
-
-function b64urlJson(obj: unknown): string {
-  return Buffer.from(JSON.stringify(obj)).toString('base64url');
-}
-
-function errText(err: unknown): string {
-  return err instanceof Error ? err.message : String(err);
-}
-
-/** Redact a device token to a short non-reversible prefix for debug lines. */
-function redact(token: string): string {
-  return token.length <= 8 ? '…' : `${token.slice(0, 6)}…`;
 }

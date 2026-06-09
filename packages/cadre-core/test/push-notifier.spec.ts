@@ -193,6 +193,14 @@ describe('FcmPushNotifier', () => {
     const result = await notifier.send({ token: 't', platform: 'fcm', payload: PAYLOAD });
     expect(result).toMatchObject({ ok: false, unregistered: false, error: expect.stringContaining('oauth') });
   });
+
+  it('does not re-mint indefinitely: a persistent 401 yields a transient failure after exactly one re-mint', async () => {
+    const fake = fakeFcmFetch({ send: [{ status: 401, body: { error: { status: 'UNAUTHENTICATED' } } }] });
+    const notifier = createFcmPushNotifier(FCM_CREDS, { fetch: fake.fetch });
+    const result = await notifier.send({ token: 't', platform: 'fcm', payload: PAYLOAD });
+    expect(result).toMatchObject({ ok: false, unregistered: false });
+    expect(fake.tokenCalls).toBe(2); // initial mint + a single re-mint, then give up
+  });
 });
 
 // ── APNs ────────────────────────────────────────────────────────────────────
@@ -260,6 +268,15 @@ describe('ApnsPushNotifier', () => {
     expect(fake.requests[0].headers.authorization).not.toBe(fake.requests[1].headers.authorization);
   });
 
+  it('does NOT re-mint on a 403 that is not ExpiredProviderToken (e.g. InvalidProviderToken)', async () => {
+    const fake = fakeApnsTransport([{ status: 403, body: JSON.stringify({ reason: 'InvalidProviderToken' }) }]);
+    const notifier = createApnsPushNotifier(APNS_CREDS, { transport: fake.transport });
+    const result = await notifier.send({ token: 'tok', platform: 'apns', payload: PAYLOAD });
+    // A config-level 403 is transient, not a token-expiry — the re-mint+retry path is gated on the reason.
+    expect(result).toMatchObject({ ok: false, unregistered: false });
+    expect(fake.requests).toHaveLength(1);
+  });
+
   it('re-establishes once on a thrown session error (GOAWAY) and retries', async () => {
     const fake = fakeApnsTransport([new Error('GOAWAY: session destroyed'), { status: 200, body: '' }]);
     const notifier = createApnsPushNotifier(APNS_CREDS, { transport: fake.transport });
@@ -307,6 +324,17 @@ describe('createPushNotifier (router)', () => {
     const notifier = createPushNotifier({ fcm: FCM_CREDS }, { fcm: { fetch: fcm.fetch } });
     const result = await notifier.send({ token: 'b', platform: 'apns', payload: PAYLOAD });
     expect(result).toEqual({ ok: false, unregistered: false, error: 'no apns credentials' });
+  });
+
+  it('with no credentials at all, every platform is a best-effort no-op', async () => {
+    const notifier = createPushNotifier({});
+    expect(await notifier.send({ token: 'a', platform: 'fcm', payload: PAYLOAD })).toEqual({
+      ok: false, unregistered: false, error: 'no fcm credentials',
+    });
+    expect(await notifier.send({ token: 'b', platform: 'apns', payload: PAYLOAD })).toEqual({
+      ok: false, unregistered: false, error: 'no apns credentials',
+    });
+    await notifier.close(); // no transports to release — must not throw
   });
 
   it('close() releases all configured platform transports', async () => {
