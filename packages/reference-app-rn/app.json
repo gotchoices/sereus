@@ -12,16 +12,26 @@
     ],
     "ios": {
       "bundleIdentifier": "org.gotchoices.sereus.chat",
-      "supportsTablet": true
+      "supportsTablet": true,
+      "infoPlist": {
+        "UIBackgroundModes": [
+          "remote-notification"
+        ]
+      }
     },
     "android": {
       "package": "org.gotchoices.sereus.chat",
       "adaptiveIcon": {
         "backgroundColor": "#1a1a2e"
-      }
+      },
+      "permissions": [
+        "android.permission.POST_NOTIFICATIONS",
+        "android.permission.WAKE_LOCK"
+      ]
     },
     "plugins": [
-      "expo-router"
+      "expo-router",
+      "expo-notifications"
     ],
     "extra": {
       "router": {},

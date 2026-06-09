@@ -32,6 +32,7 @@ import {
   type RunnerState,
 } from './background-runner';
 import { createReactNativeAppState } from './app-state';
+import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './push-wake-native';
 import { uuid } from './uuid';
 
 /** How long a closed-strand invitation stays valid (24h). */
@@ -218,6 +219,10 @@ export function useCadreInternal(): UseCadreResult {
       setPeerId(started.peerId?.toString() ?? null);
       setStrands(new Map(started.getStrands()));
       setStatus('connected');
+      // Acquire + publish the FCM/APNs device token so a server peer can push-wake
+      // this phone while suspended. Best-effort: permission-denied / pre-membership
+      // defers silently and retries on the next start (see push-wake-native).
+      void acquireAndRegisterDeviceToken();
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
@@ -226,6 +231,10 @@ export function useCadreInternal(): UseCadreResult {
   }, []);
 
   const stop = useCallback(async () => {
+    // Clear the DeviceToken row + drop the rotation listener before stopping, so a
+    // logged-out phone is no longer push-wake addressable. Best-effort (logs on
+    // failure); must run before stopPhoneNode tears the node down.
+    await clearDeviceTokenRegistration();
     await stopPhoneNode();
     setNode(null);
     nodeRef.current = null;

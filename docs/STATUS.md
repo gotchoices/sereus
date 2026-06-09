@@ -216,8 +216,8 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
   - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
-  - Out of scope (owned by `tickets/implement/3-mobile-push-wake-receive.md`): the automatic trigger
-    policy (a server fanning wakes on detected activity) and mobile FCM/APNs delivery.
+  - Out of scope here: the automatic trigger policy (a server fanning wakes on detected activity, owned by
+    `cadre-server-push-fanout`). Mobile FCM/APNs **receive** delivery has since shipped (see below).
 - [x] Device-token registry (the resolve primitive FCM/APNs delivery needs)
   - `DeviceToken` control-network table (in `control-schema.ts` + `schemas/control.qsql`), modeled on
     `CadrePeer`: self-published, monotonic `UpdatedAt`, self-`Sig` over `(PeerId|Platform|Token|UpdatedAt)`
@@ -241,6 +241,24 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     coalesced per-strand and sharing one runtime build with a racing push-wake; returns a branchable
     `ServiceWakeResult { strandId, serviced, hadActivity }` instead of throwing when not running / unknown.
   - `running` / `controlConnected` getters give headless callers a synchronous readiness snapshot.
+- [x] Mobile push-wake **receive** path (RN reference app, managed Expo SDK 53 + `expo-dev-client`)
+  - `packages/reference-app-rn/src/push-wake.ts` (platform-agnostic, unit-tested): the shared
+    `StrandWakePayload { type:'strand-wake', strandId, reason }` contract (consumed by the pending
+    `cadre-server-push-fanout` sender), its defensive parser, `extractPushData` (Android JSON `dataString` /
+    iOS keys), the background-task handler (parse → foreground-vs-background route → cold-start ensure →
+    bounded `awaitControlConnected` → `serviceWake`), and the `DeviceToken` registrar (deferred-retry on
+    pre-membership). Foreground pushes route to `wakeStrand`+`recordStrandActivity` (no re-hibernate).
+  - `push-wake-native.ts` (the only RN/expo-coupled module, mirrors `app-state.ts`): defines + registers the
+    `expo-notifications`/`expo-task-manager` background task (wired in `index.js`), acquires the raw FCM/APNs
+    token (`getDevicePushTokenAsync`), and re-publishes on rotation. `use-cadre` calls it on start / clears on
+    stop. Library rationale (Expo first-party over bare-RN headless JS / `notifee`) in the ticket handoff.
+  - Config: `app.json` iOS `UIBackgroundModes:[remote-notification]` + `expo-notifications` plugin; Android
+    `POST_NOTIFICATIONS`/`WAKE_LOCK` (manifest + plugin permissions). No FGS (data-message window suffices).
+  - **Best-effort by design**: iOS silent push is rate-limited/coalesced and Android Doze defers data messages
+    without a battery-optimization opt-out — the check-in wake is the backstop. Cold-start into a fully OS-killed
+    process is **not** yet wired (start options aren't persisted) → degrades to a `no-node` no-op. Human/infra
+    prerequisites (`google-services.json`, paid APNs creds + push capability) and on-device validation are
+    out-of-agent; steps recorded in `tickets/review/3-mobile-push-wake-receive.md`.
 
 ## Testing / CI
 
