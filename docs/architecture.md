@@ -746,6 +746,65 @@ drives `ensureAuthorityKey(pub)` + `initializeSeedBootstrap(priv)` itself rather
 than cadre-core silently running genesis. A future separate-authority slot
 (`authorityKeyId`) is anticipated but not yet built.
 
+#### Mobile secure backend (`SecureStoreKeyStore`)
+
+The React Native reference app (`reference-app-rn`) backs the seam with
+**`expo-secure-store`** (`src/secure-key-store.ts`): iOS **Keychain**
+(`kSecClassGenericPassword`) and Android **Keystore**-encrypted SharedPreferences.
+The phone node's identity (and the authority key derived from it) therefore lives
+in the platform enclave rather than the plaintext LevelDB the app used before.
+`cadre-phone.ts` constructs the store and passes it as `keyStore` — cadre-core's
+load-or-create path does the rest. Bridging details the backend handles:
+
+- **Bytes ↔ text.** SecureStore stores strings; material is base64-encoded on
+  `set`, decoded on `get` (lossless for the protobuf bytes).
+- **KeyId → SecureStore key.** SecureStore keys allow only `[A-Za-z0-9._-]`, so a
+  logical keyId (e.g. `cadre/identity`) is base64url-encoded under a `sereus.ks.`
+  prefix — deterministic and collision-free.
+- **`list()` via index.** Neither enclave can enumerate keys, so a reserved
+  `sereus.ks.__index` entry holds a JSON array of logical keyIds. Material is
+  written before the index (a crash leaves an orphaned-but-readable slot, never an
+  index entry pointing at missing material); index writes are serialized.
+- **Access vs absence.** A thrown `getItemAsync` (e.g. a cancelled biometric
+  prompt) surfaces as `KeyStoreAccessError`; a `null` return becomes `undefined`.
+  Only `undefined` triggers regeneration, so a transient access failure never
+  orphans the real identity.
+
+**Gating.** The identity slot defaults to **no `requireAuthentication`** (the node
+must come up headless / in the background — push-wake and the background runner —
+and a biometric-set change would invalidate a gated entry). iOS accessibility is
+`AFTER_FIRST_UNLOCK` so the slot is readable while locked after first unlock.
+Biometric gating remains *available* (`requireAuthentication: true` +
+`SecureStore.canUseBiometricAuthentication()`), but enabling it additionally
+requires an `NSFaceIDUsageDescription` string in `app.json` and is **unsupported
+under Expo Go**.
+
+**One-time migration.** On upgrade, if the secure slot is empty and the old
+plaintext LevelDB identity DB (`sereus-peer-identity`) holds a key, the app lifts
+it into the enclave once (then clears the plaintext copy), so the device keeps its
+PeerId/authority across the upgrade. A failed legacy read falls through to fresh
+generation (logged, never logging key material).
+
+**Reinstall & recovery behavior:**
+
+| Platform | After app uninstall/reinstall |
+| --- | --- |
+| **iOS** | Keychain items **persist** by default → identity/authority survive; the node resumes with the same PeerId. |
+| **Android** | Uninstall wipes the app's SharedPreferences → the Keystore-encrypted entries are **lost**; the node generates a new identity on reinstall. |
+
+- **Biometric invalidation.** Entries written with `requireAuthentication: true`
+  are invalidated when the device's biometric set changes (new fingerprint /
+  re-enrolled Face ID). Per Expo's API, a subsequent read then resolves `null`
+  (indistinguishable from an empty slot) rather than throwing — another reason the
+  identity slot is not biometric-gated by default.
+- **Recovery.** A node that has lost its enclave entries (Android reinstall,
+  biometric invalidation, device loss) does **not** recover the old key. It
+  re-enrolls from another cadre node via the existing invite/seed flow
+  (`applySeed` with the inviting cadre's authority keys pinned — see
+  [Enrollment and Bootstrap](#enrollment-and-bootstrap)), receiving a fresh
+  identity. The settings screen surfaces the node's **authority
+  public key** (base64url) precisely so it can be shared for that (re-)pairing.
+
 ### Strand Instance State
 
 ```typescript

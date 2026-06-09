@@ -7,7 +7,7 @@
  * - Authority role: the phone holds the signing keys
  */
 
-import { CadreNode, authorityKeyFromLibp2p, ControlFormationUsageRecorder } from '@serfab/cadre-core';
+import { CadreNode, ControlFormationUsageRecorder, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
 import type {
   CadreNodeConfig,
   ControlNetworkSeed,
@@ -18,17 +18,15 @@ import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure,
+  KeyStore,
 } from '@serfab/cadre-core';
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import type { PrivateKey } from '@libp2p/interface';
-import {
-  LevelDBRawStorage,
-  loadOrCreateRNPeerKey,
-  openOptimysticRNDb,
-} from '@optimystic/db-p2p-storage-rn';
+import * as SecureStore from 'expo-secure-store';
+import { LevelDBRawStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
+import { SecureStoreKeyStore, migrateLegacyIdentity } from './secure-key-store';
 
 // ── LevelDB helpers ──────────────────────────────────────────────────────────
 // Each strand (and the peer identity) gets its own LevelDB database file.
@@ -47,17 +45,70 @@ function createStorage(strandId: string) {
 	return new LevelDBRawStorage(openLevelDb(`sereus-${strandId}`));
 }
 
-// ── Peer identity ───────────────────────────────────────────────────────────
-// Persist a single Ed25519 keypair so the phone keeps the same PeerId across
-// restarts. LevelDB on-disk is not secure storage (not Keychain/Keystore) —
-// acceptable for v1; secure storage is tracked separately.
+// ── Peer identity (secure enclave) ────────────────────────────────────────────
+// The phone's single Ed25519 keypair (its PeerId, and the authority key derived
+// from it) is held in the platform secure enclave — iOS Keychain / Android
+// Keystore-encrypted storage — via expo-secure-store, NOT plaintext LevelDB.
+// cadre-core loads/generates the identity through this store on start().
+//
+// Gating: no `requireAuthentication` (the node must come up headless / in the
+// background, and a biometric-set change would invalidate the entry).
+// `AFTER_FIRST_UNLOCK` lets iOS read the slot while the device is locked after
+// the first unlock — needed for background / push-wake bring-up. Enabling
+// biometric gating later also requires `NSFaceIDUsageDescription` in app.json
+// and is unsupported under Expo Go.
+const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, {
+	keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
+});
 
+// Legacy plaintext identity DB (pre-secure-store). Retained only so a one-time
+// migration can lift an existing identity into the enclave on upgrade; new nodes
+// never write here. This dedicated DB only ever held the single identity blob.
 const PEER_IDENTITY_DB_NAME = 'sereus-peer-identity';
 
-async function loadOrCreatePhoneKey(): Promise<PrivateKey> {
+/**
+ * Read the legacy plaintext identity protobuf bytes from {@link PEER_IDENTITY_DB_NAME},
+ * or undefined when the DB is empty/absent (fresh install). That DB only ever
+ * held the single identity blob (written by the old `loadOrCreateRNPeerKey`), so
+ * the first entry's value IS the identity. Throws only if the DB cannot be
+ * opened/iterated — {@link migrateLegacyIdentity} treats that as "read failed →
+ * generate fresh". Never logs key material.
+ */
+async function readLegacyIdentityBytes(): Promise<Uint8Array | undefined> {
 	const db = openLevelDb(PEER_IDENTITY_DB_NAME);
 	try {
-		return await loadOrCreateRNPeerKey(db);
+		const iter = db.iterator();
+		try {
+			const first = await iter.next();
+			const value = first?.[1];
+			return value && value.byteLength > 0 ? value : undefined;
+		} finally {
+			await iter.close();
+		}
+	} finally {
+		await db.close();
+	}
+}
+
+/**
+ * Best-effort removal of the legacy plaintext identity after a successful
+ * migration, so the device stops keeping an unencrypted copy of the key.
+ */
+async function deleteLegacyIdentity(): Promise<void> {
+	const db = openLevelDb(PEER_IDENTITY_DB_NAME);
+	try {
+		const keys: Uint8Array[] = [];
+		const iter = db.iterator({ keys: true });
+		try {
+			for (let entry = await iter.next(); entry; entry = await iter.next()) {
+				keys.push(entry[0]);
+			}
+		} finally {
+			await iter.close();
+		}
+		for (const key of keys) {
+			await db.delete(key);
+		}
 	} finally {
 		await db.close();
 	}
@@ -88,10 +139,23 @@ export function getPhoneNode(): CadreNode | null {
 export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode> {
   if (node?.isRunning) return node;
 
-  const privateKey = await loadOrCreatePhoneKey();
+  // One-time: lift any pre-existing plaintext LevelDB identity into the secure
+  // store BEFORE the node's load-or-create path runs. If we didn't, cadre-core
+  // would see an empty slot and generate a fresh key, losing the device's PeerId
+  // and authority identity across the upgrade. Gated on the slot being empty, so
+  // it copies (and clears the legacy plaintext) at most once.
+  await migrateLegacyIdentity({
+    store: keyStore,
+    identityKeyId: DEFAULT_IDENTITY_KEY_ID,
+    readLegacy: readLegacyIdentityBytes,
+    deleteLegacy: deleteLegacyIdentity,
+  });
 
   const config: CadreNodeConfig = {
-    privateKey,
+    // Identity comes from the secure enclave (load on present, generate+persist on
+    // first run). Mutually exclusive with `privateKey`.
+    keyStore,
+    identityKeyId: DEFAULT_IDENTITY_KEY_ID,
     controlNetwork: {
       partyId: opts.partyId,
       bootstrapNodes: opts.bootstrapAddrs,
@@ -114,7 +178,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 
   node = new CadreNode(config);
   await node.start();
-  await runAuthorityGenesis(node, privateKey);
+  await runAuthorityGenesis(node);
   initializeFormationResponder(node);
   return node;
 }
@@ -173,9 +237,11 @@ function initializeFormationResponder(cadre: CadreNode): void {
  * can still join discovered strands and sync. The failure resurfaces loudly at
  * {@link CadreNode.publishStrand} time if the phone later tries to create one.
  */
-async function runAuthorityGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
+async function runAuthorityGenesis(cadre: CadreNode): Promise<void> {
   try {
-    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(privateKey);
+    // Source the authority pair from the node's resolved (secure-stored) identity
+    // rather than a key this module loaded itself — cadre-core owns the identity now.
+    const { privateKeyB64, publicKeyB64 } = cadre.getIdentityAuthorityKey();
     const controlDb = cadre.getControlDatabase();
     if (!controlDb) {
       throw new Error('control database unavailable after start; cannot run authority genesis');
@@ -184,6 +250,24 @@ async function runAuthorityGenesis(cadre: CadreNode, privateKey: PrivateKey): Pr
     cadre.initializeSeedBootstrap(privateKeyB64);
   } catch (err) {
     console.warn('[cadre-phone] authority self-genesis failed:', err);
+  }
+}
+
+/**
+ * The node's authority **public** key (base64url) for out-of-band pairing /
+ * enrollment. Derived from the secure-stored identity (single-key model), so it
+ * is the same value an enrolling cadre pins as a trust anchor. Returns null
+ * before start or if the identity is not resolved. Never exposes private material.
+ */
+export function getAuthorityPublicKey(): string | null {
+  if (!node?.isRunning) return null;
+  try {
+    return node.getIdentityAuthorityKey().publicKeyB64;
+  } catch (err) {
+    // Only reachable on the ephemeral path (no keyStore) — not expected for the
+    // phone node, which always configures a secure key store. Log, don't throw.
+    console.warn('[cadre-phone] authority public key unavailable:', err);
+    return null;
   }
 }
 

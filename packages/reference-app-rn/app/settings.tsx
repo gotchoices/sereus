@@ -139,6 +139,19 @@ export default function SettingsScreen() {
           <>
             <InfoRow label="Status" value="Connected" color="#4caf50" />
             <InfoRow label="Peer ID" value={cadre.peerId ?? '—'} />
+            {/* Authority public key (base64url): share out-of-band for pairing /
+                enrollment. Tap to view + select the full key. Read-only; the
+                private half never leaves the secure enclave. */}
+            <InfoRow
+              label="Authority Key"
+              value={cadre.authorityPublicKey ?? '—'}
+              onPress={
+                cadre.authorityPublicKey
+                  ? () => showAlert('Authority Public Key', cadre.authorityPublicKey ?? '')
+                  : undefined
+              }
+              testID={TEST_IDS.settings.authorityKeyRow}
+            />
             <InfoRow label="Strands" value={String(cadre.strands.size)} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
           </>
@@ -228,11 +241,16 @@ function Section({ title, children }: { title: string; children: React.ReactNode
   );
 }
 
-function InfoRow({ label, value, color }: { label: string; value: string; color?: string }) {
+function InfoRow({ label, value, color, onPress, testID }: { label: string; value: string; color?: string; onPress?: () => void; testID?: string }) {
+  const valueText = (
+    <Text style={[styles.value, color ? { color } : null]} numberOfLines={1}>{value}</Text>
+  );
   return (
     <View style={styles.row}>
       <Text style={styles.label}>{label}</Text>
-      <Text style={[styles.value, color ? { color } : null]} numberOfLines={1}>{value}</Text>
+      {onPress ? (
+        <Pressable style={styles.valuePress} onPress={onPress} testID={testID}>{valueText}</Pressable>
+      ) : valueText}
     </View>
   );
 }
@@ -265,6 +283,7 @@ const styles = StyleSheet.create({
   label: { color: '#aaa', fontSize: 13, marginBottom: 4 },
   hint: { color: '#888', fontSize: 12, lineHeight: 17, marginBottom: 10 },
   value: { color: '#fff', fontSize: 13, flexShrink: 1, textAlign: 'right' },
+  valuePress: { flexShrink: 1, flexDirection: 'row', justifyContent: 'flex-end' },
   input: { backgroundColor: '#2a2a3e', color: '#fff', borderRadius: 8, paddingHorizontal: 12, paddingVertical: 8, fontSize: 14 },
   btn: { borderRadius: 8, paddingVertical: 10, alignItems: 'center', marginTop: 8 },
   btnDisabled: { opacity: 0.4 },

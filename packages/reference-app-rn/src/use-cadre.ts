@@ -13,6 +13,7 @@ import {
   startPhoneNode,
   stopPhoneNode,
   getPhoneNode,
+  getAuthorityPublicKey,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
@@ -49,6 +50,11 @@ export interface UseCadreResult {
   node: CadreNode | null;
   /** This node's peer ID string (null until connected) */
   peerId: string | null;
+  /**
+   * This node's authority **public** key (base64url), shareable out-of-band for
+   * pairing / enrollment. Null until connected. Never carries private material.
+   */
+  authorityPublicKey: string | null;
   /** Active strand instances */
   strands: Map<string, StrandInstance>;
   /** Last error message */
@@ -93,6 +99,9 @@ export function useCadreInternal(): UseCadreResult {
   const [node, setNode] = useState<CadreNode | null>(getPhoneNode);
   const [peerId, setPeerId] = useState<string | null>(
     () => getPhoneNode()?.peerId?.toString() ?? null,
+  );
+  const [authorityPublicKey, setAuthorityPublicKey] = useState<string | null>(
+    () => getAuthorityPublicKey(),
   );
   const [strands, setStrands] = useState<Map<string, StrandInstance>>(
     () => getPhoneNode()?.getStrands() ?? new Map(),
@@ -177,6 +186,7 @@ export function useCadreInternal(): UseCadreResult {
     setNode(started);
     nodeRef.current = started;
     setPeerId(started.peerId?.toString() ?? null);
+    setAuthorityPublicKey(getAuthorityPublicKey());
     setStrands(new Map(started.getStrands()));
   }, []);
 
@@ -217,6 +227,7 @@ export function useCadreInternal(): UseCadreResult {
       setNode(started);
       nodeRef.current = started;
       setPeerId(started.peerId?.toString() ?? null);
+      setAuthorityPublicKey(getAuthorityPublicKey());
       setStrands(new Map(started.getStrands()));
       setStatus('connected');
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
@@ -239,6 +250,7 @@ export function useCadreInternal(): UseCadreResult {
     setNode(null);
     nodeRef.current = null;
     setPeerId(null);
+    setAuthorityPublicKey(null);
     setStrands(new Map());
     setStatus('idle');
   }, []);
@@ -322,7 +334,7 @@ export function useCadreInternal(): UseCadreResult {
   }, [refreshStrands]);
 
   return {
-    status, node, peerId, strands, error, runnerState, resuming, degraded,
+    status, node, peerId, authorityPublicKey, strands, error, runnerState, resuming, degraded,
     start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };

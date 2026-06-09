@@ -5278,6 +5278,7 @@ __metadata:
     expo-linking: "npm:~7.1.7"
     expo-notifications: "npm:~0.31.5"
     expo-router: "npm:~5.1.11"
+    expo-secure-store: "npm:~14.2.4"
     expo-status-bar: "npm:~2.2.0"
     expo-task-manager: "npm:~13.1.6"
     react: "npm:19.0.0"
@@ -9396,6 +9397,15 @@ __metadata:
     react-server-dom-webpack:
       optional: true
   checksum: 10c0/0d7089b082a55932156cd382134b94a5f62a1c2ad518338989c97fb689a8c4b6f608dd8c815f67b40cedb737b32f00e2278d0400b7deadb89be5fb426975da80
+  languageName: node
+  linkType: hard
+
+"expo-secure-store@npm:~14.2.4":
+  version: 14.2.4
+  resolution: "expo-secure-store@npm:14.2.4"
+  peerDependencies:
+    expo: "*"
+  checksum: 10c0/490009d561f03609b819251d71c741643ad9e556afc744dcc5dce1e4b4ea288fc602cc4d93f6045e9a1b09a7f821f1cde5005971d98ab01bbac9b46a054c5e31
   languageName: node
   linkType: hard
 
