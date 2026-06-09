@@ -24,6 +24,7 @@ import type {
   StrandMode,
   ResolveOpts,
   SelfRegistrationOutcome,
+  ServiceWakeResult,
   Libp2pNodeWithRepo
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
@@ -84,7 +85,21 @@ export class CadreNode implements SAppIdLookup {
   private seedBootstrapService: SeedBootstrapService | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
   private strandWakeService: StrandWakeService | null = null;
-  private running = false;
+  /** Backing field for the {@link running} / {@link isRunning} getters. */
+  private _running = false;
+  /**
+   * In-flight {@link serviceWake} operations keyed by strandId. Coalesces
+   * concurrent on-demand wakes for the same strand into one runtime build + one
+   * window + one re-hibernate decision (a second caller joins the first's
+   * promise), complementing {@link HibernationManager}'s wake coalescing.
+   */
+  private serviceWakePromises: Map<string, Promise<ServiceWakeResult>> = new Map();
+  /**
+   * Live wake-window waiters (see {@link holdWakeWindow}). Tracked so
+   * {@link cleanup} can clear the timer AND resolve the promise on teardown — a
+   * window must never fire (or hang an in-flight serviceWake) after stop().
+   */
+  private windowWaiters: Set<{ timer: ReturnType<typeof setTimeout>; resolve: () => void }> = new Set();
   private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<never>>> = new Map();
 
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
@@ -165,7 +180,27 @@ export class CadreNode implements SAppIdLookup {
    * Check if the node is running
    */
   get isRunning(): boolean {
-    return this.running;
+    return this._running;
+  }
+
+  /**
+   * Synchronous lifecycle snapshot for headless callers (a mobile
+   * `BackgroundRunner` that boots in a background task and must *query* state
+   * rather than subscribe to `control:connected`/`control:disconnected`).
+   * Equivalent to {@link isRunning}.
+   */
+  get running(): boolean {
+    return this._running;
+  }
+
+  /**
+   * Synchronous readiness snapshot: whether the control network is currently
+   * connected (the node is running and its control-network libp2p node is up).
+   * Tracks the same edge the `control:connected`/`control:disconnected` events
+   * announce, but pollable.
+   */
+  get controlConnected(): boolean {
+    return this._running && this.controlNode !== null;
   }
 
   /**
@@ -208,7 +243,7 @@ export class CadreNode implements SAppIdLookup {
    * Start the cadre node
    */
   async start(): Promise<void> {
-    if (this.running) {
+    if (this._running) {
       log('CadreNode already running');
       return;
     }
@@ -274,7 +309,7 @@ export class CadreNode implements SAppIdLookup {
       });
       this.strandWakeService.initialize(this.controlNode);
 
-      this.running = true;
+      this._running = true;
       this.emit('control:connected', undefined);
       timing('[start] total: %dms', Math.round(performance.now() - tTotal));
       log('CadreNode started successfully');
@@ -293,14 +328,14 @@ export class CadreNode implements SAppIdLookup {
    * Stop the cadre node
    */
   async stop(): Promise<void> {
-    if (!this.running) {
+    if (!this._running) {
       log('CadreNode not running');
       return;
     }
 
     log('Stopping CadreNode');
     await this.cleanup();
-    this.running = false;
+    this._running = false;
     this.emit('control:disconnected', undefined);
     log('CadreNode stopped');
   }
@@ -446,7 +481,7 @@ export class CadreNode implements SAppIdLookup {
 
   /** The body of {@link registerSelf}; serialised by its single-flight guard. */
   private async publishSelfRecord(): Promise<SelfRegistrationOutcome> {
-    if (!this.running || !this.controlNode || !this.controlDatabase) {
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
       log('Cannot register self - node or database not initialized');
       return 'skipped';
     }
@@ -693,6 +728,11 @@ export class CadreNode implements SAppIdLookup {
   }
 
   private async cleanup(): Promise<void> {
+    // Resolve + clear any in-flight wake windows first, so an in-flight check-in
+    // or serviceWake unblocks and tears down cleanly rather than firing a stale
+    // window timer (or hanging) after the strand manager is stopped below.
+    this.clearWindowWaiters();
+
     // Stop self-record refresh timers + address-change listener (before the
     // control node is torn down, so removeEventListener has a live target).
     this.stopRecordRefresh();
@@ -809,15 +849,27 @@ export class CadreNode implements SAppIdLookup {
     // Quiesced: re-resolve volatile cohort inputs (the seed may have grown, the
     // mode may have shifted bootstrap → networked) and rebuild the runtime.
     log('Waking strand %s — rebuilding strand-network resources', strandId);
+    await this.resumeStrandRuntime(strandId);
+    instance.lastActivity = new Date();
+    this.emit('strand:waking', { strandId });
+    log('Strand %s awake (resources rebuilt)', strandId);
+  }
+
+  /**
+   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort inputs
+   * first: the discovery seed may have grown and cohort membership may have
+   * shifted the mode `bootstrap → networked` since the strand last ran. Shared by
+   * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so
+   * both apply the same fresh seed/mode resolution. `resumeStrand` is idempotent
+   * (returns the live instance unchanged) as a backstop against double-resume.
+   */
+  private async resumeStrandRuntime(strandId: string): Promise<void> {
     const seed = await this.resolveCohortSeed();
     const mode = selectStrandMode(undefined, seed.hasOtherPeers);
     await this.strandManager.resumeStrand(strandId, {
       bootstrapNodes: seed.bootstrapNodes,
       mode
     });
-    instance.lastActivity = new Date();
-    this.emit('strand:waking', { strandId });
-    log('Strand %s awake (resources rebuilt, mode=%s)', strandId, mode);
   }
 
   /**
@@ -856,33 +908,12 @@ export class CadreNode implements SAppIdLookup {
       // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
       //    seed + mode, then rebuild the runtime.
       log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
-      const seed = await this.resolveCohortSeed();
-      const mode = selectStrandMode(undefined, seed.hasOtherPeers);
-      await this.strandManager.resumeStrand(strandId, {
-        bootstrapNodes: seed.bootstrapNodes,
-        mode
-      });
+      await this.resumeStrandRuntime(strandId);
 
-      // Capture the post-resume activity marker. recordActivity assigns a FRESH
-      // Date object, so a changed reference after the window means real activity
-      // was recorded during it — not millisecond-resolution noise.
-      const activityMark = instance.lastActivity;
-
-      // 2. Bounded window for the strand network to connect + the app to act.
-      await this.runCheckInWindow(instance);
-
-      // 3. Decide based on whether activity landed during the window.
-      const sawActivity = instance.lastActivity !== activityMark;
-      if (sawActivity) {
-        instance.status = 'active';
-        this.emit('strand:waking', { strandId });
-        log('Check-in: strand %s saw activity during the window; staying active', strandId);
-        return;
-      }
-
-      log('Check-in: no activity for strand %s; re-hibernating', strandId);
-      await this.strandManager.quiesceStrand(strandId);
-      instance.status = 'hibernating';
+      // 2-3. Bounded window for the strand network to connect + the app to act,
+      //      then re-hibernate-if-idle. Shared with the on-demand serviceWake.
+      const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+      await this.runWakeWindow(instance, windowMs);
     } catch (err) {
       // A check-in that throws part-way — resume failing on a flaky network (the
       // very scenario hibernation targets), the window rejecting, or quiesce
@@ -903,17 +934,71 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Hold a just-resumed strand live for the check-in window so its strand
-   * network can connect to reachable cohort peers and the app can drive
-   * pull-on-read activity. Resolves after
-   * {@link HibernationConfig.checkInWindowMs} (default
-   * {@link DEFAULT_CHECKIN_WINDOW_MS}); a non-positive window resolves
-   * immediately. Extracted as its own method so tests can stub the wait.
+   * Window-then-decide for a just-resumed strand, shared by the check-in timer
+   * path ({@link handleStrandCheckIn}) and the on-demand {@link serviceWake}:
+   *
+   *   1. Capture the post-resume activity marker. `recordActivity` assigns a
+   *      FRESH `Date`, so a changed reference after the window means real
+   *      activity landed during it — not millisecond-resolution noise.
+   *   2. Hold the strand live for `windowMs` so its strand network reaches the
+   *      cohort and the app can drive pull-on-read activity.
+   *   3. If activity landed, leave the strand `active` (return `true`); otherwise
+   *      quiesce and mark it `hibernating` again (return `false`).
+   *
+   * @returns whether activity was observed during the window (strand left active).
    */
-  private async runCheckInWindow(_instance: StrandInstance): Promise<void> {
-    const windowMs = this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+  private async runWakeWindow(instance: StrandInstance, windowMs: number): Promise<boolean> {
+    const strandId = instance.strandId;
+    const activityMark = instance.lastActivity;
+
+    await this.holdWakeWindow(instance, windowMs);
+
+    const sawActivity = instance.lastActivity !== activityMark;
+    if (sawActivity) {
+      instance.status = 'active';
+      this.emit('strand:waking', { strandId });
+      log('Wake window: strand %s saw activity during the window; staying active', strandId);
+      return true;
+    }
+
+    log('Wake window: no activity for strand %s; re-hibernating', strandId);
+    await this.strandManager.quiesceStrand(strandId);
+    instance.status = 'hibernating';
+    return false;
+  }
+
+  /**
+   * Hold a just-resumed strand live for `windowMs` (default
+   * {@link DEFAULT_CHECKIN_WINDOW_MS} is applied by callers). A non-positive
+   * window resolves immediately. The pending timer is tracked in
+   * {@link windowWaiters} so {@link cleanup} can both clear it and resolve the
+   * promise on teardown — a `stop()` during an in-flight window must neither fire
+   * the timer afterward nor hang the awaiting check-in/serviceWake. Extracted as
+   * its own method so tests can stub the wait (and inject activity during it).
+   */
+  private async holdWakeWindow(_instance: StrandInstance, windowMs: number): Promise<void> {
     if (windowMs <= 0) return;
-    await new Promise<void>((resolve) => { setTimeout(resolve, windowMs); });
+    await new Promise<void>((resolve) => {
+      const waiter = { timer: undefined as unknown as ReturnType<typeof setTimeout>, resolve };
+      waiter.timer = setTimeout(() => {
+        this.windowWaiters.delete(waiter);
+        resolve();
+      }, windowMs);
+      this.windowWaiters.add(waiter);
+    });
+  }
+
+  /**
+   * Clear every in-flight wake window: cancel its timer and resolve its promise
+   * so any awaiting check-in/serviceWake completes promptly rather than hanging
+   * past teardown. Called from {@link cleanup}.
+   */
+  private clearWindowWaiters(): void {
+    for (const waiter of this.windowWaiters) {
+      clearTimeout(waiter.timer);
+      waiter.resolve();
+    }
+    this.windowWaiters.clear();
   }
 
   /**
@@ -921,7 +1006,7 @@ export class CadreNode implements SAppIdLookup {
    * The hosting application must provide the sApp schema when creating a strand.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
-    if (!this.running) {
+    if (!this._running) {
       throw new Error('CadreNode not running');
     }
 
@@ -963,7 +1048,7 @@ export class CadreNode implements SAppIdLookup {
    *   control DB rejects the (unauthorized) insert.
    */
   async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
-    if (!this.running || !this.controlDatabase) {
+    if (!this._running || !this.controlDatabase) {
       throw new Error('CadreNode must be started before publishing a strand');
     }
     const signingKey = this.getSelfSigningKey();
@@ -1010,7 +1095,7 @@ export class CadreNode implements SAppIdLookup {
     sAppId: string,
     options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
-    if (!this.running || !this.controlDatabase) {
+    if (!this._running || !this.controlDatabase) {
       throw new Error('CadreNode must be started before publishing a formation invite');
     }
     const signingKey = this.getSelfSigningKey();
@@ -1075,7 +1160,7 @@ export class CadreNode implements SAppIdLookup {
    * Remove a strand
    */
   async removeStrand(strandId: string): Promise<void> {
-    if (!this.running) {
+    if (!this._running) {
       throw new Error('CadreNode not running');
     }
 
@@ -1104,6 +1189,149 @@ export class CadreNode implements SAppIdLookup {
    */
   async wakeStrand(strandId: string): Promise<void> {
     await this.hibernationManager.wakeStrand(strandId);
+  }
+
+  // ============================================================================
+  // Mobile background lifecycle primitives
+  //
+  // Imperative control a mobile BackgroundRunner drives from OS app-state and
+  // push events, rather than from the internal idle/hibernate/check-in timers.
+  // ============================================================================
+
+  /**
+   * Force a single strand to hibernate immediately, bypassing the idle/hibernate
+   * timers — the background-entry path. No-op if the strand is realtime
+   * (never-hibernate latency hint), already hibernating, or unknown.
+   *
+   * Routes through {@link HibernationManager.forceHibernate}, which cancels the
+   * strand's pending idle/hibernate (and check-in) timers — so a stale timer
+   * can't re-fire on or resurrect the strand — then runs the same `onHibernate`
+   * path as the timer (`quiesceStrand` + `status='hibernating'` +
+   * `strand:hibernating`). Unlike the timer path it does NOT re-arm check-ins:
+   * the strand stays down until the caller drives a wake (e.g. {@link serviceWake}).
+   */
+  async hibernateStrand(strandId: string): Promise<void> {
+    const instance = this.strandManager.getInstance(strandId);
+    if (!instance) {
+      log('hibernateStrand: strand %s unknown; no-op', strandId);
+      return;
+    }
+    if (!this.hibernationManager.hibernates(instance)) {
+      log('hibernateStrand: strand %s is realtime; no-op', strandId);
+      return;
+    }
+    if (instance.status === 'hibernating') {
+      log('hibernateStrand: strand %s already hibernating; no-op', strandId);
+      return;
+    }
+    await this.hibernationManager.forceHibernate(instance);
+  }
+
+  /**
+   * Force-hibernate every tracked strand whose latency hint is not realtime,
+   * tolerating per-strand failure (one strand failing to quiesce never aborts
+   * the others). Realtime strands are left running — the caller keeps the control
+   * connection and realtime strands alive for as long as the OS permits.
+   *
+   * @returns the strandIds actually hibernated (now in `hibernating` status);
+   *   realtime strands are excluded.
+   */
+  async hibernateAll(): Promise<string[]> {
+    const hibernated: string[] = [];
+    for (const [strandId, instance] of this.strandManager.getInstances()) {
+      if (!this.hibernationManager.hibernates(instance)) {
+        log('hibernateAll: skipping realtime strand %s', strandId);
+        continue;
+      }
+      try {
+        await this.hibernateStrand(strandId);
+        if (instance.status === 'hibernating') {
+          hibernated.push(strandId);
+        }
+      } catch (error) {
+        // Collect-and-continue: a single strand's quiesce failure must not strand
+        // the rest of the background-entry sweep.
+        log('hibernateAll: strand %s failed to hibernate (continuing): %o', strandId, error);
+      }
+    }
+    log('hibernateAll: hibernated %d strand(s)', hibernated.length);
+    return hibernated;
+  }
+
+  /**
+   * On-demand equivalent of a check-in cycle, for a push-delivered wake on
+   * mobile: resume the strand, hold it live for `windowMs` so its strand network
+   * reaches the cohort and the app can pull pending activity, then re-hibernate
+   * if no activity was recorded (else leave it active).
+   *
+   * Idempotent / coalesced two ways: concurrent `serviceWake`s for the same
+   * strand share one in-flight operation ({@link serviceWakePromises}), and the
+   * underlying resume coalesces with a racing push-wake via
+   * {@link HibernationManager}'s wake coalescing — one runtime build, one window,
+   * one re-hibernate decision. Returns `{ serviced: false }` (never throws) when
+   * the node is not running or the strand is unknown, and surfaces a resume
+   * failure as `{ serviced: true, hadActivity: false }` after re-hibernating.
+   *
+   * @param strandId - the strand a push said has pending activity.
+   * @param opts.windowMs - override the live-window duration (defaults to the
+   *   configured `checkInWindowMs` / {@link DEFAULT_CHECKIN_WINDOW_MS}).
+   */
+  async serviceWake(strandId: string, opts?: { windowMs?: number }): Promise<ServiceWakeResult> {
+    const existing = this.serviceWakePromises.get(strandId);
+    if (existing) {
+      log('serviceWake: joining in-flight wake for strand %s', strandId);
+      return existing;
+    }
+    const op = this.runServiceWake(strandId, opts);
+    this.serviceWakePromises.set(strandId, op);
+    try {
+      return await op;
+    } finally {
+      this.serviceWakePromises.delete(strandId);
+    }
+  }
+
+  /** Body of {@link serviceWake}; serialised per-strand by its coalescing guard. */
+  private async runServiceWake(strandId: string, opts?: { windowMs?: number }): Promise<ServiceWakeResult> {
+    // Not-running / control-absent guard (mirrors pushWake): a background task
+    // must get a branchable result, never a throw.
+    if (!this._running || !this.controlNode) {
+      log('serviceWake: node not running; not serviced (strand %s)', strandId);
+      return { strandId, serviced: false, hadActivity: false };
+    }
+
+    const instance = this.strandManager.getInstance(strandId);
+    if (!instance) {
+      log('serviceWake: strand %s unknown to this node; not serviced', strandId);
+      return { strandId, serviced: false, hadActivity: false };
+    }
+
+    // Already live (active or idle — both retain their runtime): servicing is a
+    // no-op success. Do NOT run a window that would re-hibernate a strand the app
+    // may be actively using, and do NOT rebuild a second runtime.
+    if (instance.libp2pNode || instance.database) {
+      log('serviceWake: strand %s already live; no-op success', strandId);
+      return { strandId, serviced: true, hadActivity: true };
+    }
+
+    try {
+      // Coalesced resume: routes through wakeStrand → HibernationManager.beginWake
+      // so a racing push-wake shares this single runtime build.
+      await this.wakeStrand(strandId);
+      const windowMs = opts?.windowMs ?? this.config.hibernation?.checkInWindowMs ?? DEFAULT_CHECKIN_WINDOW_MS;
+      const hadActivity = await this.runWakeWindow(instance, windowMs);
+      return { strandId, serviced: true, hadActivity };
+    } catch (error) {
+      // Resume failing mid-window (network unreachable inside a Doze grant, etc.)
+      // must not throw out of a background task: re-hibernate and report no
+      // activity, mirroring handleStrandCheckIn's re-hibernate-on-error.
+      log('serviceWake: strand %s failed during wake window; re-hibernating: %o', strandId, error);
+      await this.strandManager.quiesceStrand(strandId).catch((cleanupErr) => {
+        log('serviceWake cleanup quiesce for strand %s failed: %o', strandId, cleanupErr);
+      });
+      instance.status = 'hibernating';
+      return { strandId, serviced: true, hadActivity: false };
+    }
   }
 
   /**

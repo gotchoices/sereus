@@ -270,6 +270,72 @@ describe('HibernationManager', () => {
     });
   });
 
+  describe('hibernates (realtime predicate)', () => {
+    it('is false for realtime, true for non-realtime hints', () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+
+      expect(manager.hibernates(createInstance('rt', 'realtime'))).toBe(false);
+      expect(manager.hibernates(createInstance('ix', 'interactive'))).toBe(true);
+      expect(manager.hibernates(createInstance('bg', 'background'))).toBe(true);
+      expect(manager.hibernates(createInstance('ar', 'archive'))).toBe(true);
+    });
+
+    it('honours a customTimeouts override that makes a hint never hibernate', () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager(
+        { enabled: true, customTimeouts: { background: { idleTimeout: Infinity } } },
+        callbacks
+      );
+      expect(manager.hibernates(createInstance('bg', 'background'))).toBe(false);
+    });
+  });
+
+  describe('forceHibernate (imperative background-entry)', () => {
+    it('cancels pending idle/hibernate timers and does not re-arm check-ins (no resurrection)', async () => {
+      const callbacks = createCallbacks();
+      callbacks.onHibernate.mockImplementation(async (id: string) => {
+        callbacks.hibernateCalls.push(id);
+        instance.status = 'hibernating';
+      });
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-force', 'interactive');
+      manager.trackStrand(instance); // arms the idle transition
+
+      const hibernated = await manager.forceHibernate(instance);
+      expect(hibernated).toBe(true);
+      expect(callbacks.onHibernate).toHaveBeenCalledTimes(1);
+      expect(instance.status).toBe('hibernating');
+
+      // Advance well past idle + hibernate + several check-in intervals. Because
+      // forceHibernate cancelled the timers and armed NO check-in, nothing fires:
+      // no second hibernate, no check-in resurrecting the strand.
+      await vi.advanceTimersByTimeAsync(2 * 60 * 60 * 1000);
+      expect(callbacks.onHibernate).toHaveBeenCalledTimes(1);
+      expect(callbacks.onCheckIn).not.toHaveBeenCalled();
+      expect(instance.status).toBe('hibernating');
+
+      manager.stop();
+    });
+
+    it('is a no-op (returns false, no onHibernate) for a realtime strand', async () => {
+      const callbacks = createCallbacks();
+      const manager = new HibernationManager({ enabled: true }, callbacks);
+      manager.start();
+
+      const instance = createInstance('strand-rt', 'realtime');
+      const hibernated = await manager.forceHibernate(instance);
+
+      expect(hibernated).toBe(false);
+      expect(callbacks.onHibernate).not.toHaveBeenCalled();
+      expect(instance.status).toBe('active');
+
+      manager.stop();
+    });
+  });
+
   describe('check-in backoff', () => {
     /**
      * Drive a tracked interactive strand (FAST_BACKOFF) through idle@1000 +

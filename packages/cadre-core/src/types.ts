@@ -307,6 +307,28 @@ export interface StrandInstance {
 }
 
 /**
+ * Outcome of an on-demand {@link CadreNode.serviceWake} — the mobile push-wake
+ * cycle (resume → bounded window → re-hibernate-if-idle) run imperatively for a
+ * single strand.
+ */
+export interface ServiceWakeResult {
+  /** The strand the wake was requested for. */
+  strandId: string;
+  /**
+   * Whether the wake was actually serviced. `false` when the node is not
+   * running, or the strand is unknown to this node (not a member-participated
+   * strand) — never a thrown error, so a background task can branch on it.
+   */
+  serviced: boolean;
+  /**
+   * Whether activity landed during the wake window. `true` leaves the strand
+   * active; `false` re-hibernates it (or the strand was already live, in which
+   * case it reflects current liveness). Always `false` when `serviced` is `false`.
+   */
+  hadActivity: boolean;
+}
+
+/**
  * Strand row from control network - basic membership info
  */
 export interface StrandRow {

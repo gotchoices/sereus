@@ -117,6 +117,47 @@ export class HibernationManager {
   }
 
   /**
+   * Whether a strand with this instance's latency hint ever hibernates — `false`
+   * for realtime (Infinity idle timeout, see {@link HIBERNATION_TIMEOUTS}), also
+   * honouring any per-hint `customTimeouts` override. Imperative callers
+   * (`CadreNode.hibernateStrand` / `hibernateAll`) use this as the single source
+   * of truth for "skip realtime", consistent with {@link trackStrand} declining
+   * to track Infinity-timeout strands.
+   */
+  hibernates(instance: StrandInstance): boolean {
+    return this.getTimeouts(instance.latencyHint).idleTimeout !== Infinity;
+  }
+
+  /**
+   * Imperatively hibernate a tracked strand now, bypassing the idle/hibernate
+   * timers — the mobile background-entry path. Cancels the strand's pending
+   * idle/hibernate AND check-in timers so none can later re-fire `onHibernate`
+   * on the already-quiesced strand or resurrect one the caller means to keep
+   * down, then invokes `onHibernate` (quiesce + mark hibernating).
+   *
+   * Unlike the timer path ({@link handleHibernateTimeout}) it deliberately does
+   * NOT re-arm the check-in chain: a force-hibernate keeps the strand down until
+   * the caller drives the next wake on demand (push-delivered on mobile), so a
+   * stray check-in timer must not bring it back up.
+   *
+   * @returns `true` if the strand was hibernated, `false` (no-op) for a realtime
+   *   strand that never hibernates.
+   */
+  async forceHibernate(instance: StrandInstance): Promise<boolean> {
+    if (!this.hibernates(instance)) {
+      log('forceHibernate: strand %s is realtime; no-op', instance.strandId);
+      return false;
+    }
+    // Cancel idle/hibernate + check-in timers BEFORE quiescing so nothing fights
+    // the imperative hibernate (a stale hibernate timer firing on the quiesced
+    // strand, or a check-in resuming a strand the caller wants kept down).
+    this.clearTimers(instance.strandId);
+    await this.callbacks.onHibernate(instance.strandId);
+    log('forceHibernate: strand %s hibernated (timers cancelled, not re-armed)', instance.strandId);
+    return true;
+  }
+
+  /**
    * Register a strand for hibernation management
    */
   trackStrand(instance: StrandInstance): void {

@@ -493,7 +493,7 @@ describe('CadreNode', () => {
 
       // Simulate the app recording activity during the window: assign a fresh
       // Date so the reference differs from the post-resume activity marker.
-      (node as unknown as { runCheckInWindow: (i: StrandInstance) => Promise<void> }).runCheckInWindow =
+      (node as unknown as { holdWakeWindow: (i: StrandInstance, ms: number) => Promise<void> }).holdWakeWindow =
         async () => { instance.lastActivity = new Date(2000); };
 
       const waking: string[] = [];
@@ -558,6 +558,295 @@ describe('CadreNode', () => {
       expect(instance.status).toBe('hibernating');
       expect(quiesceCalls).toEqual(['checkin-fail']);
     });
+  });
+
+  describe('mobile background lifecycle primitives', () => {
+    // A live (post-launch) strand instance with both runtime handles attached.
+    function liveInstance(strandId: string, latencyHint: StrandInstance['latencyHint'] = 'interactive'): StrandInstance {
+      return {
+        strandId,
+        status: 'active',
+        sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
+        connectedPeers: 2,
+        lastActivity: new Date(0),
+        latencyHint,
+        libp2pNode: {} as never,
+        database: {} as never
+      };
+    }
+
+    // A fake StrandInstanceManager backed by a strandId→instance map whose
+    // quiesce/resume mutate the instances the way the real manager does.
+    function fakeManager(instances: Map<string, StrandInstance>, calls: { quiesce: string[]; resume: Array<{ id: string; overrides: unknown }> }) {
+      return {
+        getInstance: (id: string) => instances.get(id),
+        getInstances: () => new Map(instances),
+        quiesceStrand: async (id: string) => {
+          calls.quiesce.push(id);
+          const i = instances.get(id);
+          if (i) { i.libp2pNode = undefined; i.database = undefined; i.connectedPeers = 0; }
+        },
+        resumeStrand: async (id: string, overrides: unknown) => {
+          calls.resume.push({ id, overrides });
+          const i = instances.get(id)!;
+          i.libp2pNode = {} as never;
+          i.database = {} as never;
+          i.status = 'active';
+          i.lastActivity = new Date();
+          return i;
+        }
+      };
+    }
+
+    function injectControl(node: CadreNode, peers: Array<{ peerId: string; multiaddr: string | null }> = []): void {
+      (node as unknown as { _running: boolean })._running = true;
+      (node as unknown as { controlNode: unknown }).controlNode = { peerId: { toString: () => 'self-peer' } };
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryCadrePeers: async () => peers
+      };
+    }
+
+    it('hibernateStrand quiesces an active interactive strand and emits strand:hibernating', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance = liveInstance('h1', 'interactive');
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['h1', instance]]), calls);
+
+      const hibernating: string[] = [];
+      node.on('strand:hibernating', (d) => hibernating.push(d.strandId));
+
+      await node.hibernateStrand('h1');
+
+      expect(instance.status).toBe('hibernating');
+      expect(calls.quiesce).toEqual(['h1']);
+      expect(instance.libp2pNode).toBeUndefined();
+      expect(instance.database).toBeUndefined();
+      expect(hibernating).toEqual(['h1']);
+    });
+
+    it('hibernateStrand on a realtime strand is a no-op (no status change, no event, no quiesce)', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance = liveInstance('rt', 'realtime');
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['rt', instance]]), calls);
+
+      const hibernating: string[] = [];
+      node.on('strand:hibernating', (d) => hibernating.push(d.strandId));
+
+      await node.hibernateStrand('rt');
+
+      expect(instance.status).toBe('active');
+      expect(calls.quiesce).toEqual([]);
+      expect(hibernating).toEqual([]);
+    });
+
+    it('hibernateStrand on an already-hibernating strand is a no-op', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'hib', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(0), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['hib', instance]]), calls);
+
+      const hibernating: string[] = [];
+      node.on('strand:hibernating', (d) => hibernating.push(d.strandId));
+
+      await node.hibernateStrand('hib');
+
+      expect(calls.quiesce).toEqual([]);
+      expect(hibernating).toEqual([]);
+    });
+
+    it('hibernateStrand on an unknown strand is a no-op', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map(), calls);
+
+      await expect(node.hibernateStrand('ghost')).resolves.toBeUndefined();
+      expect(calls.quiesce).toEqual([]);
+    });
+
+    it('hibernateAll hibernates only the non-realtime strands and leaves realtime active', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const rt = liveInstance('rt', 'realtime');
+      const ix = liveInstance('ix', 'interactive');
+      const bg = liveInstance('bg', 'background');
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['rt', rt], ['ix', ix], ['bg', bg]]), calls);
+
+      const hibernated = await node.hibernateAll();
+
+      expect(hibernated.sort()).toEqual(['bg', 'ix']);
+      expect(calls.quiesce.sort()).toEqual(['bg', 'ix']);
+      expect(rt.status).toBe('active');
+      expect(ix.status).toBe('hibernating');
+      expect(bg.status).toBe('hibernating');
+    });
+
+    it('hibernateAll tolerates a single strand failing to quiesce and still hibernates the rest', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const ix = liveInstance('ix', 'interactive');
+      const bg = liveInstance('bg', 'background');
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      const manager = fakeManager(new Map([['ix', ix], ['bg', bg]]), calls);
+      // 'ix' quiesce throws; 'bg' must still hibernate.
+      const baseQuiesce = manager.quiesceStrand;
+      manager.quiesceStrand = async (id: string) => {
+        if (id === 'ix') throw new Error('quiesce boom');
+        return baseQuiesce(id);
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = manager;
+
+      const hibernated = await node.hibernateAll();
+
+      expect(hibernated).toEqual(['bg']);
+      expect(bg.status).toBe('hibernating');
+      // 'ix' threw inside handleStrandHibernate, so its status never advanced.
+      expect(ix.status).toBe('active');
+    });
+
+    it('serviceWake on a hibernating strand with no activity resumes, then re-hibernates', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-idle', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-idle', instance]]), calls);
+      injectControl(node, [{ peerId: 'self-peer', multiaddr: null }]);
+
+      const result = await node.serviceWake('sw-idle', { windowMs: 0 });
+
+      expect(result).toEqual({ strandId: 'sw-idle', serviced: true, hadActivity: false });
+      expect(calls.resume).toHaveLength(1);
+      expect(calls.quiesce).toEqual(['sw-idle']);
+      expect(instance.status).toBe('hibernating');
+      expect(instance.libp2pNode).toBeUndefined();
+    });
+
+    it('serviceWake leaves the strand active when activity arrives during the window', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-active', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-active', instance]]), calls);
+      injectControl(node, []);
+
+      // App records activity during the window: a fresh Date differs from the
+      // post-resume marker, so the strand stays active.
+      (node as unknown as { holdWakeWindow: (i: StrandInstance, ms: number) => Promise<void> }).holdWakeWindow =
+        async () => { instance.lastActivity = new Date(9999); };
+
+      const result = await node.serviceWake('sw-active');
+
+      expect(result.serviced).toBe(true);
+      expect(result.hadActivity).toBe(true);
+      expect(instance.status).toBe('active');
+      expect(calls.quiesce).toEqual([]);
+    });
+
+    it('serviceWake on an already-live strand is a no-op success without a second runtime build', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance = liveInstance('sw-live', 'interactive');
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-live', instance]]), calls);
+      injectControl(node, []);
+
+      const result = await node.serviceWake('sw-live');
+
+      expect(result).toEqual({ strandId: 'sw-live', serviced: true, hadActivity: true });
+      expect(calls.resume).toEqual([]);
+      expect(calls.quiesce).toEqual([]);
+      expect(instance.status).toBe('active');
+    });
+
+    it('serviceWake returns serviced:false (no throw) when the node is not running', async () => {
+      const node = new CadreNode(createConfig());
+      const result = await node.serviceWake('whatever');
+      expect(result).toEqual({ strandId: 'whatever', serviced: false, hadActivity: false });
+    });
+
+    it('serviceWake returns serviced:false for a strand unknown to this node', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager = fakeManager(new Map(), calls);
+      injectControl(node, []);
+
+      const result = await node.serviceWake('absent');
+      expect(result).toEqual({ strandId: 'absent', serviced: false, hadActivity: false });
+      expect(calls.resume).toEqual([]);
+    });
+
+    it('serviceWake re-hibernates and reports no activity when the resume throws', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-fail', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      const manager = fakeManager(new Map([['sw-fail', instance]]), calls);
+      manager.resumeStrand = async () => {
+        // Mirror the real resumeStrand failure: status 'error', rethrow.
+        instance.status = 'error';
+        throw new Error('resume boom (flaky network)');
+      };
+      (node as unknown as { strandManager: unknown }).strandManager = manager;
+      injectControl(node, []);
+
+      const result = await node.serviceWake('sw-fail', { windowMs: 0 });
+
+      expect(result).toEqual({ strandId: 'sw-fail', serviced: true, hadActivity: false });
+      expect(instance.status).toBe('hibernating');
+      expect(calls.quiesce).toEqual(['sw-fail']);
+    });
+
+    it('coalesces concurrent serviceWake calls for the same strand into one runtime build', async () => {
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-coalesce', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-coalesce', instance]]), calls);
+      injectControl(node, []);
+
+      const [r1, r2] = await Promise.all([
+        node.serviceWake('sw-coalesce', { windowMs: 0 }),
+        node.serviceWake('sw-coalesce', { windowMs: 0 })
+      ]);
+
+      // One coalesced operation: a single resume, and both callers get the very
+      // same result object.
+      expect(calls.resume).toHaveLength(1);
+      expect(r1).toBe(r2);
+    });
+
+    it('running and controlConnected reflect lifecycle synchronously', async () => {
+      const node = new CadreNode(createConfig());
+
+      expect(node.running).toBe(false);
+      expect(node.controlConnected).toBe(false);
+
+      await node.start();
+      expect(node.running).toBe(true);
+      expect(node.controlConnected).toBe(true);
+
+      await node.stop();
+      expect(node.running).toBe(false);
+      expect(node.controlConnected).toBe(false);
+    }, 30000);
   });
 
   describe('push-wake (control-network WAKE_PROTOCOL)', () => {
