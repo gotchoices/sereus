@@ -304,6 +304,26 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     **Not exercised**: the RN-bundle build (Metro lacks a `node:http2` shim — see the ticket review handoff) and
     real-network fan-out.
 
+- [x] Push-credential provisioning into the spawned node's `config.push` (host + provider)
+  - `cadre-core` exposes `validatePushCredentials` / `redactPushCredentials` (`push-credentials.ts`, dependency-free)
+    so a provisioner rejects a partial credential set and never logs a private key.
+  - **cadre-cli** now carries `push` from `cadre.json` (and a JSON `CADRE_PUSH` env override) through `ResolvedConfig`
+    into `CadreNodeConfig.push` — closing the gap that previously dropped the block before `CadreNode.start`.
+  - **cadre-host**: FCM/APNs private keys + identifiers live in the secret store (keytar / `0600` fallback, accounts
+    `push:fcm` / `push:apns`); non-secret bits (APNs `bundleId`, sandbox/prod, cooldown/debounce) live in
+    `host.config.json`. `cadre-host push {fcm,apns,options,status,clear}` is the entry path. The orchestrator
+    **re-resolves on every (re-)spawn** via a `pushResolver` (no raw key in `state.json`) and writes `config.push`
+    for the authority/storage node (and managed storage nodes); transaction nodes get none. Tested:
+    `push.test.ts`, `orchestrator-push.test.ts`.
+  - **cadre-provider**: per-tenant `push` config (provider-level `default` + `tenants[customerId]` overrides);
+    `validate.ts` rejects a partial set at `loadConfig`; `ContainerService` resolves **strictly by the launching
+    tenant's id** and the Docker orchestrator injects `CADRE_PUSH` (JSON, PEM-newline-safe) — a cross-tenant
+    isolation test asserts tenant B's node never receives tenant A's (or the default's) secret. Tested:
+    `push-validate.test.ts`, `container-push.test.ts`, `docker-orchestrator-push.test.ts`.
+  - **Push-wake is end-to-end once a deployment provisions creds.** On-device validation (real FCM/APNs token,
+    correct bundle id, sandbox-vs-production match for the build under test) remains a human prerequisite, and the
+    Firebase/Apple credential creation itself is out-of-agent infra work.
+
 ## Testing / CI
 
 - [ ] Wire `@serfab/strand-proto` tests into workspace CI

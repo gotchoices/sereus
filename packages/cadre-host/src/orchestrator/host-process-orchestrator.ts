@@ -26,6 +26,7 @@ import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { PortAllocator } from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
+import type { PushCredentials } from '@serfab/cadre-core';
 import {
   decodeDockerId,
   encodeDockerId,
@@ -35,6 +36,7 @@ import {
   type ManagedNodeInfo,
   type NodePorts,
   type NodeStateListener,
+  type PushCredentialsResolver,
 } from './types.js';
 
 const log = debug('cadre:host:orchestrator');
@@ -102,6 +104,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly defaultMemoryLimit?: string;
   private readonly handles = new Map<string, Handle>();
   private readonly cliEntrypoint: string;
+  /** Resolves push credentials fresh on every spawn (see HostProcessConfig). */
+  private readonly pushResolver?: PushCredentialsResolver;
   /** State-change listeners — invoked when a handle's alive state changes. */
   private readonly stateListeners = new Set<NodeStateListener>();
   /** Persisted spawn config for the authority node (re-spawn on demand). */
@@ -120,6 +124,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.logMaxFiles = cfg.logMaxFiles ?? DEFAULTS.logMaxFiles;
     this.defaultMemoryLimit = cfg.defaultResources?.memoryLimit;
     this.cliEntrypoint = cfg.spawn?.entrypoint ?? resolveCadreCliBin();
+    this.pushResolver = cfg.pushResolver;
     log('HostProcessOrchestrator rootDir=%s cli=%s', this.rootDir, this.cliEntrypoint);
   }
 
@@ -219,16 +224,40 @@ export class HostProcessOrchestrator implements Orchestrator {
       p2p: this.portAllocator.allocate(),
       admin: this.portAllocator.allocate(),
     };
+    // Only storage-profile nodes participate in strands and thus fan out push
+    // wakes — a transaction-only node need not carry credentials.
+    const push = request.profile === 'storage' ? await this.resolvePush() : undefined;
     return this.launchChild({
       containerId: request.containerId,
       partyId: request.partyId,
       profile: request.profile,
       ports,
       authority: false,
-      buildConfig: (workdir) => this.buildChildConfig(request, workdir),
+      buildConfig: (workdir) => this.buildChildConfig(request, workdir, push),
       extraArgs: [],
       ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
     });
+  }
+
+  /**
+   * Resolve the push credentials to inject into the node about to spawn. Called
+   * on every spawn so a re-spawn re-reads the secret store — raw private keys are
+   * never persisted. A resolver failure (e.g. a partial credential set) is
+   * logged and degrades to "no push" rather than failing the spawn: the node
+   * stays up and reachable, just without platform push-wake.
+   */
+  private async resolvePush(): Promise<PushCredentials | undefined> {
+    if (!this.pushResolver) return undefined;
+    try {
+      const push = await this.pushResolver();
+      if (push) {
+        log('resolved push credentials: fcm=%s apns=%s cooldownMs=%s', !!push.fcm, !!push.apns, push.cooldownMs);
+      }
+      return push;
+    } catch (err) {
+      log('push resolver failed; spawning node without push: %s', (err as Error).message);
+      return undefined;
+    }
   }
 
   /**
@@ -264,6 +293,9 @@ export class HostProcessOrchestrator implements Orchestrator {
     }
 
     const profile = config.profile ?? 'storage';
+    // Re-resolve push credentials from the secret store on every (re-)spawn so a
+    // restart picks up rotated keys and nothing raw is replayed from state.json.
+    const push = await this.resolvePush();
     const ports: NodePorts = {
       health: this.portAllocator.allocate(),
       metrics: this.portAllocator.allocate(),
@@ -281,7 +313,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       profile,
       ports,
       authority: true,
-      buildConfig: (workdir) => this.buildAuthorityChildConfig(config, profile, workdir),
+      buildConfig: (workdir) => this.buildAuthorityChildConfig(config, profile, workdir, push),
       extraArgs: ['--authority', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
     });
     const handle = this.handles.get(result.dockerId)!;
@@ -625,7 +657,11 @@ export class HostProcessOrchestrator implements Orchestrator {
     return handle;
   }
 
-  private buildChildConfig(req: OrchestratorCreateRequest, workdir: string): Record<string, unknown> {
+  private buildChildConfig(
+    req: OrchestratorCreateRequest,
+    workdir: string,
+    push?: PushCredentials,
+  ): Record<string, unknown> {
     const cfg: Record<string, unknown> = {
       controlNetwork: {
         partyId: req.partyId,
@@ -644,6 +680,10 @@ export class HostProcessOrchestrator implements Orchestrator {
       }
       cfg.storage = storage;
     }
+    // Push credentials land in the child's cadre.json on the host filesystem —
+    // the same trust boundary as the control-DB storage in this workdir. The
+    // private keys are NOT logged (the resolver redacts; we log only presence).
+    if (push) cfg.push = push;
     return cfg;
   }
 
@@ -656,6 +696,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     cfg: AuthoritySpawnConfig,
     profile: 'storage' | 'transaction',
     workdir: string,
+    push?: PushCredentials,
   ): Record<string, unknown> {
     const config: Record<string, unknown> = {
       controlNetwork: {
@@ -668,6 +709,11 @@ export class HostProcessOrchestrator implements Orchestrator {
     if (profile === 'storage') {
       config.storage = { type: 'file', path: join(workdir, 'storage') };
     }
+    // The always-on authority/storage node participates in strands, so it owns
+    // the push-wake fan-out when credentials are configured. Written into
+    // cadre.json (same host trust boundary as the workdir's control-DB); keys
+    // are never logged — only the redacted presence line in resolvePush.
+    if (push) config.push = push;
     return config;
   }
 

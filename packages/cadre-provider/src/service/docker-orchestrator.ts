@@ -116,6 +116,10 @@ export class DockerOrchestrator implements Orchestrator {
           `CADRE_SEED_TOKEN=${seedToken}`,
           request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
           resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
+          // This tenant's push credentials, JSON-encoded (handles the PEM newlines)
+          // — only ever this tenant's, resolved upstream by ContainerService. The
+          // node reads it via the CADRE_PUSH env mapping. Never logged.
+          request.push ? `CADRE_PUSH=${JSON.stringify(request.push)}` : '',
         ].filter(Boolean),
         HostConfig: {
           // Health (which also serves the authenticated `POST /seed`) and metrics

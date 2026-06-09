@@ -127,6 +127,11 @@ export { STRAND_WAKE_TYPE, type StrandWakePayload } from './strand-wake-payload.
 // dynamic import, never re-exported as a runtime value.
 export type { PushNotifier, PushMessage, PushSendResult } from './push-notifier.js';
 
+// Push-credential validation + log redaction. Dependency-free (type-only imports),
+// so a provisioner (cadre-host / cadre-provider) can reject a partial credential
+// set and produce a key-safe log view without pulling the FCM/APNs sender graph.
+export { validatePushCredentials, redactPushCredentials, REDACTED } from './push-credentials.js';
+
 // Server-side push-wake trigger policy + fan-out (who/when to wake). Cross-platform
 // clean — it imports only the PushNotifier *type*, so exporting it as a runtime
 // value pulls no node:http2/node:crypto edge into the RN/browser graph.

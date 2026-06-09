@@ -40,7 +40,7 @@ import {
   type WizardDefaults,
 } from './wizard.js';
 
-export type { HostConfigFile } from './config.js';
+export type { HostConfigFile, PushSettings } from './config.js';
 export { readHostConfig, updateHostConfig, writeHostConfig } from './config.js';
 export type { WizardAnswers, WizardDefaults } from './wizard.js';
 export type { ServiceHost, ServiceHostContext, ServiceHostStatus } from './service-host/index.js';

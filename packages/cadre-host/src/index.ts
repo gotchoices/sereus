@@ -67,12 +67,30 @@ export type {
   UninstallOptions,
   InstallerOptions,
   HostConfigFile,
+  PushSettings,
   WizardAnswers,
   WizardDefaults,
   ServiceHost,
   ServiceHostContext,
   ServiceHostStatus,
 } from './installer/index.js';
+
+/* ──────────────── push credentials (FCM/APNs) ──────────────── */
+
+export {
+  resolvePushCredentials,
+  setFcmSecret,
+  setApnsSecret,
+  clearPushSecret,
+  pushAccount,
+  pushStatus,
+} from './push/index.js';
+export type {
+  FcmSecret,
+  ApnsSecret,
+  PushSecretPlatform,
+  PushStatus,
+} from './push/index.js';
 
 export {
   UpdateService,

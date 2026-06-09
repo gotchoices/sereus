@@ -35,6 +35,14 @@ import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
 import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
 import { NatService } from '../nat/index.js';
+import { createSecretsStore } from '../nat/secrets/index.js';
+import {
+  resolvePushCredentials,
+  setFcmSecret,
+  setApnsSecret,
+  clearPushSecret,
+  pushStatus,
+} from '../push/index.js';
 import { AuthorityNodeClient } from '../authority/index.js';
 import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
@@ -257,7 +265,15 @@ program
       // to it over the node's loopback admin channel (the 6.6 contract). The
       // manager never joins the control network (see docs/cadre-host.md
       // § Control-plane separation).
-      const orchestrator = new HostProcessOrchestrator({ rootDir: join(cfg.dataDir, 'orchestrator') });
+      // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
+      // restart re-reads the secret store (rotated keys) and nothing raw is
+      // persisted in state.json. The non-secret bits (bundle id / sandbox toggle,
+      // cooldown/debounce) are re-read from host.config.json each call too.
+      const pushSecrets = await createSecretsStore(cfg.dataDir);
+      const orchestrator = new HostProcessOrchestrator({
+        rootDir: join(cfg.dataDir, 'orchestrator'),
+        pushResolver: () => resolvePushCredentials(pushSecrets, readHostConfig(cfgPath).push),
+      });
       await orchestrator.init();
 
       // Spawn the authority node. Best-effort: a spawn failure leaves the
@@ -716,6 +732,178 @@ ddns
     printNatStatus(body);
     process.exit(0);
   });
+
+// ============================================================================
+// push subcommands — provision FCM/APNs credentials for strand-wake delivery
+// ============================================================================
+//
+// These operate directly on the data dir's secret store + host.config.json (they
+// do NOT go through the running management API). Private keys land in the OS
+// keychain (keytar) or the 0600 file-store fallback; the non-secret bits (APNs
+// bundle id / sandbox toggle, cooldown/debounce) land in host.config.json. New
+// credentials take effect on the next authority-node (re)spawn — run
+// `cadre-host` restart (or restart the service) to apply them immediately.
+
+const push = program
+  .command('push')
+  .description('Configure FCM/APNs push credentials for mobile strand-wake delivery');
+
+push
+  .command('fcm')
+  .description('Store Firebase Cloud Messaging (Android) service-account credentials')
+  .requiredOption('--project-id <id>', 'GCP / Firebase project id')
+  .requiredOption('--client-email <email>', 'Service-account email')
+  .option('--private-key-file <path>', 'Path to the service-account private key (PEM)')
+  .option('--private-key <pem>', 'Inline PEM private key (prefer --private-key-file)')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .action(async (opts: {
+    projectId: string;
+    clientEmail: string;
+    privateKeyFile?: string;
+    privateKey?: string;
+    dataDir?: string;
+  }) => {
+    const { dataDir } = resolveHostPaths(opts.dataDir);
+    const privateKey = readPrivateKeyArg(opts.privateKeyFile, opts.privateKey, 'FCM');
+    const secrets = await createSecretsStore(dataDir);
+    await setFcmSecret(secrets, {
+      projectId: opts.projectId,
+      clientEmail: opts.clientEmail,
+      privateKey,
+    });
+    console.log('✓ FCM credentials stored. Restart cadre-host to apply on the authority node.');
+    process.exit(0);
+  });
+
+push
+  .command('apns')
+  .description('Store Apple Push Notification service (iOS) auth-key credentials')
+  .requiredOption('--key-id <id>', 'APNs key id (the .p8 key identifier)')
+  .requiredOption('--team-id <id>', 'Apple developer team id')
+  .requiredOption('--bundle-id <id>', 'App bundle id (becomes the apns-topic)')
+  .option('--private-key-file <path>', 'Path to the .p8 auth key (PEM)')
+  .option('--private-key <pem>', 'Inline .p8 PEM key (prefer --private-key-file)')
+  .option('--production', 'Target the production APNs host (default: sandbox)')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .action(async (opts: {
+    keyId: string;
+    teamId: string;
+    bundleId: string;
+    privateKeyFile?: string;
+    privateKey?: string;
+    production?: boolean;
+    dataDir?: string;
+  }) => {
+    const { dataDir, cfgPath } = resolveHostPaths(opts.dataDir);
+    const privateKey = readPrivateKeyArg(opts.privateKeyFile, opts.privateKey, 'APNs');
+    const secrets = await createSecretsStore(dataDir);
+    // Secret bits → secret store; non-secret app-config → host.config.json.
+    await setApnsSecret(secrets, { keyId: opts.keyId, teamId: opts.teamId, privateKey });
+    const current = readHostConfig(cfgPath);
+    updateHostConfig(cfgPath, {
+      push: {
+        ...current.push,
+        apns: { bundleId: opts.bundleId, production: opts.production === true },
+      },
+    });
+    console.log(
+      `✓ APNs credentials stored (${opts.production ? 'production' : 'sandbox'}). ` +
+      `Restart cadre-host to apply on the authority node.`,
+    );
+    process.exit(0);
+  });
+
+push
+  .command('options')
+  .description('Set non-secret push tuning (anti-spam cooldown / burst-coalesce window)')
+  .option('--cooldown-ms <ms>', 'Per-(peer,strand) minimum gap between wakes', parseIntArg)
+  .option('--debounce-ms <ms>', 'Per-strand burst-coalescing window', parseIntArg)
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .action((opts: { cooldownMs?: number; debounceMs?: number; dataDir?: string }) => {
+    const { cfgPath } = resolveHostPaths(opts.dataDir);
+    const current = readHostConfig(cfgPath);
+    const nextPush = { ...current.push };
+    if (typeof opts.cooldownMs === 'number') nextPush.cooldownMs = opts.cooldownMs;
+    if (typeof opts.debounceMs === 'number') nextPush.debounceMs = opts.debounceMs;
+    updateHostConfig(cfgPath, { push: nextPush });
+    console.log('✓ Push options updated.');
+    process.exit(0);
+  });
+
+push
+  .command('clear')
+  .description('Remove stored push credentials')
+  .argument('<target>', 'Which to clear: "fcm", "apns", or "all"')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .action(async (target: string, opts: { dataDir?: string }) => {
+    if (!['fcm', 'apns', 'all'].includes(target)) {
+      console.error(`push clear: target must be one of fcm | apns | all (got "${target}")`);
+      process.exit(1);
+      return;
+    }
+    const { dataDir, cfgPath } = resolveHostPaths(opts.dataDir);
+    const secrets = await createSecretsStore(dataDir);
+    if (target === 'fcm' || target === 'all') await clearPushSecret(secrets, 'fcm');
+    if (target === 'apns' || target === 'all') {
+      await clearPushSecret(secrets, 'apns');
+      const current = readHostConfig(cfgPath);
+      if (current.push?.apns) {
+        const { apns: _drop, ...rest } = current.push;
+        updateHostConfig(cfgPath, { push: rest });
+      }
+    }
+    console.log(`✓ Cleared push credentials: ${target}. Restart cadre-host to apply.`);
+    process.exit(0);
+  });
+
+push
+  .command('status')
+  .description('Show which push platforms are configured (no secret material)')
+  .option('--data-dir <path>', 'Override the data directory (env: CADRE_HOST_DATA_DIR)')
+  .action(async (opts: { dataDir?: string }) => {
+    const { dataDir, cfgPath } = resolveHostPaths(opts.dataDir);
+    const secrets = await createSecretsStore(dataDir);
+    const status = await pushStatus(secrets);
+    const cfg = readHostConfig(cfgPath);
+    console.log('Push credentials:');
+    console.log(`  FCM:  ${status.fcm ? 'configured' : 'not configured'}`);
+    const prod = cfg.push?.apns?.production ? 'production' : 'sandbox';
+    const bundle = cfg.push?.apns?.bundleId ? ` bundle=${cfg.push.apns.bundleId} (${prod})` : '';
+    console.log(`  APNs: ${status.apns ? `configured${bundle}` : 'not configured'}`);
+    if (cfg.push?.cooldownMs !== undefined) console.log(`  cooldownMs: ${cfg.push.cooldownMs}`);
+    if (cfg.push?.debounceMs !== undefined) console.log(`  debounceMs: ${cfg.push.debounceMs}`);
+    process.exit(0);
+  });
+
+/** Resolve the data dir + config path for a direct-on-disk push subcommand. */
+function resolveHostPaths(dataDirOpt?: string): { dataDir: string; cfgPath: string } {
+  const platform = detectPlatform();
+  const dataDir = dataDirOpt ?? process.env.CADRE_HOST_DATA_DIR ?? defaultDataDir(platform);
+  const cfgPath = resolveConfigPath(dataDir);
+  if (!existsSync(cfgPath)) {
+    console.error(`${cfgPath} not found. Run \`cadre-host install\` first (or pass --data-dir).`);
+    process.exit(1);
+  }
+  // Resolve the real data dir from the persisted config (handles default-dir installs).
+  const cfg = readHostConfig(cfgPath);
+  return { dataDir: cfg.dataDir, cfgPath };
+}
+
+/** Read a private key from a file or inline flag; exit with a clear error if neither. */
+function readPrivateKeyArg(file: string | undefined, inline: string | undefined, label: string): string {
+  if (file) {
+    try {
+      return readFileSync(file, 'utf8');
+    } catch (err) {
+      console.error(`Failed to read ${label} private key file ${file}: ${(err as Error).message}`);
+      process.exit(1);
+    }
+  }
+  if (inline) return inline;
+  console.error(`${label}: supply --private-key-file <path> (or --private-key <pem>).`);
+  process.exit(1);
+  throw new Error('unreachable');
+}
 
 async function getJson(url: string): Promise<NatStatusLike> {
   return await callJson(url, 'GET');

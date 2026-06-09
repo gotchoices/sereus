@@ -21,6 +21,26 @@ export interface UpdatesConfig {
   manifestUrl?: string;
 }
 
+/**
+ * Non-secret push (FCM/APNs) settings. The actual private keys (and the FCM
+ * service-account / APNs key identifiers) live in the secret store — see
+ * `src/push/`. Only these app-config bits, which are safe to keep in plaintext
+ * `host.config.json`, are stored here. Absent ⇒ push is not configured.
+ */
+export interface PushSettings {
+  /** APNs app-config (the `.p8` private key + key/team ids stay in the secret store). */
+  apns?: {
+    /** App bundle id → APNs `apns-topic` header. */
+    bundleId: string;
+    /** `true` → production APNs host; false/undefined → sandbox (dev/TestFlight). */
+    production?: boolean;
+  };
+  /** Per-(peer,strand) anti-spam cooldown (ms) forwarded into the node's push block. */
+  cooldownMs?: number;
+  /** Per-strand burst-coalescing window (ms) forwarded into the node's push block. */
+  debounceMs?: number;
+}
+
 export interface HostConfigFile {
   version: 2;
   /** A stable per-install id; useful for log correlation and the control-network partyId. */
@@ -41,6 +61,12 @@ export interface HostConfigFile {
   installerVersion: string;
   /** Update-flow settings; defaults: { autoApply: false }. */
   updates: UpdatesConfig;
+  /**
+   * Non-secret push settings (bundle id, sandbox/prod toggle, cooldown/debounce).
+   * Optional — absent when push is not configured. Private keys never live here;
+   * they are read from the secret store at node-spawn time (`src/push/`).
+   */
+  push?: PushSettings;
 }
 
 const CURRENT_VERSION = 2;

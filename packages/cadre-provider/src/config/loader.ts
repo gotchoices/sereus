@@ -8,7 +8,7 @@ import * as path from 'node:path';
 import yaml from 'js-yaml';
 import debug from 'debug';
 import { type ProviderConfig, type PartialProviderConfig, DEFAULT_CONFIG } from './types.js';
-import { validateAuthConfig } from './validate.js';
+import { validateAuthConfig, validatePushConfig, redactPushConfig } from './validate.js';
 
 const log = debug('cadre:provider:config');
 
@@ -152,7 +152,11 @@ export function loadConfig(options: LoadConfigOptions = {}): ProviderConfig {
   // Fail closed: reject an implicit/unacknowledged fully-open auth config.
   validateAuthConfig(config.auth);
 
-  log('Loaded configuration: %O', config);
+  // Reject a partial push credential set up front rather than at first push.
+  validatePushConfig(config.push);
+
+  // Redact push private keys before the debug dump — they are secrets.
+  log('Loaded configuration: %O', config.push ? { ...config, push: redactPushConfig(config.push) } : config);
   return config;
 }
 

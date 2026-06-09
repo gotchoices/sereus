@@ -146,6 +146,10 @@ export const startCommand = new Command('start')
         hibernation: config.hibernation,
         strandWatchInterval: config.strandWatchInterval,
         seedTrustPolicy,
+        // Platform push credentials provisioned by the orchestrator (cadre-host
+        // writes the `push` block into cadre.json; cadre-provider injects it via
+        // CADRE_PUSH). Present ⇒ CadreNode.start builds the push-wake fan-out.
+        push: config.push,
       };
 
       const node = new CadreNode(nodeConfig);

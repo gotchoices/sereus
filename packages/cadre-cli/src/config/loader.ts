@@ -69,7 +69,40 @@ function parseEnvValue(envVar: string, value: string): unknown {
   if (envVar === 'CADRE_STRAND_FILTER') {
     return parseStrandFilterEnv(value);
   }
+  // Push credentials are a nested object (FCM/APNs blocks). The provider injects
+  // them as a single JSON env var — the same explicit-encoding precedent the
+  // `_NODES`/`_ADDRS`/strand-filter vars set — rather than as many dotted leaves.
+  if (envVar === 'CADRE_PUSH') {
+    return parsePushEnv(value);
+  }
   return value;
+}
+
+/**
+ * Parse the `CADRE_PUSH` environment value into a `PushCredentials` object.
+ *
+ * The value MUST be a JSON object (e.g. `{"fcm":{...},"apns":{...}}`). An empty
+ * value (the `CADRE_PUSH=` default a docker-compose may pass) yields `undefined`
+ * so the node simply runs without push. A non-empty value that fails to parse
+ * throws — a misconfigured push block must fail loudly at start, not silently
+ * disable wake delivery.
+ */
+function parsePushEnv(value: string): unknown {
+  const trimmed = value.trim();
+  if (trimmed === '') return undefined;
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch (err) {
+    throw new Error(
+      `Invalid CADRE_PUSH: expected a JSON object (e.g. {"fcm":{...}} / {"apns":{...}})`,
+      { cause: err },
+    );
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error(`Invalid CADRE_PUSH: expected a JSON object, got ${JSON.stringify(parsed)}`);
+  }
+  return parsed;
 }
 
 /**
@@ -224,6 +257,7 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
     network: fileConfig.network,
     hibernation: fileConfig.hibernation,
     strandWatchInterval: fileConfig.strandWatchInterval,
+    push: fileConfig.push,
   };
 }
 

@@ -100,7 +100,11 @@ export async function createProviderServer(
   }
 
   // Create services
-  const containerService = new ContainerService({ store, orchestrator });
+  const containerService = new ContainerService({
+    store,
+    orchestrator,
+    ...(config.push ? { push: config.push } : {}),
+  });
   const billingService = new BillingService({
     config: config.billing,
     store,

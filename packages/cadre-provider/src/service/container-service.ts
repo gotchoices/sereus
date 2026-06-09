@@ -12,9 +12,24 @@ import type {
 } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
+import type { ProviderPushConfig, PushCredentials } from '../config/types.js';
 import { fetchContainerHealthStatus } from './container-health.js';
 
 const log = debug('cadre:provider:container');
+
+/**
+ * Resolve the push credentials for ONE tenant: the per-tenant override keyed by
+ * `customerId`, else the provider-level default, else none. This is the single
+ * cross-tenant boundary — a tenant only ever sees its own override or the shared
+ * default, never another tenant's override.
+ */
+export function resolveTenantPush(
+  push: ProviderPushConfig | undefined,
+  customerId: string,
+): PushCredentials | undefined {
+  if (!push) return undefined;
+  return push.tenants?.[customerId] ?? push.default;
+}
 
 /** Container service options */
 export interface ContainerServiceOptions {
@@ -22,6 +37,11 @@ export interface ContainerServiceOptions {
   store: ProviderStore;
   /** Container orchestrator (Docker, K8s, etc.) */
   orchestrator: Orchestrator;
+  /**
+   * Per-tenant push (FCM/APNs) credentials. Resolved by `customerId` at provision
+   * time and injected into that tenant's node only. Omit to disable push.
+   */
+  push?: ProviderPushConfig;
 }
 
 /**
@@ -31,10 +51,12 @@ export interface ContainerServiceOptions {
 export class ContainerService {
   private readonly store: ProviderStore;
   private readonly orchestrator: Orchestrator;
+  private readonly push?: ProviderPushConfig;
 
   constructor(options: ContainerServiceOptions) {
     this.store = options.store;
     this.orchestrator = options.orchestrator;
+    this.push = options.push;
     log('ContainerService initialized');
   }
 
@@ -85,6 +107,9 @@ export class ContainerService {
       // Update status to creating
       await this.updateStatus(container.id, 'creating');
 
+      // Resolve push strictly by the OWNING tenant's id — never another tenant's.
+      const push = resolveTenantPush(this.push, container.customerId);
+
       // Create the container via orchestrator
       const result = await this.orchestrator.createContainer({
         containerId: container.id,
@@ -93,6 +118,7 @@ export class ContainerService {
         profile: request.profile,
         resources: request.resources,
         strandFilter: request.strandFilter,
+        ...(push ? { push } : {}),
       });
       dockerId = result.dockerId;
 

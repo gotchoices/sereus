@@ -1,5 +1,5 @@
 import type { PrivateKey } from '@libp2p/interface';
-import type { NodeProfile, LatencyHint, StrandFilter } from '@serfab/cadre-core';
+import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials } from '@serfab/cadre-core';
 
 /**
  * CLI configuration file format (YAML/JSON)
@@ -64,6 +64,16 @@ export interface CliConfigFile {
 
   /** Polling interval for strand watcher in ms */
   strandWatchInterval?: number;
+
+  /**
+   * Platform push-delivery credentials (FCM and/or APNs). Provisioned per node by
+   * an orchestrator — `cadre-host` writes this block into `cadre.json`, and
+   * `cadre-provider` injects it via the `CADRE_PUSH` env var (JSON). Absent ⇒ the
+   * node constructs no push fan-out (control-network push-wake only). `privateKey`
+   * fields are secrets and are never logged. See `@serfab/cadre-core`'s
+   * `PushCredentials`.
+   */
+  push?: PushCredentials;
 }
 
 /**
@@ -83,6 +93,7 @@ export const ENV_MAPPINGS = {
   CADRE_ENABLE_RELAY: 'network.enableRelay',
   CADRE_HIBERNATION_ENABLED: 'hibernation.enabled',
   CADRE_STRAND_FILTER: 'strandFilter',
+  CADRE_PUSH: 'push',
 } as const;
 
 /**
@@ -112,5 +123,6 @@ export interface ResolvedConfig {
     defaultLatencyHint?: LatencyHint;
   };
   strandWatchInterval?: number;
+  push?: PushCredentials;
 }
 

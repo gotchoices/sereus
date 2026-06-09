@@ -3,6 +3,7 @@
  */
 
 import type { ChildProcess } from 'node:child_process';
+import type { PushCredentials } from '@serfab/cadre-core';
 
 /** User-facing configuration for `HostProcessOrchestrator`. */
 export interface HostProcessConfig {
@@ -23,7 +24,23 @@ export interface HostProcessConfig {
    * spawns `node <entrypoint> ...` instead of resolving `@serfab/cadre-cli`.
    */
   spawn?: { entrypoint?: string };
+  /**
+   * Resolver for the platform push credentials (FCM/APNs) to inject into a
+   * spawned strand-participating node's `cadre.json` (`config.push`). Called
+   * fresh on EVERY spawn/re-spawn so the secret store stays the source of truth
+   * and no raw private key is ever persisted in `state.json`. Returns `undefined`
+   * when no push credentials are configured (the default — push is opt-in). The
+   * resolver itself is responsible for rejecting a partial credential set.
+   */
+  pushResolver?: PushCredentialsResolver;
 }
+
+/**
+ * Resolves the push credentials to inject into a node being spawned. Re-invoked
+ * per spawn so a restart re-reads the secret store rather than replaying stale
+ * (or persisted) material. See {@link HostProcessConfig.pushResolver}.
+ */
+export type PushCredentialsResolver = () => Promise<PushCredentials | undefined>;
 
 /** Per-child allocated ports. `admin` carries the loopback admin channel (6.6). */
 export interface NodePorts {

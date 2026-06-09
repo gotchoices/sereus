@@ -4,6 +4,7 @@
  */
 
 import type { ContainerResources } from '../types.js';
+import type { PushCredentials } from '../config/types.js';
 
 /** Container creation request for orchestrator */
 export interface OrchestratorCreateRequest {
@@ -19,6 +20,13 @@ export interface OrchestratorCreateRequest {
   resources?: ContainerResources;
   /** Strand filter */
   strandFilter?: string;
+  /**
+   * Already-resolved push credentials for THIS tenant's node (or undefined). The
+   * orchestrator injects exactly what it is handed and performs no tenant lookup
+   * itself — cross-tenant isolation is guaranteed upstream, by ContainerService
+   * resolving strictly by the launching tenant's id before calling this.
+   */
+  push?: PushCredentials;
 }
 
 /** Container creation result from orchestrator */
