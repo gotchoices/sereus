@@ -28,28 +28,19 @@
  *                           ─► serviceWake(strandId, {windowMs}) ─► re-hibernate
  */
 
-import type { CadreNode, PushPlatform, ServiceWakeResult } from '@serfab/cadre-core';
+import { STRAND_WAKE_TYPE } from '@serfab/cadre-core';
+import type { CadreNode, PushPlatform, ServiceWakeResult, StrandWakePayload } from '@serfab/cadre-core';
 
-// ── Shared payload contract ─────────────────────────────────────────────────
+// ── Shared payload contract (canonical home: @serfab/cadre-core) ─────────────
 //
-// The data-only message both this receiver and the server-side fan-out
-// (`cadre-server-push-fanout`) must agree on. Defined here as the single source
-// of truth; the sender imports this type rather than re-declaring it.
-
-/** Discriminator value carried by a strand-wake data message. */
-export const STRAND_WAKE_TYPE = 'strand-wake';
-
-/**
- * A data-only push payload telling a suspended phone that `strandId` has pending
- * activity. Delivered addressed to the phone's resolved `DeviceToken`.
- */
-export interface StrandWakePayload {
-  type: typeof STRAND_WAKE_TYPE;
-  /** The strand the wake is for. */
-  strandId: string;
-  /** Why the wake was sent (e.g. `'activity'`). Free-form, for diagnostics. */
-  reason: string;
-}
+// `STRAND_WAKE_TYPE` + `StrandWakePayload` are the data-only message both this
+// receiver and the server-side sender (`PushNotifier`) agree on. They now live in
+// cadre-core (`strand-wake-payload.ts`) so the sender does not depend on this RN
+// app; re-exported here for this module's existing callers/tests. The defensive
+// `parseStrandWakePayload` parser below stays receive-side — it guards untrusted
+// push input rather than re-declaring the contract.
+export { STRAND_WAKE_TYPE };
+export type { StrandWakePayload };
 
 /**
  * Parse an opaque push `data` record into a {@link StrandWakePayload}, or `null`

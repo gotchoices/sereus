@@ -252,6 +252,15 @@ export interface CadreNodeConfig {
    * from a CadreInvite).
    */
   seedTrustPolicy?: SeedTrustPolicy;
+
+  /**
+   * Platform push-delivery credentials (FCM and/or APNs). When present, the node
+   * can deliver strand-wake data messages to suspended mobile peers over the
+   * platform push channel — the server fan-out constructs a `PushNotifier` from
+   * this. Absent ⇒ no platform push (control-network push-wake only). Injected
+   * per node by `cadre-host`; `privateKey` fields are secrets and are never logged.
+   */
+  push?: PushCredentials;
 }
 
 /**
@@ -663,6 +672,51 @@ export interface ResolveDeviceTokenOpts {
    * resolvable for push-wake. Set this to bound staleness explicitly.
    */
   maxAgeMs?: number;
+}
+
+// ============================================================================
+// Push Credentials (platform push delivery — see push-notifier.ts)
+// ============================================================================
+
+/**
+ * Platform push-delivery credentials injected into a participating node's config
+ * (`CadreNodeConfig.push`). Provisioned per spawned node by `cadre-host` and read
+ * by `createPushNotifier` to construct the FCM and/or APNs senders. A platform
+ * whose block is absent is simply not deliverable (the router returns a
+ * best-effort "no credentials" failure rather than throwing).
+ *
+ * Secret hygiene: every `privateKey` field is a secret — never logged (treated
+ * like the node's startup/seed tokens).
+ */
+export interface PushCredentials {
+  /** FCM (Android / Firebase) service-account credentials. */
+  fcm?: FcmCredentials;
+  /** APNs (Apple) auth-key credentials. */
+  apns?: ApnsCredentials;
+}
+
+/** Google service-account fields needed for FCM HTTP v1 OAuth2. */
+export interface FcmCredentials {
+  /** GCP project id → `POST https://fcm.googleapis.com/v1/projects/{projectId}/messages:send`. */
+  projectId: string;
+  /** Service-account email (JWT `iss`/`sub`). */
+  clientEmail: string;
+  /** Service-account RSA private key, PEM. Secret — never logged. */
+  privateKey: string;
+}
+
+/** Apple APNs auth-key (.p8) fields. */
+export interface ApnsCredentials {
+  /** APNs key id (JWT header `kid`). */
+  keyId: string;
+  /** Apple team id (JWT `iss`). */
+  teamId: string;
+  /** App bundle id → `apns-topic` header. */
+  bundleId: string;
+  /** `.p8` ES256 private key, PEM. Secret — never logged. */
+  privateKey: string;
+  /** `true` → `api.push.apple.com`; false/undefined → `api.sandbox.push.apple.com`. */
+  production?: boolean;
 }
 
 // ============================================================================

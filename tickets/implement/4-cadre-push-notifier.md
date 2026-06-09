@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-06-09T03:17:32.190Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\4-cadre-push-notifier.implement.2026-06-09T03-17-32-190Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 priority: 3
 description: Platform push delivery for cadre-core — a PushNotifier abstraction with FCM (HTTP v1) and APNs (HTTP/2) implementations, credential config surface, the shared strand-wake payload contract re-homed into core, and unregistered-token detection
 files: packages/cadre-core/src/types.ts, packages/cadre-core/src/index.ts, packages/cadre-core/src/push-notifier.ts (new), packages/cadre-core/src/push-notifier-fcm.ts (new), packages/cadre-core/src/push-notifier-apns.ts (new), packages/cadre-core/src/strand-wake-payload.ts (new), packages/cadre-core/test/push-notifier.spec.ts (new), packages/reference-app-rn/src/push-wake.ts, docs/architecture.md, docs/STATUS.md

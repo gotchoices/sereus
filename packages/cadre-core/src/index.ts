@@ -115,6 +115,17 @@ export {
   isPushPlatform
 } from './device-token.js';
 
+// Strand-wake payload contract (canonical; shared by the server sender + RN receiver)
+export { STRAND_WAKE_TYPE, type StrandWakePayload } from './strand-wake-payload.js';
+
+// Platform push delivery — server-only PushNotifier (FCM HTTP v1 / APNs HTTP/2).
+// TYPES ONLY here: the implementations import node:http2/node:crypto and are
+// constructed solely by the in-package fan-out inside a Node CadreNode. A
+// type-only re-export is erased at emit, so the cross-platform (RN/browser) entry
+// graph never pulls these modules in. `createPushNotifier` is imported directly
+// from './push-notifier.js' by the fan-out, never re-exported as a runtime value.
+export type { PushNotifier, PushMessage, PushSendResult } from './push-notifier.js';
+
 // Seed trust policy (trust anchor for incoming seeds)
 export {
   dbAnchoredTrustPolicy,
