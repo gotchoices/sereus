@@ -2,10 +2,12 @@ import { describe, it, expect } from 'vitest';
 import type { Libp2p } from '@libp2p/interface';
 import {
   FormationListener,
+  dialFormation,
   isValidResponderCreatesResult,
   type FormationContactMessage,
   type FormationResultMessage,
   type FormationListenerOptions,
+  type FormationProvisionResult,
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
@@ -266,5 +268,60 @@ describe('isValidResponderCreatesResult rejection matrix', () => {
       ...good,
       provisionResult: { ...good.provisionResult!, strand: { strandId: 'strand-1', createdBy: 'initiator' } }
     })).toBe(false);
+  });
+});
+
+// ── dialFormation: the sole provision-result guard on the initiator ────────────
+
+/** A mock node whose `dialProtocol` returns a stream pre-loaded with one response frame. */
+function dialNode(response: FormationResultMessage): { node: Libp2p; stream: MockStream } {
+  const stream = new MockStream([encodeFrame(response)]);
+  const node = {
+    dialProtocol: async () => stream
+  } as unknown as Libp2p;
+  return { node, stream };
+}
+
+describe('dialFormation provision-result invariant', () => {
+  const responderAddrs = ['/ip4/127.0.0.1/tcp/1'];
+
+  it('returns the responder-provisioned strand on an approved result', async () => {
+    const provisionResult: FormationProvisionResult = {
+      strand: { strandId: 'strand-from-responder', createdBy: 'responder' },
+      dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+    };
+    const { node, stream } = dialNode({
+      approved: true,
+      partyId: RESPONDER_IDENTITY.partyId,
+      cadrePeerAddrs: RESPONDER_IDENTITY.cadrePeerAddrs,
+      provisionResult
+    });
+
+    const result = await dialFormation(node, { contact, responderAddrs, validateResponse: async () => true });
+    expect(result).toEqual(provisionResult);
+    expect(stream.closed).toBe(true);
+  });
+
+  it('throws when the responder approves but returns no provision result', async () => {
+    // This is the lone guard carrying the provision-result invariant after the mode
+    // discriminator was removed — an approved-but-resultless reply must abort, not
+    // resolve undefined.
+    const { node } = dialNode({
+      approved: true,
+      partyId: RESPONDER_IDENTITY.partyId,
+      cadrePeerAddrs: RESPONDER_IDENTITY.cadrePeerAddrs
+    });
+
+    await expect(
+      dialFormation(node, { contact, responderAddrs, validateResponse: async () => true })
+    ).rejects.toThrow(/Missing provision result/);
+  });
+
+  it('throws when the responder rejects the formation', async () => {
+    const { node } = dialNode({ approved: false, reason: 'Invalid token' });
+
+    await expect(
+      dialFormation(node, { contact, responderAddrs, validateResponse: async () => true })
+    ).rejects.toThrow(/Formation rejected: Invalid token/);
   });
 });
