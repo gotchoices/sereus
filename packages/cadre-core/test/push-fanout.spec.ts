@@ -257,6 +257,24 @@ describe('PushFanoutService — best-effort', () => {
     await expect(h.service.notify('strand-1')).resolves.toBeUndefined();
   });
 
+  it('a concurrent joiner does not reject when the in-flight pass rejects', async () => {
+    // Regression: a second notify that joins an in-flight pass via `return inflight`
+    // must not adopt that pass's rejection (it would escape notify's own try/catch
+    // and surface as an unhandled rejection at the `void notify(...)` trigger).
+    const h = makeFanout({ debounceMs: 0 });
+    const opts = (h.service as unknown as { deps: PushFanoutOptions }).deps;
+    let rejectMembers: (e: Error) => void = () => {};
+    opts.listMembers = () => new Promise<FanoutMember[]>((_resolve, reject) => { rejectMembers = reject; });
+
+    // First call parks awaiting listMembers (pass in flight); second joins it.
+    const first = h.service.notify('strand-1');
+    const second = h.service.notify('strand-1');
+    rejectMembers(new Error('control DB unavailable'));
+
+    await expect(first).resolves.toBeUndefined();
+    await expect(second).resolves.toBeUndefined();
+  });
+
   it('close() releases the notifier transport', async () => {
     const h = makeFanout();
     await h.service.close();

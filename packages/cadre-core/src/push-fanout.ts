@@ -129,7 +129,11 @@ export class PushFanoutService {
 
       // Concurrent trigger coalescing: a second near-simultaneous notify joins the
       // in-flight pass rather than enumerating + sending again (mirrors
-      // CadreNode.serviceWakePromises).
+      // CadreNode.serviceWakePromises). The stored promise is guarded (see below),
+      // so a joiner that adopts it via `return inflight` never observes a rejection
+      // — the "never throws to the trigger" guarantee holds on the join path too
+      // (a rejection here would otherwise escape this try/catch, since the returned
+      // promise settles in the caller's `void notify(...)` context).
       const inflight = this.inFlight.get(strandId);
       if (inflight) {
         log('notify: joining in-flight fan-out for strand %s', strandId);
@@ -145,7 +149,12 @@ export class PushFanoutService {
       }
 
       this.lastFanoutAt.set(strandId, now);
-      const op = this.runFanout(strandId, reason);
+      // Guard the pass so neither the originator nor a concurrent joiner can see a
+      // rejection (e.g. listMembers throwing on a control-DB hiccup): a dropped
+      // fan-out is recoverable via the check-in wake backstop.
+      const op = this.runFanout(strandId, reason).catch((error) => {
+        log('notify: fan-out pass for strand %s failed (best-effort): %o', strandId, error);
+      });
       this.inFlight.set(strandId, op);
       try {
         await op;
