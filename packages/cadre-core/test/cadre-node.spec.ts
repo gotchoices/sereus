@@ -833,6 +833,42 @@ describe('CadreNode', () => {
       expect(r1).toBe(r2);
     });
 
+    it('teardown clears an in-flight wake window so the awaiting serviceWake unblocks (no stale timer)', async () => {
+      // Exercises the windowWaiters/clearWindowWaiters machinery cleanup() relies
+      // on: a stop() during a live window must neither hang the awaiting wake nor
+      // leave a timer to fire after teardown.
+      const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
+      const instance: StrandInstance = {
+        strandId: 'sw-teardown', status: 'hibernating', connectedPeers: 0,
+        lastActivity: new Date(1000), latencyHint: 'interactive'
+      };
+      const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
+      (node as unknown as { strandManager: unknown }).strandManager =
+        fakeManager(new Map([['sw-teardown', instance]]), calls);
+      injectControl(node, []);
+
+      // A long window the test will never wait out — only the teardown can resolve it.
+      const pending = node.serviceWake('sw-teardown', { windowMs: 60_000 });
+
+      // Let the wake reach the live window (the waiter is registered there).
+      const waiters = () => (node as unknown as { windowWaiters: Set<unknown> }).windowWaiters;
+      for (let i = 0; i < 1000 && waiters().size === 0; i++) {
+        await new Promise<void>((r) => { setTimeout(r, 0); });
+      }
+      expect(waiters().size).toBe(1);
+
+      // What cleanup() invokes on stop(): cancel the timer and resolve the waiter.
+      (node as unknown as { clearWindowWaiters: () => void }).clearWindowWaiters();
+      expect(waiters().size).toBe(0);
+
+      // The awaiting serviceWake completes promptly — no activity landed, so the
+      // strand re-hibernates rather than hanging past teardown.
+      const result = await pending;
+      expect(result).toEqual({ strandId: 'sw-teardown', serviced: true, hadActivity: false });
+      expect(instance.status).toBe('hibernating');
+      expect(calls.quiesce).toEqual(['sw-teardown']);
+    });
+
     it('running and controlConnected reflect lifecycle synchronously', async () => {
       const node = new CadreNode(createConfig());
 

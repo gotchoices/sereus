@@ -218,6 +218,16 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
   - Out of scope (owned by `tickets/backlog/3-mobile-background-service.md`): the automatic trigger
     policy (a server fanning wakes on detected activity) and mobile FCM/APNs delivery.
+- [x] Imperative background-lifecycle primitives (platform-agnostic; for a mobile `BackgroundRunner`)
+  - `CadreNode.hibernateStrand(strandId)` / `hibernateAll()` force-hibernate now, bypassing the
+    idle/hibernate timers, via `HibernationManager.forceHibernate` — which cancels the strand's pending
+    idle/hibernate **and** check-in timers and runs `onHibernate` without re-arming check-ins (the strand
+    stays down until the caller drives a wake). Realtime strands are skipped (`HibernationManager.hibernates`);
+    `hibernateAll` is collect-and-continue on per-strand failure and returns the hibernated strandIds.
+  - `CadreNode.serviceWake(strandId, opts?)` runs the check-in cycle on demand (shared `runWakeWindow` body),
+    coalesced per-strand and sharing one runtime build with a racing push-wake; returns a branchable
+    `ServiceWakeResult { strandId, serviced, hadActivity }` instead of throwing when not running / unknown.
+  - `running` / `controlConnected` getters give headless callers a synchronous readiness snapshot.
 
 ## Testing / CI
 
