@@ -186,6 +186,20 @@ describe('SecureStoreKeyStore — access vs absence', () => {
 		await expect(result).rejects.toMatchObject({ keyId: 'cadre/identity' });
 	});
 
+	it('corrupt (non-base64) stored material raises KeyStoreAccessError, not truncated bytes or undefined', async () => {
+		const { store, fake } = makeStore();
+		await store.set('cadre/identity', new Uint8Array([1, 2, 3]));
+		// Overwrite the stored text with a value that is not valid base64. A silent
+		// decode would orphan the real key via cadre-core regeneration, so this must
+		// surface loudly rather than return undefined/garbage.
+		const [matKey] = fake.materialKeys();
+		fake.map.set(matKey, '!!! not base64 @@@');
+
+		const result = store.get('cadre/identity');
+		await expect(result).rejects.toBeInstanceOf(KeyStoreAccessError);
+		await expect(result).rejects.toMatchObject({ keyId: 'cadre/identity' });
+	});
+
 	it('forwards construction options to material reads/writes; index never requires auth', async () => {
 		const { store, fake } = makeStore({ requireAuthentication: true, keychainAccessible: 7 });
 		await store.set('cadre/identity', new Uint8Array([1]));
@@ -279,6 +293,15 @@ describe('migrateLegacyIdentity', () => {
 		const { store } = makeStore();
 		const outcome = await migrateLegacyIdentity({
 			store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy: async () => undefined,
+		});
+		expect(outcome).toBe('no-legacy');
+		await expect(store.get(DEFAULT_IDENTITY_KEY_ID)).resolves.toBeUndefined();
+	});
+
+	it('treats a zero-length legacy blob as no-legacy (never sets an empty slot)', async () => {
+		const { store } = makeStore();
+		const outcome = await migrateLegacyIdentity({
+			store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy: async () => new Uint8Array(0),
 		});
 		expect(outcome).toBe('no-legacy');
 		await expect(store.get(DEFAULT_IDENTITY_KEY_ID)).resolves.toBeUndefined();
