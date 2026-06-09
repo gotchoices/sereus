@@ -1,6 +1,9 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach } from 'vitest';
+import { mkdtempSync, writeFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { PushCredentials } from '@serfab/cadre-core';
-import { applyEnvironmentOverrides } from '../src/config/loader.js';
+import { applyEnvironmentOverrides, resolveConfig } from '../src/config/loader.js';
 import type { CliConfigFile } from '../src/config/types.js';
 
 const baseConfig: CliConfigFile = {
@@ -50,5 +53,42 @@ describe('push config', () => {
   it('throws when CADRE_PUSH is a JSON scalar/array, not an object', () => {
     expect(() => resolveFromEnv('42')).toThrow(/CADRE_PUSH/);
     expect(() => resolveFromEnv('["x"]')).toThrow(/CADRE_PUSH/);
+  });
+});
+
+describe('resolveConfig push validation', () => {
+  let dir: string;
+
+  /** Write a cadre.json and resolve it. */
+  async function resolveWith(push: unknown): Promise<PushCredentials | undefined> {
+    const cfgPath = join(dir, 'cadre.json');
+    writeFileSync(cfgPath, JSON.stringify({ ...baseConfig, push }), 'utf8');
+    return (await resolveConfig(cfgPath)).push;
+  }
+
+  beforeEach(() => {
+    dir = mkdtempSync(join(tmpdir(), 'cadre-cli-push-'));
+  });
+
+  afterEach(() => {
+    delete process.env.CADRE_PUSH;
+    rmSync(dir, { recursive: true, force: true });
+  });
+
+  it('accepts a complete file-config push block', async () => {
+    expect(await resolveWith({ fcm: FCM, apns: APNS })).toEqual({ fcm: FCM, apns: APNS });
+  });
+
+  it('accepts a config with no push block', async () => {
+    expect(await resolveWith(undefined)).toBeUndefined();
+  });
+
+  it('rejects a partial file-config push block (fail fast at start)', async () => {
+    await expect(resolveWith({ fcm: { ...FCM, privateKey: '' } })).rejects.toThrow(/push\.fcm\.privateKey/);
+  });
+
+  it('rejects a partial block injected via CADRE_PUSH', async () => {
+    process.env.CADRE_PUSH = JSON.stringify({ apns: { keyId: 'KID', teamId: 'TEAM', bundleId: '', privateKey: 'P8' } });
+    await expect(resolveWith(undefined)).rejects.toThrow(/push\.apns\.bundleId/);
   });
 });

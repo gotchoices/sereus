@@ -5,6 +5,7 @@ import debug from 'debug';
 import { privateKeyFromRaw, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { StrandFilter } from '@serfab/cadre-core';
+import { validatePushCredentials } from '@serfab/cadre-core';
 import type { CliConfigFile, ResolvedConfig} from './types.js';
 import { ENV_MAPPINGS } from './types.js';
 
@@ -231,11 +232,30 @@ export function parseStrandFilter(filter: unknown): StrandFilter {
 }
 
 /**
+ * Validate a resolved push block before it reaches `CadreNode.start`.
+ *
+ * The provisioners (cadre-host's secret store, cadre-provider's per-tenant config)
+ * already reject a partial set, but the cli is the common sink for *both* a
+ * file-config `push` block and the `CADRE_PUSH` env override — a hand-edited
+ * `cadre.json` or a partial env value would otherwise build a notifier that only
+ * fails at the first push. Fail fast at start instead, using cadre-core's shared
+ * validator (the dependency-free seam built for exactly this).
+ */
+function validateResolvedPush(push: CliConfigFile['push']): void {
+  if (!push) return;
+  const errors = validatePushCredentials(push);
+  if (errors.length > 0) {
+    throw new Error(`Invalid push credentials: ${errors.join('; ')}`);
+  }
+}
+
+/**
  * Resolve configuration: load file, apply env overrides, load keys
  */
 export async function resolveConfig(configPath: string): Promise<ResolvedConfig> {
   let fileConfig = await loadConfigFile(configPath);
   fileConfig = applyEnvironmentOverrides(fileConfig);
+  validateResolvedPush(fileConfig.push);
 
   // Load private key if specified. The protobuf identity (installer-written
   // `identity.key`) takes precedence, then a raw/hex key file, then inline hex.
