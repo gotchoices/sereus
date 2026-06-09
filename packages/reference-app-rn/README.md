@@ -126,6 +126,13 @@ In **Settings**:
 
 The drone automatically joins all strands (`strandFilter: all`), so it syncs immediately.
 
+A phone can hold several strands at once (the one it created plus any open strands
+auto-joined from the network). The Chat tab picks a single **active strand**
+deterministically — the strand you explicitly created/joined, otherwise the
+lexicographically smallest id — so an inbound auto-joined strand never silently
+hijacks the view. Use the strand-chip picker above the message list to switch
+between them; switching resets the conversation to the selected strand.
+
 ## Connecting Multiple Users
 
 Each phone runs its own CadreNode. To chat between two phones:

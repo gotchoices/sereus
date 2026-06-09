@@ -104,14 +104,19 @@ export function useChat(opts: UseChatOptions): UseChatResult {
         queryMessages(s),
         queryMembers(s),
       ]);
+      // A switch may have landed while this query was in flight. Applying a
+      // previous strand's rows now would re-bleed the very conversation the
+      // reset-on-switch effect just cleared, so drop the stale result.
+      if (strandRef.current !== s) return;
       setMessages(msgs);
       setMembers(mems);
       setError(null);
     } catch (err) {
+      if (strandRef.current !== s) return;
       const msg = err instanceof Error ? err.message : String(err);
       setError(msg);
     } finally {
-      setLoading(false);
+      if (strandRef.current === s) setLoading(false);
     }
   }, []);
 
