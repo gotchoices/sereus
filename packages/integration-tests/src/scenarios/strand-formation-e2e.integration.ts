@@ -11,20 +11,23 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { toString as uint8ArrayToString } from 'uint8arrays';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	StrandSolicitationService,
+	ControlFormationUsageRecorder,
 	signSchema,
 	type DisclosureValidator,
 	type FormationUsageRecorder,
 	type StrandProvisioner,
 } from '@serfab/cadre-core';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure } from '@serfab/cadre-core';
+import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation } from '@serfab/cadre-core';
 import { TestCadreNetwork, waitUntil } from '../harness/index.js';
+import type { TestParty } from '../harness/types.js';
 
 // ── Mock implementations ────────────────────────────────────────────────────
 
@@ -732,5 +735,140 @@ describe('E2E Strand Formation', () => {
 				}
 			}, 30_000);
 		}
+	});
+
+	// ═════════════════════════════════════════════════════════════════════════════
+	// Phase 4: Responder consent enforcement over libp2p (REAL ControlFormationUsageRecorder)
+	// ═════════════════════════════════════════════════════════════════════════════
+	//
+	// Unlike Phases 1-3 (in-memory mock recorders/provisioners), this drives the responder
+	// through the DB-backed ControlFormationUsageRecorder so the single-use accounting and the
+	// missing-host-strand rejection are exercised against the real control network — the same
+	// path cadre-core's strand-formation-consent.spec.ts asserts off-network with a MockStream.
+	// Covers the two responder-fallback gaps:
+	//   (i)  an unbound single-use invite redeemed twice rejects the SECOND redemption, and
+	//   (ii) a bound invite naming a host strand absent on the responder yields a clean
+	//        `approved:false` (formStrand throws `Formation rejected: <reason>`) rather than a
+	//        dial read-error / step timeout.
+
+	describe('Phase 4: Responder consent enforcement (real recorder)', () => {
+		let network: TestCadreNetwork;
+
+		beforeAll(() => {
+			network = new TestCadreNetwork({ verbose: true, defaultTimeoutMs: 20_000 });
+		});
+
+		afterAll(async () => {
+			await network.shutdown();
+		});
+
+		/** ed25519-sign raw message bytes with a party's authority key (cf. insert* signers). */
+		function authoritySigner(party: TestParty): (message: Uint8Array) => string {
+			// libp2p protobuf ed25519 private key: 32-byte seed at slice(4, 36) (cf. enrollment-e2e).
+			const rawKey = uint8ArrayToString(party.authorityPrivateKey.slice(4, 36), 'base64url');
+			return (message) => cryptoSign(message, rawKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+		}
+
+		/** A responder solicitation service wired to the party's REAL DB-backed recorder. */
+		function responderService(party: TestParty): StrandSolicitationService {
+			const service = new StrandSolicitationService({
+				partyId: party.partyId,
+				cadrePeerAddrs: party.authorityNode.multiaddrs,
+				formationUsageRecorder: new ControlFormationUsageRecorder(party.controlDatabase),
+			});
+			service.registerResponder(party.authorityNode.libp2p);
+			return service;
+		}
+
+		/** Build an OpenInvitation pointing at the responder party's bootstrap addrs. */
+		function invitationFor(token: string, sAppId: string, party: TestParty): OpenInvitation {
+			return {
+				token,
+				sAppId,
+				expiration: new Date(Date.now() + 365 * 24 * 3600_000),
+				bootstrap: party.authorityNode.multiaddrs,
+			};
+		}
+
+		it('(i) rejects the second redemption of an unbound single-use invite', async () => {
+			const alice = await network.createParty({ name: 'alice-consent' });
+			const bob = await network.createParty({ name: 'bob-consent' });
+
+			const aliceService = responderService(alice);
+			const sign = authoritySigner(alice);
+
+			// Authority-signed UNBOUND single-use invite (no strandId → responder-provisions).
+			const token = `invite-unbound-${Date.now()}`;
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent', alice.authorityPublicKey, sign, {
+				totalUses: 1,
+				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+			});
+
+			const bobService = new StrandSolicitationService({
+				partyId: bob.partyId,
+				cadrePeerAddrs: bob.authorityNode.multiaddrs,
+			});
+
+			// First redemption provisions a fresh strand and records the single usage row.
+			const first = await bobService.formStrand(
+				invitationFor(token, 'sapp-consent', alice),
+				{ partyId: bob.partyId, purpose: 'consent-1' },
+				bob.authorityNode.libp2p,
+			);
+			expect(first.strandId).toBeDefined();
+			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+
+			// Second redemption of the now-exhausted single-use invite is rejected.
+			await expect(
+				bobService.formStrand(
+					invitationFor(token, 'sapp-consent', alice),
+					{ partyId: bob.partyId, purpose: 'consent-2' },
+					bob.authorityNode.libp2p,
+				),
+			).rejects.toThrow(/Formation rejected/);
+
+			// Still exactly one usage row — the rejected attempt wrote nothing.
+			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+
+			aliceService.unregisterResponder(alice.authorityNode.libp2p);
+		}, 30_000);
+
+		it('(ii) a bound-but-unconverged host strand yields a clean rejection (no read-error/timeout)', async () => {
+			const alice = await network.createParty({ name: 'alice-missing' });
+			const bob = await network.createParty({ name: 'bob-missing' });
+
+			const aliceService = responderService(alice);
+			const sign = authoritySigner(alice);
+
+			// Invite binds a strand id that is NEVER inserted as a Strand row (unconverged host).
+			const missingStrandId = `strand-unconverged-${Date.now()}`;
+			const token = `invite-missing-${Date.now()}`;
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-missing', alice.authorityPublicKey, sign, {
+				totalUses: 1,
+				strandId: missingStrandId,
+				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+			});
+
+			const bobService = new StrandSolicitationService({
+				partyId: bob.partyId,
+				cadrePeerAddrs: bob.authorityNode.multiaddrs,
+			});
+
+			// formStrand surfaces the responder's `approved:false` as a thrown
+			// `Formation rejected: Host strand not yet available on this responder` —
+			// a clean protocol rejection, NOT a dial read-error or step timeout.
+			await expect(
+				bobService.formStrand(
+					invitationFor(token, 'sapp-missing', alice),
+					{ partyId: bob.partyId, purpose: 'missing-host' },
+					bob.authorityNode.libp2p,
+				),
+			).rejects.toThrow(/Host strand not yet available/);
+
+			// No usage row was written, so a retry after convergence is not pre-blocked.
+			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
+
+			aliceService.unregisterResponder(alice.authorityNode.libp2p);
+		}, 30_000);
 	});
 });

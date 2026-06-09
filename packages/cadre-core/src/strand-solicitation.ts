@@ -35,6 +35,26 @@ export interface DisclosureValidator {
 }
 
 /**
+ * Discriminated result of resolving the host strand an invite binds to (responder side):
+ *
+ * - `unbound`: the invite carries no `StrandId` → the responder-provisions path (provision
+ *   a NEW strand; legacy/open).
+ * - `bound`: the invite names a host strand AND that strand row is present on this responder
+ *   → provision-then-record (record consent against it, return it + its membership key).
+ * - `missing`: the invite names a host strand but the row is ABSENT on this responder (e.g.
+ *   not yet converged) → the manager rejects cleanly rather than recording usage against a
+ *   non-existent strand, which would fail the deferred `FormationUsage.StrandExists` CHECK at
+ *   commit and drop the result frame.
+ *
+ * Replaces the older `{ strandId, memberPrivateKey } | null` shape, which conflated `bound`
+ * and `missing` (both produced a non-null result whenever the invite had a `StrandId`).
+ */
+export type ResolvedHostStrand =
+  | { kind: 'unbound' }
+  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
+  | { kind: 'missing'; strandId: string };
+
+/**
  * Interface for recording formation usage
  */
 export interface FormationUsageRecorder {
@@ -54,15 +74,27 @@ export interface FormationUsageRecorder {
   isTokenValid(token: string): Promise<{ valid: boolean; invitation?: OpenInvitation }>;
 
   /**
-   * Resolve the host strand an invite binds to (provision-then-record), returning
-   * its id plus the strand's membership key (the closed-strand read-gating secret),
-   * or null when the invite carries no strand binding — the legacy/open
-   * responder-provisions path. Optional: a recorder that does not bind strands omits
-   * it, and {@link StrandFormationManager} then falls back to its provisioner. Keeping
-   * resolution behind this interface keeps the manager DB-agnostic and unit-testable
-   * with an in-memory fake.
+   * Resolve the host strand an invite binds to, classifying it as unbound / bound /
+   * missing (see {@link ResolvedHostStrand}). Optional: a recorder that does not bind
+   * strands omits it, and {@link StrandFormationManager} treats every invite as `unbound`
+   * and falls back to its provisioner. Keeping resolution behind this interface keeps the
+   * manager DB-agnostic and unit-testable with an in-memory fake.
    */
-  resolveStrand?(token: string): Promise<{ strandId: string; memberPrivateKey: string | null } | null>;
+  resolveStrand?(token: string): Promise<ResolvedHostStrand>;
+
+  /**
+   * Provision a NEW strand for an UNBOUND invite and record consent against it
+   * ATOMICALLY (single `FormationUsage` row → single-use enforced on the next redemption).
+   * Optional: a recorder that only supports provision-then-record omits it, and the
+   * manager falls back to its {@link StrandProvisioner}. Mirrors the create-strand-by-consent
+   * path the schema's `Strand.Authorized` `FormationUsage` branch authorizes. Returns the
+   * minted strand id plus its membership key (null for an open responder-provisioned strand).
+   */
+  provisionAndRecord?(
+    token: string,
+    initiatorKey: string,
+    sAppId: string
+  ): Promise<{ strandId: string; memberPrivateKey: string | null }>;
 }
 
 /**

@@ -232,11 +232,11 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await recorder.isTokenUsed(unlimited)).toBe(false);
     });
 
-    it('resolveStrand: returns the bound host strand + its membership key, null when unbound', async () => {
+    it('resolveStrand: classifies bound (present) / unbound / missing host strands', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
-      // Bound closed strand: the invite names the pre-existing host strand, and
-      // resolveStrand hands back that strand id + its MemberPrivateKey.
+      // Bound + present closed strand: the invite names the pre-existing host strand →
+      // kind 'bound', carrying that strand id + its MemberPrivateKey.
       const hostStrand = 'strand-bound-' + rand();
       const hostMemberKey = 'memkey-' + rand();
       await db.insertStrand(hostStrand, 'c', authorityPublicKey, signMessage, hostMemberKey);
@@ -244,18 +244,54 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertFormationInvite(bound, 'sapp-bound', authorityPublicKey, signMessage, {
         strandId: hostStrand,
       });
-      const resolved = await recorder.resolveStrand(bound);
-      expect(resolved).not.toBeNull();
-      expect(resolved?.strandId).toBe(hostStrand);
-      expect(resolved?.memberPrivateKey).toBe(hostMemberKey);
+      expect(await recorder.resolveStrand(bound)).toEqual({
+        kind: 'bound',
+        strandId: hostStrand,
+        memberPrivateKey: hostMemberKey,
+      });
 
-      // Unbound invite (legacy/open path): no StrandId → resolveStrand returns null.
+      // Unbound invite (legacy/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
       await db.insertFormationInvite(unbound, 'sapp-unbound', authorityPublicKey, signMessage);
-      expect(await recorder.resolveStrand(unbound)).toBeNull();
+      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
 
-      // Unknown token resolves to null too.
-      expect(await recorder.resolveStrand('nope-' + rand())).toBeNull();
+      // Unknown token: no binding to act on → unbound.
+      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound' });
+
+      // Bound but the named Strand row was NEVER inserted (unconverged host) → kind 'missing'.
+      const missingStrand = 'strand-missing-' + rand();
+      const boundMissing = 'invite-bound-missing-' + rand();
+      await db.insertFormationInvite(boundMissing, 'sapp-bm', authorityPublicKey, signMessage, {
+        strandId: missingStrand,
+      });
+      expect(await recorder.resolveStrand(boundMissing)).toEqual({
+        kind: 'missing',
+        strandId: missingStrand,
+      });
+    });
+
+    it('provisionAndRecord: mints an open strand + records one usage atomically (single-use)', async () => {
+      const recorder = new ControlFormationUsageRecorder(db);
+
+      // UNBOUND single-use invite → provisionAndRecord mints a fresh open strand and
+      // records its one consent row in a single transaction.
+      const token = 'invite-par-' + rand();
+      await db.insertFormationInvite(token, 'sapp-par', authorityPublicKey, signMessage, {
+        totalUses: 1,
+        expiresAtMs: Date.now() + 60_000,
+      });
+
+      const out = await recorder.provisionAndRecord(token, 'peer-par', 'sapp-par');
+      expect(out.strandId.length).toBeGreaterThan('strand-'.length);
+      // An unbound responder-provisioned strand is open → no membership key.
+      expect(out.memberPrivateKey).toBeNull();
+
+      // The minted strand exists, is open, and exactly one usage row was recorded → single-use.
+      const strand = await rawDb.get('select Id, Type from CadreControl.Strand where Id = ?', [out.strandId]);
+      expect(strand?.Id).toBe(out.strandId);
+      expect(strand?.Type).toBe('o');
+      expect(await db.countFormationUsage(token)).toBe(1);
+      expect(await recorder.isTokenUsed(token)).toBe(true);
     });
   });
 });

@@ -8,6 +8,7 @@ import type {
 import type {
   DisclosureValidator,
   FormationUsageRecorder,
+  ResolvedHostStrand,
   StrandProvisioner,
   FormationResponseValidator
 } from './strand-solicitation.js';
@@ -18,7 +19,8 @@ import {
   type FormationContactMessage,
   type FormationProvisionResult,
   type FormationResultMessage,
-  type FormationMode
+  type FormationMode,
+  type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 
 const log = debug('sereus:cadre:formation-manager');
@@ -221,52 +223,117 @@ export class StrandFormationManager {
   }
 
   /**
-   * Responder-side provisioning. Two paths, selected by whether the invite binds a
-   * host strand:
+   * Responder-side provisioning. Routes on how the invite resolves
+   * ({@link ResolvedHostStrand}), and can REJECT post-validation by returning a
+   * {@link ResponderProvisionOutcome} with `approved: false` — `runSession` turns that
+   * into a clean, non-disclosing reply instead of a dropped result frame.
    *
-   * 1. **Provision-then-record** (invite carries a `StrandId`): the host strand already
-   *    exists, so resolve it via the recorder, write the single `FormationUsage` consent
-   *    row against it (record-only), and return that strand + its membership key. The
-   *    key is a read-gating secret disclosed only here — `runSession` already gated this
-   *    call behind token + disclosure validation.
-   * 2. **Responder-provisions** fallback (no binding): provision a NEW strand via the
-   *    wired {@link StrandProvisioner}, threading the invite's REAL `sAppId` (no longer
-   *    `''`), or a structural placeholder when no provisioner is wired.
+   * - **bound** (host strand present): provision-then-record — write the single
+   *   `FormationUsage` consent row against the pre-existing strand (record-only) and
+   *   return it + its membership key (a read-gating secret disclosed only here, behind the
+   *   token + disclosure validation `runSession` already enforced).
+   * - **missing** (invite names a host strand absent on this responder, e.g. unconverged):
+   *   reject cleanly + retryably, writing NO usage row — recording usage here would fail the
+   *   deferred `StrandExists` CHECK at commit and drop the frame.
+   * - **unbound** (no binding): the responder-provisions fallback — see {@link provisionUnbound}.
+   *
+   * Defense-in-depth: known provisioning/redeem failures (notably the concurrent
+   * `(Token, UseNumber)` PK collision when two redemptions of one unbound single-use invite
+   * race) are caught and mapped to a logged, retry-suggesting rejection rather than a thrown
+   * insert + a silently-closed stream. The LOG-before-reject keeps this a deliberate
+   * internal-error→protocol-rejection conversion (AGENTS.md: don't eat exceptions silently),
+   * not control-flow-by-exception.
    */
   private async provisionAsResponder(
     token: string,
     initiatorPartyId: string,
     _disclosure: StrandFormationDisclosure
-  ): Promise<FormationProvisionResult> {
+  ): Promise<ResponderProvisionOutcome> {
     const recorder = this.formationUsageRecorder;
-    if (recorder?.resolveStrand) {
-      const resolved = await recorder.resolveStrand(token);
-      if (resolved) {
-        // Write the single FormationUsage consent row against the pre-existing host strand.
-        await recorder.recordUsage(token, initiatorPartyId, resolved.strandId);
-        return {
-          strand: { strandId: resolved.strandId, createdBy: 'responder' },
-          memberPrivateKey: resolved.memberPrivateKey ?? undefined,
-          dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-        };
+    const resolved: ResolvedHostStrand = recorder?.resolveStrand
+      ? await recorder.resolveStrand(token)
+      : { kind: 'unbound' };
+
+    try {
+      switch (resolved.kind) {
+        case 'bound': {
+          // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
+          await recorder!.recordUsage(token, initiatorPartyId, resolved.strandId);
+          return this.approve({
+            strand: { strandId: resolved.strandId, createdBy: 'responder' },
+            memberPrivateKey: resolved.memberPrivateKey ?? undefined,
+            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+          });
+        }
+        case 'missing': {
+          log('Host strand %s not yet available on this responder; rejecting token %s', resolved.strandId, token);
+          return { approved: false, reason: 'Host strand not yet available on this responder' };
+        }
+        case 'unbound':
+          return await this.provisionUnbound(token, initiatorPartyId);
       }
+    } catch (err) {
+      log('provisionAsResponder failed for token %s: %o', token, err);
+      return { approved: false, reason: 'Formation conflict, retry' };
     }
+  }
 
-    if (!this.strandProvisioner) {
-      // No provisioner — return a structural placeholder the initiator can still validate.
-      const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-      return {
-        strand: { strandId, createdBy: 'responder' },
+  /**
+   * Responder-provisions fallback (invite binds no host strand). Precedence:
+   *
+   * 1. `recorder.provisionAndRecord` present (a real DB recorder) → atomic create-strand +
+   *    record-consent, so the unbound redemption is single-use just like the bound path.
+   *    Returns the new strand (+ key, null for an open responder-provisioned strand).
+   * 2. else `strandProvisioner` present → the legacy/mock contract: provision a bare strand,
+   *    NO inline usage write (those callers record usage explicitly via
+   *    `recordFormationComplete`, or assert transport invariants only). Threads the invite's
+   *    REAL `sAppId`.
+   * 3. else → a structural placeholder (no recorder + no provisioner ⇒ no single-use semantics
+   *    exist to enforce).
+   *
+   * Plan tradeoff — option (a) "record usage on the fallback" over (b) "remove the fallback":
+   * (a) closes the single-use hole with a targeted atomic create+record and leaves the
+   * `StrandProvisioner` mock-transport tests untouched; (b) would delete the provisioner
+   * surface and churn ~6 unit + ~6 integration sites for ZERO production benefit (production
+   * — `cadre-web.ts` / `cadre-phone.ts` — always publishes strand-BOUND invites and treats
+   * the responder-provisions placeholder as failure). The broader "should this fallback exist
+   * at all?" question lives in backlog `formation-initiatorcreates-cover-or-remove`.
+   */
+  private async provisionUnbound(
+    token: string,
+    initiatorPartyId: string
+  ): Promise<ResponderProvisionOutcome> {
+    const recorder = this.formationUsageRecorder;
+    if (recorder?.provisionAndRecord) {
+      const sAppId = await this.resolveInviteSAppId(token);
+      const provisioned = await recorder.provisionAndRecord(token, initiatorPartyId, sAppId);
+      return this.approve({
+        strand: { strandId: provisioned.strandId, createdBy: 'responder' },
+        memberPrivateKey: provisioned.memberPrivateKey ?? undefined,
         dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-      };
+      });
     }
 
-    const sAppId = await this.resolveInviteSAppId(token);
-    const result = await this.strandProvisioner.provisionStrand(sAppId, initiatorPartyId, this.partyId);
-    return {
-      strand: { strandId: result.strandId, createdBy: 'responder' },
+    if (this.strandProvisioner) {
+      const sAppId = await this.resolveInviteSAppId(token);
+      const result = await this.strandProvisioner.provisionStrand(sAppId, initiatorPartyId, this.partyId);
+      return this.approve({
+        strand: { strandId: result.strandId, createdBy: 'responder' },
+        dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+      });
+    }
+
+    // No recorder + no provisioner — a structural placeholder the initiator can still validate.
+    const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
+    return this.approve({
+      strand: { strandId, createdBy: 'responder' },
       dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-    };
+    });
+  }
+
+  /** Wrap a provision result as an approving {@link ResponderProvisionOutcome}. */
+  private approve(result: FormationProvisionResult): ResponderProvisionOutcome {
+    return { approved: true, result };
   }
 
   /**

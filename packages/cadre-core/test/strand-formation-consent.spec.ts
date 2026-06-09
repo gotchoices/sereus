@@ -32,6 +32,15 @@ import type { StrandFormationDisclosure } from '../src/types.js';
  *  (b) writes EXACTLY ONE FormationUsage row keyed to the host strand,
  *  (c) returns the host's real strandId AND its memberPrivateKey in the result, and
  *  (d) is single-use: a second use of a TotalUses:1 invite is rejected and writes no row.
+ *
+ * Plus the responder-provisions (UNBOUND-invite) path and the missing-host-strand path:
+ *  (e) an unbound single-use invite provisions a fresh strand + records one usage, and a
+ *      second redemption is rejected (the security regression: the old fallback wrote NO
+ *      usage row, so a TotalUses:1 unbound invite was infinitely redeemable),
+ *  (f) an unbound multi-use invite provisions distinct strands until TotalUses is exhausted,
+ *  (g) a bound invite naming a host strand absent on this responder yields a CLEAN
+ *      `approved:false` (no hang, no dropped frame, no usage row, no identity disclosed) —
+ *      previously the deferred StrandExists CHECK threw and the stream closed with no frame.
  */
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
@@ -228,5 +237,116 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(rejected.provisionResult).toBeUndefined();
     expect(rejected.partyId).toBeUndefined();
     expect(await db.countFormationUsage(token)).toBe(1);
+  });
+
+  it('(e) unbound single-use: provisions a fresh strand, records one usage, rejects reuse', async () => {
+    // UNBOUND invite (no strandId) → responder-provisions path through provisionAndRecord.
+    const token = 'invite-unbound-1use-' + rand();
+    await db.insertFormationInvite(token, 'sapp-unbound', authorityPublicKey, signMessage, {
+      totalUses: 1,
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const { invoke } = responder();
+
+    // First use: approves, mints a fresh responder-provisioned strand, records one usage row.
+    const first = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(first);
+    const ok = decodeFirstFrame<FormationResultMessage>(first.sent);
+
+    expect(ok.approved).toBe(true);
+    expect(ok.partyId).toBe(HOST_PARTY);
+    expect(ok.cadrePeerAddrs).toEqual(HOST_CADRE);
+    const mintedId = ok.provisionResult?.strand.strandId;
+    expect(mintedId).toBeDefined();
+    expect(mintedId!.length).toBeGreaterThan('strand-'.length);
+    expect(ok.provisionResult?.strand.createdBy).toBe('responder');
+    // An unbound responder-provisioned strand is open → no membership key disclosed.
+    expect(ok.provisionResult?.memberPrivateKey).toBeUndefined();
+
+    // Exactly one usage row, and a Strand row now exists for the minted id.
+    expect(await db.countFormationUsage(token)).toBe(1);
+    expect(await db.queryStrand(mintedId!)).not.toBeNull();
+
+    // Second use of the single-use invite is rejected and writes NO extra row
+    // (the security regression: the old fallback never recorded usage, so this re-approved).
+    const second = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(second);
+    const rejected = decodeFirstFrame<FormationResultMessage>(second.sent);
+
+    expect(rejected.approved).toBe(false);
+    expect(rejected.reason).toBe('Invalid token');
+    expect(rejected.provisionResult).toBeUndefined();
+    expect(await db.countFormationUsage(token)).toBe(1);
+  });
+
+  it('(f) unbound multi-use: provisions distinct strands until TotalUses is exhausted', async () => {
+    const token = 'invite-unbound-2use-' + rand();
+    await db.insertFormationInvite(token, 'sapp-unbound-multi', authorityPublicKey, signMessage, {
+      totalUses: 2,
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const { invoke } = responder();
+
+    const first = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(first);
+    const r1 = decodeFirstFrame<FormationResultMessage>(first.sent);
+
+    const second = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(second);
+    const r2 = decodeFirstFrame<FormationResultMessage>(second.sent);
+
+    expect(r1.approved).toBe(true);
+    expect(r2.approved).toBe(true);
+    const id1 = r1.provisionResult?.strand.strandId;
+    const id2 = r2.provisionResult?.strand.strandId;
+    // Two distinct freshly-minted strand ids, two usage rows.
+    expect(id1).toBeDefined();
+    expect(id2).toBeDefined();
+    expect(id1).not.toBe(id2);
+    expect(await db.countFormationUsage(token)).toBe(2);
+
+    // UseNumbers are the sequential 1 and 2 across the two minted strands.
+    const u1 = await rawDb.get('select UseNumber from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id1!]);
+    const u2 = await rawDb.get('select UseNumber from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id2!]);
+    expect(new Set([u1?.UseNumber, u2?.UseNumber])).toEqual(new Set([1, 2]));
+
+    // Third use exhausts the invite.
+    const third = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(third);
+    const r3 = decodeFirstFrame<FormationResultMessage>(third.sent);
+    expect(r3.approved).toBe(false);
+    expect(r3.reason).toBe('Invalid token');
+    expect(await db.countFormationUsage(token)).toBe(2);
+  });
+
+  it('(g) bound + missing strand: clean rejection, no dropped frame, no usage row, no disclosure', async () => {
+    // The invite binds a strand id that was NEVER inserted as a Strand row (an
+    // unconverged host). Previously the responder tried to record usage, the deferred
+    // StrandExists CHECK threw, and the stream closed WITHOUT a result frame.
+    const missingStrandId = 'strand-never-inserted-' + rand();
+    const token = 'invite-missing-' + rand();
+    await db.insertFormationInvite(token, 'sapp-missing', authorityPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: missingStrandId,
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const { invoke } = responder();
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+
+    // A result frame IS written (no hang/drop), and it is a clean non-disclosing rejection.
+    expect(stream.sent.length).toBeGreaterThan(0);
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Host strand not yet available on this responder');
+    expect(result.partyId).toBeUndefined();
+    expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.provisionResult).toBeUndefined();
+
+    // No usage row written, so a retry after convergence is not blocked.
+    expect(await db.countFormationUsage(token)).toBe(0);
   });
 });

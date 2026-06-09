@@ -6,7 +6,7 @@ import {
   type FormationContactMessage,
   type FormationResultMessage,
   type FormationListenerOptions,
-  type FormationProvisionResult
+  type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 
@@ -83,9 +83,12 @@ function baseOptions(overrides: Partial<FormationListenerOptions>): {
   const options: FormationListenerOptions = {
     validateToken: async () => ({ valid: true, mode: 'responderCreates' }),
     validateDisclosure: async () => true,
-    provisionStrand: async (): Promise<FormationProvisionResult> => ({
-      strand: { strandId: 'strand-ok', createdBy: 'responder' },
-      dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+    provisionStrand: async (): Promise<ResponderProvisionOutcome> => ({
+      approved: true,
+      result: {
+        strand: { strandId: 'strand-ok', createdBy: 'responder' },
+        dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+      }
     }),
     getResponderIdentity: () => { disclosed = true; return RESPONDER_IDENTITY; },
     ...overrides
@@ -167,6 +170,52 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.provisionResult?.strand.strandId).toBe('strand-ok');
     expect(result.provisionResult?.strand.createdBy).toBe('responder');
     expect(identityDisclosed()).toBe(true);
+  });
+
+  it('rejects a post-validation provisioning outcome without disclosing responder cadre', async () => {
+    // The hook validated token + disclosure but then REJECTS (e.g. an unconverged host
+    // strand). The listener must reply with a clean, non-disclosing approved:false.
+    const { options, identityDisclosed } = baseOptions({
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> =>
+        ({ approved: false, reason: 'Host strand not yet available on this responder' })
+    });
+    const listener = new FormationListener(options);
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Host strand not yet available on this responder');
+    expect(result.partyId).toBeUndefined();
+    expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(result.provisionResult).toBeUndefined();
+    // Identity is read only on the approval path — a rejection discloses nothing.
+    expect(identityDisclosed()).toBe(false);
+  });
+
+  it('converts an unexpected provisioning throw into a non-disclosing internal-error frame', async () => {
+    // A future hook bug that THROWS must not reproduce the silent-drop symptom: a
+    // best-effort approved:false frame is written before the stream closes.
+    const { options, identityDisclosed } = baseOptions({
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> => { throw new Error('boom'); }
+    });
+    const listener = new FormationListener(options);
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Internal formation error');
+    expect(result.partyId).toBeUndefined();
+    expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(identityDisclosed()).toBe(false);
+    expect(stream.closed).toBe(true);
   });
 });
 

@@ -57,6 +57,7 @@ export {
   createDefaultFormationResponseValidator,
   type DisclosureValidator,
   type FormationUsageRecorder,
+  type ResolvedHostStrand,
   type StrandProvisioner,
   type FormationSigner,
   type FormationResponseValidator,
@@ -139,7 +140,8 @@ export {
   type FormationStrandInfo,
   type FormationDbConnectionInfo,
   type FormationListenerOptions,
-  type FormationDialOptions
+  type FormationDialOptions,
+  type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 
 // Strand Formation manager (drives the native transport)

@@ -76,6 +76,20 @@ export interface FormationProvisionResult {
   dbConnectionInfo: FormationDbConnectionInfo;
 }
 
+/**
+ * Outcome of the responder's provisioning hook.
+ *
+ * Distinct from a bare {@link FormationProvisionResult} so the hook can REJECT a
+ * formation AFTER token + disclosure validation — e.g. a bound invite naming a host
+ * strand this responder has not yet converged on, or a concurrent-redemption collision.
+ * Without this channel such cases threw inside provisioning, the stream closed with no
+ * result frame, and the initiator saw a read-error/timeout instead of a clean
+ * `approved: false`. A rejection still discloses NO responder identity/cadre.
+ */
+export type ResponderProvisionOutcome =
+  | { approved: true; result: FormationProvisionResult }
+  | { approved: false; reason: string };
+
 /** Initiator → Responder: carries the real token + disclosure + initiator cadre. */
 export interface FormationContactMessage {
   /** The real invitation token. */
@@ -232,8 +246,12 @@ export interface FormationListenerOptions {
    * Provision (or, for provision-then-record, resolve + record consent against) the
    * strand (`responderCreates`) for the given initiator. The REAL token is threaded
    * in so the hook can map it to the bound host strand and its membership key.
+   *
+   * Returns a {@link ResponderProvisionOutcome}: the hook may REJECT post-validation
+   * (e.g. an unconverged host strand) and the listener turns that into a clean,
+   * non-disclosing `approved: false` reply rather than dropping the result frame.
    */
-  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<FormationProvisionResult>;
+  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<ResponderProvisionOutcome>;
   /** Validate the db result echoed back by the initiator (`initiatorCreates`). */
   validateDatabaseResult?(message: FormationDatabaseMessage): Promise<boolean>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
@@ -309,49 +327,71 @@ export class FormationListener {
   }
 
   private async runSession(id: number, stream: LibP2PStream): Promise<void> {
-    const reader = new FrameReader(stream);
-    const contact = await withTimeout(this.stepTimeoutMs, `await-contact#${id}`, () => reader.read<FormationContactMessage>());
-    log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
-
-    const tokenResult = await this.options.validateToken(contact.token);
-    if (!tokenResult.valid) {
-      const rejection: FormationResultMessage = { approved: false, reason: 'Invalid token' };
-      writeFrame(stream, rejection);
-      return;
-    }
-
-    const disclosureOk = await this.options.validateDisclosure(contact.token, contact.disclosure);
-    if (!disclosureOk) {
-      const rejection: FormationResultMessage = { approved: false, reason: 'Invalid disclosure' };
-      writeFrame(stream, rejection);
-      return;
-    }
-
-    // Validation passed → safe to disclose responder identity/cadre.
-    const identity = this.options.getResponderIdentity();
-
-    if (tokenResult.mode === 'responderCreates') {
-      const provisionResult = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
-      const result: FormationResultMessage = {
-        approved: true,
-        partyId: identity.partyId,
-        cadrePeerAddrs: identity.cadrePeerAddrs,
-        provisionResult
-      };
-      writeFrame(stream, result);
-      return;
-    }
-
-    // initiatorCreates: approve (no provisionResult yet), then await the initiator's db result.
-    const approval: FormationResultMessage = {
-      approved: true,
-      partyId: identity.partyId,
-      cadrePeerAddrs: identity.cadrePeerAddrs
+    // Track whether ANY frame has been written so the catch below can convert an
+    // unexpected internal error into a non-disclosing rejection ONLY when nothing has
+    // gone out yet (a second frame after the initiatorCreates approval would corrupt the
+    // stream). This closes the "stream closed with no result frame" class of bug.
+    let wroteFrame = false;
+    const send = (msg: FormationResultMessage): void => {
+      writeFrame(stream, msg);
+      wroteFrame = true;
     };
-    writeFrame(stream, approval);
-    const dbResult = await withTimeout(this.stepTimeoutMs, `await-database#${id}`, () => reader.read<FormationDatabaseMessage>());
-    const dbValid = this.options.validateDatabaseResult ? await this.options.validateDatabaseResult(dbResult) : true;
-    if (!dbValid) throw new Error('Invalid database result from initiator');
+
+    try {
+      const reader = new FrameReader(stream);
+      const contact = await withTimeout(this.stepTimeoutMs, `await-contact#${id}`, () => reader.read<FormationContactMessage>());
+      log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
+
+      const tokenResult = await this.options.validateToken(contact.token);
+      if (!tokenResult.valid) {
+        send({ approved: false, reason: 'Invalid token' });
+        return;
+      }
+
+      const disclosureOk = await this.options.validateDisclosure(contact.token, contact.disclosure);
+      if (!disclosureOk) {
+        send({ approved: false, reason: 'Invalid disclosure' });
+        return;
+      }
+
+      if (tokenResult.mode === 'responderCreates') {
+        const outcome = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
+        if (!outcome.approved) {
+          // A post-validation rejection still discloses NEITHER identity NOR cadre,
+          // exactly like the token/disclosure rejections above.
+          send({ approved: false, reason: outcome.reason });
+          return;
+        }
+        // Validation + provisioning passed → safe to disclose responder identity/cadre.
+        const identity = this.options.getResponderIdentity();
+        send({
+          approved: true,
+          partyId: identity.partyId,
+          cadrePeerAddrs: identity.cadrePeerAddrs,
+          provisionResult: outcome.result
+        });
+        return;
+      }
+
+      // initiatorCreates: approve (no provisionResult yet), then await the initiator's db result.
+      const identity = this.options.getResponderIdentity();
+      send({ approved: true, partyId: identity.partyId, cadrePeerAddrs: identity.cadrePeerAddrs });
+      const dbResult = await withTimeout(this.stepTimeoutMs, `await-database#${id}`, () => reader.read<FormationDatabaseMessage>());
+      const dbValid = this.options.validateDatabaseResult ? await this.options.validateDatabaseResult(dbResult) : true;
+      if (!dbValid) throw new Error('Invalid database result from initiator');
+    } catch (err) {
+      // Defense-in-depth: if an unexpected internal error escapes BEFORE any frame was
+      // written (e.g. a future provisionStrand-hook bug), convert it into a non-disclosing
+      // protocol rejection so the initiator sees a clean error instead of a read-error/
+      // timeout. If a frame was already sent (e.g. the initiatorCreates approval), leave
+      // the stream as-is and let handleStream log + close. Re-throw either way so the
+      // failure is still recorded — this is a deliberate, logged conversion, not silent.
+      if (!wroteFrame) {
+        const internalError: FormationResultMessage = { approved: false, reason: 'Internal formation error' };
+        try { writeFrame(stream, internalError); } catch { /* stream already broken */ }
+      }
+      throw err;
+    }
   }
 }
 
