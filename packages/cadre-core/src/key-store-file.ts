@@ -13,10 +13,13 @@
  * A React Native / browser entry graph never resolves this path, so the
  * `node:fs` edge never reaches a bundler that cannot satisfy it.
  */
+import debug from 'debug';
 import { mkdir, readFile, writeFile, rm, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { KeyId, KeyStore } from './key-store.js';
 import { KeyStoreAccessError } from './key-store.js';
+
+const log = debug('sereus:cadre:key-store-file');
 
 /** Suffix appended to the encoded keyId to form a slot filename. */
 const SLOT_SUFFIX = '.key';
@@ -41,9 +44,21 @@ function encodeKeyId(keyId: KeyId): string {
 	);
 }
 
-/** Reverse {@link encodeKeyId}: strip the slot suffix and percent-decode. */
-function decodeKeyId(fileName: string): KeyId {
-	return decodeURIComponent(fileName.slice(0, -SLOT_SUFFIX.length));
+/**
+ * Reverse {@link encodeKeyId}: strip the slot suffix and percent-decode. Returns
+ * `undefined` for a `.key` filename this store did not write (a foreign file
+ * with an invalid percent-sequence), so {@link FileKeyStore.list} can skip it
+ * rather than letting one undecodable entry throw and break enumeration of every
+ * real slot.
+ */
+function decodeKeyId(fileName: string): KeyId | undefined {
+	const encoded = fileName.slice(0, -SLOT_SUFFIX.length);
+	try {
+		return decodeURIComponent(encoded);
+	} catch (error) {
+		log('FileKeyStore: skipping undecodable slot filename %s: %o', fileName, error);
+		return undefined;
+	}
 }
 
 /** Whether an unknown error is a Node "file/dir not found" (ENOENT). */
@@ -101,6 +116,7 @@ export class FileKeyStore implements KeyStore {
 		}
 		return entries
 			.filter((name) => name.endsWith(SLOT_SUFFIX))
-			.map(decodeKeyId);
+			.map(decodeKeyId)
+			.filter((id): id is KeyId => id !== undefined);
 	}
 }

@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
@@ -142,6 +142,18 @@ describe('FileKeyStore specifics', () => {
 	it('get() on a never-created directory returns undefined (no throw)', async () => {
 		const store = new FileKeyStore(join(tmpdir(), 'cadre-keystore-missing', 'deep'));
 		await expect(store.get('cadre/identity')).resolves.toBeUndefined();
+	});
+
+	it('list() skips a foreign .key file with an undecodable name (no throw)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-foreign-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+		await store.set('real', new Uint8Array([1]));
+		// A `.key` file this store never wrote, whose stem is an invalid percent
+		// sequence — decodeURIComponent would throw on it.
+		await writeFile(join(dir, '%ZZ.key'), new Uint8Array([9]));
+
+		expect(await store.list()).toEqual(['real']);
 	});
 });
 
