@@ -227,8 +227,9 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     `isPushPlatform`) mirrors `peer-record.ts`. `CadreNode.registerDeviceToken(platform, token)` /
     `resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, `null` on any failure) /
     `clearDeviceToken()` reuse the `registerSelf` / `resolvePeerAddrs` write+gate paths.
-  - **Not** implemented here (downstream): the server push *sender* (fan-out over resolved tokens) and the
-    RN registration call. A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
+  - **Downstream of this registry**: the platform push **sender** has since shipped (`PushNotifier`,
+    cadre-core — see below); its automatic fan-out/trigger (`cadre-server-push-fanout`) and the RN
+    registration call remain pending. A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
     `CadrePeer`, the initial row is authority-gated, so the phone→server registration handshake (downstream
     "RN registration" ticket) must seed it before the phone can self-refresh.
 - [x] Imperative background-lifecycle primitives (platform-agnostic; for a mobile `BackgroundRunner`)
@@ -243,8 +244,9 @@ Strand lifecycle resource management in `@serfab/cadre-core`
   - `running` / `controlConnected` getters give headless callers a synchronous readiness snapshot.
 - [x] Mobile push-wake **receive** path (RN reference app, managed Expo SDK 53 + `expo-dev-client`)
   - `packages/reference-app-rn/src/push-wake.ts` (platform-agnostic, unit-tested): the shared
-    `StrandWakePayload { type:'strand-wake', strandId, reason }` contract (consumed by the pending
-    `cadre-server-push-fanout` sender), its defensive parser, `extractPushData` (Android JSON `dataString` /
+    `StrandWakePayload { type:'strand-wake', strandId, reason }` contract (now homed in
+    `@serfab/cadre-core`'s `strand-wake-payload.ts` and imported from there — the delivery sender has since
+    shipped, see below), its defensive parser, `extractPushData` (Android JSON `dataString` /
     iOS keys), the background-task handler (parse → foreground-vs-background route → cold-start ensure →
     bounded `awaitControlConnected` → `serviceWake`), and the `DeviceToken` registrar (deferred-retry on
     pre-membership). Foreground pushes route to `wakeStrand`+`recordStrandActivity` (no re-hibernate).
@@ -259,6 +261,28 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     process is **not** yet wired (start options aren't persisted) → degrades to a `no-node` no-op. Human/infra
     prerequisites (`google-services.json`, paid APNs creds + push capability) and on-device validation are
     out-of-agent; steps recorded in `tickets/review/3-mobile-push-wake-receive.md`.
+- [~] Platform push **delivery** sender (`PushNotifier`, cadre-core) — delivery shipped; fan-out trigger pending
+  - `push-notifier.ts`: `createPushNotifier(creds, deps?)` returns a credential- and transport-injected
+    router dispatching by `PushMessage.platform` to FCM/APNs, constructing only the implementations whose
+    credentials are present. `send` returns a `PushSendResult` (`{ ok:true }` | `{ ok:false, unregistered, error }`)
+    as a value and never throws; a platform with no creds yields a best-effort `no <platform> credentials`.
+  - `push-notifier-fcm.ts` (HTTP v1): RS256 service-account JWT → cached OAuth2 access token (re-minted once
+    on a 401), `POST …/v1/projects/{projectId}/messages:send` with a high-priority `data` message. 404
+    `UNREGISTERED` / 400 naming the registration token → `unregistered:true`; a generic 400 / 5xx is transient.
+  - `push-notifier-apns.ts` (HTTP/2): cached ES256 provider JWT (JOSE r‖s, re-minted once on 403
+    `ExpiredProviderToken`) over one lazily-(re)established `node:http2` session (re-established once on
+    GOAWAY/throw). `POST /3/device/{token}` with `apns-push-type: background` / `apns-priority: 5` /
+    `content-available`; 410 `Unregistered` / 400 `BadDeviceToken` → `unregistered:true`. `close()` ends the session.
+  - The shared contract `strand-wake-payload.ts` (`STRAND_WAKE_TYPE` + `StrandWakePayload`) **moved into
+    cadre-core** — imported by both sender and RN receiver. Credentials ride `CadreNodeConfig.push`
+    (`PushCredentials`/`FcmCredentials`/`ApnsCredentials`; `privateKey` fields are secrets, never logged).
+    Server-only modules (`node:crypto`/`node:http2`) stay out of the RN/browser bundle — the cross-platform
+    `cadre-core` entry re-exports only their *types*.
+  - 22 unit tests (`push-notifier.spec.ts`, fake fetch/http2 transports) cover request shape, every documented
+    response-code mapping, access-token cache + 401 re-mint, provider-JWT refresh, GOAWAY re-establish, router
+    dispatch + missing-credentials no-op, and no-secret-in-logs. **Pending (downstream
+    `cadre-server-push-fanout`)**: *who*/*when* to wake, constructing the notifier inside `CadreNode.start`,
+    expiring `unregistered` rows, and real-network / on-device validation (no network exercised in unit tests).
 
 ## Testing / CI
 

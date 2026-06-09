@@ -1,4 +1,4 @@
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect } from 'vitest';
 import { generateKeyPairSync } from 'node:crypto';
 import { STRAND_WAKE_TYPE } from '../src/strand-wake-payload.js';
 import type { StrandWakePayload } from '../src/strand-wake-payload.js';
