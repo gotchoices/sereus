@@ -5279,6 +5279,8 @@ __metadata:
     readable-stream: "npm:^4.7.0"
     rn-leveldb: "npm:^3.11.0"
     typescript: "npm:~5.8.3"
+    uint8arrays: "npm:^5.1.0"
+    vitest: "npm:^4.0.17"
     web-streams-polyfill: "npm:^4.1.0"
   languageName: unknown
   linkType: soft

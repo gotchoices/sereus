@@ -26,6 +26,12 @@ import {
   joinClosedChatStrandFromFormation,
   CHAT_SAPP_ID,
 } from './chat-strand';
+import {
+  createBackgroundRunner,
+  type BackgroundRunner,
+  type RunnerState,
+} from './background-runner';
+import { createReactNativeAppState } from './app-state';
 import { uuid } from './uuid';
 
 /** How long a closed-strand invitation stays valid (24h). */
@@ -46,6 +52,10 @@ export interface UseCadreResult {
   strands: Map<string, StrandInstance>;
   /** Last error message */
   error: string | null;
+  /** OS-lifecycle phase owned by the {@link BackgroundRunner} (foreground/background/…). */
+  runnerState: RunnerState;
+  /** True while a foreground resume is settling (control network catching up). */
+  resuming: boolean;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -85,10 +95,17 @@ export function useCadreInternal(): UseCadreResult {
     () => getPhoneNode()?.getStrands() ?? new Map(),
   );
   const [error, setError] = useState<string | null>(null);
+  const [runnerState, setRunnerState] = useState<RunnerState>('foreground');
+  const [resuming, setResuming] = useState(false);
 
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
   nodeRef.current = node;
+
+  // Last options passed to `start`, so the BackgroundRunner can cold-start the
+  // node (re-run `startPhoneNode`) on a foreground return after the OS killed it.
+  const optsRef = useRef<PhoneNodeOptions | null>(null);
+  const runnerRef = useRef<BackgroundRunner | null>(null);
 
   // ── Strand event sync ──────────────────────────────────────────────────
 
@@ -144,12 +161,53 @@ export function useCadreInternal(): UseCadreResult {
     };
   }, [node, refreshStrands]);
 
+  // ── Background lifecycle (AppState-driven) ───────────────────────────────
+
+  // Cold-start hook for the runner: re-run `startPhoneNode` with the last opts
+  // when a foreground return finds the node stopped/killed, then re-sync React
+  // state. Idempotent (startPhoneNode no-ops a running node).
+  const ensureNode = useCallback(async () => {
+    const opts = optsRef.current;
+    if (!opts) return;
+    const started = await startPhoneNode(opts);
+    setNode(started);
+    nodeRef.current = started;
+    setPeerId(started.peerId?.toString() ?? null);
+    setStrands(new Map(started.getStrands()));
+  }, []);
+
+  // Own the OS foreground/background lifecycle once the node exists. The runner
+  // observes the node singleton (it does not fight the manual Settings start/stop)
+  // and tears down its AppState + node listeners on unmount/stop.
+  useEffect(() => {
+    if (!node) return;
+    const runner = createBackgroundRunner({
+      getNode: getPhoneNode,
+      appState: createReactNativeAppState(),
+      ensureNode,
+    });
+    runnerRef.current = runner;
+    const sync = () => {
+      setRunnerState(runner.state);
+      setResuming(runner.resuming);
+    };
+    const unsubscribe = runner.onStateChange(sync);
+    runner.start();
+    sync();
+    return () => {
+      unsubscribe();
+      runner.stop();
+      runnerRef.current = null;
+    };
+  }, [node, ensureNode]);
+
   // ── Actions ────────────────────────────────────────────────────────────
 
   const start = useCallback(async (opts: PhoneNodeOptions) => {
     try {
       setStatus('connecting');
       setError(null);
+      optsRef.current = opts;
       const started = await startPhoneNode(opts);
       setNode(started);
       nodeRef.current = started;
@@ -251,7 +309,7 @@ export function useCadreInternal(): UseCadreResult {
   }, [refreshStrands]);
 
   return {
-    status, node, peerId, strands, error,
+    status, node, peerId, strands, error, runnerState, resuming,
     start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };

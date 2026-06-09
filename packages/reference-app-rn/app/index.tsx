@@ -47,13 +47,15 @@ export default function ChatScreen() {
   // ── Connection banner ──────────────────────────────────────────────────
 
   const statusColor =
-    cadre.status === 'connected'
-      ? '#4caf50'
-      : cadre.status === 'connecting'
-        ? '#ff9800'
-        : cadre.status === 'error'
-          ? '#f44336'
-          : '#666';
+    cadre.resuming
+      ? '#ff9800'
+      : cadre.status === 'connected'
+        ? '#4caf50'
+        : cadre.status === 'connecting'
+          ? '#ff9800'
+          : cadre.status === 'error'
+            ? '#f44336'
+            : '#666';
 
   return (
     <KeyboardAvoidingView
@@ -64,11 +66,13 @@ export default function ChatScreen() {
       {/* Status bar */}
       <View style={[styles.statusBar, { backgroundColor: statusColor }]} testID={TEST_IDS.chat.statusBar}>
         <Text style={styles.statusText}>
-          {cadre.status === 'connected'
-            ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
-            : cadre.status === 'connecting'
-              ? 'Connecting…'
-              : cadre.error ?? 'Not connected — go to Settings'}
+          {cadre.resuming
+            ? 'Resuming — syncing…'
+            : cadre.status === 'connected'
+              ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
+              : cadre.status === 'connecting'
+                ? 'Connecting…'
+                : cadre.error ?? 'Not connected — go to Settings'}
         </Text>
       </View>
 
