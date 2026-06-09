@@ -84,3 +84,12 @@ appId: ${MAESTRO_APP_ID}
 - tapOn: "Chat"
 - assertVisible:
     id: "status-bar"
+
+# ── Determinism guard ─────────────────────────────────────────────────────
+# Fail loudly here if the chat is NOT showing the discovered working strand.
+# Without this, a non-deterministic active strand would let flows 2/3 pass
+# vacuously (phone and drone silently referencing different strands). The
+# strand-label element renders the FULL active strand id as visible text.
+- assertVisible:
+    id: "chat-strand-label"
+    text: ${WORKING_STRAND_ID}

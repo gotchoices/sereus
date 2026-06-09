@@ -63,20 +63,35 @@ export function useChat(opts: UseChatOptions): UseChatResult {
 
   // ── Register local member on first attach ──────────────────────────────
 
-  const registeredRef = useRef(false);
+  // Keyed by strandId, not a single boolean: switching to a second strand via
+  // the picker must register the local member there too (register once per strand).
+  const registeredStrandsRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
-    if (!strand || !memberId || registeredRef.current) return;
+    if (!strand || !memberId) return;
+    const sid = strand.strandId;
+    if (registeredStrandsRef.current.has(sid)) return;
 
     (async () => {
       try {
         await insertMember(strand, memberId, memberName ?? memberId);
-        registeredRef.current = true;
+        registeredStrandsRef.current.add(sid);
       } catch (err) {
         console.warn('Failed to register member:', err);
       }
     })();
   }, [strand, memberId, memberName]);
+
+  // ── Reset view on strand switch ─────────────────────────────────────────
+
+  // Clear the previous strand's messages/members (and re-enter loading) the
+  // moment the active strand id changes, so the list never renders the wrong
+  // conversation in the gap before the new strand's first poll completes.
+  useEffect(() => {
+    setMessages([]);
+    setMembers([]);
+    setLoading(true);
+  }, [strand?.strandId]);
 
   // ── Fetch messages + members ───────────────────────────────────────────
 

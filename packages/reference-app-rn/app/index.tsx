@@ -8,6 +8,7 @@ import {
   KeyboardAvoidingView,
   Platform,
   Pressable,
+  ScrollView,
   StyleSheet,
   Text,
   TextInput,
@@ -20,10 +21,10 @@ import { TEST_IDS } from '../src/test-ids';
 
 export default function ChatScreen() {
   const cadre = useCadre();
-  const firstStrand = cadre.strands.values().next().value ?? null;
+  const activeStrand = cadre.activeStrand;
 
   const chat = useChat({
-    strand: firstStrand,
+    strand: activeStrand,
     memberId: cadre.peerId,
     memberName: cadre.peerId ? memberDisplayName(cadre.peerId) : undefined,
   });
@@ -80,6 +81,13 @@ export default function ChatScreen() {
         </Text>
       </View>
 
+      {/* Strand picker */}
+      <StrandPicker
+        strandIds={[...cadre.strands.keys()]}
+        activeStrandId={activeStrand?.strandId ?? null}
+        onSelect={cadre.selectStrand}
+      />
+
       {/* Error banner */}
       {chat.error && (
         <View style={styles.errorBar}>
@@ -114,7 +122,7 @@ export default function ChatScreen() {
           placeholderTextColor="#666"
           onSubmitEditing={handleSend}
           returnKeyType="send"
-          editable={cadre.status === 'connected' && !!firstStrand}
+          editable={cadre.status === 'connected' && !!activeStrand}
         />
         <Pressable
           style={[styles.sendBtn, !draft.trim() && styles.sendBtnDisabled]}
@@ -130,6 +138,56 @@ export default function ChatScreen() {
 }
 
 // ── Sub-components ─────────────────────────────────────────────────────────
+
+/**
+ * Horizontal row of selectable strand chips plus a label rendering the FULL
+ * active strand id. The label's full-id text is what Maestro asserts against to
+ * confirm the chat is deterministically showing the working strand.
+ */
+function StrandPicker({
+  strandIds,
+  activeStrandId,
+  onSelect,
+}: {
+  strandIds: string[];
+  activeStrandId: string | null;
+  onSelect: (id: string) => void;
+}) {
+  if (strandIds.length === 0) return null;
+
+  return (
+    <View>
+      <ScrollView
+        horizontal
+        showsHorizontalScrollIndicator={false}
+        contentContainerStyle={styles.pickerRow}
+        testID={TEST_IDS.chat.strandPicker}
+      >
+        {strandIds.map((id) => {
+          const active = id === activeStrandId;
+          return (
+            <Pressable
+              key={id}
+              testID={TEST_IDS.chat.strandRow(id)}
+              style={[styles.chip, active && styles.chipActive]}
+              onPress={() => onSelect(id)}
+            >
+              <Text style={[styles.chipText, active && styles.chipTextActive]}>
+                {id.slice(0, 8)}
+              </Text>
+            </Pressable>
+          );
+        })}
+      </ScrollView>
+      {activeStrandId && (
+        // Full id, no numberOfLines clamp so Maestro's exact text match works.
+        <Text testID={TEST_IDS.chat.strandLabel} style={styles.strandLabel}>
+          {activeStrandId}
+        </Text>
+      )}
+    </View>
+  );
+}
 
 function MessageBubble({ msg, isOwn }: { msg: ChatMessage; isOwn: boolean }) {
   return (
@@ -151,6 +209,12 @@ const styles = StyleSheet.create({
   container: { flex: 1, backgroundColor: '#0f0f1a' },
   statusBar: { paddingVertical: 6, paddingHorizontal: 12 },
   statusText: { color: '#fff', fontSize: 12, textAlign: 'center' },
+  pickerRow: { flexDirection: 'row', paddingHorizontal: 8, paddingVertical: 6, gap: 6 },
+  chip: { backgroundColor: '#2a2a3e', borderRadius: 14, paddingHorizontal: 12, paddingVertical: 5, borderWidth: 1, borderColor: 'transparent' },
+  chipActive: { backgroundColor: '#6c63ff', borderColor: '#9c95ff' },
+  chipText: { color: '#aaa', fontSize: 12 },
+  chipTextActive: { color: '#fff', fontWeight: '600' },
+  strandLabel: { color: '#666', fontSize: 9, paddingHorizontal: 12, paddingBottom: 4 },
   errorBar: { backgroundColor: '#f44336', paddingVertical: 4, paddingHorizontal: 12 },
   errorText: { color: '#fff', fontSize: 12, textAlign: 'center' },
   list: { padding: 12, paddingBottom: 4 },

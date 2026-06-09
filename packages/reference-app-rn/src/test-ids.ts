@@ -28,6 +28,12 @@ export const TEST_IDS = {
 		messageInput: 'input-message',
 		sendBtn: 'btn-send',
 		messageList: 'message-list',
+		/** Horizontal row of selectable strand chips. */
+		strandPicker: 'chat-strand-picker',
+		/** Renders the FULL active strand id (for Maestro determinism asserts). */
+		strandLabel: 'chat-strand-label',
+		/** Per-chip id; pass the strand id. */
+		strandRow: (id: string) => `chat-strand-${id}`,
 		/** Per-row id; pass the message Id. */
 		messageRow: (id: number | string) => `message-row-${id}`,
 	},

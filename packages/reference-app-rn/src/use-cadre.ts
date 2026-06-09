@@ -5,7 +5,7 @@
  * methods for seed application and strand creation.
  */
 
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { CadreNode } from '@serfab/cadre-core';
 import type { StrandInstance, CadreNodeEvents, StrandFormationDisclosure } from '@serfab/cadre-core';
@@ -32,6 +32,7 @@ import {
   type BackgroundRunner,
   type RunnerState,
 } from './background-runner';
+import { pickActiveStrandId } from './strand-selection';
 import { createReactNativeAppState } from './app-state';
 import { acquireAndRegisterDeviceToken, clearDeviceTokenRegistration } from './push-wake-native';
 import { uuid } from './uuid';
@@ -57,6 +58,12 @@ export interface UseCadreResult {
   authorityPublicKey: string | null;
   /** Active strand instances */
   strands: Map<string, StrandInstance>;
+  /** Explicitly selected strand id (null = use the deterministic default). */
+  selectedStrandId: string | null;
+  /** The strand the chat should render, per pickActiveStrandId. Null if none. */
+  activeStrand: StrandInstance | null;
+  /** Pick a strand to view; persists until changed or the strand disappears. */
+  selectStrand: (strandId: string) => void;
   /** Last error message */
   error: string | null;
   /** OS-lifecycle phase owned by the {@link BackgroundRunner} (foreground/background/…). */
@@ -106,6 +113,7 @@ export function useCadreInternal(): UseCadreResult {
   const [strands, setStrands] = useState<Map<string, StrandInstance>>(
     () => getPhoneNode()?.getStrands() ?? new Map(),
   );
+  const [selectedStrandId, setSelectedStrandId] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [runnerState, setRunnerState] = useState<RunnerState>('foreground');
   const [resuming, setResuming] = useState(false);
@@ -128,6 +136,21 @@ export function useCadreInternal(): UseCadreResult {
       setStrands(new Map(current.getStrands()));
     }
   }, []);
+
+  // Pick a strand to view. Persists until changed or the strand disappears
+  // (the derivation below guards on presence, so a stale/unsynced id falls back
+  // to the deterministic default rather than dangling).
+  const selectStrand = useCallback((strandId: string) => {
+    setSelectedStrandId(strandId);
+  }, []);
+
+  // Deterministically derive the strand the chat renders. Order-independent of
+  // the Map's insertion order, so it never depends on the create-vs-control-sync
+  // race (see strand-selection.ts).
+  const activeStrand = useMemo<StrandInstance | null>(() => {
+    const activeId = pickActiveStrandId([...strands.keys()], selectedStrandId);
+    return activeId !== null ? strands.get(activeId) ?? null : null;
+  }, [strands, selectedStrandId]);
 
   // Subscribe to strand lifecycle events
   useEffect(() => {
@@ -252,6 +275,7 @@ export function useCadreInternal(): UseCadreResult {
     setPeerId(null);
     setAuthorityPublicKey(null);
     setStrands(new Map());
+    setSelectedStrandId(null);
     setStatus('idle');
   }, []);
 
@@ -286,6 +310,9 @@ export function useCadreInternal(): UseCadreResult {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     const instance = await createChatStrand(current, strandId);
+    // Explicit user action selects it — this is what keeps the chat on the
+    // phone-created strand even if the drone's pre-created strand syncs in.
+    setSelectedStrandId(instance.strandId);
     refreshStrands();
     return instance;
   }, [refreshStrands]);
@@ -303,6 +330,7 @@ export function useCadreInternal(): UseCadreResult {
     if (!current) throw new Error('Node not started');
     const strandId = uuid();
     await createClosedChatStrand(current, strandId);
+    setSelectedStrandId(strandId);
     const invitation = await createOpenInvitation(CHAT_SAPP_ID, INVITE_EXPIRY_MS);
     await publishFormationInvite(invitation.token, CHAT_SAPP_ID, {
       expiresAtMs: invitation.expiration.getTime(),
@@ -329,12 +357,15 @@ export function useCadreInternal(): UseCadreResult {
     };
     const formResult = await formStrand(invitation, disclosure);
     const instance = await joinClosedChatStrandFromFormation(current, formResult);
+    setSelectedStrandId(instance.strandId);
     refreshStrands();
     return instance;
   }, [refreshStrands]);
 
   return {
-    status, node, peerId, authorityPublicKey, strands, error, runnerState, resuming, degraded,
+    status, node, peerId, authorityPublicKey, strands,
+    selectedStrandId, activeStrand, selectStrand,
+    error, runnerState, resuming, degraded,
     start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };
