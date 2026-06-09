@@ -49,13 +49,15 @@ export default function ChatScreen() {
   const statusColor =
     cadre.resuming
       ? '#ff9800'
-      : cadre.status === 'connected'
-        ? '#4caf50'
-        : cadre.status === 'connecting'
-          ? '#ff9800'
-          : cadre.status === 'error'
-            ? '#f44336'
-            : '#666';
+      : cadre.degraded
+        ? '#f44336'
+        : cadre.status === 'connected'
+          ? '#4caf50'
+          : cadre.status === 'connecting'
+            ? '#ff9800'
+            : cadre.status === 'error'
+              ? '#f44336'
+              : '#666';
 
   return (
     <KeyboardAvoidingView
@@ -68,11 +70,13 @@ export default function ChatScreen() {
         <Text style={styles.statusText}>
           {cadre.resuming
             ? 'Resuming — syncing…'
-            : cadre.status === 'connected'
-              ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
-              : cadre.status === 'connecting'
-                ? 'Connecting…'
-                : cadre.error ?? 'Not connected — go to Settings'}
+            : cadre.degraded
+              ? 'Offline — reconnecting…'
+              : cadre.status === 'connected'
+                ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
+                : cadre.status === 'connecting'
+                  ? 'Connecting…'
+                  : cadre.error ?? 'Not connected — go to Settings'}
         </Text>
       </View>
 

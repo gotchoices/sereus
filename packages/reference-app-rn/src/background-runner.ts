@@ -125,6 +125,10 @@ export function createBackgroundRunner(deps: BackgroundRunnerDeps): BackgroundRu
   let subscription: AppStateSubscription | null = null;
   let listenedNode: CadreNode | null = null;
   const pendingTimers = new Set<ReturnType<typeof setTimeout>>();
+  // In-flight `awaitControlConnected` teardowns, so `stop()` can abort a settle
+  // mid-flight (removing its `control:connected` listener + timer) instead of
+  // orphaning them — `clearTimeout` alone would leave the listener attached.
+  const pendingSettles = new Set<(connected: boolean) => void>();
   const stateListeners = new Set<(s: RunnerState) => void>();
 
   // ── notification ────────────────────────────────────────────────────────────
@@ -168,18 +172,31 @@ export function createBackgroundRunner(deps: BackgroundRunnerDeps): BackgroundRu
     }
   }
 
+  // A `control:connected` that arrives while we are already foregrounded and
+  // degraded means the control network recovered on its own (no app-lifecycle
+  // transition to drive a fresh resume). Clear the stale degraded hint so the UI
+  // stops showing offline. During a resume settle, state is not yet 'foreground',
+  // so this no-ops and the settle's own one-shot listener owns the outcome.
+  function onControlConnected(): void {
+    if (state === 'foreground' && degraded) {
+      setDegraded(false);
+    }
+  }
+
   function attachNodeListeners(): void {
     const node = deps.getNode();
     if (node === listenedNode) return;
     detachNodeListeners();
     if (!node) return;
     node.on('control:disconnected', onControlDisconnected);
+    node.on('control:connected', onControlConnected);
     listenedNode = node;
   }
 
   function detachNodeListeners(): void {
     if (!listenedNode) return;
     listenedNode.off('control:disconnected', onControlDisconnected);
+    listenedNode.off('control:connected', onControlConnected);
     listenedNode = null;
   }
 
@@ -200,12 +217,14 @@ export function createBackgroundRunner(deps: BackgroundRunnerDeps): BackgroundRu
         node.off('control:connected', onConnected);
         pendingTimers.delete(timer);
         clearTimeout(timer);
+        pendingSettles.delete(finish);
         resolve(connected);
       };
       const onConnected = () => finish(true);
       node.on('control:connected', onConnected);
       const timer = setTimeout(() => finish(false), settleTimeoutMs);
       pendingTimers.add(timer);
+      pendingSettles.add(finish);
       // Guard a connect that raced in between the initial check and subscribe.
       if (node.controlConnected) finish(true);
     });
@@ -310,6 +329,11 @@ export function createBackgroundRunner(deps: BackgroundRunnerDeps): BackgroundRu
       subscription = null;
     }
     detachNodeListeners();
+    // Abort any in-flight settle (removes its `control:connected` listener +
+    // timer and resolves it); the epoch bump above makes the resolved handler
+    // bail before touching state. Snapshot first — `finish` mutates the set.
+    for (const finish of [...pendingSettles]) finish(false);
+    pendingSettles.clear();
     for (const timer of pendingTimers) clearTimeout(timer);
     pendingTimers.clear();
     setResuming(false);

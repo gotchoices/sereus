@@ -216,7 +216,7 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
   - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
-  - Out of scope (owned by `tickets/backlog/3-mobile-background-service.md`): the automatic trigger
+  - Out of scope (owned by `tickets/implement/3-mobile-push-wake-receive.md`): the automatic trigger
     policy (a server fanning wakes on detected activity) and mobile FCM/APNs delivery.
 - [x] Device-token registry (the resolve primitive FCM/APNs delivery needs)
   - `DeviceToken` control-network table (in `control-schema.ts` + `schemas/control.qsql`), modeled on

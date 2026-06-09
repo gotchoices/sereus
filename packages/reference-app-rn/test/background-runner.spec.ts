@@ -209,6 +209,58 @@ describe('createBackgroundRunner', () => {
     }
   });
 
+  it('degraded clears when control reconnects on its own while foregrounded', async () => {
+    vi.useFakeTimers();
+    try {
+      const runner = createBackgroundRunner({
+        getNode: () => asNode(node),
+        appState: app,
+        settleTimeoutMs: 5_000,
+      });
+      runner.start();
+      node.controlConnected = false;
+
+      app.fire('background');
+      await flush();
+
+      app.fire('active');
+      await vi.advanceTimersByTimeAsync(5_000);
+      expect(runner.degraded).toBe(true);
+      expect(runner.state).toBe('foreground');
+
+      // Control network recovers later with no app-lifecycle transition to drive
+      // a fresh resume — the stale degraded hint must self-heal.
+      node.controlConnected = true;
+      node.emit('control:connected');
+      expect(runner.degraded).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('stop() during an in-flight resume settle tears down the control:connected listener (no leak)', async () => {
+    const runner = createBackgroundRunner({
+      getNode: () => asNode(node),
+      appState: app,
+      settleTimeoutMs: 5_000,
+    });
+    runner.start();
+    const baseline = node.listenerCount('control:connected'); // persistent self-heal listener
+    node.controlConnected = false;
+
+    app.fire('background');
+    await flush();
+
+    app.fire('active'); // begins the resume settle (awaits control:connected)
+    await flush();
+    expect(runner.resuming).toBe(true);
+    expect(node.listenerCount('control:connected')).toBe(baseline + 1); // settle one-shot added
+
+    runner.stop();
+    expect(node.listenerCount('control:connected')).toBe(0); // both removed, nothing orphaned
+    expect(runner.resuming).toBe(false);
+  });
+
   it('stop() removes the AppState subscription and node listeners; no further transitions', async () => {
     const runner = createBackgroundRunner({ getNode: () => asNode(node), appState: app });
     runner.start();

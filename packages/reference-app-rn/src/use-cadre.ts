@@ -56,6 +56,8 @@ export interface UseCadreResult {
   runnerState: RunnerState;
   /** True while a foreground resume is settling (control network catching up). */
   resuming: boolean;
+  /** True after a resume settled without the control network reconnecting (offline/degraded). */
+  degraded: boolean;
   /** Start the node with the given options */
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
@@ -97,6 +99,7 @@ export function useCadreInternal(): UseCadreResult {
   const [error, setError] = useState<string | null>(null);
   const [runnerState, setRunnerState] = useState<RunnerState>('foreground');
   const [resuming, setResuming] = useState(false);
+  const [degraded, setDegraded] = useState(false);
 
   // Track the latest node so event handlers always reference it
   const nodeRef = useRef<CadreNode | null>(node);
@@ -190,6 +193,7 @@ export function useCadreInternal(): UseCadreResult {
     const sync = () => {
       setRunnerState(runner.state);
       setResuming(runner.resuming);
+      setDegraded(runner.degraded);
     };
     const unsubscribe = runner.onStateChange(sync);
     runner.start();
@@ -309,7 +313,7 @@ export function useCadreInternal(): UseCadreResult {
   }, [refreshStrands]);
 
   return {
-    status, node, peerId, strands, error, runnerState, resuming,
+    status, node, peerId, strands, error, runnerState, resuming, degraded,
     start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };
