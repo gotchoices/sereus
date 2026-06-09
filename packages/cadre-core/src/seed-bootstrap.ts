@@ -26,7 +26,8 @@ import type {
   DroneInitResult,
   InviteResult,
   CadreInvite,
-  PeerAddressRecord
+  PeerAddressRecord,
+  DeviceTokenRecord
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
@@ -280,32 +281,82 @@ export class SeedBootstrapService {
     updatedAt: number;
     sig: string | null;
   }): Promise<void> {
-    if (!this.config.authorityPrivateKey) {
-      throw new Error('Authority private key required to authorize peers');
-    }
+    const signature = this.signPeerAuthorization(row.peerId);
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-
-    // Sign the peer ID with the authority key. The signed bytes come from the
-    // shared peerAuthorizationDigest helper so the offline `cadre enroll
-    // register` verifier checks the exact same construction.
-    const peerIdDigest = peerAuthorizationDigest(row.peerId);
-    const signature = sign(
-      peerIdDigest,
-      this.config.authorityPrivateKey,
-      'ed25519',
-      'base64url',
-      'base64url',
-      'base64url'
-    ) as string;
-
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig)
         with context AuthorityKey = ?, Signature = ?
         values (?, ?, ?, ?, ?)
     `, [this.authorityPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig]);
+  }
+
+  /**
+   * Authority-signed INSERT of a peer's OWN self-signed `DeviceToken` row.
+   *
+   * Counterpart to {@link insertSelfPeerRecord} for the device-token registry: the
+   * row is authority-signed (satisfying `DeviceToken.AuthorizedInsert`, which vouches
+   * membership exactly as `CadrePeer.AuthorizedInsert` does) AND carries the peer's
+   * own self-`Sig` over the token payload. The authority signature covers only the
+   * PeerId — it does NOT vouch the token contents; the peer's `Sig` (verified at
+   * resolve time against the bound `CadrePeer.PublicKey`) is what makes the row
+   * resolvable. Used by {@link CadreNode.registerDeviceToken} for the first publish
+   * when the node is its own authority.
+   */
+  async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
+    const signature = this.signPeerAuthorization(record.peerId);
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    const db = this.controlDatabase.getDatabase();
+    await db.exec(`
+      insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig)
+        with context AuthorityKey = ?, Signature = ?
+        values (?, ?, ?, ?, ?)
+    `, [this.authorityPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig]);
+    log('Device token inserted (authority-signed): %s', record.peerId);
+  }
+
+  /**
+   * Authority-signed DELETE of a peer's `DeviceToken` row (logout / token
+   * invalidation). The `DeviceToken.AuthorizedInsert` constraint gates both insert
+   * AND delete on an authority signature over `digest(old.PeerId)`, so — like
+   * {@link removePeer} for `CadrePeer` — clearing a token requires the authority key.
+   */
+  async deleteDeviceToken(peerId: string): Promise<void> {
+    const signature = this.signPeerAuthorization(peerId);
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    const db = this.controlDatabase.getDatabase();
+    await db.exec(`
+      delete from CadreControl.DeviceToken
+        with context AuthorityKey = ?, Signature = ?
+        where PeerId = ?
+    `, [this.authorityPublicKey, signature, peerId]);
+    log('Device token removed (authority-signed): %s', peerId);
+  }
+
+  /**
+   * Sign a peer ID with the authority key for a `CadrePeer` / `DeviceToken`
+   * insert-or-delete. The signed bytes come from the shared
+   * {@link peerAuthorizationDigest} helper so the offline `cadre enroll register`
+   * verifier checks the exact same construction. Throws if no authority key is set.
+   */
+  private signPeerAuthorization(peerId: string): string {
+    if (!this.config.authorityPrivateKey) {
+      throw new Error('Authority private key required to authorize peers');
+    }
+    return sign(
+      peerAuthorizationDigest(peerId),
+      this.config.authorityPrivateKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    ) as string;
   }
 
   /**
@@ -316,26 +367,14 @@ export class SeedBootstrapService {
    * key. We use the same digest pattern as authorizePeer.
    */
   async removePeer(peerId: string): Promise<void> {
-    if (!this.config.authorityPrivateKey) {
-      throw new Error('Authority private key required to remove peers');
-    }
-
+    // Same canonical digest as the authorizing INSERT (see peerAuthorizationDigest);
+    // also validates the authority key is present before touching the database.
+    const signature = this.signPeerAuthorization(peerId);
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
 
     log('Removing peer: %s', peerId);
-
-    // Same canonical digest as the authorizing INSERT (see peerAuthorizationDigest).
-    const peerIdDigest = peerAuthorizationDigest(peerId);
-    const signature = sign(
-      peerIdDigest,
-      this.config.authorityPrivateKey,
-      'ed25519',
-      'base64url',
-      'base64url',
-      'base64url'
-    ) as string;
 
     const db = this.controlDatabase.getDatabase();
     await db.exec(`

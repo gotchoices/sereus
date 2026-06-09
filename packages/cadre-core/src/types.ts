@@ -619,6 +619,53 @@ export interface PeerResolveTrustPolicy {
 }
 
 // ============================================================================
+// Device Token Registry Types
+// ============================================================================
+
+/** Platform push channel a {@link DeviceTokenRecord} targets. */
+export type PushPlatform = 'fcm' | 'apns';
+
+/**
+ * A mobile cadre peer's self-published, freshness-stamped, self-signed platform
+ * push token.
+ *
+ * This is the logical shape of a `CadreControl.DeviceToken` row. A phone publishes
+ * its own record (signing with the ed25519 key behind its PeerId); a server peer
+ * resolves it from the phone's PeerId to deliver a push-wake over FCM/APNs when a
+ * control-network dial cannot reach the OS-suspended process. The signature covers
+ * `peerId`, `platform`, `token`, and `updatedAt` — see `deviceTokenSignedPayload`.
+ *
+ * Unlike {@link PeerAddressRecord}, the record carries NO public key: it is verified
+ * against the `CadrePeer.PublicKey` bound to the same `peerId`, so a `DeviceToken`
+ * with no backing `CadrePeer` row can never be resolved.
+ */
+export interface DeviceTokenRecord {
+  /** libp2p peer ID (base58btc) — the row key and the CadrePeer this token belongs to. */
+  peerId: string;
+  /** Push channel: `'fcm'` (Android/Firebase) or `'apns'` (Apple). */
+  platform: PushPlatform;
+  /** Opaque platform device/registration token. */
+  token: string;
+  /** epoch ms — freshness; strictly increasing per self-update (replay guard). */
+  updatedAt: number;
+  /** ed25519 self-signature over the signed payload, base64url. */
+  sig: string;
+}
+
+/**
+ * Options for {@link CadreNode.resolveDeviceToken}.
+ */
+export interface ResolveDeviceTokenOpts {
+  /**
+   * Optional freshness ceiling in ms. Defaults to NO ceiling (a record is fresh
+   * as long as its `updatedAt` is positive): unlike a relay reservation, a device
+   * push token stays valid until it rotates, so a long-suspended phone must remain
+   * resolvable for push-wake. Set this to bound staleness explicitly.
+   */
+  maxAgeMs?: number;
+}
+
+// ============================================================================
 // Seed Bootstrap API Types (from architecture.md)
 // ============================================================================
 

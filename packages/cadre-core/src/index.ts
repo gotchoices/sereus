@@ -107,6 +107,14 @@ export {
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
 } from './peer-record.js';
 
+// Device-token record (self-published, signed FCM/APNs push token — CadrePeer sibling)
+export {
+  deviceTokenSignedPayload,
+  signDeviceTokenRecord,
+  verifyDeviceTokenSignature,
+  isPushPlatform
+} from './device-token.js';
+
 // Seed trust policy (trust anchor for incoming seeds)
 export {
   dbAnchoredTrustPolicy,

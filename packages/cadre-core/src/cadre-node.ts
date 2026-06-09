@@ -25,7 +25,10 @@ import type {
   ResolveOpts,
   SelfRegistrationOutcome,
   ServiceWakeResult,
-  Libp2pNodeWithRepo
+  Libp2pNodeWithRepo,
+  PushPlatform,
+  DeviceTokenRecord,
+  ResolveDeviceTokenOpts
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
@@ -41,6 +44,11 @@ import {
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
 } from './peer-record.js';
+import {
+  signDeviceTokenRecord,
+  verifyDeviceTokenSignature,
+  isPushPlatform
+} from './device-token.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
 import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
@@ -676,6 +684,173 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     return out;
+  }
+
+  // ============================================================================
+  // Device-token registry (control-network push-token publish + resolve)
+  //
+  // The control network is the only network a hibernating peer keeps connected,
+  // so it is where a mobile peer self-publishes its FCM/APNs push token and where
+  // a server peer resolves it to deliver a push-wake to a suspended app. The write
+  // + gate paths mirror registerSelf / resolvePeerAddrs (see DeviceToken in
+  // control-schema.ts and device-token.ts).
+  // ============================================================================
+
+  /**
+   * Publish (or refresh) this node's own self-signed `DeviceToken` row so a server
+   * peer can resolve its FCM/APNs push token from its PeerId alone. Mirrors
+   * {@link registerSelf}:
+   *
+   * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt` (works
+   *   for any member — the `AuthorizedUpdate` self-branch verifies the new `Sig`
+   *   against the bound `CadrePeer.PublicKey`). Platform/Token may change here
+   *   (rotation / platform switch / reinstall are all normal self-updates).
+   * - If not, and the node holds an authority service: an authority-signed INSERT
+   *   that also carries the self-signature.
+   * - Otherwise: throws. Like `CadrePeer`, the first `DeviceToken` row requires an
+   *   authority signature; a non-authority peer (e.g. a phone) must have its row
+   *   seeded by an authority — typically the server it enrolled with — before it
+   *   can self-refresh. (Establishing that phone→server registration handshake is
+   *   the downstream "RN registration" ticket; this node only owns the cadre-core
+   *   write path.)
+   *
+   * `UpdatedAt` strictly increases on every publish (even a same-millisecond
+   * re-publish), so a replayed older record is rejected by the schema.
+   *
+   * @param platform - `'fcm'` (Android/Firebase) or `'apns'` (Apple).
+   * @param token - the opaque platform device/registration token.
+   * @throws if the node is not started, exposes no self-signing key, or has no
+   *   existing row and no authority service to self-insert.
+   */
+  async registerDeviceToken(platform: PushPlatform, token: string): Promise<void> {
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      throw new Error('CadreNode must be started before registering a device token');
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      throw new Error(
+        'Cannot register device token: no self-signing key available ' +
+        '(config.privateKey unset or not matching the node PeerId).'
+      );
+    }
+
+    const peerId = this.controlNode.peerId.toString();
+    const existing = await this.controlDatabase.queryDeviceToken(peerId);
+    // Strictly increase UpdatedAt even on a same-millisecond re-publish (rotation).
+    const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
+    const record = signDeviceTokenRecord(
+      { peerId, platform, token, updatedAt },
+      signingKey.privateKeyB64
+    );
+
+    if (existing) {
+      await this.controlDatabase.updateSelfDeviceToken(record);
+      log('registerDeviceToken: refreshed own DeviceToken (platform=%s, updatedAt=%d)', platform, updatedAt);
+      return;
+    }
+    if (this.seedBootstrapService) {
+      await this.seedBootstrapService.insertSelfDeviceToken(record);
+      log('registerDeviceToken: inserted own DeviceToken (authority-signed, platform=%s, updatedAt=%d)', platform, updatedAt);
+      return;
+    }
+    throw new Error(
+      `Cannot register device token for ${peerId}: no existing row to self-update and no ` +
+      'authority service to self-insert. An authority must seed this peer\'s DeviceToken ' +
+      'row first (mirrors CadrePeer enrollment).'
+    );
+  }
+
+  /**
+   * Resolve a cadre peer's FCM/APNs push token from only its PeerId — the input a
+   * server's push-wake fan-out consumes to deliver a platform push to a suspended
+   * app. Applies the same gating shape as {@link resolvePeerAddrs}, returning
+   * `null` (never throwing) on any failure:
+   *
+   *   1. membership — the peer has a `CadrePeer` row with a `PublicKey`,
+   *   2. `publicKey <-> peerId` binding — the stored key's libp2p identity is the
+   *      requested peerId,
+   *   3. a `DeviceToken` row exists with a known {@link PushPlatform},
+   *   4. self-signature verifies against the bound `CadrePeer.PublicKey`,
+   *   5. freshness — `updatedAt` is positive and within `opts.maxAgeMs` (default:
+   *      no ceiling, since a push token is valid until it rotates).
+   *
+   * A peer that is not a current member, or whose token has no backing `CadrePeer`
+   * record, resolves to `null` — a server must not attempt to push to a non-cadre
+   * peer.
+   */
+  async resolveDeviceToken(peerId: string, opts: ResolveDeviceTokenOpts = {}): Promise<DeviceTokenRecord | null> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before resolving a device token');
+    }
+
+    // Membership + publicKey<->peerId binding: read the peer's CadrePeer row and
+    // confirm the stored key is the one embedded in the requested Ed25519 peer id.
+    const peerRecord = await this.controlDatabase.queryPeerRecord(peerId);
+    if (!peerRecord || !peerRecord.publicKey) {
+      log('resolveDeviceToken: no CadrePeer/PublicKey for %s', peerId);
+      return null;
+    }
+    if (ed25519PublicKeyB64FromPeerId(peerId) !== peerRecord.publicKey) {
+      log('resolveDeviceToken: publicKey does not match peerId for %s', peerId);
+      return null;
+    }
+
+    const record = await this.controlDatabase.queryDeviceToken(peerId);
+    if (!record) {
+      log('resolveDeviceToken: no device token for %s', peerId);
+      return null;
+    }
+    if (!isPushPlatform(record.platform)) {
+      log('resolveDeviceToken: unknown platform %s for %s', record.platform, peerId);
+      return null;
+    }
+
+    // Self-signature over (peerId, platform, token, updatedAt), verified against the
+    // CadrePeer.PublicKey bound to this peerId.
+    if (!verifyDeviceTokenSignature(record, peerRecord.publicKey)) {
+      log('resolveDeviceToken: signature verification failed for %s', peerId);
+      return null;
+    }
+
+    // Freshness: a positive stamp, optionally bounded. No ceiling by default — a
+    // suspended phone's token must stay resolvable for push-wake long after publish.
+    const maxAgeMs = opts.maxAgeMs ?? Number.POSITIVE_INFINITY;
+    if (!isPeerRecordFresh(record.updatedAt, maxAgeMs, Date.now())) {
+      log('resolveDeviceToken: record for %s is stale (updatedAt=%d, maxAgeMs=%d)', peerId, record.updatedAt, maxAgeMs);
+      return null;
+    }
+
+    return record;
+  }
+
+  /**
+   * Delete this node's own `DeviceToken` row (logout / token invalidation). No-op
+   * when no row exists. Like {@link registerDeviceToken}'s first insert, the delete
+   * is gated on an authority signature (`DeviceToken.AuthorizedInsert` covers insert
+   * AND delete), so it requires this node's authority service; a non-authority peer
+   * must route the clear through its authority (downstream RN registration path).
+   *
+   * @throws if the node is not started, or a row exists but no authority service is
+   *   available to sign the delete.
+   */
+  async clearDeviceToken(): Promise<void> {
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      throw new Error('CadreNode must be started before clearing a device token');
+    }
+    const peerId = this.controlNode.peerId.toString();
+    const existing = await this.controlDatabase.queryDeviceToken(peerId);
+    if (!existing) {
+      log('clearDeviceToken: no DeviceToken row for %s; no-op', peerId);
+      return;
+    }
+    if (!this.seedBootstrapService) {
+      throw new Error(
+        `Cannot clear device token for ${peerId}: delete requires an authority signature ` +
+        'and no authority service is initialized.'
+      );
+    }
+    await this.seedBootstrapService.deleteDeviceToken(peerId);
+    log('clearDeviceToken: deleted DeviceToken for %s', peerId);
   }
 
   private async handleStrandAdded(strand: StrandRow): Promise<void> {

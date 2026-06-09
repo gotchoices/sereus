@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord } from './types.js';
+import type { StrandRow, PeerAddressRecord, DeviceTokenRecord, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 
 const log = debug('sereus:cadre:control-db');
@@ -106,6 +106,7 @@ export type ControlTable =
   | 'ValidationKey'
   | 'Strand'
   | 'CadrePeer'
+  | 'DeviceToken'
   | 'FormationInvite'
   | 'FormationUsage';
 
@@ -115,6 +116,7 @@ const CONTROL_TABLES: ReadonlySet<ControlTable> = new Set<ControlTable>([
   'ValidationKey',
   'Strand',
   'CadrePeer',
+  'DeviceToken',
   'FormationInvite',
   'FormationUsage',
 ]);
@@ -422,6 +424,54 @@ export class ControlDatabase {
         where PeerId = ?
     `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
     log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
+  }
+
+  /**
+   * Read a single peer's device push token (the full `DeviceToken` row) by PeerId.
+   *
+   * Returns null when no row exists. Missing/legacy column values are coalesced to
+   * their empty form (`''` token/sig, `0` stamp) so the caller's verify/freshness
+   * gates uniformly reject an unpublished or malformed row. `platform` is returned
+   * verbatim (the resolver validates it against {@link PushPlatform} and re-verifies
+   * the self-signature, which covers the platform field).
+   */
+  async queryDeviceToken(peerId: string): Promise<DeviceTokenRecord | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval(
+      'select PeerId, Platform, Token, UpdatedAt, Sig from CadreControl.DeviceToken where PeerId = ?',
+      [peerId]
+    )) {
+      return {
+        peerId: row.PeerId as string,
+        platform: (row.Platform as string ?? '') as PushPlatform,
+        token: (row.Token as string | null) ?? '',
+        updatedAt: (row.UpdatedAt as number | null) ?? 0,
+        sig: (row.Sig as string | null) ?? '',
+      };
+    }
+    return null;
+  }
+
+  /**
+   * Apply a peer's own self-signed device-token update to an existing row.
+   *
+   * Authorization is carried entirely by the record: the `Sig` column (verified by
+   * the `DeviceToken.AuthorizedUpdate` self-branch against the stored
+   * `CadrePeer.PublicKey`) plus the strictly-increasing `UpdatedAt`. No authority key
+   * is involved, so this is the refresh / rotation path for any member once both its
+   * `CadrePeer` row (for the PublicKey) and its `DeviceToken` row exist. `PeerId` is
+   * intentionally not in the SET list (immutable; the constraint enforces
+   * `new.PeerId = old.PeerId`). Mirrors {@link updateSelfPeerRecord}.
+   */
+  async updateSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
+    this.ensureInitialized();
+    await this.db!.exec(`
+      update CadreControl.DeviceToken
+        with context AuthorityKey = null, Signature = ?
+        set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
+        where PeerId = ?
+    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]);
+    log('Self device token updated: %s (platform=%s, updatedAt=%d)', record.peerId, record.platform, record.updatedAt);
   }
 
   /**

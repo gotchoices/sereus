@@ -35,6 +35,7 @@ The control network is a private Optimystic network involving only the party's o
 | `ValidationKey` | Keys that can validate strand formation disclosures |
 | `Strand` | List of strands the party participates in |
 | `CadrePeer` | Registry of nodes in the cadre |
+| `DeviceToken` | Self-published FCM/APNs push token per mobile peer (for push-wake of a suspended app) |
 | `FormationInvite` | Open invitations to form strands with this party |
 | `FormationUsage` | Audit log of formation invite consumption |
 
@@ -65,6 +66,7 @@ A cadre node is a running instance of the `@serfab/cadre-core` library. Each nod
 2. **Watches the `Strand` table** for changes (reactive pattern - which is a TODO for Optimystic so we'll have to poll for now)
 3. **Starts/stops strand instances** as rows are added/removed
 4. **Publishes a signed peer-address record** to its own `CadrePeer` row (`CadreNode.registerSelf`): its current dialable/relay multiaddrs (signaling `/p2p-circuit` first), an ed25519 `PublicKey` whose libp2p identity *is* its PeerId, a monotonic `UpdatedAt` freshness stamp, and a self-`Sig` over those fields. It re-publishes on relay-reservation/address change and on a TTL heartbeat. Any member can then **resolve** another member's current signaling address from its PeerId alone via `CadreNode.resolvePeerAddrs(peerId)` — which re-verifies the signature, checks the `PublicKey↔PeerId` binding and freshness, and applies a pluggable trust gate — so a NAT-to-NAT WebRTC dial can be negotiated without copy/paste.
+5. **Publishes a signed device push token** to its own `DeviceToken` row (`CadreNode.registerDeviceToken(platform, token)`), modeled on the `CadrePeer` record: an FCM/APNs `Token`, a monotonic `UpdatedAt`, and a self-`Sig` verified at resolve time against the `CadrePeer.PublicKey` bound to the same PeerId. Because a control-network libp2p dial cannot reach an OS-suspended phone, a server peer instead **resolves** the phone's token via `CadreNode.resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, returning `null` on any failure) and delivers a push-wake over the platform push channel. `clearDeviceToken()` removes the row on logout/invalidation. The first `DeviceToken` row, like `CadrePeer`, is authority-signed (insert/delete are authority-gated); a member self-updates its own token thereafter. The push *sender* (server fan-out) and the RN registration call are downstream of this registry.
 
 ```mermaid
 graph TD

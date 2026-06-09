@@ -161,7 +161,7 @@ Goal: define and implement how a user manages a **cadre** (their personal cluste
   - [ ] Transport expectations (direct vs relay, addressing, reachability)
   - [ ] Operational requirements (headless node, backups, monitoring)
 - [ ] Create an initial Cadre schema doc (suggested: `sereus/docs/cadre-schema.md`)
-  - [~] Tables — a control/cadre schema exists at `schemas/control.qsql` (schema `CadreControl`) with `AuthorityKey`, `ValidationKey`, `Strand`, `CadrePeer`, `FormationInvite`, `FormationUsage`; the actual shape differs from the proposed `cadres`/`cadre_nodes`/`node_keys`
+  - [~] Tables — a control/cadre schema exists at `schemas/control.qsql` (schema `CadreControl`) with `AuthorityKey`, `ValidationKey`, `Strand`, `CadrePeer`, `DeviceToken`, `FormationInvite`, `FormationUsage`; the actual shape differs from the proposed `cadres`/`cadre_nodes`/`node_keys`
   - [ ] RBAC / permissions model (who can add/remove nodes)
   - [ ] Audit trail requirements
 - [x] Decide where the schema lives long-term: as `.qsql` artifacts under `schemas/`
@@ -218,6 +218,19 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
   - Out of scope (owned by `tickets/backlog/3-mobile-background-service.md`): the automatic trigger
     policy (a server fanning wakes on detected activity) and mobile FCM/APNs delivery.
+- [x] Device-token registry (the resolve primitive FCM/APNs delivery needs)
+  - `DeviceToken` control-network table (in `control-schema.ts` + `schemas/control.qsql`), modeled on
+    `CadrePeer`: self-published, monotonic `UpdatedAt`, self-`Sig` over `(PeerId|Platform|Token|UpdatedAt)`
+    verified at resolve time against the bound `CadrePeer.PublicKey`. Insert/delete authority-gated; a
+    member self-updates its own token (rotation / platform switch).
+  - `device-token.ts` (`deviceTokenSignedPayload` / `signDeviceTokenRecord` / `verifyDeviceTokenSignature` /
+    `isPushPlatform`) mirrors `peer-record.ts`. `CadreNode.registerDeviceToken(platform, token)` /
+    `resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, `null` on any failure) /
+    `clearDeviceToken()` reuse the `registerSelf` / `resolvePeerAddrs` write+gate paths.
+  - **Not** implemented here (downstream): the server push *sender* (fan-out over resolved tokens) and the
+    RN registration call. A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
+    `CadrePeer`, the initial row is authority-gated, so the phone→server registration handshake (downstream
+    "RN registration" ticket) must seed it before the phone can self-refresh.
 - [x] Imperative background-lifecycle primitives (platform-agnostic; for a mobile `BackgroundRunner`)
   - `CadreNode.hibernateStrand(strandId)` / `hibernateAll()` force-hibernate now, bypassing the
     idle/hibernate timers, via `HibernationManager.forceHibernate` — which cancels the strand's pending

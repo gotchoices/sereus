@@ -80,6 +80,41 @@ declare schema CadreControl {
         )
     ) with context (AuthorityKey text null, Signature text);
 
+    -- A mobile cadre peer's platform push token (FCM/APNs), self-published so a
+    -- server peer can deliver a push-wake to a suspended app over the platform push
+    -- channel (a control-network dial cannot reach an OS-suspended process). The row
+    -- mirrors CadrePeer: a resolver re-verifies Sig against the CadrePeer.PublicKey for
+    -- this PeerId (see device-token.ts:deviceTokenSignedPayload), checks freshness, then
+    -- hands the token to the push sender.
+    table DeviceToken (
+        PeerId text primary key,        -- the CadrePeer this token belongs to
+        Platform text not null,         -- 'fcm' | 'apns'
+        Token text not null,            -- opaque platform device/registration token
+        UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay guard)
+        Sig text null,                  -- ed25519 self-sig over (PeerId|Platform|Token|UpdatedAt)
+        constraint AuthorizedInsert check on insert, delete (
+            -- Authorized by an authority key (membership vouch), exactly like CadrePeer.
+            -- Use utf8 input encoding since peer IDs are base58btc strings, not base64url.
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(new.PeerId, old.PeerId), 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedUpdate check on update (
+            -- Peer self-updates its own token, signing with its OWN ed25519 key (the key
+            -- behind PeerId). PeerId is immutable, UpdatedAt must strictly increase (replay
+            -- guard), and Sig is verified against the stored CadrePeer.PublicKey over the
+            -- signed payload (cadre-core device-token.ts:deviceTokenSignedPayload). Platform
+            -- and Token may change on self-update (platform switch / reinstall / rotation).
+            (
+                new.PeerId = old.PeerId
+                and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
+                and exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(
+                        digest(new.PeerId || '|' || new.Platform || '|' || new.Token || '|' || cast(new.UpdatedAt as text), 'sha256', 'utf8'),
+                        new.Sig, P.PublicKey, 'ed25519'))
+            )
+                -- or an authority re-authorizes (rotation / correction)
+                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId, 'sha256', 'utf8'), context.Signature, A.Key, 'ed25519'))
+        )
+    ) with context (AuthorityKey text null, Signature text);
+
     -- An open invitation to form a strand with this party
     table FormationInvite (
         Token text primary key, -- Just a random string
