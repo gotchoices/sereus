@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-06-09T08:17:21.510Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\reference-app-web-formation-convergence-e2e.plan.2026-06-09T08-17-21-510Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ----
 description: Re-establish live two-party cross-cohort convergence as a runnable e2e tier for the browser reference — two parties form a closed strand via the consent/invitation flow, then a chat message written by one replicates to the other through the strand cohort.
 prereq: formationinvite-fix-curve-and-wire-consent
