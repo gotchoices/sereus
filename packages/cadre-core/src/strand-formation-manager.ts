@@ -19,7 +19,6 @@ import {
   type FormationContactMessage,
   type FormationProvisionResult,
   type FormationResultMessage,
-  type FormationMode,
   type ResponderProvisionOutcome
 } from './strand-formation-protocol.js';
 
@@ -161,7 +160,6 @@ export class StrandFormationManager {
       const provision = await dialFormation(node, {
         contact,
         responderAddrs: invitation.bootstrap,
-        mode: 'responderCreates',
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
         sessionTimeoutMs: this.config.sessionTimeoutMs,
         stepTimeoutMs: this.config.stepTimeoutMs,
@@ -193,25 +191,24 @@ export class StrandFormationManager {
 
   // ── Responder-side hooks ─────────────────────────────────────────────────────
 
-  private async validateToken(token: string): Promise<{ valid: boolean; mode: FormationMode }> {
-    const mode: FormationMode = 'responderCreates';
+  private async validateToken(token: string): Promise<{ valid: boolean }> {
     if (!this.formationUsageRecorder) {
       // No recorder configured — accept all tokens.
-      return { valid: true, mode };
+      return { valid: true };
     }
 
     const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
     if (!tokenCheck.valid) {
       log('Token invalid: %s', token);
-      return { valid: false, mode };
+      return { valid: false };
     }
 
     if (await this.formationUsageRecorder.isTokenUsed(token)) {
       log('Token already used: %s', token);
-      return { valid: false, mode };
+      return { valid: false };
     }
 
-    return { valid: true, mode };
+    return { valid: true };
   }
 
   private async validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean> {

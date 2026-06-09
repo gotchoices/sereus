@@ -8,12 +8,9 @@
  * real cadre peer addresses end-to-end (no `{ partyId: sessionId }` / `cadre-*.local`
  * placeholders), and validating the responder's result on the initiator side.
  *
- * Two provisioning modes are preserved from strand-proto:
- * - `responderCreates` (2 messages): responder provisions and returns the result.
- * - `initiatorCreates` (3 messages): initiator provisions after approval and echoes
- *   the strand/db back. Unlike the deprecated transport (which opened a fresh stream
- *   for the echo and thereby lost session correlation), the echo stays on the same
- *   live stream so the responder validates it against the session it approved.
+ * Provisioning flow (`responderCreates`, 2 messages): the responder provisions (or, for
+ * provision-then-record, resolves + records consent against) the strand and returns the
+ * result on approval.
  *
  * Cadre-disclosure timing (see docs/strand-proto.md "Security & Privacy"): the
  * responder reveals its own party id + cadre addresses — and, for a closed strand
@@ -41,16 +38,9 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 /** Default cap on concurrent inbound formation sessions. */
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
 
-// ── Roles / modes ────────────────────────────────────────────────────────────
+// ── Roles ────────────────────────────────────────────────────────────────────
 
 export type FormationParty = 'initiator' | 'responder';
-
-/**
- * Who provisions the strand:
- * - `responderCreates`: responder provisions and returns it in the result (2 messages).
- * - `initiatorCreates`: initiator provisions after approval and echoes it back (3 messages).
- */
-export type FormationMode = 'responderCreates' | 'initiatorCreates';
 
 // ── Wire messages (length-prefixed JSON frames) ──────────────────────────────
 
@@ -111,14 +101,8 @@ export interface FormationResultMessage {
   partyId?: string;
   /** Responder's real multiaddrs (omitted on rejection). */
   cadrePeerAddrs?: string[];
-  /** Present for `responderCreates` mode. */
+  /** The provisioned strand/db result (always present on approval). */
   provisionResult?: FormationProvisionResult;
-}
-
-/** Initiator → Responder (`initiatorCreates`): the strand/db the initiator provisioned. */
-export interface FormationDatabaseMessage {
-  strand: FormationStrandInfo;
-  dbConnectionInfo: FormationDbConnectionInfo;
 }
 
 // ── Stream framing helpers ───────────────────────────────────────────────────
@@ -238,8 +222,8 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
 // ── Responder (listener) ─────────────────────────────────────────────────────
 
 export interface FormationListenerOptions {
-  /** Validate the invitation token; returns whether it is valid and which mode applies. */
-  validateToken(token: string): Promise<{ valid: boolean; mode: FormationMode }>;
+  /** Validate the invitation token; returns whether it is valid. */
+  validateToken(token: string): Promise<{ valid: boolean }>;
   /** Validate the initiator's disclosure with the REAL token + disclosure. */
   validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean>;
   /**
@@ -252,8 +236,6 @@ export interface FormationListenerOptions {
    * non-disclosing `approved: false` reply rather than dropping the result frame.
    */
   provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<ResponderProvisionOutcome>;
-  /** Validate the db result echoed back by the initiator (`initiatorCreates`). */
-  validateDatabaseResult?(message: FormationDatabaseMessage): Promise<boolean>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
   sessionTimeoutMs?: number;
@@ -329,8 +311,7 @@ export class FormationListener {
   private async runSession(id: number, stream: LibP2PStream): Promise<void> {
     // Track whether ANY frame has been written so the catch below can convert an
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
-    // gone out yet (a second frame after the initiatorCreates approval would corrupt the
-    // stream). This closes the "stream closed with no result frame" class of bug.
+    // gone out yet. This closes the "stream closed with no result frame" class of bug.
     let wroteFrame = false;
     const send = (msg: FormationResultMessage): void => {
       writeFrame(stream, msg);
@@ -354,38 +335,28 @@ export class FormationListener {
         return;
       }
 
-      if (tokenResult.mode === 'responderCreates') {
-        const outcome = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
-        if (!outcome.approved) {
-          // A post-validation rejection still discloses NEITHER identity NOR cadre,
-          // exactly like the token/disclosure rejections above.
-          send({ approved: false, reason: outcome.reason });
-          return;
-        }
-        // Validation + provisioning passed → safe to disclose responder identity/cadre.
-        const identity = this.options.getResponderIdentity();
-        send({
-          approved: true,
-          partyId: identity.partyId,
-          cadrePeerAddrs: identity.cadrePeerAddrs,
-          provisionResult: outcome.result
-        });
+      const outcome = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
+      if (!outcome.approved) {
+        // A post-validation rejection still discloses NEITHER identity NOR cadre,
+        // exactly like the token/disclosure rejections above.
+        send({ approved: false, reason: outcome.reason });
         return;
       }
-
-      // initiatorCreates: approve (no provisionResult yet), then await the initiator's db result.
+      // Validation + provisioning passed → safe to disclose responder identity/cadre.
       const identity = this.options.getResponderIdentity();
-      send({ approved: true, partyId: identity.partyId, cadrePeerAddrs: identity.cadrePeerAddrs });
-      const dbResult = await withTimeout(this.stepTimeoutMs, `await-database#${id}`, () => reader.read<FormationDatabaseMessage>());
-      const dbValid = this.options.validateDatabaseResult ? await this.options.validateDatabaseResult(dbResult) : true;
-      if (!dbValid) throw new Error('Invalid database result from initiator');
+      send({
+        approved: true,
+        partyId: identity.partyId,
+        cadrePeerAddrs: identity.cadrePeerAddrs,
+        provisionResult: outcome.result
+      });
     } catch (err) {
       // Defense-in-depth: if an unexpected internal error escapes BEFORE any frame was
       // written (e.g. a future provisionStrand-hook bug), convert it into a non-disclosing
       // protocol rejection so the initiator sees a clean error instead of a read-error/
-      // timeout. If a frame was already sent (e.g. the initiatorCreates approval), leave
-      // the stream as-is and let handleStream log + close. Re-throw either way so the
-      // failure is still recorded — this is a deliberate, logged conversion, not silent.
+      // timeout. If a frame was already sent, leave the stream as-is and let handleStream
+      // log + close. Re-throw either way so the failure is still recorded — this is a
+      // deliberate, logged conversion, not silent.
       if (!wroteFrame) {
         const internalError: FormationResultMessage = { approved: false, reason: 'Internal formation error' };
         try { writeFrame(stream, internalError); } catch { /* stream already broken */ }
@@ -402,12 +373,8 @@ export interface FormationDialOptions {
   contact: FormationContactMessage;
   /** Responder multiaddrs to dial. */
   responderAddrs: string[];
-  /** Expected provisioning mode (defaults to `responderCreates`). */
-  mode?: FormationMode;
   /** Validate the responder's result; a false return aborts the formation. */
   validateResponse(response: FormationResultMessage): Promise<boolean>;
-  /** `initiatorCreates` only: provision the strand locally after approval. */
-  provisionStrand?(responderPartyId: string): Promise<FormationProvisionResult>;
   sessionTimeoutMs?: number;
   stepTimeoutMs?: number;
   protocolId?: string;
@@ -416,13 +383,12 @@ export interface FormationDialOptions {
 /**
  * Initiator side of the native formation protocol. Dials the responder, sends the
  * contact (carrying the real disclosure/token/cadre), validates the responder's
- * result, and — for `initiatorCreates` — provisions and echoes the strand back.
+ * result, and returns the strand the responder provisioned.
  */
 export async function dialFormation(node: Libp2p, options: FormationDialOptions): Promise<FormationProvisionResult> {
   if (options.responderAddrs.length === 0) {
     throw new Error('No responder addresses available for formation');
   }
-  const mode = options.mode ?? 'responderCreates';
   const protocolId = options.protocolId ?? FORMATION_PROTOCOL;
   const sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
   const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
@@ -442,20 +408,8 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
       const ok = await options.validateResponse(response);
       if (!ok) throw new Error('Responder result failed validation');
 
-      if (mode === 'responderCreates') {
-        if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
-        return response.provisionResult;
-      }
-
-      // initiatorCreates: provision locally and echo the strand/db back on the same stream.
-      if (!options.provisionStrand) throw new Error('provisionStrand callback required for initiatorCreates mode');
-      const provision = await options.provisionStrand(response.partyId ?? '');
-      const dbMessage: FormationDatabaseMessage = {
-        strand: provision.strand,
-        dbConnectionInfo: provision.dbConnectionInfo
-      };
-      writeFrame(stream, dbMessage);
-      return provision;
+      if (!response.provisionResult) throw new Error('Missing provision result for responderCreates mode');
+      return response.provisionResult;
     } finally {
       try { await stream.close(); } catch { /* ignore */ }
     }

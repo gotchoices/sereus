@@ -15,8 +15,7 @@ import {
 } from './strand-formation-manager.js';
 import {
   isValidResponderCreatesResult,
-  type FormationResultMessage,
-  type FormationDatabaseMessage
+  type FormationResultMessage
 } from './strand-formation-protocol.js';
 
 const log = debug('sereus:cadre:solicitation');
@@ -140,12 +139,6 @@ export interface FormationResponseValidator {
     disclosure: StrandFormationDisclosure;
     response: FormationResultMessage;
   }): Promise<boolean>;
-  /** initiatorCreates mode: validate the strand/db result the responder echoes back. */
-  validateDatabaseResult?(ctx: {
-    invitation: OpenInvitation;
-    expected: FormationDatabaseMessage;
-    received: unknown;
-  }): Promise<boolean>;
 }
 
 /**
@@ -154,17 +147,12 @@ export interface FormationResponseValidator {
  * `validateResponse` rejects when the responder did not approve, omitted a disclosed
  * identity, returned no/placeholder cadre addresses, or returned a missing/empty or
  * non-responder-created strand (see {@link isValidResponderCreatesResult}).
- * `validateDatabaseResult` confirms the echoed strand id matches what was provisioned.
  * Apps can supply a stricter validator via {@link StrandSolicitationServiceOptions}.
  */
 export function createDefaultFormationResponseValidator(): FormationResponseValidator {
   return {
     async validateResponse({ response }) {
       return isValidResponderCreatesResult(response);
-    },
-    async validateDatabaseResult({ expected, received }) {
-      const result = received as FormationDatabaseMessage | null | undefined;
-      return !!result?.strand?.strandId && result.strand.strandId === expected.strand.strandId;
     }
   };
 }

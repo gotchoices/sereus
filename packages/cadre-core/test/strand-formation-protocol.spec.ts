@@ -81,7 +81,7 @@ function baseOptions(overrides: Partial<FormationListenerOptions>): {
 } {
   let disclosed = false;
   const options: FormationListenerOptions = {
-    validateToken: async () => ({ valid: true, mode: 'responderCreates' }),
+    validateToken: async () => ({ valid: true }),
     validateDisclosure: async () => true,
     provisionStrand: async (): Promise<ResponderProvisionOutcome> => ({
       approved: true,
@@ -101,7 +101,7 @@ function baseOptions(overrides: Partial<FormationListenerOptions>): {
 describe('FormationListener disclosure timing (no responder cadre on rejection)', () => {
   it('rejects an invalid token without disclosing responder identity/cadre', async () => {
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: false, mode: 'responderCreates' })
+      validateToken: async () => ({ valid: false })
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
