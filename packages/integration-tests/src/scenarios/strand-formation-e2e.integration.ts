@@ -11,7 +11,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
@@ -24,9 +23,9 @@ import {
 	type FormationUsageRecorder,
 	type StrandProvisioner,
 } from '@serfab/cadre-core';
-import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation } from '@serfab/cadre-core';
-import { TestCadreNetwork, waitUntil } from '../harness/index.js';
+import { TestCadreNetwork, signMessageEd25519, waitUntil } from '../harness/index.js';
 import type { TestParty } from '../harness/types.js';
 
 // ── Mock implementations ────────────────────────────────────────────────────
@@ -762,11 +761,13 @@ describe('E2E Strand Formation', () => {
 			await network.shutdown();
 		});
 
-		/** ed25519-sign raw message bytes with a party's authority key (cf. insert* signers). */
+		/**
+		 * Sign control-row authorization bytes with a party's authority key via the SAME
+		 * harness signer {@link TestCadreNetwork.createOpenInvitation} uses, so a bespoke
+		 * `insertFormationInvite` here is byte-identical to the harness's own invites.
+		 */
 		function authoritySigner(party: TestParty): (message: Uint8Array) => string {
-			// libp2p protobuf ed25519 private key: 32-byte seed at slice(4, 36) (cf. enrollment-e2e).
-			const rawKey = uint8ArrayToString(party.authorityPrivateKey.slice(4, 36), 'base64url');
-			return (message) => cryptoSign(message, rawKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+			return (message) => signMessageEd25519(message, party.authorityPrivateKey);
 		}
 
 		/** A responder solicitation service wired to the party's REAL DB-backed recorder. */

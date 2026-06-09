@@ -27,8 +27,12 @@ import type {
  * contents (see `buildAuthorizationMessage` in cadre-core): the signer receives the raw
  * message bytes and signs them DIRECTLY — no SHA-256 pre-hash and no re-encode, since
  * ed25519 hashes internally and the bytes are already canonical.
+ *
+ * Exported so scenarios that insert their own authority-signed control rows
+ * (e.g. bespoke `FormationInvite`s) sign through the SAME proven path the harness
+ * uses for {@link TestCadreNetwork.createOpenInvitation}, rather than re-deriving it.
  */
-function signMessageEd25519(message: Uint8Array, privateKey: Uint8Array): string {
+export function signMessageEd25519(message: Uint8Array, privateKey: Uint8Array): string {
   // Ed25519 private key from libp2p is in protobuf format, extract the raw 32-byte seed.
   // The protobuf format is: type (1 byte) + length (1 byte) + key data (32 bytes) + public key...
   const rawPrivateKey = privateKey.slice(4, 36); // Skip protobuf header
