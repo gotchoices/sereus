@@ -133,10 +133,15 @@ export class StrandWakeService {
   /** Register the wake protocol handler on the control node. */
   initialize(node: Libp2p): void {
     this.node = node;
+    // `runOnLimitedConnection: true` is REQUIRED for the relay path: a NAT'd
+    // receiver is reached over a circuit-relay connection, which libp2p marks
+    // "limited" (the relay caps its data/duration). Without this the receiver
+    // would refuse the inbound wake stream on exactly the connection the
+    // protocol is designed to use (see the relay note on `dialWake`).
     void node.handle(WAKE_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
       await this.handleStream(rawStream as LibP2PStream, remotePeerId);
-    });
+    }, { runOnLimitedConnection: true });
     log('StrandWakeService registered handler: %s', WAKE_PROTOCOL);
   }
 
@@ -262,7 +267,12 @@ async function sendWake(
   protocolId: string,
   request: WakeRequest
 ): Promise<WakeAck> {
-  const rawStream = await node.dialProtocol(addr, protocolId);
+  // `runOnLimitedConnection: true`: the target may be reachable only over a
+  // circuit-relay connection (the signaling-first addr), which libp2p marks
+  // "limited". The wake exchange is a single tiny request→ack well within the
+  // relay's data/duration cap, so opening it on the limited connection is safe
+  // and is the whole point of dialing the relay address.
+  const rawStream = await node.dialProtocol(addr, protocolId, { runOnLimitedConnection: true });
   const stream = rawStream as unknown as LibP2PStream;
   try {
     writeFrame(stream, request);
