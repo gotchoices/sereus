@@ -47,6 +47,25 @@ async function bootAuthorityNode(): Promise<BootedNode> {
   return { node, privateKeyB64, publicKeyB64, peerId: node.peerId!.toString() };
 }
 
+/**
+ * Boot a started node that can self-sign (has its privateKey) but holds NO authority
+ * service — i.e. a phone-shaped peer. It can self-update an existing row but cannot
+ * authority-insert its first one.
+ */
+async function bootNonAuthorityNode(): Promise<CadreNode> {
+  const libp2pKey: PrivateKey = await generateKeyPair('Ed25519');
+  const node = new CadreNode({
+    controlNetwork: {
+      partyId: 'device-token-na-' + Math.random().toString(36).slice(2),
+      bootstrapNodes: [],
+    },
+    profile: 'transaction',
+    privateKey: libp2pKey,
+  });
+  await node.start();
+  return node;
+}
+
 describe('device-token registry (real control DB)', () => {
   let booted: BootedNode;
 
@@ -187,6 +206,13 @@ describe('device-token registry (real control DB)', () => {
     expect(await node.resolveDeviceToken(strangerPeerId)).toBeNull();
   }, 60_000);
 
+  it('resolves to null for a member that has a CadrePeer row but no DeviceToken row', async () => {
+    // The booted node is a member (registerSelf ran in boot) but has not published
+    // a token yet — the membership/binding gates pass, the missing-row gate trips.
+    const { node, peerId } = booted;
+    expect(await node.resolveDeviceToken(peerId)).toBeNull();
+  }, 60_000);
+
   it('honors an explicit freshness ceiling (stale → null)', async () => {
     const { node, peerId } = booted;
     await node.registerDeviceToken('fcm', 'fresh');
@@ -208,5 +234,17 @@ describe('device-token registry (real control DB)', () => {
 
     // Clearing again is a no-op (no row).
     await node.clearDeviceToken();
+  }, 60_000);
+
+  it('throws when a non-authority node tries to self-insert its first token (no row, no authority)', async () => {
+    // A phone-shaped peer: it can self-sign, but with no pre-existing row and no
+    // authority service it cannot satisfy DeviceToken.AuthorizedInsert. The contract
+    // is an explicit throw directing an authority to seed the row first.
+    const node = await bootNonAuthorityNode();
+    try {
+      await expect(node.registerDeviceToken('fcm', 'phone-token')).rejects.toThrow(/authority/i);
+    } finally {
+      await node.stop();
+    }
   }, 60_000);
 });
