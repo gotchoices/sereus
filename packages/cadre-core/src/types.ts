@@ -3,6 +3,7 @@ import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
+import type { KeyStore, KeyId } from './key-store.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -208,8 +209,30 @@ export interface ControlNetworkConfig {
  * Main configuration for a CadreNode
  */
 export interface CadreNodeConfig {
-  /** If provided, use this keypair for the node identity */
+  /**
+   * If provided, use this keypair for the node identity (direct injection).
+   * Mutually exclusive with {@link keyStore} — supplying both is a configuration
+   * error (fail closed) thrown by `start()` before any network bring-up.
+   */
   privateKey?: PrivateKey;
+
+  /**
+   * Pluggable secure store for node key material. When set, the node loads its
+   * identity from `keyStore` under {@link identityKeyId}, generating + persisting
+   * a fresh Ed25519 key on first run (protobuf bytes are the canonical stored
+   * form). Mutually exclusive with {@link privateKey}. Absent ⇒ legacy behavior
+   * (use `privateKey`, else libp2p generates an ephemeral key).
+   *
+   * In the single-key reference model the authority signing key is *derived from*
+   * the node identity (see {@link CadreNode.getIdentityAuthorityKey}), so
+   * protecting the identity in a secure enclave protects the authority key too.
+   * A future separate-authority slot (`authorityKeyId`) is anticipated but not
+   * built here.
+   */
+  keyStore?: KeyStore;
+
+  /** Slot id for the node identity in {@link keyStore}. Default: `'cadre/identity'`. */
+  identityKeyId?: KeyId;
 
   /** Control network connection settings */
   controlNetwork: ControlNetworkConfig;

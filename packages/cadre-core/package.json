@@ -19,6 +19,10 @@
       },
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./key-store-file": {
+      "types": "./dist/key-store-file.d.ts",
+      "import": "./dist/key-store-file.js"
     }
   },
   "repository": {

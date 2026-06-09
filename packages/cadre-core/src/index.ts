@@ -13,6 +13,19 @@ export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig,
 // Authority key bridge (libp2p Ed25519 -> base64url authority keypair)
 export { authorityKeyFromLibp2p, authorityPublicKeyFromPrivate, type AuthorityKeyPair } from './authority-key.js';
 
+// Pluggable key store (backend-agnostic identity/authority key material seam).
+// Dependency-free: the interface, error, default slot id, and in-memory backend
+// are safe in every (RN/browser/Node) entry graph. The Node FileKeyStore is a
+// separate subpath module ('@serfab/cadre-core/key-store-file') so its node:fs
+// import never lands here.
+export {
+  InMemoryKeyStore,
+  KeyStoreAccessError,
+  DEFAULT_IDENTITY_KEY_ID,
+  type KeyStore,
+  type KeyId
+} from './key-store.js';
+
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
 

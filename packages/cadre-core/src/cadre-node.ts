@@ -1,6 +1,7 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import type { Libp2p, PeerId } from '@libp2p/interface';
+import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
@@ -32,7 +33,8 @@ import type {
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
-import { authorityKeyFromLibp2p } from './authority-key.js';
+import { authorityKeyFromLibp2p, type AuthorityKeyPair } from './authority-key.js';
+import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
   signPeerRecord,
@@ -85,6 +87,15 @@ type EventHandler<T> = (data: T) => void;
  */
 export class CadreNode implements SAppIdLookup {
   private readonly config: CadreNodeConfig;
+  /**
+   * The resolved node identity key, set once by {@link resolveIdentityKey}
+   * during {@link start} (from `config.keyStore`, else `config.privateKey`).
+   * Left undefined when neither is configured — libp2p then generates an
+   * ephemeral key internally and there is no exposed authority key. Every
+   * identity-dependent path (control node creation, self-record signing, strand
+   * launch) reads this resolved field, never `config.privateKey` directly.
+   */
+  private identityKey: PrivateKey | undefined;
   private controlNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
   private strandWatcher: StrandWatcher | null = null;
@@ -269,6 +280,11 @@ export class CadreNode implements SAppIdLookup {
     try {
       const tTotal = performance.now();
 
+      // Resolve the node identity (keyStore | privateKey | ephemeral) BEFORE any
+      // libp2p/network bring-up, so a misconfiguration or an access-denied secure
+      // store fails closed before a node is created.
+      await this.resolveIdentityKey();
+
       // Create the control network libp2p node
       let t0 = performance.now();
       this.controlNode = await this.createControlNode();
@@ -412,8 +428,64 @@ export class CadreNode implements SAppIdLookup {
     });
   }
 
+  /**
+   * Resolve the node identity into {@link identityKey} exactly once, fail-closed,
+   * before any network bring-up. Resolution order:
+   *
+   * 1. Both `keyStore` and `privateKey` set ⇒ configuration error (throws).
+   * 2. `keyStore` set ⇒ load protobuf bytes from `identityKeyId` (default
+   *    {@link DEFAULT_IDENTITY_KEY_ID}). Found ⇒ deserialize; empty ⇒ generate a
+   *    fresh Ed25519 key, persist it, and use it. A rejected `get` (access denied
+   *    / backend failure) PROPAGATES — we never generate a new key on a read
+   *    error, which would silently orphan the real identity.
+   * 3. `privateKey` set ⇒ use it directly.
+   * 4. Neither ⇒ leave undefined; libp2p generates an ephemeral key.
+   *
+   * Idempotent: a second call (or a stop()→start() cycle) reuses the already
+   * resolved key rather than regenerating or re-persisting.
+   */
+  private async resolveIdentityKey(): Promise<void> {
+    if (this.identityKey) {
+      return;
+    }
+    const { keyStore, privateKey, identityKeyId } = this.config;
+
+    if (keyStore && privateKey) {
+      throw new Error(
+        'CadreNodeConfig: `keyStore` and `privateKey` are mutually exclusive — ' +
+        'configure at most one source for the node identity'
+      );
+    }
+
+    if (keyStore) {
+      const keyId = identityKeyId ?? DEFAULT_IDENTITY_KEY_ID;
+      // A rejection here (e.g. KeyStoreAccessError) must propagate — do NOT fall
+      // through to generation, which would orphan an existing but unreadable key.
+      const bytes = await keyStore.get(keyId);
+      if (bytes) {
+        // Corrupt/garbage bytes throw here; surface loudly rather than
+        // regenerating (which would orphan the real identity).
+        this.identityKey = privateKeyFromProtobuf(bytes);
+        log('Identity key loaded from key store (slot present)');
+        return;
+      }
+      const generated = await generateKeyPair('Ed25519');
+      await keyStore.set(keyId, privateKeyToProtobuf(generated));
+      this.identityKey = generated;
+      log('Identity key generated and persisted to key store (first run)');
+      return;
+    }
+
+    if (privateKey) {
+      this.identityKey = privateKey;
+      return;
+    }
+    // Neither configured: libp2p generates an ephemeral key internally.
+  }
+
   private async createControlNode(): Promise<Libp2p> {
-    const { controlNetwork, network, storage, profile, privateKey } = this.config;
+    const { controlNetwork, network, storage, profile } = this.config;
+    const identityKey = this.identityKey;
 
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes (better connectivity/uptime)
@@ -437,7 +509,7 @@ export class CadreNode implements SAppIdLookup {
       clusterSize: 3,
       clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
       arachnode: { enableRingZulu: this.config.profile === 'storage' },
-      ...(privateKey && { privateKey }),
+      ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
       ...(network?.listenAddrs && { listenAddrs: network.listenAddrs })
     };
@@ -487,7 +559,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * - Builds a `PeerAddressRecord` from the node's current dialable addrs
    *   (signaling/`p2p-circuit` first), signed with the ed25519 key behind its
-   *   PeerId (sourced from `config.privateKey`).
+   *   PeerId (the resolved node identity from `keyStore`/`config.privateKey`).
    * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
    * - If not, and the node is its own authority: an authority-signed INSERT that
    *   also carries the self-signature.
@@ -526,7 +598,7 @@ export class CadreNode implements SAppIdLookup {
 
     const signingKey = this.getSelfSigningKey();
     if (!signingKey) {
-      log('registerSelf: no self-signing key available (config.privateKey unset or not matching peerId); skipping');
+      log('registerSelf: no self-signing key available (node identity unavailable or not matching peerId); skipping');
       return 'skipped';
     }
 
@@ -559,25 +631,55 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The ed25519 keypair (base64url) the node signs its own record with — the key
-   * behind its libp2p PeerId. Sourced from `config.privateKey`; returns null when
-   * absent or (defensively) when it does not match the control node's PeerId, in
-   * which case self-publish is skipped rather than producing an unresolvable row.
+   * behind its libp2p PeerId. Sourced from the resolved {@link identityKey}
+   * (which a `keyStore` or `config.privateKey` supplies); returns null when
+   * absent (ephemeral identity) or (defensively) when it does not match the
+   * control node's PeerId, in which case self-publish is skipped rather than
+   * producing an unresolvable row.
    */
   private getSelfSigningKey(): { privateKeyB64: string; publicKeyB64: string } | null {
     const peerId = this.controlNode?.peerId.toString();
-    if (!peerId || !this.config.privateKey) {
+    if (!peerId || !this.identityKey) {
       return null;
     }
     try {
-      const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(this.config.privateKey);
+      const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(this.identityKey);
       if (publicKeyB64 === ed25519PublicKeyB64FromPeerId(peerId)) {
         return { privateKeyB64, publicKeyB64 };
       }
-      log('getSelfSigningKey: config.privateKey does not match control node peerId; cannot self-sign');
+      log('getSelfSigningKey: resolved identity key does not match control node peerId; cannot self-sign');
     } catch (error) {
-      log('getSelfSigningKey: failed to derive ed25519 key from config.privateKey: %o', error);
+      // Logs the error shape only; authorityKeyFromLibp2p never embeds key material.
+      log('getSelfSigningKey: failed to derive ed25519 key from identity key: %o', error);
     }
     return null;
+  }
+
+  /**
+   * The authority keypair (base64url Ed25519) derived from this node's resolved
+   * identity key. In the single-key reference model the authority signing key is
+   * *derived from* the node identity (see {@link authorityKeyFromLibp2p}), so the
+   * same key material protected in a secure enclave backs both.
+   *
+   * Exposed so the hosting app retains control of authority genesis: cadre-core
+   * resolves + protects the identity, then the app sources this pair to drive
+   * `ensureAuthorityKey(pub)` + `initializeSeedBootstrap(priv)` itself — cadre-core
+   * never silently runs genesis. A future separate-authority slot would return a
+   * distinct key here instead of the identity-derived one.
+   *
+   * @returns The base64url seed/public-key authority pair.
+   * @throws If called before {@link start} has resolved the identity, or when the
+   *   node runs on an ephemeral libp2p key (no `keyStore`/`privateKey` configured),
+   *   since that key is internal to libp2p and not exposed.
+   */
+  getIdentityAuthorityKey(): AuthorityKeyPair {
+    if (!this.identityKey) {
+      throw new Error(
+        'getIdentityAuthorityKey: node identity not resolved — call start() first, and ' +
+        'configure `keyStore` or `privateKey` (an ephemeral libp2p identity exposes no authority key)'
+      );
+    }
+    return authorityKeyFromLibp2p(this.identityKey);
   }
 
   /**
@@ -760,7 +862,7 @@ export class CadreNode implements SAppIdLookup {
     if (!signingKey) {
       throw new Error(
         'Cannot register device token: no self-signing key available ' +
-        '(config.privateKey unset or not matching the node PeerId).'
+        '(node identity unavailable or not matching the node PeerId).'
       );
     }
 
@@ -1295,7 +1397,7 @@ export class CadreNode implements SAppIdLookup {
     if (!signingKey) {
       throw new Error(
         `Cannot publish strand ${strandId}: no authority signing key available ` +
-        '(config.privateKey is unset or does not match the node PeerId). Run authority ' +
+        '(node identity is unavailable or does not match the node PeerId). Run authority ' +
         'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
       );
     }
@@ -1342,7 +1444,7 @@ export class CadreNode implements SAppIdLookup {
     if (!signingKey) {
       throw new Error(
         `Cannot publish formation invite ${token}: no authority signing key available ` +
-        '(config.privateKey is unset or does not match the node PeerId). Run authority ' +
+        '(node identity is unavailable or does not match the node PeerId). Run authority ' +
         'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
       );
     }
@@ -1373,7 +1475,7 @@ export class CadreNode implements SAppIdLookup {
       network: this.config.network,
       profile: this.config.profile,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
-      privateKey: this.config.privateKey,
+      privateKey: this.identityKey,
       bootstrapNodes: seed.bootstrapNodes,
       mode,
       requireSignedSchemas: this.config.requireSignedSchemas

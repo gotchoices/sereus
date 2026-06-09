@@ -643,8 +643,10 @@ graph TD
 
 ```typescript
 interface CadreNodeConfig {
-  // Node identity
-  privateKey?: Uint8Array;        // If provided, use this keypair
+  // Node identity (see "Node Key Material & the KeyStore Seam" below).
+  privateKey?: PrivateKey;        // Direct keypair injection (legacy path)
+  keyStore?: KeyStore;            // Pluggable secure store; mutually exclusive with privateKey
+  identityKeyId?: string;         // Slot id in keyStore (default 'cadre/identity')
 
   // Control network connection
   controlNetwork: {
@@ -685,6 +687,64 @@ interface CadreNodeConfig {
   };
 }
 ```
+
+### Node Key Material & the KeyStore Seam
+
+A cadre node holds two sensitive keys at rest: the libp2p **peer/node identity**
+key, and the **authority** signing key. In the single-key reference model the
+authority key is *derived from* the identity key (`authorityKeyFromLibp2p` —
+libp2p's 64-byte Ed25519 raw key carries the 32-byte seed the crypto plugin
+treats as the authority private key), so the node's PeerId and its authority key
+are one keypair. Protecting the identity therefore protects the authority key.
+
+`@serfab/cadre-core` stores key material behind a backend-agnostic **`KeyStore`**
+interface (`key-store.ts`), so a platform-secure backend (iOS Keychain / Android
+Keystore) can be plugged in without cadre-core taking any platform dependency.
+The canonical stored form is the libp2p **protobuf bytes** of the private key.
+
+```typescript
+interface KeyStore {
+  get(keyId: KeyId): Promise<Uint8Array | undefined>; // undefined = empty slot (NOT an error)
+  set(keyId: KeyId, keyMaterial: Uint8Array): Promise<void>;
+  delete(keyId: KeyId): Promise<void>;                // idempotent
+  list(): Promise<KeyId[]>;                            // keyIds only — never material
+}
+```
+
+Key contract points:
+
+- **`get` returns `undefined` for a missing slot** and only *throws* on
+  access-denied / backend failure (`KeyStoreAccessError`, carrying the `keyId`
+  but never material). This distinction lets the load-or-create path generate a
+  fresh key on a genuinely empty slot while refusing to clobber an existing but
+  currently-unreadable key (e.g. a cancelled biometric prompt) — avoiding silent
+  identity loss.
+- Reference backends ship for non-mobile nodes and tests: **`InMemoryKeyStore`**
+  (exported from the package root, dependency-free) and **`FileKeyStore`**
+  (one file per slot, best-effort `0o600`). `FileKeyStore` imports `node:fs` and
+  is therefore exported from the subpath `@serfab/cadre-core/key-store-file` so
+  the cross-platform default entry never pulls a Node-only edge into RN/browser
+  bundlers.
+
+**Identity resolution order** (performed once early in `CadreNode.start()`, before
+any libp2p/network bring-up, into a private resolved field):
+
+1. Both `keyStore` and `privateKey` set → configuration error (fail closed).
+2. `keyStore` set → `get(identityKeyId ?? 'cadre/identity')`:
+   - bytes present → `privateKeyFromProtobuf(bytes)` (corrupt bytes surface an
+     error rather than regenerating);
+   - empty → `generateKeyPair('Ed25519')`, persist `privateKeyToProtobuf(key)`,
+     then use it;
+   - `get` rejects → propagate (do **not** generate — that would orphan the key).
+3. `privateKey` set → use it (legacy behavior).
+4. Neither → libp2p generates an ephemeral key (legacy behavior).
+
+Authority genesis stays **app-controlled**: cadre-core resolves and protects the
+identity, then exposes the derived authority pair via
+`CadreNode.getIdentityAuthorityKey()` (available after `start()`); the hosting app
+drives `ensureAuthorityKey(pub)` + `initializeSeedBootstrap(priv)` itself rather
+than cadre-core silently running genesis. A future separate-authority slot
+(`authorityKeyId`) is anticipated but not yet built.
 
 ### Strand Instance State
 
@@ -876,6 +936,7 @@ Maestro Studio, with Appium as the documented fallback.
 - **StrandInstanceManager**: Per-strand libp2p node creation with isolated storage paths, sApp schema application, and ed25519 schema signature verification on strand start
 - **Schema Verification**: `signSchema()`, `verifySchema()`, `assertSchemaSignature()` — ed25519 signature verification of sApp schemas gating strand join. **Enforced by default (fail-closed)**: the `requireSignedSchemas` node policy defaults to `true`, so an unsigned schema is rejected (`'missing signature'`, distinct from `'invalid signature'`) before any libp2p node or schema DDL is brought up. The policy may be relaxed only by explicit opt-out (`requireSignedSchemas: false`) for dev/test with unsigned demo schemas (e.g. `reference-app-rn`).
 - **EnrollmentService**: `createCadrePeer()` for Ed25519 keypair generation
+- **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived authority pair via `getIdentityAuthorityKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The platform-secure (`expo-secure-store`) mobile backend lands in a dependent ticket.
 - **Seed Bootstrap API**: `createSeed()`, `applySeed()`, `deliverSeed()`, `encodeSeed()`/`decodeSeed()`, helper functions (`addDrone`, `createInvite`, `acceptPhone`, `addPhoneWithRelay`)
 - **Member Registration API**: `registerMember()`, `validateMemberRegistration()` with pluggable verifier/registry interfaces
 - **Strand Solicitation API**: `createOpenInvitation()`, `formStrand()`, `validateStrandFormation()` with full `strand-proto` SessionManager integration via `StrandFormationManager`
