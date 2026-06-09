@@ -62,6 +62,7 @@ import {
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
+import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
   summarizeConnectionPaths,
@@ -93,6 +94,13 @@ export class CadreNode implements SAppIdLookup {
   private seedBootstrapService: SeedBootstrapService | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
   private strandWakeService: StrandWakeService | null = null;
+  /**
+   * Server-side push-wake fan-out. Constructed by {@link start} only when
+   * `config.push` (FCM/APNs credentials) is present — without it the node behaves
+   * exactly as before (no notifier, no fan-out). Owns who/when to wake
+   * hibernating mobile peers on strand activity.
+   */
+  private pushFanoutService: PushFanoutService | null = null;
   /** Backing field for the {@link running} / {@link isRunning} getters. */
   private _running = false;
   /**
@@ -316,6 +324,28 @@ export class CadreNode implements SAppIdLookup {
         wake: (strandId) => this.wakeStrand(strandId),
       });
       this.strandWakeService.initialize(this.controlNode);
+
+      // Server-side push-wake fan-out: only when push credentials are configured.
+      // The PushNotifier reaches for node:http2/node:crypto, so it is loaded via a
+      // guarded DYNAMIC import — a cross-platform (RN/browser) node that never sets
+      // config.push never pulls those modules into its static graph. The fan-out
+      // service itself is import-clean (PushNotifier type only) and statically imported.
+      if (this.config.push) {
+        const { createPushNotifier } = await import('./push-notifier.js');
+        const notifier = createPushNotifier(this.config.push);
+        this.pushFanoutService = new PushFanoutService({
+          listMembers: () => this.listMembers(),
+          getStrand: (strandId) => this.strandManager.getInstance(strandId),
+          selfPeerId: () => this.controlNode?.peerId.toString(),
+          pushWake: (peerId, strandId, reason) => this.pushWake(peerId, strandId, reason),
+          resolveDeviceToken: (peerId) => this.resolveDeviceToken(peerId),
+          expireDeviceToken: (peerId) => this.expireDeviceToken(peerId),
+          notifier,
+          cooldownMs: this.config.push.cooldownMs,
+          debounceMs: this.config.push.debounceMs,
+        });
+        log('Push-wake fan-out enabled (FCM=%s, APNs=%s)', !!this.config.push.fcm, !!this.config.push.apns);
+      }
 
       this._running = true;
       this.emit('control:connected', undefined);
@@ -853,6 +883,35 @@ export class CadreNode implements SAppIdLookup {
     log('clearDeviceToken: deleted DeviceToken for %s', peerId);
   }
 
+  /**
+   * Expire ANOTHER peer's stale `DeviceToken` after a platform reported it
+   * unregistered during a push-wake fan-out. Unlike {@link clearDeviceToken}
+   * (self-only — it hardcodes the local peerId), this takes an arbitrary peerId.
+   *
+   * - When this node holds an authority seed service, it deletes the row
+   *   (`deleteDeviceToken` is authority-gated and accepts any peerId), so the peer
+   *   is not retried until it re-registers.
+   * - When this node is NOT an authority it cannot delete the row, so it only logs
+   *   that a re-registration is needed. The fan-out's own in-memory dead-token set
+   *   is what actually stops re-pushing to the dead token this process — see
+   *   {@link PushFanoutService}. That set is acceptably lossy across restarts (a
+   *   restart re-learns staleness on the next failed send).
+   *
+   * Best-effort: never throws to the (best-effort) fan-out caller.
+   */
+  async expireDeviceToken(peerId: string): Promise<void> {
+    if (this.seedBootstrapService) {
+      try {
+        await this.seedBootstrapService.deleteDeviceToken(peerId);
+        log('expireDeviceToken: authority-deleted stale DeviceToken for %s', peerId);
+      } catch (error) {
+        log('expireDeviceToken: authority delete for %s failed: %o', peerId, error);
+      }
+      return;
+    }
+    log('expireDeviceToken: %s token is stale but this node is not an authority; re-registration required', peerId);
+  }
+
   private async handleStrandAdded(strand: StrandRow): Promise<void> {
     log('Handling strand added from control network: %s', strand.Id);
 
@@ -925,6 +984,12 @@ export class CadreNode implements SAppIdLookup {
     if (this.strandWakeService) {
       await this.strandWakeService.shutdown();
       this.strandWakeService = null;
+    }
+
+    // Tear down the push-wake fan-out (releases the notifier's APNs HTTP/2 session).
+    if (this.pushFanoutService) {
+      await this.pushFanoutService.close().catch((err) => log('Push fan-out close failed: %o', err));
+      this.pushFanoutService = null;
     }
 
     // Unregister strand solicitation service
@@ -1350,13 +1415,35 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Record activity on a strand (resets hibernation timer)
+   * Record activity on a strand (resets hibernation timer).
+   *
+   * Also drives the server push-wake fan-out: whatever already drives activity on
+   * this node's strand (its relay/app layer doing pull-on-read) additionally wakes
+   * hibernating mobile peers — the same imperative seam local-wake uses, with no
+   * new contract. No-op for the fan-out when push is not configured.
    */
   recordStrandActivity(strandId: string): void {
     const instance = this.strandManager.getInstance(strandId);
     if (instance) {
       this.hibernationManager.recordActivity(instance);
     }
+    this.notifyStrandActivity(strandId);
+  }
+
+  /**
+   * Explicit fan-out trigger: an always-on host/relay/sApp calls this when it
+   * observes activity for a strand this node participates in, to wake hibernating
+   * mobile members over a direct control-network dial (falling back to FCM/APNs
+   * for suspended phones). This is the supported, honest v1 trigger — Optimystic
+   * exposes no passive repo-level "new transaction" hook to drive it automatically
+   * (see the deferred passive-detector follow-up). No-op when push is not
+   * configured; best-effort (never throws — the check-in wake is the backstop).
+   *
+   * @param strandId - the strand that saw activity.
+   * @param reason - free-form cause hint carried in the wake (default `activity`).
+   */
+  notifyStrandActivity(strandId: string, reason?: string): void {
+    void this.pushFanoutService?.notify(strandId, reason);
   }
 
   /**

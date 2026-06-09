@@ -940,6 +940,66 @@ describe('CadreNode', () => {
     });
   });
 
+  describe('push-wake fan-out wiring', () => {
+    // A minimal fake PushFanoutService capturing notify/close, injected without
+    // booting the node (the wiring under test is pure delegation).
+    function fakeFanout() {
+      const notifyCalls: Array<{ strandId: string; reason?: string }> = [];
+      const state = { closed: 0 };
+      const service = {
+        notify: async (strandId: string, reason?: string) => { notifyCalls.push({ strandId, reason }); },
+        close: async () => { state.closed++; }
+      };
+      return { service, notifyCalls, get closed() { return state.closed; } };
+    }
+
+    it('recordStrandActivity drives the fan-out notify for the strand', () => {
+      const node = new CadreNode(createConfig());
+      const fanout = fakeFanout();
+      (node as unknown as { pushFanoutService: unknown }).pushFanoutService = fanout.service;
+
+      node.recordStrandActivity('s-1');
+
+      expect(fanout.notifyCalls).toEqual([{ strandId: 's-1', reason: undefined }]);
+    });
+
+    it('notifyStrandActivity delegates to the fan-out with the reason', () => {
+      const node = new CadreNode(createConfig());
+      const fanout = fakeFanout();
+      (node as unknown as { pushFanoutService: unknown }).pushFanoutService = fanout.service;
+
+      node.notifyStrandActivity('s-2', 'manual');
+
+      expect(fanout.notifyCalls).toEqual([{ strandId: 's-2', reason: 'manual' }]);
+    });
+
+    it('with no push config: notifyStrandActivity is a no-op and recordStrandActivity still works', () => {
+      // No config.push → no fan-out service constructed; both calls must be safe no-ops.
+      const node = new CadreNode(createConfig());
+      expect((node as unknown as { pushFanoutService: unknown }).pushFanoutService).toBeNull();
+      expect(() => node.notifyStrandActivity('s-3')).not.toThrow();
+      expect(() => node.recordStrandActivity('s-3')).not.toThrow();
+    });
+
+    it('expireDeviceToken authority-deletes the row when an authority service is present', async () => {
+      const node = new CadreNode(createConfig());
+      const deleted: string[] = [];
+      (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+        deleteDeviceToken: async (peerId: string) => { deleted.push(peerId); }
+      };
+
+      await node.expireDeviceToken('peer-x');
+
+      expect(deleted).toEqual(['peer-x']);
+    });
+
+    it('expireDeviceToken is a best-effort no-op (re-registration log) for a non-authority node', async () => {
+      const node = new CadreNode(createConfig());
+      // No seedBootstrapService → cannot delete; must resolve without throwing.
+      await expect(node.expireDeviceToken('peer-x')).resolves.toBeUndefined();
+    });
+  });
+
   describe('enrollment service', () => {
     it('should provide access to enrollment service', () => {
       const config = createConfig();

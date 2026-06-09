@@ -693,6 +693,19 @@ export interface PushCredentials {
   fcm?: FcmCredentials;
   /** APNs (Apple) auth-key credentials. */
   apns?: ApnsCredentials;
+  /**
+   * Per-`(peer, strand)` minimum gap between push-wakes the server fan-out emits —
+   * the anti-spam cooldown a chatty strand needs. Default
+   * {@link DEFAULT_PUSH_COOLDOWN_MS} (5 min). In-memory, acceptably lossy across
+   * restarts (`serviceWake` is idempotent, so a duplicate wake is harmless).
+   */
+  cooldownMs?: number;
+  /**
+   * Per-strand burst-coalescing window for the fan-out: a second activity trigger
+   * within this window is dropped (one wake is enough). Default
+   * {@link DEFAULT_PUSH_DEBOUNCE_MS} (10 s).
+   */
+  debounceMs?: number;
 }
 
 /** Google service-account fields needed for FCM HTTP v1 OAuth2. */

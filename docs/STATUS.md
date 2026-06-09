@@ -216,8 +216,8 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
   - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
-  - Out of scope here: the automatic trigger policy (a server fanning wakes on detected activity, owned by
-    `cadre-server-push-fanout`). Mobile FCM/APNs **receive** delivery has since shipped (see below).
+  - The automatic trigger policy (a server fanning wakes on activity) has since shipped as `PushFanoutService`
+    (`push-fanout.ts` — see below), as has Mobile FCM/APNs **receive** delivery.
 - [x] Device-token registry (the resolve primitive FCM/APNs delivery needs)
   - `DeviceToken` control-network table (in `control-schema.ts` + `schemas/control.qsql`), modeled on
     `CadrePeer`: self-published, monotonic `UpdatedAt`, self-`Sig` over `(PeerId|Platform|Token|UpdatedAt)`
@@ -227,9 +227,8 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     `isPushPlatform`) mirrors `peer-record.ts`. `CadreNode.registerDeviceToken(platform, token)` /
     `resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, `null` on any failure) /
     `clearDeviceToken()` reuse the `registerSelf` / `resolvePeerAddrs` write+gate paths.
-  - **Downstream of this registry**: the platform push **sender** has since shipped (`PushNotifier`,
-    cadre-core — see below); its automatic fan-out/trigger (`cadre-server-push-fanout`) and the RN
-    registration call remain pending. A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
+  - **Downstream of this registry**: the platform push **sender** (`PushNotifier`) and the automatic
+    fan-out/trigger (`PushFanoutService`) have both since shipped (see below). A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
     `CadrePeer`, the initial row is authority-gated, so the phone→server registration handshake (downstream
     "RN registration" ticket) must seed it before the phone can self-refresh.
 - [x] Imperative background-lifecycle primitives (platform-agnostic; for a mobile `BackgroundRunner`)
@@ -261,7 +260,7 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     process is **not** yet wired (start options aren't persisted) → degrades to a `no-node` no-op. Human/infra
     prerequisites (`google-services.json`, paid APNs creds + push capability) and on-device validation are
     out-of-agent; steps recorded in `tickets/review/3-mobile-push-wake-receive.md`.
-- [~] Platform push **delivery** sender (`PushNotifier`, cadre-core) — delivery shipped; fan-out trigger pending
+- [x] Platform push **delivery** sender (`PushNotifier`, cadre-core)
   - `push-notifier.ts`: `createPushNotifier(creds, deps?)` returns a credential- and transport-injected
     router dispatching by `PushMessage.platform` to FCM/APNs, constructing only the implementations whose
     credentials are present. `send` returns a `PushSendResult` (`{ ok:true }` | `{ ok:false, unregistered, error }`)
@@ -280,9 +279,30 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     `cadre-core` entry re-exports only their *types*.
   - 22 unit tests (`push-notifier.spec.ts`, fake fetch/http2 transports) cover request shape, every documented
     response-code mapping, access-token cache + 401 re-mint, provider-JWT refresh, GOAWAY re-establish, router
-    dispatch + missing-credentials no-op, and no-secret-in-logs. **Pending (downstream
-    `cadre-server-push-fanout`)**: *who*/*when* to wake, constructing the notifier inside `CadreNode.start`,
-    expiring `unregistered` rows, and real-network / on-device validation (no network exercised in unit tests).
+    dispatch + missing-credentials no-op, and no-secret-in-logs. *Who*/*when* to wake, constructing the notifier
+    inside `CadreNode.start`, and expiring `unregistered` rows are now owned by the fan-out below; **real-network /
+    on-device validation remains out-of-agent** (no network is exercised in unit tests).
+- [x] Server push-wake **fan-out + trigger policy** (`PushFanoutService`, `push-fanout.ts`)
+  - `CadreNode.start` constructs the service only when `config.push` is set — a `PushNotifier` built from those
+    credentials via a **guarded dynamic import** of `push-notifier.js`, so a cross-platform node that never sets
+    `config.push` keeps `node:http2`/`node:crypto` out of its graph. Without `config.push` the node is unchanged.
+  - **v1 trigger is explicit** (no passive Optimystic detector — `IRepo` has no commit/block-received hook, so
+    it is **deferred** to backlog as an enhancement, not a correctness gap): `CadreNode.notifyStrandActivity(strandId, reason?)`
+    is the imperative seam, and `recordStrandActivity` additionally drives it (same seam local-wake uses).
+  - `notify(strandId)` gates on participation (`getStrand`), debounces per strand (`debounceMs`, default 10 s) +
+    coalesces concurrent triggers, enumerates `listMembers()` minus self, skips peers within the per-`(peer,strand)`
+    cooldown (`cooldownMs`, default 5 min), then wakes **direct-first**: a resolved `WakeAck` (even `accepted:false`)
+    = reached ⇒ no platform push (no double-wake); only a dial/transport **rejection** falls back to
+    `resolveDeviceToken` → `notifier.send`. An `unregistered` send marks the token dead (skips next resolve→send)
+    and calls `CadreNode.expireDeviceToken(peerId)` — authority deletes the row, non-authority logs re-registration.
+  - **Honest caveats**: cooldown/debounce/dead-token state is **in-memory, acceptably lossy** across restarts
+    (`serviceWake` is idempotent ⇒ a duplicate is harmless); **no cross-strand coalescing** in v1 (each wake names
+    its own `strandId`); **passive detection deferred** (above). Never throws to the trigger — the check-in wake
+    is the backstop.
+  - 18 unit tests (`push-fanout.spec.ts` fakes the node primitives + notifier; `cadre-node.spec.ts` covers the
+    `recordStrandActivity → notify` binding, the no-push-config no-op, and `expireDeviceToken` authority-vs-not).
+    **Not exercised**: the RN-bundle build (Metro lacks a `node:http2` shim — see the ticket review handoff) and
+    real-network fan-out.
 
 ## Testing / CI
 

@@ -120,11 +120,23 @@ export { STRAND_WAKE_TYPE, type StrandWakePayload } from './strand-wake-payload.
 
 // Platform push delivery — server-only PushNotifier (FCM HTTP v1 / APNs HTTP/2).
 // TYPES ONLY here: the implementations import node:http2/node:crypto and are
-// constructed solely by the in-package fan-out inside a Node CadreNode. A
-// type-only re-export is erased at emit, so the cross-platform (RN/browser) entry
-// graph never pulls these modules in. `createPushNotifier` is imported directly
-// from './push-notifier.js' by the fan-out, never re-exported as a runtime value.
+// constructed solely by `CadreNode.start` (via a guarded dynamic import) when
+// push credentials are configured. A type-only re-export is erased at emit, so the
+// cross-platform (RN/browser) entry graph never pulls these modules in.
+// `createPushNotifier` is imported directly from './push-notifier.js' only by that
+// dynamic import, never re-exported as a runtime value.
 export type { PushNotifier, PushMessage, PushSendResult } from './push-notifier.js';
+
+// Server-side push-wake trigger policy + fan-out (who/when to wake). Cross-platform
+// clean — it imports only the PushNotifier *type*, so exporting it as a runtime
+// value pulls no node:http2/node:crypto edge into the RN/browser graph.
+export {
+  PushFanoutService,
+  DEFAULT_PUSH_COOLDOWN_MS,
+  DEFAULT_PUSH_DEBOUNCE_MS,
+  type PushFanoutOptions,
+  type FanoutMember
+} from './push-fanout.js';
 
 // Seed trust policy (trust anchor for incoming seeds)
 export {

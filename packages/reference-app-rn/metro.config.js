@@ -34,6 +34,9 @@ config.resolver.nodeModulesPaths = nodeModulesPaths;
 //   os, crypto       — real shims providing subset APIs via react-native / @noble/hashes
 //   stream, buffer   — npm packages providing Node-equivalent APIs
 //   net, tls         — empty stubs (imported by transitive libp2p deps but never called at runtime)
+//   http2            — empty stub: cadre-core's server-only push-notifier (APNs HTTP/2) is reachable
+//                      via CadreNode's guarded dynamic import, but a phone never sets config.push so the
+//                      fan-out/notifier never loads — the stub only satisfies Metro's graph resolution.
 const emptyShim = path.resolve(__dirname, 'polyfills/empty.js');
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),
@@ -43,12 +46,14 @@ config.resolver.extraNodeModules = {
   'node:crypto': path.resolve(__dirname, 'polyfills/node-crypto.js'),
   'node:net': emptyShim,
   'node:tls': emptyShim,
+  'node:http2': emptyShim,
   os: path.resolve(__dirname, 'polyfills/node-os.js'),
   stream: require.resolve('readable-stream'),
   buffer: require.resolve('buffer'),
   crypto: path.resolve(__dirname, 'polyfills/node-crypto.js'),
   net: emptyShim,
   tls: emptyShim,
+  http2: emptyShim,
 };
 
 // @libp2p/crypto ships parallel `.browser.js` variants of its Node-using
