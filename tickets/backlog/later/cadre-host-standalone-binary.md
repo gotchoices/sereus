@@ -2,6 +2,7 @@
 description: Standalone single-executable cadre-host distribution — bundled Node runtime, platform installers (.msi/.pkg/.deb/.rpm), code-signing, signed-binary update path
 prereq: cadre-host-installer, cadre-host-update-flow
 files: packages/cadre-host/build/ (new), .github/workflows/cadre-host-release.yml (new)
+difficulty: hard
 ---
 
 ## Why this is separate

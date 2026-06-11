@@ -5,6 +5,7 @@ RESUME: A prior agent run on this ticket did not complete.
 Read the log to see what was done. Resume where it left off.
 If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
 <!-- /resume-note -->
+difficulty: hard
 ----
 description: Re-establish live two-party cross-cohort convergence as a runnable e2e tier for the browser reference — two parties form a closed strand via the consent/invitation flow, then a chat message written by one replicates to the other through the strand cohort.
 prereq: formationinvite-fix-curve-and-wire-consent

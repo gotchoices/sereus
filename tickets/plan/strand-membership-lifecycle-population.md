@@ -2,6 +2,7 @@
 description: Populate and enforce the strand membership/RBAC tables at runtime — Header, founding Authority/Member, invite issuance/consumption, and MemberPeer — wired into strand formation and join
 prereq: apply-strand-membership-schema
 files: schemas/strand.qsql, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/src/strand-database.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core/src/types.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts
+difficulty: hard
 ----
 
 ## Why this is separate

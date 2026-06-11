@@ -1,5 +1,6 @@
 description: clean up the dead-code backlog surfaced by knip and decide whether to promote dead-code rules from warn to error
 files: knip.ts, docs/STATUS.md, packages/cadre-provider/src/server/index.ts, packages/cadre-provider/src/service/index.ts, packages/cadre-host/src, packages/reference-app-web/src, packages/reference-app-rn
+difficulty: easy
 ----
 
 # Dead-code cleanup + optional knip dead-code gate

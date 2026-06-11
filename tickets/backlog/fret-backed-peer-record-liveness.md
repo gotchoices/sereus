@@ -2,6 +2,7 @@
 description: Optional FRET-backed liveness layer for peer-address records — store/resolve a peer's signed, freshness-stamped address record at the FRET ring neighbors of its PeerId coordinate, so a peer's current relay/signaling address is discoverable with ring-local freshness and without a control-DB round-trip. Complements the durable CadrePeer-backed resolution from peer-record-resolution-layer.
 prereq: peer-record-resolution-layer
 files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/strand-instance-manager.ts
+difficulty: hard
 ----
 
 ## Problem

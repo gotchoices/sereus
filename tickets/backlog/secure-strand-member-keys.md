@@ -1,6 +1,7 @@
 priority: 3
 description: Decide how to protect closed-strand member private keys at rest given they currently live in the replicated control DB (secure-enclave per-device storage conflicts with cadre-node fungibility)
 files: packages/cadre-core/src/strand-member-key.ts, packages/cadre-core/src/strand-solicitation.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/strand-formation-protocol.ts, schemas/control.qsql, docs/architecture.md, docs/strands.md
+difficulty: hard
 ----
 
 The mobile secure-key-storage plan listed **strand member keys** (`StrandInstance.memberPrivateKey`) as needing the same at-rest protection as peer identity keys. Investigation surfaced a genuine design tension that needs a human/architecture call before any implementation, so it is parked here rather than emitted as an implement ticket.

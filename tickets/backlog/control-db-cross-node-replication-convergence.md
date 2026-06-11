@@ -1,6 +1,7 @@
 description: Cross-node control-DB reads do not converge in practice — a `CadrePeer`/membership row written (authority-signed) on one cadre node is never observed by another node, even over a live control-network connection. Multiple parts of the design assume the `CadreControl` tables are a *replicated* store (peer-record resolution calls `CadrePeer` "replicated"; push-wake authorization relies on the receiver reading the shared control DB to know the sender is a member). Pin down whether control-DB replication is *meant* to work P2P over the control network, and if so, what is missing.
 prereq:
 files: packages/cadre-core/src/control-database.ts, packages/cadre-core/src/cadre-node.ts (registerSelf/listMembers/isMember/resolvePeerAddrs), packages/cadre-core/src/seed-bootstrap.ts, packages/integration-tests/src/harness/test-network.ts (waitForControlSync — documents the "authority-only convergence" caveat), packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts (header: "control-network cohort discovery is TODO"), packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts (works around this with local seeding)
+difficulty: hard
 ----
 
 ## Problem

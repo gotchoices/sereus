@@ -2,6 +2,7 @@
 description: Extend the relay-bypass WebRTC path to React Native so phones form direct connections instead of relaying every byte. Harder than web — @libp2p/webrtc targets browser WebRTC APIs and RN needs react-native-webrtc shimmed in. Parked until the web WebRTC path is proven.
 prereq: web-webrtc-transport-to-bypass-relay
 files: packages/reference-app-rn/src/cadre-phone.ts
+difficulty: hard
 ----
 
 ## Why backlog, not active

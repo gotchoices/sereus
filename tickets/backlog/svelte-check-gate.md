@@ -1,6 +1,7 @@
 ----
 description: wire svelte-check into a build-health gate and fix the latent error it already surfaces in cadre-host/ui events.ts:67
 files: packages/cadre-host/ui/src/lib/events.ts, packages/cadre-host/ui/package.json, packages/reference-app-web/package.json, package.json
+difficulty: easy
 ----
 
 # Add a `svelte-check` gate (and fix the latent error it catches)

@@ -2,6 +2,7 @@
 description: Investigate whether concurrent bidirectional blind appends converge in Optimystic strand sync without an intervening list read (read-driven vs push convergence)
 prereq:
 files: packages/integration-tests/src/scenarios/convergence-stress.integration.ts
+difficulty: hard
 ----
 
 ## Background

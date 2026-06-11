@@ -1,6 +1,7 @@
 description: Resolve the @optimystic/db-p2p nested-libp2p version skew that produces 22 "export not found" warnings (StrictSign/StrictNoSign/TopicValidatorResult ← @libp2p/interface, streamMessage ← protons-runtime) in strict-ESM bundlers (NS webpack). Currently suppressed via exportsPresence:'warn'.
 prereq:
 files: ../optimystic/packages/db-p2p/package.json, packages/reference-app-ns/webpack.config.js, packages/reference-app-rn/metro.config.js
+difficulty: easy
 ----
 
 ## Problem

@@ -1,5 +1,6 @@
 description: The cohort-derived strand `bootstrapNodes` seed is built from `CadrePeer.Multiaddr` rows, but those rows store each peer's CONTROL-network listen address (written by `registerSelf`), while the seed is fed into the per-strand libp2p node (`strand-<id>`, a separate instance on a different random port). Even though control and strand nodes share a peerId (same `config.privateKey`), dialing a control address reaches the remote's control libp2p instance, not its strand instance — so the seed does not actually join the strand network. Decide how strand-network addresses are published/discovered.
 files: packages/cadre-core/src/strand-cohort.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/seed-bootstrap.ts, docs/architecture.md
+difficulty: hard
 ----
 
 ## Problem

@@ -2,6 +2,7 @@
 description: Before enabling self-hosted TURN, close the SSRF gap in coturn's denied-peer-ip set (IPv4-mapped IPv6 ::ffff:0:0/96 is currently not denied) and validate the full denied-peer-ip set with the real coturn binary (turnserver -n). Dormant while TURN is off; a hard prerequisite before TURN_ENABLED=true.
 prereq: webrtc-stun-turn-infrastructure
 files: ops/docker/coturn/turnserver.conf, ops/docker/coturn/entrypoint.sh, ops/docker/coturn/README.md
+difficulty: easy
 ----
 
 ## Problem

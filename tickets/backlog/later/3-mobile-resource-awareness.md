@@ -1,6 +1,7 @@
 priority: 2
 description: Specify battery-, network-, and memory-aware behavior for cadre nodes running on mobile devices
 files: packages/cadre-core/src, packages/reference-app-rn/app
+difficulty: hard
 ----
 Mobile cadre nodes operate under resource constraints that do not apply to servers: battery budget, metered/cellular networks, limited memory. The node should observe these conditions and adapt — reducing sync frequency on low battery, preferring WiFi for bulk work, and capping the number of concurrently-active strand instances.
 

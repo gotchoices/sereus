@@ -2,6 +2,7 @@
 description: Per-path byte accounting (bytes-over-relay) needs a libp2p metrics component wired into the optimystic node base. The connection-path observability baseline surfaces `bytesOverRelay` but leaves it null until this lands, because the stock libp2p Connection carries no byte counter and the node base (in ../optimystic) configures no metrics implementation.
 prereq: relay-usage-connectivity-observability
 files: ../optimystic packages/db-p2p/src/libp2p-node-base.ts, packages/cadre-core/src/diagnostics/connection-path.ts, packages/cadre-core/src/cadre-node.ts
+difficulty: easy
 ----
 
 ## Problem

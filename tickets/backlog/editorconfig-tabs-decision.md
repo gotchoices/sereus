@@ -1,6 +1,7 @@
 ----
 description: decide and reconcile the "tabs for code" indentation claim — no .editorconfig exists and indentation is actually mixed across packages
 files: AGENTS.md, docs/STATUS.md, eslint.config.mjs, .editorconfig (does not yet exist)
+difficulty: easy
 ----
 
 # Reconcile the "tabs for code" indentation claim with reality

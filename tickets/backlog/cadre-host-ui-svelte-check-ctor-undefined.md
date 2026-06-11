@@ -1,6 +1,7 @@
 description: cadre-host UI `svelte-check` reports a type error (`'ctor' is possibly 'undefined'`) in ui/src/lib/events.ts; the UI is not type-checked in CI so this latent error goes unnoticed
 prereq:
 files: packages/cadre-host/ui/src/lib/events.ts, packages/cadre-host/ui/tsconfig.json, packages/cadre-host/package.json
+difficulty: easy
 ----
 
 # cadre-host UI: svelte-check type error in events.ts
