@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-06-16T23:32:47.956Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\1-formation-convergence-e2e-responder-fixture.review.2026-06-16T23-32-47-956Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Review the new headless test "second party" — an in-process cadre node that hands out a chat invitation and seeds a message — that lets an end-to-end test prove two parties really connect and sync.
 prereq:
 files: packages/reference-app-web/e2e/fixtures/formation-responder.ts, packages/reference-app-web/package.json, packages/reference-app-web/src/lib/chat-strand.ts, packages/reference-app-web/src/lib/chat-dml.ts, packages/integration-tests/src/harness/test-party.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts
