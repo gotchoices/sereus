@@ -743,19 +743,27 @@ export async function stopCadre(): Promise<void> {
 // These helpers back the additive `__cadre` hooks for exactly that.
 
 /**
- * Resolve a strand instance's libp2p node, or throw a clear, surfaced error. The
- * strand may be unknown (a strandId this tab never formed), still launching, or in
- * `bootstrap` mode with no libp2p node — all surface as a thrown error rather than
- * a bare `undefined` deref so the test (and devtools) fail loudly. Targets the
- * **strand-level** node (`getStrand`), never the control node.
+ * Resolve a strand instance by id, or throw a clear, surfaced error. The strand
+ * may be unknown (a strandId this tab never formed) — surfaced as a thrown error
+ * rather than a bare `undefined` deref so the test (and devtools) fail loudly.
+ * Targets the **strand-level** instance (`getStrand`), never the control node.
  */
-function requireStrandLibp2p(strandId: string): Libp2p {
+function requireStrandInstance(strandId: string): StrandInstance {
 	if (!node) throw new Error('CadreNode not started');
 	const instance = node.getStrand(strandId);
 	if (!instance) {
 		throw new Error(`strand ${strandId} not found on this node`);
 	}
-	const libp2pNode = instance.libp2pNode;
+	return instance;
+}
+
+/**
+ * Resolve a strand instance's libp2p node, or throw a clear, surfaced error. The
+ * strand may be still launching, or in `bootstrap` mode with no libp2p node — both
+ * surface as a thrown error rather than a bare `undefined` deref.
+ */
+function requireStrandLibp2p(strandId: string): Libp2p {
+	const libp2pNode = requireStrandInstance(strandId).libp2pNode;
 	if (!libp2pNode) {
 		throw new Error(
 			`strand ${strandId} has no libp2p node — it is still launching or runs in ` +
@@ -767,16 +775,12 @@ function requireStrandLibp2p(strandId: string): Libp2p {
 
 /**
  * Resolve a strand instance's attached Quereus database, or throw. Read/write
- * hooks need the DB handle (not the libp2p node), so this guards the strand being
- * unknown or not yet active (no attached database) separately. A wrong/unknown
- * strandId errors clearly rather than silently reading an empty solo strand.
+ * hooks need the DB handle (not the libp2p node), so this guards the strand not
+ * yet being active (no attached database) separately. A wrong/unknown strandId
+ * errors clearly rather than silently reading an empty solo strand.
  */
 function requireStrandDatabase(strandId: string): Database {
-	if (!node) throw new Error('CadreNode not started');
-	const instance = node.getStrand(strandId);
-	if (!instance) {
-		throw new Error(`strand ${strandId} not found on this node`);
-	}
+	const instance = requireStrandInstance(strandId);
 	if (!instance.database) {
 		throw new Error(`strand ${strandId} has no database — it is still launching`);
 	}
