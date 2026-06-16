@@ -13,6 +13,7 @@
 
 import { getCadreNode, getChatStrandId } from './cadre-web.js';
 import type { StrandInstance } from '@serfab/cadre-core';
+import { insertChatMessage, selectChatMessages } from './chat-dml.js';
 import { pushError } from './diagnostics.svelte.js';
 
 const REFRESH_INTERVAL_MS = 4_000;
@@ -90,27 +91,14 @@ export async function refresh(): Promise<void> {
 	if (refreshInFlight) return;
 	refreshInFlight = true;
 	try {
-		const database = db(strand);
-		const messages: ChatMessage[] = [];
-		// Order by Timestamp (the text UUID Id is not chronologically sortable).
-		// Id is only a stable tiebreak: Timestamp has second resolution, so two
-		// peers posting within the same second converge to an arbitrary-but-stable
-		// order. Acceptable for the reference app.
-		for await (const row of database.eval(
-			`select M.Id, M.MemberId, M.Content, M.Timestamp, Mem.Name as MemberName
-			 from App.Message M
-			 left join App.Member Mem on Mem.Id = M.MemberId
-			 order by M.Timestamp asc, M.Id asc`,
-		)) {
-			messages.push({
-				Id: row.Id as string,
-				MemberId: row.MemberId as string,
-				Content: row.Content as string,
-				Timestamp: row.Timestamp as string,
-				MemberName: (row.MemberName as string) ?? undefined,
-			});
-		}
-		state.messages = messages;
+		const rows = await selectChatMessages(db(strand));
+		state.messages = rows.map((r) => ({
+			Id: r.id,
+			MemberId: r.memberId,
+			Content: r.content,
+			Timestamp: r.timestamp,
+			MemberName: r.memberName,
+		}));
 		state.ready = true;
 		state.error = null;
 		state.updatedMs = Date.now();
@@ -133,24 +121,7 @@ export async function sendMessage(author: string, content: string): Promise<void
 	state.loading = true;
 	state.error = null;
 	try {
-		const database = db(strand);
-		await database.exec('insert or ignore into App.Member (Id, Name) values (?, ?)', [
-			author,
-			author,
-		]);
-
-		// Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS' — not ISO 8601 with 'T'/'Z'.
-		// eslint-disable-next-line svelte/prefer-svelte-reactivity -- transient Date, immediately serialized to a string and discarded; never held or mutated in reactive state.
-		const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
-		// Generate the primary key locally as a UUID. A read-then-increment of
-		// max(Id) would collide when two peers post concurrently into a shared
-		// strand, since each reads the same local max before either replicates.
-		const id = crypto.randomUUID();
-		await database.exec(
-			'insert into App.Message (Id, MemberId, Content, Timestamp) values (?, ?, ?, ?)',
-			[id, author, content, now],
-		);
-
+		await insertChatMessage(db(strand), author, content);
 		await refresh();
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);

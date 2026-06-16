@@ -61,6 +61,7 @@ import {
 	CONTROL_STORE_KEY,
 } from './strand-storage.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
+import { insertChatMessage, selectChatMessages } from './chat-dml.js';
 
 /**
  * db-p2p's transport-factory element type. The WebRTC factories from
@@ -475,6 +476,12 @@ async function createClosedChatStrand(
 	await cadre.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
 		sAppConfig: getChatSAppConfig(),
+		// Formed strands replicate across a cohort. Without an explicit mode,
+		// addStrand infers `bootstrap` from the empty CadrePeer cohort (formation
+		// exchanges peer addrs but persists no CadrePeer rows yet) and the strand
+		// gets a local transactor that never replicates — the silent no-convergence
+		// failure mode. `networked` launches even before the cohort peer dials in.
+		mode: 'networked',
 	});
 	return { strandId, memberPrivateKey };
 }
@@ -571,6 +578,11 @@ export async function joinViaInvitation(
 			Type: 'c',
 		},
 		sAppConfig: getChatSAppConfig(),
+		// Formed strands replicate across a cohort — request `networked` explicitly
+		// so the joiner's strand does not infer `bootstrap` from the empty CadrePeer
+		// cohort and end up with a non-replicating local transactor. See the matching
+		// note in createClosedChatStrand.
+		mode: 'networked',
 	});
 
 	const formed: FormedStrand = {
@@ -720,6 +732,109 @@ export async function stopCadre(): Promise<void> {
 	formedStrands.clear();
 }
 
+// ── Formed-strand connectivity + DML (e2e formation→convergence hooks) ────────
+//
+// Formation exchanges peer addrs but does NOT persist them as `CadrePeer` rows,
+// so the strand cohort seed stays empty and the two strand instances never
+// auto-connect (strand peer discovery via the control network is still TODO). The
+// e2e test wires the cohort link by hand — dialing one strand's libp2p node at the
+// other's strand multiaddr — and reads/writes the FORMED strand (a responder-minted
+// UUID strand, distinct from the solo `CHAT_STRAND_ID` the Messages UI renders).
+// These helpers back the additive `__cadre` hooks for exactly that.
+
+/**
+ * Resolve a strand instance's libp2p node, or throw a clear, surfaced error. The
+ * strand may be unknown (a strandId this tab never formed), still launching, or in
+ * `bootstrap` mode with no libp2p node — all surface as a thrown error rather than
+ * a bare `undefined` deref so the test (and devtools) fail loudly. Targets the
+ * **strand-level** node (`getStrand`), never the control node.
+ */
+function requireStrandLibp2p(strandId: string): Libp2p {
+	if (!node) throw new Error('CadreNode not started');
+	const instance = node.getStrand(strandId);
+	if (!instance) {
+		throw new Error(`strand ${strandId} not found on this node`);
+	}
+	const libp2pNode = instance.libp2pNode;
+	if (!libp2pNode) {
+		throw new Error(
+			`strand ${strandId} has no libp2p node — it is still launching or runs in ` +
+				'bootstrap mode (no cohort). Formed strands must be added with mode:"networked".',
+		);
+	}
+	return libp2pNode;
+}
+
+/**
+ * Resolve a strand instance's attached Quereus database, or throw. Read/write
+ * hooks need the DB handle (not the libp2p node), so this guards the strand being
+ * unknown or not yet active (no attached database) separately. A wrong/unknown
+ * strandId errors clearly rather than silently reading an empty solo strand.
+ */
+function requireStrandDatabase(strandId: string): Database {
+	if (!node) throw new Error('CadreNode not started');
+	const instance = node.getStrand(strandId);
+	if (!instance) {
+		throw new Error(`strand ${strandId} not found on this node`);
+	}
+	if (!instance.database) {
+		throw new Error(`strand ${strandId} has no database — it is still launching`);
+	}
+	return instance.database.getDatabase();
+}
+
+/**
+ * The strand-level libp2p multiaddrs for a formed strand — the cohort peer's
+ * dialable addresses, NOT the control node's. The second party dials one of these
+ * to join the strand cohort.
+ */
+export function getStrandMultiaddrs(strandId: string): string[] {
+	return requireStrandLibp2p(strandId).getMultiaddrs().map(String);
+}
+
+/**
+ * Dial a strand-cohort peer's multiaddr from this strand's libp2p node, wiring the
+ * cohort link the control network does not yet seed. libp2p handles an
+ * already-connected dial idempotently; an unreachable addr surfaces the libp2p
+ * error rather than wedging.
+ */
+export async function dialStrandPeer(strandId: string, addr: string): Promise<void> {
+	await requireStrandLibp2p(strandId).dial(multiaddr(addr));
+}
+
+/**
+ * Live strand-cohort connection count. The test polls this until ≥ 1 before
+ * expecting convergence — a 2-member cohort commit needs a super-majority of 2, so
+ * a write only lands once both members are connected.
+ */
+export function getStrandConnectionCount(strandId: string): number {
+	return requireStrandLibp2p(strandId).getConnections().length;
+}
+
+/**
+ * Upsert the author `Member` row then append an `App.Message` into the FORMED
+ * strand's database (`getStrand(strandId)`), NOT the solo chat strand. Returns the
+ * new message id. Reuses the shared chat DML so the write is byte-identical to the
+ * Messages UI path (including the load-bearing Member-before-Message FK ordering).
+ */
+export async function writeChatMessage(
+	strandId: string,
+	message: { memberName: string; content: string },
+): Promise<string> {
+	return insertChatMessage(requireStrandDatabase(strandId), message.memberName, message.content);
+}
+
+/**
+ * Read all `App.Message` rows from the FORMED strand's database, reduced to the
+ * `{ id, memberId, content }` shape the e2e convergence assertion needs.
+ */
+export async function readChatMessages(
+	strandId: string,
+): Promise<Array<{ id: string; memberId: string; content: string }>> {
+	const rows = await selectChatMessages(requireStrandDatabase(strandId));
+	return rows.map((r) => ({ id: r.id, memberId: r.memberId, content: r.content }));
+}
+
 // ── Debug hook ────────────────────────────────────────────────────────────────
 
 /**
@@ -743,6 +858,14 @@ function exposeDebugHook(cadre: CadreNode): void {
 			joinViaInvitation(encoded, disclosure),
 		attemptUnauthorizedStrandWrite: () => attemptUnauthorizedStrandWrite(),
 		readControlAuthorizationState: () => readControlAuthorizationState(),
+		// Formed-strand cohort connectivity + DML — the test wires the strand peer
+		// link by hand and reads/writes the formed (closed) strand directly.
+		getStrandMultiaddrs: (strandId: string) => getStrandMultiaddrs(strandId),
+		dialStrandPeer: (strandId: string, addr: string) => dialStrandPeer(strandId, addr),
+		getStrandConnectionCount: (strandId: string) => getStrandConnectionCount(strandId),
+		writeChatMessage: (strandId: string, message: { memberName: string; content: string }) =>
+			writeChatMessage(strandId, message),
+		readChatMessages: (strandId: string) => readChatMessages(strandId),
 	};
 }
 
