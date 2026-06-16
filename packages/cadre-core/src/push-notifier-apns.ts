@@ -19,7 +19,11 @@
  * token prefix.
  */
 
-import { sign } from 'node:crypto';
+// Namespace import (not `import { sign }`): a *named* import of the
+// browser-externalized `node:crypto` hard-fails the web build, whereas a
+// namespace import only warns — same reasoning as the `node:http2` import below
+// and the matching note in push-notifier-fcm.ts. Server-only; never run in browser.
+import * as nodeCrypto from 'node:crypto';
 import * as http2 from 'node:http2';
 import debug from 'debug';
 import type { ApnsCredentials } from './types.js';
@@ -167,7 +171,7 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
     const header = { alg: 'ES256', kid: creds.keyId };
     const claims = { iss: creds.teamId, iat };
     const signingInput = `${b64urlJson(header)}.${b64urlJson(claims)}`;
-    const sig = sign('SHA256', Buffer.from(signingInput), {
+    const sig = nodeCrypto.sign('SHA256', Buffer.from(signingInput), {
       key: creds.privateKey,
       dsaEncoding: 'ieee-p1363',
     }).toString('base64url');

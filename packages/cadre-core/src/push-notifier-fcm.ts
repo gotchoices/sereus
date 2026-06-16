@@ -14,7 +14,14 @@
  * code and a redacted token prefix.
  */
 
-import { sign } from 'node:crypto';
+// Namespace import (not `import { sign }`): this module is server-only and is
+// reached only via the guarded dynamic import in CadreNode, but bundlers still
+// analyse that lazy chunk. A *named* import of `node:crypto` hard-fails the
+// browser build ("sign is not exported by __vite-browser-external"), whereas a
+// namespace import of the deliberately-unaliased external only warns (matching
+// the `node:http2` namespace import in push-notifier-apns.ts). The browser
+// never executes this code (config.push is node-only), so the warning is benign.
+import * as nodeCrypto from 'node:crypto';
 import debug from 'debug';
 import type { FcmCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
@@ -159,7 +166,7 @@ export function createFcmPushNotifier(creds: FcmCredentials, deps: FcmPushDeps =
       exp: iat + 3600,
     };
     const signingInput = `${b64urlJson(header)}.${b64urlJson(claims)}`;
-    const sig = sign('RSA-SHA256', Buffer.from(signingInput), creds.privateKey).toString('base64url');
+    const sig = nodeCrypto.sign('RSA-SHA256', Buffer.from(signingInput), creds.privateKey).toString('base64url');
     return `${signingInput}.${sig}`;
   }
 
