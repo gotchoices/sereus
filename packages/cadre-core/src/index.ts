@@ -85,7 +85,8 @@ export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 
 // Strand membership writer (founder bootstrap, invite issuance/consumption,
-// authority-admit, + shared signing primitives reused by the peer/rotation flows).
+// authority-admit, member-peer registration, authority rotation, + shared signing
+// primitives reused across the flows).
 export {
   signStrandPayload,
   verifyStrandPayload,
@@ -93,13 +94,19 @@ export {
   issueInvite,
   consumeInvite,
   addMemberByAuthority,
+  registerMemberPeer,
+  addAuthority,
+  removeAuthority,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
   type FounderBootstrapParams,
   type IssueInviteParams,
   type IssuedInvite,
   type ConsumeInviteParams,
-  type AddMemberByAuthorityParams
+  type AddMemberByAuthorityParams,
+  type RegisterMemberPeerParams,
+  type AddAuthorityParams,
+  type RemoveAuthorityParams
 } from './strand-membership-writer.js';
 
 // Engine-canonical datetime helper (shared by control + strand signed-write flows

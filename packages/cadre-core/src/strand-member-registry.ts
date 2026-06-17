@@ -17,9 +17,9 @@ const log = debug('sereus:cadre:strand-member-registry');
  *
  * Binds the member key to the strand id so a registration signature cannot be
  * replayed against a different strand. Peer-id binding is intentionally NOT part
- * of this payload yet — `MemberPeer` rows (and their own per-peer self-proofs)
- * are owned by the MemberPeer/sApp join path (ticket 3); see
- * {@link StrandMemberRegistry}.
+ * of this payload — `MemberPeer` rows carry their OWN per-peer self-proofs
+ * (`MemberKey || '|' || PeerId`, signed by the member) and are written by the
+ * dedicated `registerMemberPeer` writer; see {@link StrandMemberRegistry}.
  */
 export function memberRegistrationPayload(registration: MemberRegistration): string {
   return `${registration.strandId}|${registration.key}`;
@@ -109,9 +109,13 @@ export class StrandMemberVerifier implements MemberVerifier {
  * Scoped to one strand's db; the `strandId` argument is accepted for interface
  * compatibility but writes target this db's `Strand.*` tables.
  *
- * NOTE (ticket 3): `peerIds` are NOT written as `MemberPeer` rows here — the
- * MemberPeer self-proof path is the next ticket. A non-empty `peerIds` is logged
- * and otherwise ignored so the member still lands; peer rows are reconciled later.
+ * NOTE: `peerIds` are NOT written as `MemberPeer` rows here. The signed peer path
+ * now exists as the standalone `registerMemberPeer` writer (each peer self-proof is
+ * signed by the member's own key), but wiring the enrollment `peerIds` through it is
+ * a deliberate follow-on — the member self-proof available here does not carry the
+ * per-peer signatures `MemberPeer.Authorized` requires. A non-empty `peerIds` is
+ * logged and otherwise ignored so the member still lands; peer rows are reconciled
+ * separately via `registerMemberPeer`.
  */
 export class StrandMemberRegistry implements MemberRegistry {
   constructor(
@@ -122,7 +126,7 @@ export class StrandMemberRegistry implements MemberRegistry {
   async registerMember(strandId: string, memberKey: string, peerIds: string[]): Promise<void> {
     if (peerIds.length > 0) {
       log(
-        'registerMember: %d peerId(s) for member %s on strand %s deferred to the MemberPeer path (ticket 3); registering member only',
+        'registerMember: %d peerId(s) for member %s on strand %s deferred to the registerMemberPeer path (needs per-peer self-proofs); registering member only',
         peerIds.length, memberKey, strandId,
       );
     }
