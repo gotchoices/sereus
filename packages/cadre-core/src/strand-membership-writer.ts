@@ -317,6 +317,12 @@ export interface ConsumeInviteParams {
   invitePrivateKey: string;
   /** The joining member's ed25519 PUBLIC key (base64url) — the new `Member.Key`. */
   memberKey: string;
+  /**
+   * The instant (epoch ms) to compare against the invite's `Expiration` for the
+   * `NotExpired` gate. Defaults to `Date.now()`; tests pin it so the comparison is
+   * deterministic. Mirrors the control-layer `redeemInvitation`'s `nowMs` convention.
+   */
+  nowMs?: number;
 }
 
 /**
@@ -339,16 +345,38 @@ export interface ConsumeInviteParams {
  * network's `FormationUsage` single-use, which gates strand FORMATION, not the
  * per-strand member join enforced here).
  *
+ * Expiry: the `ConsumedInvite.NotExpired` deferred check rejects redeeming an invite
+ * whose `Expiration` is at or before `context.Now`. `Now` is supplied here as a
+ * canonical-datetime string from `canonicalDatetime(db, nowMs)` — the SAME transform
+ * `issueInvite` uses to store `Invite.Expiration` — so both sides of the schema's
+ * `I.Expiration > context.Now` comparison are byte-identical canonical strings and
+ * the lexical `>` orders chronologically at any granularity. (This intentionally
+ * diverges from the control layer, which passes `Now` as a JS ISO string; Quereus
+ * does not coerce context params, so an ISO `Now` would be compared lexically against
+ * the canonical, space-separated `Expiration` and could mis-order near-same-instant
+ * timestamps. The control tests only use far-future/far-past expiries, so that latent
+ * skew never bites there — the strand layer avoids it outright.) A null `Expiration`
+ * never expires. Like `ValidUsage`, `NotExpired` defers to commit, so an expired
+ * invite rolls back the whole txn — neither the `Member` nor the `ConsumedInvite`
+ * row survives.
+ *
  * @param db - The closed strand's database.
- * @param params - The invite key/secret and the joining member's public key.
- * @throws If any constraint rejects; the whole transaction rolls back (neither
- *   the `Member` nor the `ConsumedInvite` row survives).
+ * @param params - The invite key/secret, the joining member's public key, and an
+ *   optional `nowMs` instant for the expiry comparison (default `Date.now()`).
+ * @throws If any constraint rejects (bad signature, missing invite, or an expired
+ *   invite); the whole transaction rolls back (neither the `Member` nor the
+ *   `ConsumedInvite` row survives).
  */
 export async function consumeInvite(db: Database, params: ConsumeInviteParams): Promise<void> {
-  const { inviteKey, invitePrivateKey, memberKey } = params;
+  const { inviteKey, invitePrivateKey, memberKey, nowMs } = params;
 
   const usagePayload = `${inviteKey}|${memberKey}`;
   const inviteSignature = signStrandPayload(usagePayload, invitePrivateKey);
+
+  // Canonicalise "now" the same way issueInvite canonicalises Expiration, so the
+  // schema's `I.Expiration > context.Now` compares like-for-like canonical strings.
+  // Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
+  const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
 
   await db.beginTransaction();
   try {
@@ -361,12 +389,13 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
       [memberKey],
     );
 
-    // 2. ConsumedInvite — proves possession of the invite private key.
+    // 2. ConsumedInvite — proves possession of the invite private key and that the
+    //    invite has not expired (NotExpired gate against the canonical Now).
     await db.exec(
       `insert into Strand.ConsumedInvite (InviteKey, MemberKey)
-         with context InviteSignature = ?
+         with context InviteSignature = ?, Now = ?
          values (?, ?)`,
-      [inviteSignature, inviteKey, memberKey],
+      [inviteSignature, nowCanonical, inviteKey, memberKey],
     );
 
     await db.commit();

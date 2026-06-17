@@ -8,6 +8,7 @@ import {
   consumeInvite,
   addMemberByAuthority,
 } from './strand-membership-writer.js';
+import { canonicalDatetime } from './canonical-datetime.js';
 
 const log = debug('sereus:cadre:strand-member-registry');
 
@@ -78,6 +79,12 @@ export class StrandMemberVerifier implements MemberVerifier {
    * here. This check is therefore a "door is open" pre-flight; the binding,
    * single-use, and cryptographic gates are all enforced by the deferred
    * `Strand.*` constraints when the member is actually written.
+   *
+   * Expired invites are filtered out so this pre-flight matches the on-engine
+   * `ConsumedInvite.NotExpired` gate — `Now` is canonicalised the same way the
+   * writer canonicalises it, so `Expiration > ?` compares like-for-like canonical
+   * strings. A member that already holds a `ConsumedInvite` short-circuits above,
+   * regardless of any invite's expiry.
    */
   async isAuthorizedToJoin(_strandId: string, memberKey: string): Promise<boolean> {
     const consumed = await scalarCount(
@@ -88,7 +95,12 @@ export class StrandMemberVerifier implements MemberVerifier {
     if (consumed > 0) {
       return true;
     }
-    const invites = await scalarCount(this.db, 'select count(1) as c from Strand.Invite', []);
+    const nowCanonical = await canonicalDatetime(this.db, Date.now());
+    const invites = await scalarCount(
+      this.db,
+      'select count(1) as c from Strand.Invite where Expiration is null or Expiration > ?',
+      [nowCanonical],
+    );
     return invites > 0;
   }
 }

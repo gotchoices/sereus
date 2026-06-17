@@ -87,8 +87,18 @@ export const STRAND_SCHEMA = `    table Header (
         constraint ValidUsage check on insert (
             exists (select 1 from Invite I where I.Key = new.InviteKey and verify(digest(new.InviteKey || '|' || new.MemberKey, 'sha256', 'utf8'), context.InviteSignature, new.InviteKey, 'ed25519'))
         ),
+        -- An invite with a non-null Expiration may only be consumed while it is still
+        -- in the future. context.Now is the canonical-datetime "now" supplied by the
+        -- consumeInvite writer (same canonicalDatetime() transform used to store
+        -- Invite.Expiration), so both sides of the comparison are byte-identical
+        -- canonical strings and the lexical ">" comparison orders chronologically. A
+        -- null Expiration never expires. Mirrors CadreControl.FormationUsage's
+        -- "FI.ExpiresAt is null or FI.ExpiresAt > context.Now" gate.
+        constraint NotExpired check on insert (
+            exists (select 1 from Invite I where I.Key = new.InviteKey and (I.Expiration is null or I.Expiration > context.Now))
+        ),
         constraint MemberValid check (exists (select 1 from Member M where M.Key = new.MemberKey))
-    ) with context (InviteSignature text null);
+    ) with context (InviteSignature text null, Now datetime null);
 
     -- A party in the closed strand network
     table Member (

@@ -249,6 +249,78 @@ describe('consumeInvite', () => {
     expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
   }, 30_000);
 
+  // ── Expiry enforcement (NotExpired) ───────────────────────────────────────
+  //
+  // nowMs pins the comparison instant so the deferred NotExpired gate is exercised
+  // deterministically instead of against wall-clock drift. `base` is a fixed UTC
+  // instant; one day is 86_400_000 ms.
+
+  it('rejects consuming a past-expiry invite and rolls BOTH rows back (atomic)', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder, expiration: base });
+    const member = freshKeyPair();
+
+    // Consume one day AFTER the invite expired.
+    await expect(
+      consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64, nowMs: base + 86_400_000 }),
+    ).rejects.toThrow();
+
+    // The deferred NotExpired rejection at commit rolls back the whole txn — neither
+    // the Member nor the ConsumedInvite row survives (mirrors the wrong-key case).
+    expect(await tableCount(db, 'Member')).toBe(1); // only the founder
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
+  }, 30_000);
+
+  it('admits a member when consuming a future-expiry invite', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, {
+      authorityKeyPair: founder,
+      expiration: base + 86_400_000,
+    });
+    const member = freshKeyPair();
+
+    // Consume one day BEFORE the invite expires.
+    await consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64, nowMs: base });
+
+    expect(await tableCount(db, 'Member')).toBe(2); // founder + the new member
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+  }, 30_000);
+
+  it('rejects consuming at the exact expiry instant (> is strict, expiry is exclusive)', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder, expiration: base });
+    const member = freshKeyPair();
+
+    // Now == Expiration: `Expiration > Now` is false, so the boundary is rejected
+    // (matches the control layer's strict `FI.ExpiresAt > context.Now`).
+    await expect(
+      consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64, nowMs: base }),
+    ).rejects.toThrow();
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
+  }, 30_000);
+
+  it('still admits a null-expiry invite regardless of the Now context (regression)', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const member = freshKeyPair();
+
+    // A null Expiration passes NotExpired (I.Expiration is null) for any Now, so
+    // adding the Now context never breaks the never-expires path.
+    await consumeInvite(db, {
+      inviteKey,
+      invitePrivateKey,
+      memberKey: member.publicKeyB64,
+      nowMs: Date.UTC(2031, 2, 4, 12, 0, 0),
+    });
+
+    expect(await tableCount(db, 'Member')).toBe(2);
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+  }, 30_000);
+
   // KNOWN PLATFORM GAP — single-use is NOT yet enforced for ConsumedInvite.
   //
   // The schema makes `ConsumedInvite.InviteKey` the primary key so a given invite
@@ -311,6 +383,36 @@ describe('addMemberByAuthority', () => {
       addMemberByAuthority(db, { authorityKeyPair: notAnAuthority, memberKey: member.publicKeyB64 }),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Member')).toBe(1);
+  }, 30_000);
+});
+
+// ── StrandMemberVerifier.isAuthorizedToJoin expiry parity ────────────────────
+
+describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
+  it('returns false when the only outstanding invite is already expired', async () => {
+    const { db, strandId, founder } = await openStrand('c');
+    // An invite whose expiry is far in the past relative to wall-clock now, so the
+    // pre-flight "door is open" count must filter it out (matching NotExpired).
+    await issueInvite(db, { authorityKeyPair: founder, expiration: Date.UTC(2000, 0, 1) });
+    const verifier = new StrandMemberVerifier(db);
+
+    expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(false);
+  }, 30_000);
+
+  it('returns true when a future-expiry invite is outstanding', async () => {
+    const { db, strandId, founder } = await openStrand('c');
+    await issueInvite(db, { authorityKeyPair: founder, expiration: Date.UTC(2999, 0, 1) });
+    const verifier = new StrandMemberVerifier(db);
+
+    expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('returns true when a never-expiring (null-expiry) invite is outstanding', async () => {
+    const { db, strandId, founder } = await openStrand('c');
+    await issueInvite(db, { authorityKeyPair: founder });
+    const verifier = new StrandMemberVerifier(db);
+
+    expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(true);
   }, 30_000);
 });
 
