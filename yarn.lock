@@ -5301,7 +5301,6 @@ __metadata:
   dependencies:
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
     "@libp2p/crypto": "npm:^5.1.13"
-    "@libp2p/tcp": "npm:^11.0.10"
     "@libp2p/webrtc": "npm:6.0.14"
     "@libp2p/websockets": "npm:^10.1.3"
     "@multiformats/multiaddr": "npm:^12.5.1"

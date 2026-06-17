@@ -16,8 +16,9 @@
  * `__referencePeer`.
  *
  * The node is modelled on the integration harness's Node node
- * (`integration-tests/src/harness/test-party.ts` — Node transports + memory storage)
- * and the responder wiring on the Phase-2/Phase-4 responder in
+ * (`integration-tests/src/harness/test-party.ts` — in-memory storage; WS-only here,
+ * since the browser is the only dialer) and the responder wiring on the Phase-2/Phase-4
+ * responder in
  * `strand-formation-e2e.integration.ts`. It imports the SAME signed `getChatSAppConfig`
  * the browser uses (from `../../src/lib/chat-strand.js`) so the cohort can converge —
  * a re-declared schema would drift the signature and break the browser's attach.
@@ -28,7 +29,6 @@
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { tcp } from '@libp2p/tcp';
 import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
@@ -102,16 +102,21 @@ export interface FormationResponderHandle {
 	stop(): Promise<void>;
 }
 
-/** Node transports for the responder: TCP + WebSocket (the browser dials the `/ws` addr). */
+/**
+ * Transports for the responder: WebSocket only. The browser (the only client)
+ * dials the `/ws` listen addr, and the responder dials nobody — so, like the
+ * browser's own stack (see cadre-web.ts), it needs no TCP transport. A WS-only
+ * responder keeps the e2e dependency surface minimal.
+ */
 function responderTransports(): Libp2pTransports {
-	return [tcp(), webSockets()];
+	return [webSockets()];
 }
 
 /**
  * Build the `CadreNodeConfig` for the in-process responder. Mirrors the integration
- * harness's Node node — Node transports + in-memory raw storage — but listens on an
- * ephemeral WS port (`tcp/0/ws`) so the browser can dial it directly. `storage`
- * profile matches the integration responder (a willing cohort holder).
+ * harness's Node node — in-memory raw storage — but with a WS-only transport that
+ * listens on an ephemeral WS port (`tcp/0/ws`) so the browser can dial it directly.
+ * `storage` profile matches the integration responder (a willing cohort holder).
  */
 function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId: string): CadreNodeConfig {
 	return {
@@ -149,7 +154,7 @@ async function runAuthorityGenesis(node: CadreNode, privateKey: NonNullable<Cadr
  * Boot the in-process responder and return a live handle.
  *
  * Sequence (each step mirrors the documented production path it is named after):
- *  1. Boot a `CadreNode` with Node transports + memory storage, listening on an
+ *  1. Boot a `CadreNode` with a WS transport + memory storage, listening on an
  *     ephemeral `/ws` port.
  *  2. Genesis-seed its authority (fail-loud).
  *  3. Wire the formation responder (`initializeStrandSolicitation` + a real
