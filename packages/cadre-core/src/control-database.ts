@@ -793,10 +793,14 @@ export class ControlDatabase {
     validationKey: string | null;
     validationSignature: string | null;
   }): Promise<void> {
-    // Canonicalise to `YYYY-MM-DD HH:MM:SS` so `context.Now` byte-matches the
-    // `datetime`-coerced `ExpiresAt` column — same-UTC-day comparisons are
-    // lexically ordered by time-of-day instead of mis-ordering at position 10
-    // where canonical ' ' < ISO 'T'.
+    // Derive `context.Now` through the same `canonicalDatetime` transform that
+    // produced the stored `ExpiresAt`, so the deferred CHECK's `FI.ExpiresAt >
+    // context.Now` compares two byte-identical engine-`datetime` strings. The
+    // previous `new Date(nowMs).toISOString()` form differed only by a trailing
+    // `.000Z` (the engine `datetime()` separator is `T`, not a space), which never
+    // flipped the strict `>` against a second-granular `ExpiresAt` — so this is a
+    // robustness/consistency change, matching the strand layer's `consumeInvite`,
+    // not a fix for an observable mis-ordering.
     const nowCanonical = await canonicalDatetime(this.db!, opts.nowMs);
     await this.db!.exec(`
       insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId)

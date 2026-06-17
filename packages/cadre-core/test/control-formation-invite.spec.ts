@@ -175,9 +175,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const token = 'invite-sameday-' + rand();
     const strandId = 'strand-sameday-' + rand();
     // base = noon UTC on a fixed date; expiry = one hour later (same calendar day).
-    // Under the old ISO `Now`, position 10 is 'T' while ExpiresAt has ' ', so
-    // ExpiresAt > Now is always false for same-day — this invite would be wrongly
-    // rejected. With canonical Now both sides use ' ' and the time-of-day is compared.
+    // Guards that a same-UTC-day future expiry is admitted: the deferred CHECK
+    // compares `FI.ExpiresAt > context.Now` lexically, and both operands are the
+    // engine `datetime()` form via canonicalDatetime, so the time-of-day decides.
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
     await db.insertFormationInvite(token, 'sapp-sameday', authorityPublicKey, signMessage, {
       expiresAtMs: base + 3_600_000,
