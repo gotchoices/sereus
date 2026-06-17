@@ -80,18 +80,25 @@ describe('signStrandPayload (single-digest ed25519 signer)', () => {
 interface OpenStrand {
   db: Database;
   strandId: string;
+  storage: MemoryRawStorage;
   shutdown: () => Promise<void>;
 }
 
-/** Open a fresh strand DB in bootstrap mode (real node + in-memory storage). */
-async function openStrandDb(): Promise<OpenStrand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
+/**
+ * Open a strand DB in bootstrap mode (real node + in-memory storage). Passing a
+ * prior run's `strandId`+`storage` reopens that persisted strand (a fresh
+ * `Database` over the same blocks), exercising the warm-restart / hydrate path.
+ */
+async function openStrandDb(
+  strandId: string = randomUUID(),
+  storage: MemoryRawStorage = new MemoryRawStorage(),
+): Promise<OpenStrand> {
   const db = new Database();
   const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
   return {
     db,
     strandId,
+    storage,
     shutdown: async () => {
       await result.shutdown();
       db.close();
@@ -180,6 +187,35 @@ describe('bootstrapFounderMembership', () => {
     // InsertOnly / PK violation.
     await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
 
+    expect(await count(db, 'Header')).toBe(1);
+    expect(await count(db, 'Member')).toBe(1);
+    expect(await count(db, 'Authority')).toBe(1);
+  }, 30_000);
+
+  it('is idempotent across a reopen: a fresh DB over persisted storage re-runs without duplicating rows', async () => {
+    const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+
+    // Cold session: bootstrap a closed strand, then shut the connection down,
+    // leaving the rows persisted in the shared MemoryRawStorage blocks.
+    const cold = await openStrandDb();
+    const { strandId, storage } = cold;
+    const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };
+    await bootstrapFounderMembership(cold.db, params);
+    await cold.shutdown();
+
+    // Warm session: a brand-new Database hydrates the persisted strand. The rows
+    // are already seated *before* any new write — proving this is a true reopen,
+    // not a fresh insert into an empty catalog.
+    open = await openStrandDb(strandId, storage);
+    const { db } = open;
+    expect(await count(db, 'Header')).toBe(1);
+    expect(await count(db, 'Member')).toBe(1);
+    expect(await count(db, 'Authority')).toBe(1);
+
+    // Re-running the founder bootstrap against the reopened DB (the real
+    // cross-process restart path) is a no-op — the count guards see the hydrated
+    // rows and skip, so no duplicate Header / InsertOnly violation.
+    await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
     expect(await count(db, 'Authority')).toBe(1);
