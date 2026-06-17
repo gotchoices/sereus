@@ -1,4 +1,4 @@
-import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
+import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
 import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
@@ -170,6 +170,16 @@ export interface NetworkConfig {
    * and externally-mapped port — see `@serfab/cadre-host`'s NatService.
    */
   inviteAddressResolver?: () => Promise<string[]>;
+  /**
+   * Optional libp2p connection gater, threaded to both the control node and every
+   * strand's cohort node. libp2p's browser default denies dialing insecure
+   * WebSockets and private/loopback addresses; callers that must dial local or
+   * unsecured peers (the web reference dialing a `127.0.0.1/.../ws` responder,
+   * Playwright e2e, RN simulators) supply a permissive gater here — e.g.
+   * `{ denyDialMultiaddr: () => false }`. See `@optimystic/db-p2p`'s
+   * `libp2p-node-base` for the underlying option.
+   */
+  connectionGater?: ConnectionGater;
 }
 
 /**

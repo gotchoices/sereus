@@ -301,6 +301,16 @@ export async function startCadre(): Promise<CadreNode> {
 			// Dialable side of formation listens via circuit relay + WebRTC; solo
 			// tabs (no relay configured) keep the Phase-1 no-listen posture.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
+			// Permissive dial gater. libp2p's browser default denies dialing
+			// insecure-WebSocket and private/loopback addresses, which blocks the
+			// reference app from dialing a local/unsecured peer — e.g. an
+			// out-of-band invitation pointing at a `127.0.0.1/.../ws` responder, or
+			// the strand-cohort dial in the formation→convergence e2e. This is a
+			// dev/reference surface (see README), so allow those dials; the
+			// canonical libp2p pattern is `denyDialMultiaddr: () => false`
+			// (per @libp2p/webrtc docs). Applies to both the control node and every
+			// formed strand's cohort node (cadre-core threads it to both).
+			connectionGater: { denyDialMultiaddr: () => false },
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },

@@ -511,7 +511,8 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: this.config.profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
-      ...(network?.listenAddrs && { listenAddrs: network.listenAddrs })
+      ...(network?.listenAddrs && { listenAddrs: network.listenAddrs }),
+      ...(network?.connectionGater && { connectionGater: network.connectionGater })
     };
 
     return await createLibp2pNode(nodeOptions);

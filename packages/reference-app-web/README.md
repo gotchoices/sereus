@@ -34,12 +34,12 @@ The `CadreControl` authorization gates ("RBAC") — authority keys, formation
 invites/usage, strand membership type + member-key presence, and a live
 authority-gate probe — are observable on the Diagnostics page.
 
-> **What's still deferred.** Live two-party **cross-cohort convergence** (a
-> message written in one tab replicating to another through a shared closed
-> strand) needs circuit-relay infrastructure + a dialable second cadre, and the
-> DB-backed consent wiring landing in cadre-core
-> (`formationinvite-fix-curve-and-wire-consent`). It is the remaining deferred
-> e2e tier — see [Automated end-to-end tests](#automated-end-to-end-tests).
+> **Live convergence is covered.** Two-party **cross-cohort convergence** (a
+> message written by one party replicating to another through a shared closed
+> strand) is exercised end-to-end by the formation→convergence e2e tier, with an
+> in-process headless cadre **responder** as the dialable second party (the browser
+> is the initiator and needs no relay) — see
+> [Automated end-to-end tests](#automated-end-to-end-tests).
 
 ## Run
 
@@ -146,7 +146,8 @@ button attempts an *unauthorized* `Strand` insert (a non-enrolled key + bogus
 signature, no consuming `FormationUsage`); the `CadreControl` constraint rejects it
 at commit, demonstrating the gate is live.
 
-> **Still deferred:** live two-party cross-cohort convergence — see
+> Live two-party cross-cohort convergence over a formed closed strand is covered by
+> the formation→convergence e2e tier — see
 > [Automated end-to-end tests](#automated-end-to-end-tests).
 
 ## Diagnostics (`#/diag`)
@@ -271,16 +272,25 @@ yarn workspace @serfab/reference-app-web test:e2e
   invitation* with no relay, a malformed invitation is rejected on join, the
   **authority gate** rejects an unauthorized control write, and the authorization
   surface reflects the genesis authority + zero formation rows.
-- **Tier 2 — cross-party convergence** (`e2e/distributed/`) — **deferred.** The
-  legacy distributed specs assert *membership-free* Optimystic convergence — now
-  obsolete (chat data lives in a cadre **strand** cohort). The Phase-2 analogue —
-  two parties sharing a closed strand via formation, then a message converging
-  across the cohort — is not yet runnable here: it needs (1) a circuit-relay
-  reservation so both tabs are dialable, (2) the DB-backed consent wiring from
-  `formationinvite-fix-curve-and-wire-consent`, and (3) a dialable second cadre (a
-  second relayed tab, or a headless cadre responder fixture — `cadre-cli` has no
-  formation command today). `e2e/global-setup.ts` writes the fixture as
-  unavailable (`TIER2_CONVERGENCE_DEFERRED`), so every distributed spec skips.
+- **Tier 2 — formation → convergence** (`e2e/distributed/formation-convergence.spec.ts`)
+  — the live two-party tier. The dialable second party is an **in-process headless
+  cadre responder** (`e2e/fixtures/formation-responder.ts`), booted in the spec's
+  `beforeAll` (the Playwright worker process — `global-setup` runs in a different
+  process and cannot share the live node handle). The browser is the **initiator**:
+  it dials out only, so it needs **no relay**. The happy path redeems an
+  `OpenInvitation` through the Home formation panel, asserts a **closed** strand
+  (`type:'c'` + member key) forms, wires the strand cohort link by hand
+  (`__cadre.dialStrandPeer`, since control-network strand discovery is still TODO),
+  and then proves convergence: a message the responder seeds replicates to the
+  browser through the cohort, and the responder records a `FormationUsage` consent
+  row bound to the strand. A negative test redeems a deliberately-**expired**
+  invitation and asserts the join is rejected with no formed strand and no new
+  consent row. The reverse (browser→responder) direction is a best-effort tail on
+  the happy path. The tier self-skips if the responder cannot boot, and can be
+  disabled with `FORMATION_E2E_DISABLED=1`. This tier replaced the obsolete
+  bootstrap-mesh distributed suite, which asserted *membership-free* Optimystic
+  convergence over a shared network — a model that no longer exists now that chat
+  data lives in a strand cohort.
 
 Wiring this suite into CI is out of scope for the current ticket — it stops at
 "runs cleanly locally."
@@ -288,6 +298,4 @@ Wiring this suite into CI is out of scope for the current ticket — it stops at
 ## Out of scope (for follow-up)
 
 - Real-time push (gossip / sync subscription wiring) — convergence is poll-based.
-- Live two-party cross-cohort convergence e2e — needs relay infra + a dialable
-  second cadre + the cadre-core consent DB wiring (see Tier 2 above).
 - A richer app-level RBAC notion beyond the schema-enforced `CadreControl` gates.

@@ -267,7 +267,8 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
-        ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs })
+        ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs }),
+        ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 

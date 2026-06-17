@@ -2,18 +2,22 @@
  * formation-responder.ts — an in-process headless cadre responder for the live
  * formation→convergence e2e.
  *
- * Boots a REAL cadre-core `CadreNode` inside the Playwright Node process (the same
- * process that runs `global-setup`, alongside the existing `globalThis.__referencePeer`
- * handle) and acts as the dialable **second party** for the live formation→convergence
- * test. The browser tab is the *initiator* — it only dials out, so it needs no relay;
- * this responder is the *only* party that must be dialable, so it listens on WebSocket
- * and the browser dials it directly.
+ * Boots a REAL cadre-core `CadreNode` inside the Playwright **worker** process (the
+ * spec's `beforeAll`) and acts as the dialable **second party** for the live
+ * formation→convergence test. The browser tab is the *initiator* — it only dials out,
+ * so it needs no relay; this responder is the *only* party that must be dialable, so
+ * it listens on WebSocket and the browser dials it directly.
+ *
+ * It boots in the worker, NOT in `global-setup`: Playwright runs `global-setup` in
+ * the main runner process and spec files in separate worker child processes that do
+ * NOT share `globalThis`/memory, and the handle's live methods (`readFormationUsage`,
+ * `readStrandMessages`, `seedMessage`) read in-memory node state — so they are only
+ * reachable from the process that booted the node, i.e. the worker the spec runs in.
  *
  * Run in-process, NOT as a child: cadre-core runs fine in Node (the integration tests
  * boot `CadreNode` under vitest), and an in-process node sidesteps the TS-loader /
- * child-process problems the optimystic `reference-peer.ts` fixture works around. A
- * long-lived handle survives the whole run via `globalThis`, exactly like
- * `__referencePeer`.
+ * child-process problems a CLI-spawned fixture would hit. The handle lives for the
+ * spec's lifetime and is torn down in its `afterAll`.
  *
  * The node is modelled on the integration harness's Node node
  * (`integration-tests/src/harness/test-party.ts` — in-memory storage; WS-only here,
@@ -23,9 +27,9 @@
  * the browser uses (from `../../src/lib/chat-strand.js`) so the cohort can converge —
  * a re-declared schema would drift the signature and break the browser's attach.
  *
- * `global-setup` wiring + the spec are the sibling
- * `formation-convergence-e2e-wire-and-spec` ticket; this module delivers the responder
- * and its API.
+ * The spec wiring (`beforeAll` boot + `afterAll` stop, the formation/convergence
+ * assertions) is the sibling `formation-convergence-e2e-wire-and-spec` ticket; this
+ * module delivers the responder and its API.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -56,8 +60,8 @@ const DEFAULT_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 const EXPIRED_OFFSET_MS = 60_000;
 
 /**
- * A live handle to the in-process responder, consumed by `global-setup` (the wire
- * ticket) and the e2e spec. All multiaddrs are read back from the bound libp2p nodes
+ * A live handle to the in-process responder, consumed by the e2e spec (which boots it
+ * in `beforeAll`). All multiaddrs are read back from the bound libp2p nodes
  * (never hard-coded), so parallel runs never clash on a port.
  */
 export interface FormationResponderHandle {
