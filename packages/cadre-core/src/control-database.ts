@@ -710,11 +710,6 @@ export class ControlDatabase {
     const strandStampId = generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
-    // `context.Now` is NOT type-coerced (only column values are), so it must be a
-    // string to compare (TEXT vs TEXT) against the datetime-coerced `ExpiresAt`;
-    // an epoch-ms number would land in a different storage class and mis-order.
-    const nowIso = new Date(nowMs ?? Date.now()).toISOString();
-
     await this.db!.beginTransaction();
     try {
       // 1. Strand row — authorised by the FormationUsage branch (no authority sig),
@@ -728,7 +723,7 @@ export class ControlDatabase {
       // 2. FormationUsage row — authorised by the matching FormationInvite.
       await this.execFormationUsageInsert({
         token, useNumber, disclosure, strandId,
-        peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowIso,
+        peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
 
@@ -775,11 +770,10 @@ export class ControlDatabase {
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
     const useNumber = await this.nextUseNumber(token);
-    const nowIso = new Date(nowMs ?? Date.now()).toISOString();
 
     await this.execFormationUsageInsert({
       token, useNumber, disclosure, strandId,
-      peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowIso,
+      peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
       validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
     });
 
@@ -788,23 +782,28 @@ export class ControlDatabase {
   }
 
   /** Parameterised `FormationUsage` insert shared by redeem + record paths. */
-  private execFormationUsageInsert(opts: {
+  private async execFormationUsageInsert(opts: {
     token: string;
     useNumber: number;
     disclosure: string;
     strandId: string;
     peerId: string;
     peerSignature: string | null;
-    nowIso: string;
+    nowMs: number;
     validationKey: string | null;
     validationSignature: string | null;
   }): Promise<void> {
-    return this.db!.exec(`
+    // Canonicalise to `YYYY-MM-DD HH:MM:SS` so `context.Now` byte-matches the
+    // `datetime`-coerced `ExpiresAt` column — same-UTC-day comparisons are
+    // lexically ordered by time-of-day instead of mis-ordering at position 10
+    // where canonical ' ' < ISO 'T'.
+    const nowCanonical = await canonicalDatetime(this.db!, opts.nowMs);
+    await this.db!.exec(`
       insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId)
         with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
         values (?, ?, ?, ?)
     `, [
-      opts.peerId, opts.peerSignature, opts.nowIso,
+      opts.peerId, opts.peerSignature, nowCanonical,
       opts.validationKey, opts.validationSignature,
       opts.token, opts.useNumber, opts.disclosure, opts.strandId,
     ]);

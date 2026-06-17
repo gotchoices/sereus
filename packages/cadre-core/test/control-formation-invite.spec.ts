@@ -171,6 +171,63 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(await usageCount()).toBe(usageBefore);
   });
 
+  it('admits redemption when the invite expires later on the same UTC day (same-day future expiry)', async () => {
+    const token = 'invite-sameday-' + rand();
+    const strandId = 'strand-sameday-' + rand();
+    // base = noon UTC on a fixed date; expiry = one hour later (same calendar day).
+    // Under the old ISO `Now`, position 10 is 'T' while ExpiresAt has ' ', so
+    // ExpiresAt > Now is always false for same-day — this invite would be wrongly
+    // rejected. With canonical Now both sides use ' ' and the time-of-day is compared.
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    await db.insertFormationInvite(token, 'sapp-sameday', authorityPublicKey, signMessage, {
+      expiresAtMs: base + 3_600_000,
+    });
+
+    const strandsBefore = await strandCount();
+    const usageBefore = await usageCount();
+
+    await db.redeemInvitation({ token, strandId, nowMs: base });
+
+    expect(await strandCount()).toBe(strandsBefore + 1);
+    expect(await usageCount()).toBe(usageBefore + 1);
+  }, 30_000);
+
+  it('rejects redemption when the invite expired earlier on the same UTC day (same-day past expiry)', async () => {
+    const token = 'invite-sameday-past-' + rand();
+    const strandId = 'strand-sameday-past-' + rand();
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    // ExpiresAt one hour BEFORE nowMs — same calendar day but already past.
+    await db.insertFormationInvite(token, 'sapp-sameday-past', authorityPublicKey, signMessage, {
+      expiresAtMs: base - 3_600_000,
+    });
+
+    const strandsBefore = await strandCount();
+    const usageBefore = await usageCount();
+
+    await expect(db.redeemInvitation({ token, strandId, nowMs: base })).rejects.toThrow();
+
+    expect(await strandCount()).toBe(strandsBefore);
+    expect(await usageCount()).toBe(usageBefore);
+  }, 30_000);
+
+  it('rejects redemption at the exact expiry instant (> is strict, boundary is exclusive)', async () => {
+    const token = 'invite-boundary-' + rand();
+    const strandId = 'strand-boundary-' + rand();
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    // nowMs == expiresAtMs: ExpiresAt > Now is false (strict inequality).
+    await db.insertFormationInvite(token, 'sapp-boundary', authorityPublicKey, signMessage, {
+      expiresAtMs: base,
+    });
+
+    const strandsBefore = await strandCount();
+    const usageBefore = await usageCount();
+
+    await expect(db.redeemInvitation({ token, strandId, nowMs: base })).rejects.toThrow();
+
+    expect(await strandCount()).toBe(strandsBefore);
+    expect(await usageCount()).toBe(usageBefore);
+  }, 30_000);
+
   it('recordFormationUsage adds usage rows against a pre-existing (authority-signed) strand, monotonically', async () => {
     const token = 'invite-rec-' + rand();
     const strandId = 'strand-authsigned-' + rand();
