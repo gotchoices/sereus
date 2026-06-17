@@ -288,6 +288,27 @@ describe('consumeInvite', () => {
     expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
   }, 30_000);
 
+  it('admits a member with a same-UTC-day future expiry (canonical Now, not ISO)', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    // Expiry one HOUR after now, on the SAME calendar day. This is the case the
+    // canonicalDatetime(Now) choice exists for: both sides canonicalise to
+    // `YYYY-MM-DD HH:MM:SS`, so the lexical `>` compares the time-of-day and admits.
+    // A regression to an ISO `Now` (`...T...000Z`) would mis-order at position 10
+    // (' ' < 'T') and WRONGLY reject this still-valid invite — the day-granular
+    // tests above would not catch that, so this test guards the divergence.
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, {
+      authorityKeyPair: founder,
+      expiration: base + 3_600_000,
+    });
+    const member = freshKeyPair();
+
+    await consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64, nowMs: base });
+
+    expect(await tableCount(db, 'Member')).toBe(2); // founder + the new member
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+  }, 30_000);
+
   it('rejects consuming at the exact expiry instant (> is strict, expiry is exclusive)', async () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
