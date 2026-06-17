@@ -9,6 +9,7 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { StrandRow, PeerAddressRecord, DeviceTokenRecord, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
+import { canonicalDatetime } from './canonical-datetime.js';
 
 const log = debug('sereus:cadre:control-db');
 const timing = debug('sereus:cadre:timing');
@@ -634,7 +635,7 @@ export class ControlDatabase {
     //   - StrandId: the host strand id or '' when absent (text column, no coercion).
     const expiresAtCanonical = options.expiresAtMs == null
       ? null
-      : await this.canonicalDatetime(options.expiresAtMs);
+      : await canonicalDatetime(this.db!, options.expiresAtMs);
     const expiresAtField = expiresAtCanonical ?? '';
     const totalUsesField = options.totalUses == null ? '' : String(options.totalUses);
     const validationUrlField = options.validationUrl ?? '';
@@ -665,21 +666,6 @@ export class ControlDatabase {
     ]);
 
     log('Formation invite inserted: %s', token);
-  }
-
-  /**
-   * Canonicalise an epoch-ms timestamp to the exact `datetime` string Quereus stores,
-   * by round-tripping through the engine's own `datetime(?)` scalar — the same parse the
-   * `datetime` column coercion uses. This avoids a hand-rolled ISO formatter whose
-   * fractional-second handling could diverge from Temporal, keeping the signed ExpiresAt
-   * field byte-identical to the value the deferred CHECK verifies. Pure scalar eval (no
-   * network), mirroring the {@link nextUseNumber} eval pattern.
-   */
-  private async canonicalDatetime(epochMs: number): Promise<string> {
-    for await (const row of this.db!.eval('select datetime(?) as Canonical', [epochMs])) {
-      return row.Canonical as string;
-    }
-    throw new Error('datetime() canonicalisation returned no row');
   }
 
   /**

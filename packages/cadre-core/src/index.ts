@@ -84,15 +84,36 @@ export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 // protobuf->base64url bridge that derives the founding Member/Authority key.
 export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 
-// Strand membership writer (founder bootstrap + shared signing primitives reused
-// by the later invite/peer/rotation flows).
+// Strand membership writer (founder bootstrap, invite issuance/consumption,
+// authority-admit, + shared signing primitives reused by the peer/rotation flows).
 export {
   signStrandPayload,
+  verifyStrandPayload,
   bootstrapFounderMembership,
+  issueInvite,
+  consumeInvite,
+  addMemberByAuthority,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
-  type FounderBootstrapParams
+  type FounderBootstrapParams,
+  type IssueInviteParams,
+  type IssuedInvite,
+  type ConsumeInviteParams,
+  type AddMemberByAuthorityParams
 } from './strand-membership-writer.js';
+
+// Engine-canonical datetime helper (shared by control + strand signed-write flows
+// so a signed timestamp byte-matches the datetime-coerced column the CHECK sees).
+export { canonicalDatetime } from './canonical-datetime.js';
+
+// Strand-DB-backed EnrollmentService backing: concrete MemberRegistry +
+// MemberVerifier that write/read the real Strand.* membership tables.
+export {
+  StrandMemberRegistry,
+  StrandMemberVerifier,
+  memberRegistrationPayload,
+  type StrandAdmission
+} from './strand-member-registry.js';
 
 // Seed Bootstrap
 export {
