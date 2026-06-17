@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-06-17T02:28:37.312Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\2-formation-convergence-e2e-wire-and-spec.implement.2026-06-17T02-28-37-312Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Turn on the two-party convergence test tier for the browser reference — wire in the test second-party, write the test that proves an invitation forms a shared chat and a message crosses between the two parties, and remove the old obsolete tests it replaces.
 prereq: formation-convergence-e2e-app-hooks, formation-convergence-e2e-responder-fixture
 files: packages/reference-app-web/e2e/global-setup.ts, packages/reference-app-web/e2e/global-teardown.ts, packages/reference-app-web/e2e/fixtures/state.ts, packages/reference-app-web/e2e/distributed, packages/reference-app-web/e2e/fixtures/reference-peer.ts, packages/reference-app-web/e2e/fixtures/optimystic-detect.ts, packages/reference-app-web/README.md
