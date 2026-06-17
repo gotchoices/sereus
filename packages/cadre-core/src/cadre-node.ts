@@ -1352,15 +1352,18 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode not running');
     }
 
-    const { strandRow, sAppConfig, mode } = config;
+    const { strandRow, sAppConfig, mode, founder } = config;
 
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
-    log('Registered sAppConfig for strand %s (sApp: %s, mode: %s)', strandRow.Id, sAppConfig.id, mode ?? 'inferred');
+    log('Registered sAppConfig for strand %s (sApp: %s, mode: %s, founder: %s)',
+      strandRow.Id, sAppConfig.id, mode ?? 'inferred', founder ?? false);
 
     // Pass `mode` (possibly undefined) through: an explicit mode wins, while a
     // caller that omits it gets the same cohort-inferred mode as the discovery path.
-    return await this.launchStrand(strandRow, sAppConfig, mode);
+    // `founder` only flows from the explicit addStrand path — the control-discovered
+    // join path never founds, so its rows arrive via sync (see handleStrandAdded).
+    return await this.launchStrand(strandRow, sAppConfig, mode, founder);
   }
 
   /**
@@ -1463,7 +1466,8 @@ export class CadreNode implements SAppIdLookup {
   private async launchStrand(
     strand: StrandRow,
     sAppConfig: SAppConfig,
-    explicitMode?: StrandMode
+    explicitMode?: StrandMode,
+    founder?: boolean
   ): Promise<StrandInstance> {
     const seed = await this.resolveCohortSeed();
     const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
@@ -1478,7 +1482,8 @@ export class CadreNode implements SAppIdLookup {
       privateKey: this.identityKey,
       bootstrapNodes: seed.bootstrapNodes,
       mode,
-      requireSignedSchemas: this.config.requireSignedSchemas
+      requireSignedSchemas: this.config.requireSignedSchemas,
+      founder
     });
 
     this.hibernationManager.trackStrand(instance);

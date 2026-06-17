@@ -80,8 +80,19 @@ export {
 // DB-backed FormationUsageRecorder (reads/writes the real CadreControl tables)
 export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 
-// Closed-strand member key generation (ed25519 protobuf, base64)
-export { generateStrandMemberKey } from './strand-member-key.js';
+// Closed-strand member key generation (ed25519 protobuf, base64) + the
+// protobuf->base64url bridge that derives the founding Member/Authority key.
+export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
+
+// Strand membership writer (founder bootstrap + shared signing primitives reused
+// by the later invite/peer/rotation flows).
+export {
+  signStrandPayload,
+  bootstrapFounderMembership,
+  STRAND_ENGINE,
+  STRAND_ENGINE_VERSION,
+  type FounderBootstrapParams
+} from './strand-membership-writer.js';
 
 // Seed Bootstrap
 export {

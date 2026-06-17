@@ -46,6 +46,13 @@ export interface StartStrandConfig {
    * with unsigned demo schemas. Mirrors {@link CadreNodeConfig.requireSignedSchemas}.
    */
   requireSignedSchemas?: boolean;
+  /**
+   * Whether this node founds the strand (vs. joins it). Forwarded to the
+   * StrandDatabase so the founder bootstrap (Header, founding Member/Authority)
+   * runs once at bring-up. Joiners leave this unset and write nothing. See
+   * {@link StrandConfig.founder}.
+   */
+  founder?: boolean;
 }
 
 /**
@@ -281,7 +288,13 @@ export class StrandInstanceManager {
         libp2pNode: node,
         coordinatedRepo: node.coordinatedRepo,
         mode: config.mode ?? 'networked',
-        rawStorage: strandStorage
+        rawStorage: strandStorage,
+        // Founder bootstrap inputs: the strand's type drives which membership rows
+        // are written, and the closed-strand MemberPrivateKey derives the founding
+        // Member/Authority key. Both come off the control-network strand row.
+        strandType: config.strandRow.Type,
+        memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
+        founder: config.founder
       });
       instance.database = strandDb;
       await strandDb.initialize();

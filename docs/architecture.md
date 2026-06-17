@@ -481,6 +481,22 @@ sequenceDiagram
     Note over A,B: Both add to Strand table →<br/>triggers node participation
 ```
 
+### Strand Membership Bootstrap
+
+Three independent consent/RBAC layers coexist; do not conflate them:
+
+1. **Control / cadre layer** (`CadreControl.*` in the shared control DB): `Strand`, `FormationInvite`/`FormationUsage`, `AuthorityKey`, `CadrePeer`. Governs which cadre operates a strand and cadre-operator consent to *form* it. The control-layer `Strand.MemberPrivateKey` is the closed-strand read-gating secret.
+2. **Strand RBAC layer** (`Strand.*` inside each strand DB, applied from `schemas/strand.qsql` by `composeStrand`): the authoritative per-strand membership/RBAC — `Header`, `Invite`/`ConsumedInvite`, `Member`, `MemberPeer`, `Authority`.
+3. **sApp layer** (`App.*`): application-data RBAC declared by the sApp schema, gated by its own `verify()`-bound CHECK constraints.
+
+`composeStrand` only *applies* the layer-2 schema; the first runtime *writer* is the **founder bootstrap** (`strand-membership-writer.ts`). The **founder** — the party that provisioned and published the strand (the responder in formation, the creator in host/solo paths; the same party that calls `CadreNode.publishStrand`) — runs a one-time bootstrap at bring-up. A **joiner** writes nothing and receives these rows via Optimystic sync.
+
+- **Plumbing**: an explicit `founder?: boolean` flows `CadreNode.addStrand(StrandConfig)` → `launchStrand` → `StrandInstanceManager.startStrand` → `buildStrandRuntime` → `StrandDatabase`. The bootstrap runs in `StrandDatabase.initialize()` *after* `connectToStrand` returns (schema is applied by then), gated on `founder === true`. The control-discovered join path never sets `founder`, so a discovering peer only syncs. A throw during bootstrap propagates out of `initialize()` so `buildStrandRuntime`'s rollback tears the half-built strand down.
+- **Open strand (`Type='o'`)**: insert `Header` only — `Member`/`Authority`/`Invite` are `OnlyClosed`.
+- **Closed strand (`Type='c'`)**: insert `Header(Type='c')`, then the founding `Member`, then the founding `Authority`, in that order (the deferred `OnlyClosed` checks on Member/Authority see the committed closed `Header`). The founding `Member.Key` and `Authority.MemberKey` are *derived from* the control-layer `MemberPrivateKey` via the **key bridge** (`strandMemberKeyPair`): the base64-protobuf libp2p ed25519 key is decoded and run through `authorityKeyFromLibp2p`, yielding a base64url `{ privateKeyB64, publicKeyB64 }` whose `publicKeyB64` is the founding member/authority key. The first-row inserts use the schema's `count(…) <= 1` bootstrap branch, so they need **no** signature.
+- **Idempotency**: every write is insert-if-absent (guarded by a `select count(1) from Strand.<T>`), so a founder restart / re-`addStrand` / `resumeStrand` is a no-op and never double-inserts or trips `InsertOnly`.
+- **Signing idiom (for the later signed flows)**: `schemas/strand.qsql` verifies a **single digest over a `'|'`-joined payload** (`verify(digest(payload,'sha256','utf8'), signature, pubkey, 'ed25519')`), distinct from the control layer's multi-field `buildAuthorizationMessage` concatenation. `signStrandPayload(payload, privateKeyB64)` is the matching signer (hash the payload to raw bytes, ed25519-sign those bytes); the invite/peer/rotation flows reuse it. `Header.Engine`/`EngineVersion` are pinned constants (`STRAND_ENGINE` = `quereus`) — a real engine-selection seam is future work.
+
 ### Strand Hibernation
 
 A party may participate in many strands (potentially hundreds), but most are inactive at any given time. Maintaining live libp2p connections for all strands wastes resources. The hibernation system manages strand instance lifecycle based on activity:
