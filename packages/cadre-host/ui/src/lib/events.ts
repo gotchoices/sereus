@@ -50,6 +50,7 @@ export function subscribeEvents(handler: EventHandler, opts: EventStreamOptions 
 		// SSR / test without EventSource — nothing to do.
 		return { close() { /* noop */ } };
 	}
+	const Ctor = ctor; // svelte-check doesn't preserve const narrowing into closures
 	const schedule = opts.backoffSchedule ?? BACKOFF_SCHEDULE_MS;
 
 	let closed = false;
@@ -64,7 +65,7 @@ export function subscribeEvents(handler: EventHandler, opts: EventStreamOptions 
 
 	function open(): void {
 		if (closed) return;
-		source = new ctor(url);
+		source = new Ctor(url);
 		const es = source;
 		es.onopen = () => {
 			if (closed) return;

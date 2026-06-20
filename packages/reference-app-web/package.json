@@ -8,6 +8,7 @@
     "build": "yarn typecheck && yarn typecheck:e2e && vite build",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
+    "check:svelte": "svelte-check",
     "typecheck:e2e": "tsc -p tsconfig.e2e.json --noEmit",
     "test:e2e": "playwright test",
     "test:e2e:install": "playwright install --with-deps chromium",

@@ -28,6 +28,7 @@
     "dep-check": "knip",
     "doc": "yarn workspaces foreach -A run doc",
     "typecheck": "yarn workspaces foreach -A run typecheck",
+    "check:svelte": "yarn workspaces foreach -A run check:svelte",
     "bump": "bumpp --recursive",
     "release": "yarn bump && yarn pub",
     "pub": "yarn pub:strand-proto && yarn pub:quereus-plugin-sereus && yarn pub:cadre-core && yarn pub:cadre-cli && yarn pub:cadre-provider && yarn pub:cadre-host",
