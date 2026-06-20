@@ -291,12 +291,16 @@ describe('consumeInvite', () => {
   it('admits a member with a same-UTC-day future expiry (canonical Now, not ISO)', async () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
-    // Expiry one HOUR after now, on the SAME calendar day. This is the case the
-    // canonicalDatetime(Now) choice exists for: both sides are T-separated ISO
-    // (e.g. `YYYY-MM-DDTHH:MM:SS`), so the lexical `>` compares time-of-day and
-    // admits. A regression to a raw ISO `Now` (`...T...000Z`) would mis-order
-    // because of the trailing `.000Z` suffix at position 19+ — the day-granular
-    // tests above would not catch that, so this test guards the divergence.
+    // Expiry one HOUR after now, on the SAME calendar day. Both sides are
+    // T-separated ISO (e.g. `YYYY-MM-DDTHH:MM:SS`), so the lexical `>` must
+    // compare time-of-day, not just the date, to admit this still-valid invite.
+    // This pins sub-day (time-of-day) granularity of the `Expiration > Now`
+    // comparison, which the day-granular tests above do not exercise. (Note: a
+    // one-hour gap diverges at the hour digit in the admit-correct direction, so
+    // it does NOT by itself distinguish canonical Now from a raw ISO `Now` —
+    // both admit here. The strand layer canonicalises Now regardless; see
+    // consumeInvite's doc comment for why the control layer's raw ISO Now is
+    // safe in practice.)
     const { inviteKey, invitePrivateKey } = await issueInvite(db, {
       authorityKeyPair: founder,
       expiration: base + 3_600_000,
