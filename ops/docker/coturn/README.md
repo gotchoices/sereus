@@ -81,13 +81,16 @@ It sends a STUN Binding request and prints your mapped (reflexive) address. See
 Render the active config locally, then run coturn briefly against it:
 
 ```bash
-# 1. Render
+# 1. Render (TURN_REALM is the realm knob; REALM is not read by entrypoint.sh)
 COTURN_RENDER_ONLY=1 LISTENING_PORT=3478 HOST_BIND_IP=0.0.0.0 \
-  REALM=sereus TURN_ENABLED=true TURN_SECRET=fake-secret-for-validation \
+  TURN_REALM=sereus TURN_ENABLED=true TURN_SECRET=fake-secret-for-validation \
   COTURN_TEMPLATE=./turnserver.conf COTURN_ACTIVE_CONF=/tmp/active.conf \
   bash ./entrypoint.sh
 
-# 2. Binary check (Docker; kill after a second — we only need the parse output)
+# 2. Binary check. Pull first so the 3s timeout covers only the parse, not the
+#    image download — otherwise a slow pull is killed mid-fetch and the grep
+#    below prints nothing, which misreads as a clean parse.
+docker pull coturn/coturn
 timeout 3 docker run --rm \
   -v /tmp/active.conf:/etc/coturn/turnserver.conf \
   coturn/coturn turnserver -c /etc/coturn/turnserver.conf 2>&1 | \
