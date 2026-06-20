@@ -210,6 +210,23 @@ describe('FileKeyStore specifics', () => {
 		expect(await store.list()).toEqual(['id']);
 	});
 
+	it('a failed first write leaves no slot and no .tmp debris (no phantom slot)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-firstfail-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+
+		// No prior slot: the rename that would publish the very first write fails.
+		vi.mocked(rename).mockRejectedValueOnce(new Error('simulated power loss'));
+		await expect(store.set('id', new Uint8Array([9, 9, 9, 9])))
+			.rejects.toThrow('simulated power loss');
+
+		// The slot was never published, so get() still reports it empty...
+		await expect(store.get('id')).resolves.toBeUndefined();
+		// ...and the temp file was cleaned up, leaving the directory empty.
+		expect(await readdir(dir)).toEqual([]);
+		expect(await store.list()).toEqual([]);
+	});
+
 	// POSIX-only: Windows has no 0o600-style mode bits to assert against.
 	it.skipIf(process.platform === 'win32')('keeps best-effort 0o600 on the final slot, even on overwrite', async () => {
 		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-perm-'));

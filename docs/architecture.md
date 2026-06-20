@@ -772,7 +772,10 @@ Key contract points:
   identity loss.
 - Reference backends ship for non-mobile nodes and tests: **`InMemoryKeyStore`**
   (exported from the package root, dependency-free) and **`FileKeyStore`**
-  (one file per slot, best-effort `0o600`). `FileKeyStore` imports `node:fs` and
+  (one file per slot, best-effort `0o600`). `FileKeyStore.set` is crash-atomic —
+  it writes a sibling temp file, fsyncs it, then atomically renames it over the
+  slot, so a crash mid-write leaves either the complete old bytes or the complete
+  new bytes, never a torn/unloadable slot. `FileKeyStore` imports `node:fs` and
   is therefore exported from the subpath `@serfab/cadre-core/key-store-file` so
   the cross-platform default entry never pulls a Node-only edge into RN/browser
   bundlers.
