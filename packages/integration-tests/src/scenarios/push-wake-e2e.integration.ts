@@ -15,36 +15,45 @@
  *     freshness + trust + signaling-first), and
  *   - the circuit-relay (signaling-first) dial to a NAT'd receiver.
  *
- * Three scenarios, each booting fresh nodes in a try/finally:
+ * Four scenarios, each booting fresh nodes in a try/finally:
  *   1. Happy path — direct dial of a hibernating member, wake accepted.
  *   2. NAT'd receiver reachable only via a circuit relay, wake accepted.
+ *      (Currently `it.skip` — see `push-wake-e2e-shared-authority-topology`.)
  *   3. Non-member sender — receiver rejects, strand stays hibernating.
+ *   4. Replication-backed authorization — membership written ONLY on an authority
+ *      node converges to the sender and receiver over the live control network, so
+ *      the wake passes the `isMember` / `resolvePeerAddrs` gates via REPLICATION,
+ *      with no local seeding on the node that consults them.
  *
- * ── Deviation from the source ticket (IMPORTANT — read before reviewing) ──────
+ * ── Control-DB replication: locally-seeded vs replication-backed (READ THIS) ──
  *
- * The ticket assumed the control DB is a *replicating* Optimystic store, so a
- * `registerSelf()` / `insertSelfPeerRecord()` on one node would become visible on
- * another via pull-on-read ("no replication sleep/poll needed; just query after
- * the write"). **That does not hold in this harness.** A diagnostic (two control
- * nodes, a live control connection) showed the receiver never observes the
- * server's `CadrePeer` row even after 24s — cross-node control-DB reads do not
- * converge here, consistent with the "control-network cohort discovery is TODO"
- * note in `strand-formation-e2e.integration.ts`. Strand-level tests work around
- * the same gap by *manually* dialing strand libp2p nodes; the control plane has
- * no equivalent yet.
- *
- * Because the wake **wire path** (the actual subject of this ticket) only needs
- * each node's *local* control DB to hold the membership facts that node consults,
- * we seed those locally instead of relying on replication:
+ * The wake gate (`isMember`) and the sender's address resolve (`resolvePeerAddrs`)
+ * both read a node's LOCAL control DB. Scenarios 1 and 3 seed those facts locally
+ * on the consulting node — fast wire-path coverage that needs no control cohort:
  *   - the DIALER (server / outsider) is its own authority and seeds the target's
  *     self-signed record so `resolvePeerAddrs(target)` passes its gates;
  *   - the RECEIVER is its own authority and `authorizePeer(sender)` so its wake
  *     gate `isMember(sender)` is true (scenario 3 deliberately omits this).
- * This keeps every byte of the real dial/handle/framing/resolve path under test;
- * only the (currently non-functional) cross-node DB propagation is sidestepped.
- * See the review handoff for the follow-up ticket this should spawn.
+ * This keeps every byte of the real dial/handle/framing/resolve path under test.
  *
- * Second deviation — NAT receiver listen address: with
+ * Network-backing the control DB has since LANDED (`control-db-network-backed`):
+ * the `CadreControl` tables are a party-shared, replicated Optimystic store, so a
+ * fact written on one cadre node converges to a connected peer by pull-on-read
+ * (proven by `control-db-two-node-convergence.integration.ts`). **Scenario 4**
+ * exercises that real production path: a SINGLE authority node writes the
+ * membership facts (the sender's `CadrePeer` row + the receiver's address record)
+ * and they converge to the receiver and sender respectively — so the wake passes
+ * its gates via REPLICATION, with no local seeding on the node that consults them.
+ * The locally-seeded scenarios are kept as the fast wire-path floor; scenario 4 is
+ * the replication-backed proof.
+ *
+ * A consequence of the shared store: two nodes in one party can no longer each
+ * self-appoint as genesis authority — so scenario 4 uses ONE authority and the
+ * other nodes are plain members. Scenarios 1 and 3 avoid that collision by never
+ * forming a control cohort (their nodes genesis local-only and dial only the wake
+ * wire); see `push-wake-e2e-shared-authority-topology` for the skipped scenario 2.
+ *
+ * Scenario 2 — NAT receiver listen address: with
  * `@libp2p/circuit-relay-v2@4.x`, a *discovered* relay reservation is skipped
  * unless a `/p2p-circuit` listen address has populated the pending-reservation
  * queue (reservation-store.ts `HadEnoughRelaysError` guard). So the NAT'd receiver
@@ -52,7 +61,7 @@
  * dialable address (genuinely NAT'd), but the reservation is deterministic rather
  * than discovery-timing dependent. (The ticket's `listenAddrs: []` never reserves.)
  *
- * Third deviation — NAT receiver is NOT hibernated, by design. Scenario 2's unique
+ * Scenario 2 — NAT receiver is NOT hibernated, by design. Scenario 2's unique
  * subject is the SENDER reaching a NAT'd peer: the signaling-first resolve and the
  * relayed dial over a libp2p "limited" (circuit) connection. (That dial used to
  * fail outright with `LimitedConnectionError`; this ticket fixed it — see the
@@ -73,6 +82,7 @@ import { describe, it, expect } from 'vitest';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
@@ -84,7 +94,7 @@ import {
 	ed25519PublicKeyB64FromPeerId,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig, SAppConfig, WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
-import { waitUntil } from '../harness/index.js';
+import { waitUntil, waitForCadrePeerConverged, waitForCrossNodeControlSync } from '../harness/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -181,6 +191,36 @@ async function seedReceiverRecord(
 	);
 	await authorityNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);
 	return record;
+}
+
+/**
+ * Establish a DIRECT control-network connection from `reader` to `writer` and wait
+ * until BOTH sides report it (scoped to this specific peer pair, so the recipe is
+ * correct when several readers attach to one writer). This is the test-only
+ * stand-in for production control-cohort discovery, proven by
+ * `control-db-two-node-convergence.integration.ts`. Both-sides confirmation is a
+ * hard precondition of a replicating write: only once each peer sees the connection
+ * can the control collection's cohort span them and a commit be non-local-only.
+ */
+async function connectControlNodes(reader: CadreNode, writer: CadreNode): Promise<void> {
+	const readerNode = reader.getControlNode()!;
+	const writerNode = writer.getControlNode()!;
+	const writerAddrs = writerNode.getMultiaddrs();
+	expect(writerAddrs.length).toBeGreaterThan(0);
+	const readerPeerId = reader.peerId!.toString();
+	const writerPeerId = writer.peerId!.toString();
+
+	await readerNode.dial(writerAddrs[0]!);
+	await waitUntil(() => readerNode.getConnections().some((c) => c.remotePeer.toString() === writerPeerId), {
+		timeoutMs: 15_000,
+		intervalMs: 250,
+		description: 'reader control node connects to writer',
+	});
+	await waitUntil(() => writerNode.getConnections().some((c) => c.remotePeer.toString() === readerPeerId), {
+		timeoutMs: 15_000,
+		intervalMs: 250,
+		description: 'writer control node sees inbound connection from reader',
+	});
 }
 
 /**
@@ -395,4 +435,131 @@ describe('E2E push-wake over the control network', () => {
 			await Rx?.stop();
 		}
 	}, 60_000);
+
+	// ── 4. Replication-backed authorization: membership written only on an authority ──
+	//
+	// The production path: a single party authority writes the membership facts ONCE,
+	// they replicate over the live control network, and the consulting node reads a
+	// SIBLING-written row — no local seeding on the node that gates on it. This proves
+	// the `isMember` (receiver) and `resolvePeerAddrs` (sender) gates pass via
+	// convergence, which scenarios 1 & 3 sidestep by seeding locally.
+	//
+	// Three design choices keep this deterministic against the network-backed control DB
+	// (the same store the proven two-node convergence test exercises):
+	//
+	// 1. ONE WRITER, PURE READERS. The shared `CadreControl` store is optimistically
+	//    concurrent — two cadre nodes committing to the same CadrePeer tree block at once
+	//    collide (`stale revision` / stream reset), and the transactor does not retry. The
+	//    two-node convergence test is clean because ONE node writes and the other only
+	//    reads. So here the authority A is the SOLE writer the test depends on: it writes
+	//    S's membership (`authorizePeer`) AND vouches Rx's full self-signed address record
+	//    (`seedReceiverRecord` → one authority-signed insert carrying Rx's own `Sig`). S
+	//    and Rx never write a row the assertions hinge on; they pull A's rows on read.
+	//    (Rx's own background `registerSelf` is best-effort and non-fatal — it can only
+	//    self-UPDATE its already-resolvable row, never a row the test waits on.)
+	//
+	// 2. FULL MESH. All three nodes are directly connected (each link both-sides
+	//    confirmed). The control collection's cluster for a membership block spans the
+	//    cohort, and a 3-member commit needs the cluster members to reach EACH OTHER — a
+	//    star (only S→A, Rx→A) leaves S↔Rx unlinked and resets streams it cannot route.
+	//    This is the ticket's "ensure all three are connected" precondition.
+	//
+	// 3. NO ADDR-BEARING NON-SELF ROWS. Authority A and sender S use EPHEMERAL libp2p
+	//    identities (no `privateKey`), so they never self-publish a `CadrePeer` address
+	//    row (`registerSelf` skips without an identity key — cadre-node.ts:600-604).
+	//    The woken strand's `networked` resume seeds its cohort from EVERY CadrePeer row
+	//    with a dialable addr (`deriveCohortSeed` → `resumeStrandRuntime`,
+	//    cadre-node.ts:1209-1216); an authority/relay advertising a control addr would be
+	//    (wrongly) recruited into the strand cluster and fail strand-repo negotiation —
+	//    the known `control-network-cohort-discovery` gap. Keeping the only other member
+	//    (S) addr-less means Rx's resume stands up networked-SOLO exactly as scenario 1
+	//    does, isolating THIS test to replication-backed authorization. A is also NOT a
+	//    relay here: with three nodes a relay invites unstable S↔Rx circuit links; direct
+	//    WebSocket dials keep the cohort stable. (Only Rx needs a stable key — to bind the
+	//    self-signature in the address record A vouches for it.)
+	it('wakes a member whose authorization and address were learned by control-DB replication, not local seeding', async () => {
+		let A: CadreNode | undefined;  // sole party authority + storage (holds the CadrePeer blocks)
+		let S: CadreNode | undefined;  // sender — NOT an authority; learns Rx's address by replication
+		let Rx: CadreNode | undefined; // hibernating receiver — NOT an authority; learns S's membership by replication
+		try {
+			const partyId = `pushwake-repl-${Date.now()}`;
+			const strandId = `strand-repl-${Date.now()}`;
+
+			// Authority A: the single genesis authority + sole control-DB writer. Storage
+			// profile so it holds the CadrePeer blocks the readers pull. Its authority keypair
+			// is enrolled explicitly (independent of the node's ephemeral identity). Genesis
+			// BEFORE forming a cohort so its lone AuthorityKey commits without a shared-authority
+			// collision. NOT a relay (see the design note) — direct dials keep the cohort stable.
+			const aKey = await generateKeyPair('Ed25519');
+			A = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
+			await A.start();
+			await makeOwnAuthority(A, aKey);
+
+			// Sender S and receiver Rx are plain members — NEITHER is its own authority, so
+			// neither can self-insert any control row. Every membership fact they consult must
+			// have been written by A and pulled over the wire. S's session peerId is stable.
+			S = new CadreNode(nodeConfig({ partyId }));
+			await S.start();
+			const sPeerId = S.peerId!.toString();
+
+			const rxKey = await generateKeyPair('Ed25519');
+			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
+			await Rx.start();
+			const rxPeerId = Rx.peerId!.toString();
+
+			// CONNECT BEFORE WRITE, FULL MESH: seat A, S and Rx in one control cohort (each
+			// link both-sides confirmed) so A's writes commit cohort-wide, not local-only — the
+			// convergence precondition. The mesh is deliberate: the control collection's cluster
+			// for a membership block spans all three, and a 3-member commit needs the cluster
+			// members to reach EACH OTHER. A star (only S→A, Rx→A) leaves S↔Rx unlinked, so such
+			// a commit resets streams it cannot route — the "ensure all three are connected" note.
+			await connectControlNodes(S, A);
+			await connectControlNodes(Rx, A);
+			await connectControlNodes(Rx, S);
+
+			// A — and ONLY A — writes the membership facts the assertions hinge on:
+			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
+			//   • Rx's full self-signed address record (`seedReceiverRecord` — one authority
+			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
+			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
+			// `seedReceiverRecord(S, ...)`): each consulting node reads a SIBLING-written row.
+			await A.authorizePeer(sPeerId);
+			await seedReceiverRecord(A, rxPeerId, rxKey, controlAddrs(Rx));
+
+			// Converge the RECEIVER on S's membership (pull-on-read), then assert the production
+			// gate passes via REPLICATION — with NO local `Rx.authorizePeer(...)` anywhere above.
+			await waitForCadrePeerConverged(Rx.getControlDatabase()!, sPeerId, {
+				timeoutMs: 30_000,
+				description: "Rx observes S's CadrePeer membership row written on A",
+			});
+			expect((await Rx.getControlDatabase()!.queryCadrePeers()).some((p) => p.peerId === sPeerId)).toBe(true);
+			expect(await Rx.isMember(sPeerId)).toBe(true);
+
+			// Negative, preserved in the replicated topology: a peer A never authorized never
+			// converges anywhere — replication is selective, not "trust everyone once connected".
+			const strangerPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+			expect(await Rx.isMember(strangerPeerId)).toBe(false);
+
+			// Converge the SENDER on Rx's sibling-written, resolvable record. Poll the real
+			// resolve path (binding + self-sig + freshness + trust gates), not just row presence.
+			await waitForCrossNodeControlSync(
+				S.getControlDatabase()!,
+				async () => (await S!.resolvePeerAddrs(rxPeerId)).length > 0,
+				{ timeoutMs: 30_000, description: "S resolves Rx's address record via replication" },
+			);
+			expect((await S.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
+
+			await bringUpHibernatingStrand(Rx, strandId);
+
+			// The real wake: pushWake → resolvePeerAddrs (replicated record) → dialWake, and the
+			// receiver's `isMember` gate passes on the REPLICATED membership row. Strand wakes.
+			const ack: WakeAck = await S.pushWake(rxPeerId, strandId, 'replication-backed wake');
+			expect(ack).toEqual({ accepted: true, status: 'active' });
+			expect(Rx.getStrand(strandId)?.status).toBe('active');
+		} finally {
+			await Rx?.stop();
+			await S?.stop();
+			await A?.stop();
+		}
+	}, 90_000);
 });
