@@ -180,6 +180,27 @@ export interface NetworkConfig {
    * `libp2p-node-base` for the underlying option.
    */
   connectionGater?: ConnectionGater;
+  /**
+   * Tuning for the proactive control-cohort dial routine
+   * ({@link CadreNode.reconcileControlCohort}), which keeps a party's control
+   * nodes connected so the `CadreControl` collections form a replicating cohort.
+   * Both fields are optional; omit for the defaults
+   * ({@link DEFAULT_CONTROL_COHORT_TARGET_DEGREE} /
+   * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}).
+   */
+  controlCohort?: {
+    /**
+     * Cap on the number of NON-authority siblings dialed per reconcile pass
+     * (backbone/authority members are always dialed and do not count). Defaults
+     * to {@link DEFAULT_CONTROL_COHORT_TARGET_DEGREE}.
+     */
+    targetDegree?: number;
+    /**
+     * Recurring reconcile cadence in ms. Defaults to
+     * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}.
+     */
+    reconcileMs?: number;
+  };
 }
 
 /**

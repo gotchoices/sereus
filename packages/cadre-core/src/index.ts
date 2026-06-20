@@ -195,6 +195,15 @@ export {
   type FanoutMember
 } from './push-fanout.js';
 
+// Control-cohort dial selection (backbone-preferential, bounded out-degree) +
+// the cadence/degree defaults the proactive reconcile routine reads.
+export {
+  selectControlCohortDials,
+  DEFAULT_CONTROL_COHORT_RECONCILE_MS,
+  DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
+  type ControlCohortSelection
+} from './control-cohort.js';
+
 // Seed trust policy (trust anchor for incoming seeds)
 export {
   dbAnchoredTrustPolicy,

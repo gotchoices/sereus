@@ -2,6 +2,7 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { peerIdFromString } from '@libp2p/peer-id';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
@@ -54,6 +55,12 @@ import {
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
 import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
+import type { CohortPeerRow } from './strand-cohort.js';
+import {
+  selectControlCohortDials,
+  DEFAULT_CONTROL_COHORT_RECONCILE_MS,
+  DEFAULT_CONTROL_COHORT_TARGET_DEGREE
+} from './control-cohort.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase } from './control-database.js';
@@ -146,6 +153,20 @@ export class CadreNode implements SAppIdLookup {
   private recordRefreshTimer: ReturnType<typeof setInterval> | null = null;
   /** Listener that re-publishes the self record when reachable addresses change. */
   private selfPeerUpdateHandler: (() => void) | null = null;
+  /**
+   * Recurring proactive control-cohort dial cadence (see
+   * {@link reconcileControlCohort}). Wired alongside {@link recordRefreshTimer}
+   * in {@link startRecordRefresh} and torn down symmetrically in
+   * {@link stopRecordRefresh}; `.unref()`'d so it never keeps the loop alive.
+   */
+  private controlCohortReconcileTimer: ReturnType<typeof setInterval> | null = null;
+  /**
+   * Single-flight guard for {@link reconcileControlCohort}. The eager start pass,
+   * the recurring interval, and the `self:peer:update` trigger can fire close
+   * together; collapsing concurrent passes into one in-flight run prevents two
+   * passes from double-dialing the same siblings (mirrors {@link registerSelfInFlight}).
+   */
+  private reconcileControlCohortInFlight: Promise<void> | null = null;
   /**
    * Single-flight guard for {@link registerSelf}. Concurrent callers (the explicit
    * CLI `--authority` publish, the 1s startup timer, the TTL heartbeat, and the
@@ -546,7 +567,12 @@ export class CadreNode implements SAppIdLookup {
           // Background task — a failed publish must not crash the node.
           log('Self-registration failed: %o', error);
         }
+        // Wire the ongoing refresh + control-cohort reconcile cadence, then run
+        // an eager reconcile pass once the node has settled (the recurring
+        // interval was just armed inside startRecordRefresh).
         this.startRecordRefresh();
+        void this.reconcileControlCohort().catch((error) =>
+          log('Control-cohort reconcile (start) failed: %o', error));
       })();
     }, 1000); // Small delay to ensure node is fully started
     // Node-only: don't keep the event loop alive solely for this timer.
@@ -710,13 +736,29 @@ export class CadreNode implements SAppIdLookup {
     const republish = (reason: string) => {
       void this.registerSelf().catch((error) => log('Record refresh (%s) failed: %o', reason, error));
     };
+    const reconcile = (reason: string) => {
+      void this.reconcileControlCohort().catch((error) =>
+        log('Control-cohort reconcile (%s) failed: %o', reason, error));
+    };
 
-    this.selfPeerUpdateHandler = () => republish('self:peer:update');
+    // Address churn re-publishes the self record AND re-checks the control cohort:
+    // a relay-reservation rotation / NAT change can drop a sibling connection, so
+    // the next pass should re-observe and re-dial it.
+    this.selfPeerUpdateHandler = () => {
+      republish('self:peer:update');
+      reconcile('self:peer:update');
+    };
     this.controlNode.addEventListener('self:peer:update', this.selfPeerUpdateHandler);
 
     this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
     (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
-    log('Record refresh wired (heartbeat=%dms)', DEFAULT_PEER_RECORD_HEARTBEAT_MS);
+
+    const reconcileMs = this.config.network?.controlCohort?.reconcileMs ?? DEFAULT_CONTROL_COHORT_RECONCILE_MS;
+    this.controlCohortReconcileTimer = setInterval(() => reconcile('interval'), reconcileMs);
+    (this.controlCohortReconcileTimer as { unref?: () => void } | null)?.unref?.();
+
+    log('Record refresh wired (heartbeat=%dms, cohortReconcile=%dms)',
+      DEFAULT_PEER_RECORD_HEARTBEAT_MS, reconcileMs);
   }
 
   /** Tear down the self-record refresh timers + listener (see {@link cleanup}). */
@@ -728,6 +770,10 @@ export class CadreNode implements SAppIdLookup {
     if (this.recordRefreshTimer) {
       clearInterval(this.recordRefreshTimer);
       this.recordRefreshTimer = null;
+    }
+    if (this.controlCohortReconcileTimer) {
+      clearInterval(this.controlCohortReconcileTimer);
+      this.controlCohortReconcileTimer = null;
     }
     if (this.controlNode && this.selfPeerUpdateHandler) {
       this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
@@ -817,6 +863,170 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     return out;
+  }
+
+  // ============================================================================
+  // Proactive control-cohort dial
+  //
+  // The control collections only replicate once a party's nodes are
+  // transport-connected (so FRET seats each peer in the others' keyspace cohort)
+  // AND a write happens while that cohort has ≥2 members. There is no production
+  // mechanism that makes a party's control nodes actively connect to each other;
+  // the convergence test does it by hand with a manual dial(). reconcileControlCohort
+  // productionizes that: each node resolves its known siblings' control addresses
+  // and proactively dials a bounded, backbone-preferential set, re-observing and
+  // re-dialing dropped connections on each pass. See docs/architecture.md (Control
+  // Network) and control-cohort.ts for the selection policy.
+  // ============================================================================
+
+  /**
+   * Run one proactive control-cohort dial pass to keep this node connected to its
+   * cadre siblings (so the `CadreControl` collections form a replicating cohort).
+   * Public so the cohort-growth-driven re-replication path
+   * (`control-write-ensure-replicated`) and tests can trigger a pass on demand;
+   * normally driven by the eager start pass, the recurring interval, and
+   * `self:peer:update` (all wired in {@link startRecordRefresh}).
+   *
+   * Concurrent triggers collapse into a single in-flight pass
+   * (see {@link reconcileControlCohortInFlight}) so two passes never double-dial.
+   * Best-effort throughout: a failure to resolve/dial any one sibling is logged
+   * and the pass continues; the whole pass is a no-op when the node is alone.
+   */
+  async reconcileControlCohort(): Promise<void> {
+    if (this.reconcileControlCohortInFlight) {
+      return this.reconcileControlCohortInFlight;
+    }
+    const op = this.runReconcileControlCohort();
+    this.reconcileControlCohortInFlight = op;
+    try {
+      await op;
+    } finally {
+      this.reconcileControlCohortInFlight = null;
+    }
+  }
+
+  /** Body of {@link reconcileControlCohort}; serialised by its single-flight guard. */
+  private async runReconcileControlCohort(): Promise<void> {
+    // Shutdown / not-yet-started guard (mirrors publishSelfRecord). A pass that
+    // fires after stop() began must early-return rather than touch a torn-down node.
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+    const selfPeerId = this.controlNode.peerId.toString();
+
+    // 1. Enumerate known siblings. This membership read is itself a pull-on-read
+    //    that helps the CadrePeer table converge — a reader-only node converges
+    //    purely by these reads.
+    const members = await this.listMembers();
+    const siblings = members.filter((m) => m.peerId !== selfPeerId);
+    if (siblings.length === 0) {
+      // Genuinely alone (cold start with no rows, or a solo cadre): nothing to
+      // dial. Must not throw or busy-loop.
+      return;
+    }
+    // Re-guard after the await: a stop() may have raced the membership read.
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+
+    // 2. Classify backbone (authority) members and select a bounded dial set.
+    const authorityKeys = await this.controlDatabase.getAuthorityKeys();
+    if (!this._running || !this.controlNode) {
+      return;
+    }
+    const targetDegree = this.config.network?.controlCohort?.targetDegree
+      ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
+    const { dials, cappedNonAuthority } = selectControlCohortDials(siblings, authorityKeys, targetDegree);
+    if (cappedNonAuthority > 0) {
+      // Don't silently bound coverage — surface what the out-degree cap dropped.
+      log('reconcileControlCohort: capped %d non-authority sibling(s) at targetDegree=%d',
+        cappedNonAuthority, targetDegree);
+    }
+
+    // 3. Skip already-connected peers (no re-dial / churn for live connections).
+    const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
+
+    // 4. Resolve + dial each selected, not-yet-connected sibling, best-effort.
+    let dialed = 0;
+    for (const sibling of dials) {
+      if (!this._running || !this.controlNode) {
+        return;
+      }
+      if (connected.has(sibling.peerId)) {
+        continue;
+      }
+      if (await this.dialControlSibling(sibling)) {
+        dialed++;
+      }
+    }
+    log('reconcileControlCohort: pass complete (siblings=%d, selected=%d, dialed=%d)',
+      siblings.length, dials.length, dialed);
+  }
+
+  /**
+   * Resolve one sibling's control-network dial addresses and dial it, best-effort.
+   * Returns whether a dial was attempted (false when no address resolves).
+   *
+   * A per-peer failure (NAT, offline, relay down, connection-gater denial) is
+   * logged and swallowed so one unreachable sibling never aborts the pass —
+   * exactly like {@link SeedBootstrapService.applySeed}'s authority-dial loop. A
+   * failed dial is simply retried on the next pass.
+   */
+  private async dialControlSibling(sibling: CohortPeerRow): Promise<boolean> {
+    const controlNode = this.controlNode;
+    if (!controlNode) {
+      return false;
+    }
+    const addrs = await this.resolveControlDialAddrs(sibling.peerId);
+    if (addrs.length === 0) {
+      log('reconcileControlCohort: no dialable control address for sibling %s; skipping', sibling.peerId);
+      return false;
+    }
+    try {
+      log('reconcileControlCohort: dialing sibling %s (%d addr(s))', sibling.peerId, addrs.length);
+      await controlNode.dial(addrs);
+      return true;
+    } catch (error) {
+      log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
+      return false;
+    }
+  }
+
+  /**
+   * Resolve a sibling's control-network dial addresses for the reconcile pass.
+   *
+   * Primary (steady state): the signed, fresh, trust-gated control addresses from
+   * the converged `CadrePeer` record via {@link resolvePeerAddrs}. Fallback (cold
+   * start): the libp2p peerStore entries `applySeed` populated, used only while the
+   * record is not yet resolvable. Returns `[]` (never throws) when neither yields
+   * an address — that sibling is skipped this pass.
+   */
+  private async resolveControlDialAddrs(peerId: string): Promise<Multiaddr[]> {
+    const resolved = await this.resolvePeerAddrs(peerId);
+    if (resolved.length > 0) {
+      return resolved;
+    }
+    return this.peerStoreAddrs(peerId);
+  }
+
+  /**
+   * Cold-start fallback: the libp2p peerStore multiaddrs for `peerId` (seeded by
+   * {@link SeedBootstrapService.applySeed}). Returns `[]` on a missing entry or any
+   * parse/lookup failure — never throws.
+   */
+  private async peerStoreAddrs(peerId: string): Promise<Multiaddr[]> {
+    if (!this.controlNode) {
+      return [];
+    }
+    try {
+      const peer = await this.controlNode.peerStore.get(peerIdFromString(peerId));
+      // Re-parse through the top-level multiaddr parser so the returned type matches
+      // resolvePeerAddrs (the peerStore bundles its own @multiformats/multiaddr copy).
+      return this.parseMultiaddrs(peer.addresses.map((a) => a.multiaddr.toString()));
+    } catch (error) {
+      log('reconcileControlCohort: peerStore lookup for %s failed: %o', peerId, error);
+      return [];
+    }
   }
 
   // ============================================================================
