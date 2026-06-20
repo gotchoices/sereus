@@ -245,6 +245,34 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(Number(row?.c)).toBe(2);
   });
 
+  describe('MemberKeyClosedOnly constraint', () => {
+    it('rejects an open strand with a non-null MemberPrivateKey', async () => {
+      const before = await strandCount();
+      await expect(
+        db.insertStrand('strand-' + rand(), 'o', authorityPublicKey, signMessage, 'memkey-' + rand()),
+      ).rejects.toThrow();
+      expect(await strandCount()).toBe(before);
+    });
+
+    it('admits a closed strand with a MemberPrivateKey', async () => {
+      const strandId = 'strand-closed-' + rand();
+      const before = await strandCount();
+      await db.insertStrand(strandId, 'c', authorityPublicKey, signMessage, 'memkey-' + rand());
+      expect(await strandCount()).toBe(before + 1);
+      const row = await rawDb.get('select Type from CadreControl.Strand where Id = ?', [strandId]);
+      expect(row?.Type).toBe('c');
+    });
+
+    it('admits an open strand with a null MemberPrivateKey', async () => {
+      const strandId = 'strand-open-' + rand();
+      const before = await strandCount();
+      await db.insertStrand(strandId, 'o', authorityPublicKey, signMessage);
+      expect(await strandCount()).toBe(before + 1);
+      const row = await rawDb.get('select Type from CadreControl.Strand where Id = ?', [strandId]);
+      expect(row?.Type).toBe('o');
+    });
+  });
+
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
     it('isTokenValid: true for a known unexpired token, false for unknown or expired', async () => {
       const recorder = new ControlFormationUsageRecorder(db);

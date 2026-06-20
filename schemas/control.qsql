@@ -42,7 +42,11 @@ declare schema CadreControl {
                 -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
                 or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
         ),
-        -- TODO: constraint to ensure member private key only if closed
+        constraint MemberKeyClosedOnly check (
+            -- An open strand ('o') has no membership gate, so it must not carry a
+            -- member key. A non-null MemberPrivateKey requires a closed strand ('c').
+            new.MemberPrivateKey is null or new.Type = 'c'
+        )
     ) with context (AuthorityKey text, Signature text);
 
     -- A peer (node) that is part of the cadre, carrying a self-published,
