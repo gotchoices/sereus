@@ -8,9 +8,9 @@
 --
 -- The signer (see rbac-signed-write.integration.ts) computes the exact same bytes:
 --   payload   = Id || '|' || Name || '|' || coalesce(Value,'')
---   hashBytes = digest(payload, 'sha256', 'utf8', 'bytes')
+--   hashBytes = digest([payload], 'sha256', 'bytes')
 --   Signature = sign(hashBytes, memberPrivateKey, 'ed25519')
--- and `digest(payload,'sha256','utf8')` below yields the base64url form of those same
+-- and `digest(payload)` below yields the base64url form of those same
 -- hashBytes, which verify() decodes (its default inputEncoding is base64url) before
 -- checking against Signature/MemberKey.
 --
@@ -33,7 +33,7 @@ table Items (
         (old.Id is null
             and new.CreatedBy = context.MemberKey
             and verify(
-                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, ''), 'sha256', 'utf8'),
+                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, '')),
                 context.Signature, context.MemberKey, 'ed25519'))
         -- Update: only the original creator may update, with a fresh signature over the
         -- new payload, and may not reassign ownership.
@@ -41,12 +41,12 @@ table Items (
             and old.CreatedBy = context.MemberKey
             and new.CreatedBy = context.MemberKey
             and verify(
-                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, ''), 'sha256', 'utf8'),
+                digest(new.Id || '|' || new.Name || '|' || coalesce(new.Value, '')),
                 context.Signature, context.MemberKey, 'ed25519'))
     ),
     constraint AuthorizedDelete check on delete (
         -- Only the creator can delete, proven by a signature over the row key.
         old.CreatedBy = context.MemberKey
-        and verify(digest(old.Id, 'sha256', 'utf8'), context.Signature, context.MemberKey, 'ed25519')
+        and verify(digest(old.Id), context.Signature, context.MemberKey, 'ed25519')
     )
 ) with context (MemberKey text, Signature text null);

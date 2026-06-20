@@ -138,7 +138,7 @@ function itemPayload(id: string, name: string, value: string | null): string {
 
 /** Sign the Id|Name|Value payload for an App.Items insert/update with a member's key. */
 function signItem(privateKeyB64: string, id: string, name: string, value: string | null): string {
-	const hashBytes = digest(itemPayload(id, name, value), 'sha256', 'utf8', 'bytes') as Uint8Array;
+	const hashBytes = digest([itemPayload(id, name, value)], 'sha256', 'bytes') as Uint8Array;
 	return sign(hashBytes, privateKeyB64, SAPP_CURVE, 'bytes', 'base64url', 'base64url') as string;
 }
 

@@ -103,18 +103,18 @@ function itemPayload(id: string, name: string, value: string | null): string {
 
 /**
  * Sign the Id|Name|Value payload for an insert/update. We hash to raw bytes and sign
- * those bytes; the constraint passes `digest(payload,'sha256','utf8')` (the base64url
+ * those bytes; the constraint passes `digest(payload)` (the base64url
  * form of the same hash) to verify(), whose default inputEncoding decodes it back to
  * these bytes — so signer and verifier operate on identical data.
  */
 function signItem(member: Member, id: string, name: string, value: string | null): string {
-	const hashBytes = digest(itemPayload(id, name, value), 'sha256', 'utf8', 'bytes') as Uint8Array;
+	const hashBytes = digest([itemPayload(id, name, value)], 'sha256', 'bytes') as Uint8Array;
 	return sign(hashBytes, member.privateKey, SAPP_CURVE, 'bytes', 'base64url', 'base64url') as string;
 }
 
 /** Sign the row-key payload for a delete (matches AuthorizedDelete's digest(old.Id)). */
 function signDelete(member: Member, id: string): string {
-	const hashBytes = digest(id, 'sha256', 'utf8', 'bytes') as Uint8Array;
+	const hashBytes = digest([id], 'sha256', 'bytes') as Uint8Array;
 	return sign(hashBytes, member.privateKey, SAPP_CURVE, 'bytes', 'base64url', 'base64url') as string;
 }
 
