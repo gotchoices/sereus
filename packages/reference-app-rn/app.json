@@ -16,7 +16,8 @@
       "infoPlist": {
         "UIBackgroundModes": [
           "remote-notification"
-        ]
+        ],
+        "NSFaceIDUsageDescription": "Sereus uses Face ID to unlock this device's secure identity key."
       }
     },
     "android": {

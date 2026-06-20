@@ -832,7 +832,11 @@ load-or-create path does the rest. Bridging details the backend handles:
 - **Access vs absence.** A thrown `getItemAsync` (e.g. a cancelled biometric
   prompt) surfaces as `KeyStoreAccessError`; a `null` return becomes `undefined`.
   Only `undefined` triggers regeneration, so a transient access failure never
-  orphans the real identity.
+  orphans the real identity. For a **gated** slot (`requireAuthentication: true`) a
+  `null` read is additionally disambiguated via the unauthenticated `sereus.ks.__index`
+  marker — keyId present in the index ⇒ was-written-but-now-unreadable ⇒
+  `KeyStoreAccessError` (fail-closed); absent ⇒ genuinely empty ⇒ `undefined`. For
+  an ungated slot (today's default) `null` always means `undefined`, unchanged.
 
 **Gating.** The identity slot defaults to **no `requireAuthentication`** (the node
 must come up headless / in the background — push-wake and the background runner —
@@ -859,8 +863,12 @@ generation (logged, never logging key material).
 - **Biometric invalidation.** Entries written with `requireAuthentication: true`
   are invalidated when the device's biometric set changes (new fingerprint /
   re-enrolled Face ID). Per Expo's API, a subsequent read then resolves `null`
-  (indistinguishable from an empty slot) rather than throwing — another reason the
-  identity slot is not biometric-gated by default.
+  (indistinguishable, at the entry level, from an empty slot) rather than throwing.
+  The unauthenticated `__index`-marker guard now makes an invalidated gated slot
+  **fail closed** (`KeyStoreAccessError`, no silent regeneration over the real
+  identity), so biometric gating is safe to enable once an `NSFaceIDUsageDescription`
+  string is present in `app.json`. The identity slot nonetheless stays ungated by
+  default because it must come up headless / push-woken (no prompt available).
 - **Recovery.** A node that has lost its enclave entries (Android reinstall,
   biometric invalidation, device loss) does **not** recover the old key. It
   re-enrolls from another cadre node via the existing invite/seed flow

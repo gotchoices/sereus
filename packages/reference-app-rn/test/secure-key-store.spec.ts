@@ -212,6 +212,76 @@ describe('SecureStoreKeyStore — access vs absence', () => {
 	});
 });
 
+// ── Gated-slot null discriminator (biometric-invalidated vs empty) ─────────────
+// For a slot written with requireAuthentication: true, Expo resolves a
+// biometric-invalidated entry to `null`, indistinguishable at the entry level from
+// a genuinely empty slot. The unauthenticated __index marker disambiguates: keyId
+// in the index + material null ⇒ was-present-but-now-unreadable ⇒
+// KeyStoreAccessError (fail-closed, no regeneration); keyId absent ⇒ genuinely
+// empty / first launch ⇒ undefined. Ungated slots keep null ⇒ undefined verbatim.
+
+describe('SecureStoreKeyStore — gated null discriminator', () => {
+	const KEY = 'cadre/identity';
+
+	/**
+	 * Gated store with KEY set, then its material entry wiped while the __index
+	 * marker is left intact — the on-device shape of a biometric-invalidated gated
+	 * slot (Expo reads the entry as null, but the unauthenticated index still
+	 * records that the slot was written).
+	 */
+	async function gatedInvalidated(
+		options?: SecureStoreKeyStoreOptions,
+	): Promise<{ store: SecureStoreKeyStore; fake: FakeSecureStore }> {
+		const { store, fake } = makeStore({ requireAuthentication: true, ...options });
+		await store.set(KEY, new Uint8Array([1, 2, 3]));
+		for (const k of fake.materialKeys()) fake.map.delete(k); // drop material, keep __index
+		return { store, fake };
+	}
+
+	it('gated + material null + keyId IN index ⇒ KeyStoreAccessError (no silent regeneration)', async () => {
+		const { store, fake } = await gatedInvalidated();
+		expect(fake.map.has(INDEX_KEY)).toBe(true); // marker survived the invalidation
+		expect(fake.materialKeys()).toEqual([]);    // material is gone
+
+		const result = store.get(KEY);
+		await expect(result).rejects.toBeInstanceOf(KeyStoreAccessError);
+		await expect(result).rejects.toMatchObject({ keyId: KEY });
+	});
+
+	it('gated + material null + keyId NOT in index ⇒ undefined (true first launch)', async () => {
+		const { store } = makeStore({ requireAuthentication: true });
+		await expect(store.get(KEY)).resolves.toBeUndefined();
+	});
+
+	it("ungated + material null ⇒ undefined even with the keyId forced into the index (today's behaviour)", async () => {
+		const { store, fake } = makeStore(); // ungated default — shipped path
+		fake.map.set(INDEX_KEY, JSON.stringify([KEY])); // index says present, but no material
+		await expect(store.get(KEY)).resolves.toBeUndefined();
+	});
+
+	it('the guard index probe forwards accessibility but never requireAuthentication (no prompt)', async () => {
+		const { store, fake } = await gatedInvalidated({ keychainAccessible: 7 });
+		await expect(store.get(KEY)).rejects.toBeInstanceOf(KeyStoreAccessError);
+		// The guard read the index via indexOptions(): accessibility is forwarded so
+		// background reads work, but requireAuthentication must never reach the index.
+		expect(fake.getOptionsByKey.get(INDEX_KEY)).toEqual({ keychainAccessible: 7 });
+		expect(fake.getOptionsByKey.get(INDEX_KEY)).not.toHaveProperty('requireAuthentication');
+	});
+
+	it('gated + index read fails during the guard ⇒ KeyStoreAccessError (fail-closed)', async () => {
+		const { store, fake } = await gatedInvalidated();
+		fake.throwOnGet.add(INDEX_KEY); // backend error reading the marker
+		await expect(store.get(KEY)).rejects.toBeInstanceOf(KeyStoreAccessError);
+	});
+
+	it('gated slot deleted cleanly ⇒ undefined (index pruned, genuinely empty)', async () => {
+		const { store } = makeStore({ requireAuthentication: true });
+		await store.set(KEY, new Uint8Array([9]));
+		await store.delete(KEY);
+		await expect(store.get(KEY)).resolves.toBeUndefined();
+	});
+});
+
 // ── Index consistency ─────────────────────────────────────────────────────────
 
 describe('SecureStoreKeyStore — index consistency', () => {
