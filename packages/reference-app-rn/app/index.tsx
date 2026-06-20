@@ -17,6 +17,7 @@ import {
 import { useCadre } from '../src/cadre-context';
 import { useChat } from '../src/use-chat';
 import { memberDisplayName, type ChatMessage } from '../src/chat-operations';
+import { connectionBanner } from '../src/connection-status';
 import { TEST_IDS } from '../src/test-ids';
 
 export default function ChatScreen() {
@@ -47,18 +48,17 @@ export default function ChatScreen() {
 
   // ── Connection banner ──────────────────────────────────────────────────
 
-  const statusColor =
-    cadre.resuming
-      ? '#ff9800'
-      : cadre.degraded
-        ? '#f44336'
-        : cadre.status === 'connected'
-          ? '#4caf50'
-          : cadre.status === 'connecting'
-            ? '#ff9800'
-            : cadre.status === 'error'
-              ? '#f44336'
-              : '#666';
+  // Pure derivation (color + text) lives in connection-status.ts so the
+  // BackgroundRunner-driven resuming/degraded flags can be unit-tested reaching
+  // the bar without rendering this whole screen.
+  const banner = connectionBanner({
+    resuming: cadre.resuming,
+    degraded: cadre.degraded,
+    status: cadre.status,
+    error: cadre.error,
+    strandCount: cadre.strands.size,
+    memberCount: chat.members.length,
+  });
 
   return (
     <KeyboardAvoidingView
@@ -67,18 +67,8 @@ export default function ChatScreen() {
       keyboardVerticalOffset={90}
     >
       {/* Status bar */}
-      <View style={[styles.statusBar, { backgroundColor: statusColor }]} testID={TEST_IDS.chat.statusBar}>
-        <Text style={styles.statusText}>
-          {cadre.resuming
-            ? 'Resuming — syncing…'
-            : cadre.degraded
-              ? 'Offline — reconnecting…'
-              : cadre.status === 'connected'
-                ? `Connected · ${cadre.strands.size} strand(s) · ${chat.members.length} member(s)`
-                : cadre.status === 'connecting'
-                  ? 'Connecting…'
-                  : cadre.error ?? 'Not connected — go to Settings'}
-        </Text>
+      <View style={[styles.statusBar, { backgroundColor: banner.color }]} testID={TEST_IDS.chat.statusBar}>
+        <Text style={styles.statusText}>{banner.text}</Text>
       </View>
 
       {/* Strand picker */}
