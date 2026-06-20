@@ -31,7 +31,14 @@
     },
     "plugins": [
       "expo-router",
-      "expo-notifications"
+      "expo-notifications",
+      [
+        "@config-plugins/react-native-webrtc",
+        {
+          "cameraPermission": "Unused: Sereus uses WebRTC data channels only and never requests camera access.",
+          "microphonePermission": "Unused: Sereus uses WebRTC data channels only and never requests microphone access."
+        }
+      ]
     ],
     "extra": {
       "router": {},

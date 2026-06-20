@@ -1,5 +1,9 @@
 // Polyfills must run before any library code.
 import './polyfills/hermes';
+// WebRTC globals (react-native-webrtc registerGlobals) — after hermes (DTLS needs
+// crypto.getRandomValues) and before expo-router/entry mounts cadre-phone.ts →
+// @libp2p/webrtc. See polyfills/webrtc.js for why the order is load-bearing.
+import './polyfills/webrtc';
 import './polyfills/intl-pluralrules';
 import './polyfills/event';
 

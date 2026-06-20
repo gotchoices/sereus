@@ -56,39 +56,60 @@ config.resolver.extraNodeModules = {
   http2: emptyShim,
 };
 
-// @libp2p/crypto ships parallel `.browser.js` variants of its Node-using
-// modules (ed25519/secp256k1/rsa/ecdh keys, webcrypto, hmac, aes-gcm).  The
-// browser variants use @noble/curves + WebCrypto and run correctly under
-// Hermes; the Node variants call crypto.generateKeyPairSync / createPrivateKey
-// / sign / verify which our minimal polyfills/node-crypto.js does not
-// implement.
+// Several @libp2p packages ship parallel `.browser.js` variants of their
+// Node-using modules and declare the rewrite in their package.json `browser`
+// field:
 //
-// The package declares the mapping in its `browser` field, but with
-// `unstable_enablePackageExports: true` (Expo SDK 52+ default) Metro resolves
-// via `exports` and the browser rewrite is not reliably applied.  We apply it
-// explicitly via resolveRequest so Ed25519 key generation (and any future
-// consumer of these modules) works on first launch.
+//   @libp2p/crypto — ed25519/secp256k1/rsa/ecdh keys, webcrypto, hmac, aes-gcm.
+//     The browser variants use @noble/curves + WebCrypto and run correctly under
+//     Hermes; the Node variants call crypto.generateKeyPairSync /
+//     createPrivateKey / sign / verify which our minimal polyfills/node-crypto.js
+//     does not implement.
+//   @libp2p/webrtc — webrtc/index, private-to-public/{listener,transport}, and
+//     get-rtcpeerconnection. The Node variants pull `node-datachannel` (a native
+//     addon absent on RN); the browser variants read the WebRTC engine off the
+//     globals react-native-webrtc's registerGlobals() installs (see
+//     polyfills/webrtc.js). The `browser` field also lists `node:net`/`node:os`
+//     → false, but those `node:*` specifiers are already neutralised by the
+//     extraNodeModules empty shims above, so we skip the non-string targets here.
+//     We force the `browser` (not `react-native`) variant deliberately: the
+//     `react-native` field only remaps webrtc/index.js, leaving the three
+//     private-to-public modules resolving to their node-datachannel originals,
+//     whereas the `browser` field covers the whole node-datachannel surface.
 //
-// Bare `require.resolve('@libp2p/crypto')` is blocked by exports enforcement
-// on Node 20+ (the `"."` entry only lists `import`), so locate the package by
+// With `unstable_enablePackageExports: true` (Expo SDK 52+ default) Metro
+// resolves these packages via `exports` and the `browser`-field rewrite is not
+// reliably applied to their internal relative imports.  We apply it explicitly
+// via resolveRequest so key generation and the WebRTC transport resolve their
+// Hermes-safe variants on first launch.
+//
+// Bare `require.resolve('@libp2p/<pkg>')` is blocked by exports enforcement on
+// Node 20+ (the `"."` entry only lists `import`), so locate each package by
 // walking the nodeModulesPaths we already configure for Metro.
-function loadLibp2pCryptoBrowserMap() {
+function loadLibp2pBrowserMap(scope, name) {
   for (const nmRoot of nodeModulesPaths) {
-    const pkgDir = path.join(nmRoot, '@libp2p', 'crypto');
+    const pkgDir = path.join(nmRoot, scope, name);
     const pkgJson = path.join(pkgDir, 'package.json');
     if (!fs.existsSync(pkgJson)) continue;
-    const pkg = JSON.parse(fs.readFileSync(pkgJson, 'utf8'));
-    const map = pkg.browser;
+    const map = JSON.parse(fs.readFileSync(pkgJson, 'utf8')).browser;
     if (!map || typeof map !== 'object') return null;
     const out = Object.create(null);
     for (const [from, to] of Object.entries(map)) {
+      // Skip non-path targets such as `"node:net": false` — those specifiers are
+      // handled by extraNodeModules empty shims, and path.resolve(pkgDir, false)
+      // would be nonsense.
+      if (typeof to !== 'string') continue;
       out[path.resolve(pkgDir, from)] = path.resolve(pkgDir, to);
     }
     return out;
   }
   return null;
 }
-const libp2pCryptoBrowserMap = loadLibp2pCryptoBrowserMap();
+const libp2pBrowserMap = Object.assign(
+  Object.create(null),
+  loadLibp2pBrowserMap('@libp2p', 'crypto') ?? {},
+  loadLibp2pBrowserMap('@libp2p', 'webrtc') ?? {},
+);
 
 const upstreamResolveRequest = config.resolver.resolveRequest;
 config.resolver.resolveRequest = (context, moduleName, platform) => {
@@ -100,14 +121,13 @@ config.resolver.resolveRequest = (context, moduleName, platform) => {
         platform,
       );
   if (
-    libp2pCryptoBrowserMap &&
     resolved &&
     resolved.type === 'sourceFile' &&
-    libp2pCryptoBrowserMap[resolved.filePath]
+    libp2pBrowserMap[resolved.filePath]
   ) {
     return {
       type: 'sourceFile',
-      filePath: libp2pCryptoBrowserMap[resolved.filePath],
+      filePath: libp2pBrowserMap[resolved.filePath],
     };
   }
   return resolved;

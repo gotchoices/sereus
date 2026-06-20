@@ -23,10 +23,24 @@ import type {
 import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { webRTC } from '@libp2p/webrtc';
+import type { Libp2pTransports } from '@optimystic/db-p2p';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDBRawStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { SecureStoreKeyStore, migrateLegacyIdentity } from './secure-key-store';
+import { loadIceConfig } from './ice-config';
+
+/**
+ * db-p2p's transport-factory element type. The `webRTC()` factory from
+ * `@libp2p/webrtc` carries a nominally-different `[transportSymbol]` brand than
+ * db-p2p's pinned `@libp2p/interface` (the symbol is a global-registry key, so
+ * they are runtime-identical). `CadreNodeConfig.network.transports` is exactly
+ * this `Libp2pTransports`, so we bridge with `as unknown as TransportFactory` —
+ * no `any`, no pinning five transitive packages. Mirrors the same cast in
+ * `reference-app-web/src/lib/cadre-web.ts`.
+ */
+type TransportFactory = Libp2pTransports[number];
 
 // ── LevelDB helpers ──────────────────────────────────────────────────────────
 // Each strand (and the peer identity) gets its own LevelDB database file.
@@ -151,6 +165,14 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     deleteLegacy: deleteLegacyIdentity,
   });
 
+  // ICE servers (STUN/TURN) from the runtime manifest, for the WebRTC transport's
+  // RTCPeerConnection. Never throws; `[]` when no manifest is configured (the
+  // relay-signalled WebRTC upgrade still works on host/LAN candidates). Awaited
+  // inside startPhoneNode (not hoisted to module scope) so each cold-start /
+  // foreground-resume re-fetches — ICE servers may rotate. The 5 s deadline in
+  // loadIceConfig bounds a hung manifest host so it cannot wedge a resume.
+  const iceServers = await loadIceConfig();
+
   const config: CadreNodeConfig = {
     // Identity comes from the secure enclave (load on present, generate+persist on
     // first run). Mutually exclusive with `privateKey`.
@@ -165,7 +187,23 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
       provider: createStorage,
     },
     network: {
-      transports: [webSockets(), circuitRelayTransport()],
+      transports: [
+        webSockets(),
+        circuitRelayTransport(),
+        // Phone → peer direct upgrade: a relayed `/p2p-circuit` connection
+        // hole-punches to a direct `/webrtc` data path, dropping the drone out of
+        // the data path (relay stays signalling-only). Brand-skew bridge —
+        // runtime-safe, see TransportFactory above. No `connectionGater` override
+        // is added: the phone dials a real relay/drone over `wss` (not a
+        // private/loopback addr), so unlike the web reference's local insecure
+        // dials it should not be gated out by libp2p's default. (This is a
+        // Tier-B/device-verified assumption — see the review handoff.)
+        webRTC({ rtcConfiguration: { iceServers } }) as unknown as TransportFactory,
+      ],
+      // Phones do NOT listen (`listenAddrs: []`). Unlike web, which conditionally
+      // listens on ['/p2p-circuit', '/webrtc'] when it holds a relay reservation,
+      // the phone's dialed circuit reservation + the `/webrtc` upgrade are
+      // advertised over the existing identify/cohort flow without a listen addr.
       listenAddrs: [], // RN cannot listen for inbound connections
     },
     strandFilter: { mode: 'all' },

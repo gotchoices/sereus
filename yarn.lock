@@ -1436,6 +1436,15 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@config-plugins/react-native-webrtc@npm:^12.0.0":
+  version: 12.0.0
+  resolution: "@config-plugins/react-native-webrtc@npm:12.0.0"
+  peerDependencies:
+    expo: ^53
+  checksum: 10c0/95fc8d077eff96290bb1f4143478f8b0ed959a1dc38709bf276d23d2c09b5e67f0ca13aab9d9d22494cc9f8d7511cde87ae8f0c13c73524d50c4c28c5c9f9802
+  languageName: node
+  linkType: hard
+
 "@csstools/color-helpers@npm:^5.1.0":
   version: 5.1.0
   resolution: "@csstools/color-helpers@npm:5.1.0"
@@ -5258,7 +5267,9 @@ __metadata:
   dependencies:
     "@babel/core": "npm:^7.29.0"
     "@babel/runtime": "npm:^7.28.6"
+    "@config-plugins/react-native-webrtc": "npm:^12.0.0"
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
+    "@libp2p/webrtc": "npm:6.0.14"
     "@libp2p/websockets": "npm:^10.1.3"
     "@multiformats/multiaddr": "npm:^12.5.1"
     "@noble/hashes": "npm:^2.0.0"
@@ -5287,6 +5298,7 @@ __metadata:
     react-native-get-random-values: "npm:^1.11.0"
     react-native-safe-area-context: "npm:5.4.0"
     react-native-screens: "npm:~4.11.0"
+    react-native-webrtc: "npm:^124.0.6"
     react-test-renderer: "npm:19.0.0"
     readable-stream: "npm:^4.7.0"
     rn-leveldb: "npm:^3.11.0"
