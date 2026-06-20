@@ -20,10 +20,10 @@ function authoritySign(peerId: string, authorityPrivateKey: string): string {
 }
 
 describe('peerAuthorizationDigest', () => {
-  it('is the canonical sha256/utf8/base64url digest of the peer ID', () => {
+  it('is the canonical single-field sha256/base64url digest of the peer ID', () => {
     const peerId = '12D3KooWTestPeer';
     expect(peerAuthorizationDigest(peerId)).toBe(
-      digest(peerId, 'sha256', 'utf8', 'base64url') as string
+      digest([peerId], 'sha256', 'base64url') as string
     );
   });
 
@@ -92,7 +92,7 @@ describe('verifyPeerAuthorization', () => {
     // Reproduce the exact pre-helper construction that SeedBootstrapService used
     // (digest then sign) WITHOUT going through peerAuthorizationDigest. If the
     // shared digest ever drifts from this construction, this fails.
-    const inlineDigest = digest(peerId, 'sha256', 'utf8', 'base64url') as string;
+    const inlineDigest = digest([peerId], 'sha256', 'base64url') as string;
     const signature = sign(
       inlineDigest,
       authorityPrivateKey,

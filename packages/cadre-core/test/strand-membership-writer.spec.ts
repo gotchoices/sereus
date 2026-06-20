@@ -46,20 +46,20 @@ describe('strandMemberKeyPair (protobuf -> base64url bridge)', () => {
     const payload = `${kp.publicKeyB64}|2030-01-01T00:00:00`;
     const sig = signStrandPayload(payload, kp.privateKeyB64);
 
-    // Mirror the constraint: verify(digest(payload,'sha256','utf8'), sig, pub, 'ed25519').
-    const payloadDigest = digest(payload, 'sha256', 'utf8', 'base64url') as string;
+    // Mirror the constraint: verify(digest(payload), sig, pub, 'ed25519').
+    const payloadDigest = digest([payload], 'sha256', 'base64url') as string;
     expect(verify(payloadDigest, sig, kp.publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(true);
   });
 });
 
 describe('signStrandPayload (single-digest ed25519 signer)', () => {
-  it('output verifies via verify(digest(payload,sha256,utf8), sig, pub, ed25519)', () => {
+  it('output verifies via verify(digest(payload), sig, pub, ed25519)', () => {
     const priv = generatePrivateKey('ed25519', 'base64url') as string;
     const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
     const payload = 'invite-key|2031-03-04T12:34:56';
 
     const sig = signStrandPayload(payload, priv);
-    const payloadDigest = digest(payload, 'sha256', 'utf8', 'base64url') as string;
+    const payloadDigest = digest([payload], 'sha256', 'base64url') as string;
 
     expect(verify(payloadDigest, sig, pub, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(true);
   });
@@ -69,7 +69,7 @@ describe('signStrandPayload (single-digest ed25519 signer)', () => {
     const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
 
     const sig = signStrandPayload('payload-A', priv);
-    const wrongDigest = digest('payload-B', 'sha256', 'utf8', 'base64url') as string;
+    const wrongDigest = digest(['payload-B'], 'sha256', 'base64url') as string;
 
     expect(verify(wrongDigest, sig, pub, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(false);
   });

@@ -19,7 +19,7 @@ describe('authorityKeyFromLibp2p', () => {
     const libp2pKey = await generateKeyPair('Ed25519');
     const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(libp2pKey);
 
-    const msgDigest = digest('hello cadre', 'sha256', 'utf8', 'base64url') as string;
+    const msgDigest = digest(['hello cadre'], 'sha256', 'base64url') as string;
     const signature = sign(msgDigest, privateKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
     expect(verify(msgDigest, signature, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(true);
@@ -51,7 +51,7 @@ describe('authorityPublicKeyFromPrivate', () => {
     const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
     const publicKeyB64 = authorityPublicKeyFromPrivate(privateKeyB64);
 
-    const msgDigest = digest('hello drone', 'sha256', 'utf8', 'base64url') as string;
+    const msgDigest = digest(['hello drone'], 'sha256', 'base64url') as string;
     const signature = sign(msgDigest, privateKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
     expect(verify(msgDigest, signature, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(true);

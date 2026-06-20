@@ -131,7 +131,7 @@ describe('SeedBootstrapService', () => {
 
       // Sign the seed over the canonical payload (key-order independent)
       const seedJson = canonicalSeedPayload(seedData);
-      const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+      const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest,
         authorityPrivateKey,
@@ -169,7 +169,7 @@ describe('SeedBootstrapService', () => {
       // Create and sign original seed
       const originalData = { partyId, peers: [] };
       const seedJson = canonicalSeedPayload(originalData);
-      const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+      const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest,
         authorityPrivateKey,
@@ -196,7 +196,7 @@ describe('SeedBootstrapService', () => {
       partyId: string;
       peers: SeedPeer[];
     }): ControlNetworkSeed {
-      const seedDigest = digest(canonicalSeedPayload(seedData), 'sha256', 'utf8', 'base64url') as string;
+      const seedDigest = digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest,
         privateKey,
@@ -468,7 +468,7 @@ describe('Seed trust policy', () => {
 	): ControlNetworkSeed {
 		const seedData = { partyId, peers };
 		const seedJson = canonicalSeedPayload(seedData);
-		const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+		const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
 		const signature = sign(
 			seedDigest,
 			privateKey,
@@ -886,7 +886,7 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         // Use a real Ed25519-derived peerId so the value is shape-valid,
         // though the constraint actually only cares about the signature
-        // over digest(PeerId, 'sha256', 'utf8').
+        // over digest(PeerId).
         const droneKey = await generateKeyPair('Ed25519');
         const dronePeerId = peerIdFromPrivateKey(droneKey).toString();
         const multiaddrs = ['/ip4/192.168.1.100/tcp/4001'];
@@ -927,7 +927,7 @@ describe('SeedBootstrapService Helper Methods', () => {
     function signSeed(privateKey: string, publicKey: string): ControlNetworkSeed {
       const seedData = { partyId, peers: [] as SeedPeer[] };
       const seedJson = canonicalSeedPayload(seedData);
-      const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+      const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest, privateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
       ) as string;

@@ -31,7 +31,7 @@ describe('device-token signed payload', () => {
     const token = 'fcm-device-token-abc123';
     const updatedAt = 1700000000000;
 
-    const expected = digest(`${peerId}|${platform}|${token}|${updatedAt}`, 'sha256', 'utf8', 'base64url') as string;
+    const expected = digest([`${peerId}|${platform}|${token}|${updatedAt}`], 'sha256', 'base64url') as string;
     expect(deviceTokenSignedPayload({ peerId, platform, token, updatedAt })).toBe(expected);
   });
 

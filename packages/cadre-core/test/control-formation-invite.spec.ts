@@ -13,8 +13,8 @@ import { ControlFormationUsageRecorder } from '../src/control-formation-recorder
  * Exercises the FormationInvite / FormationUsage consent path:
  *
  *  1. An authority-signed `FormationInvite` insert. The schema verifies the
- *     authority signature with `verify(digest(StampId,'sha256','utf8'), Sig, Key,
- *     'ed25519')`. Before the Phase-1 curve fix the verify defaulted to
+ *     authority signature with `verify(digest(...), Sig, Key, 'ed25519')` over the
+ *     row-bound field tuple. Before the Phase-1 curve fix the verify defaulted to
  *     secp256k1 and swallowed the curve-mismatch (returning false), so a real
  *     ed25519 authority signature was ALWAYS rejected — this happy-path insert
  *     therefore FAILS against the pre-fix schema and PASSES after it, pinning the

@@ -378,8 +378,8 @@ export class SeedBootstrapService {
    * Remove a peer from the cadre by authority signature.
    *
    * The constraint over CadrePeer's `check on insert, delete` validates a
-   * signature over `digest(old.PeerId, 'sha256', 'utf8')` by an authority
-   * key. We use the same digest pattern as authorizePeer.
+   * signature over `digest(old.PeerId)` by an authority key. We use the same
+   * digest pattern as authorizePeer.
    */
   async removePeer(peerId: string): Promise<void> {
     // Same canonical digest as the authorizing INSERT (see peerAuthorizationDigest);
@@ -427,7 +427,7 @@ export class SeedBootstrapService {
     
     // Sign the seed over its canonical byte representation
     const seedJson = canonicalSeedPayload(seedData);
-    const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+    const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
     const signature = sign(
       seedDigest,
       this.config.authorityPrivateKey,
@@ -640,7 +640,7 @@ export class SeedBootstrapService {
       // verification is independent of key order. The payload is the fixed
       // `{ partyId, peers }` the producer emits.
       const seedJson = canonicalSeedPayload(seed);
-      const seedDigest = digest(seedJson, 'sha256', 'utf8', 'base64url') as string;
+      const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
 
       return verify(
         seedDigest,

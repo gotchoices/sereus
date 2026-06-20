@@ -9,8 +9,7 @@
  * + sha256, no key ordering) and — crucially — is reconstructable inside the
  * `CadrePeer.AuthorizedUpdate` SQL constraint from the row's own columns:
  *
- *   digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text),
- *          'sha256', 'utf8')
+ *   digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text))
  *
  * Keep {@link peerRecordSignedPayload} and that constraint byte-for-byte in
  * sync. The `'|'` delimiter is safe: a base58btc PeerId, a multiaddr (which uses
@@ -53,7 +52,7 @@ const SIGNALING_PREFIX = '/p2p-circuit';
  */
 export function peerRecordSignedPayload(peerId: string, multiaddr: string, updatedAt: number): string {
   const joined = `${peerId}|${multiaddr}|${updatedAt}`;
-  return digest(joined, 'sha256', 'utf8', 'base64url') as string;
+  return digest([joined], 'sha256', 'base64url') as string;
 }
 
 /**

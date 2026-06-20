@@ -21,8 +21,10 @@ const timing = debug('sereus:cadre:timing');
  * - Last 16 bytes: Random bytes (for collision resistance)
  */
 function generateStampId(peerId: string): string {
-  // Hash the peer ID and get first 16 bytes (128 bits)
-  const peerIdHash = digest(peerId, 'sha256', 'utf8', 'bytes') as Uint8Array;
+  // Hash the peer ID and get first 16 bytes (128 bits). A purely local ID
+  // generator: never signed/verified against SQL, so the framed single-field
+  // digest is fine (the changed framing is not cross-checked anywhere).
+  const peerIdHash = digest([peerId], 'sha256', 'bytes') as Uint8Array;
   const peerIdHashPart = peerIdHash.slice(0, 16);
 
   // Generate 16 random bytes
@@ -54,29 +56,26 @@ function parseStoredDatetimeMs(value: string | number): number {
 /**
  * Build the canonical authorization message that authority signatures are bound to.
  *
- * The message is the byte concatenation of the per-field SHA-256 digests, in a fixed
- * field order, with the single-use StampId as the final field:
+ * The message is a SINGLE framed SHA-256 digest over the ordered tuple of fields (the
+ * crypto plugin's injective multi-field encoding), in a fixed field order, with the
+ * single-use StampId as the final field:
  *
- *   message = sha256(utf8(field_1)) ++ sha256(utf8(field_2)) ++ ... ++ sha256(utf8(StampId))
+ *   message = sha256(encodeFields([field_1, field_2, ..., StampId]))   // raw digest bytes
  *
- * ed25519 signs these raw bytes DIRECTLY (no pre-hash). The SQL constraints verify the
- * identical bytes by concatenating the hex-encoded digests
- * (`digest(field, 'sha256', 'utf8', 'hex') || ...`) and decoding with verify's `'hex'`
- * input encoding — so signer and verifier operate on the same bytes. This binds the
- * signature to the row contents (not a bare stamp), closing the captured-stamp replay /
- * privilege-escalation hole. Single source of truth: every signed writer (and every
- * test/harness signer) MUST build the message through this function in the schema's field
- * order, or `verify` will reject the row.
+ * ed25519 signs these raw digest bytes DIRECTLY (no second hash). The SQL constraints
+ * verify the identical bytes with one variadic call
+ * (`verify(digest(field_1, ..., StampId), context.Signature, A.Key, 'ed25519')`): SQL
+ * `digest(...)` returns the base64url string of the same digest, which `verify`'s default
+ * base64url input encoding decodes back to those raw bytes — so signer and verifier
+ * operate on the same bytes. Every field is TEXT on both sides (the SQL columns are
+ * `cast(... as text)` / `coalesce(...,'')`; the TS args are strings), so the per-field
+ * type tags agree. This binds the signature to the row contents (not a bare stamp),
+ * closing the captured-stamp replay / privilege-escalation hole. Single source of truth:
+ * every signed writer (and every test/harness signer) MUST build the message through this
+ * function in the schema's field order, or `verify` will reject the row.
  */
 export function buildAuthorizationMessage(fields: string[]): Uint8Array {
-  const parts = fields.map(field => digest(field, 'sha256', 'utf8', 'bytes') as Uint8Array);
-  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    out.set(part, offset);
-    offset += part.length;
-  }
-  return out;
+  return digest([...fields], 'sha256', 'bytes') as Uint8Array;
 }
 
 /**

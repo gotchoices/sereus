@@ -11,7 +11,7 @@
  * constraint from the row's own columns:
  *
  *   digest(new.PeerId || '|' || new.Platform || '|' || new.Token || '|'
- *          || cast(new.UpdatedAt as text), 'sha256', 'utf8')
+ *          || cast(new.UpdatedAt as text))
  *
  * Keep {@link deviceTokenSignedPayload} and that constraint byte-for-byte in sync.
  * The `'|'` delimiter is safe: a base58btc PeerId, a fixed `'fcm'`/`'apns'` platform
@@ -35,7 +35,7 @@ import type { DeviceTokenRecord, PushPlatform } from './types.js';
  */
 export function deviceTokenSignedPayload(record: Omit<DeviceTokenRecord, 'sig'>): string {
   const joined = `${record.peerId}|${record.platform}|${record.token}|${record.updatedAt}`;
-  return digest(joined, 'sha256', 'utf8', 'base64url') as string;
+  return digest([joined], 'sha256', 'base64url') as string;
 }
 
 /**

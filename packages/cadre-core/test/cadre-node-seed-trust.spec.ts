@@ -50,7 +50,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
   /** A signature-valid, peerless cold seed signed by `privateKey`. */
   function signSeed(privateKey: string, publicKey: string): ControlNetworkSeed {
     const seedData = { partyId: seedParty, peers: [] as SeedPeer[] };
-    const seedDigest = digest(canonicalSeedPayload(seedData), 'sha256', 'utf8', 'base64url') as string;
+    const seedDigest = digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string;
     const signature = sign(
       seedDigest, privateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
     ) as string;
@@ -283,7 +283,7 @@ describe('seed protocol handler — configured-default rejection surfaces in the
 
   function signSeed(): ControlNetworkSeed {
     const seedData = { partyId: seedParty, peers: [] as SeedPeer[] };
-    const seedDigest = digest(canonicalSeedPayload(seedData), 'sha256', 'utf8', 'base64url') as string;
+    const seedDigest = digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string;
     const signature = sign(
       seedDigest, authorityPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
     ) as string;

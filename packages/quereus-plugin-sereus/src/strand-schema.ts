@@ -18,7 +18,7 @@
  *
  * Crypto idiom (matches `schemas/control.qsql` and the sApp RBAC fixture
  * `packages/integration-tests/fixtures/simple-sapp.qsql`): every signed write
- * proves itself with `verify(digest(<concatenated payload>, 'sha256', 'utf8'),
+ * proves itself with `verify(digest(<single joined payload>),
  * <signature>, <pubkey>, 'ed25519')`. Member keys are ed25519, so the explicit
  * curve arg is REQUIRED (verify() otherwise defaults to secp256k1).
  *
@@ -70,10 +70,10 @@ export const STRAND_SCHEMA = `    table Header (
             -- Can only be inserted by an authority,
             exists (select 1 from Authority A
                 where A.MemberKey = context.AuthorityKey
-                    and verify(digest(new.Key || '|' || coalesce(new.Expiration, ''), 'sha256', 'utf8'), context.AuthoritySignature, A.MemberKey, 'ed25519')
+                    and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.AuthoritySignature, A.MemberKey, 'ed25519')
             )
                 -- and must also prove invite private key held by issuing authority
-                and verify(digest(new.Key || '|' || coalesce(new.Expiration, ''), 'sha256', 'utf8'), context.InviteSignature, new.Key, 'ed25519')
+                and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.InviteSignature, new.Key, 'ed25519')
         )
     ) with context (AuthorityKey text null, AuthoritySignature text null, InviteSignature text null);
 
@@ -85,7 +85,7 @@ export const STRAND_SCHEMA = `    table Header (
         constraint InviteExists check (exists (select 1 from Invite I where I.Key = new.InviteKey)),
         constraint MemberExists check (exists (select 1 from Member M where M.Key = new.MemberKey)),
         constraint ValidUsage check on insert (
-            exists (select 1 from Invite I where I.Key = new.InviteKey and verify(digest(new.InviteKey || '|' || new.MemberKey, 'sha256', 'utf8'), context.InviteSignature, new.InviteKey, 'ed25519'))
+            exists (select 1 from Invite I where I.Key = new.InviteKey and verify(digest(new.InviteKey || '|' || new.MemberKey), context.InviteSignature, new.InviteKey, 'ed25519'))
         ),
         -- An invite with a non-null Expiration may only be consumed while it is still
         -- in the future. context.Now is the canonical-datetime "now" supplied by the
@@ -115,7 +115,7 @@ export const STRAND_SCHEMA = `    table Header (
                 or exists (
                     select 1 from Authority A
                         where A.MemberKey = context.AuthorityKey
-                            and verify(digest(new.Key, 'sha256', 'utf8'), context.AuthoritySignature, A.MemberKey, 'ed25519')
+                            and verify(digest(new.Key), context.AuthoritySignature, A.MemberKey, 'ed25519')
                 )
 
                 -- or added by invite
@@ -134,7 +134,7 @@ export const STRAND_SCHEMA = `    table Header (
         constraint MemberExists check (exists (select 1 from Member M where M.Key = new.MemberKey)),
         constraint Authorized check on insert, update, delete (
             verify(
-                digest(coalesce(new.MemberKey, old.MemberKey) || '|' || coalesce(new.PeerId, old.PeerId), 'sha256', 'utf8'),
+                digest(coalesce(new.MemberKey, old.MemberKey) || '|' || coalesce(new.PeerId, old.PeerId)),
                 context.Signature,
                 coalesce(new.MemberKey, old.MemberKey),
                 'ed25519'
@@ -156,14 +156,14 @@ export const STRAND_SCHEMA = `    table Header (
                 or (
                     old.MemberKey is not null
                         and old.MemberKey = context.AuthorityKey
-                        and verify(digest(old.MemberKey, 'sha256', 'utf8'), context.Signature, old.MemberKey, 'ed25519')
+                        and verify(digest(old.MemberKey), context.Signature, old.MemberKey, 'ed25519')
                 )
 
                 -- or authorized by another existing authority
                 or exists (
                     select 1 from Authority A
                         where A.MemberKey = context.AuthorityKey
-                            and verify(digest(coalesce(new.MemberKey, old.MemberKey), 'sha256', 'utf8'), context.Signature, A.MemberKey, 'ed25519')
+                            and verify(digest(coalesce(new.MemberKey, old.MemberKey)), context.Signature, A.MemberKey, 'ed25519')
                 )
         )
     ) with context (AuthorityKey text null, Signature text null);

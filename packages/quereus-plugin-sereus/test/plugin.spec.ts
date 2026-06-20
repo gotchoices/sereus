@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
+import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
 
@@ -153,13 +154,17 @@ describe('connectToStrand', () => {
 			transactor: 'test',
 		});
 
-		// Verify crypto functions are registered by calling digest
+		// Verify crypto functions are registered by calling the variadic digest. The
+		// SQL function fixes algorithm + output encoding at load (sha256 / base64url) and
+		// is variadic over data fields, so digest('hello') is the framed single-TEXT-field
+		// digest — i.e. the JS digest(['hello']) base64url string, NOT sha256('hello').
+		const expected = digest(['hello']) as string;
 		const rows: Array<Record<string, SqlValue>> = [];
-		for await (const row of db.eval("select digest('hello', 'sha256', 'utf8') as h")) {
+		for await (const row of db.eval("select digest('hello') as h")) {
 			rows.push(row);
 		}
 		expect(rows).toHaveLength(1);
-		expect(rows[0].h).toBeTruthy();
+		expect(rows[0].h).toBe(expected);
 
 		await result.shutdown();
 	});

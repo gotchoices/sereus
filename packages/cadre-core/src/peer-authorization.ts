@@ -8,13 +8,13 @@ const log = debug('sereus:cadre:peer-authorization');
  *
  * This is the exact byte construction {@link SeedBootstrapService.authorizePeer}
  * signs over when it inserts an authorized `CadrePeer` row:
- * `digest(peerId, 'sha256', 'utf8', 'base64url')`. Factored into one place so the
+ * `digest([peerId], 'sha256', 'base64url')`. Factored into one place so the
  * producer (authority signing) and the verifier (the offline `cadre enroll
  * register` check) can never drift apart — change the digest here and both move
- * together.
+ * together. The SQL mirror is the bare single-field `digest(coalesce(new.PeerId, old.PeerId))`.
  */
 export function peerAuthorizationDigest(peerId: string): string {
-  return digest(peerId, 'sha256', 'utf8', 'base64url') as string;
+  return digest([peerId], 'sha256', 'base64url') as string;
 }
 
 /**

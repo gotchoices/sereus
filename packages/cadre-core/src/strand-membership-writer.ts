@@ -31,12 +31,13 @@ export const STRAND_ENGINE_VERSION = '0.1.0';
  *
  * `schemas/strand.qsql` signs a single SHA-256 digest over a `'|'`-joined payload
  * (e.g. `Member.Authorized` verifies
- * `verify(digest(new.Key, 'sha256', 'utf8'), context.AuthoritySignature, A.MemberKey, 'ed25519')`).
+ * `verify(digest(new.Key), context.AuthoritySignature, A.MemberKey, 'ed25519')`).
  * So the signer hashes the payload to raw bytes and ed25519-signs *those bytes*:
- * `digest(...)`'s default output is base64url and `verify(...)`'s default
+ * SQL `digest(...)`'s default output is base64url and `verify(...)`'s default
  * `inputEncoding` is base64url, so signer and verifier operate on identical bytes.
  * This differs from the control-layer's multi-field `buildAuthorizationMessage`
- * concatenation — the strand layer is a single digest over one joined payload.
+ * (a single digest over MANY fields) — the strand layer is a single digest over ONE
+ * joined payload field.
  *
  * All strand keys are ed25519, so the explicit `'ed25519'` curve arg is mandatory
  * (the crypto plugin otherwise defaults to secp256k1). Mirrors the proven
@@ -47,7 +48,7 @@ export const STRAND_ENGINE_VERSION = '0.1.0';
  * @returns The base64url ed25519 signature over the payload's SHA-256 digest.
  */
 export function signStrandPayload(payload: string, privateKeyB64: string): string {
-  const hashBytes = digest(payload, 'sha256', 'utf8', 'bytes') as Uint8Array;
+  const hashBytes = digest([payload], 'sha256', 'bytes') as Uint8Array;
   return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
@@ -55,8 +56,8 @@ export function signStrandPayload(payload: string, privateKeyB64: string): strin
  * The verifier counterpart to {@link signStrandPayload}.
  *
  * Mirrors what every `Strand.*` constraint computes:
- * `verify(digest(payload, 'sha256', 'utf8'), signature, publicKey, 'ed25519')`.
- * `digest`'s default output and `verify`'s default `inputEncoding`/`sigEncoding`/
+ * `verify(digest(payload), signature, publicKey, 'ed25519')`.
+ * SQL `digest`'s default output and `verify`'s default `inputEncoding`/`sigEncoding`/
  * `keyEncoding` are all base64url, so the off-engine check operates on the exact
  * same bytes the in-engine CHECK does. Used by the off-engine `MemberVerifier`
  * (pre-flight registration checks) so the on-engine constraint is not the only
@@ -68,7 +69,7 @@ export function signStrandPayload(payload: string, privateKeyB64: string): strin
  * @returns `true` iff the signature is valid for the payload under that key.
  */
 export function verifyStrandPayload(payload: string, signatureB64: string, publicKeyB64: string): boolean {
-  const payloadDigest = digest(payload, 'sha256', 'utf8', 'base64url') as string;
+  const payloadDigest = digest([payload], 'sha256', 'base64url') as string;
   return verify(payloadDigest, signatureB64, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url');
 }
 

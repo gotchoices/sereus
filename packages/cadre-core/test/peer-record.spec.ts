@@ -40,7 +40,7 @@ describe('peer-record signed payload', () => {
     const multiaddr = '/dns4/relay/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWExamplePeer';
     const updatedAt = 1700000000000;
 
-    const expected = digest(`${peerId}|${multiaddr}|${updatedAt}`, 'sha256', 'utf8', 'base64url') as string;
+    const expected = digest([`${peerId}|${multiaddr}|${updatedAt}`], 'sha256', 'base64url') as string;
     expect(peerRecordSignedPayload(peerId, multiaddr, updatedAt)).toBe(expected);
   });
 
