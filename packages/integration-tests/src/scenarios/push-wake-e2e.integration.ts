@@ -317,10 +317,12 @@ describe('E2E push-wake over the control network', () => {
 	// it is already dedicated transport infra, mirroring scenario 4's authority+storage
 	// `A`). S and Rx are plain members that never genesis.
 	//
-	// Every control WRITE is a clean 2-node `{L, S}` commit (the proven
-	// `control-db-two-node-convergence` recipe): L genesises ALONE, then S connects,
-	// then L writes both membership facts while only `{L, S}` are linked. Rx joins
-	// LAST and ONLY reads — no 3-node commit, no S↔Rx control link (which over the
+	// Every control WRITE the assertions hinge on is a clean 2-node `{L, S}` commit
+	// (the proven `control-db-two-node-convergence` recipe): L genesises ALONE, then S
+	// connects, then L writes both membership facts while only `{L, S}` are linked. Rx
+	// joins LAST and writes nothing any assertion waits on (its background `registerSelf`
+	// only self-UPDATEs its own already-resolvable row — scenario 4 design note #1) — no
+	// 3-node commit, no S↔Rx control link (which over the
 	// relay mesh would be the unstable link), no full-mesh-over-relay flakiness. Rx's
 	// deterministic circuit address is CONSTRUCTED before it starts, so the
 	// address-record write lands inside the `{L, S}` window.
@@ -384,8 +386,9 @@ describe('E2E push-wake over the control network', () => {
 			expect(resolved[0]).toContain('/p2p-circuit');
 
 			// Start Rx LAST: genuinely NAT'd — no direct listen addr, only a relayed slot on
-			// L (explicit `…/p2p-circuit` listen, see header note). It bootstraps to L and
-			// ONLY reads — no genesis, no writes. (NOT hibernated — see header note.)
+			// L (explicit `…/p2p-circuit` listen, see header note). It bootstraps to L; it never
+			// genesises and writes nothing the assertions hinge on (its background `registerSelf`
+			// only self-UPDATEs its own already-resolvable row). (NOT hibernated — see header note.)
 			Rx = new CadreNode(nodeConfig({
 				partyId,
 				privateKey: rxKey,
