@@ -1,5 +1,5 @@
 description: Upgrade the push-wake tests so a node learns who its fellow members are by syncing the shared membership store over the network — the real production path — instead of being hand-fed those facts locally as the tests do today.
-prereq: control-db-two-node-convergence-test
+prereq: control-db-two-node-convergence-test, control-db-network-backed
 files: packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts (header lines 23-45, makeOwnAuthority ~154-160, seedReceiverRecord ~168-184, scenarios ~210-375), packages/integration-tests/src/harness/test-network.ts (new waitForCrossNodeControlSync from prereq), packages/cadre-core/src/strand-wake-protocol.ts (processWakeRequest/isMember gate ~70-93,207-230), packages/cadre-core/src/cadre-node.ts (isMember/resolvePeerAddrs/getSeedBootstrapService/authorizePeer)
 difficulty: medium
 ----

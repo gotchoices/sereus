@@ -8,10 +8,10 @@
 import debug from 'debug';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import type { ControlTable } from '@serfab/cadre-core';
+import type { ControlDatabase, ControlTable } from '@serfab/cadre-core';
 import { createTestParty, shutdownTestParty } from './test-party.js';
 import { releaseAllPorts } from './port-allocator.js';
-import { waitForCount } from './wait-utils.js';
+import { waitForCount, waitUntil, type WaitOptions } from './wait-utils.js';
 import type {
   TestParty,
   TestStrand,
@@ -250,8 +250,54 @@ export class TestCadreNetwork {
     this.strands.clear();
     releaseAllPorts();
     this.isShutdown = true;
-    
+
     log('TestCadreNetwork shutdown complete');
   }
+}
+
+/**
+ * Wait until a predicate over an ARBITRARY node's control database holds.
+ *
+ * SCOPE — deliberately broader than {@link TestCadreNetwork.waitForControlSync},
+ * which is pinned to a single party's *authority* control DB (the harness builds
+ * exactly one `ControlDatabase` per party). This waiter takes ANY node's
+ * `ControlDatabase` directly, so a scenario can prove that a row written on
+ * node A becomes readable on a SECOND node B over the live control network —
+ * read-driven Optimystic convergence, where each poll IS the read that pulls
+ * A's block into B's cohort view. Convergence is asserted on the predicate,
+ * never on elapsed time; widen a flaky window with `timeoutMs`, not a fixed
+ * sleep.
+ *
+ * @param readerDb   the control DB to poll (e.g. `B.getControlDatabase()`)
+ * @param predicate  resolves true once the reader DB has converged
+ * @param opts       wait tuning (defaults: 20s timeout, 250ms interval)
+ */
+export async function waitForCrossNodeControlSync(
+  readerDb: ControlDatabase,
+  predicate: (db: ControlDatabase) => Promise<boolean> | boolean,
+  opts: WaitOptions = {}
+): Promise<void> {
+  await waitUntil(() => predicate(readerDb), {
+    timeoutMs: opts.timeoutMs ?? 20_000,
+    intervalMs: opts.intervalMs ?? 250,
+    description: opts.description ?? 'cross-node control DB convergence',
+  });
+}
+
+/**
+ * Convenience over {@link waitForCrossNodeControlSync}: wait until `readerDb`
+ * observes a `CadrePeer` row for `peerId` — the exact membership fact
+ * `CadreNode.isMember` gates on. Returns once converged; throws on timeout.
+ */
+export async function waitForCadrePeerConverged(
+  readerDb: ControlDatabase,
+  peerId: string,
+  opts: WaitOptions = {}
+): Promise<void> {
+  await waitForCrossNodeControlSync(
+    readerDb,
+    async (db) => (await db.queryCadrePeers()).some((p) => p.peerId === peerId),
+    { description: `CadrePeer ${peerId} visible on reader control DB`, ...opts }
+  );
 }
 
