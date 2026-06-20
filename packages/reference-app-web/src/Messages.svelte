@@ -46,7 +46,7 @@
 	}
 
 	function formatWhen(ts: string): string {
-		// Strand timestamps are 'YYYY-MM-DD HH:MM:SS' (no zone). Render as-is.
+		// Strand timestamps are T-separated ISO (e.g. 'YYYY-MM-DDTHH:MM:SS'). Render as-is.
 		return ts;
 	}
 </script>

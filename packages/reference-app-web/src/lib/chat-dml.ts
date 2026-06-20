@@ -23,11 +23,12 @@ export interface ChatMessageRow {
 }
 
 /**
- * Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS' — not ISO 8601 with 'T'/'Z'.
- * The transient `Date` is serialized to a string immediately and never held.
+ * Current timestamp as an ISO string. Quereus datetime columns coerce any valid
+ * input (space-form, T-form, ISO-Z) to T-separated form on read — see
+ * `canonical-datetime.ts` in cadre-core.
  */
 function quereusTimestamp(): string {
-	return new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+	return new Date().toISOString();
 }
 
 /**

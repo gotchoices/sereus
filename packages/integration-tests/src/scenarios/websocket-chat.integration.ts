@@ -151,8 +151,8 @@ describe('WebSocket Chat (server-to-server)', () => {
     await droneDb.exec(
       "insert into App.Member (Id, Name) values ('drone-1', 'Drone')",
     );
-    // Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS' — NOT ISO 8601 with 'Z'.
-    const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+    // Quereus datetime columns coerce any valid input to T-separated ISO form on read.
+    const now = new Date().toISOString();
     // Message.Id is a text primary key (collision-free across concurrent peers);
     // a fixed text id keeps the replication assertions below deterministic.
     const messageId = 'msg-drone-1';

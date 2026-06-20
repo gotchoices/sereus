@@ -353,8 +353,8 @@ export interface ConsumeInviteParams {
  * the lexical `>` orders chronologically at any granularity. (This intentionally
  * diverges from the control layer, which passes `Now` as a JS ISO string; Quereus
  * does not coerce context params, so an ISO `Now` would be compared lexically against
- * the canonical, space-separated `Expiration` and could mis-order near-same-instant
- * timestamps. The control tests only use far-future/far-past expiries, so that latent
+ * the canonical, T-separated `Expiration` and could mis-order near-same-instant
+ * timestamps (due to a trailing `.000Z` suffix). The control tests only use far-future/far-past expiries, so that latent
  * skew never bites there — the strand layer avoids it outright.) A null `Expiration`
  * never expires. Like `ValidUsage`, `NotExpired` defers to commit, so an expired
  * invite rolls back the whole txn — neither the `Member` nor the `ConsumedInvite`

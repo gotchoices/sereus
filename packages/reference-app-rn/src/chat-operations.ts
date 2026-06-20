@@ -122,8 +122,8 @@ export async function insertMessage(
   content: string,
 ): Promise<ChatMessage> {
   const db = getDb(strand);
-  // Quereus DATETIME expects 'YYYY-MM-DD HH:MM:SS', not ISO 8601 with 'T' / 'Z'.
-  const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+  // Quereus datetime columns store T-separated ISO form; any valid input coerces on read.
+  const now = new Date().toISOString();
 
   // Generate the primary key locally as a UUID. A read-then-increment of
   // max(Id) would collide when two peers post concurrently into a shared

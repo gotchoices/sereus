@@ -41,7 +41,7 @@ function errMessage(err: unknown): string {
 	return err instanceof Error ? err.message : String(err);
 }
 
-/** Quereus stores `YYYY-MM-DD HH:MM:SS`; show just `HH:MM`. */
+/** Quereus stores timestamps as T-separated ISO (e.g. `YYYY-MM-DDTHH:MM:SS`); show just `HH:MM`. */
 function formatTime(timestamp: string): string {
 	return timestamp.length >= 16 ? timestamp.slice(11, 16) : timestamp;
 }

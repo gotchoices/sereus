@@ -116,8 +116,8 @@ async function insertMessage(node, strandId, memberId, content) {
 		[memberId, memberId],
 	);
 
-	// Quereus DATETIME format: 'YYYY-MM-DD HH:MM:SS'
-	const now = new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');
+	// Quereus datetime columns coerce any valid input to T-separated ISO form on read.
+	const now = new Date().toISOString();
 
 	// Collision-free text UUID key (matches the phone app's chat-operations.ts) —
 	// a max(Id)+1 read would collide when this drone and the phone post concurrently.

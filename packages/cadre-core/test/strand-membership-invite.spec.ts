@@ -292,10 +292,10 @@ describe('consumeInvite', () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
     // Expiry one HOUR after now, on the SAME calendar day. This is the case the
-    // canonicalDatetime(Now) choice exists for: both sides canonicalise to
-    // `YYYY-MM-DD HH:MM:SS`, so the lexical `>` compares the time-of-day and admits.
-    // A regression to an ISO `Now` (`...T...000Z`) would mis-order at position 10
-    // (' ' < 'T') and WRONGLY reject this still-valid invite — the day-granular
+    // canonicalDatetime(Now) choice exists for: both sides are T-separated ISO
+    // (e.g. `YYYY-MM-DDTHH:MM:SS`), so the lexical `>` compares time-of-day and
+    // admits. A regression to a raw ISO `Now` (`...T...000Z`) would mis-order
+    // because of the trailing `.000Z` suffix at position 19+ — the day-granular
     // tests above would not catch that, so this test guards the divergence.
     const { inviteKey, invitePrivateKey } = await issueInvite(db, {
       authorityKeyPair: founder,
