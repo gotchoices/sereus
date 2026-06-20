@@ -1,6 +1,6 @@
 ----
 description: When self-hosted TURN is enabled, browsers/mobile need short-lived TURN credentials they can't be handed statically. Provide a tiny signing endpoint that issues coturn ephemeral (use-auth-secret / REST API) credentials and have the ICE-config manifest advertise the TURN entry only when issuance is available.
-prereq: webrtc-stun-turn-infrastructure
+prereq: turn-ssrf-peer-deny-hardening
 files: ops/docker/coturn/turnserver.conf, ops/docs/ice-servers.md, packages/reference-app-web/src/lib/ice-config.ts
 ----
 

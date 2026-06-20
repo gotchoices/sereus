@@ -1,5 +1,4 @@
 description: A strand admin can remove the very last admin (or drop down to a single admin), which can lock the group with no one able to ever add admins again — the rules should prevent removing the last one.
-prereq: optimystic-deferred-check-not-enforced-on-delete
 files: schemas/strand.qsql, packages/quereus-plugin-sereus/src/strand-schema.ts, packages/cadre-core/src/strand-membership-writer.ts, packages/cadre-core/test/strand-membership-peer-rotation.spec.ts
 difficulty: medium
 ----
@@ -11,7 +10,7 @@ difficulty: medium
 same branch is evaluated at commit against the POST-delete row set, so it is true whenever a
 delete drops the authority count to ≤ 1. Two bad outcomes follow once delete-side constraint
 enforcement actually runs (today it does not — see `optimystic-deferred-check-not-enforced-on-delete`,
-which is why this is deferred behind it):
+now in `../optimystic/tickets/`, which is why this is deferred behind it):
 
 - **Second-to-last removal is unauthenticated.** Removing an authority when exactly two remain
   drops the count to 1, so the bootstrap branch is satisfied and ANY signature (or none) is
@@ -44,7 +43,8 @@ design:
 ## Why deferred / ordering
 
 Right now `removeAuthority`'s authorization is unenforced for ALL deletes (the platform gap),
-so this invariant has no teeth until that lands — hence the `prereq`. Once delete-side checks
+so this invariant has no teeth until that lands; it stays in `backlog/` until that cross-repo fix
+lands (no enforceable `prereq:` here — the header was removed for that reason). Once delete-side checks
 run, add tests to `strand-membership-peer-rotation.spec.ts`: (a) removing the last authority is
 rejected and the row remains; (b) a second-to-last removal still requires a valid existing-
 authority/self signature (no bootstrap bypass).

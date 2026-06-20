@@ -1,4 +1,4 @@
-description: Guard against silent identity regeneration when a biometric-gated SecureStore slot is invalidated (returns null indistinguishably from empty). Latent until requireAuthentication is enabled on the RN identity slot.
+description: Guard against silent identity regeneration when a biometric-gated SecureStore slot is invalidated (returns null indistinguishably from empty). This is the safety prerequisite that must land before biometric gating (requireAuthentication) is turned on for the RN identity slot.
 prereq:
 files: packages/reference-app-rn/src/secure-key-store.ts, packages/reference-app-rn/src/cadre-phone.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/key-store.ts, docs/architecture.md
 ----

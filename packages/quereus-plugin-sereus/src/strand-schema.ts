@@ -132,7 +132,7 @@ export const STRAND_SCHEMA = `    table Header (
         PeerId text,
         primary key (MemberKey, PeerId),
         constraint MemberExists check (exists (select 1 from Member M where M.Key = new.MemberKey)),
-        constraint Authorized check (
+        constraint Authorized check on insert, update, delete (
             verify(
                 digest(coalesce(new.MemberKey, old.MemberKey) || '|' || coalesce(new.PeerId, old.PeerId), 'sha256', 'utf8'),
                 context.Signature,
@@ -148,7 +148,7 @@ export const STRAND_SCHEMA = `    table Header (
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
-        constraint Authorized check (
+        constraint Authorized check on insert, update, delete (
             -- There are no existing records - first authority needs no authorization
             (select count(1) from Authority) <= 1
 

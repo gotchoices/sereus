@@ -1,5 +1,4 @@
 description: The cadre-cli Docker image does a non-immutable yarn install that regenerates the lockfile per build — make the image build reproducible
-prereq: optimystic-db-p2p-libp2p-dep-skew
 files: packages/cadre-cli/docker/Dockerfile, packages/cadre-cli/docker/workspace-root.package.json, yarn.lock
 ----
 
@@ -18,8 +17,8 @@ builds at different times can resolve different versions of `@optimystic/*`, `@q
 any transitive deps whose ranges still float, even though the seeded lock holds most pins. That
 defeats reproducible builds and means a registry change (a republish, a new satisfying version,
 or an unpublish) silently alters the image. The review's native reproduction also reconfirmed the
-known multiaddr/libp2p type-skew (tracked separately in `optimystic-db-p2p-libp2p-dep-skew`) is
-exactly what an un-pinned drift reintroduces, so the pinning is load-bearing.
+known multiaddr/libp2p type-skew (tracked separately in `optimystic-db-p2p-libp2p-dep-skew`, now in
+`../optimystic/tickets/`) is exactly what an un-pinned drift reintroduces, so the pinning is load-bearing.
 
 ## Expected behavior
 
@@ -41,3 +40,6 @@ registry (not sibling `link:` checkouts).
 Surfaced by the `cadre-cli-docker-yarn-workspace-build` review. The current non-immutable
 approach is documented in the Dockerfile header comment and is correct/working — this ticket is
 hardening for supply-chain reproducibility, not a build break.
+
+This stays in `backlog/` until the upstream `optimystic-db-p2p-libp2p-dep-skew` fix lands (cross-repo,
+so there is no enforceable `prereq:` here — its prior prereq header was removed for that reason).

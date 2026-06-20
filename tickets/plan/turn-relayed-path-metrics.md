@@ -1,6 +1,6 @@
 ----
 description: A TURN-relayed WebRTC media path consumes server bandwidth like a circuit relay, but the connection-path classifier sees only a /webrtc multiaddr and reports it as "direct". When TURN is enabled, count TURN-relayed paths as relayed in connectivity observability so the fallback is visible, not silent.
-prereq: webrtc-stun-turn-infrastructure
+prereq: turn-ssrf-peer-deny-hardening
 files: packages/cadre-core/src/diagnostics/connection-path.ts, packages/reference-app-web/src/lib/connection-path.ts
 difficulty: easy
 ----

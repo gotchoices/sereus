@@ -24,7 +24,7 @@ export class SchemaVerificationError extends Error {
  */
 function schemaDigest(schema: string, version: string): string {
   const payload = JSON.stringify({ schema, version });
-  return digest(payload, 'sha256', 'utf8', 'base64url') as string;
+  return digest([payload], 'sha256', 'base64url') as string;
 }
 
 /**
