@@ -209,6 +209,18 @@ export class SeedBootstrapService {
   }
 
   /**
+   * Whether this service holds an authority private key, i.e. can produce the
+   * authority signatures that gate `CadrePeer` / `DeviceToken` inserts, deletes,
+   * and re-authorizations. A seed-listener-only service (`enableSeedListener`,
+   * no authority key) returns false: it can receive/apply seeds but cannot author
+   * or re-issue authority writes. Used by the write-while-alone re-replication
+   * drain to skip authority work on a non-authority node.
+   */
+  canAuthorize(): boolean {
+    return !!this.config.authorityPrivateKey;
+  }
+
+  /**
    * Initialize the service with libp2p node and control database.
    *
    * `registerHandler` (default true) gates registration of the shared inbound
@@ -399,6 +411,45 @@ export class SeedBootstrapService {
     `, [this.authorityPublicKey, signature, peerId]);
 
     log('Peer %s removed successfully', peerId);
+  }
+
+  /**
+   * Authority "re-touch" of an existing `CadrePeer` membership row: bump
+   * `UpdatedAt` under the authority branch of `CadrePeer.AuthorizedUpdate` (a
+   * signature over `digest(peerId)` — the same construction {@link authorizePeer}
+   * uses) so the row is re-emitted as a fresh, broadcasting transaction.
+   *
+   * This is the write-while-alone re-replication primitive
+   * (`control-write-ensure-replicated`): a membership row that committed
+   * local-only (its block's cluster ≤1 at insert) is pushed to the cohort once it
+   * grows, by re-issuing this monotonic bump. It is an UPDATE (not the original
+   * INSERT) because the row already exists locally; a re-INSERT would hit the
+   * `PeerId` PK. Only the freshness stamp changes — `PublicKey` / `Multiaddr` /
+   * `Sig` are left intact — so it is safe over a row whose peer has not
+   * self-published (`Sig` null); the caller must skip a row that already carries a
+   * self-`Sig` (that row is the owning peer's to refresh, and bumping `UpdatedAt`
+   * without re-signing would invalidate its self-signature).
+   *
+   * @param peerId - the membership row to re-touch.
+   * @param updatedAt - the strictly-increasing freshness stamp to write.
+   * @throws if no authority private key is configured (a non-authority cannot
+   *   re-sign another peer's row) or the control database is not initialized.
+   */
+  async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
+    // Reuses the exact digest authorizePeer signs (peerAuthorizationDigest), which
+    // the authority branch of AuthorizedUpdate verifies; throws if no authority key.
+    const signature = this.signPeerAuthorization(peerId);
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    const db = this.controlDatabase.getDatabase();
+    await db.exec(`
+      update CadreControl.CadrePeer
+        with context AuthorityKey = ?, Signature = ?
+        set UpdatedAt = ?
+        where PeerId = ?
+    `, [this.authorityPublicKey, signature, updatedAt, peerId]);
+    log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
   }
 
   /**

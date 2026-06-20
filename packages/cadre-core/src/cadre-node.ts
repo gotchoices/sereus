@@ -175,6 +175,41 @@ export class CadreNode implements SAppIdLookup {
    */
   private registerSelfInFlight: Promise<SelfRegistrationOutcome> | null = null;
 
+  // ── Write-while-alone re-replication (control-write-ensure-replicated) ──────
+  /**
+   * Re-replication queue for authority control writes that committed while this
+   * node was alone — `controlNode.getConnections().length === 0` at write time
+   * means the Optimystic commit was local-only (the block's cluster was ≤1) and
+   * never broadcast. Maps the affected subject peerId → the write to re-issue once
+   * the cohort grows. A later op for the same subject overwrites an earlier one
+   * (authorize then remove → remove wins). Drained on the 0→≥1 control-connection
+   * transition by {@link drainPendingControlReplication}.
+   */
+  private pendingPeerWrites: Map<string, 'authorize' | 'remove'> = new Map();
+  /** This node's own `CadrePeer` self-write committed local-only (re-touched on growth). */
+  private pendingSelfPeerWrite = false;
+  /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
+  private pendingSelfDeviceWrite = false;
+  /**
+   * Guards the one-shot, first-cohort-growth reconstruction: an authority re-touches
+   * every membership row it may have authored that could be unreplicated (covering
+   * writes made before this process started, which the in-memory queue cannot know).
+   * Set true after the first drain so later passes only drain the in-memory queue.
+   */
+  private reconstructedLocalOnlyWrites = false;
+  /** Single-flight guard for the re-replication drain (mirrors {@link registerSelfInFlight}). */
+  private drainControlReplicationInFlight: Promise<void> | null = null;
+  /**
+   * Tracks the control-connection presence edge so the drain fires only on the
+   * 0→≥1 transition (the earliest point a re-issue can broadcast), not on every
+   * subsequent `connection:open`. Re-armed to false once connections return to 0.
+   */
+  private hasControlConnection = false;
+  /** `connection:open` listener driving the growth-triggered drain (teardown in {@link stopRecordRefresh}). */
+  private controlConnectionOpenHandler: (() => void) | null = null;
+  /** `connection:close` listener re-arming the growth edge (teardown in {@link stopRecordRefresh}). */
+  private controlConnectionCloseHandler: (() => void) | null = null;
+
   constructor(config: CadreNodeConfig) {
     this.config = config;
     this.strandManager = new StrandInstanceManager();
@@ -388,6 +423,11 @@ export class CadreNode implements SAppIdLookup {
       this.emit('control:connected', undefined);
       timing('[start] total: %dms', Math.round(performance.now() - tTotal));
       log('CadreNode started successfully');
+
+      // Wire the control-connection growth listeners immediately (not via the
+      // delayed refresh path) so no early `connection:open` is missed — the
+      // write-while-alone re-replication drain must fire on the first 0→≥1 edge.
+      this.wireControlConnectionListeners();
 
       // Schedule self-registration in background
       this.scheduleSelfRegistration();
@@ -642,6 +682,7 @@ export class CadreNode implements SAppIdLookup {
 
     if (existing) {
       await this.controlDatabase.updateSelfPeerRecord(record);
+      if (this.committedAlone()) this.pendingSelfPeerWrite = true;
       log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', updatedAt, addrs.length);
       return 'refreshed';
     }
@@ -649,6 +690,7 @@ export class CadreNode implements SAppIdLookup {
       // First-time row: requires an authority signature (the node is its own
       // authority). insertSelfPeerRecord throws if no authority key is present.
       await this.seedBootstrapService.insertSelfPeerRecord(record);
+      if (this.committedAlone()) this.pendingSelfPeerWrite = true;
       log('registerSelf: inserted own CadrePeer record (authority-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
       return 'inserted';
     }
@@ -775,10 +817,31 @@ export class CadreNode implements SAppIdLookup {
       clearInterval(this.controlCohortReconcileTimer);
       this.controlCohortReconcileTimer = null;
     }
-    if (this.controlNode && this.selfPeerUpdateHandler) {
-      this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
+    if (this.controlNode) {
+      if (this.selfPeerUpdateHandler) {
+        this.controlNode.removeEventListener('self:peer:update', this.selfPeerUpdateHandler);
+      }
+      if (this.controlConnectionOpenHandler) {
+        this.controlNode.removeEventListener('connection:open', this.controlConnectionOpenHandler);
+      }
+      if (this.controlConnectionCloseHandler) {
+        this.controlNode.removeEventListener('connection:close', this.controlConnectionCloseHandler);
+      }
     }
     this.selfPeerUpdateHandler = null;
+    this.controlConnectionOpenHandler = null;
+    this.controlConnectionCloseHandler = null;
+
+    // Reset the write-while-alone re-replication state so a stop()→start() cycle
+    // re-arms the growth edge and re-runs the first-growth reconstruction. Any
+    // queued local-only writes are moot once the node is torn down; authority
+    // inserts are re-covered by reconstruction on the next start, and the
+    // (already-loudly-logged) delete gap is tracked for follow-up.
+    this.hasControlConnection = false;
+    this.reconstructedLocalOnlyWrites = false;
+    this.pendingPeerWrites.clear();
+    this.pendingSelfPeerWrite = false;
+    this.pendingSelfDeviceWrite = false;
   }
 
   /**
@@ -1030,6 +1093,309 @@ export class CadreNode implements SAppIdLookup {
   }
 
   // ============================================================================
+  // Write-while-alone re-replication (control-write-ensure-replicated)
+  //
+  // Optimystic's coordinator commits a control write WITHOUT broadcasting when the
+  // block's cluster has ≤1 member. An authority that authorizes/removes a peer or
+  // (re)publishes its own record while no sibling is connected therefore writes a
+  // row that exists ONLY in its local control DB — a sibling that connects later
+  // never observes it (pull-on-read routes to the block's cluster, which never
+  // learned of the write). reconcileControlCohort shrinks the alone window but
+  // cannot close it (a write in the instant before any sibling connects is still
+  // local-only). The remedy: detect "wrote while alone" (0 connections is a sound
+  // lower bound), queue the affected row, and RE-ISSUE the write once the cohort
+  // grows (0→≥1 connection), as an idempotent monotonic update that now broadcasts.
+  // See docs/architecture.md (Control Network → write-while-alone durability).
+  // ============================================================================
+
+  /**
+   * Whether a control write happening now would commit local-only. A sound lower
+   * bound is "no connected control peers": 0 connections ⇒ the block's cluster is
+   * ≤1 ⇒ Optimystic commits without broadcasting. This is the pragmatic proxy for
+   * the precise signal (the block's `getClusterSize`); it over-approximates safely
+   * — a connected-but-not-in-this-block's-cluster write may still be local-only and
+   * is caught by the cohort's periodic pull-on-read instead. Re-issuing an already-
+   * replicated row is harmless (an idempotent monotonic bump), so the coarse proxy
+   * is acceptable as the agreed first cut.
+   */
+  private committedAlone(): boolean {
+    return (this.controlNode?.getConnections().length ?? 0) === 0;
+  }
+
+  /**
+   * Record (or clear) a just-committed authority membership write in the
+   * write-while-alone re-replication queue. If the control node had no connections
+   * at commit, the Optimystic write was local-only and must be re-issued once the
+   * cohort grows; otherwise the write replicated and any stale queue entry for this
+   * subject is dropped.
+   *
+   * A `remove` that commits alone is a security-relevant durability gap (a revoked
+   * peer may persist as a member elsewhere), so it is logged loudly — and, because
+   * a physical delete leaves no local trace to re-issue from, its on-growth
+   * re-issue is best-effort only (see {@link drainPendingPeerWrites}).
+   */
+  private noteControlWrite(peerId: string, kind: 'authorize' | 'remove'): void {
+    if (!this.committedAlone()) {
+      this.pendingPeerWrites.delete(peerId);
+      return;
+    }
+    this.pendingPeerWrites.set(peerId, kind);
+    if (kind === 'remove') {
+      log('removePeer(%s) committed while ALONE (0 control connections): the deletion is ' +
+        'local-only, so a revoked peer may persist in the cohort until re-replication. The ' +
+        'on-growth re-issue is best-effort (a physical delete cannot be replayed without a ' +
+        'schema tombstone — see control-delete-while-alone-tombstone).', peerId);
+    } else {
+      log('authorizePeer(%s) committed while alone (0 control connections); queued for ' +
+        're-replication on cohort growth', peerId);
+    }
+  }
+
+  /**
+   * Drain the write-while-alone re-replication queue: re-issue the writes that
+   * committed local-only now that the cohort can broadcast them. Public so the
+   * 0→≥1 growth trigger ({@link handleControlConnectionChange}) and tests can drive
+   * it; concurrent calls collapse into one in-flight drain
+   * ({@link drainControlReplicationInFlight}) so two growth signals never
+   * double-issue. Best-effort throughout — a per-row failure leaves that entry
+   * queued for the next growth rather than aborting the drain.
+   */
+  async drainPendingControlReplication(reason: string): Promise<void> {
+    if (this.drainControlReplicationInFlight) {
+      return this.drainControlReplicationInFlight;
+    }
+    const op = this.runDrainControlReplication(reason);
+    this.drainControlReplicationInFlight = op;
+    try {
+      await op;
+    } finally {
+      this.drainControlReplicationInFlight = null;
+    }
+  }
+
+  /** Body of {@link drainPendingControlReplication}; serialised by its single-flight guard. */
+  private async runDrainControlReplication(reason: string): Promise<void> {
+    // Shutdown / not-yet-started guard (mirrors runReconcileControlCohort).
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+    const firstGrowth = !this.reconstructedLocalOnlyWrites;
+    log('Draining control re-replication (reason=%s, firstGrowth=%s, pendingPeers=%d, self=%s, deviceToken=%s)',
+      reason, firstGrowth, this.pendingPeerWrites.size, this.pendingSelfPeerWrite, this.pendingSelfDeviceWrite);
+
+    // 1. Self rows. On the first growth always re-touch (covers a self row carried
+    //    over from a prior process that committed local-only before this start);
+    //    afterwards only when a self-write-while-alone was recorded this session.
+    //    registerSelf is idempotent + single-flight, so this never races a
+    //    duplicate publish with the heartbeat republish.
+    if (firstGrowth || this.pendingSelfPeerWrite) {
+      await this.registerSelf().catch((error) => log('drain: registerSelf failed: %o', error));
+      this.pendingSelfPeerWrite = false;
+    }
+    if (firstGrowth || this.pendingSelfDeviceWrite) {
+      await this.retouchSelfDeviceToken();
+      this.pendingSelfDeviceWrite = false;
+    }
+
+    // 2. First growth: an authority reconstructs membership rows it may have
+    //    authored that never replicated (covers writes from before this process
+    //    started). Rows already tracked in the in-memory queue are handled by
+    //    step 3 — skipped here to avoid a double re-touch.
+    if (firstGrowth) {
+      this.reconstructedLocalOnlyWrites = true;
+      await this.reconstructAuthoredMembership();
+    }
+
+    // 3. In-session pending authority membership writes (authorize / remove).
+    await this.drainPendingPeerWrites();
+  }
+
+  /**
+   * Re-touch this node's own `DeviceToken` row (re-sign + bump `UpdatedAt` via
+   * {@link registerDeviceToken}) so a self device-token that committed local-only
+   * re-broadcasts on cohort growth. No-op when no row exists (nothing to
+   * re-replicate) or the stored platform is unknown. Best-effort — never throws to
+   * the drain.
+   */
+  private async retouchSelfDeviceToken(): Promise<void> {
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+    const peerId = this.controlNode.peerId.toString();
+    try {
+      const existing = await this.controlDatabase.queryDeviceToken(peerId);
+      if (!existing || !isPushPlatform(existing.platform)) {
+        return;
+      }
+      await this.registerDeviceToken(existing.platform, existing.token);
+    } catch (error) {
+      log('drain: retouch self DeviceToken failed: %o', error);
+    }
+  }
+
+  /**
+   * One-shot, first-cohort-growth reconstruction of the write-while-alone queue for
+   * an AUTHORITY node: re-touch every membership row that may be an unreplicated
+   * authority insert. A row is a candidate iff it is not self (handled by
+   * {@link registerSelf}), is not already tracked in the in-memory queue (handled by
+   * {@link drainPendingPeerWrites}), and carries no self-`Sig` yet (an
+   * authority-authored row the peer has not self-published — the only kind safe to
+   * bump without invalidating a self-signature). O(rows) on the small control
+   * tables; safe to over-apply (a monotonic authority bump on an already-replicated
+   * row is a no-op-equivalent).
+   *
+   * A node with no authority private key skips this entirely — it cannot re-sign
+   * rows for other peers, and rows it merely holds are not its to re-issue. DELETEs
+   * cannot be reconstructed here (a removed row leaves no local trace and the schema
+   * carries no tombstone) — see the delete-path note in {@link drainPendingPeerWrites}.
+   */
+  private async reconstructAuthoredMembership(): Promise<void> {
+    if (!this.controlDatabase || !this.controlNode) {
+      return;
+    }
+    if (!this.seedBootstrapService?.canAuthorize()) {
+      return;
+    }
+    const selfPeerId = this.controlNode.peerId.toString();
+    const members = await this.controlDatabase.queryCadrePeers();
+    let touched = 0;
+    for (const member of members) {
+      if (!this._running || !this.controlNode || !this.controlDatabase) {
+        return;
+      }
+      if (member.peerId === selfPeerId || this.pendingPeerWrites.has(member.peerId)) {
+        continue;
+      }
+      try {
+        const record = await this.controlDatabase.queryPeerRecord(member.peerId);
+        // Missing (raced a delete) or peer-owned (self-Sig present) → not ours to bump.
+        if (!record || record.sig) {
+          continue;
+        }
+        await this.reissuePeerAuthorize(member.peerId, record.updatedAt);
+        touched++;
+      } catch (error) {
+        log('drain: reconstruction re-touch of %s failed (continuing): %o', member.peerId, error);
+      }
+    }
+    if (touched > 0) {
+      log('drain: reconstructed %d authority-authored membership row(s) on first cohort growth', touched);
+    }
+  }
+
+  /**
+   * Drain the in-session write-while-alone queue: re-issue each pending authority
+   * membership write now that the cohort can broadcast it. Sequential (no fan-out)
+   * to avoid a thundering re-touch; an entry is cleared only on success, so a
+   * failure (or a still-alone re-commit) leaves it queued for the next growth.
+   *
+   * - `authorize`: re-issue as an idempotent monotonic authority UPDATE
+   *   ({@link reissuePeerAuthorize}). Skipped (and cleared) if the row vanished
+   *   (raced a delete) or now carries a self-`Sig` (the peer self-published and owns
+   *   its republish).
+   * - `remove` (security-relevant): a removePeer-while-alone physically removed the
+   *   row locally, so a re-issued DELETE matches nothing and does NOT propagate —
+   *   full delete durability requires a schema tombstone (deferred:
+   *   `control-delete-while-alone-tombstone`). We still attempt the re-issue
+   *   (harmless, and it propagates in the row-still-present case); the commit-alone
+   *   was already logged loudly in {@link noteControlWrite}.
+   */
+  private async drainPendingPeerWrites(): Promise<void> {
+    if (this.pendingPeerWrites.size === 0) {
+      return;
+    }
+    if (!this.seedBootstrapService?.canAuthorize()) {
+      // A non-authority node cannot have authored these writes; drop any stray entries.
+      this.pendingPeerWrites.clear();
+      return;
+    }
+    for (const [peerId, kind] of [...this.pendingPeerWrites]) {
+      if (!this._running || !this.controlNode || !this.controlDatabase) {
+        return;
+      }
+      try {
+        if (kind === 'authorize') {
+          const record = await this.controlDatabase.queryPeerRecord(peerId);
+          if (!record || record.sig) {
+            // Removed since, or peer self-published — nothing for the authority to re-issue.
+            this.pendingPeerWrites.delete(peerId);
+            continue;
+          }
+          await this.reissuePeerAuthorize(peerId, record.updatedAt);
+        } else {
+          // Best-effort delete re-issue (see method doc): propagates only if the row
+          // is somehow still present locally.
+          await this.seedBootstrapService.removePeer(peerId);
+        }
+        this.pendingPeerWrites.delete(peerId);
+      } catch (error) {
+        log('drain: re-issue of %s (%s) failed; leaving queued for next growth: %o', peerId, kind, error);
+      }
+    }
+  }
+
+  /**
+   * Re-issue an authority membership row as a monotonic authority UPDATE: bump
+   * `UpdatedAt` strictly above the stored value (and the wall clock) and re-sign via
+   * the authority branch of `CadrePeer.AuthorizedUpdate`. The row already exists
+   * locally (it committed there, just local-only), so this is an UPDATE, not the
+   * original INSERT.
+   */
+  private async reissuePeerAuthorize(peerId: string, currentUpdatedAt: number): Promise<void> {
+    if (!this.seedBootstrapService) {
+      return;
+    }
+    const updatedAt = Math.max(Date.now(), (currentUpdatedAt ?? 0) + 1);
+    await this.seedBootstrapService.reauthorizePeer(peerId, updatedAt);
+  }
+
+  /**
+   * On a control connection opening, detect the 0→≥1 transition and drain the
+   * write-while-alone re-replication queue (single-flight; fires only on the edge,
+   * not on every subsequent `connection:open`). Best-effort — a drain failure is
+   * logged, not thrown.
+   */
+  private handleControlConnectionChange(): void {
+    if (!this._running || !this.controlNode) {
+      return;
+    }
+    const connected = this.controlNode.getConnections().length > 0;
+    if (!connected || this.hasControlConnection) {
+      return;
+    }
+    this.hasControlConnection = true;
+    log('Control cohort grew (0 → ≥1 connection); draining write-while-alone re-replication queue');
+    void this.drainPendingControlReplication('connection:open')
+      .catch((error) => log('Control re-replication drain (connection:open) failed: %o', error));
+  }
+
+  /** Re-arm the growth edge once all control connections drop, so a later reconnect re-drains. */
+  private handleControlConnectionClose(): void {
+    if (!this.controlNode) {
+      return;
+    }
+    if (this.controlNode.getConnections().length === 0) {
+      this.hasControlConnection = false;
+    }
+  }
+
+  /**
+   * Wire the control-connection growth listeners that drive write-while-alone
+   * re-replication. Wired in {@link start} (not the delayed refresh path) so no
+   * early `connection:open` is missed; torn down in {@link stopRecordRefresh}.
+   * Idempotent.
+   */
+  private wireControlConnectionListeners(): void {
+    if (!this.controlNode || this.controlConnectionOpenHandler) {
+      return;
+    }
+    this.controlConnectionOpenHandler = () => this.handleControlConnectionChange();
+    this.controlConnectionCloseHandler = () => this.handleControlConnectionClose();
+    this.controlNode.addEventListener('connection:open', this.controlConnectionOpenHandler);
+    this.controlNode.addEventListener('connection:close', this.controlConnectionCloseHandler);
+  }
+
+  // ============================================================================
   // Device-token registry (control-network push-token publish + resolve)
   //
   // The control network is the only network a hibernating peer keeps connected,
@@ -1088,11 +1454,13 @@ export class CadreNode implements SAppIdLookup {
 
     if (existing) {
       await this.controlDatabase.updateSelfDeviceToken(record);
+      if (this.committedAlone()) this.pendingSelfDeviceWrite = true;
       log('registerDeviceToken: refreshed own DeviceToken (platform=%s, updatedAt=%d)', platform, updatedAt);
       return;
     }
     if (this.seedBootstrapService) {
       await this.seedBootstrapService.insertSelfDeviceToken(record);
+      if (this.committedAlone()) this.pendingSelfDeviceWrite = true;
       log('registerDeviceToken: inserted own DeviceToken (authority-signed, platform=%s, updatedAt=%d)', platform, updatedAt);
       return;
     }
@@ -2095,6 +2463,8 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs });
+    // Queue for re-replication if this committed local-only (no connected cohort).
+    this.noteControlWrite(peerId, 'authorize');
   }
 
   /**
@@ -2108,6 +2478,8 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     await this.seedBootstrapService.removePeer(peerId);
+    // Track + loudly flag a delete that committed local-only (security-relevant).
+    this.noteControlWrite(peerId, 'remove');
   }
 
   /**
