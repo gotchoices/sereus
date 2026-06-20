@@ -346,26 +346,16 @@ describe('consumeInvite', () => {
     expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
   }, 30_000);
 
-  // KNOWN PLATFORM GAP — single-use is NOT yet enforced for ConsumedInvite.
+  // Single-use is enforced: an invite can be consumed at most once.
   //
   // The schema makes `ConsumedInvite.InviteKey` the primary key so a given invite
-  // can be consumed at most once. But the optimystic local (bootstrap-mode) vtab
-  // transactor does not enforce primary-key uniqueness on INSERT — its insert path
-  // (`optimystic-module.ts` `case 'insert'`) stages `[insertKey, encodedRow]`,
-  // which silently OVERWRITES any existing row at that key instead of rejecting.
-  // It is also classified as an 'insert', so the `InsertOnly check on update` guard
-  // never fires. Net effect: a second consume of the same invite succeeds, the
-  // `ConsumedInvite` row is overwritten (InviteKey -> new MemberKey), and a second
-  // Member is admitted — a replay. This is a platform-layer gap (the writer code
-  // here issues a correct, ordinary insert), sibling to the now-fixed
-  // optimystic-deferred-constraint-rejection bug, filed as
-  // `optimystic-insert-pk-uniqueness-not-enforced` (backlog).
-  //
-  // This test pins the ACTUAL behavior so it (a) still exercises the second
-  // consume's write path and (b) fails loudly — prompting these assertions to flip
-  // to the intended `rejects.toThrow()` + unchanged-counts — the moment the
-  // platform starts enforcing PK uniqueness on insert.
-  it('KNOWN GAP: a double consume currently overwrites instead of rejecting (PK uniqueness not enforced)', async () => {
+  // can be consumed at most once. The optimystic local (bootstrap-mode) vtab
+  // transactor now enforces primary-key uniqueness on INSERT, so a second consume of
+  // the same invite is rejected (`UNIQUE constraint failed`) rather than silently
+  // overwriting the `ConsumedInvite` row and admitting a replay member. This pins the
+  // intended single-use behavior; it previously documented the platform gap tracked
+  // by `optimystic-insert-pk-uniqueness-not-enforced`, which has since been fixed.
+  it('a double consume of the same invite is rejected (single-use enforced)', async () => {
     const { db, founder } = await openStrand('c');
     const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
     const memberB = freshKeyPair();
@@ -374,16 +364,16 @@ describe('consumeInvite', () => {
     await consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: memberB.publicKeyB64 });
     expect(await tableCount(db, 'Member')).toBe(2);
 
-    // Intended behavior: this would reject (single-use). Current behavior: it
-    // resolves, overwriting the ConsumedInvite row and admitting a second member.
+    // The second consume of the already-consumed invite is rejected by PK uniqueness.
     await expect(
       consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: memberC.publicKeyB64 }),
-    ).resolves.toBeUndefined();
+    ).rejects.toThrow();
 
-    expect(await tableCount(db, 'ConsumedInvite')).toBe(1); // overwritten, not appended
-    expect(await tableCount(db, 'Member')).toBe(3); // founder + B + C (replay admitted C)
+    // The first consume stands; the replay admitted no second member.
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(2); // founder + B only
     const ci = await db.get('select MemberKey from Strand.ConsumedInvite');
-    expect(ci?.MemberKey).toBe(memberC.publicKeyB64); // row now points at the replayer
+    expect(ci?.MemberKey).toBe(memberB.publicKeyB64); // row still points at the first consumer
   }, 30_000);
 });
 

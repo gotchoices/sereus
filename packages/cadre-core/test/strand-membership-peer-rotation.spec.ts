@@ -275,15 +275,13 @@ describe('addAuthority', () => {
 describe('removeAuthority', () => {
   // NOTE on what these prove: the writer builds a correctly-signed delete (the
   // existing-authority branch for admin removal, the former-authority self branch
-  // for self-resignation — see removeAuthority's doc). HOWEVER, the optimystic
-  // bootstrap-mode transactor does NOT currently evaluate deferred (subquery-bearing)
-  // CHECK constraints on DELETE — `Authority.Authorized` is one — so the platform
-  // accepts ANY delete regardless of signature (filed as
-  // `optimystic-deferred-check-not-enforced-on-delete`, backlog; the KNOWN GAP test
-  // below pins this). These two acceptance tests therefore currently assert that the
-  // writer removes the correct row and leaves the others intact; once delete-side
-  // constraint enforcement lands they will ALSO exercise the signature branches
-  // unchanged (the founder/self signatures are already valid for those branches).
+  // for self-resignation — see removeAuthority's doc). The optimystic bootstrap-mode
+  // transactor now evaluates deferred (subquery-bearing) CHECK constraints on DELETE
+  // — `Authority.Authorized` is one — so these acceptance tests genuinely exercise
+  // the signature branches (the founder/self signatures are valid for those
+  // branches), and an unauthorized delete is rejected (see the test below). The
+  // platform gap they previously documented is tracked by
+  // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
   it('an authority removes a DIFFERENT authority and leaves the other authorities intact', async () => {
     const { db, founder } = await openStrand('c');
     // 3 authorities total so removing one leaves 2 (≥ 2 after delete keeps the
@@ -313,34 +311,27 @@ describe('removeAuthority', () => {
     expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
-  // KNOWN PLATFORM GAP — delete-side constraint enforcement is not implemented.
+  // Delete-side constraint enforcement: an unauthorized removal is rejected.
   //
-  // `Authority.Authorized` (a deferred, subquery-bearing CHECK) SHOULD reject a
-  // removal whose signer is neither an existing authority nor the target itself.
-  // But the optimystic bootstrap-mode vtab transactor evaluates deferred CHECK
-  // constraints only on INSERT, not on DELETE (the engine never re-checks the
-  // constraint for the delete), so the delete is silently accepted — any party can
-  // remove any Authority row. Proven directly: a delete carrying a null AuthorityKey
-  // and null Signature still drops the row (see the probe rationale in the review
-  // handoff). Filed as `optimystic-deferred-check-not-enforced-on-delete` (backlog),
-  // a sibling of `optimystic-insert-pk-uniqueness-not-enforced`.
-  //
-  // This test pins the ACTUAL (insecure) behavior so it fails loudly the moment the
-  // platform starts enforcing delete-side constraints — at which point these
-  // assertions flip to `rejects.toThrow()` + an unchanged count of 3.
-  it('KNOWN GAP: a non-authority removal currently SUCCEEDS (deferred CHECK not enforced on delete)', async () => {
+  // `Authority.Authorized` (a deferred, subquery-bearing CHECK) rejects a removal
+  // whose signer is neither an existing authority nor the target itself. The
+  // optimystic bootstrap-mode vtab transactor now evaluates deferred CHECK
+  // constraints on DELETE (not only on INSERT), so a non-authority can no longer
+  // remove an Authority row. This pins the intended secure behavior; it previously
+  // documented the platform gap tracked by
+  // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
+  it('a non-authority removal is rejected (deferred CHECK enforced on delete)', async () => {
     const { db, founder } = await openStrand('c');
     const [a2] = await addExtraAuthorities(db, founder, 2);
     const notAnAuthority = freshKeyPair();
     expect(await tableCount(db, 'Authority')).toBe(3);
 
-    // Intended behavior: reject (no accepting branch matches; post-delete count 2
-    // keeps the bootstrap branch false). Current behavior: resolves and removes the
-    // row because the delete-side CHECK is never evaluated.
+    // No accepting branch matches (post-delete count 2 keeps the bootstrap branch
+    // false), so the deferred Authorized CHECK rejects the delete at commit.
     await expect(
       removeAuthority(db, { byAuthorityKeyPair: notAnAuthority, targetAuthorityKey: a2.publicKeyB64 }),
-    ).resolves.toBeUndefined();
-    expect(await tableCount(db, 'Authority')).toBe(2); // a2 was removed despite no authorization
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a2.publicKeyB64])).toBeUndefined();
+    ).rejects.toThrow();
+    expect(await tableCount(db, 'Authority')).toBe(3); // unchanged — nothing was removed
+    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
   }, 30_000);
 });
