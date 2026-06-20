@@ -27,11 +27,12 @@
  * `../optimystic` workspace; the green cadre-core consent suite depends on it being
  * built and linked.
  *
- * This stands in for production control-cohort discovery with a test-only manual
- * `dial()` over the existing public `getControlNode()` seam — exactly as the strand
- * scenarios manually dial strand nodes. Auto-connect (so nodes form the control
- * cohort without a manual dial) remains the open prerequisite, tracked by
- * `control-network-cohort-discovery`.
+ * This scenario isolates the *replication-given-a-connected-cohort* behavior, so it
+ * still forms the cohort with a test-only manual `dial()` over the public
+ * `getControlNode()` seam — exactly as the strand scenarios manually dial strand
+ * nodes. Production auto-connect (nodes forming the control cohort with no manual
+ * dial) now lands via `CadreNode.reconcileControlCohort` and is proven end-to-end,
+ * with zero manual control dials, by `control-cohort-auto-convergence.integration.ts`.
  */
 
 import { describe, it, expect } from 'vitest';

@@ -1,5 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { multiaddr } from '@multiformats/multiaddr';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
@@ -151,6 +153,37 @@ describe('CadreNode.reconcileControlCohort', () => {
     await node.reconcileControlCohort();
 
     expect(dialCalls).toEqual([]);
+  });
+
+  it('falls back to peerStore addresses when the signed record does not resolve (cold start)', async () => {
+    // This is the load-bearing cold-start path the auto-convergence integration test
+    // exercises: the CadrePeer record is not yet resolvable, so resolveControlDialAddrs
+    // must fall through to the libp2p peerStore entry applySeed populated and still dial.
+    const node = new CadreNode(createConfig());
+    const siblingPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const dialCalls: Array<unknown> = [];
+    (node as unknown as { _running: boolean })._running = true;
+    (node as unknown as { controlNode: unknown }).controlNode = {
+      peerId: { toString: () => 'self-peer' },
+      getConnections: () => [],
+      dial: async (addrs: unknown) => { dialCalls.push(addrs); },
+      // peerStore HAS an entry for the sibling (the cold-start seed populated it).
+      peerStore: { get: async () => ({ addresses: [{ multiaddr: multiaddr('/ip4/9.9.9.9/tcp/4001') }] }) }
+    };
+    (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+      queryCadrePeers: async () => [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: siblingPeerId, multiaddr: null }
+      ],
+      getAuthorityKeys: async () => new Set<string>()
+    };
+    // Signed-record resolution yields nothing → must consult the peerStore fallback.
+    (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
+      async () => [];
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
   });
 
   it('tolerates a dial failure and continues the pass', async () => {
