@@ -190,6 +190,13 @@ describe('Two-node control-DB convergence', () => {
 			await A.authorizePeer(xPeerId);
 			expect(await A.isMember(xPeerId)).toBe(true); // the write commits LOCALLY on A
 
+			// Sanity: B's control-DB read seam WORKS and simply lacks X — so the timeout
+			// below is genuine non-convergence, not a throwing/broken reader masked by
+			// `waitUntil` swallowing predicate errors (it polls this exact query).
+			expect(
+				(await B.getControlDatabase()!.queryCadrePeers()).some((p) => p.peerId === xPeerId),
+			).toBe(false);
+
 			// TRIPWIRE: today B never observes X — the CadreControl tables are not
 			// network-backed (see file header). The window is comfortably longer than
 			// the ~2s convergence the wiring spike achieved, so once the control DB is

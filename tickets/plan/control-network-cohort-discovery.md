@@ -1,12 +1,14 @@
 description: A party's nodes don't automatically connect to each other tightly enough for their shared membership/control database to stay in sync — they need a way to find and dial their fellow cadre nodes so control data actually propagates in production, not just in hand-wired tests.
-prereq:
+prereq: control-db-network-backed
 files: packages/cadre-core/src/cadre-node.ts (createControlNode ~486-519, registerSelf/resolvePeerAddrs/listMembers ~577-807, scheduleSelfRegistration/startRecordRefresh ~540-720), packages/cadre-core/src/seed-bootstrap.ts (applySeed/dialInvite/createSeed ~408-539,1003-1030), packages/cadre-core/src/control-database.ts (network transactor wiring ~176-200), packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts (the manual-dial workaround ~389-445), tickets/backlog/fret-backed-peer-record-liveness.md, docs/architecture.md (Control Network ~30,594; enrollment sequences ~177)
 difficulty: hard
 ----
 
 ## Problem
 
-The `CadreControl` store is designed to converge P2P over the control network via Optimystic's network transactor (deterministic collection ids → FRET routing → cluster consensus replication + pull-on-read read-repair) — this is settled (see `tickets/implement/1-control-db-two-node-convergence-test.md` for the full mechanism). It is the **same** machinery that converges strand databases today.
+The `CadreControl` store is **designed** to converge P2P over the control network via Optimystic's network transactor (deterministic collection ids → FRET routing → cluster consensus replication + pull-on-read read-repair) — the **same** machinery that converges strand databases today.
+
+> **Correction (from `control-db-two-node-convergence-test` review).** An earlier draft of this ticket called control convergence "settled" and assumed only cohort discovery was missing. That premise is **wrong**: the `CadreControl` tables are **not network-backed at all today** — `ControlDatabase.initialize()` never sets `optimystic` as the default vtab, so the tables fall back to Quereus's in-memory vtab and a write never reaches the transactor. The "did not converge after 24s" observation below is explained by that, not (only) by cohort non-formation. Network-backing is a **prerequisite** of this ticket (`control-db-network-backed`, now in `prereq:`); cohort discovery cannot make in-memory tables replicate. Design this ticket assuming network-backing has landed.
 
 But convergence only happens when the control collections' **cohort/cluster actually forms** across the party's nodes: the nodes must be connected such that FRET seats each peer in the others' keyspace cohort, and a write must occur while that cohort has ≥2 members (otherwise it commits **local-only** and never broadcasts — the `getClusterSize(blockId) <= 1` branch in optimystic's `coordinator-repo.ts`).
 
