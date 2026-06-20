@@ -4,16 +4,7 @@ import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-c
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
-
-/**
- * Minimal libp2p stream surface compatible with libp2p 3.x.
- * In libp2p 3.x, streams are AsyncIterable for reading and use send() for writing.
- */
-interface LibP2PStream extends AsyncIterable<Uint8Array> {
-  send(data: Uint8Array): boolean;
-  close(): Promise<void>;
-  abort(err: Error): void;
-}
+import { type ControlStream, writeFrame, readStreamToEnd } from './control-stream.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -44,6 +35,12 @@ export const SEED_PROTOCOL = '/sereus/seed/1.0.0';
 
 /** Maximum seed message size (1MB) */
 const MAX_SEED_SIZE = 1024 * 1024;
+
+/** Default time the receiver waits for an inbound seed frame before aborting (ms). */
+const DEFAULT_SEED_READ_TIMEOUT_MS = 10_000;
+
+/** Default cap on concurrent inbound seed streams a single peer can pin open. */
+const DEFAULT_MAX_CONCURRENT_SEEDS = 100;
 
 /**
  * Decode a 4-byte big-endian length-prefixed frame; returns the body bytes.
@@ -137,6 +134,18 @@ export interface SeedBootstrapConfig {
    * since a network-delivered seed has no per-call override.
    */
   trustPolicy?: SeedTrustPolicy;
+  /**
+   * Time the inbound seed handler waits for the seed frame before aborting the
+   * read (ms). Defaults to {@link DEFAULT_SEED_READ_TIMEOUT_MS}. Bounds a
+   * buggy/compromised own-cadre node that opens a stream and never half-closes.
+   */
+  seedReadTimeoutMs?: number;
+  /**
+   * Cap on concurrent inbound seed streams (defaults to
+   * {@link DEFAULT_MAX_CONCURRENT_SEEDS}). Over the cap, a non-accepting ack is
+   * returned without applying any seed.
+   */
+  maxConcurrentSeeds?: number;
 }
 
 /**
@@ -164,11 +173,17 @@ export class SeedBootstrapService {
   private controlDatabase: ControlDatabase | null = null;
   private readonly authorityPublicKey: string | null;
   private readonly trustPolicy: SeedTrustPolicy;
+  private readonly seedReadTimeoutMs: number;
+  private readonly maxConcurrentSeeds: number;
+  /** In-flight inbound seed streams, used to enforce {@link maxConcurrentSeeds}. */
+  private activeStreams = 0;
   private eventCallbacks: SeedEventCallbacks = {};
 
   constructor(config: SeedBootstrapConfig) {
     this.config = config;
     this.trustPolicy = config.trustPolicy ?? dbAnchoredTrustPolicy();
+    this.seedReadTimeoutMs = config.seedReadTimeoutMs ?? DEFAULT_SEED_READ_TIMEOUT_MS;
+    this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
 
     // Derive public key from private key if not provided
     if (config.authorityPrivateKey && !config.authorityPublicKey) {
@@ -554,10 +569,10 @@ export class SeedBootstrapService {
 
     // Dial the target and open a stream
     const rawStream = await this.libp2pNode.dialProtocol(addr, SEED_PROTOCOL);
-    const stream = rawStream as unknown as LibP2PStream;
+    const stream = rawStream as unknown as ControlStream;
 
     try {
-      // Send the seed message
+      // Send the seed message as one length-prefixed frame (shared writer).
       const message: SeedMessage = {
         partyId: seed.partyId,
         peers: seed.peers,
@@ -565,14 +580,7 @@ export class SeedBootstrapService {
         signerKey: seed.signerKey,
       };
 
-      const messageBytes = new TextEncoder().encode(JSON.stringify(message));
-
-      // Write length-prefixed message using libp2p 3.x send() API
-      const lengthBytes = new Uint8Array(4);
-      new DataView(lengthBytes.buffer).setUint32(0, messageBytes.length, false);
-
-      stream.send(lengthBytes);
-      stream.send(messageBytes);
+      writeFrame(stream, message);
 
       // In libp2p v3.x, close() closes the write end only (signals EOF),
       // while the read end remains open for receiving the ack.
@@ -691,104 +699,106 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Register the seed protocol handler.
+   * Register the seed protocol handler. The inbound closure just delegates to
+   * {@link handleSeedStream} — extracted as a method so it has a unit-test seam
+   * (mirroring wake's `handleStream`) the inline closure never had.
    */
   private registerProtocolHandler(): void {
     if (!this.libp2pNode) return;
 
     void this.libp2pNode.handle(SEED_PROTOCOL, async (rawStream: unknown, rawConnection: unknown) => {
-      const stream = rawStream as LibP2PStream;
       const remotePeerId = (rawConnection as Connection).remotePeer.toString();
-      log('Incoming seed delivery from: %s', remotePeerId);
-
-      try {
-        // Read the seed message (stream is AsyncIterable in libp2p 3.x)
-        const chunks: Uint8Array[] = [];
-        let totalLength = 0;
-
-        for await (const chunk of stream) {
-          const bytes = chunk instanceof Uint8Array ? chunk : (chunk as { subarray(): Uint8Array }).subarray();
-          chunks.push(bytes);
-          totalLength += bytes.length;
-          if (totalLength > MAX_SEED_SIZE) {
-            throw new Error('Seed message too large');
-          }
-        }
-
-        const data = new Uint8Array(totalLength);
-        let offset = 0;
-        for (const chunk of chunks) {
-          data.set(chunk, offset);
-          offset += chunk.length;
-        }
-
-        // Parse length-prefixed message
-        const messageBody = decodeLengthPrefixedFrame(data);
-        const messageJson = new TextDecoder().decode(messageBody);
-        const message = JSON.parse(messageJson) as SeedMessage;
-
-        // Emit seed received event
-        this.eventCallbacks.onSeedReceived?.(message.partyId, remotePeerId);
-
-        // Convert to seed and apply
-        const seed: ControlNetworkSeed = {
-          partyId: message.partyId,
-          peers: message.peers,
-          signature: message.signature,
-          signerKey: message.signerKey,
-        };
-
-        const result = await this.applySeed(seed);
-
-        // Emit appropriate event based on result
-        if (result.success) {
-          this.eventCallbacks.onSeedApplied?.(seed.partyId, result.peersAdded);
-        } else {
-          this.eventCallbacks.onSeedError?.(seed.partyId, result.error ?? 'Unknown error');
-        }
-
-        // Send acknowledgment using libp2p 3.x send() API
-        const ack: SeedAckMessage = {
-          accepted: result.success,
-          reason: result.error,
-        };
-
-        const ackBytes = new TextEncoder().encode(JSON.stringify(ack));
-        const lengthBytes = new Uint8Array(4);
-        new DataView(lengthBytes.buffer).setUint32(0, ackBytes.length, false);
-
-        stream.send(lengthBytes);
-        stream.send(ackBytes);
-
-      } catch (error) {
-        log('Error handling seed delivery: %o', error);
-        const errorMessage = error instanceof Error ? error.message : 'Unknown error';
-
-        // Emit error event
-        this.eventCallbacks.onSeedError?.(this.config.partyId, errorMessage);
-
-        // Send error acknowledgment
-        const ack: SeedAckMessage = {
-          accepted: false,
-          reason: errorMessage,
-        };
-
-        const ackBytes = new TextEncoder().encode(JSON.stringify(ack));
-        const lengthBytes = new Uint8Array(4);
-        new DataView(lengthBytes.buffer).setUint32(0, ackBytes.length, false);
-
-        try {
-          stream.send(lengthBytes);
-          stream.send(ackBytes);
-        } catch {
-          // Ignore send errors
-        }
-      } finally {
-        await stream.close();
-      }
+      await this.handleSeedStream(rawStream as ControlStream, remotePeerId);
     });
 
     log('Registered seed protocol handler: %s', SEED_PROTOCOL);
+  }
+
+  /**
+   * Read one inbound seed frame, apply it, and write the ack.
+   *
+   * Hardened against a buggy/compromised own-cadre node: a concurrency cap (over
+   * {@link maxConcurrentSeeds}, reply without applying), a read timeout (a peer
+   * that never half-closes is aborted inside `readStreamToEnd`), and the existing
+   * malformed/oversized-frame guard — all reported as a non-accepting
+   * {@link SeedAckMessage} rather than a dropped/hung stream.
+   */
+  private async handleSeedStream(stream: ControlStream, remotePeerId: string): Promise<void> {
+    log('Incoming seed delivery from: %s', remotePeerId);
+
+    if (this.activeStreams >= this.maxConcurrentSeeds) {
+      log('Rejecting seed from %s: %d concurrent streams at cap %d', remotePeerId, this.activeStreams, this.maxConcurrentSeeds);
+      const ack: SeedAckMessage = { accepted: false, reason: 'Too many concurrent seed deliveries' };
+      try {
+        writeFrame(stream, ack);
+      } catch {
+        // Ignore send errors on the reject path.
+      }
+      try {
+        await stream.close();
+      } catch {
+        // Ignore close errors.
+      }
+      return;
+    }
+
+    this.activeStreams++;
+    try {
+      // Read the seed frame to EOF (bounded + size-capped), then decode it.
+      const data = await readStreamToEnd(stream, {
+        maxBytes: MAX_SEED_SIZE,
+        timeoutMs: this.seedReadTimeoutMs,
+        label: 'Seed',
+      });
+
+      const messageBody = decodeLengthPrefixedFrame(data);
+      const messageJson = new TextDecoder().decode(messageBody);
+      const message = JSON.parse(messageJson) as SeedMessage;
+
+      // Emit seed received event
+      this.eventCallbacks.onSeedReceived?.(message.partyId, remotePeerId);
+
+      // Convert to seed and apply
+      const seed: ControlNetworkSeed = {
+        partyId: message.partyId,
+        peers: message.peers,
+        signature: message.signature,
+        signerKey: message.signerKey,
+      };
+
+      const result = await this.applySeed(seed);
+
+      // Emit appropriate event based on result
+      if (result.success) {
+        this.eventCallbacks.onSeedApplied?.(seed.partyId, result.peersAdded);
+      } else {
+        this.eventCallbacks.onSeedError?.(seed.partyId, result.error ?? 'Unknown error');
+      }
+
+      const ack: SeedAckMessage = { accepted: result.success, reason: result.error };
+      writeFrame(stream, ack);
+    } catch (error) {
+      log('Error handling seed delivery: %o', error);
+      const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+
+      // Emit error event
+      this.eventCallbacks.onSeedError?.(this.config.partyId, errorMessage);
+
+      // Send error acknowledgment (best-effort on the still-open write side).
+      const ack: SeedAckMessage = { accepted: false, reason: errorMessage };
+      try {
+        writeFrame(stream, ack);
+      } catch {
+        // Ignore send errors
+      }
+    } finally {
+      this.activeStreams--;
+      try {
+        await stream.close();
+      } catch {
+        // Ignore close errors.
+      }
+    }
   }
 
   /**

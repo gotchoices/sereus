@@ -22,6 +22,7 @@ import debug from 'debug';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
 import type { StrandFormationDisclosure } from './types.js';
+import { type ControlStream, writeFrame, withTimeout } from './control-stream.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -108,25 +109,6 @@ export interface FormationResultMessage {
 // ── Stream framing helpers ───────────────────────────────────────────────────
 
 /**
- * Minimal libp2p stream surface (libp2p 3.x): AsyncIterable for reads,
- * `send()` for writes. Mirrors the shape used in `seed-bootstrap.ts`.
- */
-interface LibP2PStream extends AsyncIterable<Uint8Array> {
-  send(data: Uint8Array): boolean;
-  close(): Promise<void>;
-  abort(err: Error): void;
-}
-
-/** Write a JSON object as a single 4-byte big-endian length-prefixed frame. */
-function writeFrame(stream: LibP2PStream, obj: unknown): void {
-  const body = new TextEncoder().encode(JSON.stringify(obj));
-  const prefix = new Uint8Array(4);
-  new DataView(prefix.buffer).setUint32(0, body.length, false);
-  stream.send(prefix);
-  stream.send(body);
-}
-
-/**
  * Reads length-prefixed JSON frames from a libp2p stream one frame at a time.
  *
  * Unlike seed delivery (which reads a stream to EOF then parses once), formation
@@ -179,14 +161,6 @@ class FrameReader {
     this.buffer = this.buffer.subarray(4 + length);
     return JSON.parse(json) as T;
   }
-}
-
-/** Reject if `op` does not settle within `ms`. */
-function withTimeout<T>(ms: number, label: string, op: () => Promise<T>): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error(`Formation ${label} timed out after ${ms}ms`)), ms);
-    op().then(resolve, reject).finally(() => clearTimeout(timer));
-  });
 }
 
 // ── Result validation ────────────────────────────────────────────────────────
@@ -276,7 +250,7 @@ export class FormationListener {
       return;
     }
     void node.handle(protocolId, async (rawStream: unknown, _connection: unknown) => {
-      await this.handleStream(rawStream as LibP2PStream);
+      await this.handleStream(rawStream as ControlStream);
     });
     this.registered.add(node);
     log('formation listener registered (%s)', protocolId);
@@ -289,7 +263,7 @@ export class FormationListener {
     log('formation listener unregistered (%s)', protocolId);
   }
 
-  private async handleStream(stream: LibP2PStream): Promise<void> {
+  private async handleStream(stream: ControlStream): Promise<void> {
     if (this.activeSessions >= this.maxConcurrentSessions) {
       const rejection: FormationResultMessage = { approved: false, reason: 'Too many concurrent formation sessions' };
       try { writeFrame(stream, rejection); } catch { /* best effort */ }
@@ -299,7 +273,7 @@ export class FormationListener {
     const id = ++this.sessionCounter;
     this.activeSessions++;
     try {
-      await withTimeout(this.sessionTimeoutMs, `session#${id}`, () => this.runSession(id, stream));
+      await withTimeout(this.sessionTimeoutMs, `Formation session#${id}`, () => this.runSession(id, stream));
     } catch (err) {
       log('formation session #%d failed: %o', id, err);
     } finally {
@@ -308,7 +282,7 @@ export class FormationListener {
     }
   }
 
-  private async runSession(id: number, stream: LibP2PStream): Promise<void> {
+  private async runSession(id: number, stream: ControlStream): Promise<void> {
     // Track whether ANY frame has been written so the catch below can convert an
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
     // gone out yet. This closes the "stream closed with no result frame" class of bug.
@@ -320,7 +294,7 @@ export class FormationListener {
 
     try {
       const reader = new FrameReader(stream);
-      const contact = await withTimeout(this.stepTimeoutMs, `await-contact#${id}`, () => reader.read<FormationContactMessage>());
+      const contact = await withTimeout(this.stepTimeoutMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
       log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
 
       const tokenResult = await this.options.validateToken(contact.token);
@@ -394,14 +368,14 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
   const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
   const addr = multiaddr(options.responderAddrs[0]);
 
-  return withTimeout(sessionTimeoutMs, 'dial', async () => {
-    const rawStream = await withTimeout(stepTimeoutMs, 'dial-connect', async () => node.dialProtocol(addr, protocolId));
-    const stream = rawStream as unknown as LibP2PStream;
+  return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
+    const rawStream = await withTimeout(stepTimeoutMs, 'Formation dial-connect', async () => node.dialProtocol(addr, protocolId));
+    const stream = rawStream as unknown as ControlStream;
     try {
       const reader = new FrameReader(stream);
       writeFrame(stream, options.contact);
 
-      const response = await withTimeout(stepTimeoutMs, 'await-response', () => reader.read<FormationResultMessage>());
+      const response = await withTimeout(stepTimeoutMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
       if (!response.approved) {
         throw new Error(`Formation rejected: ${response.reason ?? 'no reason provided'}`);
       }

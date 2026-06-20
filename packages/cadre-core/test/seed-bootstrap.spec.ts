@@ -25,6 +25,7 @@ import type {
   DroneInitResult,
   InviteResult
 } from '../src/types.js';
+import { decodeFrames, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
 
 /**
  * Test-only window into the private SeedBootstrapService surface these specs
@@ -1163,5 +1164,54 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
       await node.stop();
     }
   }, 60_000);
+});
+
+describe('SeedBootstrapService.handleSeedStream — read-timeout + concurrency cap', () => {
+  /** Invoke the extracted private inbound-seed handler seam directly. */
+  function runHandleSeedStream(
+    service: SeedBootstrapService,
+    stream: unknown,
+    remotePeerId: string
+  ): Promise<void> {
+    return (service as unknown as {
+      handleSeedStream(s: unknown, p: string): Promise<void>;
+    }).handleSeedStream(stream, remotePeerId);
+  }
+
+  it('settles within the read timeout (does not hang) on a never-half-closing stream', async () => {
+    // Same hang class as wake: a peer that opens the seed stream and never
+    // half-closes. The read timeout aborts + rejects so the handler replies with
+    // a non-accepting ack rather than awaiting EOF forever.
+    const service = new SeedBootstrapService({ partyId: 'p', seedReadTimeoutMs: 50 });
+    const stream = new NeverEndingStream();
+
+    await runHandleSeedStream(service, stream, 'member-peer');
+
+    const ack = decodeFrames<SeedAckMessage>(stream.sent);
+    expect(ack.accepted).toBe(false);
+    expect(ack.reason).toMatch(/timed out/i);
+    expect(stream.aborted).toBeTruthy();
+    expect(stream.closed).toBe(true);
+  });
+
+  it('rejects over the concurrency cap with a non-accepting ack, without applying a seed', async () => {
+    const service = new SeedBootstrapService({ partyId: 'p', maxConcurrentSeeds: 2 });
+
+    // Saturate the cap with two parked reads (synchronous activeStreams++ runs
+    // before the first await), then attempt a third.
+    const held = [new PausableStream(), new PausableStream()];
+    for (const s of held) void runHandleSeedStream(service, s, 'member-peer');
+
+    const overflow = new PausableStream();
+    await runHandleSeedStream(service, overflow, 'member-peer');
+
+    const ack = decodeFrames<SeedAckMessage>(overflow.sent);
+    expect(ack.accepted).toBe(false);
+    expect(ack.reason).toMatch(/too many concurrent/i);
+    expect(overflow.closed).toBe(true);
+
+    // Release the held reads so their read-timeout timers clear before teardown.
+    for (const s of held) s.release();
+  });
 });
 

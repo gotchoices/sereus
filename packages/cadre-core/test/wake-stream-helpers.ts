@@ -135,3 +135,84 @@ export function duplexPair(): { clientStream: MockStream; serverStream: MockStre
     serverStream: makeStream(clientToServer, serverToClient),
   };
 }
+
+/**
+ * A stream whose read never completes: its iterator's `next()` returns a promise
+ * that never resolves, modeling a peer that opens a stream and never half-closes
+ * its write end (the indefinite-hang `readStreamToEnd` guards against). `abort()`
+ * records the error but deliberately does NOT unblock the read — so a
+ * timeout-settle test proves `readStreamToEnd`'s `Promise.race` settles at the
+ * deadline on its own, not because `abort()` happened to release the iterator.
+ * Captures `send()` so the bounded non-accepting ack is still assertable.
+ */
+export class NeverEndingStream implements MockStream {
+  readonly sent: Uint8Array[] = [];
+  closed = false;
+  aborted: Error | null = null;
+
+  send(data: Uint8Array): boolean {
+    this.sent.push(data);
+    return true;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  abort(err: Error): void {
+    this.aborted = err;
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    return {
+      // Never resolves: the read loop parks here until the surrounding timeout
+      // aborts/rejects it. A manual iterator (vs an async generator) keeps this a
+      // no-yield read without tripping `require-yield`.
+      next: () => new Promise<IteratorResult<Uint8Array>>(() => { /* never settles */ }),
+    };
+  }
+}
+
+/**
+ * A stream whose read parks until explicitly {@link release}d (or `abort`ed) —
+ * lets a test hold N inbound streams "in flight" to exercise a concurrency cap,
+ * then release them so their reads reach EOF and no read-timeout timers linger
+ * past the test. `abort()` both records the error and releases (mirroring a real
+ * stream reset unblocking the read).
+ */
+export class PausableStream implements MockStream {
+  readonly sent: Uint8Array[] = [];
+  closed = false;
+  aborted: Error | null = null;
+  private releaseGate!: () => void;
+  private readonly gate = new Promise<void>((resolve) => { this.releaseGate = resolve; });
+
+  send(data: Uint8Array): boolean {
+    this.sent.push(data);
+    return true;
+  }
+
+  async close(): Promise<void> {
+    this.closed = true;
+  }
+
+  abort(err: Error): void {
+    this.aborted = err;
+    this.releaseGate();
+  }
+
+  /** Release the parked read so it reaches EOF (the stream yields no bytes). */
+  release(): void {
+    this.releaseGate();
+  }
+
+  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+    const gate = this.gate;
+    return {
+      async next(): Promise<IteratorResult<Uint8Array>> {
+        await gate;
+        return { value: undefined as unknown as Uint8Array, done: true };
+      },
+    };
+  }
+}
