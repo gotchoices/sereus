@@ -317,4 +317,54 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(drains()).toBe(2);
     });
   });
+
+  // The drain's self-device-token re-touch. The full registerDeviceToken path needs
+  // a real self-signing key (covered end-to-end by the integration scenario); here
+  // we isolate retouchSelfDeviceToken's guard logic by stubbing registerDeviceToken.
+  describe('retouchSelfDeviceToken', () => {
+    function injectDeviceToken(
+      node: CadreNode,
+      existing: { platform: string; token: string } | null
+    ): { registerCalls: () => Array<{ platform: string; token: string }> } {
+      const calls: Array<{ platform: string; token: string }> = [];
+      (node as unknown as { _running: boolean })._running = true;
+      (node as unknown as { controlNode: unknown }).controlNode = fakeControlNode({ selfPeerId: 'self-peer' });
+      (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+        queryDeviceToken: async () => existing
+      };
+      (node as unknown as { registerDeviceToken: (p: string, t: string) => Promise<void> })
+        .registerDeviceToken = async (platform: string, token: string) => { calls.push({ platform, token }); };
+      return { registerCalls: () => calls };
+    }
+
+    const retouch = (node: CadreNode) =>
+      (node as unknown as { retouchSelfDeviceToken: () => Promise<void> }).retouchSelfDeviceToken();
+
+    it('re-registers an existing push-platform self token', async () => {
+      const node = new CadreNode(createConfig());
+      const { registerCalls } = injectDeviceToken(node, { platform: 'fcm', token: 'tok-1' });
+
+      await retouch(node);
+
+      expect(registerCalls()).toEqual([{ platform: 'fcm', token: 'tok-1' }]);
+    });
+
+    it('is a no-op when no self token row exists', async () => {
+      const node = new CadreNode(createConfig());
+      const { registerCalls } = injectDeviceToken(node, null);
+
+      await retouch(node);
+
+      expect(registerCalls()).toEqual([]);
+    });
+
+    it('is a no-op when the stored platform is not a known push platform', async () => {
+      const node = new CadreNode(createConfig());
+      const { registerCalls } = injectDeviceToken(node, { platform: 'carrier-pigeon', token: 'tok-1' });
+
+      await retouch(node);
+
+      expect(registerCalls()).toEqual([]);
+    });
+  });
 });
