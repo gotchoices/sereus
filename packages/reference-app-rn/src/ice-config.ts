@@ -12,10 +12,12 @@
  *  - `localStorage` is absent in RN — the per-device override seam is omitted.
  *    A debug-override path (e.g. SecureStore/AsyncStorage) is out of scope here;
  *    file a separate ticket if wanted.
- *  - `RTCIceServer` is a DOM type; RN's tsconfig does not include `dom`. A local
- *    structural `IceServer` type (W3C RTCIceServer subset) is used instead. The
- *    next ticket (`rn-webrtc-transport`) maps it onto react-native-webrtc's type
- *    at the call site.
+ *  - `RTCIceServer` is a DOM type. Expo's `tsconfig.base` does pull in the `dom`
+ *    lib (so DOM types resolve), but we keep a local structural `IceServer` (W3C
+ *    RTCIceServer subset) anyway, to stay decoupled from `dom` and portable. The
+ *    WebRTC transport (`cadre-phone.ts`) passes the `IceServer[]` straight into
+ *    `rtcConfiguration.iceServers` — structurally assignable to `RTCIceServer[]`,
+ *    so no per-element mapping is needed.
  *
  * `fetch` is a global in RN (Hermes) — no import needed.
  * `AbortController` is present in Hermes/RN 0.79; no polyfill is needed.
