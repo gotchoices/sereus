@@ -280,6 +280,21 @@ describe('SecureStoreKeyStore — gated null discriminator', () => {
 		await store.delete(KEY);
 		await expect(store.get(KEY)).resolves.toBeUndefined();
 	});
+
+	it('discriminates per keyId across slots sharing one index (written ⇒ throw, never-written ⇒ undefined)', async () => {
+		// Two gated slots backed by the single shared __index: KEY was set (so it is
+		// recorded) then invalidated (material wiped); OTHER was never set. The guard
+		// keys off index.includes(keyId), so the written-but-now-null slot fails closed
+		// while the genuinely-empty one returns undefined — proving slots are
+		// independent despite the shared marker.
+		const OTHER = 'cadre/other';
+		const { store, fake } = makeStore({ requireAuthentication: true });
+		await store.set(KEY, new Uint8Array([1, 2, 3]));
+		for (const k of fake.materialKeys()) fake.map.delete(k); // invalidate KEY, keep index
+
+		await expect(store.get(KEY)).rejects.toBeInstanceOf(KeyStoreAccessError);
+		await expect(store.get(OTHER)).resolves.toBeUndefined();
+	});
 });
 
 // ── Index consistency ─────────────────────────────────────────────────────────
