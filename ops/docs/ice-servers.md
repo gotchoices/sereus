@@ -59,9 +59,10 @@ for the app:
 - alongside the web app origin (e.g. `https://app.sereus.org/ice-servers.json`), or
 - alongside the relay/ops infra (e.g. `https://relay.sereus.org/ice-servers.json`).
 
-Clients point at it via `VITE_ICE_CONFIG_URL` (build-time) or a `ice-config-url`
-`localStorage` override (runtime/debug). With neither set, clients run **STUN-less**
-— degraded but safe (no leak to a third-party STUN); see the helper below.
+Clients point at it via a build-time env var — `VITE_ICE_CONFIG_URL` (web) or
+`EXPO_PUBLIC_ICE_CONFIG_URL` (React Native) — or, on web only, a `ice-config-url`
+`localStorage` override (runtime/debug). With none set, clients run **STUN-less**
+— degraded but safe (no leak to a third-party STUN); see the helpers below.
 
 ### Rotating / scaling without an app rebuild
 - Add capacity: list multiple STUN servers in `iceServers` (the browser races them).
@@ -80,13 +81,19 @@ This is just an indirection to the same JSON manifest — the browser helper sti
 fetches and validates that JSON. (This is distinct from the libp2p `_dnsaddr`
 records in `dnsaddr.md`, which carry multiaddrs, not `stun:`/`turn:` URLs.)
 
-### Browser helper
+### Client helpers
 `packages/reference-app-web/src/lib/ice-config.ts` exposes `loadIceConfig()`:
 resolve URL (`VITE_ICE_CONFIG_URL` → `localStorage['ice-config-url']` → none),
 fetch + validate, and return `RTCIceServer[]`. It returns `[]` on any failure (no
 URL, network error, malformed) and **never** falls back to a third-party STUN
 (e.g. Google) — empty is the privacy-preserving default. The WebRTC transport
 wiring that consumes it is `web-webrtc-transport-to-bypass-relay` (ticket 3).
+
+`packages/reference-app-rn/src/ice-config.ts` is the React Native port: same
+validation, 5 s timeout, and never-throws contract, but resolves the URL from
+`EXPO_PUBLIC_ICE_CONFIG_URL` only (no `localStorage`) and returns a local
+structural `IceServer[]` (RN's tsconfig lacks the `dom` lib). The transport
+wiring that consumes it is `rn-webrtc-transport`.
 
 ### Forward pointers (TURN gaps — do not lose these when TURN is enabled)
 - **`turn-credential-issuance-service`** (backlog): the signing endpoint that mints
