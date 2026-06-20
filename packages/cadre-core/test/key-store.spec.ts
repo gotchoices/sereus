@@ -1,9 +1,17 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { describe, it, expect, afterEach, vi } from 'vitest';
+import { mkdtemp, rm, writeFile, readdir, stat, rename } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
 import { FileKeyStore } from '../src/key-store-file.js';
+
+// Mock node:fs/promises so the atomic-write tests can force a `rename` failure.
+// Everything else delegates to the real implementation, so the shared contract
+// suite (which exercises real set/get/delete/list) runs unchanged.
+vi.mock('node:fs/promises', async (importOriginal) => {
+	const actual = await importOriginal<typeof import('node:fs/promises')>();
+	return { ...actual, rename: vi.fn(actual.rename) };
+});
 
 /** Spread to plain arrays for a content-wise byte comparison. */
 function sameBytes(a: Uint8Array | undefined, b: Uint8Array): boolean {
@@ -154,6 +162,68 @@ describe('FileKeyStore specifics', () => {
 		await writeFile(join(dir, '%ZZ.key'), new Uint8Array([9]));
 
 		expect(await store.list()).toEqual(['real']);
+	});
+
+	it('leaves no .tmp debris after a successful set', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-atomic-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+		await store.set('id', new Uint8Array([1, 2, 3]));
+
+		// The atomic rename consumes the temp file; only the `.key` slot remains.
+		const raw = await readdir(dir);
+		expect(raw.some((name) => name.endsWith('.tmp'))).toBe(false);
+		expect(await store.list()).toEqual(['id']);
+	});
+
+	it('list() never surfaces a stray non-.key file (e.g. crash-orphaned .tmp)', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-stray-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+		await store.set('real', new Uint8Array([1]));
+		// A temp file a crashed write could leave behind: list() must ignore it.
+		await writeFile(join(dir, 'real.deadbeef.tmp'), new Uint8Array([9]));
+
+		expect(await store.list()).toEqual(['real']);
+	});
+
+	it('a mid-write failure preserves the previous slot and leaves no .tmp debris', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-fail-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+
+		// Seed a good slot.
+		await store.set('id', new Uint8Array([1, 2, 3]));
+
+		// Simulate a crash during the atomic swap: the temp file is created and
+		// written, but the rename that would publish it fails (e.g. power loss).
+		vi.mocked(rename).mockRejectedValueOnce(new Error('simulated power loss'));
+		await expect(store.set('id', new Uint8Array([9, 9, 9, 9])))
+			.rejects.toThrow('simulated power loss');
+
+		// Previous bytes survive intact and fully loadable.
+		expect(sameBytes(await store.get('id'), new Uint8Array([1, 2, 3]))).toBe(true);
+
+		// No `.tmp` debris remains for a retry to trip over.
+		const raw = await readdir(dir);
+		expect(raw.some((name) => name.endsWith('.tmp'))).toBe(false);
+		expect(await store.list()).toEqual(['id']);
+	});
+
+	// POSIX-only: Windows has no 0o600-style mode bits to assert against.
+	it.skipIf(process.platform === 'win32')('keeps best-effort 0o600 on the final slot, even on overwrite', async () => {
+		const dir = await mkdtemp(join(tmpdir(), 'cadre-keystore-perm-'));
+		tmpDirs.push(dir);
+		const store = new FileKeyStore(dir);
+		await store.set('id', new Uint8Array([1]));
+		await store.set('id', new Uint8Array([2, 3])); // overwrite via rename must not widen mode
+
+		const names = await readdir(dir);
+		const slot = names.find((name) => name.endsWith('.key'));
+		expect(slot).toBeDefined();
+		if (!slot) return;
+		const st = await stat(join(dir, slot));
+		expect(st.mode & 0o777).toBe(0o600);
 	});
 });
 
