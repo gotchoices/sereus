@@ -76,6 +76,27 @@ node sereus/ops/test/check-stun.mjs --host stun.sereus.org --port 3478
 It sends a STUN Binding request and prints your mapped (reflexive) address. See
 `../../test/README.md`.
 
+### Config parse check (requires Docker / a coturn binary)
+
+Render the active config locally, then run coturn briefly against it:
+
+```bash
+# 1. Render
+COTURN_RENDER_ONLY=1 LISTENING_PORT=3478 HOST_BIND_IP=0.0.0.0 \
+  REALM=sereus TURN_ENABLED=true TURN_SECRET=fake-secret-for-validation \
+  COTURN_TEMPLATE=./turnserver.conf COTURN_ACTIVE_CONF=/tmp/active.conf \
+  bash ./entrypoint.sh
+
+# 2. Binary check (Docker; kill after a second — we only need the parse output)
+timeout 3 docker run --rm \
+  -v /tmp/active.conf:/etc/coturn/turnserver.conf \
+  coturn/coturn turnserver -c /etc/coturn/turnserver.conf 2>&1 | \
+  grep -Ei '(error|warning|fatal|denied.peer|unknown|cannot)' || true
+```
+
+A clean parse shows only startup/bind lines; any `Unknown config option` or
+`ERROR` line indicates a rejected directive (fix before enabling TURN).
+
 ### References
 - coturn: `https://github.com/coturn/coturn`
 - STUN: RFC 5389 / 8489 — TURN: RFC 5766 / 8656
