@@ -1,62 +1,37 @@
 /**
  * Two-node control-DB convergence over the live control network.
  *
- * INTENDED as the regression anchor for the claim that the `CadreControl` store
- * **replicates peer-to-peer** across a party's cadre nodes (docs/architecture.md
- * — `CadrePeer` as the "authoritative, replicated form"). Building it surfaced
- * that the claim is **not yet true in the wiring**, so this file currently
- * documents the gap and ships the proven recipe ready to flip once it closes.
+ * The regression anchor for the claim that the `CadreControl` store **replicates
+ * peer-to-peer** across a party's cadre nodes (docs/architecture.md — `CadrePeer`
+ * as the "authoritative, replicated form"). Network-backing has now LANDED
+ * (`control-db-network-backed`), so this asserts the positive convergence directly.
  *
- * ── What the investigation found (root cause — read before reviewing) ─────────
+ * How it was wired (context for reviewers):
  *
- * The source ticket's premise was that the control DB already replicates via the
- * Optimystic network transactor and only *cohort discovery* was missing. That is
- * WRONG. The CadreControl tables are **not network-backed at all**:
+ * `ControlDatabase.initialize()` now mirrors `connectToStrand`
+ * (@serfab/quereus-plugin-sereus): after registering the optimystic plugin and the
+ * libp2p node it calls `db.setDefaultVtabName('optimystic')` +
+ * `setDefaultVtabArgs({ transactor: 'network', ... })` and hydrates the catalog
+ * BEFORE applying `CONTROL_SCHEMA`. The `declare schema CadreControl { table ... }`
+ * tables carry no per-table `using optimystic(...)`, so routing the DEFAULT vtab to
+ * the network transactor is what makes a control write replicate (a control write
+ * now emits the same optimystic transactor/cluster/coordinator activity a strand
+ * write does). Before that fix the tables fell back to Quereus's in-memory vtab and
+ * never converged.
  *
- *   - `ControlDatabase.initialize()` registers the optimystic plugin with
- *     `default_transactor: 'network'`, but it never calls
- *     `db.setDefaultVtabName('optimystic')` / `setDefaultVtabArgs(...)`. So the
- *     `declare schema CadreControl { table ... }` tables (which carry no per-table
- *     `using optimystic(...)`) fall back to Quereus's built-in IN-MEMORY vtab.
- *   - The strand path does the opposite: `connectToStrand`
- *     (@serfab/quereus-plugin-sereus) sets the default vtab + args + hydrates
- *     before applying its schema, so strand tables ARE network-backed — which is
- *     why strand replication converges (strand-formation/convergence-stress) in
- *     ~1.5s while the control DB never converges.
- *   - Empirical proof: with `DEBUG=optimystic:*`, a control write emits ZERO
- *     optimystic lines (no transactor/cluster/coordinator activity); the
- *     analogous strand write emits thousands.
+ * Network-backing also required closing a transaction-semantics gap in the Optimystic
+ * vtab: a deferred CHECK referencing `committed.<Table>` (the
+ * `FormationUsage.Monotonic` anti-replay) must read the pre-transaction snapshot, so
+ * the vtab now honours Quereus's `_readCommitted` flag (and enforces secondary-UNIQUE
+ * constraints for the single-use StampId columns). That work lives in the
+ * `../optimystic` workspace; the green cadre-core consent suite depends on it being
+ * built and linked.
  *
- * A spike that adds the missing `setDefaultVtabName` + `setDefaultVtabArgs` +
- * `hydrate` to `ControlDatabase` made BOTH cases below converge for real (primary
- * connect-then-write in ~2.0s; the write-then-connect local-only row healed via
- * pull-on-read once the cohort formed). BUT it also broke 9 cadre-core
- * consent-path tests (`control-formation-invite.spec.ts`,
- * `strand-formation-consent.spec.ts`, `control-authorization-binding.spec.ts`)
- * with `CHECK constraint failed: Monotonic` — the network transactor's
- * `committed.*` snapshot / deferred-CHECK / multi-statement-transaction semantics
- * differ from the in-memory vtab that `redeemInvitation`/`recordFormationUsage`
- * rely on. Network-backing the control DB is therefore a substantial production
- * change (it must reconcile those transaction semantics), tracked separately in
- * `tickets/.../control-db-network-backed`. It is NOT the same concern as
- * `control-network-cohort-discovery` (auto-connect): even with perfect
- * connectivity, in-memory tables cannot replicate.
- *
- * ── What this file delivers now ──────────────────────────────────────────────
- *
- *   1. A RUNNING tripwire (`current behaviour`) that exercises the full recipe —
- *      direct control-network dial + both-sides wait + authority write + poll —
- *      and asserts the row does NOT cross to the peer. When `control-db-network-
- *      backed` lands, convergence will start happening inside the window and this
- *      test will go RED, prompting whoever fixes the wiring to delete it and
- *      un-skip the target below.
- *   2. A SKIPPED target (`target behaviour`) holding the proven positive
- *      convergence assertion, verified to pass in the spike. Un-skip it (and drop
- *      the tripwire) the moment the control DB is network-backed.
- *
- * Both stand in for production control-cohort discovery with a test-only manual
- * `dial()` over the existing public `getControlNode()` seam — exactly as the
- * strand scenarios manually dial strand nodes.
+ * This stands in for production control-cohort discovery with a test-only manual
+ * `dial()` over the existing public `getControlNode()` seam — exactly as the strand
+ * scenarios manually dial strand nodes. Auto-connect (so nodes form the control
+ * cohort without a manual dial) remains the open prerequisite, tracked by
+ * `control-network-cohort-discovery`.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -171,59 +146,12 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Two-node control-DB convergence', () => {
-	// ── CURRENT BEHAVIOUR (tripwire): control tables are in-memory, so a row
-	//    written on A never crosses to B even with the cohort connected. Delete
-	//    this test and un-skip the target below once `control-db-network-backed`
-	//    wires the control tables to the network transactor. ───────────────────
+	// The control tables are network-backed (default vtab → optimystic network
+	// transactor), so an authority-written CadrePeer row on A converges to a connected
+	// reader B by pull-on-read. The recipe is intentionally identical to the strand
+	// convergence scenarios.
 
-	it('does NOT yet replicate a CadrePeer row cross-node (control tables are in-memory — see control-db-network-backed)', async () => {
-		let A: CadreNode | undefined;
-		let B: CadreNode | undefined;
-		try {
-			({ A, B } = await bootPair('gap'));
-
-			// Form the cohort BEFORE the write (the recipe that converges for strands).
-			await connectControlNodes(B, A);
-
-			// A authority-signs + inserts a CadrePeer row for a third peer X.
-			const xPeerId = await randomPeerId();
-			await A.authorizePeer(xPeerId);
-			expect(await A.isMember(xPeerId)).toBe(true); // the write commits LOCALLY on A
-
-			// Sanity: B's control-DB read seam WORKS and simply lacks X — so the timeout
-			// below is genuine non-convergence, not a throwing/broken reader masked by
-			// `waitUntil` swallowing predicate errors (it polls this exact query).
-			expect(
-				(await B.getControlDatabase()!.queryCadrePeers()).some((p) => p.peerId === xPeerId),
-			).toBe(false);
-
-			// TRIPWIRE: today B never observes X — the CadreControl tables are not
-			// network-backed (see file header). The window is comfortably longer than
-			// the ~2s convergence the wiring spike achieved, so once the control DB is
-			// network-backed this rejection STOPS and the test fails loudly, signalling
-			// "delete me; un-skip the target".
-			await expect(
-				waitForCadrePeerConverged(B.getControlDatabase()!, xPeerId, {
-					timeoutMs: 12_000,
-					description: 'B observes the X CadrePeer row written on A',
-				}),
-			).rejects.toThrow(/Timeout/);
-
-			// The production authorization gate confirms the gap: B does not recognise X.
-			expect(await B.isMember(xPeerId)).toBe(false);
-		} finally {
-			await B?.stop();
-			await A?.stop();
-		}
-	}, 40_000);
-
-	// ── TARGET BEHAVIOUR (skipped): the proven positive convergence assertion.
-	//    Verified to PASS (~2.0s) in the wiring spike that added
-	//    setDefaultVtabName/setDefaultVtabArgs/hydrate to ControlDatabase. Un-skip
-	//    this (and delete the tripwire above) once `control-db-network-backed`
-	//    lands. The recipe is intentionally identical to the strand scenarios. ──
-
-	it.skip('replicates an authority-written CadrePeer row from node A to node B over the live control network', async () => {
+	it('replicates an authority-written CadrePeer row from node A to node B over the live control network', async () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {

@@ -92,6 +92,15 @@ interface OptimysticPluginResult {
   collectionFactory: CollectionFactory;
   vtables: VTablePluginInfo[];
   functions: FunctionPluginInfo[];
+  /**
+   * Hydrate Quereus's in-memory catalog from persisted optimystic vtab schemas.
+   * Must run BEFORE applying CONTROL_SCHEMA on a warm restart so the declarative
+   * diff sees the existing tables and skips re-emitting CREATE TABLE / CREATE INDEX
+   * for each persisted control object. Idempotent; `{ tables: 0, indexes: 0 }` on a
+   * cold/in-memory start. Mirrors the strand path's hydrate-before-apply (see
+   * compose-strand.ts).
+   */
+  hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
   [key: string]: unknown;
 }
 
@@ -200,6 +209,32 @@ export class ControlDatabase {
     );
     timing('[controlDb] registerLibp2pNode: %dms', Math.round(performance.now() - t0));
     log('Registered libp2p node with collection factory');
+
+    // Network-back the control tables. CONTROL_SCHEMA's `declare schema CadreControl
+    // { table ... }` tables carry NO per-table `using optimystic(...)`, so storage is
+    // chosen by the database's DEFAULT vtab. Routing the default to optimystic (with
+    // the network transactor + this party's control network) is what makes a control
+    // write replicate peer-to-peer — exactly what connectToStrand does for strand
+    // tables (compose-strand.ts). Without these two calls the tables fall back to
+    // Quereus's in-memory vtab and never converge across the cadre.
+    this.db.setDefaultVtabName('optimystic');
+    this.db.setDefaultVtabArgs({
+      networkName,
+      transactor: 'network',
+      keyNetwork: 'libp2p',
+    });
+    log('Set default vtab to optimystic (networkName=%s, transactor=network)', networkName);
+
+    // Hydrate Quereus's catalog from any persisted optimystic vtab schemas BEFORE
+    // applying CONTROL_SCHEMA, so a warm restart with persistent storage diffs the
+    // control DDL against the already-present tables and re-emits nothing — the same
+    // warm-start regression connectToStrand's hydrate-before-apply guards against.
+    // No-op on a cold / in-memory start (`{ tables: 0, indexes: 0 }`).
+    t0 = performance.now();
+    const hydrated = await pluginResult.hydrate(this.db);
+    timing('[controlDb] hydrate: %dms (tables=%d, indexes=%d)',
+      Math.round(performance.now() - t0), hydrated.tables, hydrated.indexes);
+    log('Hydrated control catalog (tables=%d, indexes=%d)', hydrated.tables, hydrated.indexes);
 
     // Load and execute the schema
     t0 = performance.now();

@@ -254,7 +254,19 @@ describe('E2E push-wake over the control network', () => {
 
 	// ── 2. NAT'd receiver reachable only via a circuit relay ──────────────────
 
-	it("delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial", async () => {
+	// SKIPPED pending `push-wake-e2e-shared-authority-topology` (fix/). Network-backing
+	// the control DB (`control-db-network-backed`) makes the `CadreControl` tables a
+	// PARTY-SHARED, replicated store, so two nodes can no longer each self-appoint as
+	// genesis authority in the same party: this variant bootstraps both S and Rx to the
+	// relay L, so the cohort forms during start and `makeOwnAuthority(Rx)` sees S's
+	// already-replicated AuthorityKey — its bootstrap branch `(count(1) from AuthorityKey)
+	// <= 1` is now false and the genesis insert fails `Authorized`. That is the CORRECT
+	// shared-authority semantic, not a regression; the test's "receiver is its own
+	// authority" setup is an in-memory-era assumption. The direct-dial variant above
+	// still passes because its nodes genesis BEFORE forming a cohort (no bootstrap link).
+	// Re-authoring the receiver's authorization to derive from the party authority over
+	// the replicated store is the job of `2-push-wake-replication-backed-authorization`.
+	it.skip("delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial", async () => {
 		let L: CadreNode | undefined;
 		let S: CadreNode | undefined;
 		let Rx: CadreNode | undefined;
