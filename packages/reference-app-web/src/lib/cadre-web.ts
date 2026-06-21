@@ -264,7 +264,12 @@ export async function startCadre(): Promise<CadreNode> {
 
 	partyId = await loadOrCreatePartyId(controlHandle);
 	identityFirstSeenMs = await trackIdentityFirstSeen(controlHandle, DEFAULT_PEER_KEY_NAME);
-	const privateKey = await loadOrCreateBrowserPeerKey(controlHandle);
+	// `loadOrCreateBrowserPeerKey` returns db-p2p-storage-web's pinned
+	// `@libp2p/interface` `PrivateKey`, whose `Uint8ArrayList` brand is newer than
+	// this app's `@libp2p/interface` (same global symbol → runtime-identical).
+	// Bridge to the local `PrivateKey` type — the same brand-skew cast the
+	// transport factories use above; cadre-core consumes the local brand.
+	const privateKey = (await loadOrCreateBrowserPeerKey(controlHandle)) as unknown as PrivateKey;
 	controlStorage = getStoreStorage(CONTROL_STORE_KEY);
 
 	// ICE servers (STUN/TURN) from the runtime manifest. Never throws; `[]` when
