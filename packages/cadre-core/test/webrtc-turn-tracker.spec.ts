@@ -173,4 +173,56 @@ describe('TurnRelayTracker — detection', () => {
     tracker.dispose();
     expect(GLOBAL.RTCPeerConnection).toBe(FakeRTCPeerConnection as unknown as typeof RTCPeerConnection);
   });
+
+  it('consume pops the most recent settlement first (newest → oldest)', async () => {
+    GLOBAL.RTCPeerConnection = FakeRTCPeerConnection as unknown as typeof RTCPeerConnection;
+    const tracker = new TurnRelayTracker();
+    tracker.install();
+
+    // Two settlements within the window: a relay then a non-relay. consume()
+    // returns the most recent (the non-relay) first, then the older relay.
+    const relayPc = newTrackedConnection();
+    relayPc.statsEntries = RELAY_STATS;
+    relayPc.settle('connected');
+    await flush();
+
+    const hostPc = newTrackedConnection();
+    hostPc.statsEntries = HOST_STATS;
+    hostPc.settle('connected');
+    await flush();
+
+    expect(tracker.consume(1000)).toBe(false); // most recent (host)
+    expect(tracker.consume(1000)).toBe(true);  // older (relay)
+    expect(tracker.consume(1000)).toBeNull();
+    tracker.dispose();
+  });
+
+  it('records a single settlement even if connected fires repeatedly', async () => {
+    GLOBAL.RTCPeerConnection = FakeRTCPeerConnection as unknown as typeof RTCPeerConnection;
+    const tracker = new TurnRelayTracker();
+    tracker.install();
+
+    const pc = newTrackedConnection();
+    pc.statsEntries = RELAY_STATS;
+    // A flapping/duplicate connectionstatechange must not double-count (guarded by
+    // the per-connection `observed` WeakSet).
+    pc.settle('connected');
+    pc.settle('connected');
+    await flush();
+
+    expect(tracker.consume(1000)).toBe(true);
+    expect(tracker.consume(1000)).toBeNull();
+    tracker.dispose();
+  });
+
+  it('install is idempotent — a single dispose restores the original', () => {
+    GLOBAL.RTCPeerConnection = FakeRTCPeerConnection as unknown as typeof RTCPeerConnection;
+    const tracker = new TurnRelayTracker();
+    tracker.install();
+    const wrapped = GLOBAL.RTCPeerConnection;
+    tracker.install(); // second install is a NOP — must not re-wrap the wrapper
+    expect(GLOBAL.RTCPeerConnection).toBe(wrapped);
+    tracker.dispose();
+    expect(GLOBAL.RTCPeerConnection).toBe(FakeRTCPeerConnection as unknown as typeof RTCPeerConnection);
+  });
 });

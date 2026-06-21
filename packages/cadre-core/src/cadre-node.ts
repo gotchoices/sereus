@@ -76,6 +76,7 @@ import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
   summarizeConnectionPaths,
+  classifyTransport,
   type ConnectionPathSummary,
   type ConnectionLike
 } from './diagnostics/connection-path.js';
@@ -1480,7 +1481,11 @@ export class CadreNode implements SAppIdLookup {
   private handleTurnConnectionOpen(conn: Connection): void {
     try {
       const addr = conn.remoteAddr?.toString() ?? '';
-      if (!addr.includes('/webrtc')) {
+      // Only a genuine `/webrtc` (ICE) session can be TURN-relayed and promoted to
+      // webrtc-turn. Use the classifier (which checks `/webrtc-direct` first) rather
+      // than a bare substring — `'/webrtc-direct'.includes('/webrtc')` is true, and a
+      // webrtc-direct open must not drain a settlement meant for a real webrtc dial.
+      if (classifyTransport(addr).transport !== 'webrtc') {
         return;
       }
       if (this.turnTracker.consume(TURN_CONSUME_WINDOW_MS) === true) {
