@@ -35,10 +35,10 @@ straight into `new RTCPeerConnection({ iceServers })` / libp2p
 }
 ```
 
-When TURN is enabled **and** a credential service exists, add a TURN entry with
-ephemeral (time-limited) credentials. The manifest is then per-client / short-lived
-(the credentials expire), so it must be generated on demand by that service rather
-than served as a static file:
+When TURN is enabled, the manifest adds a TURN entry with ephemeral (time-limited)
+credentials. The manifest is then per-client / short-lived (the credentials
+expire), so it is **generated on demand** by the credential issuer rather than
+served as a static file:
 
 ```jsonc
 {
@@ -49,9 +49,46 @@ than served as a static file:
 ```
 
 > ⚠️ Never put static TURN user/password in the manifest — it would be a public,
-> long-lived open-relay credential. TURN credentials must be ephemeral, issued by
-> the (not-yet-built) **`turn-credential-issuance-service`** (backlog). Until that
-> lands, keep `turnPolicy: "off"` and advertise STUN only.
+> long-lived open-relay credential. TURN credentials must be ephemeral, minted
+> per-request by the **`turn-credential-issuer`** service
+> (`../docker/turn-credential-issuer/`). It signs the username with the shared
+> coturn `static-auth-secret` (which lives only on the issuer, never in a client
+> bundle); coturn verifies. When TURN is off, the issuer serves a STUN-only
+> manifest identical in shape to the static example.
+
+### The dynamic manifest (turn-credential-issuer)
+`../docker/turn-credential-issuer/` is a tiny HTTP service that serves
+`/ice-servers.json` per request. It is the operator-hosted evolution of the static
+file: same JSON shape, but it injects a freshly-minted TURN credential when TURN is
+enabled. Stand it up co-located with coturn (one `env.local` carries both the
+issuer config and the shared `TURN_SECRET`).
+
+- **Gating matrix** — a TURN entry is emitted **only** when ALL hold; otherwise the
+  manifest is STUN-only (TURN stays last-resort / off):
+
+  | Condition                              | Manifest          |
+  |----------------------------------------|-------------------|
+  | `TURN_ENABLED=false`                   | STUN-only         |
+  | `TURN_SECRET` or `TURN_URLS` empty     | STUN-only (+ warn)|
+  | `TURN_POLICY=off` (secret set)         | STUN-only (policy wins) |
+  | enabled + secret + URLs + `gated`/`on` | STUN **+ TURN**   |
+
+- **Turning TURN on** is the `turnPolicy` transition `off → gated`: enable coturn
+  TURN, set the issuer's `TURN_SECRET` (== coturn's), `TURN_URLS`, and
+  `TURN_POLICY=gated`. Clients need no rebuild — they already pass through
+  `username`/`credential`.
+- **`Cache-Control: no-store`** — the dynamic endpoint MUST NOT be cached; a stale
+  manifest would serve already-expired credentials. (The *static* example file
+  stays cacheable — it has no credentials to expire.)
+- **CORS** — the issuer sends `Access-Control-Allow-Origin` so cross-origin
+  browsers can fetch it; it answers `OPTIONS` preflights for the token-header path.
+- **Clock** — coturn checks credential expiry against its own clock, so the issuer
+  and coturn must share time (NTP).
+- **Abuse posture** — issuance is never unbounded: always-on per-IP rate limit +
+  short TTL + optional bearer token, with coturn's quotas as the hard backstop.
+
+See `../docker/turn-credential-issuer/README.md` for the full knob set and the
+reverse-proxy / `TRUST_PROXY` notes.
 
 ### Where to host it
 The manifest is plain HTTPS — host it wherever is convenient and same-origin-ish
@@ -96,8 +133,12 @@ structural `IceServer[]` (RN's tsconfig lacks the `dom` lib). The transport
 wiring that consumes it is `rn-webrtc-transport`.
 
 ### Forward pointers (TURN gaps — do not lose these when TURN is enabled)
-- **`turn-credential-issuance-service`** (backlog): the signing endpoint that mints
-  ephemeral TURN credentials. Required before any TURN entry can appear here.
+- **`turn-credential-issuer`** (built — `../docker/turn-credential-issuer/`): the
+  signing service that mints ephemeral TURN credentials and serves the dynamic
+  manifest. This is what makes a TURN entry possible here.
+- **`turn-issuer-peer-bound-auth`** (backlog): a stronger issuance model that binds
+  a credential to a known libp2p peer id (client signs a challenge with its node
+  key), rather than the issuer's current rate-limit + optional-token posture.
 - **`turn-relayed-path-metrics`** (backlog): the `connection-path` classifier treats
   a TURN-relayed WebRTC connection as `direct` (it only sees `/webrtc`), so a
   TURN-relayed path is **not** counted as relayed in connectivity observability.

@@ -1,0 +1,36 @@
+# turn-credential-issuer — serves the dynamic ICE-config manifest
+# (/ice-servers.json) with freshly-minted, short-lived coturn TURN credentials.
+#
+# The service listens PLAIN HTTP on ISSUER_PORT. Front it with your existing TLS
+# reverse proxy (nginx/caddy) — same model as the relay/bootstrap nodes and the
+# static ICE manifest (see ../../docs/ice-servers.md). Do NOT expose it without
+# TLS in front: the manifest carries TURN credentials.
+#
+# TURN_SECRET MUST match the coturn `TURN_SECRET` (static-auth-secret) of the
+# co-located coturn service. Keep both in one env.local so TURN is enabled in one
+# place. Issuer and coturn MUST share a clock (NTP) — see env.example.
+services:
+  turn-credential-issuer:
+    image: sereus-turn-credential-issuer:local
+    build:
+      context: ../turn-credential-issuer
+    container_name: sereus_turn_credential_issuer
+    environment:
+      - ISSUER_PORT=${ISSUER_PORT:-8080}
+      - STUN_URLS=${STUN_URLS:-}
+      - TURN_ENABLED=${TURN_ENABLED:-false}
+      - TURN_POLICY=${TURN_POLICY:-off}
+      - TURN_SECRET=${TURN_SECRET:-}
+      - TURN_URLS=${TURN_URLS:-}
+      - CRED_TTL_SECONDS=${CRED_TTL_SECONDS:-300}
+      - CRED_ID=${CRED_ID:-web}
+      - ISSUER_AUTH_TOKEN=${ISSUER_AUTH_TOKEN:-}
+      - RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN:-30}
+      - TRUST_PROXY=${TRUST_PROXY:-false}
+      - CORS_ALLOW_ORIGIN=${CORS_ALLOW_ORIGIN:-*}
+    ports:
+      # Bind to localhost by default — the TLS reverse proxy (same host) fronts it.
+      # Set HOST_BIND_IP=0.0.0.0 only if the proxy lives on another host. The
+      # service listens on ISSUER_PORT inside the container, so both sides match.
+      - "${HOST_BIND_IP:-127.0.0.1}:${ISSUER_PORT:-8080}:${ISSUER_PORT:-8080}/tcp"
+    restart: unless-stopped

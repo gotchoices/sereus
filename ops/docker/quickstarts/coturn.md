@@ -44,5 +44,6 @@ You should see your mapped reflexive `IP:port` printed back.
 ### Enabling TURN (later, deliberate)
 TURN relays media and costs bandwidth — leave it off until you need it. When you
 do: set `TURN_ENABLED=true` + `TURN_SECRET`, publish the relay port range (or use
-host networking), and stand up the credential service (backlog:
-`turn-credential-issuance-service`). See `../coturn/README.md`.
+host networking), and stand up the credential issuer
+(`../turn-credential-issuer/`, with the same `TURN_SECRET`). See
+`../coturn/README.md` and `turn-credential-issuer.md`.

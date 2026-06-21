@@ -6,6 +6,7 @@
   "scripts": {
     "check-node": "node check-node.mjs",
     "check-stun": "node check-stun.mjs",
+    "check-turn-creds": "node check-turn-creds.mjs",
     "pair:listen": "node relay-bootstrap-pair/listener.mjs",
     "pair:dial": "node relay-bootstrap-pair/dialer.mjs"
   },

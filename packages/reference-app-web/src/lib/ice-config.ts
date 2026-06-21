@@ -24,9 +24,12 @@
  * schema and never instantiates a transport itself.
  *
  * TURN forward-pointers (do not lose when TURN is enabled):
- *  - TURN entries carry ephemeral credentials minted by a signing endpoint that
- *    does not exist yet — backlog `turn-credential-issuance-service`. Until then
- *    a well-formed manifest advertises STUN only (`turnPolicy: 'off'`).
+ *  - TURN entries carry ephemeral credentials minted per-request by the
+ *    `turn-credential-issuer` service (`ops/docker/turn-credential-issuer/`),
+ *    which serves this manifest dynamically. No client change is needed — the
+ *    `username`/`credential` passthrough below already handles them; just point
+ *    `VITE_ICE_CONFIG_URL` at the issuer's `/ice-servers.json`. When TURN is off
+ *    (or `turnPolicy: 'off'`) the issuer serves a STUN-only manifest.
  *  - A TURN-relayed WebRTC path is misclassified as `direct` by
  *    `connection-path.ts` (it only sees `/webrtc`) — backlog
  *    `turn-relayed-path-metrics`. Dormant while TURN is off.

@@ -7,7 +7,7 @@ Usage:
   ./sereus/ops/scripts/install docker <service> [dest_dir]
 
 Where:
-  <service>  one of: relay | bootstrap | bootstrap-relay | coturn
+  <service>  one of: relay | bootstrap | bootstrap-relay | coturn | turn-credential-issuer
   [dest_dir] optional path to create the site instance directory.
              If omitted, defaults to ./docker-<service> in the current directory.
 
@@ -60,6 +60,11 @@ case "$service" in
   # works unchanged; coturn also bind-mounts its repo-resident entrypoint.sh +
   # turnserver.conf via relative paths in its compose file.
   coturn) ;;
+  # turn-credential-issuer (dynamic ICE manifest) — locally-built image
+  # (sereus-turn-credential-issuer:local) from ops/docker/turn-credential-issuer/.
+  # Co-locate with coturn; its TURN_SECRET must match coturn's. The env.local +
+  # svc + data/ scaffold flow below is image-agnostic and works unchanged.
+  turn-credential-issuer) ;;
   *) die "unknown service: $service" ;;
 esac
 

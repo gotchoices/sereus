@@ -59,12 +59,16 @@ TURN is off for a reason. Before enabling it you need:
 2. The TURN relay port range published — uncomment the relay-range mapping in
    `docker-compose.yml`, or (recommended for production) switch that file to
    `network_mode: host`.
-3. A credential-issuing endpoint to hand browsers time-limited credentials —
-   **not built yet** (backlog: `turn-credential-issuance-service`). Until it
-   exists, the manifest advertises STUN only.
+3. A credential-issuing endpoint to hand browsers/phones time-limited credentials:
+   stand up `../turn-credential-issuer/` (this repo) with the **same** `TURN_SECRET`
+   and point clients at its `/ice-servers.json`. It mints short-lived credentials
+   per request and serves the dynamic ICE manifest. Until it's deployed (or while
+   `TURN_POLICY=off`), the manifest advertises STUN only.
 
 The entrypoint refuses to start with `TURN_ENABLED=true` and an empty
-`TURN_SECRET` (an auth-less TURN server is an open relay).
+`TURN_SECRET` (an auth-less TURN server is an open relay). The issuer must use that
+same `TURN_SECRET` so coturn accepts the credentials it signs. coturn checks each
+credential's expiry against its own clock — run NTP on both hosts.
 
 ### Validate
 A live STUN check needs a deployed, publicly reachable server:

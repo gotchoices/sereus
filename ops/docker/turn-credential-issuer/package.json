@@ -1,0 +1,13 @@
+{
+  "name": "sereus-turn-credential-issuer",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "start": "node --enable-source-maps dist/main.js"
+  },
+  "dependencies": {},
+  "devDependencies": {
+    "typescript": "^5.8.3"
+  }
+}

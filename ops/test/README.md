@@ -51,6 +51,33 @@ yarn workspace @serfab/ops-test check-stun -- --host stun.sereus.org --port 3478
 > manually after deploying coturn. A timeout almost always means UDP `3478` isn't
 > reachable (firewall / security group) or the server isn't up.
 
+### TURN credential check (turn-credential-issuer)
+Validate the TURN credential scheme served by the dynamic ICE manifest
+(`ops/docker/turn-credential-issuer/`). Two modes:
+
+**Self-test (agent-runnable, no network)** — pins the credential scheme
+(base64-not-base64url, `<expiry>:<id>` username, HMAC-SHA1 digest) against a fixed
+vector and drives the TURN gating matrix:
+
+```bash
+yarn workspace @serfab/ops-test check-turn-creds -- --self-test
+```
+
+**Live check (requires a deployed issuer)** — fetch a deployed issuer's manifest,
+assert a STUN entry is present, and (when a TURN entry is present) parse the
+username as `<future-unix>:<id>` and, with `--secret`, re-derive the HMAC and
+assert it matches the served credential:
+
+```bash
+yarn workspace @serfab/ops-test check-turn-creds -- \
+  --url https://turn-issuer.sereus.org/ice-servers.json --secret <TURN_SECRET>
+```
+
+> The `--url` mode requires a **deployed, reachable** issuer — like the STUN check
+> above, it is **not** runnable in CI / by agents. Run it manually after deploy. The
+> `--self-test` mode needs neither network nor a build and is the in-CI floor that
+> keeps the issuer and clients in sync.
+
 ### Advanced: NAT-to-NAT test pair (bootstrap + relay)
 Goal: validate a real-world scenario where **both devices are behind NAT/firewalls**:
 

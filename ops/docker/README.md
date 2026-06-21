@@ -12,6 +12,7 @@ Docker-related operational resources for Sereus.
 - `bootstrap-relay/`: A **combined bootstrap + relay node** (single process) for smaller deployments.
 - `sereus-node/`: A **headless Optimystic node** intended to be added to a user's **cadre** (personal infrastructure cluster).
 - `coturn/`: A **STUN server** (optionally TURN) for WebRTC ICE assistance — lets browser/mobile peers form **direct** connections instead of relaying. Distinct purpose and distinct upstream image (`coturn/coturn`), not the shared `sereus-libp2p-infra:local` image. See `../docs/ice-servers.md`.
+- `turn-credential-issuer/`: A tiny HTTP service that serves the **dynamic ICE-config manifest** (`/ice-servers.json`) — STUN-only when TURN is off, or STUN **plus** a freshly-minted short-lived coturn credential when TURN is on. Co-locate with `coturn/` (shares its `TURN_SECRET`). Builds its own local image (`sereus-turn-credential-issuer:local`). See `../docs/ice-servers.md`.
 
 ### Recommended production layout (site directories)
 
@@ -22,6 +23,7 @@ Docker-related operational resources for Sereus.
   bootstrap/            # site instance
   bootstrap-relay/      # site instance
   coturn/               # site instance (STUN/TURN — ICE assistance)
+  turn-credential-issuer/  # site instance (dynamic ICE manifest — co-located with coturn)
 ```
 
 Each site instance folder typically contains:
@@ -47,6 +49,7 @@ From your ops root (often `~/sereus-ops` or `/srv/sereus-ops`):
 ./sereus/ops/scripts/install docker bootstrap
 ./sereus/ops/scripts/install docker bootstrap-relay
 ./sereus/ops/scripts/install docker coturn
+./sereus/ops/scripts/install docker turn-credential-issuer
 ```
 
 This scaffolds `./docker-<service>/` instance folders with `env.local`, `svc`, and `data/`.
@@ -92,6 +95,8 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 
 `coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 
+`turn-credential-issuer` builds its **own** local image (`sereus-turn-credential-issuer:local`) from `turn-credential-issuer/` — a tiny dependency-free Node service (Node built-ins only). `./svc up` builds and runs it. It listens plain HTTP; front it with a TLS reverse proxy. See `turn-credential-issuer/README.md`.
+
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.
 
@@ -106,6 +111,7 @@ See `../test/README.md`.
 - `quickstarts/bootstrap.md`: run a **private bootstrap** peer (discovery seed)
 - `quickstarts/bootstrap-relay.md`: run a **combined** bootstrap + relay node
 - `quickstarts/coturn.md`: run a **public STUN server** (coturn) for WebRTC ICE assistance
+- `quickstarts/turn-credential-issuer.md`: serve the **dynamic ICE manifest** + mint short-lived TURN credentials
 
 ### Installing Docker (optional)
 If you already have Docker + Compose installed and working, you can skip this section.
