@@ -885,6 +885,36 @@ export interface WakeAck {
   reason?: string;
 }
 
+// ============================================================================
+// Strand Address (control-network strand-address RPC) — see strand-addr-protocol.ts
+// ============================================================================
+
+/**
+ * Control-network request from one of a party's own cadre nodes to a sibling,
+ * asking "what are your live multiaddrs for this strand's separate network?".
+ * Used to seed a strand mesh from co-cadre nodes that already run that strand.
+ * The receiver gates this on cadre membership before answering.
+ */
+export interface StrandAddrRequest {
+  /** The strand whose strand-network address the requester wants to seed from. */
+  strandId: string;
+}
+
+/**
+ * Response to a {@link StrandAddrRequest}, carrying the responder's strand-node
+ * multiaddrs, returned on the same stream.
+ */
+export interface StrandAddrResponse {
+  /** Echoes the requested strand id (empty on a reject/error reply). */
+  strandId: string;
+  /**
+   * Dialable strand-network multiaddr strings (signaling/`p2p-circuit` first);
+   * empty when the responder is a non-member, or does not currently run that
+   * strand, or the exchange failed.
+   */
+  multiaddrs: string[];
+}
+
 /**
  * Options for authorizing a new peer in the cadre.
  */
