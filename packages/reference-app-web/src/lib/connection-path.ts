@@ -22,6 +22,7 @@ export type ConnectionPathKind = 'relayed' | 'direct';
 export type ConnectionTransport =
   | 'circuit-relay'
   | 'webrtc'
+  | 'webrtc-turn'   // WebRTC session whose ICE selected a TURN relay candidate
   | 'webrtc-direct'
   | 'websocket'
   | 'tcp'
@@ -64,6 +65,12 @@ export interface ConnectionLike {
   remoteAddr?: { toString(): string };
   direction?: 'inbound' | 'outbound';
   timeline?: { open?: number };
+  /**
+   * Set externally when ICE selected a TURN relay candidate for this `/webrtc`
+   * session. `undefined` = unknown (the multiaddr alone cannot reveal it). Only
+   * honoured for the `webrtc` transport — see {@link classifyConnectionPath}.
+   */
+  turnRelayed?: boolean;
 }
 
 export const DEFAULT_SETTLE_WINDOW_MS = 10_000;
@@ -71,6 +78,7 @@ export const DEFAULT_SETTLE_WINDOW_MS = 10_000;
 const ALL_TRANSPORTS: readonly ConnectionTransport[] = [
   'circuit-relay',
   'webrtc',
+  'webrtc-turn',
   'webrtc-direct',
   'websocket',
   'tcp',
@@ -108,9 +116,20 @@ function addrString(conn: ConnectionLike): string {
   }
 }
 
-/** Pure per-connection classifier over the connection's remoteAddr. */
+/**
+ * Per-connection classifier. Starts from the pure multiaddr classification, then
+ * applies the TURN override: a `/webrtc` session whose ICE selected a TURN relay
+ * candidate (`conn.turnRelayed === true`, set externally) is reclassified
+ * `relayed`/`webrtc-turn`. The `transport === 'webrtc'` guard means `webrtc-direct`
+ * is never promoted (it uses no ICE), and `undefined` degrades safely to the
+ * multiaddr result.
+ */
 export function classifyConnectionPath(conn: ConnectionLike): TransportClass {
-  return classifyTransport(addrString(conn));
+  const { kind, transport } = classifyTransport(addrString(conn));
+  if (transport === 'webrtc' && conn.turnRelayed === true) {
+    return { kind: 'relayed', transport: 'webrtc-turn' };
+  }
+  return { kind, transport };
 }
 
 /**
@@ -166,7 +185,9 @@ export function summarizeConnectionPaths(
 
   const classified = list.map((conn) => {
     const remoteAddr = addrString(conn);
-    const { kind, transport } = classifyTransport(remoteAddr);
+    // classifyConnectionPath (not classifyTransport) so the externally-set
+    // turnRelayed hint promotes webrtc → webrtc-turn (relayed).
+    const { kind, transport } = classifyConnectionPath(conn);
     const openedAtMs = typeof conn.timeline?.open === 'number' ? conn.timeline.open : null;
     const ageMs = openedAtMs != null ? Math.max(0, now - openedAtMs) : null;
     const peerId = safePeerId(conn);

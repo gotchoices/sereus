@@ -1,6 +1,8 @@
 import { test, expect } from '@playwright/test';
 import {
 	classifyTransport,
+	classifyConnectionPath,
+	type ConnectionLike,
 	type ConnectionPathKind,
 	type ConnectionTransport,
 } from '../../src/lib/connection-path.js';
@@ -25,6 +27,9 @@ const CLASSIFIER_TABLE: Array<{
 	addr: string;
 	kind: ConnectionPathKind;
 	transport: ConnectionTransport;
+	// TURN-relay hint (see cadre-core CLASSIFIER_TABLE). Hint rows are asserted via
+	// classifyConnectionPath; classifyTransport (pure string fn) cannot produce them.
+	turnRelayed?: boolean;
 }> = [
 	{
 		addr: '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/p2p/QmTarget',
@@ -48,12 +53,45 @@ const CLASSIFIER_TABLE: Array<{
 	{ addr: '/ip4/127.0.0.1/tcp/4001/p2p/QmTarget', kind: 'direct', transport: 'tcp' },
 	{ addr: '', kind: 'direct', transport: 'unknown' },
 	{ addr: 'not-a-multiaddr', kind: 'direct', transport: 'unknown' },
+	{
+		// WebRTC whose ICE selected a TURN relay candidate: turnRelayed promotes it
+		// to relayed/webrtc-turn. Mirrors the cadre-core row.
+		addr: '/ip4/1.2.3.4/udp/9/webrtc/p2p/QmTurn',
+		turnRelayed: true,
+		kind: 'relayed',
+		transport: 'webrtc-turn',
+	},
 ];
 
+/** Build a minimal synthetic connection for classifyConnectionPath assertions. */
+function makeConn(addr: string, turnRelayed?: boolean): ConnectionLike {
+	return {
+		remotePeer: { toString: () => 'QmParity' },
+		remoteAddr: { toString: () => addr },
+		direction: 'outbound',
+		turnRelayed,
+	};
+}
+
 test.describe('web connection-path classifier parity', () => {
-	for (const { addr, kind, transport } of CLASSIFIER_TABLE) {
-		test(`classifies "${addr || '(empty)'}" as ${kind}/${transport}`, () => {
+	// Pure addr→class rows drive classifyTransport (the TURN hint is not a string).
+	for (const { addr, kind, transport, turnRelayed } of CLASSIFIER_TABLE) {
+		if (turnRelayed) continue;
+		test(`classifyTransport "${addr || '(empty)'}" → ${kind}/${transport}`, () => {
 			expect(classifyTransport(addr)).toEqual({ kind, transport });
 		});
 	}
+
+	// The full table (incl. the TURN-hint row) drives classifyConnectionPath.
+	for (const { addr, kind, transport, turnRelayed } of CLASSIFIER_TABLE) {
+		const label = turnRelayed ? ' (turnRelayed)' : '';
+		test(`classifyConnectionPath "${addr || '(empty)'}"${label} → ${kind}/${transport}`, () => {
+			expect(classifyConnectionPath(makeConn(addr, turnRelayed))).toEqual({ kind, transport });
+		});
+	}
+
+	test('webrtc-direct is not promoted even with a turnRelayed hint', () => {
+		const conn = makeConn('/ip4/1.2.3.4/udp/9/webrtc-direct/certhash/uEiAabc/p2p/QmX', true);
+		expect(classifyConnectionPath(conn)).toEqual({ kind: 'direct', transport: 'webrtc-direct' });
+	});
 });

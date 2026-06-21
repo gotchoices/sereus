@@ -18,6 +18,12 @@ export const CLASSIFIER_TABLE: Array<{
   addr: string;
   kind: ConnectionPathKind;
   transport: ConnectionTransport;
+  /**
+   * The externally-set TURN-relay hint. When set, the row is classified via
+   * {@link classifyConnectionPath} (the hint-aware classifier) rather than the
+   * pure {@link classifyTransport}, which cannot see it.
+   */
+  turnRelayed?: boolean;
 }> = [
   {
     addr: '/ip4/1.2.3.4/tcp/443/wss/p2p/QmRelay/p2p-circuit/p2p/QmTarget',
@@ -54,10 +60,21 @@ export const CLASSIFIER_TABLE: Array<{
   },
   { addr: '', kind: 'direct', transport: 'unknown' },
   { addr: 'not-a-multiaddr', kind: 'direct', transport: 'unknown' },
+  {
+    // WebRTC whose ICE selected a TURN relay candidate: the turnRelayed hint
+    // promotes it from direct/webrtc to relayed/webrtc-turn. Not expressible as a
+    // pure addr→class mapping, so it is asserted via classifyConnectionPath only.
+    addr: '/ip4/1.2.3.4/udp/9/webrtc/p2p/QmTurn',
+    turnRelayed: true,
+    kind: 'relayed',
+    transport: 'webrtc-turn',
+  },
 ];
 
 describe('classifyTransport', () => {
-  for (const { addr, kind, transport } of CLASSIFIER_TABLE) {
+  // Pure addr→class rows only — the TURN hint is not expressible as a string.
+  for (const { addr, kind, transport, turnRelayed } of CLASSIFIER_TABLE) {
+    if (turnRelayed) continue;
     it(`classifies "${addr || '(empty)'}" as ${kind}/${transport}`, () => {
       expect(classifyTransport(addr)).toEqual({ kind, transport });
     });
@@ -71,8 +88,45 @@ describe('classifyTransport', () => {
     });
   });
 
-  it('classifyConnectionPath delegates to classifyTransport over remoteAddr', () => {
+  it('is unchanged by the TURN hint: a webrtc addr stays direct/webrtc (pure string fn)', () => {
+    // classifyTransport takes only the addr string and can never see turnRelayed.
+    expect(classifyTransport('/ip4/1.2.3.4/udp/9/webrtc/p2p/QmX')).toEqual({
+      kind: 'direct',
+      transport: 'webrtc',
+    });
+  });
+});
+
+describe('classifyConnectionPath', () => {
+  // The full table, including the TURN-hint row, drives the hint-aware classifier.
+  for (const { addr, kind, transport, turnRelayed } of CLASSIFIER_TABLE) {
+    const label = turnRelayed ? ` (turnRelayed)` : '';
+    it(`classifies "${addr || '(empty)'}"${label} as ${kind}/${transport}`, () => {
+      const conn = makeConn({ remoteAddr: addr, turnRelayed });
+      expect(classifyConnectionPath(conn)).toEqual({ kind, transport });
+    });
+  }
+
+  it('delegates to classifyTransport when no TURN hint is set', () => {
     const conn = makeConn({ remoteAddr: '/ip4/1.2.3.4/udp/9/webrtc/p2p/QmX' });
+    expect(classifyConnectionPath(conn)).toEqual({ kind: 'direct', transport: 'webrtc' });
+  });
+
+  it('promotes webrtc → webrtc-turn (relayed) when turnRelayed is true', () => {
+    const conn = makeConn({ remoteAddr: WEBRTC_ADDR, turnRelayed: true });
+    expect(classifyConnectionPath(conn)).toEqual({ kind: 'relayed', transport: 'webrtc-turn' });
+  });
+
+  it('does NOT promote webrtc-direct even with a turnRelayed hint (ICE not used)', () => {
+    const conn = makeConn({
+      remoteAddr: '/ip4/1.2.3.4/udp/9/webrtc-direct/certhash/uEiAabc/p2p/QmX',
+      turnRelayed: true,
+    });
+    expect(classifyConnectionPath(conn)).toEqual({ kind: 'direct', transport: 'webrtc-direct' });
+  });
+
+  it('ignores turnRelayed:false (stays direct/webrtc)', () => {
+    const conn = makeConn({ remoteAddr: WEBRTC_ADDR, turnRelayed: false });
     expect(classifyConnectionPath(conn)).toEqual({ kind: 'direct', transport: 'webrtc' });
   });
 });
@@ -85,6 +139,7 @@ interface MakeConnOpts {
   direction?: 'inbound' | 'outbound';
   openedAtMs?: number | null;
   metrics?: { bytesReceived?: number; bytesSent?: number };
+  turnRelayed?: boolean;
 }
 
 function makeConn(opts: MakeConnOpts): ConnectionLike {
@@ -93,6 +148,7 @@ function makeConn(opts: MakeConnOpts): ConnectionLike {
     remoteAddr: { toString: () => opts.remoteAddr ?? '' },
     direction: opts.direction ?? 'outbound',
     timeline: opts.openedAtMs === null ? {} : { open: opts.openedAtMs ?? Date.now() },
+    turnRelayed: opts.turnRelayed,
   };
   if (opts.metrics) conn.metrics = opts.metrics;
   return conn;
@@ -177,6 +233,64 @@ describe('summarizeConnectionPaths', () => {
     expect(summary.paths[0]!.kind).toBe('direct');
     expect(summary.paths[0]!.transport).toBe('webrtc');
     expect(summary.paths[0]!.stuckOnRelay).toBe(false);
+  });
+
+  it('promotes a turnRelayed webrtc conn to relayed/webrtc-turn and counts it relayed', () => {
+    const conn = makeConn({
+      peerId: 'QmPeerA',
+      remoteAddr: WEBRTC_ADDR,
+      turnRelayed: true,
+      openedAtMs: Date.now() - 1_000,
+    });
+    const summary = summarizeConnectionPaths([conn], 10_000);
+
+    expect(summary.total).toBe(1);
+    expect(summary.relayed).toBe(1);
+    expect(summary.direct).toBe(0);
+    expect(summary.byTransport['webrtc-turn']).toBe(1);
+    expect(summary.byTransport.webrtc).toBe(0);
+    expect(summary.paths[0]!.kind).toBe('relayed');
+    expect(summary.paths[0]!.transport).toBe('webrtc-turn');
+    // Young (within the settle window) → not yet stuck.
+    expect(summary.stuckOnRelay).toBe(0);
+  });
+
+  it('flags an aged turnRelayed webrtc-turn conn with no direct sibling as stuck', () => {
+    // A long-lived TURN session that never upgraded to a direct path is the
+    // intended stuck-on-relay signal (webrtc-turn has kind === relayed).
+    const conn = makeConn({
+      peerId: 'QmPeerA',
+      remoteAddr: WEBRTC_ADDR,
+      turnRelayed: true,
+      openedAtMs: Date.now() - 20_000,
+    });
+    const summary = summarizeConnectionPaths([conn], 10_000);
+
+    expect(summary.relayed).toBe(1);
+    expect(summary.stuckOnRelay).toBe(1);
+    expect(summary.paths[0]!.transport).toBe('webrtc-turn');
+    expect(summary.paths[0]!.stuckOnRelay).toBe(true);
+  });
+
+  it('does NOT flag a turnRelayed conn when the same peer also has a direct conn', () => {
+    const turnRelayed = makeConn({
+      peerId: 'QmPeerA',
+      remoteAddr: WEBRTC_ADDR,
+      turnRelayed: true,
+      openedAtMs: Date.now() - 20_000,
+    });
+    const direct = makeConn({
+      peerId: 'QmPeerA',
+      remoteAddr: '/ip4/9.9.9.9/udp/9/webrtc-direct/certhash/uEiAabc/p2p/QmPeerA',
+      openedAtMs: Date.now() - 1_000,
+    });
+    const summary = summarizeConnectionPaths([turnRelayed, direct], 10_000);
+
+    expect(summary.relayed).toBe(1);
+    expect(summary.direct).toBe(1);
+    expect(summary.byTransport['webrtc-turn']).toBe(1);
+    expect(summary.byTransport['webrtc-direct']).toBe(1);
+    expect(summary.stuckOnRelay).toBe(0);
   });
 
   it('does NOT flag a relayed conn younger than the settle window (still settling)', () => {
