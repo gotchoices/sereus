@@ -296,4 +296,41 @@ describe('collectStrandAddrs — client union/dedup', () => {
 
     expect(result).toEqual(['/ip4/3.3.3.3/tcp/3/p2p/strand']);
   });
+
+  it('falls back to explicit addrs when a parseable peerId dial fails', async () => {
+    // A valid peerId AND explicit addrs: dialTargets tries the peerId first
+    // (reuse an open control connection); when that dial throws, the per-target
+    // loop must fall through to the explicit addr rather than abandoning the
+    // sibling. (The unparsable-peerId case above never enters the peerId branch.)
+    const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const addr = multiaddr('/ip4/4.4.4.4/tcp/4');
+    const dialed: string[] = [];
+    const replies = new Map<string, string[]>([[addr.toString(), ['/ip4/4.4.4.4/tcp/4/p2p/strand']]]);
+    const node = collectNode(self, replies, { throwing: new Set([sib]), dialed });
+
+    const result = await collectStrandAddrs(node, [{ peerId: sib, addrs: [addr] }], 'strand-x');
+
+    expect(result).toEqual(['/ip4/4.4.4.4/tcp/4/p2p/strand']);
+    // peerId dialed first (and failed), then the explicit addr fallback.
+    expect(dialed).toEqual([sib, addr.toString()]);
+  });
+
+  it('skips a sibling whose receiver never replies (per-dial timeout) and aborts its stream', async () => {
+    // The receiver opens the stream but never writes/closes the response — pre-
+    // abort the client's unbounded response-read would leak the dangling stream.
+    // The per-attempt AbortController fires on timeout, resets the live stream,
+    // and the failure folds to [] (best-effort: a dead sibling never aborts the
+    // whole collection). Parity with dialWake's timeout test.
+    const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const hanging = new PausableStream();
+    const node = {
+      peerId: { toString: () => self },
+      dialProtocol: async () => hanging
+    } as unknown as Libp2p;
+
+    const result = await collectStrandAddrs(node, [{ peerId: sib }], 'strand-x', { timeoutMs: 50 });
+
+    expect(result).toEqual([]);
+    expect(hanging.aborted).toBeTruthy();
+  });
 });
