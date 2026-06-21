@@ -70,6 +70,7 @@ export async function createChatStrand(
 	return cadreNode.addStrand({
 		strandRow,
 		sAppConfig: getChatSAppConfig(),
+		founder: true,
 	});
 }
 

@@ -497,6 +497,7 @@ async function createClosedChatStrand(
 		// gets a local transactor that never replicates — the silent no-convergence
 		// failure mode. `networked` launches even before the cohort peer dials in.
 		mode: 'networked',
+		founder: true,
 	});
 	return { strandId, memberPrivateKey };
 }
@@ -723,6 +724,7 @@ export async function addChatStrand(): Promise<StrandInstance> {
 	const instance = await node.addStrand({
 		strandRow: { Id: CHAT_STRAND_ID, MemberPrivateKey: null, Type: 'o' },
 		sAppConfig: getChatSAppConfig(),
+		founder: true,
 	});
 	activeStrandId = CHAT_STRAND_ID;
 	return instance;

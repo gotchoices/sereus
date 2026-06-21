@@ -1,7 +1,11 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { signSchema } from '../src/schema-verification.js';
+import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
@@ -106,4 +110,103 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     });
     await expect(stopped.publishStrand('strand-' + rand(), 'o')).rejects.toThrow(/must be started/i);
   });
+});
+
+// ── CadreNode.addStrand founder bootstrap (node-level seam) ──────────────────
+
+const SCHEMA = 'create table Note (Id text primary key);';
+const VERSION = '1.0.0';
+
+function signedSApp() {
+  const priv = generatePrivateKey('ed25519', 'base64url') as string;
+  const pub = getPublicKey(priv, 'ed25519', 'base64url', 'base64url') as string;
+  return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
+}
+
+async function countRow(db: Database, table: 'Header' | 'Member' | 'Authority'): Promise<number> {
+  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
+    return (row as { c: number }).c;
+  }
+  return 0;
+}
+
+describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
+  let node: CadreNode | undefined;
+
+  const rand2 = (): string => Math.random().toString(36).slice(2);
+
+  async function startNode(): Promise<CadreNode> {
+    const nodeKey = await generateKeyPair('Ed25519');
+    const { publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const n = new CadreNode({
+      controlNetwork: { partyId: 'addstrand-founder-' + rand2(), bootstrapNodes: [] },
+      privateKey: nodeKey,
+      profile: 'transaction',
+    });
+    await n.start();
+    await n.getControlDatabase()!.insertAuthorityKey(publicKeyB64);
+    return n;
+  }
+
+  afterEach(async () => {
+    await node?.stop();
+    node = undefined;
+  });
+
+  it('founder of a closed strand: Header=1, Member=1, Authority=1 with derived key', async () => {
+    node = await startNode();
+    const strandId = 'addstrand-closed-' + rand2();
+    const memberPrivateKey = await generateStrandMemberKey();
+
+    const instance = await node.addStrand({
+      strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
+      sAppConfig: signedSApp(),
+      founder: true,
+    });
+
+    expect(instance.status).toBe('active');
+    const db = instance.database!.getDatabase();
+    expect(await countRow(db, 'Header')).toBe(1);
+    expect(await countRow(db, 'Member')).toBe(1);
+    expect(await countRow(db, 'Authority')).toBe(1);
+
+    const expectedKey = strandMemberKeyPair(memberPrivateKey).publicKeyB64;
+    const member = await db.get('select Key from Strand.Member');
+    const authority = await db.get('select MemberKey from Strand.Authority');
+    expect(member?.Key).toBe(expectedKey);
+    expect(authority?.MemberKey).toBe(expectedKey);
+  }, 60_000);
+
+  it('founder of an open strand: Header=1, Member=0, Authority=0, Header.Type=o', async () => {
+    node = await startNode();
+    const strandId = 'addstrand-open-' + rand2();
+
+    const instance = await node.addStrand({
+      strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
+      sAppConfig: signedSApp(),
+      founder: true,
+    });
+
+    expect(instance.status).toBe('active');
+    const db = instance.database!.getDatabase();
+    expect(await countRow(db, 'Header')).toBe(1);
+    expect(await countRow(db, 'Member')).toBe(0);
+    expect(await countRow(db, 'Authority')).toBe(0);
+
+    const header = await db.get('select Type from Strand.Header');
+    expect(header?.Type).toBe('o');
+  }, 60_000);
+
+  it('closed founder with null MemberPrivateKey rejects', async () => {
+    node = await startNode();
+    const strandId = 'addstrand-closed-nokey-' + rand2();
+
+    await expect(
+      node.addStrand({
+        strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'c' },
+        sAppConfig: signedSApp(),
+        founder: true,
+      }),
+    ).rejects.toThrow(/MemberPrivateKey/i);
+  }, 60_000);
 });

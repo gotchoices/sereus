@@ -99,6 +99,7 @@ export async function createChatStrand(
   return cadreNode.addStrand({
     strandRow,
     sAppConfig: getChatSAppConfig(),
+    founder: true,
   });
 }
 
@@ -156,6 +157,7 @@ export async function createClosedChatStrand(
   const instance = await cadreNode.addStrand({
     strandRow,
     sAppConfig: getChatSAppConfig(),
+    founder: true,
   });
 
   await assignLocalMemberRole(cadreNode, instance, 'owner');
