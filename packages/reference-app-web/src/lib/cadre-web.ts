@@ -497,6 +497,9 @@ async function createClosedChatStrand(
 		// gets a local transactor that never replicates — the silent no-convergence
 		// failure mode. `networked` launches even before the cohort peer dials in.
 		mode: 'networked',
+		// This node provisioned + published the strand, so it is the founder: run the
+		// one-time genesis bootstrap that seats Header/Member/Authority from
+		// MemberPrivateKey. Idempotent (insert-if-absent) across reload / re-addStrand.
 		founder: true,
 	});
 	return { strandId, memberPrivateKey };
