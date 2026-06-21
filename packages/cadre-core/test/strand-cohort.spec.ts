@@ -1,56 +1,60 @@
 import { describe, it, expect } from 'vitest';
-import { deriveCohortSeed, selectStrandMode, type CohortPeerRow } from '../src/strand-cohort.js';
+import { deriveCohortMembers, selectStrandMode, type CohortPeerRow } from '../src/strand-cohort.js';
 
-describe('deriveCohortSeed', () => {
+describe('deriveCohortMembers', () => {
   const self = 'self-peer-id';
 
-  it('returns an empty seed for no peers', () => {
-    expect(deriveCohortSeed([], self)).toEqual({ bootstrapNodes: [], hasOtherPeers: false });
+  it('returns no members for an empty cohort', () => {
+    expect(deriveCohortMembers([], self)).toEqual({ otherPeerIds: [], hasOtherPeers: false });
   });
 
-  it('excludes self from membership and seed', () => {
+  it('excludes self from the membership view', () => {
     const peers: CohortPeerRow[] = [{ peerId: self, multiaddr: '/ip4/127.0.0.1/tcp/4001' }];
-    expect(deriveCohortSeed(peers, self)).toEqual({ bootstrapNodes: [], hasOtherPeers: false });
+    expect(deriveCohortMembers(peers, self)).toEqual({ otherPeerIds: [], hasOtherPeers: false });
   });
 
-  it('splits comma-joined multiaddrs for other peers', () => {
-    const peers: CohortPeerRow[] = [{ peerId: 'other', multiaddr: '/a,/b' }];
-    const seed = deriveCohortSeed(peers, self);
-    expect(seed.hasOtherPeers).toBe(true);
-    expect(seed.bootstrapNodes).toContain('/a');
-    expect(seed.bootstrapNodes).toContain('/b');
-    expect(seed.bootstrapNodes).toHaveLength(2);
+  it('lists other peerIds and flags membership presence', () => {
+    const peers: CohortPeerRow[] = [
+      { peerId: self, multiaddr: null },
+      { peerId: 'other', multiaddr: '/a,/b' }
+    ];
+    const members = deriveCohortMembers(peers, self);
+    expect(members.hasOtherPeers).toBe(true);
+    expect(members.otherPeerIds).toEqual(['other']);
   });
 
-  it('counts an addr-less other peer toward membership but not the seed', () => {
+  it('counts an addr-less other peer toward membership (addrs are irrelevant here)', () => {
     for (const ma of ['', null] as const) {
       const peers: CohortPeerRow[] = [{ peerId: 'other', multiaddr: ma }];
-      const seed = deriveCohortSeed(peers, self);
-      expect(seed.hasOtherPeers).toBe(true);
-      expect(seed.bootstrapNodes).toEqual([]);
+      const members = deriveCohortMembers(peers, self);
+      expect(members.hasOtherPeers).toBe(true);
+      expect(members.otherPeerIds).toEqual(['other']);
     }
   });
 
-  it('dedups repeated fragments across peers', () => {
-    const peers: CohortPeerRow[] = [
-      { peerId: 'a', multiaddr: '/x,/y' },
-      { peerId: 'b', multiaddr: '/y,/z' }
-    ];
-    const seed = deriveCohortSeed(peers, self);
-    expect([...seed.bootstrapNodes].sort()).toEqual(['/x', '/y', '/z']);
+  it('ignores the Multiaddr field entirely — control addrs must not seed the strand', () => {
+    const peers: CohortPeerRow[] = [{ peerId: 'other', multiaddr: '/control/addr/1,/control/addr/2' }];
+    const members = deriveCohortMembers(peers, self);
+    // Only the peerId is surfaced; the control multiaddrs never appear in the result.
+    expect(members.otherPeerIds).toEqual(['other']);
   });
 
-  it('trims fragments and drops empties from a comma-joined field', () => {
-    const peers: CohortPeerRow[] = [{ peerId: 'a', multiaddr: ' /a , , /b ' }];
-    const seed = deriveCohortSeed(peers, self);
-    expect([...seed.bootstrapNodes].sort()).toEqual(['/a', '/b']);
+  it('dedups repeated peerId rows', () => {
+    const peers: CohortPeerRow[] = [
+      { peerId: 'a', multiaddr: '/x' },
+      { peerId: 'a', multiaddr: '/y' },
+      { peerId: 'b', multiaddr: null }
+    ];
+    const members = deriveCohortMembers(peers, self);
+    expect(members.otherPeerIds).toEqual(['a', 'b']);
+    expect(members.hasOtherPeers).toBe(true);
   });
 
   it('keeps all peers when selfPeerId is undefined', () => {
     const peers: CohortPeerRow[] = [{ peerId: 'a', multiaddr: '/a' }];
-    const seed = deriveCohortSeed(peers, undefined);
-    expect(seed.hasOtherPeers).toBe(true);
-    expect(seed.bootstrapNodes).toEqual(['/a']);
+    const members = deriveCohortMembers(peers, undefined);
+    expect(members.hasOtherPeers).toBe(true);
+    expect(members.otherPeerIds).toEqual(['a']);
   });
 });
 

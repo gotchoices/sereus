@@ -54,7 +54,7 @@ import {
 } from './device-token.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
-import { deriveCohortSeed, selectStrandMode, type CohortSeed } from './strand-cohort.js';
+import { deriveCohortMembers, selectStrandMode, type CohortSeed } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
@@ -71,6 +71,7 @@ import {
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
+import { StrandAddrService, collectStrandAddrs } from './strand-addr-protocol.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
@@ -112,6 +113,13 @@ export class CadreNode implements SAppIdLookup {
   private seedBootstrapService: SeedBootstrapService | null = null;
   private strandSolicitationService: StrandSolicitationService | null = null;
   private strandWakeService: StrandWakeService | null = null;
+  /**
+   * Control-network strand-address responder. Answers a co-cadre sibling's
+   * on-demand request for this node's live strand-network multiaddrs so the
+   * sibling can seed a strand mesh from us — the read side of the seed path that
+   * stops conflating control addresses with strand seeding.
+   */
+  private strandAddrService: StrandAddrService | null = null;
   /**
    * Server-side push-wake fan-out. Constructed by {@link start} only when
    * `config.push` (FCM/APNs credentials) is present — without it the node behaves
@@ -396,6 +404,16 @@ export class CadreNode implements SAppIdLookup {
         wake: (strandId) => this.wakeStrand(strandId),
       });
       this.strandWakeService.initialize(this.controlNode);
+
+      // Register the control-network strand-address responder: a same-cadre peer
+      // resolving a strand's bootstrap seed asks us for our live strand-network
+      // multiaddrs (its CadrePeer row only knows our *control* address). Gated on
+      // CadrePeer membership; answers only for strands we are actively meshing.
+      this.strandAddrService = new StrandAddrService({
+        isMember: (peerId) => this.isMember(peerId),
+        getStrandMultiaddrs: (strandId) => this.getStrandMultiaddrs(strandId),
+      });
+      this.strandAddrService.initialize(this.controlNode);
 
       // Server-side push-wake fan-out: only when push credentials are configured.
       // The PushNotifier reaches for node:http2/node:crypto, so it is loaded via a
@@ -1667,6 +1685,13 @@ export class CadreNode implements SAppIdLookup {
       this.strandWakeService = null;
     }
 
+    // Stop strand-addr service (unregister the STRAND_ADDR_PROTOCOL handler so a
+    // restart does not hit DuplicateProtocolHandlerError).
+    if (this.strandAddrService) {
+      await this.strandAddrService.shutdown();
+      this.strandAddrService = null;
+    }
+
     // Tear down the push-wake fan-out (releases the notifier's APNs HTTP/2 session).
     if (this.pushFanoutService) {
       await this.pushFanoutService.close().catch((err) => log('Push fan-out close failed: %o', err));
@@ -1785,7 +1810,7 @@ export class CadreNode implements SAppIdLookup {
    * (returns the live instance unchanged) as a backstop against double-resume.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
-    const seed = await this.resolveCohortSeed();
+    const seed = await this.resolveCohortSeed(strandId);
     const mode = selectStrandMode(undefined, seed.hasOtherPeers);
     await this.strandManager.resumeStrand(strandId, {
       bootstrapNodes: seed.bootstrapNodes,
@@ -2048,7 +2073,7 @@ export class CadreNode implements SAppIdLookup {
     explicitMode?: StrandMode,
     founder?: boolean
   ): Promise<StrandInstance> {
-    const seed = await this.resolveCohortSeed();
+    const seed = await this.resolveCohortSeed(strand.Id);
     const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
 
     const instance = await this.strandManager.startStrand({
@@ -2071,15 +2096,52 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Derive the cohort discovery seed from the control network's CadrePeer rows,
-   * excluding this node. Returns an empty seed when no control database exists.
+   * Resolve a strand's discovery seed. Membership (and thus mode) comes from the
+   * control network's CadrePeer rows; the **strand-network** bootstrap addresses
+   * are resolved on demand over the control mesh via the strand-addr RPC —
+   * deliberately NOT from `CadrePeer.Multiaddr`, which carries *control*
+   * addresses that must not seed the strand mesh.
+   *
+   * Only siblings we already hold an open control connection to are RPC'd: they
+   * are the ones that can answer right now, and dialing them by peerId reuses the
+   * live connection. When no connected sibling yet runs the strand the seed is
+   * empty (`[]`) — mode still follows membership, and the empty seed self-heals
+   * on the next resume / check-in pass. Returns an empty seed when the control DB
+   * or node is absent (not yet started / torn down).
    */
-  private async resolveCohortSeed(): Promise<CohortSeed> {
-    if (!this.controlDatabase) {
+  private async resolveCohortSeed(strandId: string): Promise<CohortSeed> {
+    if (!this.controlDatabase || !this.controlNode) {
       return { bootstrapNodes: [], hasOtherPeers: false };
     }
     const peers = await this.controlDatabase.queryCadrePeers();
-    return deriveCohortSeed(peers, this.controlNode?.peerId.toString());
+    const { otherPeerIds, hasOtherPeers } =
+      deriveCohortMembers(peers, this.controlNode.peerId.toString());
+
+    // RPC only siblings we already have a control connection to — they can answer
+    // now, and `dialProtocol` by peerId reuses the open connection.
+    const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
+    const targets = otherPeerIds.filter((id) => connected.has(id));
+    const bootstrapNodes = targets.length
+      ? await collectStrandAddrs(this.controlNode, targets.map((peerId) => ({ peerId })), strandId)
+      : [];
+    return { bootstrapNodes, hasOtherPeers };
+  }
+
+  /**
+   * The local strand instance's dialable strand-network multiaddrs for the
+   * strand-addr RPC, ordered signaling-first (reusing the control node's
+   * {@link orderSignalingFirst}). Returns `[]` when the strand is not running
+   * locally or has no live libp2p node (hibernating / quiescing / never
+   * participated) — a node only answers for a strand it is actively meshing,
+   * regardless of the strand's mode. A `bootstrap`-mode first node still has a
+   * live node, so it answers and a later sibling can dial in.
+   */
+  private getStrandMultiaddrs(strandId: string): string[] {
+    const node = this.strandManager.getInstance(strandId)?.libp2pNode;
+    if (!node) {
+      return [];
+    }
+    return orderSignalingFirst(node.getMultiaddrs().map((ma) => ma.toString()));
   }
 
   /**

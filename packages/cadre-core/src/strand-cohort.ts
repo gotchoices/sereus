@@ -11,42 +11,59 @@ export interface CohortPeerRow {
 }
 
 /**
- * Cohort-derived discovery seed for a strand's libp2p node.
+ * Cohort-derived discovery seed for a strand's libp2p node. `bootstrapNodes`
+ * here are **strand-network** addresses resolved on demand from co-cadre
+ * siblings (see `collectStrandAddrs` / `STRAND_ADDR_PROTOCOL`), NOT the control
+ * addresses stored in `CadrePeer.Multiaddr`.
  */
 export interface CohortSeed {
-  /** Dialable multiaddr strings for cohort peers other than self (deduplicated). */
+  /** Dialable strand-network multiaddr strings for cohort peers other than self (deduplicated). */
   bootstrapNodes: string[];
-  /** True when at least one CadrePeer row other than self exists (even if it has no dialable addr). */
+  /** True when at least one CadrePeer row other than self exists (even if it has no resolvable strand addr). */
   hasOtherPeers: boolean;
 }
 
 /**
- * Derive a strand's bootstrap seed from the control network's CadrePeer rows.
- * Excludes `selfPeerId`, splits each comma-joined `Multiaddr` field, and drops
- * empty fragments. `hasOtherPeers` reflects membership presence, NOT dialability,
- * so a cohort whose addrs are not yet known still selects `networked` mode.
+ * Membership-only view of a strand's cohort, derived from the control network's
+ * CadrePeer rows. The bootstrap addresses themselves are resolved separately
+ * (over the strand-addr RPC) from these peerIds, never from the rows' addr field.
  */
-export function deriveCohortSeed(peers: CohortPeerRow[], selfPeerId: string | undefined): CohortSeed {
-  const bootstrapSet = new Set<string>();
-  let hasOtherPeers = false;
+export interface CohortMembers {
+  /** PeerIds of cohort members other than self — the strand-addr RPC fan-out targets (deduplicated, in row order). */
+  otherPeerIds: string[];
+  /** True when at least one CadrePeer row other than self exists (even if it has no resolvable strand addr). */
+  hasOtherPeers: boolean;
+}
+
+/**
+ * Derive the membership view of a strand's cohort from the control network's
+ * CadrePeer rows: the peerIds of members other than `selfPeerId` (the strand-addr
+ * RPC fan-out targets) and whether any other member exists at all.
+ *
+ * Deliberately does NOT read `CadrePeer.Multiaddr` — that field carries each
+ * node's *control*-network address, which must not seed the *strand* mesh
+ * (dialing it reaches the remote's control instance, not its strand instance).
+ * The strand-network bootstrap addresses are resolved on demand over the control
+ * mesh from these peerIds. `hasOtherPeers` reflects membership presence, NOT
+ * dialability, so a cohort whose strand addrs are not yet resolvable still
+ * selects `networked` mode.
+ */
+export function deriveCohortMembers(peers: CohortPeerRow[], selfPeerId?: string): CohortMembers {
+  const otherPeerIds: string[] = [];
+  const seen = new Set<string>();
 
   for (const peer of peers) {
     if (selfPeerId !== undefined && peer.peerId === selfPeerId) {
       continue;
     }
-    hasOtherPeers = true;
-    if (!peer.multiaddr) {
+    if (seen.has(peer.peerId)) {
       continue;
     }
-    for (const fragment of peer.multiaddr.split(',')) {
-      const addr = fragment.trim();
-      if (addr.length > 0) {
-        bootstrapSet.add(addr);
-      }
-    }
+    seen.add(peer.peerId);
+    otherPeerIds.push(peer.peerId);
   }
 
-  return { bootstrapNodes: [...bootstrapSet], hasOtherPeers };
+  return { otherPeerIds, hasOtherPeers: otherPeerIds.length > 0 };
 }
 
 /**

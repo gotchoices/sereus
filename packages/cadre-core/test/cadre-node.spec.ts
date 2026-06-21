@@ -2,9 +2,11 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
 import { CadreNode } from '../src/cadre-node.js';
 import { StrandWakeService } from '../src/strand-wake-protocol.js';
+import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance, CadreNodeEvents } from '../src/types.js';
 import { duplexPair } from './wake-stream-helpers.js';
@@ -324,14 +326,31 @@ describe('CadreNode', () => {
 
       // Inject the fake strand manager plus a control DB/node so resolveCohortSeed
       // returns a non-trivial, freshly-resolved seed at wake time (self excluded).
+      // The seed's bootstrap addrs come from the strand-addr RPC over the CONNECTED
+      // sibling — NOT from its CadrePeer *control* multiaddr — so the connected
+      // sibling answers the loopback RPC with its live STRAND address.
+      const otherPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+      const otherStrandAddr = '/ip4/9.9.9.9/tcp/5001/p2p/other-strand';
       (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
       (node as unknown as { controlNode: unknown }).controlNode = {
-        peerId: { toString: () => 'self-peer' }
+        peerId: { toString: () => 'self-peer' },
+        getConnections: () => [{ remotePeer: { toString: () => otherPeerId } }],
+        dialProtocol: async () => {
+          const receiver = new StrandAddrService({
+            isMember: async () => true,
+            getStrandMultiaddrs: () => [otherStrandAddr]
+          });
+          const { clientStream, serverStream } = duplexPair();
+          void (receiver as unknown as { handleStream(s: unknown, p: string): Promise<void> })
+            .handleStream(serverStream, 'self-peer');
+          return clientStream;
+        }
       };
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
         queryCadrePeers: async () => [
           { peerId: 'self-peer', multiaddr: '/ip4/1.1.1.1/tcp/4001/p2p/self-peer' },
-          { peerId: 'other-peer', multiaddr: '/ip4/9.9.9.9/tcp/4001/p2p/other-peer' }
+          // Carries the sibling's CONTROL addr — must NOT leak into the strand seed.
+          { peerId: otherPeerId, multiaddr: '/ip4/9.9.9.9/tcp/4001/p2p/other-control' }
         ]
       };
 
@@ -354,12 +373,13 @@ describe('CadreNode', () => {
       expect(instance.libp2pNode).toBeUndefined();
       expect(hibernating).toEqual(['hib-strand']);
 
-      // Wake: cohort now has another peer → networked; resume with that seed.
+      // Wake: cohort now has another peer → networked; resume with the strand-addr
+      // RPC seed (the sibling's live STRAND addr), never its CadrePeer control addr.
       await callWake('hib-strand');
       expect(resumeCalls).toHaveLength(1);
       expect(resumeCalls[0]!.id).toBe('hib-strand');
       expect(resumeCalls[0]!.overrides).toEqual({
-        bootstrapNodes: ['/ip4/9.9.9.9/tcp/4001/p2p/other-peer'],
+        bootstrapNodes: [otherStrandAddr],
         mode: 'networked'
       });
       expect(instance.status).toBe('active');
@@ -438,7 +458,8 @@ describe('CadreNode', () => {
       };
       (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
       (node as unknown as { controlNode: unknown }).controlNode = {
-        peerId: { toString: () => 'self-peer' }
+        peerId: { toString: () => 'self-peer' },
+        getConnections: () => []
       };
       // Solo cohort (only self) → bootstrap mode, empty seed.
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
@@ -485,7 +506,8 @@ describe('CadreNode', () => {
       };
       (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
       (node as unknown as { controlNode: unknown }).controlNode = {
-        peerId: { toString: () => 'self-peer' }
+        peerId: { toString: () => 'self-peer' },
+        getConnections: () => []
       };
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
         queryCadrePeers: async () => []
@@ -542,7 +564,8 @@ describe('CadreNode', () => {
       };
       (node as unknown as { strandManager: unknown }).strandManager = fakeManager;
       (node as unknown as { controlNode: unknown }).controlNode = {
-        peerId: { toString: () => 'self-peer' }
+        peerId: { toString: () => 'self-peer' },
+        getConnections: () => []
       };
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
         queryCadrePeers: async () => []
@@ -600,7 +623,14 @@ describe('CadreNode', () => {
 
     function injectControl(node: CadreNode, peers: Array<{ peerId: string; multiaddr: string | null }> = []): void {
       (node as unknown as { _running: boolean })._running = true;
-      (node as unknown as { controlNode: unknown }).controlNode = { peerId: { toString: () => 'self-peer' } };
+      // No connected siblings here → resolveCohortSeed RPCs nobody and yields an
+      // empty strand seed; mode still follows membership. These lifecycle tests
+      // assert the resume/window/re-hibernate machinery, not seed contents (which
+      // cadre-node-strand-seed.spec.ts covers).
+      (node as unknown as { controlNode: unknown }).controlNode = {
+        peerId: { toString: () => 'self-peer' },
+        getConnections: () => []
+      };
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
         queryCadrePeers: async () => peers
       };

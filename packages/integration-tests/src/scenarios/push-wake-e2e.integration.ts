@@ -515,19 +515,20 @@ describe('E2E push-wake over the control network', () => {
 	//    star (only S→A, Rx→A) leaves S↔Rx unlinked and resets streams it cannot route.
 	//    This is the ticket's "ensure all three are connected" precondition.
 	//
-	// 3. NO ADDR-BEARING NON-SELF ROWS. Authority A and sender S use EPHEMERAL libp2p
+	// 3. EPHEMERAL NON-AUTHORITY IDENTITIES. Authority A and sender S use EPHEMERAL libp2p
 	//    identities (no `privateKey`), so they never self-publish a `CadrePeer` address
 	//    row (`registerSelf` skips without an identity key — cadre-node.ts:600-604).
-	//    The woken strand's `networked` resume seeds its cohort from EVERY CadrePeer row
-	//    with a dialable addr (`deriveCohortSeed` → `resumeStrandRuntime`,
-	//    cadre-node.ts:1209-1216); an authority/relay advertising a control addr would be
-	//    (wrongly) recruited into the strand cluster and fail strand-repo negotiation —
-	//    the known `control-network-cohort-discovery` gap. Keeping the only other member
-	//    (S) addr-less means Rx's resume stands up networked-SOLO exactly as scenario 1
-	//    does, isolating THIS test to replication-backed authorization. A is also NOT a
-	//    relay here: with three nodes a relay invites unstable S↔Rx circuit links; direct
-	//    WebSocket dials keep the cohort stable. (Only Rx needs a stable key — to bind the
-	//    self-signature in the address record A vouches for it.)
+	//    The woken strand's `networked` resume no longer seeds from CadrePeer addrs at all:
+	//    `resolveCohortSeed` resolves strand-network addresses on demand via the
+	//    `/sereus/strand-addr/1.0.0` RPC over CONNECTED siblings (the
+	//    `strand-seed-from-strand-addr-rpc` change that closed the old
+	//    `control-network-cohort-discovery` gap — a control addr can no longer be wrongly
+	//    recruited into the strand cluster). Here neither A nor S runs the strand, so each
+	//    answers the RPC with [] and Rx's resume stands up networked-SOLO exactly as
+	//    scenario 1 does, isolating THIS test to replication-backed authorization. A is also
+	//    NOT a relay here: with three nodes a relay invites unstable S↔Rx circuit links;
+	//    direct WebSocket dials keep the cohort stable. (Only Rx needs a stable key — to
+	//    bind the self-signature in the address record A vouches for it.)
 	it('wakes a member whose authorization and address were learned by control-DB replication, not local seeding', async () => {
 		let A: CadreNode | undefined;  // sole party authority + storage (holds the CadrePeer blocks)
 		let S: CadreNode | undefined;  // sender — NOT an authority; learns Rx's address by replication
