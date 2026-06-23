@@ -18,7 +18,7 @@ import { createPublicKey } from 'node:crypto';
  * it). Mismatch with the real signer surfaces as `signature_invalid`, which the
  * UI treats as "update available but unverifiable" rather than auto-applying.
  */
-const PROD_KEY_BASE64 = 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
+const PROD_KEY_BASE64 = 'XyRVnOY9DVgU6xdMgJIguOsc9B2L1o2KoU9626Nk+OE=';
 
 /**
  * Public key (32 raw bytes, base64) — env override beats the embedded one.

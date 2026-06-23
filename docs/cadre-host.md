@@ -253,6 +253,19 @@ cadre-host fetches a signed manifest from `https://releases.serfab.io/cadre-host
 
 ### Release signing & key management
 
+**Two keys, opposite directions — don't conflate them.** cadre-host holds two unrelated Ed25519 keypairs:
+
+| | Release-signing key | Per-install identity key |
+| --- | --- | --- |
+| Source | `PROD_KEY_BASE64` in `src/update/release-key.ts` | `<dataDir>/identity.key` from `src/installer/identity.ts` |
+| Direction | publisher → **every** install | this node → the network / trust-circle |
+| Lifecycle | one global keypair; minted **once, offline** by the release operator; public half pinned into every binary at build time | a fresh keypair generated at **install time** on each box, mode 0600, never leaves it |
+| Answers | "did this update instruction genuinely come from Serfab?" | "who is this node?" (libp2p peer identity) |
+
+The identity key is install-specific by design; the release key **cannot** be. It is a one-signer/many-verifiers relationship — the publisher signs `latest.json` once and every install must verify against the *same* public key, obtained from somewhere it already trusts (the binary it installed). There is nothing a freshly-minted local key could verify the publisher's signature with, so the public half must be embedded at build time. This section is about that release key.
+
+**Why sign at all, when updates come from npm?** `npm install -g` already guarantees the *bytes* of a named `package@version` (registry TLS, integrity hashes, optional provenance). But the signed manifest decides **which** package and version a node auto-moves to — `manifest.channels.npm.package`, `manifest.version`, and the `minPreviousVersion` step gate all ride inside the signature. Without it, anyone who controls or MITMs the static `releases.serfab.io` host could forge a manifest that redirects `autoApply` nodes to a typosquatted package or force-downgrades them to a known-vulnerable version, and npm would faithfully install whatever it was told. npm authenticates the bytes; the manifest authenticates the *choice*.
+
 Manifests are verified against an Ed25519 public key embedded in source (`PROD_KEY_BASE64` in `src/update/release-key.ts`). Public keys are not secret, so the *public* half is committed; the private half is the release-signing secret and is custodied **offline by the release operator — never committed**. Until the operator embeds a real key, the source ships an all-zeros placeholder, and a build/publish guard refuses to ship it (see below).
 
 The repo provides the full pipeline; the operator runs a couple of mechanical commands:

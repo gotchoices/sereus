@@ -8,6 +8,11 @@ tmp/
 *.tsbuildinfo
 .in-progress
 
+# Release-signing private keys — the cadre-host update secret is custodied
+# offline and must NEVER be committed (see docs/cadre-host.md → Release signing).
+*.key
+cadre-host-release.key
+
 # Expo prebuild artifacts (managed workflow — EAS generates these)
 packages/reference-app-rn/android/
 packages/reference-app-rn/ios/
