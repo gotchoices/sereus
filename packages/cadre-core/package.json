@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-core",
-  "version": "0.8.0",
+  "version": "0.8.1",
   "type": "module",
   "description": "Core library for Sereus cadre nodes - manages control networks and strand participation",
   "main": "dist/index.js",
