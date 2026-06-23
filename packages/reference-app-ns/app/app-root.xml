@@ -1,8 +1,10 @@
-<TabView androidTabsPosition="bottom" class="tabs" xmlns="http://schemas.nativescript.org/tns.xsd">
-	<TabViewItem title="Chat">
-		<Frame defaultPage="chat/chat-page" />
-	</TabViewItem>
-	<TabViewItem title="Settings">
-		<Frame defaultPage="settings/settings-page" />
-	</TabViewItem>
-</TabView>
+<!--
+	Single-Frame root. Chat is the default page; Settings is reached via the
+	"Settings" ActionItem in the Chat ActionBar (and the hardware/Up back button
+	returns). We deliberately do NOT use a TabView: on this NativeScript/Android
+	runtime its tab strip does not render for text-only items (bottom needs an
+	iconSource; top collapsed to nothing here), leaving Settings unreachable.
+	Both pages bind the same shared CadreViewModel singleton, so navigating
+	between them keeps one node / poll loop.
+-->
+<Frame defaultPage="chat/chat-page" xmlns="http://schemas.nativescript.org/tns.xsd" />

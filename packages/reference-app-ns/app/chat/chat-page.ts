@@ -3,6 +3,7 @@ Code-behind for the Chat screen. Binds the shared ChatViewModel singleton, runs
 its poll loop while the page is visible, and sends on tap / return key.
 */
 
+import { Frame } from '@nativescript/core';
 import type { EventData, ListView, NavigatedData, Page, View } from '@nativescript/core';
 
 import { getChatVm } from '../../src/chat-vm';
@@ -22,6 +23,10 @@ export function onNavigatingFrom(): void {
 
 export function onUnloaded(): void {
 	viewModel.stop();
+}
+
+export function onSettings(): void {
+	Frame.topmost()?.navigate('settings/settings-page');
 }
 
 export function onSend(args: EventData): void {

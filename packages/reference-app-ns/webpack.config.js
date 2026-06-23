@@ -49,6 +49,7 @@ module.exports = (env) => {
 	webpack.chainWebpack((config) => {
 		const nodeOs = path.resolve(__dirname, 'src/polyfills/node-os.ts');
 		const nodeCrypto = path.resolve(__dirname, 'src/polyfills/node-crypto.ts');
+		const nodeTty = path.resolve(__dirname, 'src/polyfills/node-tty.ts');
 
 		// ── JS-engine condition resolution ──────────────────────────────────
 		// `react-native` so @optimystic/db-p2p and @serfab/cadre-core resolve
@@ -126,8 +127,9 @@ module.exports = (env) => {
 			]);
 
 		// ── Node built-in shims / stubs ─────────────────────────────────────
-		// crypto/os: custom shims (createHash via @noble/hashes; networkInterfaces
-		// stub). stream → readable-stream. buffer/events/util/process/
+		// crypto/os/tty: custom shims (createHash via @noble/hashes;
+		// networkInterfaces stub; tty.isatty → false so debug/weald's eager
+		// useColors() check doesn't crash). stream → readable-stream. buffer/events/util/process/
 		// string_decoder resolve directly to their installed npm packages
 		// (externalsPresets.node:false). net/tls/http/… : `false` (empty module) —
 		// imported by transitive libp2p / debug / @multiformats/dns deps on
@@ -137,6 +139,7 @@ module.exports = (env) => {
 			fallback: {
 				os: nodeOs,
 				crypto: nodeCrypto,
+				tty: nodeTty,
 				stream: require.resolve('readable-stream'),
 				net: false,
 				tls: false,
@@ -144,7 +147,6 @@ module.exports = (env) => {
 				https: false,
 				http2: false,
 				zlib: false,
-				tty: false,
 				dns: false,
 				'dns/promises': false,
 				dgram: false,
@@ -216,6 +218,29 @@ module.exports = (env) => {
 		...(config.module.parser.javascript ?? {}),
 		exportsPresence: 'warn',
 	};
+
+	// ── Silence the known upstream skew warnings ──────────────────────────────
+	// With exportsPresence:'warn' the renamed/removed named imports above no
+	// longer fail the build, but each emits a "export 'X' was not found in 'Y'"
+	// warning — ~24 of them, which bury any genuinely new warning. Suppress ONLY
+	// these specific, known-benign cases (the names are never reached on the
+	// TCP-free browser-transport rn path), scoped to the exact upstream modules
+	// that renamed them, plus our createHash-only node-crypto shim's missing
+	// `sign`. Any OTHER missing export — including a new one from these same
+	// modules — still surfaces as a warning, so this isn't a blanket mute.
+	const SKEW_WARNINGS = [
+		// gossipsub vs @libp2p/interface
+		/export 'Strict(Sign|NoSign)' .*was not found in '@libp2p\/interface'/,
+		/export 'TopicValidatorResult' .*was not found in '@libp2p\/interface'/,
+		// @libp2p/autonat vs protons-runtime
+		/export 'streamMessage' .*was not found in 'protons-runtime'/,
+		// node-crypto shim (createHash-only) — `sign` is on an unreached branch
+		/export 'sign' .*was not found in 'node:crypto'/,
+	];
+	config.ignoreWarnings = [
+		...(config.ignoreWarnings ?? []),
+		(warning) => SKEW_WARNINGS.some((re) => re.test(warning.message ?? '')),
+	];
 
 	return config;
 };

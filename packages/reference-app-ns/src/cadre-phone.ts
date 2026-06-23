@@ -37,7 +37,15 @@ const PEER_IDENTITY_DB_NAME = 'sereus-peer-identity';
 async function loadOrCreatePhoneKey(): Promise<PrivateKey> {
 	const db = await openOptimysticNSDb(PEER_IDENTITY_DB_NAME);
 	try {
-		return await loadOrCreateNSPeerKey(db);
+		// `loadOrCreateNSPeerKey` returns a PrivateKey branded by db-p2p-storage-ns's
+		// own pinned `@libp2p/interface`/`uint8arraylist` copies (it is linked from a
+		// separate install). Those carry a nominally-different `Uint8ArrayList[symbol]`
+		// brand than sereus's copy — `uint8arraylist` declares it as a `unique symbol`,
+		// which TypeScript treats per-copy — but the symbol is a global-registry key
+		// (`Symbol.for`), so the types are runtime-identical. Bridge with
+		// `as unknown as PrivateKey` — no `any`, no pinning transitive packages.
+		// Mirrors the transport cast in reference-app-rn/src/cadre-phone.ts.
+		return await loadOrCreateNSPeerKey(db) as unknown as PrivateKey;
 	} finally {
 		await db.close();
 	}

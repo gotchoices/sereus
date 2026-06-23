@@ -4,6 +4,7 @@ peer, and create a chat strand — all delegated to the page view model (which i
 turn drives the shared CadreViewModel singleton).
 */
 
+import { Frame } from '@nativescript/core';
 import type { NavigatedData, Page } from '@nativescript/core';
 
 import { SettingsViewModel } from './settings-view-model';
@@ -12,6 +13,11 @@ const viewModel = new SettingsViewModel();
 
 export function onNavigatingTo(args: NavigatedData): void {
 	(args.object as Page).bindingContext = viewModel;
+}
+
+/** Up/Back affordance — pop to Chat (hardware back does the same on Android). */
+export function onBack(): void {
+	Frame.topmost()?.goBack();
 }
 
 export function onConnect(): void {

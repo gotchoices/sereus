@@ -2592,6 +2592,75 @@ __metadata:
   languageName: node
   linkType: hard
 
+"@formatjs/bigdecimal@npm:0.2.6":
+  version: 0.2.6
+  resolution: "@formatjs/bigdecimal@npm:0.2.6"
+  checksum: 10c0/8e39a52ffd77bb6ed877e044d16a8dc4282ab940b0d10caeaf94ba7db9a0b56e7440fc56caee369915d5614cff2116cb6ad46a199a53f2caa1b3b1735f808307
+  languageName: node
+  linkType: hard
+
+"@formatjs/fast-memoize@npm:3.1.6":
+  version: 3.1.6
+  resolution: "@formatjs/fast-memoize@npm:3.1.6"
+  checksum: 10c0/6cac8413b09aa4771edd98a52d46a9adc2f02e8bce8756a2abbd1eea2cf977757ffbb4bc1b33b6c17092739cd0c33351dffa0ea58b22e431b9754a34e46fe093
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-datetimeformat@npm:^7.4.9":
+  version: 7.4.9
+  resolution: "@formatjs/intl-datetimeformat@npm:7.4.9"
+  dependencies:
+    "@formatjs/bigdecimal": "npm:0.2.6"
+    "@formatjs/intl-localematcher": "npm:0.8.10"
+  checksum: 10c0/4fdf278a55df5147f751192da454c4004e03c71747b311d367c07a5648c71013c34b28be54313be209e9c857fde64a1f4eaf2ac07df9ec5e1e53c22cb2658cd6
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-getcanonicallocales@npm:3.2.10, @formatjs/intl-getcanonicallocales@npm:^3.2.10":
+  version: 3.2.10
+  resolution: "@formatjs/intl-getcanonicallocales@npm:3.2.10"
+  checksum: 10c0/16d39fe94efd57dd4d1b261115892c86d0c230e921ee402153f7c1e87b833aee678f44ff31d10c436c59b081f95ebf8d70324c1ba83fd99543d84e66dfa1fba3
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-locale@npm:^5.3.9":
+  version: 5.3.9
+  resolution: "@formatjs/intl-locale@npm:5.3.9"
+  dependencies:
+    "@formatjs/intl-getcanonicallocales": "npm:3.2.10"
+    "@formatjs/intl-supportedvaluesof": "npm:2.3.8"
+  checksum: 10c0/f8233900c3777badfad67a60a4ba92e4d6b1b26d669410041bbd70471573cd7565f5af38403033e2a30bbddda561159463720a9af4ff2f4cad4f3ec32815000a
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-localematcher@npm:0.8.10":
+  version: 0.8.10
+  resolution: "@formatjs/intl-localematcher@npm:0.8.10"
+  dependencies:
+    "@formatjs/fast-memoize": "npm:3.1.6"
+  checksum: 10c0/49a38b45d618de0ce857d62208e41af4c043a90d739a10828cb0a1e57c88c1ad28c27905ce57246ae5aa1c66834276a42665320d8294b01607d0e46b229d4a71
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-numberformat@npm:^9.3.11":
+  version: 9.3.11
+  resolution: "@formatjs/intl-numberformat@npm:9.3.11"
+  dependencies:
+    "@formatjs/bigdecimal": "npm:0.2.6"
+    "@formatjs/intl-localematcher": "npm:0.8.10"
+  checksum: 10c0/645864cff17f650488e69c68c1206889f09fde52c57445c5d9d049a5737d420a99d2e827f002e1f65c856694d9e945f61c92840444f0c6486b55cbd6980a59b5
+  languageName: node
+  linkType: hard
+
+"@formatjs/intl-supportedvaluesof@npm:2.3.8":
+  version: 2.3.8
+  resolution: "@formatjs/intl-supportedvaluesof@npm:2.3.8"
+  dependencies:
+    "@formatjs/fast-memoize": "npm:3.1.6"
+  checksum: 10c0/4c84b70c48ddd47c86087666b8dd7524f263cbbe8825341745db2416441907b6354509f3439a08f373f374442c8abc1e1d53662c2a6d8ef7a5e7385be10e1619
+  languageName: node
+  linkType: hard
+
 "@grpc/grpc-js@npm:^1.11.1":
   version: 1.14.3
   resolution: "@grpc/grpc-js@npm:1.14.3"
@@ -3656,14 +3725,14 @@ __metadata:
   languageName: node
   linkType: soft
 
-"@optimystic/db-p2p-storage-fs@npm:^0.13.5":
-  version: 0.13.5
-  resolution: "@optimystic/db-p2p-storage-fs@npm:0.13.5"
+"@optimystic/db-p2p-storage-fs@npm:^0.14.1":
+  version: 0.14.1
+  resolution: "@optimystic/db-p2p-storage-fs@npm:0.14.1"
   dependencies:
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
     debug: "npm:^4.4.3"
-  checksum: 10c0/7f5aad12109345ff4777782519ab0b5c7c867023d97912ebaabb25951a9893c43c8905fd75ea83ca28ba68d49fd20c14b27862ed7dda3cd45c1183f6fc674b49
+  checksum: 10c0/7d298ee6a233eedf1305a2be65eae5379b61ad30358b9e7f135c9dcc4ab84fd99ed4652e5f352221aa02d53b075a063691a5f8d17d19263cc9d35cabd54a7ff8
   languageName: node
   linkType: hard
 
@@ -5056,8 +5125,8 @@ __metadata:
     "@libp2p/crypto": "npm:^5.1.13"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/peer-id": "npm:^6.0.4"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-fs": "npm:^0.13.5"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-fs": "npm:^0.14.1"
     "@serfab/cadre-core": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/js-yaml": "npm:^4.0.9"
@@ -5086,11 +5155,11 @@ __metadata:
     "@libp2p/peer-id-factory": "npm:^4.2.4"
     "@libp2p/tcp": "npm:^11.0.10"
     "@multiformats/multiaddr": "npm:^12.5.1"
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.14.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@serfab/quereus-plugin-sereus": "workspace:^"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
@@ -5181,11 +5250,11 @@ __metadata:
     "@multiformats/multiaddr": "npm:^12.5.1"
     "@noble/curves": "npm:^2.0.1"
     "@noble/hashes": "npm:^2.0.1"
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.14.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@serfab/cadre-core": "workspace:*"
     "@serfab/cadre-host": "workspace:*"
     "@types/debug": "npm:^4.1.12"
@@ -5207,13 +5276,13 @@ __metadata:
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/websockets": "npm:^10.1.3"
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-fs": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-web": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-crypto": "npm:^0.13.5"
-    "@optimystic/quereus-plugin-optimystic": "npm:^0.13.5"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-fs": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-web": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-crypto": "npm:^0.14.1"
+    "@optimystic/quereus-plugin-optimystic": "npm:^0.14.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     "@vitest/coverage-v8": "npm:^4.0.17"
@@ -5232,6 +5301,10 @@ __metadata:
   version: 0.0.0-use.local
   resolution: "@serfab/reference-app-ns@workspace:packages/reference-app-ns"
   dependencies:
+    "@formatjs/intl-datetimeformat": "npm:^7.4.9"
+    "@formatjs/intl-getcanonicallocales": "npm:^3.2.10"
+    "@formatjs/intl-locale": "npm:^5.3.9"
+    "@formatjs/intl-numberformat": "npm:^9.3.11"
     "@libp2p/circuit-relay-v2": "npm:^4.1.3"
     "@libp2p/interface": "npm:^3.1.0"
     "@libp2p/websockets": "npm:^10.1.3"
@@ -5242,10 +5315,10 @@ __metadata:
     "@nativescript/types": "npm:~8.9.0"
     "@nativescript/webpack": "npm:~5.0.35"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-ns": "npm:^0.13.5"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-ns": "npm:^0.14.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@serfab/cadre-core": "workspace:^"
     "@types/readable-stream": "npm:^4"
     "@ungap/structured-clone": "npm:^1.3.0"
@@ -5273,9 +5346,9 @@ __metadata:
     "@libp2p/websockets": "npm:^10.1.3"
     "@multiformats/multiaddr": "npm:^12.5.1"
     "@noble/hashes": "npm:^2.0.0"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-rn": "npm:^0.14.0"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-rn": "npm:^0.14.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@serfab/cadre-core": "workspace:^"
     "@types/babel__core": "npm:^7"
     "@types/react": "npm:~19.0.10"
@@ -5318,11 +5391,11 @@ __metadata:
     "@libp2p/webrtc": "npm:6.0.14"
     "@libp2p/websockets": "npm:^10.1.3"
     "@multiformats/multiaddr": "npm:^12.5.1"
-    "@optimystic/db-core": "npm:^0.13.5"
-    "@optimystic/db-p2p": "npm:^0.13.5"
-    "@optimystic/db-p2p-storage-web": "npm:^0.13.5"
+    "@optimystic/db-core": "npm:^0.14.1"
+    "@optimystic/db-p2p": "npm:^0.14.1"
+    "@optimystic/db-p2p-storage-web": "npm:^0.14.1"
     "@playwright/test": "npm:^1.60.0"
-    "@quereus/quereus": "npm:^3.2.1"
+    "@quereus/quereus": "npm:^4.2.1"
     "@serfab/cadre-core": "npm:*"
     "@sveltejs/vite-plugin-svelte": "npm:^5.0.0"
     "@tsconfig/svelte": "npm:^5.0.4"

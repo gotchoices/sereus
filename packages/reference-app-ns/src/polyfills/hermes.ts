@@ -167,21 +167,9 @@ if (typeof Promise.withResolvers !== 'function') {
 	markPolyfilled('Promise.withResolvers');
 }
 
-// ── AbortSignal.prototype.throwIfAborted ─────────────────────────────────────
-// DOM spec addition — not guaranteed. Required by libp2p, @libp2p/utils,
-// @libp2p/circuit-relay-v2, it-pushable, p-retry.
-
-if (
-	typeof AbortSignal !== 'undefined' &&
-	typeof AbortSignal.prototype.throwIfAborted !== 'function'
-) {
-	AbortSignal.prototype.throwIfAborted = function throwIfAborted(this: AbortSignal): void {
-		if (this.aborted) {
-			throw this.reason ?? new DOMException('The operation was aborted.', 'AbortError');
-		}
-	};
-	markPolyfilled('AbortSignal.throwIfAborted');
-}
+// AbortController / AbortSignal (and throwIfAborted) are provided in full by
+// ./abort — the NativeScript V8/JSC runtime ships no base AbortSignal at all, so
+// they cannot be patched onto an existing global the way Hermes/browsers allow.
 
 // ── Timer .ref() / .unref() ──────────────────────────────────────────────────
 // Node timers return objects with .ref()/.unref(); NativeScript returns numbers.

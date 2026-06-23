@@ -18,6 +18,7 @@ interface Probe {
 }
 
 const PROBES: readonly Probe[] = [
+	{ path: 'process.env', key: 'process' },
 	{ path: 'crypto.getRandomValues' },
 	{ path: 'crypto.randomUUID' },
 	{ path: 'crypto.subtle.generateKey' },
@@ -30,10 +31,12 @@ const PROBES: readonly Probe[] = [
 	{ path: 'WritableStream', key: 'ReadableStream' },
 	{ path: 'TransformStream', key: 'ReadableStream' },
 	{ path: 'Promise.withResolvers', key: 'Promise.withResolvers' },
-	{ path: 'AbortSignal.prototype.throwIfAborted', key: 'AbortSignal.throwIfAborted' },
+	{ path: 'AbortController', key: 'AbortController' },
+	{ path: 'AbortSignal.prototype.throwIfAborted', key: 'AbortController' },
 	{ path: 'EventTarget' },
 	{ path: 'CustomEvent', key: 'CustomEvent' },
 	{ path: 'Intl.PluralRules', key: 'Intl.PluralRules' },
+	{ path: 'Intl.DateTimeFormat', key: 'Intl.DateTimeFormat' },
 	{ path: 'Buffer', key: 'Buffer' },
 	{ path: 'btoa' },
 	{ path: 'Symbol.asyncIterator', key: 'Symbol.asyncIterator' },

@@ -3,13 +3,20 @@
  *
  * moat-maker uses `new Intl.PluralRules('en', { type: 'ordinal' })` at module
  * scope for ordinal formatting in error messages. The NativeScript V8/JSC
- * runtime does not guarantee `Intl.PluralRules`, so provide a lightweight
- * English shim. Ported from packages/reference-app-rn/polyfills/intl-pluralrules.js.
+ * runtime may ship without ICU, so `Intl` itself can be entirely absent (the
+ * at-boot audit reports `Intl.PluralRules` MISSING for exactly this reason — the
+ * RN-derived guard on `typeof Intl !== 'undefined'` short-circuited). Create the
+ * `Intl` namespace when missing, then install a lightweight English shim. Ported
+ * and hardened from packages/reference-app-rn/polyfills/intl-pluralrules.js.
  */
 
 import { markPolyfilled } from './registry';
 
-if (typeof Intl !== 'undefined' && typeof Intl.PluralRules === 'undefined') {
+const intl =
+	(globalThis as { Intl?: Record<string, unknown> }).Intl ??
+	((globalThis as { Intl?: Record<string, unknown> }).Intl = {} as Record<string, unknown>);
+
+if (typeof intl.PluralRules === 'undefined') {
 	const ordinalRules = (n: number): Intl.LDMLPluralRule => {
 		const mod10 = n % 10;
 		const mod100 = n % 100;
@@ -37,6 +44,15 @@ if (typeof Intl !== 'undefined' && typeof Intl.PluralRules === 'undefined') {
 		}
 	}
 
-	(Intl as unknown as { PluralRules: unknown }).PluralRules = PluralRules;
+	// Native `Intl` may be non-extensible; fall back to defineProperty.
+	try {
+		intl.PluralRules = PluralRules;
+	} catch {
+		Object.defineProperty(intl, 'PluralRules', {
+			value: PluralRules,
+			configurable: true,
+			writable: true,
+		});
+	}
 	markPolyfilled('Intl.PluralRules');
 }
