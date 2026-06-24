@@ -1,0 +1,14 @@
+{
+  "manifest": {
+    "v": 1,
+    "version": "0.8.1",
+    "publishedAt": "2026-06-23T22:20:54.950Z",
+    "channels": {
+      "npm": {
+        "package": "@serfab/cadre-host",
+        "tag": "latest"
+      }
+    }
+  },
+  "sig": "ed25519:AUoO7SKjzkQU5eEoFTYKsDQitYFeV6zBm/aJ2FaqRUSDwN+bKeDYHznB9u7wcuOcrjLoLNH0bhCRcOV6BcbSDA=="
+}
