@@ -177,6 +177,25 @@ export async function loadPrivateKey(keyPath: string): Promise<Uint8Array> {
 }
 
 /**
+ * Decode private-key bytes into a libp2p {@link PrivateKey}, accepting both the
+ * protobuf form and a bare raw key.
+ *
+ * `cadre enroll create` writes `privateKeyToProtobuf(...)` (which carries the
+ * key-type tag and therefore begins with the protobuf field-1 tag `0x08`),
+ * while older/hand-made key files may hold the raw key bytes. Try the protobuf
+ * decoder first (the documented `enroll create` output) and fall back to raw —
+ * this is what lets a `keyFile` produced by `enroll create` actually start a
+ * node (previously `privateKeyFromRaw` threw `No decoder for tag 8` on it).
+ */
+function decodePrivateKey(bytes: Uint8Array): PrivateKey {
+  try {
+    return privateKeyFromProtobuf(bytes);
+  } catch {
+    return privateKeyFromRaw(bytes);
+  }
+}
+
+/**
  * Load a libp2p protobuf-encoded private key from disk.
  *
  * This is the format cadre-host's installer writes to `identity.key`
@@ -263,9 +282,9 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
   if (fileConfig.identity?.protobufKeyFile) {
     privateKey = loadProtobufPrivateKey(fileConfig.identity.protobufKeyFile);
   } else if (fileConfig.identity?.keyFile) {
-    privateKey = privateKeyFromRaw(await loadPrivateKey(fileConfig.identity.keyFile));
+    privateKey = decodePrivateKey(await loadPrivateKey(fileConfig.identity.keyFile));
   } else if (fileConfig.identity?.privateKeyHex) {
-    privateKey = privateKeyFromRaw(Buffer.from(fileConfig.identity.privateKeyHex, 'hex'));
+    privateKey = decodePrivateKey(Buffer.from(fileConfig.identity.privateKeyHex, 'hex'));
   }
 
   return {

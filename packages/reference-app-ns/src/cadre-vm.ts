@@ -198,6 +198,7 @@ export class CadreViewModel extends Observable {
 			this.setStrands(new Map(node.getStrands()));
 			this.setStatus('connected');
 		} catch (err) {
+			console.error('[cadre-vm] start failed:', err instanceof Error ? err.stack : err);
 			this.setError(errMessage(err));
 			this.setStatus('error');
 		}

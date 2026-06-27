@@ -87,7 +87,6 @@ export class ChatViewModel extends Observable {
 		if (value === this._draft) return;
 		this._draft = value;
 		this.notifyPropertyChange('draft', value);
-		this.notifySendState();
 	}
 
 	get loading(): boolean {
@@ -113,14 +112,14 @@ export class ChatViewModel extends Observable {
 		return this.cadre.error || 'Not connected — go to Settings';
 	}
 
-	/** `isEnabled` for the message input. */
+	/**
+	 * `isEnabled` for the message input *and* the Send button. Both are gated only
+	 * on having a live strand to write to — not on draft content — so the composer
+	 * reads as active whenever chat is usable rather than looking muted until the
+	 * first keystroke. `send()` no-ops on an empty draft, so an empty tap is safe.
+	 */
 	get inputEnabled(): boolean {
 		return this.cadre.connected && this.strand !== null;
-	}
-
-	/** `isEnabled` for the Send button. */
-	get canSend(): boolean {
-		return this.inputEnabled && this._draft.trim().length > 0;
 	}
 
 	// ── Lifecycle (driven by the chat page code-behind) ─────────────────────
@@ -249,7 +248,6 @@ export class ChatViewModel extends Observable {
 
 	private notifySendState(): void {
 		this.notifyPropertyChange('inputEnabled', this.inputEnabled);
-		this.notifyPropertyChange('canSend', this.canSend);
 	}
 }
 

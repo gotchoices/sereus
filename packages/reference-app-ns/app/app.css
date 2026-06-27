@@ -15,6 +15,14 @@ Page {
 	color: #ffffff;
 }
 
+/* Custom actionView label (Settings) — readable on the dark action bar. */
+.action-item {
+	color: #ffffff;
+	font-size: 15;
+	font-weight: 600;
+	padding: 0 12;
+}
+
 .tabs {
 	tab-background-color: #1a1a2e;
 	tab-text-color: #888888;
@@ -60,9 +68,17 @@ Page {
 .input {
 	background-color: #2a2a3e;
 	color: #ffffff;
+	placeholder-color: #9a9ab2;
+	border-width: 1;
+	border-color: #3a3a52;
 	border-radius: 8;
 	padding: 8 12;
 	margin: 2 0 6 0;
+}
+
+/* Only the genuinely-disabled composer (no strand / not connected) dims. */
+.input:disabled {
+	opacity: 0.4;
 }
 
 .textarea {

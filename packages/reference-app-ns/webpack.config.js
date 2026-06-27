@@ -50,6 +50,7 @@ module.exports = (env) => {
 		const nodeOs = path.resolve(__dirname, 'src/polyfills/node-os.ts');
 		const nodeCrypto = path.resolve(__dirname, 'src/polyfills/node-crypto.ts');
 		const nodeTty = path.resolve(__dirname, 'src/polyfills/node-tty.ts');
+		const nodeCluster = path.resolve(__dirname, 'src/polyfills/node-cluster.ts');
 
 		// ── JS-engine condition resolution ──────────────────────────────────
 		// `react-native` so @optimystic/db-p2p and @serfab/cadre-core resolve
@@ -135,6 +136,49 @@ module.exports = (env) => {
 		// imported by transitive libp2p / debug / @multiformats/dns deps on
 		// Node-only branches never reached on the TCP-free, browser-transport rn
 		// path, but must resolve so the bundle builds.
+		// ── libp2p user-agent → NativeScript-safe shim ──────────────────────
+		// libp2p.js imports `./user-agent.js` relatively, so its react-native/
+		// browser export conditions never select a variant — webpack bundles the
+		// node one, whose `process.versions.node.replaceAll('v','')` throws on the
+		// NS runtime (no `process.versions.node`), crashing the Libp2p constructor
+		// on Connect. Redirect every libp2p copy to a static, NS-safe shim.
+		config
+			.plugin('libp2p-user-agent-shim')
+			.use(webpackCore.NormalModuleReplacementPlugin, [
+				/user-agent\.js$/,
+				(resource) => {
+					const ctx = resource.context ?? '';
+					if (
+						resource.request === './user-agent.js' &&
+						ctx.includes(`libp2p${path.sep}dist${path.sep}src`)
+					) {
+						resource.request = path.resolve(__dirname, 'src/shims/libp2p-user-agent.js');
+					}
+				},
+			]);
+
+		// ── @chainsafe/libp2p-noise crypto → pure-JS shim ───────────────────
+		// noise's `defaultCrypto` overrides X25519 keygen/DH + SHA-256 with
+		// `node:crypto` (generateKeyPairSync/createPrivateKey/diffieHellman), absent
+		// from the NS createHash-only crypto shim → the Noise constructor throws on
+		// Connect. noise exposes no browser condition for its crypto and db-p2p calls
+		// `noise()` with no override, so redirect its `crypto/index.js` to a pure-JS
+		// (noble) shim — every noise copy in the tree.
+		config
+			.plugin('noise-crypto-shim')
+			.use(webpackCore.NormalModuleReplacementPlugin, [
+				/crypto[\\/]index\.js$/,
+				(resource) => {
+					const ctx = resource.context ?? '';
+					if (
+						resource.request === './crypto/index.js' &&
+						ctx.includes(`@chainsafe${path.sep}libp2p-noise`)
+					) {
+						resource.request = path.resolve(__dirname, 'src/shims/noise-crypto.js');
+					}
+				},
+			]);
+
 		config.resolve.merge({
 			fallback: {
 				os: nodeOs,
@@ -150,7 +194,10 @@ module.exports = (env) => {
 				dns: false,
 				'dns/promises': false,
 				dgram: false,
-				cluster: false,
+				// cluster: real shim — mortice (libp2p peer-store lock) reads
+				// `cluster.isPrimary` and registers `cluster.on('message')` on its
+				// single-process path; an empty stub made `.on` throw on Connect.
+				cluster: nodeCluster,
 				child_process: false,
 				worker_threads: false,
 				perf_hooks: false,

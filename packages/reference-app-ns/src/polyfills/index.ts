@@ -17,6 +17,7 @@
  *                    (Quereus temporal-polyfill); needs the Intl ns above
  *   event          → EventTarget / Event / CustomEvent
  *   abort          → AbortController / AbortSignal (needs EventTarget/Event)
+ *   broadcast-channel → BroadcastChannel (mortice peer-store write lock)
  */
 
 import './process';
@@ -26,3 +27,4 @@ import './intl-pluralrules';
 import './intl-datetimeformat';
 import './event';
 import './abort';
+import './broadcast-channel';

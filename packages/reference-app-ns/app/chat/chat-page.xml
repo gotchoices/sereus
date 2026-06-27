@@ -1,8 +1,18 @@
 <Page navigatingTo="onNavigatingTo" navigatingFrom="onNavigatingFrom" unloaded="onUnloaded"
 	xmlns="http://schemas.nativescript.org/tns.xsd">
 	<ActionBar title="Chat" class="action-bar">
-		<ActionItem text="Settings" tap="onSettings" ios.position="right"
-			android.position="actionBar" automationText="btn-settings" />
+		<!--
+		A text-only ActionItem renders as a native menu item whose colour follows
+		the toolbar theme (dark on our dark bar), ignoring `color`. Use a custom
+		actionView Label so the text is styleable and reads on the dark action bar.
+		-->
+		<ActionItem ios.position="right" android.position="actionBar" tap="onSettings"
+			automationText="btn-settings">
+			<ActionItem.actionView>
+				<Label text="Settings" class="action-item" automationText="btn-settings"
+					verticalAlignment="center" />
+			</ActionItem.actionView>
+		</ActionItem>
 	</ActionBar>
 
 	<GridLayout rows="auto, auto, *, auto">
@@ -30,7 +40,7 @@
 		<GridLayout row="3" columns="*, auto" class="composer">
 			<TextField col="0" text="{{ draft }}" hint="Message…" class="input"
 				isEnabled="{{ inputEnabled }}" returnPress="onSend" automationText="input-message" />
-			<Button col="1" text="Send" tap="onSend" isEnabled="{{ canSend }}"
+			<Button col="1" text="Send" tap="onSend" isEnabled="{{ inputEnabled }}"
 				class="btn send-btn" automationText="btn-send" />
 		</GridLayout>
 	</GridLayout>

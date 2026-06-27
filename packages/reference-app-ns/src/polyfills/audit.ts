@@ -40,6 +40,7 @@ const PROBES: readonly Probe[] = [
 	{ path: 'Buffer', key: 'Buffer' },
 	{ path: 'btoa' },
 	{ path: 'Symbol.asyncIterator', key: 'Symbol.asyncIterator' },
+	{ path: 'BroadcastChannel', key: 'BroadcastChannel' },
 ];
 
 function resolve(path: string): unknown {

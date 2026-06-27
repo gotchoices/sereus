@@ -7,12 +7,15 @@ import { Frame } from '@nativescript/core';
 import type { EventData, ListView, NavigatedData, Page, View } from '@nativescript/core';
 
 import { getChatVm } from '../../src/chat-vm';
+import { applySystemBarInsets } from '../../src/safe-area';
 
 const viewModel = getChatVm();
 
 export function onNavigatingTo(args: NavigatedData): void {
 	const page = args.object as Page;
 	page.bindingContext = viewModel;
+	// Inset the ActionBar / composer past the Android 15 edge-to-edge system bars.
+	applySystemBarInsets();
 	// Start (or restart) polling — picks up a strand created while away.
 	viewModel.start();
 }

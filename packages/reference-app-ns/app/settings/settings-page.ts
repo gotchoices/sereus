@@ -8,11 +8,15 @@ import { Frame } from '@nativescript/core';
 import type { NavigatedData, Page } from '@nativescript/core';
 
 import { SettingsViewModel } from './settings-view-model';
+import { applySystemBarInsets } from '../../src/safe-area';
 
 const viewModel = new SettingsViewModel();
 
 export function onNavigatingTo(args: NavigatedData): void {
-	(args.object as Page).bindingContext = viewModel;
+	const page = args.object as Page;
+	page.bindingContext = viewModel;
+	// Inset the ActionBar / form past the Android 15 edge-to-edge system bars.
+	applySystemBarInsets();
 }
 
 /** Up/Back affordance — pop to Chat (hardware back does the same on Android). */
