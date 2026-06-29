@@ -406,3 +406,119 @@ auto-fixable subset.
   `maestro/` (Maestro JS engine), `strand-proto` (deprecated), and non-package trees (`tess/`, `ops/`,
   `scripts/`) are ignored.
 
+## Multi-node use-case validation (2026-06-26)
+
+Hands-on debugging of two flows (real cadre-cli processes on localhost + integration
+tests + `reference-app-web` e2e). Source of truth: the runs below, not aspiration.
+
+**Update (2026-06-27):** the optimystic multi-coordinator ticket filed from this work was
+split and **both halves are now fixed & complete** in `../optimystic`. Case (a) — the
+**relayed** inter-coordinator stream reset — `multi-coordinator-write-relay-stream-reset`
+(promise-phase immediate retry + `connect()` prefers a direct over a relayed connection).
+Case (b) — **cross-network coordinator selection** —
+`multi-coordinator-cross-network-coordinator-selection` (network-membership scoping:
+`Libp2pKeyPeerNetwork` takes a `protocolPrefix`, classifies peers `serves`/`foreign`/`unknown`
+from their peerStore protocols, and `findCoordinator`/`findCluster` exclude `foreign` peers).
+Rebuilt the linked optimystic `dist` and re-tested (see per-flow results below): the **real
+product topology** (edge/`transaction` initiator) now passes end-to-end; a **residual** remains
+only for **`storage` + `storage` cross-network** coordination (documented optimystic/Fret
+follow-up, below).
+
+**Update (2026-06-29): the `storage`+`storage` residual is now FIXED & VERIFIED.** The optimystic
+selection-layer ticket `cross-network-unknown-peer-backfill-hardening` was planned (split into
+`cross-network-cohort-no-unknown-backfill` + `cross-network-coordinator-no-unknown-fallback`),
+implemented, reviewed, and is **complete** in `../optimystic` (HEAD `56db2fd`). Rebuilt the linked
+`db-p2p` dist and re-ran the integration suite: `strand-formation-e2e` **11/11 pass** (was 3 fail /
+8 pass — Phase 2 storage+storage now green), `strand-membership-closed-strand-e2e` **1/1 pass**, and
+the **full integration suite is 98 passed / 2 failed** (was broadly blocked). The 2 remaining
+failures are a *separate, pre-existing* membership-authorization issue (not the cross-network path) —
+see "Membership gate" below; filed as `tickets/plan/membership-gate-uses-cadrepeer-record-presence.md`.
+The FRET root-cure ticket (`network-scoped-ring-admission`, `../fret/tickets/plan/`) is no longer
+required to unblock Sereus, but remains wanted as defense-in-depth on the routing substrate.
+
+### Adding a cadre member (cadre-cli)
+- [x] **Works** for the realistic topology: one `storage`/authority node + `transaction`
+  member(s). Verified live: authority (`cadre start --authority --admin-port`) →
+  `POST /admin/accept-phone` authorizes the member → member joins via
+  `controlNetwork.bootstrapNodes` → both nodes converge on the `CadrePeer` roster
+  **and** the member self-registers its dialable address (`registerSelf: refreshed`).
+- [x] **Fixed (cadre-cli):** `cadre enroll create` writes the identity key as libp2p
+  *protobuf* hex, but the config loader's `identity.keyFile` path fed those bytes to
+  `privateKeyFromRaw` → `No decoder for tag 8`, so a freshly-enrolled identity could
+  never start a node. `loader.ts` now decodes protobuf-first with a raw fallback
+  (`decodePrivateKey`); regression tests added in `test/protobuf-identity.spec.ts`.
+- [ ] **Blocked — multiple `storage` members.** Two `storage`/coordinator nodes in the
+  same party cannot complete a control-network write: the member's `registerSelf`
+  write fails with `Failed to get super-majority: 0/2 approvals (needed 2)` /
+  `StreamResetError: The stream has been reset` in optimystic's `NetworkTransactor`.
+  Reads/roster converge (pull-on-read) and single-coordinator writes succeed; only
+  multi-coordinator writes fail. See the optimystic blocker below.
+- Gaps noted (not bugs): no CLI surface to **create a strand** (`cadre strands` is
+  list-only) or to **export a `ControlNetworkSeed`** (admin exposes `/admin/invites`
+  = `CadreInvite`, but `--seed` consumes a `ControlNetworkSeed` with no extract path).
+
+### Inviting another user / cross-party strand formation
+- [x] **Works for the real product topology** (edge/`transaction` initiator inviting), verified
+  2026-06-27 against the rebuilt optimystic case-(b) fix:
+  - `reference-app-web` formation e2e (`e2e/distributed/formation-convergence.spec.ts`, a real
+    browser ↔ headless-responder test) **passes** — *"a redeemed invitation forms a closed
+    strand and the responder seed converges to the browser"* (2 passed). This is the same
+    1+1 test that previously failed with the case-(b) signature; the consent write
+    (`StrandFormationManager.provisionAsResponder` → `ControlDatabase.recordFormationUsage`)
+    now reaches quorum.
+  - Integration `strand-formation-e2e` Phase 1 (`transaction`-profile parties via
+    `createParty`) **passes** — open-invitation formation, token reuse rejection, disclosure
+    accept/reject, and Phase 4 consent enforcement all green.
+- [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
+  Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
+  membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic
+  selection-layer fix (`cross-network-unknown-peer-backfill-hardening`, split into
+  `cross-network-cohort-no-unknown-backfill` + `cross-network-coordinator-no-unknown-fallback`,
+  both complete at optimystic HEAD `56db2fd`) stops the `min(2, clusterSize)` viability floor from
+  backfilling an unconfirmed `unknown` peer into the write cohort, so party A no longer dials party
+  B's `/repo/1.0.0`. The `could not negotiate /optimystic/control-<party>/repo/1.0.0` +
+  `super-majority: 1/2` signature is gone. The FRET root cure (`network-scoped-ring-admission`)
+  remains wanted as substrate-level defense-in-depth but is not required for this.
+
+### Optimystic blocker (root cause — sibling repo `../optimystic`, HEAD past v0.14.1)
+Multi-coordinator control-network **writes** can't reach a super-majority. The original
+ticket (`multi-coordinator-write-stream-reset-supermajority`) was split into two distinct
+root causes:
+- **Case (a) — relayed stream reset → FIXED & COMPLETE.** Same-party two-`storage`-node
+  writes over a circuit-relay (limited) connection saw the promise-phase stream reset
+  transiently (`StreamResetError` / `super-majority: 0/2`). Fix
+  (`multi-coordinator-write-relay-stream-reset`): promise-phase immediate retry
+  (`promiseImmediateRetries`, default 1) + `Libp2pKeyPeerNetwork.connect()` prefers a
+  direct connection over a limited/relayed one. Full db-p2p suite green.
+- **Case (b) — cross-network coordinator selection → FIXED & COMPLETE (with a residual).**
+  `multi-coordinator-cross-network-coordinator-selection` (optimystic `tickets/complete/`,
+  commit `f712bfb`). A write on network A could pick a coordinator that only serves network B,
+  failing to negotiate `/optimystic/control-<A>/repo/1.0.0` at `super-majority: 1/2`. Fix:
+  `Libp2pKeyPeerNetwork` takes a `protocolPrefix` (threaded by `createLibp2pNode`, so all sereus
+  nodes get it) and classifies ring peers `serves`/`foreign`/`unknown` from their peerStore
+  protocol list; `findCoordinator` drops `foreign`, `findCluster` over-fetches a wider band and
+  keeps same-network peers, and a new `NO_NETWORK_COORDINATOR` replaces the generic failure.
+  Verified end-to-end for the **edge/`transaction` initiator** topology (the product path).
+  **Residual → RESOLVED (2026-06-29).** The `storage`+`storage` cross-network case was fixed by the
+  optimystic follow-up `cross-network-unknown-peer-backfill-hardening` (split + complete at HEAD
+  `56db2fd`): the viability-floor no longer backfills an unconfirmed `unknown` peer, so a write is
+  never handed to a peer that isn't confirmed to serve this network. Verified in Sereus (formation +
+  closed-strand e2e green; see formation finding above). The FRET-side cure
+  (`network-scoped-ring-admission`) remains wanted as substrate defense-in-depth. Intersects
+  optimystic backlog `cohort-topic-participant-coord-routing-key-mismatch` (FRET routing-key scoping).
+
+### Membership gate (cadre-level `isMember`) — 2 integration failures, pre-existing
+With the cross-network blocker cleared, the full integration suite is **98 passed / 2 failed**. Both
+residual failures share one root cause and are **not** related to the optimystic work: `isMember()`
+is `listMembers().some(...)`, and `listMembers()` returns raw `CadrePeer` **address records**, so
+membership = "has published an address record", not "is authorized". Effects: (1) a fresh party lists
+its own self-registered row (`cadre-host-authority-node` fresh-party test — expected `[]`); (2) an
+outsider that has seeded its own `CadrePeer` row passes the push-wake authorization gate
+(`push-wake-e2e` non-member test — a non-member wakes a hibernating strand). Filed
+`tickets/plan/membership-gate-uses-cadrepeer-record-presence.md` (medium; needs an authorization
+predicate distinct from the addressable set, leaving push fan-out / `resolvePeerAddrs` unchanged).
+- **Not** a super-majority-threshold rounding bug: `Math.ceil(2 * 0.75)` and the
+  "fix" `Math.floor(2/2)+1` both yield 2 — 2-of-2 is correct for a 2-node quorum. The
+  defect is upstream of the count (peer selection / protocol negotiation), and is
+  optimystic-side networking work, not a one-line sereus change.
+
