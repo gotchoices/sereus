@@ -73,7 +73,7 @@
 		"@optimystic/db-p2p-storage-web": "^0.14.1",
 		"@optimystic/quereus-plugin-crypto": "^0.14.1",
 		"@optimystic/quereus-plugin-optimystic": "^0.14.1",
-		"@quereus/quereus": "^4.2.1",
+		"@quereus/quereus": "^4.3.0",
 		"debug": "^4.4.3"
 	},
 	"quereus": {

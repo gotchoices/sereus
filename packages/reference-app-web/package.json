@@ -23,7 +23,7 @@
     "@optimystic/db-core": "^0.14.1",
     "@optimystic/db-p2p": "^0.14.1",
     "@optimystic/db-p2p-storage-web": "^0.14.1",
-    "@quereus/quereus": "^4.2.1",
+    "@quereus/quereus": "^4.3.0",
     "@serfab/cadre-core": "*",
     "buffer": "^6.0.3",
     "idb": "^8.0.3",
