@@ -32,4 +32,11 @@ describe('isPlaceholderReleaseKey', () => {
     // no override in the explicit arg -> falls through to the real embedded default
     expect(isPlaceholderReleaseKey({})).toBe(false);
   });
+
+  it('is false for a key that does not decode to 32 bytes', () => {
+    // Not the all-zeros placeholder even though it is a degenerate key: the
+    // 32-byte length gate short-circuits before the all-zeros check.
+    const shortZeros = Buffer.alloc(16).toString('base64');
+    expect(isPlaceholderReleaseKey({ CADRE_HOST_UPDATE_DEV_KEY: shortZeros })).toBe(false);
+  });
 });

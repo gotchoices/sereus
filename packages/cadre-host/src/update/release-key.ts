@@ -12,11 +12,13 @@ import type { KeyObject } from 'node:crypto';
 import { createPublicKey } from 'node:crypto';
 
 /**
- * Raw 32-byte Ed25519 public key, base64-encoded. The all-zeros value below is
- * the placeholder that ships in source until the release operator embeds a real
- * key (`isPlaceholderReleaseKey` reports it; the publish guard refuses to ship
- * it). Mismatch with the real signer surfaces as `signature_invalid`, which the
- * UI treats as "update available but unverifiable" rather than auto-applying.
+ * Raw 32-byte Ed25519 public key, base64-encoded. This is the real production
+ * public key embedded by the release operator (see the "Release signing"
+ * runbook in `docs/cadre-host.md`). Before a real key was embedded the source
+ * shipped an all-zeros placeholder; `isPlaceholderReleaseKey` still detects that
+ * state and the publish guard refuses to ship it. Mismatch with the real signer
+ * surfaces as `signature_invalid`, which the UI treats as "update available but
+ * unverifiable" rather than auto-applying.
  */
 const PROD_KEY_BASE64 = 'XyRVnOY9DVgU6xdMgJIguOsc9B2L1o2KoU9626Nk+OE=';
 
