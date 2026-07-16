@@ -341,13 +341,16 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 - [x] Orchestrator pins the requester's owner public key into the donated child
   (`createContainer` → `CADRE_OWNER_KEYS` → cold-start pinned-key trust policy) so the node accepts
   the requester-signed seed. `donations.json` store + donation types landed.
-- [~] Grantee-facing `/grants` provisioning surface + `DonationService` lifecycle
-  (provision → peer → seed → terminate) + stale-`awaiting_seed` reap sweep — in progress
-  (`tickets/implement/2-donation-service.md`, Phase 2/3).
+- [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
+  `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
+- [~] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
+  reap sweep + `DonationService` unit tests — in progress (`tickets/implement/2-donation-service.md`,
+  Phase 2/3). `DonationService` is today exercised only through the integration scenario.
 - [ ] WAN reachability for the request surface and per-donated-node NAT/relay mapping — deferred
   (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`); v1 donation is loopback-only.
-- [ ] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —
-  pending the `/grants` surface above.
+- [x] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —
+  `packages/integration-tests/src/scenarios/cadre-host-node-donation.integration.ts`, drives
+  `DonationService` directly (5/5 steps green).
 
 ## Testing / CI
 

@@ -101,7 +101,7 @@ The host **never** receives the requester's authority private key: the seed is s
 
 #### Status of the donation surface
 
-Landed today: the grant-token layer (`GrantService` / `GrantStore` / `/grants-admin` / `cadre-host grant`), the orchestrator's pinned-owner-key wiring (`createContainer` → `CADRE_OWNER_KEYS`), and the `donations.json` store plus donation types. The grantee-facing **`/grants` provisioning surface** (`POST /grants`, `GET /grants/:id/peer`, `PUT /grants/:id/seed`, `DELETE /grants/:id`), the `DonationService` that drives the lifecycle above, and the stale-`awaiting_seed` reap sweep are being wired by the donation-service work — the design is fixed (this section); the routes are in progress.
+Landed today: the grant-token layer (`GrantService` / `GrantStore` / `/grants-admin` / `cadre-host grant`), the orchestrator's pinned-owner-key wiring (`createContainer` → `CADRE_OWNER_KEYS`), the `donations.json` store plus donation types, and the **`DonationService`** that drives the lifecycle above (`provision` / `getPeer` / `applySeed` / `terminate` / `get` / `list`, exported from `@serfab/cadre-host`) — proven end-to-end against two real `cadre-cli` children by `cadre-host-node-donation.integration.ts`. Still in progress in the donation-service work: the grantee-facing **`/grants` provisioning surface** (`POST /grants`, `GET /grants/:id/peer`, `PUT /grants/:id/seed`, `DELETE /grants/:id`), the `bin/host.ts` wiring that mounts it, the stale-`awaiting_seed` reap sweep, and `DonationService`'s dedicated unit tests (today it is exercised only through the integration scenario). The design is fixed (this section).
 
 #### Reachability (loopback-only in v1)
 
