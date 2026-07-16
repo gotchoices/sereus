@@ -18,6 +18,34 @@ export function peerAuthorizationDigest(peerId: string): string {
 }
 
 /**
+ * Canonical digest an authority signs to VOUCH a `CadrePeer` membership row (insert
+ * and the authority re-touch update). Binds the peer id to the row's single-use
+ * `StampId` nonce, so a captured signed insert cannot be replayed (the `StampId` is
+ * unique) and — because {@link cadrePeerRemoveDigest} scopes a DIFFERENT payload — the
+ * stored voucher (`VouchSig`) cannot be replayed to authorize a delete.
+ *
+ * The SQL mirror is `digest(new.PeerId, new.StampId)` (two TEXT fields), matching the
+ * canonical multi-field framing in control-database.ts:buildAuthorizationMessage.
+ */
+export function cadrePeerVoucherDigest(peerId: string, stampId: string): string {
+  return digest([peerId, stampId], 'sha256', 'base64url') as string;
+}
+
+/**
+ * Canonical digest an authority signs to REMOVE a `CadrePeer` row. Deliberately a
+ * distinct payload from {@link cadrePeerVoucherDigest} (adds the `'remove'` action
+ * tag) so the row's stored voucher — a signature over the voucher digest — can never
+ * satisfy this delete check. The signature is supplied in write context and never
+ * stored, so no reader can replay it; binding the live row's `StampId` also invalidates
+ * any captured remove after a delete+reinsert (the nonce rotates).
+ *
+ * SQL mirror: `digest(old.PeerId, old.StampId, 'remove')`.
+ */
+export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
+  return digest([peerId, stampId, 'remove'], 'sha256', 'base64url') as string;
+}
+
+/**
  * Verify that `signature` is a valid authority ed25519 signature over `peerId`'s
  * authorization digest, using `authorityPublicKey` (base64url).
  *

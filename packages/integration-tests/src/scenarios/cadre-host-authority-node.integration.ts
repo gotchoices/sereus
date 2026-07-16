@@ -163,9 +163,12 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
     expect(decoded.token).toBe(invite.token);
   }, OP_MS);
 
-  it('listMembers()/isMember() report an empty membership on a fresh party', async () => {
-    expect(await client.listMembers()).toEqual([]);
-    expect(await client.isMember(await freshPeerId())).toBe(false);
+  it('listAuthorizedMembers()/isAuthorizedMember() report an empty membership on a fresh party', async () => {
+    // AUTHORIZED surface excludes self: a fresh authority self-registers a CadrePeer
+    // address row (addressable surface), but has authorized no one — so the trust-facing
+    // membership set is empty. (The addressable `listMembers()` includes the self row.)
+    expect(await client.listAuthorizedMembers()).toEqual([]);
+    expect(await client.isAuthorizedMember(await freshPeerId())).toBe(false);
   }, OP_MS);
 
   it('accept-phone authorizes a peer, then removePeer deletes it (full add→remove cycle)', async () => {

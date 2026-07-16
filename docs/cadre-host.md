@@ -89,8 +89,10 @@ Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{
 |---|---|
 | `GET /admin/identity` | `{ peerId, partyId }` |
 | `GET /admin/multiaddrs` | observed libp2p addrs |
-| `GET /admin/members` | `CadrePeer` enumeration (replaces handing a `ControlDatabase` to the manager) |
-| `GET /admin/members/:peerId` | membership probe |
+| `GET /admin/members` | `CadrePeer` enumeration — **addressable** surface, includes self (replaces handing a `ControlDatabase` to the manager) |
+| `GET /admin/members/:peerId` | membership probe (addressable) |
+| `GET /admin/authorized-members` | trust-facing enumeration — **authorized** surface, excludes self (the set the wake / strand-addr gates consult) |
+| `GET /admin/authorized-members/:peerId` | authorized-membership probe |
 | `POST /admin/invites` | mint a `CadreInvite` → `{ invite, encodedInvite }` |
 | `POST /admin/accept-phone` | authorize a redeeming peer |
 | `DELETE /admin/members/:peerId` | signed `CadrePeer` delete |

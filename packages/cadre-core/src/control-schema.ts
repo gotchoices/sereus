@@ -70,29 +70,53 @@ declare schema CadreControl {
         Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay/rollback guard)
         Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
-        constraint AuthorizedInsert check on insert, delete (
+        StampId text not null unique,    -- single-use authorization nonce (anti-replay), bound into the voucher/remove digests; rotates on (re)insert
+        VouchAuthority text null,        -- ed25519 (base64url) authority key that vouched this membership (== insert context.AuthorityKey)
+        VouchSig text null,              -- that authority's signature over digest(PeerId, StampId) (== insert context.Signature). A reader checks VouchAuthority against its NODE-LOCAL trusted-authority anchor (not this replicated table, which a self-authority can pollute) to decide authorized membership.
+        constraint AuthorizedInsert check on insert (
             -- Authorized by an authority key, which vouches both membership and the
             -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
-            -- The single-field digest frames the base58btc PeerId as TEXT, matching
-            -- cadre-core peer-authorization.ts:peerAuthorizationDigest.
-            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(coalesce(new.PeerId, old.PeerId)), context.Signature, A.Key, 'ed25519'))
+            -- The digest binds PeerId + the single-use StampId nonce (two TEXT fields),
+            -- matching cadre-core peer-authorization.ts:cadrePeerVoucherDigest.
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+            -- Persist the vouching (authority, signature) onto the row so a reader can later
+            -- re-check VouchAuthority against its node-local anchor. The stored pair MUST equal
+            -- the pair the verify above validated, so a writer cannot store a voucher it did
+            -- not actually receive a signature for.
+            and new.VouchAuthority = context.AuthorityKey
+            and new.VouchSig = context.Signature
+        ),
+        constraint AuthorizedDelete check on delete (
+            -- Delete is authorized by a signature over a DISTINCT 'remove'-scoped digest bound
+            -- to the row's StampId (cadre-core peer-authorization.ts:cadrePeerRemoveDigest), so
+            -- the stored voucher (a signature over digest(PeerId, StampId)) can NEVER be replayed
+            -- to authorize a delete. The remove signature rides in context and is never stored.
+            exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(old.PeerId, old.StampId, 'remove'), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
-            -- (the key behind PeerId). PeerId/PublicKey are immutable on self-update, UpdatedAt
-            -- must strictly increase (replay guard), and Sig is verified against the stored
-            -- PublicKey over the same payload the publish path signs
+            -- (the key behind PeerId). PeerId/PublicKey/StampId/voucher are immutable on
+            -- self-update, UpdatedAt must strictly increase (replay guard), and Sig is verified
+            -- against the stored PublicKey over the same payload the publish path signs
             -- (cadre-core peer-record.ts:peerRecordSignedPayload).
             (
                 new.PeerId = old.PeerId
                 and new.PublicKey = old.PublicKey
+                and new.StampId = old.StampId
+                and new.VouchAuthority = old.VouchAuthority
+                and new.VouchSig = old.VouchSig
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and verify(
                         digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text)),
                         new.Sig, new.PublicKey, 'ed25519')
             )
-                -- or an authority re-authorizes (rotation / correction)
-                or exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId), context.Signature, A.Key, 'ed25519'))
+                -- or an authority re-authorizes (rotation / correction): re-vouches the row over
+                -- its current StampId, so the stored voucher is re-bound to the re-authorizing authority.
+                or (
+                    exists (select 1 from AuthorityKey A where A.Key = context.AuthorityKey and verify(digest(new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                    and new.VouchAuthority = context.AuthorityKey
+                    and new.VouchSig = context.Signature
+                )
         )
     ) with context (AuthorityKey text null, Signature text);
 

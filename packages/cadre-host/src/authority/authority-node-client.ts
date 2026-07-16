@@ -123,6 +123,23 @@ export class AuthorityNodeClient implements TrustCircleCadreNodeLike, NatCadreNo
     return data.member;
   }
 
+  /** Authorized-membership surface (excludes self) — see {@link listMembers} for the addressable one. */
+  async listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    const data = await this.request<{ members: Array<{ peerId: string; multiaddr: string | null }> }>(
+      'GET',
+      '/admin/authorized-members',
+    );
+    return data.members;
+  }
+
+  async isAuthorizedMember(peerId: string): Promise<boolean> {
+    const data = await this.request<{ member: boolean }>(
+      'GET',
+      `/admin/authorized-members/${encodeURIComponent(peerId)}`,
+    );
+    return data.member;
+  }
+
   // --- NAT CadreNodeLike ---
 
   async getPeerId(): Promise<string> {

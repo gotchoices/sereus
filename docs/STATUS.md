@@ -211,8 +211,9 @@ Strand lifecycle resource management in `@serfab/cadre-core`
   - `strand-wake-protocol.ts` adds `WAKE_PROTOCOL` (`/sereus/strand-wake/1.0.0`), modeled on seed-bootstrap:
     length-prefixed JSON `WakeRequest`/`WakeAck` frames, one request → one ack per stream.
   - `StrandWakeService` (receiver, registered in `CadreNode.start`/`cleanup`) gates inbound wakes on
-    `CadrePeer` membership (`CadreNode.isMember`) — v1 authorization is control-network membership, no
-    extra signature — then routes a hibernating/idle strand through the same wake path as a local wake
+    the authorized-member surface (`CadreNode.isAuthorizedMember`, the addressable set minus self;
+    interim until the ticket-4 voucher predicate lands) — v1 authorization is control-network membership,
+    no extra signature — then routes a hibernating/idle strand through the same wake path as a local wake
     (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
   - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.
@@ -514,9 +515,40 @@ is `listMembers().some(...)`, and `listMembers()` returns raw `CadrePeer` **addr
 membership = "has published an address record", not "is authorized". Effects: (1) a fresh party lists
 its own self-registered row (`cadre-host-authority-node` fresh-party test — expected `[]`); (2) an
 outsider that has seeded its own `CadrePeer` row passes the push-wake authorization gate
-(`push-wake-e2e` non-member test — a non-member wakes a hibernating strand). Filed
-`tickets/plan/membership-gate-uses-cadrepeer-record-presence.md` (medium; needs an authorization
-predicate distinct from the addressable set, leaving push fan-out / `resolvePeerAddrs` unchanged).
+(`push-wake-e2e` non-member test — a non-member wakes a hibernating strand).
+
+**Update (2026-07-03): decision made (Option B), spike done, implement chain filed.** The scope
+question ("pull the deferred node-local trusted-authority anchor forward?") was routed to the human
+via `blocked/membership-gate-authority-anchor-decision.md`, and the ticket's own "single
+highest-value next step" — the empirical spike settling **Option A (cheap) vs B (robust)** — was run.
+**Result: pollution CONFIRMED.** A focused two-`CadreNode` integration spike measured that a same-party
+self-appointed-authority outsider's self-minted key replicates into a legitimate peer's *local*
+`AuthorityKey` table the instant they connect (Rx's table went 0 → 1 == O's key). So checking a
+recorded voucher against the *replicated* `AuthorityKey` table (Option A) is **unsound** — a correct
+fix needs a **node-local, non-replicated trusted-authority anchor** (Option B). The spike also exposed
+a second victim of the same false anchor: `dbAnchoredTrustPolicy` (the "secure default" for accepting
+seeds) sources its trust set from the same pollutable replicated table.
+
+Human approved **Option B** with a connection-gater hardening layer folded in. Filed as a 6-ticket,
+`prereq`-chained `implement/` set:
+1. `membership-authorized-surface-split` — split the *addressable* set (dial/seed/fan-out, includes
+   self) from the *authorized-member* set (wake gate, excludes self); no trust change. Fixes the
+   fresh-party self-listing test.
+2. `membership-cadrepeer-voucher-persist` — persist the vouching authority (`VouchAuthority`/`VouchSig`)
+   on each `CadrePeer` row (the sign/verify helpers in `peer-authorization.ts` already exist; the
+   signature was just being discarded at write).
+3. `membership-node-local-authority-anchor` — build the node-local, non-replicated
+   `TrustedAuthorityStore`, seeded out-of-band (genesis self-trust / invite-pinned keys); pulls the
+   interim store from `seed-accepted-authority-persistence` forward.
+4. `membership-authorized-predicate-and-gates` — `isAuthorizedMember` = voucher recorded ∧ its
+   authority ∈ node-local anchor ∧ signature verifies ∧ not-self; routes the wake/strand-addr gates
+   through it and reworks the cross-node convergence/push-wake tests to model real enrollment. **Closes
+   the non-member wake hole.**
+5. `seed-trust-anchor-from-local-store` — repoint seed-trust's `knownAuthorityKeys` from the replicated
+   table to the node-local anchor (closes the `dbAnchoredTrustPolicy` variant of the same hole).
+6. `membership-connection-gater` — defense-in-depth: reject the sensitive control protocols
+   (control-DB repo / wake / strand-addr) from unauthorized peers at stream/connection time, with an
+   enrollment carve-out (seed/accept-phone stay open to strangers).
 - **Not** a super-majority-threshold rounding bug: `Math.ceil(2 * 0.75)` and the
   "fix" `Math.floor(2/2)+1` both yield 2 — 2-of-2 is correct for a 2-node quorum. The
   defect is upstream of the count (peer selection / protocol negotiation), and is

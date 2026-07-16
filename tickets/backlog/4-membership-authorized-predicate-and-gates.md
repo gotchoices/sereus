@@ -1,6 +1,6 @@
 ----
 description: Make "is this peer a real member?" mean "an authority my node actually trusts vouched for them" instead of "they published an address." This closes the hole where an outsider can wake a sleeping node just by publishing its own address record.
-prereq: membership-node-local-authority-anchor
+prereq: membership-node-local-authority-anchor, membership-cadrepeer-authority-antireplay
 files:
   - packages/cadre-core/src/cadre-node.ts (listAuthorizedMembers/isAuthorizedMember from ticket 1)
   - packages/cadre-core/src/peer-authorization.ts (verifyPeerAuthorization — verify VouchSig)

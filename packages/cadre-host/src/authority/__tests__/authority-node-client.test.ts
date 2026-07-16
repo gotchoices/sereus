@@ -106,6 +106,22 @@ describe('AuthorityNodeClient', () => {
     expect(last?.path).toBe('/admin/members/peer-1');
   });
 
+  it('listAuthorizedMembers GETs /admin/authorized-members and returns the array', async () => {
+    responder = () => ({ status: 200, payload: { ok: true, data: { members: [{ peerId: 'b', multiaddr: null }] } } });
+    const client = makeClient();
+    const members = await client.listAuthorizedMembers();
+    expect(last?.method).toBe('GET');
+    expect(last?.path).toBe('/admin/authorized-members');
+    expect(members).toEqual([{ peerId: 'b', multiaddr: null }]);
+  });
+
+  it('isAuthorizedMember GETs /admin/authorized-members/:peerId and returns the boolean', async () => {
+    responder = () => ({ status: 200, payload: { ok: true, data: { member: false } } });
+    const client = makeClient();
+    expect(await client.isAuthorizedMember('peer-2')).toBe(false);
+    expect(last?.path).toBe('/admin/authorized-members/peer-2');
+  });
+
   it('getPeerId GETs /admin/identity', async () => {
     responder = () => ({ status: 200, payload: { ok: true, data: { peerId: '12D3KooWHost', partyId: 'party' } } });
     const client = makeClient();

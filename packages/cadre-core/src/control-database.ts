@@ -20,7 +20,7 @@ const timing = debug('sereus:cadre:timing');
  * - First 16 bytes: SHA-256 hash of peer ID (for distributed uniqueness)
  * - Last 16 bytes: Random bytes (for collision resistance)
  */
-function generateStampId(peerId: string): string {
+export function generateStampId(peerId: string): string {
   // Hash the peer ID and get first 16 bytes (128 bits). A purely local ID
   // generator: never signed/verified against SQL, so the framed single-field
   // digest is fine (the changed framing is not cross-checked anywhere).
@@ -399,16 +399,33 @@ export class ControlDatabase {
   /**
    * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
    */
-  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchAuthority: string | null; vouchSig: string | null }>> {
     this.ensureInitialized();
-    const rows: Array<{ peerId: string; multiaddr: string | null }> = [];
-    for await (const row of this.db!.eval('select PeerId, Multiaddr from CadreControl.CadrePeer')) {
+    const rows: Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchAuthority: string | null; vouchSig: string | null }> = [];
+    for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchAuthority, VouchSig from CadreControl.CadrePeer')) {
       rows.push({
         peerId: row.PeerId as string,
         multiaddr: (row.Multiaddr as string | null) ?? null,
+        stampId: (row.StampId as string | null) ?? null,
+        vouchAuthority: (row.VouchAuthority as string | null) ?? null,
+        vouchSig: (row.VouchSig as string | null) ?? null,
       });
     }
     return rows;
+  }
+
+  /**
+   * Read a single `CadrePeer` row's single-use `StampId` nonce (null when the row
+   * does not exist). Used by the authority delete / re-touch paths, which must bind
+   * their signature to the row's CURRENT nonce ({@link cadrePeerRemoveDigest} /
+   * {@link cadrePeerVoucherDigest}).
+   */
+  async queryCadrePeerStampId(peerId: string): Promise<string | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval('select StampId from CadreControl.CadrePeer where PeerId = ?', [peerId])) {
+      return (row.StampId as string | null) ?? null;
+    }
+    return null;
   }
 
   /**

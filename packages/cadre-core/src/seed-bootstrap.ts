@@ -21,8 +21,9 @@ import type {
   DeviceTokenRecord
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
+import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
-import { peerAuthorizationDigest } from './peer-authorization.js';
+import { peerAuthorizationDigest, cadrePeerVoucherDigest, cadrePeerRemoveDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   dbAnchoredTrustPolicy,
@@ -308,16 +309,23 @@ export class SeedBootstrapService {
     updatedAt: number;
     sig: string | null;
   }): Promise<void> {
-    const signature = this.signPeerAuthorization(row.peerId);
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
+    // Fresh single-use nonce; the voucher signs digest(peerId, stampId) so a captured
+    // insert can't be replayed (StampId is unique) and can't be repurposed as a delete
+    // (which signs a distinct 'remove'-scoped digest).
+    const stampId = generateStampId(row.peerId);
+    const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
+    // Persist the vouching (authority, signature) onto the row (VouchAuthority/VouchSig)
+    // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
+    // reader can later re-check the voucher against its node-local trusted-authority anchor.
     await db.exec(`
-      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig)
+      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchAuthority, VouchSig)
         with context AuthorityKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?)
-    `, [this.authorityPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig]);
+        values (?, ?, ?, ?, ?, ?, ?, ?)
+    `, [this.authorityPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.authorityPublicKey, signature]);
   }
 
   /**
@@ -373,11 +381,21 @@ export class SeedBootstrapService {
    * verifier checks the exact same construction. Throws if no authority key is set.
    */
   private signPeerAuthorization(peerId: string): string {
+    return this.signDigest(peerAuthorizationDigest(peerId));
+  }
+
+  /**
+   * Sign a base64url digest with the authority key (ed25519). The single place the
+   * authority private key is applied; callers pass the canonical digest for the specific
+   * action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
+   * {@link peerAuthorizationDigest}). Throws if no authority key is set.
+   */
+  private signDigest(digestB64url: string): string {
     if (!this.config.authorityPrivateKey) {
       throw new Error('Authority private key required to authorize peers');
     }
     return sign(
-      peerAuthorizationDigest(peerId),
+      digestB64url,
       this.config.authorityPrivateKey,
       'ed25519',
       'base64url',
@@ -394,12 +412,18 @@ export class SeedBootstrapService {
    * digest pattern as authorizePeer.
    */
   async removePeer(peerId: string): Promise<void> {
-    // Same canonical digest as the authorizing INSERT (see peerAuthorizationDigest);
-    // also validates the authority key is present before touching the database.
-    const signature = this.signPeerAuthorization(peerId);
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
+    // Delete is authorized by a signature over a DISTINCT 'remove'-scoped digest bound to
+    // the row's CURRENT StampId — so the row's stored voucher (a signature over the
+    // voucher digest) can never be replayed to authorize a delete.
+    const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
+    if (stampId === null) {
+      log('removePeer: no CadrePeer row for %s (already absent)', peerId);
+      return;
+    }
+    const signature = this.signDigest(cadrePeerRemoveDigest(peerId, stampId));
 
     log('Removing peer: %s', peerId);
 
@@ -436,19 +460,25 @@ export class SeedBootstrapService {
    *   re-sign another peer's row) or the control database is not initialized.
    */
   async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
-    // Reuses the exact digest authorizePeer signs (peerAuthorizationDigest), which
-    // the authority branch of AuthorizedUpdate verifies; throws if no authority key.
-    const signature = this.signPeerAuthorization(peerId);
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
+    // The authority branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
+    // StampId) and re-binds VouchAuthority/VouchSig. Sign over the row's CURRENT StampId
+    // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
+    const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
+    if (stampId === null) {
+      log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
+      return;
+    }
+    const signature = this.signDigest(cadrePeerVoucherDigest(peerId, stampId));
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       update CadreControl.CadrePeer
         with context AuthorityKey = ?, Signature = ?
-        set UpdatedAt = ?
+        set UpdatedAt = ?, VouchAuthority = ?, VouchSig = ?
         where PeerId = ?
-    `, [this.authorityPublicKey, signature, updatedAt, peerId]);
+    `, [this.authorityPublicKey, signature, updatedAt, this.authorityPublicKey, signature, peerId]);
     log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
   }
 

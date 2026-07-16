@@ -51,8 +51,10 @@ export interface AdminServerOptions {
  * Routes (all under `/admin`):
  * - `GET    /admin/identity`          → `{ peerId, partyId }`
  * - `GET    /admin/multiaddrs`        → `{ multiaddrs: string[] }`
- * - `GET    /admin/members`           → `{ members: { peerId, multiaddr }[] }`
- * - `GET    /admin/members/:peerId`   → `{ member: boolean }`
+ * - `GET    /admin/members`           → `{ members: { peerId, multiaddr }[] }` (ADDRESSABLE: includes self)
+ * - `GET    /admin/members/:peerId`   → `{ member: boolean }` (ADDRESSABLE)
+ * - `GET    /admin/authorized-members`         → `{ members: { peerId, multiaddr }[] }` (AUTHORIZED: excludes self)
+ * - `GET    /admin/authorized-members/:peerId` → `{ member: boolean }` (AUTHORIZED)
  * - `POST   /admin/invites`           → `{ invite, encodedInvite }`
  * - `POST   /admin/accept-phone`      → `{ ok: true }`
  * - `DELETE /admin/members/:peerId`   → `{ ok: true }`
@@ -166,6 +168,15 @@ export class AdminServer {
         await node.removePeer(id);
         return { ok: true };
       }
+    }
+
+    // Authorized-membership surface (trust-facing; excludes self): distinct from the
+    // addressable `members` surface above, which includes the node's own row.
+    if (resource === 'authorized-members' && method === 'GET') {
+      if (id === undefined) {
+        return { members: await node.listAuthorizedMembers() };
+      }
+      return { member: await node.isAuthorizedMember(id) };
     }
 
     if (resource === 'invites' && method === 'POST') {

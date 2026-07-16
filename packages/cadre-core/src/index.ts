@@ -134,6 +134,8 @@ export {
 // Peer Authorization (shared authority-signature digest + offline verifier)
 export {
   peerAuthorizationDigest,
+  cadrePeerVoucherDigest,
+  cadrePeerRemoveDigest,
   verifyPeerAuthorization
 } from './peer-authorization.js';
 

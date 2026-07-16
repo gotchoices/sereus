@@ -1,43 +1,60 @@
-You are focused on the Sereus monorepo, but have access to `../quereus` and `../optimystic` workspaces as well for reference and debugging (linked via `resolutions` in the root `package.json`).
+Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for reference/debug (linked via `resolutions` in root `package.json`).
 
 ## Repo orientation
 
-- `packages/` — the monorepo's libraries and apps. The cadre runtimes are `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager with local UI, installer, NAT, trust-circle), and `@serfab/cadre-provider` (multi-tenant Docker host). SQL access is `@serfab/quereus-plugin-sereus`. Reference apps live in `reference-app-rn` and `reference-app-web`. Cross-package, real-network tests are in `integration-tests`. `strand-proto` is deprecated.
-- `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not where application code goes.
-- `docs/` — design and protocol docs. [`docs/architecture.md`](docs/architecture.md) is the entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), and [`docs/STATUS.md`](docs/STATUS.md) cover specific subsystems.
+- `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT, trust-circle), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Reference apps: `reference-app-rn`, `reference-app-web`. Cross-package real-network tests: `integration-tests`. `strand-proto` deprecated.
+- `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not app code.
+- `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/STATUS.md`](docs/STATUS.md) cover subsystems.
 - `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
 - `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
 
 ## General
 
-Most of these style rules are machine-enforced by `yarn lint` (ESLint flat config in
-`eslint.config.mjs`), which is a fully-enforced gate — every encoded rule is an `error`, with no
-remaining `warn` backlog. **Lowercase SQL reserved words** and **no runtime inline `import()`** are not
-machine-checkable and remain human-review-only (see `docs/STATUS.md` → "Lint coverage").
+Most style rules machine-enforced by `yarn lint` (ESLint flat config in
+`eslint.config.mjs`), a fully-enforced gate — every encoded rule is `error`, no
+`warn` backlog. **Lowercase SQL reserved words** and **no runtime inline `import()`** are not
+machine-checkable, human-review-only (see `docs/STATUS.md` → "Lint coverage").
 
-- Use lowercase SQL reserved words (e.g., `select * from Table`)
-- Don't use inline `import()` unless dynamically loading
-- Don't create summary documents; update existing documentation
+- Lowercase SQL reserved words (e.g., `select * from Table`)
+- No inline `import()` unless dynamically loading
+- Don't create summary docs; update existing docs
 - Stay DRY
 - No lengthy summaries
-- Don't worry about backwards compatibility yet
+- No backwards compat yet
 - Use yarn
-- Prefix unused arguments with `_`
-- Enclose `case` blocks in braces if any consts/variables
-- Prefix calls to unused promises (micro-tasks) with `void`
+- Prefix unused args with `_`
+- Brace `case` blocks if any consts/vars
+- Prefix unused promise (micro-task) calls with `void`
 - ES Modules
-- Don't be type lazy - avoid `any`
-- Don't eat exceptions w/o at least logging; exceptions should be exceptional - not control flow
-- Small, single-purpose functions/methods.  Decomposed sub-functions over grouped code sections
-- No half-baked janky parsers; use a full-fledged parser or better, brainstorm with the dev for another way
+- Not type lazy — avoid `any`
+- Don't eat exceptions w/o at least logging; exceptions exceptional, not control flow
+- Small single-purpose functions/methods. Decomposed sub-functions over grouped code sections
+- No half-baked janky parsers; use full parser or brainstorm another way w/ dev
 - Think cross-platform (browser, node, RN, etc.)
-- .editorconfig contains formatting (tabs for code)
+- .editorconfig has formatting (tabs for code)
 
 ## Tickets (tess)
 
-This project uses [tess](tess/) for AI-driven ticket management.
-Read and follow the ticket workflow rules in tess/agent-rules/tickets.md.
-Tickets are in the [tickets/](tickets/) directory.
+Project uses [tess](tess/) for AI-driven ticket management.
+Read + follow ticket workflow rules in tess/agent-rules/tickets.md.
+Tickets in [tickets/](tickets/).
 
-Start with [`docs/architecture.md`](docs/architecture.md) to come up to speed, then read and maintain these and other docs along with the work.
+Start w/ [`docs/architecture.md`](docs/architecture.md) to come up to speed, then read + maintain these + other docs along w/ work.
 
+## Caveman
+
+Respond terse like smart caveman. All technical substance stay. Only fluff die.
+
+Rules:
+- Drop: articles (a/an/the), filler (just/really/basically), pleasantries, hedging
+- Fragments OK. Short synonyms. Technical terms exact. Code unchanged.
+- Pattern: [thing] [action] [reason]. [next step].
+- Not: "Sure! I'd be happy to help you with that."
+- Yes: "Bug in auth middleware. Fix:"
+
+Switch level: /caveman lite|full|ultra|wenyan
+Stop: "stop caveman" or "normal mode"
+
+Auto-Clarity: drop caveman for security warnings, irreversible actions, user confused. Resume after.
+
+Boundaries: code/commits/PRs written normal.

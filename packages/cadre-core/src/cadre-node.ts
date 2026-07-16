@@ -440,10 +440,11 @@ export class CadreNode implements SAppIdLookup {
       this.hibernationManager.start();
 
       // Register the control-network push-wake receiver: a same-cadre peer can
-      // signal us to bring a hibernating strand online. Gated on CadrePeer
-      // membership; the wake routes through the same path as a local wake.
+      // signal us to bring a hibernating strand online. Gated on AUTHORIZED
+      // membership (not the addressable surface); the wake routes through the same
+      // path as a local wake.
       this.strandWakeService = new StrandWakeService({
-        isMember: (peerId) => this.isMember(peerId),
+        isMember: (peerId) => this.isAuthorizedMember(peerId),
         getStrand: (strandId) => this.strandManager.getInstance(strandId),
         wake: (strandId) => this.wakeStrand(strandId),
       });
@@ -452,9 +453,9 @@ export class CadreNode implements SAppIdLookup {
       // Register the control-network strand-address responder: a same-cadre peer
       // resolving a strand's bootstrap seed asks us for our live strand-network
       // multiaddrs (its CadrePeer row only knows our *control* address). Gated on
-      // CadrePeer membership; answers only for strands we are actively meshing.
+      // AUTHORIZED membership; answers only for strands we are actively meshing.
       this.strandAddrService = new StrandAddrService({
-        isMember: (peerId) => this.isMember(peerId),
+        isMember: (peerId) => this.isAuthorizedMember(peerId),
         getStrandMultiaddrs: (strandId) => this.getStrandMultiaddrs(strandId),
       });
       this.strandAddrService.initialize(this.controlNode);
@@ -2538,9 +2539,42 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Probe whether a given peer is a `CadrePeer` member.
+   *
+   * This is the ADDRESSABLE surface ("do I have a dialable address record for this
+   * peer") — it includes this node's own self-published row. Address resolution and
+   * push fan-out use this. The trust-facing gate is {@link isAuthorizedMember}.
    */
   async isMember(peerId: string): Promise<boolean> {
     const members = await this.listMembers();
+    return members.some(m => m.peerId === peerId);
+  }
+
+  /**
+   * Enumerate the party's AUTHORIZED members — the trust-facing set, distinct from
+   * the addressable set ({@link listMembers}). Excludes this node itself: a node
+   * publishes its own `CadrePeer` address row so its dialable address rides in seeds,
+   * but "self" is not a peer this node authorized. The control-network wake and
+   * strand-address gates consult this set, NOT the addressable one.
+   *
+   * NOTE: this is the addressable set minus self for now. The real trust predicate
+   * (voucher recorded on the row ∈ node-local trusted-authority anchor, signature
+   * verified) lands with the `membership-node-local-authority-anchor` /
+   * `membership-authorized-predicate-and-gates` tickets; keeping the filter in this one
+   * method means that change touches a single place.
+   */
+  async listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    const selfPeerId = this.peerId?.toString();
+    const members = await this.listMembers();
+    return members.filter(m => m.peerId !== selfPeerId);
+  }
+
+  /**
+   * Probe whether a given peer is an AUTHORIZED party member (see
+   * {@link listAuthorizedMembers}) — the gate the control-network wake and
+   * strand-address responders consult, NOT {@link isMember} (the addressable surface).
+   */
+  async isAuthorizedMember(peerId: string): Promise<boolean> {
+    const members = await this.listAuthorizedMembers();
     return members.some(m => m.peerId === peerId);
   }
 
