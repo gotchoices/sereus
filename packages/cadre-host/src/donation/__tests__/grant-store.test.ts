@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -98,5 +98,16 @@ describe('GrantStore', () => {
     writeFileSync(join(tmpRoot, 'grants.json'), JSON.stringify({ version: 99, foo: 'bar' }), 'utf8');
     const store = new GrantStore(tmpRoot);
     expect(() => store.load()).toThrow(GrantError);
+  });
+
+  it('wraps a write failure as storage_error (not a bare Error)', () => {
+    const store = new GrantStore(tmpRoot);
+    // load() sees no grants.json (empty), then save() writes grants.json.tmp.
+    // Make that temp path a directory so writeFileSync fails (EISDIR) — the
+    // failure must surface as GrantError storage_error, not a bare Error.
+    mkdirSync(join(tmpRoot, 'grants.json.tmp'));
+    expect(() => store.add(grant())).toThrow(
+      expect.objectContaining({ code: 'storage_error' }),
+    );
   });
 });

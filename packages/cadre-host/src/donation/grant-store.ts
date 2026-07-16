@@ -82,8 +82,17 @@ export class GrantStore {
     mkdirSync(dirname(this.path), { recursive: true });
     const payload = JSON.stringify({ ...state, version: FILE_VERSION }, null, 2);
     const tmp = `${this.path}.tmp`;
-    writeFileSync(tmp, payload, { encoding: 'utf8' });
-    renameSync(tmp, this.path);
+    try {
+      writeFileSync(tmp, payload, { encoding: 'utf8' });
+      renameSync(tmp, this.path);
+    } catch (err) {
+      // Surface as storage_error (→ 500) like load(), not a bare Error (→
+      // "internal"); a write failure on issue/revoke should read consistently.
+      throw new GrantError(
+        'storage_error',
+        `failed to write grants file at ${this.path}: ${(err as Error).message}`,
+      );
+    }
     this.cache = { ...state, version: FILE_VERSION };
     log('saved grants (%d) to %s', Object.keys(state.grants).length, this.path);
   }
