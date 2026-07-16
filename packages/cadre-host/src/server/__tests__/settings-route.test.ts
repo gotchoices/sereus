@@ -149,6 +149,23 @@ describe('/api/settings routes', () => {
     expect(body.error.message).toMatch(/uiPort/);
   });
 
+  it('PUT ownCadre returns 400 invalid_setting (install-time only)', async () => {
+    writeV2Config(dataDir);
+    app = Fastify();
+    registerErrorHandler(app);
+    registerSettingsRoutes(app, { settingsStore: new HostSettingsStore({ dataDir }), nat: fakeNat().svc });
+    const res = await app.inject({
+      method: 'PUT',
+      url: '/api/settings',
+      headers: { 'content-type': 'application/json' },
+      payload: JSON.stringify({ ownCadre: { enabled: true } }),
+    });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { error: { code: string; message: string } };
+    expect(body.error.code).toBe('invalid_setting');
+    expect(body.error.message).toMatch(/ownCadre/);
+  });
+
   it('PUT unknown setting returns 400', async () => {
     writeV2Config(dataDir);
     app = Fastify();

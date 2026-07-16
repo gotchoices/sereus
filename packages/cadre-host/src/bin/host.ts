@@ -21,7 +21,7 @@ import { Command } from 'commander';
 
 import { parseDuration } from '../auth/duration.js';
 import { Installer } from '../installer/index.js';
-import { readHostConfig, updateHostConfig } from '../installer/config.js';
+import { readHostConfig, updateHostConfig, hostOwnsCadre } from '../installer/config.js';
 import {
   configPath as resolveConfigPath,
   defaultDataDir,
@@ -87,6 +87,7 @@ program
   .option('--no-upnp', 'Disable UPnP/NAT-PMP probing on first run')
   .option('--no-browser', 'Do not open a browser after install')
   .option('--no-invite', 'Skip generating the first enrollment invite')
+  .option('--own-cadre', 'Also run the host\'s own personal cadre here (founder persona; default: donor-only)')
   .option('--system', 'System-wide install (not yet supported in v1)')
   .option('--node-path <path>', 'Override the node binary embedded in the service unit')
   .action(async (opts: {
@@ -97,6 +98,7 @@ program
     upnp?: boolean;
     browser?: boolean;
     invite?: boolean;
+    ownCadre?: boolean;
     system?: boolean;
     nodePath?: string;
   }) => {
@@ -110,6 +112,7 @@ program
         noUpnp: opts.upnp === false,
         openBrowser: opts.browser !== false,
         noInvite: opts.invite === false,
+        ownCadre: opts.ownCadre === true,
         system: Boolean(opts.system),
         ...(opts.nodePath ? { nodePath: opts.nodePath } : {}),
       });
@@ -260,11 +263,14 @@ program
       void updateService.check();
       updateService.start();
 
-      // Wire the long-lived HTTP management server. The manager holds no
-      // in-process cadre node: it spawns the admin's **owner node** as a
-      // managed child and delegates owner/membership/identity operations
-      // to it over the node's loopback admin channel (the 6.6 contract). The
-      // manager never joins the control network (see docs/cadre-host.md
+      // Wire the long-lived HTTP management server. cadre-host's primary role
+      // is **node donor**: it spawns generic cadre nodes for *other people's*
+      // cadres on request (the donation grant layer below) and never needs an
+      // owner node of its own for that. Running the host's **own** personal
+      // cadre here — the "founder" persona — is opt-in via `ownCadre.enabled`
+      // (see docs/cadre-host.md § Two roles: donor and founder). Only when it
+      // is enabled do we spawn the owner node and bring up trust-circle + NAT.
+      // The manager never joins the control network (docs/cadre-host.md
       // § Control-plane separation).
       // Push (FCM/APNs) credentials are resolved fresh on every node spawn so a
       // restart re-reads the secret store (rotated keys) and nothing raw is
@@ -277,57 +283,74 @@ program
       });
       await orchestrator.init();
 
-      // Spawn the owner node. Best-effort: a spawn failure leaves the
-      // management API up (trust-circle listing degrades to local labels,
-      // owner ops return 503) rather than taking down the whole process.
-      try {
-        await orchestrator.ensureOwnerNode({
-          identityPath: idPath,
-          partyId: cfg.installId,
-          libp2pPort: cfg.libp2pPort,
-        });
-        console.log('cadre-host: owner node spawned');
-      } catch (err) {
-        console.error(`owner node spawn failed: ${(err as Error).message}`);
-      }
-
-      // The client reads the admin endpoint lazily so a node restart's fresh
-      // bearer token is picked up automatically.
-      const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
-
-      const trustCircle = new TrustCircleService({
-        cadreNode: owner,
-        store: new TrustCircleStore(cfg.dataDir),
-      });
-      const natService = new NatService({
-        rootDir: cfg.dataDir,
-        cadreNode: owner,
-      });
-
-      // Donation grant layer. Local-only: issue/validate/revoke are pure store
-      // ops (no node round-trip), so it needs no owner-node handle. The
-      // loopback `/grants-admin` surface is mounted by createLocalUiServer.
+      // Donation grant layer — the always-on donor surface. Local-only:
+      // issue/validate/revoke are pure store ops (no node round-trip), so it
+      // needs no owner-node handle. The loopback `/grants-admin` surface is
+      // mounted by createLocalUiServer regardless of the founder persona.
       const grantService = new GrantService({ store: new GrantStore(cfg.dataDir) });
 
-      // Push NAT-resolved invite addresses to the node on every NAT change.
-      // NatService.start() also fires this once as an initial push, retried
-      // until the freshly spawned owner node accepts it (bounded; the
-      // management API that mints invites comes up only after start() resolves).
-      natService.onAddressesChanged(async (addresses) => {
-        if (addresses.length === 0) return;
+      // Founder stack (opt-in). Absent `ownCadre.enabled`, cadre-host is a pure
+      // donor: no owner node, and the /auth + /nat surfaces stay unmounted
+      // (they 404). Per-donated-node WAN reachability is deferred to
+      // backlog/feat-cadre-host-wan-grant-reachability, so v1 donor mode is
+      // loopback-only — nothing for NatService to map without an owner node.
+      let trustCircle: TrustCircleService | undefined;
+      let natService: NatService | undefined;
+      if (hostOwnsCadre(cfg)) {
+        // Spawn the owner node. Best-effort: a spawn failure leaves the
+        // management API up (trust-circle listing degrades to local labels,
+        // owner ops return 503) rather than taking down the whole process.
         try {
-          await owner.pushInviteAddresses(addresses);
+          await orchestrator.ensureOwnerNode({
+            identityPath: idPath,
+            partyId: cfg.installId,
+            libp2pPort: cfg.libp2pPort,
+          });
+          console.log('cadre-host: owner node spawned (host-own-cadre enabled)');
         } catch (err) {
-          console.error(`invite-address push failed: ${(err as Error).message}`);
+          console.error(`owner node spawn failed: ${(err as Error).message}`);
         }
-      });
 
-      // Best-effort NAT start. Failures here aren't fatal — the local UI
-      // can still serve the trust circle, settings, etc.
-      try {
-        await natService.start();
-      } catch (err) {
-        console.error(`NAT start failed: ${(err as Error).message}`);
+        // The client reads the admin endpoint lazily so a node restart's fresh
+        // bearer token is picked up automatically.
+        const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
+
+        trustCircle = new TrustCircleService({
+          cadreNode: owner,
+          store: new TrustCircleStore(cfg.dataDir),
+        });
+        natService = new NatService({
+          rootDir: cfg.dataDir,
+          cadreNode: owner,
+        });
+
+        // Push NAT-resolved invite addresses to the node on every NAT change.
+        // NatService.start() also fires this once as an initial push, retried
+        // until the freshly spawned owner node accepts it (bounded; the
+        // management API that mints invites comes up only after start() resolves).
+        natService.onAddressesChanged(async (addresses) => {
+          if (addresses.length === 0) return;
+          try {
+            await owner.pushInviteAddresses(addresses);
+          } catch (err) {
+            console.error(`invite-address push failed: ${(err as Error).message}`);
+          }
+        });
+
+        // Best-effort NAT start. Failures here aren't fatal — the local UI
+        // can still serve the trust circle, settings, etc.
+        try {
+          await natService.start();
+        } catch (err) {
+          console.error(`NAT start failed: ${(err as Error).message}`);
+        }
+      } else {
+        // NOTE: if ownCadre was toggled off after a prior founder run, an owner
+        // child may still be running and orchestrator.init() re-attaches it (it
+        // then shows in listNodes but has no trustCircle/nat wired). Harmless —
+        // stopOwnerNode() on shutdown reaps it. If this surprises operators,
+        // reap a re-attached owner here when ownCadre is disabled.
+        console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /auth + /nat inactive)');
       }
 
       const settingsStore = new HostSettingsStore({ dataDir: cfg.dataDir });
@@ -335,8 +358,8 @@ program
         uiPort: cfg.uiPort,
         dataDir: cfg.dataDir,
         orchestrator,
-        trustCircle,
-        nat: natService,
+        ...(trustCircle ? { trustCircle } : {}),
+        ...(natService ? { nat: natService } : {}),
         update: updateService,
         grants: grantService,
         settingsStore,
@@ -349,7 +372,7 @@ program
 
       await waitForTermination();
       try { await server.stop(); } catch { /* ignore */ }
-      try { await natService.stop(); } catch { /* ignore */ }
+      try { await natService?.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');

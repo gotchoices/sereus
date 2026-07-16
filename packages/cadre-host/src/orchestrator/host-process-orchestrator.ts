@@ -706,9 +706,17 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Child config for the owner node. It founds/joins the control network
-   * for `partyId` (no bootstrap peers — it is the founding node), and carries
-   * the host identity via `--identity-protobuf` (passed as a spawn arg).
+   * Child config for the **host's own personal cadre** owner node — the opt-in
+   * "founder" persona spawned only when `ownCadre.enabled` (see
+   * docs/cadre-host.md § Two roles: donor and founder). It founds/joins the
+   * control network for the host's own `partyId` (no bootstrap peers — it is the
+   * founding node of the host's *own* cadre) and carries the host identity via
+   * `--identity-protobuf` (passed as a spawn arg).
+   *
+   * This is NOT the node cadre-host donates to a requester. Donated nodes are
+   * generic (`createContainer` / `buildChildConfig`): they join the
+   * **requester's** cadre via bootstrap peers and pin the *requester's* owner
+   * key — they never run a host genesis.
    */
   private buildOwnerChildConfig(
     cfg: OwnerSpawnConfig,
@@ -727,10 +735,12 @@ export class HostProcessOrchestrator implements Orchestrator {
     if (profile === 'storage') {
       config.storage = { type: 'file', path: join(workdir, 'storage') };
     }
-    // The always-on owner/storage node participates in strands, so it owns
-    // the push-wake fan-out when credentials are configured. Written into
-    // cadre.json (same host trust boundary as the workdir's control-DB); keys
-    // are never logged — only the redacted presence line in resolvePush.
+    // The host-own-cadre owner/storage node participates in strands, so it owns
+    // the push-wake fan-out when credentials are configured. (Donated nodes
+    // belong to foreign cadres and get NO host push block — see the donor path.)
+    // Written into cadre.json (same host trust boundary as the workdir's
+    // control-DB); keys are never logged — only the redacted presence line in
+    // resolvePush.
     if (push) config.push = push;
     return config;
   }

@@ -91,6 +91,27 @@ describe('GET /api/status', () => {
     expect(body.update).toBeUndefined();
   });
 
+  it('omits trustCircle + connectivity in donor-only mode (no trust circle / NAT wired)', async () => {
+    app = Fastify();
+    registerErrorHandler(app);
+    registerStatusRoute(app, {
+      orchestrator: fakeOrchestrator([]),
+    });
+
+    const res = await app.inject({ method: 'GET', url: '/api/status' });
+    expect(res.statusCode).toBe(200);
+    const body = res.json() as {
+      service: { name: string };
+      nodes: unknown[];
+      trustCircle?: unknown;
+      connectivity?: unknown;
+    };
+    expect(body.service.name).toBe('cadre-host');
+    expect(body.nodes).toEqual([]);
+    expect(body.trustCircle).toBeUndefined();
+    expect(body.connectivity).toBeUndefined();
+  });
+
   it('includes update info when service is present', async () => {
     app = Fastify();
     registerErrorHandler(app);

@@ -40,6 +40,25 @@ The shared types are too thin to warrant a third package (no `@serfab/cadre-orch
 
 One host machine runs the `cadre-host` service. That service is a **management plane only** — a loopback REST/UI control surface. It does **not** itself join any cadre control network and holds no in-process `CadreNode`. Instead it *spawns cadre nodes as child processes* and drives them over a local management channel, exactly as `@serfab/cadre-provider` spawns Docker drones and drives them over its REST API (see [architecture.md § Provider Integration](architecture.md#provider-integration)). The household admin manages everything through a localhost web UI; friends and family connect to the cadre over libp2p from their phones, laptops, etc.
 
+### Two roles: donor and founder
+
+cadre-host can play two independent roles. They are separate; a host can do either, both, or (usefully) just the first:
+
+- **Node donor (primary, always on).** The host contributes capacity to *other people's* cadres. A friend or family member holding a **grant token** asks the host to spawn a cadre node that joins *their* cadre; the node pins the *requester's* owner key and never runs a host genesis. This is the default reason to run cadre-host, and it needs **no** owner node of the host's own. The grant lifecycle lives in the donation layer (`grant`/donation tickets); the loopback admin surface is `/grants-admin`.
+- **Founder (opt-in).** The host *also* runs its **own** personal cadre on this machine — the historical "single household owner node" described below. This spawns the host-owned owner node, and only then are the trust-circle (`/auth/*`) and NAT (`/nat/*`) surfaces active.
+
+The founder role is gated by the install-time flag **`ownCadre.enabled`** in `host.config.json` (default **false**). The installer wizard asks *"Also run your own personal cadre on this machine?"* (default no); `cadre-host install --own-cadre` sets it non-interactively. It is a structural field, not editable through `/api/settings` — change it in `host.config.json` and restart (see [Write-whitelist](#write-whitelist-for-apisettings)).
+
+Consequences when `ownCadre.enabled` is **false** (donor-only, the common case):
+
+- `cadre-host start` brings up the orchestrator, the donation grant layer, and the loopback management server — but spawns **no** owner node.
+- `/auth/*` and `/nat/*` are left unmounted and **404** (there is no host cadre to have a trust circle or a NAT-mapped owner node for). Donor nodes are loopback-only in v1; per-donated-node WAN reachability is future work (`backlog/feat-cadre-host-wan-grant-reachability`).
+- `installId` still identifies the install, but is used as a cadre **party id** only when the founder role is enabled — a pure-donor host never uses it as a party id.
+
+Toggling the flag on later spawns the owner node on the next `start` (genesis is idempotent). Toggling it off later leaves the owner node's workdir + control-DB storage on disk, just unspawned — its data persists; nothing is deleted.
+
+Everything below in this document describes the **founder** role (the host's own cadre). It applies only when `ownCadre.enabled` is true.
+
 ### Control-plane separation (load-bearing principle)
 
 There are two distinct planes, and conflating them is the mistake this section exists to prevent:
@@ -355,13 +374,13 @@ The SPA's settings page reads the full `host.config.json` (so it can show read-o
 | `upnpEnabled` | yes | Propagated to `NatService.putSettings` immediately |
 | `updates.autoApply` | yes | Propagated to `UpdateService.putSettings` |
 | `updates.manifestUrl` | yes | Propagated to `UpdateService.putSettings` (env var still wins) |
-| `uiPort`, `libp2pPort`, `dataDir`, `identityPath`, `installId`, `installedAt`, `installerVersion`, `version` | **no** | Edit at install time or directly in `host.config.json` and restart |
+| `uiPort`, `libp2pPort`, `dataDir`, `identityPath`, `installId`, `installedAt`, `installerVersion`, `version`, `ownCadre` | **no** | Structural — edit at install time or directly in `host.config.json` and restart. `ownCadre` (the donor/founder role) is install-time only. |
 
 Unknown keys → 400 `invalid_setting`.
 
 ### Honest gaps
 
-- `/api/nodes/:id/{start,restart}` are real **for the owner node** — they re-spawn it from the persisted `OwnerSpawnConfig`. Generic per-member node spawn-from-saved-config is out of scope and returns **501 not_implemented**; unknown ids 404. Stop on any running node works.
+- `/api/nodes/:id/{start,restart}` are real **for the owner node** (founder role) — they re-spawn it from the persisted `OwnerSpawnConfig`. In donor-only mode there is no owner node, so these no-op gracefully (unknown ids 404; the `owner` id with no saved config returns **501 not_implemented**). Generic per-member node spawn-from-saved-config is out of scope and returns **501 not_implemented**; unknown ids 404. Stop on any running node works.
 - **Signed `CadrePeer` delete works end-to-end.** `removeMember` / `DELETE /admin/members/:peerId` reaches the owner node and the node-side delete succeeds. The Quereus deferred-constraint bug it once hit ("No row context found for column PeerId") was fixed upstream (`quereus-cadrepeer-delete-no-row-context`, landed); the cadre-host remove-cycle integration test is now unskipped, and the cross-package `cadre-host-owner-node.integration.ts` scenario exercises the full add→remove cycle against a real cadre-cli child.
 - The SPA is shipped by `6.5.2-cadre-host-local-ui-spa`. It ships into `<package>/dist/ui/` and is mounted by the static handler. When `dist/ui/` is absent (e.g. running from a source checkout without `yarn build`), `/` returns a placeholder HTML pointing at the build instructions; the API continues to answer.
 
@@ -401,7 +420,7 @@ The dotted lines from `TC`/`NAT` to the owner node are the **management channel*
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
 - `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
-- CLI: `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, **spawns the admin's owner node as a managed child and delegates owner operations to it over the loopback admin channel** (`6.6`/`6.7`), brings up the trust-circle / NAT / update services, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`). `ui` prints + opens the local-UI URL.
+- CLI: `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, brings up the orchestrator + donation grant layer, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`) — this is the always-on **node-donor** path. **Only when `ownCadre.enabled`** (the opt-in founder role) does it additionally **spawn the host's own owner node as a managed child and delegate owner operations to it over the loopback admin channel** (`6.6`/`6.7`) and bring up the trust-circle / NAT services; otherwise `/auth/*` and `/nat/*` are inactive (see [Two roles: donor and founder](#two-roles-donor-and-founder)). `ui` prints + opens the local-UI URL.
 - Owner-node delegation (`6.7`): `OwnerNodeClient` (`src/owner/`) is an HTTP client of the node's loopback admin channel implementing the trust-circle + NAT `CadreNodeLike` shapes plus `pushInviteAddresses`. `TrustCircleService` and `NatService` hold this client instead of an in-process `ControlDatabase`; the manager never joins the control network. Unreachable-node failures surface as `node_unavailable` (→ 503), and trust-circle listing degrades to the local labels file.
 - `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
 - Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.

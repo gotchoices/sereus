@@ -9,6 +9,7 @@ import type { HostProcessOrchestrator } from '../../orchestrator/index.js';
 import type { TrustCircleService } from '../../auth/index.js';
 import type { NatService } from '../../nat/index.js';
 import type { NatStatusSnapshot } from '../../nat/types.js';
+import { GrantService, GrantStore } from '../../donation/index.js';
 
 function fakeOrchestrator(): HostProcessOrchestrator {
   return {
@@ -174,5 +175,79 @@ describe('createLocalUiServer smoke', () => {
     expect(res.status).toBe(404);
     const body = await res.json() as { error: { code: string } };
     expect(body.error.code).toBe('not_found');
+  });
+});
+
+// Donor-only mode: the common case (ownCadre.enabled=false). No owner node, so
+// no trustCircle / NAT are wired. The donor surface (/grants-admin) is up, and
+// the founder-only surfaces (/auth, /nat) 404 to keep the surface honest.
+describe('createLocalUiServer smoke — donor-only (no owner node)', () => {
+  let dataDir: string;
+  let server: ReturnType<typeof createLocalUiServer>;
+  let baseUrl: string;
+
+  beforeEach(async () => {
+    dataDir = mkdtempSync(join(tmpdir(), 'cadre-host-donor-'));
+    writeConfig(dataDir);
+    server = createLocalUiServer({
+      uiPort: 8765,
+      dataDir,
+      orchestrator: fakeOrchestrator(),
+      grants: new GrantService({ store: new GrantStore(dataDir) }),
+      forcePort: 0,
+    });
+    const { url } = await server.start();
+    baseUrl = url;
+  });
+
+  afterEach(async () => {
+    await server.stop();
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('serves /api/status with no trustCircle / connectivity and no nodes', async () => {
+    const res = await fetch(`${baseUrl}/api/status`);
+    expect(res.status).toBe(200);
+    const body = await res.json() as {
+      service: { name: string };
+      nodes: unknown[];
+      trustCircle?: unknown;
+      connectivity?: unknown;
+    };
+    expect(body.service.name).toBe('cadre-host');
+    expect(body.nodes).toEqual([]);
+    expect(body.trustCircle).toBeUndefined();
+    expect(body.connectivity).toBeUndefined();
+  });
+
+  it('serves the donor surface: POST /grants-admin issues a grant', async () => {
+    const res = await fetch(`${baseUrl}/grants-admin`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: "Alice's cadre", maxNodes: 2 }),
+    });
+    expect(res.status).toBe(200);
+    const body = await res.json() as { grant: { token: string; maxNodes: number } };
+    expect(body.grant.token).toBeTruthy();
+    expect(body.grant.maxNodes).toBe(2);
+  });
+
+  it('404s the founder-only NAT surface (GET /nat/status)', async () => {
+    const res = await fetch(`${baseUrl}/nat/status`);
+    expect(res.status).toBe(404);
+    const body = await res.json() as { error: { code: string } };
+    expect(body.error.code).toBe('not_found');
+  });
+
+  it('404s the founder-only trust-circle surface (/auth/*)', async () => {
+    const list = await fetch(`${baseUrl}/auth/trust-circle`);
+    expect(list.status).toBe(404);
+
+    const invite = await fetch(`${baseUrl}/auth/invites`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ label: 'Mom' }),
+    });
+    expect(invite.status).toBe(404);
   });
 });

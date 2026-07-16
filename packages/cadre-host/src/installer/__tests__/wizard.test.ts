@@ -7,6 +7,7 @@ const defaults: WizardDefaults = {
   uiPort: 8765,
   libp2pPort: 4001,
   upnpEnabled: true,
+  ownCadre: false,
 };
 
 function scripted(answers: ReadonlyArray<string>): (label: string, fallback: string) => Promise<string> {
@@ -19,13 +20,14 @@ function scripted(answers: ReadonlyArray<string>): (label: string, fallback: str
 
 describe('runWizardWith', () => {
   it('returns the defaults when every answer is blank', async () => {
-    const out = await runWizardWith(defaults, scripted(['', '', '', '', '']));
+    const out = await runWizardWith(defaults, scripted(['', '', '', '', '', '']));
     expect(out).toEqual({
       dataDir: '/data/cadre-host',
       uiPort: 8765,
       libp2pPort: 4001,
       upnpEnabled: true,
       configureDdns: false,
+      ownCadre: false,
     });
   });
 
@@ -36,6 +38,7 @@ describe('runWizardWith', () => {
       '5000',
       'n',
       'y',
+      'y',
     ]));
     expect(out).toEqual({
       dataDir: '/srv/host',
@@ -43,6 +46,7 @@ describe('runWizardWith', () => {
       libp2pPort: 5000,
       upnpEnabled: false,
       configureDdns: true,
+      ownCadre: true,
     });
   });
 

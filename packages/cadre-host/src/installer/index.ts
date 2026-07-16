@@ -58,6 +58,8 @@ export interface InstallOptions {
   libp2pPort?: number;
   /** Disable UPnP probing on first run. */
   noUpnp?: boolean;
+  /** Also run the host's own personal cadre here (founder persona). Default false. */
+  ownCadre?: boolean;
   /** Open browser at end (default true; suppressed by --no-browser or non-TTY). */
   openBrowser?: boolean;
   /** Skip the enrollment-invite step (no QR printed). */
@@ -146,6 +148,7 @@ export class Installer {
       installedAt: new Date().toISOString(),
       installerVersion: this.installerVersion,
       updates: { autoApply: false },
+      ownCadre: { enabled: answers.ownCadre },
     };
     const cfgPath = configPath(answers.dataDir);
     writeHostConfig(cfgPath, cfg);
@@ -228,6 +231,7 @@ export class Installer {
       libp2pPort: opts.libp2pPort ?? defaults.libp2pPort,
       upnpEnabled: opts.noUpnp ? false : defaults.upnpEnabled,
       configureDdns: false,
+      ownCadre: opts.ownCadre ?? defaults.ownCadre,
     };
   }
 
@@ -246,6 +250,7 @@ export class Installer {
       uiPort: opts.uiPort ?? platformDefaults.uiPort,
       libp2pPort: opts.libp2pPort ?? platformDefaults.libp2pPort,
       upnpEnabled: opts.noUpnp ? false : platformDefaults.upnpEnabled,
+      ownCadre: opts.ownCadre ?? platformDefaults.ownCadre,
     };
     const wizard = opts.wizard ?? runWizard;
     return await wizard(defaults);

@@ -16,6 +16,8 @@ export interface WizardDefaults {
   uiPort: number;
   libp2pPort: number;
   upnpEnabled: boolean;
+  /** Also run the host's own personal cadre here (founder persona). Default false. */
+  ownCadre: boolean;
 }
 
 export interface WizardAnswers {
@@ -24,6 +26,8 @@ export interface WizardAnswers {
   libp2pPort: number;
   upnpEnabled: boolean;
   configureDdns: boolean;
+  /** Also run the host's own personal cadre here (founder persona). */
+  ownCadre: boolean;
 }
 
 export const DEFAULT_UI_PORT = 8765;
@@ -35,6 +39,7 @@ export function defaultsForPlatform(platform: SupportedPlatform): WizardDefaults
     uiPort: DEFAULT_UI_PORT,
     libp2pPort: DEFAULT_LIBP2P_PORT,
     upnpEnabled: true,
+    ownCadre: false,
   };
 }
 
@@ -54,7 +59,13 @@ export async function runWizardWith(
     defaults.upnpEnabled,
   );
   const configureDdns = parseBool(await ask('Configure DDNS now? [y/N]', 'N'), false);
-  return { dataDir, uiPort, libp2pPort, upnpEnabled, configureDdns };
+  // Founder persona (opt-in). Most installs just donate nodes to friends and
+  // answer no — a no leaves cadre-host donor-only (no owner node, no /auth+/nat).
+  const ownCadre = parseBool(
+    await ask('Also run your own personal cadre on this machine? (most people just donating nodes to friends say no) [y/N]', defaults.ownCadre ? 'Y' : 'N'),
+    defaults.ownCadre,
+  );
+  return { dataDir, uiPort, libp2pPort, upnpEnabled, configureDdns, ownCadre };
 }
 
 /** Production entrypoint — drives the wizard over stdin/stdout. */

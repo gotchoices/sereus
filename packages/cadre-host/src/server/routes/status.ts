@@ -22,8 +22,10 @@ const PROCESS_STARTED_AT = process.hrtime.bigint();
 
 export interface StatusRouteOptions {
   orchestrator: HostProcessOrchestrator;
-  trustCircle: TrustCircleService;
-  nat: NatService;
+  /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
+  trustCircle?: TrustCircleService;
+  /** Present only when the host runs its own personal cadre (`ownCadre.enabled`). */
+  nat?: NatService;
   update?: UpdateService;
 }
 
@@ -35,8 +37,10 @@ export interface StatusResponse {
     status: ManagedNodeInfo['status'];
     profile: ManagedNodeInfo['profile'];
   }>;
-  trustCircle: { members: number; pending: number };
-  connectivity: NatStatusSnapshot;
+  /** Omitted in donor-only mode (no host-own trust circle). */
+  trustCircle?: { members: number; pending: number };
+  /** Omitted in donor-only mode (no NAT service). */
+  connectivity?: NatStatusSnapshot;
   update?: { available?: string; lastChecked?: string };
 }
 
@@ -50,8 +54,6 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
       status: n.status,
       profile: n.profile,
     }));
-    const tc = await opts.trustCircle.list();
-    const connectivity = opts.nat.getStatus();
 
     const response: StatusResponse = {
       service: {
@@ -60,9 +62,17 @@ export function registerStatusRoute(app: FastifyInstance, opts: StatusRouteOptio
         uptimeSeconds: secondsSince(PROCESS_STARTED_AT),
       },
       nodes,
-      trustCircle: { members: tc.members.length, pending: tc.pending.length },
-      connectivity,
     };
+
+    // Trust-circle + connectivity exist only when the host runs its own
+    // personal cadre; donor-only mode omits both.
+    if (opts.trustCircle) {
+      const tc = await opts.trustCircle.list();
+      response.trustCircle = { members: tc.members.length, pending: tc.pending.length };
+    }
+    if (opts.nat) {
+      response.connectivity = opts.nat.getStatus();
+    }
 
     if (opts.update) {
       const state = await opts.update.getState();

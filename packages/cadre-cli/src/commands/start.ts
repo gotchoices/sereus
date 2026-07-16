@@ -89,7 +89,7 @@ export const startCommand = new Command('start')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'After successful node.start(), write $CADRE_STARTUP_TOKEN to this file. Used by external orchestrators to verify the spawned child is the one they expected (vs a recycled PID).')
   .option('--identity-protobuf <path>', 'Load the node identity from a libp2p protobuf private key file (e.g. cadre-host\'s identity.key). Takes precedence over config identity.')
-  .option('--owner', 'Run as the owner node: initialize seed-bootstrap from the node identity and perform the idempotent genesis OwnerKey insert on a fresh party.')
+  .option('--owner', 'Run as the owner of this node\'s OWN cadre: initialize seed-bootstrap from the node identity and perform the idempotent genesis OwnerKey insert on a fresh party. This is the founder persona (e.g. cadre-host with ownCadre enabled running its operator\'s personal cadre) — NOT a node donated to a requester. Donated nodes are generic and pin the requester\'s owner key via --pin-owner-key instead.')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
   .option('--pin-owner-key <b64url>', 'Pin a base64url owner key as a cold-start seed-trust anchor (repeatable; unions with CADRE_OWNER_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
   .action(async (options) => {

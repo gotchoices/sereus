@@ -117,7 +117,7 @@ describe('Installer smoke', () => {
     // returned answers stand on their own.
     const fake = new FakeServiceHost();
     const installer = new Installer({ platform: 'linux' });
-    let seenDefaults: { dataDir: string; uiPort: number; libp2pPort: number; upnpEnabled: boolean } | undefined;
+    let seenDefaults: { dataDir: string; uiPort: number; libp2pPort: number; upnpEnabled: boolean; ownCadre: boolean } | undefined;
     await installer.install({
       nonInteractive: false,
       dataDir: tmp,
@@ -136,6 +136,7 @@ describe('Installer smoke', () => {
           libp2pPort: defaults.libp2pPort,
           upnpEnabled: defaults.upnpEnabled,
           configureDdns: false,
+          ownCadre: defaults.ownCadre,
         };
       },
     });
@@ -145,6 +146,7 @@ describe('Installer smoke', () => {
       uiPort: 19997,
       libp2pPort: 14003,
       upnpEnabled: false,
+      ownCadre: false,
     });
     expect(fake.installCalls).toHaveLength(1);
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
@@ -166,10 +168,38 @@ describe('Installer smoke', () => {
         libp2pPort: 14004,
         upnpEnabled: true,
         configureDdns: false,
+        ownCadre: false,
       }),
     });
     expect(fake.installCalls).toHaveLength(1);
     expect(fake.installCalls[0]!.dataDir).toBe(tmp);
+  });
+
+  it('writes ownCadre.enabled=false by default and true when opted in', async () => {
+    const { readHostConfig } = await import('../config.js');
+
+    // Default (donor-only): --own-cadre absent → ownCadre.enabled false.
+    const fakeA = new FakeServiceHost();
+    const installerA = new Installer({ platform: 'linux' });
+    await installerA.install({
+      nonInteractive: true, dataDir: tmp, openBrowser: false, noInvite: true, serviceHost: fakeA,
+    });
+    const donorCfg = readHostConfig(join(tmp, 'host.config.json'));
+    expect(donorCfg.ownCadre).toEqual({ enabled: false });
+
+    // Opt-in: ownCadre:true (the --own-cadre flag) → ownCadre.enabled true.
+    const tmp2 = mkdtempSync(join(tmpdir(), 'cadre-host-installer-owncadre-'));
+    try {
+      const fakeB = new FakeServiceHost();
+      const installerB = new Installer({ platform: 'linux' });
+      await installerB.install({
+        nonInteractive: true, dataDir: tmp2, ownCadre: true, openBrowser: false, noInvite: true, serviceHost: fakeB,
+      });
+      const founderCfg = readHostConfig(join(tmp2, 'host.config.json'));
+      expect(founderCfg.ownCadre).toEqual({ enabled: true });
+    } finally {
+      rmSync(tmp2, { recursive: true, force: true });
+    }
   });
 
   it('re-running install preserves the existing identity', async () => {

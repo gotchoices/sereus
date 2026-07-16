@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { readHostConfig, writeHostConfig, type HostConfigFile } from '../config.js';
+import { readHostConfig, writeHostConfig, hostOwnsCadre, type HostConfigFile } from '../config.js';
 
 describe('host.config.json round-trip', () => {
   let tmp: string;
@@ -82,5 +82,31 @@ describe('host.config.json round-trip', () => {
   it('refuses to write the wrong version', () => {
     const path = join(tmp, 'host.config.json');
     expect(() => writeHostConfig(path, { ...makeCfg(), version: 3 as never })).toThrow(/version=3/);
+  });
+
+  it('round-trips ownCadre and hostOwnsCadre reflects it', () => {
+    const path = join(tmp, 'host.config.json');
+    const cfg = makeCfg({ ownCadre: { enabled: true } });
+    writeHostConfig(path, cfg);
+    const read = readHostConfig(path);
+    expect(read.ownCadre).toEqual({ enabled: true });
+    expect(hostOwnsCadre(read)).toBe(true);
+  });
+
+  it('treats an absent ownCadre as donor-only (hostOwnsCadre false)', () => {
+    // A pre-ownCadre v2 config (field absent) must read back cleanly and be
+    // donor-only — no migration, field stays absent.
+    const path = join(tmp, 'host.config.json');
+    const cfg = makeCfg();
+    writeHostConfig(path, cfg);
+    const read = readHostConfig(path);
+    expect(read.ownCadre).toBeUndefined();
+    expect(hostOwnsCadre(read)).toBe(false);
+  });
+
+  it('rejects a malformed ownCadre shape', () => {
+    const path = join(tmp, 'host.config.json');
+    writeFileSync(path, JSON.stringify({ ...makeCfg(), ownCadre: { enabled: 'yes' } }));
+    expect(() => readHostConfig(path)).toThrow(/missing required fields/);
   });
 });

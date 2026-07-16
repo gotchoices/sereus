@@ -47,8 +47,18 @@ export interface LocalUiServerOptions {
   dataDir: string;
   /** Wired dependencies — all owned by the caller. */
   orchestrator: HostProcessOrchestrator;
-  trustCircle: TrustCircleService;
-  nat: NatService;
+  /**
+   * Trust-circle service — present only when the host runs its own personal
+   * cadre (`ownCadre.enabled`). Absent in donor-only mode, where `/auth/*`
+   * stays unmounted and 404s.
+   */
+  trustCircle?: TrustCircleService;
+  /**
+   * NAT service — present only when the host runs its own personal cadre.
+   * Absent in donor-only mode (loopback-only in v1), where `/nat/*` stays
+   * unmounted and 404s.
+   */
+  nat?: NatService;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
   /**
@@ -108,15 +118,22 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
 
   registerStatusRoute(app, {
     orchestrator: opts.orchestrator,
-    trustCircle: opts.trustCircle,
-    nat: opts.nat,
+    ...(opts.trustCircle ? { trustCircle: opts.trustCircle } : {}),
+    ...(opts.nat ? { nat: opts.nat } : {}),
     ...(opts.update ? { update: opts.update } : {}),
   });
   registerNodesRoutes(app, { orchestrator: opts.orchestrator });
-  registerSettingsRoutes(app, { settingsStore, nat: opts.nat, ...(opts.update ? { update: opts.update } : {}) });
+  registerSettingsRoutes(app, { settingsStore, ...(opts.nat ? { nat: opts.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
 
-  registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(opts.trustCircle), events });
-  registerNatRoutes(app, { handlers: createNatHandlers(opts.nat), events });
+  // Trust-circle + NAT surfaces exist only when the host runs its own personal
+  // cadre. In donor-only mode they're left unmounted, so `/auth/*` and `/nat/*`
+  // fall through to the static not-found handler and 404 (see static.ts).
+  if (opts.trustCircle) {
+    registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(opts.trustCircle), events });
+  }
+  if (opts.nat) {
+    registerNatRoutes(app, { handlers: createNatHandlers(opts.nat), events });
+  }
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
   }
@@ -159,16 +176,19 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
       );
 
       // One-shot connectivity publish — the SPA will get a sane initial
-      // signal even if no settings have changed yet this session.
-      try {
-        const snap = opts.nat.getStatus();
-        events.publish({
-          type: 'connectivity-changed',
-          portMode: snap.portMode,
-          directReachability: snap.directReachability,
-        });
-      } catch {
-        // NatService.start may not have completed; harmless to skip.
+      // signal even if no settings have changed yet this session. Skipped in
+      // donor-only mode, where there is no NatService.
+      if (opts.nat) {
+        try {
+          const snap = opts.nat.getStatus();
+          events.publish({
+            type: 'connectivity-changed',
+            portMode: snap.portMode,
+            directReachability: snap.directReachability,
+          });
+        } catch {
+          // NatService.start may not have completed; harmless to skip.
+        }
       }
 
       // Update observer: poll UpdateService.getState() every 60 s and emit

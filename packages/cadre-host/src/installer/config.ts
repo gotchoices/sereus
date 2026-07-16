@@ -22,6 +22,21 @@ export interface UpdatesConfig {
 }
 
 /**
+ * Whether this host also runs its own personal cadre (the opt-in "founder"
+ * persona), on top of the always-on node-donor role.
+ *
+ * Default (absent or `enabled: false`) is donor-only: `cadre-host start` brings
+ * up the donation surface but spawns **no** owner node, so the trust-circle and
+ * NAT surfaces stay inactive. Set `enabled: true` (install-time choice) to also
+ * spawn the host's own owner node and enable `/auth` + `/nat`. See
+ * docs/cadre-host.md § Two roles: donor and founder.
+ */
+export interface OwnCadreConfig {
+  /** When true, `start` spawns the host-owned owner node + trust-circle + NAT. */
+  enabled: boolean;
+}
+
+/**
  * Non-secret push (FCM/APNs) settings. The actual private keys (and the FCM
  * service-account / APNs key identifiers) live in the secret store — see
  * `src/push/`. Only these app-config bits, which are safe to keep in plaintext
@@ -62,11 +77,26 @@ export interface HostConfigFile {
   /** Update-flow settings; defaults: { autoApply: false }. */
   updates: UpdatesConfig;
   /**
+   * Host-own-cadre (founder persona) opt-in. Optional — absent is treated as
+   * `{ enabled: false }` (donor-only). Written by the installer; read via
+   * `hostOwnsCadre()`. Not editable through /api/settings (install-time only).
+   */
+  ownCadre?: OwnCadreConfig;
+  /**
    * Non-secret push settings (bundle id, sandbox/prod toggle, cooldown/debounce).
    * Optional — absent when push is not configured. Private keys never live here;
    * they are read from the secret store at node-spawn time (`src/push/`).
    */
   push?: PushSettings;
+}
+
+/**
+ * Whether this host runs its own personal cadre (founder persona). Absent
+ * `ownCadre` ⇒ donor-only (false). The single source of truth for the
+ * founder/donor gate in `bin/host.ts start`.
+ */
+export function hostOwnsCadre(cfg: HostConfigFile): boolean {
+  return cfg.ownCadre?.enabled === true;
 }
 
 const CURRENT_VERSION = 2;
@@ -175,5 +205,9 @@ function isHostConfigShape(v: unknown): v is HostConfigFile {
   if (!updates || typeof updates !== 'object') return false;
   if (typeof updates.autoApply !== 'boolean') return false;
   if (updates.manifestUrl !== undefined && typeof updates.manifestUrl !== 'string') return false;
+  if (o.ownCadre !== undefined) {
+    const own = o.ownCadre as Record<string, unknown>;
+    if (!own || typeof own !== 'object' || typeof own.enabled !== 'boolean') return false;
+  }
   return true;
 }

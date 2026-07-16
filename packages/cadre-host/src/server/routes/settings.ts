@@ -21,14 +21,19 @@ import type { NatService } from '../../nat/index.js';
 import type { UpdateService } from '../../update/index.js';
 import type { HostSettingsStore } from '../settings-store.js';
 
-const FORBIDDEN_KEYS = new Set<string>(['uiPort', 'libp2pPort', 'dataDir', 'identityPath', 'installId', 'installedAt', 'installerVersion', 'version']);
+const FORBIDDEN_KEYS = new Set<string>(['uiPort', 'libp2pPort', 'dataDir', 'identityPath', 'installId', 'installedAt', 'installerVersion', 'version', 'ownCadre']);
 
 const WRITABLE_TOP_KEYS = new Set<string>(['upnpEnabled', 'updates']);
 const WRITABLE_UPDATES_KEYS = new Set<string>(['autoApply', 'manifestUrl']);
 
 export interface SettingsRoutesOptions {
   settingsStore: HostSettingsStore;
-  nat: NatService;
+  /**
+   * Present only when the host runs its own personal cadre. In donor-only mode
+   * an `upnpEnabled` write still persists to host.config.json but has no running
+   * NatService to propagate into.
+   */
+  nat?: NatService;
   update?: UpdateService;
 }
 
@@ -58,7 +63,10 @@ export function registerSettingsRoutes(app: FastifyInstance, opts: SettingsRoute
       // takes effect immediately. NatService persists into nat.json — that's
       // independent of host.config.json's `upnpEnabled` (which the installer
       // uses on first run to seed nat.json). Update both for consistency.
-      await nat.putSettings({ upnpEnabled: body.upnpEnabled as boolean });
+      // In donor-only mode there is no NatService — the write still persists.
+      if (nat) {
+        await nat.putSettings({ upnpEnabled: body.upnpEnabled as boolean });
+      }
     }
     if ('updates' in body) {
       const updates = body.updates as { autoApply?: boolean; manifestUrl?: string };
