@@ -2,6 +2,9 @@ description: A test that checks whether a party's control database replicates a 
 blocked-reason: external-dependency (../optimystic p2p substrate)
 files:
   - packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts
+  - packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts
+  - packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts
+  - ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts
   - ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts
   - ../optimystic/packages/db-core/src/transactor/network-transactor.ts
   - docs/STATUS.md
@@ -53,6 +56,25 @@ Prior triage also observed a run that failed *only* with `StreamResetError` (no
 validator rejection), and a run that failed *only* with the 2/2
 `membership-not-admitted:low-confidence-downsize` rejection — two distinct p2p-layer
 failure modes for the same test.
+
+## Also-affected tests (same external root cause)
+
+Later triage (2026-07-16, HEAD `7fbbb0c`) reproduced the *identical* validator rejection
+(`membership-not-admitted:low-confidence-downsize`, 2/2, from optimystic
+`ClusterCoordinator.executeTransaction` → `NetworkTransactor.pend:502`) in two more suites,
+so they attach here rather than getting fresh tickets:
+
+- `packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts`
+  > Closed-strand membership lifecycle (real two-node strand) > founds a closed strand, admits
+  a second member, and gates writes by membership
+- `packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts` > `connectToStrand (networked e2e)`
+  (4 cases: late-joining peer catch-up, peer A keeps serving reads after B shuts down, plus 2 more)
+
+The `networked.e2e.spec.ts` cases do **not** exercise the strand Authority/Manager RBAC role at
+all yet fail with the same cluster-admission rejection — confirming a systemic two-node p2p
+convergence defect, independent of any Sereus strand/role code. The emitter is optimystic
+`db-p2p/src/cluster/cluster-repo.ts` (the only source of that string; no Sereus source emits it).
+All three go green together once the optimystic-side fix below lands.
 
 ## Root cause (external)
 
