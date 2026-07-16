@@ -22,7 +22,7 @@ export async function generateStrandMemberKey(): Promise<string> {
  * base64url keypair the strand RBAC constraints consume.
  *
  * The `Strand` control-layer `MemberPrivateKey` is the closed-strand read-gating
- * secret; the founding `Member.Key`/`Authority.MemberKey` (the strand RBAC layer)
+ * secret; the founding `Member.Key`/`Manager.MemberKey` (the strand RBAC layer)
  * are *derived from it* — they are the `publicKeyB64` of the keypair this returns.
  * Decode the protobuf to a libp2p private key, then reuse
  * {@link ed25519KeyPairFromLibp2p} so the same seed→public derivation used for node
@@ -30,7 +30,7 @@ export async function generateStrandMemberKey(): Promise<string> {
  * key a later strand signature verifies against.
  *
  * @param memberPrivateKey - The strand's `MemberPrivateKey` (base64 protobuf).
- * @returns The base64url seed/public-key pair for founding membership/authority.
+ * @returns The base64url seed/public-key pair for founding membership/manager.
  * @throws If the decoded key is not Ed25519 or the raw bytes are malformed.
  */
 export function strandMemberKeyPair(memberPrivateKey: string): Ed25519KeyPair {

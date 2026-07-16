@@ -6,7 +6,7 @@ import type { Ed25519KeyPair } from './ed25519-key.js';
 import {
   verifyStrandPayload,
   consumeInvite,
-  addMemberByAuthority,
+  addMemberByManager,
 } from './strand-membership-writer.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 
@@ -37,10 +37,10 @@ export type StrandAdmission =
       readonly invitePrivateKey: string;
     }
   | {
-      /** Admit directly by authority signature (the authority-side join). */
-      readonly mode: 'authority';
-      /** The admitting authority's strand keypair. */
-      readonly authorityKeyPair: Ed25519KeyPair;
+      /** Admit directly by manager signature (the manager-side join). */
+      readonly mode: 'manager';
+      /** The admitting manager's strand keypair. */
+      readonly managerKeyPair: Ed25519KeyPair;
     };
 
 /**
@@ -115,8 +115,8 @@ export class StrandMemberVerifier implements MemberVerifier {
  * `Member.Authorized` is taken:
  * - `invite`  → {@link consumeInvite} (atomic `Member` + `ConsumedInvite`), the
  *   invitee-side flow that redeems a single-use invite.
- * - `authority` → {@link addMemberByAuthority}, the authority-side flow that
- *   seats a member already trusted by an authority.
+ * - `manager` → {@link addMemberByManager}, the manager-side flow that
+ *   seats a member already trusted by a manager.
  *
  * Scoped to one strand's db; the `strandId` argument is accepted for interface
  * compatibility but writes target this db's `Strand.*` tables.
@@ -152,8 +152,8 @@ export class StrandMemberRegistry implements MemberRegistry {
       return;
     }
 
-    await addMemberByAuthority(this.db, {
-      authorityKeyPair: this.admission.authorityKeyPair,
+    await addMemberByManager(this.db, {
+      managerKeyPair: this.admission.managerKeyPair,
       memberKey,
     });
   }

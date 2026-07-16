@@ -584,7 +584,7 @@ Each party runs its own **control network** (cadre coordination is party-private
 | Membership | Any peer can join | Invitation required |
 | Read access | Unrestricted | Members only |
 | Write access | Controlled by sApp schema | Controlled by sApp schema + membership |
-| Strand schema tables | Header only | Header + Invite + ConsumedInvite + Member + MemberPeer + Authority |
+| Strand schema tables | Header only | Header + Invite + ConsumedInvite + Member + MemberPeer + Manager |
 | Use case | Public channels, announcements | Private chats, group DMs |
 
 ### Strand Formation Flow (cross-party)

@@ -106,7 +106,7 @@ async function openStrandDb(
   };
 }
 
-async function count(db: Database, table: 'Header' | 'Member' | 'Authority'): Promise<number> {
+async function count(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
     return (row as { c: number }).c;
   }
@@ -133,7 +133,7 @@ describe('bootstrapFounderMembership', () => {
     }
   });
 
-  it('closed strand: writes exactly one Header(c), Member, and Authority sharing the founder key', async () => {
+  it('closed strand: writes exactly one Header(c), Member, and Manager sharing the founder key', async () => {
     open = await openStrandDb();
     const { db, strandId } = open;
     const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
@@ -143,7 +143,7 @@ describe('bootstrapFounderMembership', () => {
 
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Authority')).toBe(1);
+    expect(await count(db, 'Manager')).toBe(1);
 
     const header = await db.get('select * from Strand.Header');
     expect(header?.Id).toBe(strandId);
@@ -155,14 +155,14 @@ describe('bootstrapFounderMembership', () => {
     expect(header?.Engine).toBe(STRAND_ENGINE);
     expect(header?.EngineVersion).toBe(STRAND_ENGINE_VERSION);
 
-    // Member.Key === Authority.MemberKey === the derived founder public key.
+    // Member.Key === Manager.MemberKey === the derived founder public key.
     const member = await db.get('select Key from Strand.Member');
-    const authority = await db.get('select MemberKey from Strand.Authority');
+    const manager = await db.get('select MemberKey from Strand.Manager');
     expect(member?.Key).toBe(founderKeyPair.publicKeyB64);
-    expect(authority?.MemberKey).toBe(founderKeyPair.publicKeyB64);
+    expect(manager?.MemberKey).toBe(founderKeyPair.publicKeyB64);
   }, 30_000);
 
-  it('open strand: writes a Header(o) only — no Member/Authority (OnlyClosed)', async () => {
+  it('open strand: writes a Header(o) only — no Member/Manager (OnlyClosed)', async () => {
     open = await openStrandDb();
     const { db, strandId } = open;
 
@@ -170,7 +170,7 @@ describe('bootstrapFounderMembership', () => {
 
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Authority')).toBe(0);
+    expect(await count(db, 'Manager')).toBe(0);
 
     const header = await db.get('select Type from Strand.Header');
     expect(header?.Type).toBe('o');
@@ -189,7 +189,7 @@ describe('bootstrapFounderMembership', () => {
 
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Authority')).toBe(1);
+    expect(await count(db, 'Manager')).toBe(1);
   }, 30_000);
 
   it('is idempotent across a reopen: a fresh DB over persisted storage re-runs without duplicating rows', async () => {
@@ -210,7 +210,7 @@ describe('bootstrapFounderMembership', () => {
     const { db } = open;
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Authority')).toBe(1);
+    expect(await count(db, 'Manager')).toBe(1);
 
     // Re-running the founder bootstrap against the reopened DB (the real
     // cross-process restart path) is a no-op — the count guards see the hydrated
@@ -218,7 +218,7 @@ describe('bootstrapFounderMembership', () => {
     await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Authority')).toBe(1);
+    expect(await count(db, 'Manager')).toBe(1);
   }, 30_000);
 
   it('coalesces a missing sApp signature to empty string (NOT NULL Header column)', async () => {
@@ -233,7 +233,7 @@ describe('bootstrapFounderMembership', () => {
     expect(header?.sAppSignature).toBe('');
   }, 30_000);
 
-  it('throws for a closed strand with no founder key pair (would seat no authority)', async () => {
+  it('throws for a closed strand with no founder key pair (would seat no manager)', async () => {
     open = await openStrandDb();
     const { db, strandId } = open;
 
@@ -242,9 +242,9 @@ describe('bootstrapFounderMembership', () => {
     ).rejects.toThrow(/no founder key pair/i);
 
     // Fail-before-write: no closed Header is left stranded without a founding
-    // Member/Authority (which could never admit anyone).
+    // Member/Manager (which could never admit anyone).
     expect(await count(db, 'Header')).toBe(0);
     expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Authority')).toBe(0);
+    expect(await count(db, 'Manager')).toBe(0);
   }, 30_000);
 });

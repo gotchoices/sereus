@@ -12,7 +12,7 @@
  * here as `App.Items`. We assert ONLY against the sApp's own `App.Items` constraints.
  *
  * It is INDEPENDENT of the Strand-level membership schema work (applying
- * `schemas/strand.qsql`'s `Member`/`Invite`/`Authority` tables) tracked by the plan
+ * `schemas/strand.qsql`'s `Member`/`Invite`/`Manager` tables) tracked by the plan
  * ticket `strand-membership-rbac-schema-not-applied` — a different layer. Do NOT
  * assert against `Strand.*` tables here, and do NOT make this scenario wait on that
  * ticket. sApp schema-signature rejection (unsigned/tampered SAppConfig) is likewise

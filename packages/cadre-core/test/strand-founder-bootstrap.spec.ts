@@ -39,7 +39,7 @@ function startConfig(strandRow: StrandRow, founder: boolean): StartStrandConfig 
   };
 }
 
-async function count(db: Database, table: 'Header' | 'Member' | 'Authority'): Promise<number> {
+async function count(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
     return (row as { c: number }).c;
   }
@@ -56,7 +56,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     }
   });
 
-  it('founder of a closed strand seats Header + founding Member/Authority from MemberPrivateKey', async () => {
+  it('founder of a closed strand seats Header + founding Member/Manager from MemberPrivateKey', async () => {
     manager = new StrandInstanceManager();
     const memberPrivateKey = await generateStrandMemberKey();
     const strandRow: StrandRow = { Id: 'founder-closed', MemberPrivateKey: memberPrivateKey, Type: 'c' };
@@ -67,13 +67,13 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     const db = instance.database!.getDatabase();
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Authority')).toBe(1);
+    expect(await count(db, 'Manager')).toBe(1);
 
     const expectedKey = strandMemberKeyPair(memberPrivateKey).publicKeyB64;
     const member = await db.get('select Key from Strand.Member');
-    const authority = await db.get('select MemberKey from Strand.Authority');
+    const managerRow = await db.get('select MemberKey from Strand.Manager');
     expect(member?.Key).toBe(expectedKey);
-    expect(authority?.MemberKey).toBe(expectedKey);
+    expect(managerRow?.MemberKey).toBe(expectedKey);
   }, 30_000);
 
   it('joiner of a closed strand writes nothing locally (founder:false)', async () => {
@@ -88,10 +88,10 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     // No bootstrap ran: the rows would arrive via sync in a real cadre.
     expect(await count(db, 'Header')).toBe(0);
     expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Authority')).toBe(0);
+    expect(await count(db, 'Manager')).toBe(0);
   }, 30_000);
 
-  it('founder of an open strand seats only a Header(o) — no Member/Authority', async () => {
+  it('founder of an open strand seats only a Header(o) — no Member/Manager', async () => {
     manager = new StrandInstanceManager();
     const strandRow: StrandRow = { Id: 'founder-open', MemberPrivateKey: null, Type: 'o' };
 
@@ -101,7 +101,7 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     const db = instance.database!.getDatabase();
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Authority')).toBe(0);
+    expect(await count(db, 'Manager')).toBe(0);
 
     const header = await db.get('select Type from Strand.Header');
     expect(header?.Type).toBe('o');

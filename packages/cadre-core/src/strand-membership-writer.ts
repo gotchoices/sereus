@@ -31,7 +31,7 @@ export const STRAND_ENGINE_VERSION = '0.1.0';
  *
  * `schemas/strand.qsql` signs a single SHA-256 digest over a `'|'`-joined payload
  * (e.g. `Member.Authorized` verifies
- * `verify(digest(new.Key), context.AuthoritySignature, A.MemberKey, 'ed25519')`).
+ * `verify(digest(new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')`).
  * So the signer hashes the payload to raw bytes and ed25519-signs *those bytes*:
  * SQL `digest(...)`'s default output is base64url and `verify(...)`'s default
  * `inputEncoding` is base64url, so signer and verifier operate on identical bytes.
@@ -77,13 +77,13 @@ export function verifyStrandPayload(payload: string, signatureB64: string, publi
 export interface FounderBootstrapParams {
   /** The strand id — written to `Header.Id`. */
   strandId: string;
-  /** Strand type: `'o'` (open, Header only) or `'c'` (closed, Header+Member+Authority). */
+  /** Strand type: `'o'` (open, Header only) or `'c'` (closed, Header+Member+Manager). */
   type: 'o' | 'c';
   /** The sApp config whose id/version/schema/signature populate the Header. */
   sApp: SAppConfig;
   /**
    * The founder's derived strand keypair (from {@link strandMemberKeyPair}). Its
-   * `publicKeyB64` becomes the founding `Member.Key` and `Authority.MemberKey`.
+   * `publicKeyB64` becomes the founding `Member.Key` and `Manager.MemberKey`.
    * Required for a closed strand; ignored for an open strand.
    */
   founderKeyPair?: Ed25519KeyPair;
@@ -96,7 +96,7 @@ export interface FounderBootstrapParams {
  * so the interpolation is not an injection surface — it just keeps the singleton
  * insert-if-absent guards terse.
  */
-async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Authority'): Promise<number> {
+async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as Count from Strand.${table}`)) {
     return (row.Count as number) ?? 0;
   }
@@ -139,7 +139,7 @@ async function insertHeaderIfAbsent(db: Database, params: FounderBootstrapParams
  * Insert the founding `Strand.Member` if no member exists yet.
  *
  * The empty-table state satisfies the `count(1) from Member <= 1` bootstrap branch
- * of `Member.Authorized`, so no authority signature is needed — the context fields
+ * of `Member.Authorized`, so no manager signature is needed — the context fields
  * are explicit nulls. Guarding on the count makes this idempotent: a re-run (the
  * founder re-`addStrand`/`resumeStrand`) finds the member present and skips.
  */
@@ -150,7 +150,7 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
   }
   await db.exec(
     `insert into Strand.Member (Key)
-       with context AuthorityKey = null, AuthoritySignature = null
+       with context ManagerKey = null, ManagerSignature = null
        values (?)`,
     [memberKey],
   );
@@ -158,26 +158,26 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
 }
 
 /**
- * Insert the founding `Strand.Authority` if no authority exists yet.
+ * Insert the founding `Strand.Manager` if no manager exists yet.
  *
- * The empty-table state satisfies the `count(1) from Authority <= 1` bootstrap
- * branch of `Authority.Authorized`, so no signature is needed. Idempotent via the
- * same count guard. Must run AFTER the Header insert: `Authority.OnlyClosed` is a
+ * The empty-table state satisfies the `count(1) from Manager <= 1` bootstrap
+ * branch of `Manager.Authorized`, so no signature is needed. Idempotent via the
+ * same count guard. Must run AFTER the Header insert: `Manager.OnlyClosed` is a
  * deferred (subquery) check evaluated at commit, and the sequential auto-commit
- * Header→Member→Authority order ensures the closed `Header` is committed first.
+ * Header→Member→Manager order ensures the closed `Header` is committed first.
  */
-async function insertFounderAuthorityIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
-  if (await strandTableCount(db, 'Authority') > 0) {
-    log('Authority already present for strand %s; skipping founder Authority', strandId);
+async function insertFounderManagerIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
+  if (await strandTableCount(db, 'Manager') > 0) {
+    log('Manager already present for strand %s; skipping founder Manager', strandId);
     return;
   }
   await db.exec(
-    `insert into Strand.Authority (MemberKey)
-       with context AuthorityKey = null, Signature = null
+    `insert into Strand.Manager (MemberKey)
+       with context ManagerKey = null, Signature = null
        values (?)`,
     [memberKey],
   );
-  log('Inserted founding Authority for strand %s', strandId);
+  log('Inserted founding Manager for strand %s', strandId);
 }
 
 /**
@@ -189,16 +189,16 @@ async function insertFounderAuthorityIfAbsent(db: Database, memberKey: string, s
  * restart / founder re-`addStrand` is a no-op and never double-inserts.
  *
  * Behavior by strand type:
- * - **Open (`'o'`)**: insert `Header` only. `Member`/`Authority`/`Invite` are
+ * - **Open (`'o'`)**: insert `Header` only. `Member`/`Manager`/`Invite` are
  *   `OnlyClosed` and would trip that constraint — they are skipped entirely.
  * - **Closed (`'c'`)**: insert `Header(Type='c')`, then the founding `Member`
- *   (`Key = founderKeyPair.publicKeyB64`), then the founding `Authority`
+ *   (`Key = founderKeyPair.publicKeyB64`), then the founding `Manager`
  *   (`MemberKey = founderKeyPair.publicKeyB64`). Insert order matters: the
- *   Header must commit before the deferred `OnlyClosed` checks on Member/Authority
+ *   Header must commit before the deferred `OnlyClosed` checks on Member/Manager
  *   evaluate at commit.
  *
  * A closed strand with no `founderKeyPair` throws: a closed strand with no founding
- * Authority could never admit anyone, so failing loudly here (which propagates out
+ * Manager could never admit anyone, so failing loudly here (which propagates out
  * of `StrandDatabase.initialize()` and triggers the runtime's rollback) is correct.
  *
  * @param db - The strand's Quereus database (schema already applied).
@@ -211,26 +211,26 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
   log('Founder bootstrap for strand %s (type %s)', strandId, type);
 
   // Validate BEFORE writing anything: a closed strand with no founder key must
-  // fail without leaving a closed `Header` that has no founding Member/Authority
+  // fail without leaving a closed `Header` that has no founding Member/Manager
   // (such a strand could never admit anyone).
   if (type === 'c' && !founderKeyPair) {
     throw new Error(
       `Cannot bootstrap closed strand ${strandId}: no founder key pair derived from MemberPrivateKey. ` +
-      'A closed strand needs a founding Member + Authority or it can never admit members.',
+      'A closed strand needs a founding Member + Manager or it can never admit members.',
     );
   }
 
-  // Header is written for every strand; Member/Authority are closed-only.
+  // Header is written for every strand; Member/Manager are closed-only.
   await insertHeaderIfAbsent(db, params);
 
   if (type === 'o') {
-    // Open strand: Member/Authority/Invite are OnlyClosed — nothing else to write.
+    // Open strand: Member/Manager/Invite are OnlyClosed — nothing else to write.
     return;
   }
 
   const memberKey = founderKeyPair!.publicKeyB64;
   await insertFounderMemberIfAbsent(db, memberKey, strandId);
-  await insertFounderAuthorityIfAbsent(db, memberKey, strandId);
+  await insertFounderManagerIfAbsent(db, memberKey, strandId);
   log('Founder bootstrap complete for closed strand %s', strandId);
 }
 
@@ -239,10 +239,10 @@ export async function bootstrapFounderMembership(db: Database, params: FounderBo
 /** Parameters for {@link issueInvite}. */
 export interface IssueInviteParams {
   /**
-   * The issuing authority's strand keypair. Its `publicKeyB64` must already be a
-   * `Strand.Authority` row (the `InviteValid` constraint rejects a non-authority).
+   * The issuing manager's strand keypair. Its `publicKeyB64` must already be a
+   * `Strand.Manager` row (the `InviteValid` constraint rejects a non-manager).
    */
-  authorityKeyPair: Ed25519KeyPair;
+  managerKeyPair: Ed25519KeyPair;
   /**
    * Optional invite expiry as epoch milliseconds. When set, it is canonicalised
    * via {@link canonicalDatetime} so the signed payload segment byte-matches the
@@ -270,10 +270,10 @@ export interface IssuedInvite {
  *
  * Generates a fresh invite ed25519 keypair (the public key becomes `Invite.Key`),
  * builds the constraint's payload (`Key || '|' || coalesce(Expiration, '')`), and
- * signs it TWICE: with the authority private key (→ `AuthoritySignature`, proving
- * an authority issued it) and with the invite private key (→ `InviteSignature`,
+ * signs it TWICE: with the manager private key (→ `ManagerSignature`, proving
+ * a manager issued it) and with the invite private key (→ `InviteSignature`,
  * proving the issuer actually holds the invite secret). Both signatures plus the
- * authority public key are bound as constraint context for the `Invite` insert.
+ * manager public key are bound as constraint context for the `Invite` insert.
  *
  * The returned `invitePrivateKey` is the only secret the invitee needs to redeem
  * the invite — it is NOT stored in the strand (only `Invite.Key`, the public half,
@@ -281,11 +281,11 @@ export interface IssuedInvite {
  * is `InviteKey`, so a given invite can be consumed at most once.
  *
  * @param db - The closed strand's database (founder already bootstrapped).
- * @param params - The issuing authority keypair and optional expiry.
+ * @param params - The issuing manager keypair and optional expiry.
  * @returns The invite public key and the out-of-band private seed.
  */
 export async function issueInvite(db: Database, params: IssueInviteParams): Promise<IssuedInvite> {
-  const { authorityKeyPair, expiration } = params;
+  const { managerKeyPair, expiration } = params;
 
   const invitePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
   const inviteKey = getPublicKey(invitePrivateKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -296,14 +296,14 @@ export async function issueInvite(db: Database, params: IssueInviteParams): Prom
   const expirationColumn = expiration == null ? null : expirationSegment;
 
   const payload = `${inviteKey}|${expirationSegment}`;
-  const authoritySignature = signStrandPayload(payload, authorityKeyPair.privateKeyB64);
+  const managerSignature = signStrandPayload(payload, managerKeyPair.privateKeyB64);
   const inviteSignature = signStrandPayload(payload, invitePrivateKey);
 
   await db.exec(
     `insert into Strand.Invite (Key, Expiration)
-       with context AuthorityKey = ?, AuthoritySignature = ?, InviteSignature = ?
+       with context ManagerKey = ?, ManagerSignature = ?, InviteSignature = ?
        values (?, ?)`,
-    [authorityKeyPair.publicKeyB64, authoritySignature, inviteSignature, inviteKey, expirationColumn],
+    [managerKeyPair.publicKeyB64, managerSignature, inviteSignature, inviteKey, expirationColumn],
   );
   log('Issued invite %s (expires=%s)', inviteKey, expirationColumn ?? 'never');
 
@@ -382,10 +382,10 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
   await db.beginTransaction();
   try {
     // 1. Member — admitted by the deferred invite branch (the matching
-    //    ConsumedInvite below), so no authority signature is supplied.
+    //    ConsumedInvite below), so no manager signature is supplied.
     await db.exec(
       `insert into Strand.Member (Key)
-         with context AuthorityKey = null, AuthoritySignature = null
+         with context ManagerKey = null, ManagerSignature = null
          values (?)`,
       [memberKey],
     );
@@ -413,42 +413,42 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
   }
 }
 
-/** Parameters for {@link addMemberByAuthority}. */
-export interface AddMemberByAuthorityParams {
+/** Parameters for {@link addMemberByManager}. */
+export interface AddMemberByManagerParams {
   /**
-   * The admitting authority's strand keypair. Its `publicKeyB64` must be a
-   * `Strand.Authority` row; it signs the new member key directly.
+   * The admitting manager's strand keypair. Its `publicKeyB64` must be a
+   * `Strand.Manager` row; it signs the new member key directly.
    */
-  authorityKeyPair: Ed25519KeyPair;
+  managerKeyPair: Ed25519KeyPair;
   /** The joining member's ed25519 PUBLIC key (base64url) — the new `Member.Key`. */
   memberKey: string;
 }
 
 /**
- * Admit a `Member` directly by authority signature — the sibling of the invite
- * path on `Member.Authorized`'s direct-authority branch.
+ * Admit a `Member` directly by manager signature — the sibling of the invite
+ * path on `Member.Authorized`'s direct-manager branch.
  *
- * The constraint verifies `digest(new.Key)` against an `Authority` row matching
- * `context.AuthorityKey`, so the payload is just the member key (no `'|'` join).
- * No `ConsumedInvite` is involved: this is the path an authority uses to seat a
- * member it already trusts (e.g. an authority-side enrollment that admits a
+ * The constraint verifies `digest(new.Key)` against a `Manager` row matching
+ * `context.ManagerKey`, so the payload is just the member key (no `'|'` join).
+ * No `ConsumedInvite` is involved: this is the path a manager uses to seat a
+ * member it already trusts (e.g. a manager-side enrollment that admits a
  * party already authorised out-of-band).
  *
  * @param db - The closed strand's database.
- * @param params - The admitting authority keypair and the new member key.
- * @throws If `Member.Authorized` rejects (e.g. a non-authority key); the insert
+ * @param params - The admitting manager keypair and the new member key.
+ * @throws If `Member.Authorized` rejects (e.g. a non-manager key); the insert
  *   rolls back, leaving no `Member` row.
  */
-export async function addMemberByAuthority(db: Database, params: AddMemberByAuthorityParams): Promise<void> {
-  const { authorityKeyPair, memberKey } = params;
-  const signature = signStrandPayload(memberKey, authorityKeyPair.privateKeyB64);
+export async function addMemberByManager(db: Database, params: AddMemberByManagerParams): Promise<void> {
+  const { managerKeyPair, memberKey } = params;
+  const signature = signStrandPayload(memberKey, managerKeyPair.privateKeyB64);
   await db.exec(
     `insert into Strand.Member (Key)
-       with context AuthorityKey = ?, AuthoritySignature = ?
+       with context ManagerKey = ?, ManagerSignature = ?
        values (?)`,
-    [authorityKeyPair.publicKeyB64, signature, memberKey],
+    [managerKeyPair.publicKeyB64, signature, memberKey],
   );
-  log('Admitted member %s by authority %s', memberKey, authorityKeyPair.publicKeyB64);
+  log('Admitted member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
 }
 
 // ── MemberPeer registration (a member binds its own network nodes) ─────────────
@@ -459,10 +459,10 @@ export interface RegisterMemberPeerParams {
    * The member's OWN strand keypair (`{ privateKeyB64, publicKeyB64 }`). Its
    * `publicKeyB64` becomes `MemberPeer.MemberKey` and it self-signs the binding —
    * `MemberPeer.Authorized` verifies the signature against `MemberKey` itself, so a
-   * peer can only be registered by the very member it belongs to (no authority
+   * peer can only be registered by the very member it belongs to (no manager
    * involved). The founder passes its `strandMemberKeyPair`; an invited member
    * passes its own keypair. Typed as {@link Ed25519KeyPair} only for the shared
-   * base64url keypair shape — no authority privilege is implied.
+   * base64url keypair shape — no manager privilege is implied.
    */
   memberKeyPair: Ed25519KeyPair;
   /** The peer/node id (libp2p peer id string) to associate with the member. */
@@ -526,115 +526,115 @@ async function memberPeerExists(db: Database, memberKey: string, peerId: string)
   return false;
 }
 
-// ── Authority rotation (add / remove RBAC admins) ─────────────────────────────
+// ── Manager rotation (add / remove RBAC admins) ───────────────────────────────
 
-/** Parameters for {@link addAuthority}. */
-export interface AddAuthorityParams {
+/** Parameters for {@link addManager}. */
+export interface AddManagerParams {
   /**
-   * An EXISTING authority's strand keypair. Its `publicKeyB64` must already be a
-   * `Strand.Authority` row (the existing-authority branch of `Authority.Authorized`
-   * rejects a non-authority once the founder authority exists); it signs the new
-   * authority key and is bound as `context.AuthorityKey`.
+   * An EXISTING manager's strand keypair. Its `publicKeyB64` must already be a
+   * `Strand.Manager` row (the existing-manager branch of `Manager.Authorized`
+   * rejects a non-manager once the founder manager exists); it signs the new
+   * manager key and is bound as `context.ManagerKey`.
    */
-  byAuthorityKeyPair: Ed25519KeyPair;
-  /** The member key to promote — the new `Authority.MemberKey` row. */
-  newAuthorityKey: string;
+  byManagerKeyPair: Ed25519KeyPair;
+  /** The member key to promote — the new `Manager.MemberKey` row. */
+  newManagerKey: string;
 }
 
 /**
- * Promote a member to `Authority` on the signature of an existing authority.
+ * Promote a member to `Manager` on the signature of an existing manager.
  *
- * The existing-authority branch of `Authority.Authorized` verifies
+ * The existing-manager branch of `Manager.Authorized` verifies
  * `digest(coalesce(new.MemberKey, old.MemberKey))` — `new.MemberKey` =
- * `newAuthorityKey` on insert — against an `Authority` row matching
- * `context.AuthorityKey`. So the signer signs the new authority key directly (no
- * `'|'` join) and binds itself as `context.AuthorityKey`.
+ * `newManagerKey` on insert — against a `Manager` row matching
+ * `context.ManagerKey`. So the signer signs the new manager key directly (no
+ * `'|'` join) and binds itself as `context.ManagerKey`.
  *
- * Once the founder authority exists, the schema's `(select count(1) from Authority)
+ * Once the founder manager exists, the schema's `(select count(1) from Manager)
  * <= 1` bootstrap shortcut no longer applies to a second add (at commit the count
  * includes the new row, so it is ≥ 2), so this genuinely exercises signature
- * verification — a non-authority signer, or a signature over the wrong key, is
+ * verification — a non-manager signer, or a signature over the wrong key, is
  * rejected.
  *
- * @param db - The closed strand's database (founder authority already seated).
- * @param params - The authorizing authority's keypair and the new authority key.
- * @throws If `Authority.Authorized` rejects; the insert rolls back.
+ * @param db - The closed strand's database (founder manager already seated).
+ * @param params - The authorizing manager's keypair and the new manager key.
+ * @throws If `Manager.Authorized` rejects; the insert rolls back.
  */
-export async function addAuthority(db: Database, params: AddAuthorityParams): Promise<void> {
-  const { byAuthorityKeyPair, newAuthorityKey } = params;
-  const signature = signStrandPayload(newAuthorityKey, byAuthorityKeyPair.privateKeyB64);
+export async function addManager(db: Database, params: AddManagerParams): Promise<void> {
+  const { byManagerKeyPair, newManagerKey } = params;
+  const signature = signStrandPayload(newManagerKey, byManagerKeyPair.privateKeyB64);
   await db.exec(
-    `insert into Strand.Authority (MemberKey)
-       with context AuthorityKey = ?, Signature = ?
+    `insert into Strand.Manager (MemberKey)
+       with context ManagerKey = ?, Signature = ?
        values (?)`,
-    [byAuthorityKeyPair.publicKeyB64, signature, newAuthorityKey],
+    [byManagerKeyPair.publicKeyB64, signature, newManagerKey],
   );
-  log('Added authority %s by %s', newAuthorityKey, byAuthorityKeyPair.publicKeyB64);
+  log('Added manager %s by %s', newManagerKey, byManagerKeyPair.publicKeyB64);
 }
 
-/** Parameters for {@link removeAuthority}. */
-export interface RemoveAuthorityParams {
+/** Parameters for {@link removeManager}. */
+export interface RemoveManagerParams {
   /**
-   * The keypair authorizing the removal, bound as `context.AuthorityKey` and
-   * signing `digest(targetAuthorityKey)`. For an ADMIN removal this is a DIFFERENT
-   * existing authority (satisfying the existing-authority branch); for a
+   * The keypair authorizing the removal, bound as `context.ManagerKey` and
+   * signing `digest(targetManagerKey)`. For an ADMIN removal this is a DIFFERENT
+   * existing manager (satisfying the existing-manager branch); for a
    * SELF-resignation it is the target's OWN keypair (`publicKeyB64 ===
-   * targetAuthorityKey`, satisfying the former-authority self branch). The same
+   * targetManagerKey`, satisfying the former-manager self branch). The same
    * context construction satisfies whichever branch applies — see
-   * {@link removeAuthority}.
+   * {@link removeManager}.
    */
-  byAuthorityKeyPair: Ed25519KeyPair;
-  /** The `Authority.MemberKey` row to delete. */
-  targetAuthorityKey: string;
+  byManagerKeyPair: Ed25519KeyPair;
+  /** The `Manager.MemberKey` row to delete. */
+  targetManagerKey: string;
 }
 
 /**
- * Remove an `Authority` row — either an admin removing a different authority or an
- * authority resigning itself.
+ * Remove a `Manager` row — either an admin removing a different manager or a
+ * manager resigning itself.
  *
  * On a DELETE, `coalesce(new.MemberKey, old.MemberKey)` binds `old.MemberKey =
- * targetAuthorityKey` (there is no `new` row), so the signed payload is the target
- * key for BOTH accepting branches of `Authority.Authorized`, and a single context
+ * targetManagerKey` (there is no `new` row), so the signed payload is the target
+ * key for BOTH accepting branches of `Manager.Authorized`, and a single context
  * construction serves both:
- * - **Admin removal**: `byAuthorityKeyPair` is a different existing authority; the
- *   existing-authority branch verifies the signature against `A.MemberKey =
- *   context.AuthorityKey`.
- * - **Self-resignation**: `byAuthorityKeyPair` IS the target (its `publicKeyB64`
- *   equals `targetAuthorityKey`); the former-authority self branch verifies
- *   `old.MemberKey = context.AuthorityKey` and the self-signature over `old.MemberKey`.
+ * - **Admin removal**: `byManagerKeyPair` is a different existing manager; the
+ *   existing-manager branch verifies the signature against `A.MemberKey =
+ *   context.ManagerKey`.
+ * - **Self-resignation**: `byManagerKeyPair` IS the target (its `publicKeyB64`
+ *   equals `targetManagerKey`); the former-manager self branch verifies
+ *   `old.MemberKey = context.ManagerKey` and the self-signature over `old.MemberKey`.
  *
  * The caller selects the case purely by which keypair it passes — no branching here.
  *
  * KNOWN PLATFORM GAP (not fixable here): the optimystic bootstrap-mode transactor
  * evaluates deferred (subquery-bearing) CHECK constraints only on INSERT, not on
- * DELETE. `Authority.Authorized` is deferred, so the platform currently accepts ANY
- * `Authority` delete regardless of signature — `removeAuthority`'s authorization is
+ * DELETE. `Manager.Authorized` is deferred, so the platform currently accepts ANY
+ * `Manager` delete regardless of signature — `removeManager`'s authorization is
  * effectively unenforced at runtime until that gap is closed (filed as
  * `optimystic-deferred-check-not-enforced-on-delete`). This writer still builds the
  * correct, signed delete so it works unchanged once enforcement lands — exactly as
  * the invite path issues correct inserts despite the open PK-uniqueness gap.
  *
- * KNOWN SCHEMA HAZARD (not guarded here): even with enforcement, `Authority.
- * Authorized`'s `(select count(1) from Authority) <= 1` bootstrap branch is true at
+ * KNOWN SCHEMA HAZARD (not guarded here): even with enforcement, `Manager.
+ * Authorized`'s `(select count(1) from Manager) <= 1` bootstrap branch is true at
  * commit whenever a delete drops the count to ≤ 1, so removing the strand's LAST (or
- * second-to-last) authority would be accepted regardless of signature — and removing
+ * second-to-last) manager would be accepted regardless of signature — and removing
  * the last one orphans the strand (no one can ever add another). The schema does not
- * prevent this; a "min-one-authority" invariant is deferred to a future schema change
+ * prevent this; a "min-one-manager" invariant is deferred to a future schema change
  * rather than grown into this writer.
  *
  * @param db - The closed strand's database.
- * @param params - The authorizing keypair and the target authority key.
- * @throws If `Authority.Authorized` rejects (e.g. a non-authority admin removal
- *   while > 2 authorities remain); the delete rolls back.
+ * @param params - The authorizing keypair and the target manager key.
+ * @throws If `Manager.Authorized` rejects (e.g. a non-manager admin removal
+ *   while > 2 managers remain); the delete rolls back.
  */
-export async function removeAuthority(db: Database, params: RemoveAuthorityParams): Promise<void> {
-  const { byAuthorityKeyPair, targetAuthorityKey } = params;
-  const signature = signStrandPayload(targetAuthorityKey, byAuthorityKeyPair.privateKeyB64);
+export async function removeManager(db: Database, params: RemoveManagerParams): Promise<void> {
+  const { byManagerKeyPair, targetManagerKey } = params;
+  const signature = signStrandPayload(targetManagerKey, byManagerKeyPair.privateKeyB64);
   await db.exec(
-    `delete from Strand.Authority
-       with context AuthorityKey = ?, Signature = ?
+    `delete from Strand.Manager
+       with context ManagerKey = ?, Signature = ?
        where MemberKey = ?`,
-    [byAuthorityKeyPair.publicKeyB64, signature, targetAuthorityKey],
+    [byManagerKeyPair.publicKeyB64, signature, targetManagerKey],
   );
-  log('Removed authority %s by %s', targetAuthorityKey, byAuthorityKeyPair.publicKeyB64);
+  log('Removed manager %s by %s', targetManagerKey, byManagerKeyPair.publicKeyB64);
 }

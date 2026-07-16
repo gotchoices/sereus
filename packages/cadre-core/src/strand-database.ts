@@ -38,13 +38,13 @@ export interface StrandDatabaseConfig {
   /**
    * Strand type (`'o'` open / `'c'` closed) from the control-network strand row.
    * Drives the founder bootstrap: open strands get a `Header` only; closed strands
-   * also get the founding `Member`+`Authority`.
+   * also get the founding `Member`+`Manager`.
    */
   strandType: 'o' | 'c';
   /**
    * The closed-strand `MemberPrivateKey` (base64 protobuf) from the strand row.
    * Required when `founder` is true and `strandType` is `'c'` — it derives the
-   * founding `Member.Key`/`Authority.MemberKey`. Absent for open strands.
+   * founding `Member.Key`/`Manager.MemberKey`. Absent for open strands.
    */
   memberPrivateKey?: string;
   /**
@@ -136,8 +136,8 @@ export class StrandDatabase {
    * Run the founder membership bootstrap against the freshly-composed strand DB.
    *
    * Derives the founding keypair from the closed-strand `memberPrivateKey` (the
-   * `Member.Key`/`Authority.MemberKey` are its public key); a closed strand with no
-   * `memberPrivateKey` throws, because it could never seat a founding authority.
+   * `Member.Key`/`Manager.MemberKey` are its public key); a closed strand with no
+   * `memberPrivateKey` throws, because it could never seat a founding manager.
    * Open strands derive no keypair (Header only). Idempotent — see
    * {@link bootstrapFounderMembership}.
    */
@@ -157,13 +157,13 @@ export class StrandDatabase {
   /**
    * Derive the founding keypair for a closed strand from its `memberPrivateKey`,
    * failing loudly when the key is absent (a closed strand with no founding
-   * Authority can never admit anyone).
+   * Manager can never admit anyone).
    */
   private deriveFounderKeyPair(strandId: string, memberPrivateKey: string | undefined) {
     if (!memberPrivateKey) {
       throw new Error(
         `Cannot found closed strand ${strandId}: the strand row has no MemberPrivateKey. ` +
-        'A closed strand needs a founding Member/Authority derived from that key.',
+        'A closed strand needs a founding Member/Manager derived from that key.',
       );
     }
     return strandMemberKeyPair(memberPrivateKey);

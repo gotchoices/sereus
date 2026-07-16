@@ -9,7 +9,7 @@ import {
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
-  addMemberByAuthority,
+  addMemberByManager,
   signStrandPayload,
 } from '../src/strand-membership-writer.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -24,14 +24,14 @@ import type { SAppConfig, MemberRegistration } from '../src/types.js';
 
 /**
  * Component coverage for the per-strand invite -> join handshake (issuance,
- * atomic consumption, authority-admit) and the strand-DB-backed EnrollmentService
+ * atomic consumption, manager-admit) and the strand-DB-backed EnrollmentService
  * backing. Every test runs against a REAL closed strand DB in bootstrap mode
  * (libp2p node + MemoryRawStorage + the optimystic local transactor) via
  * `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *
  * The founder is bootstrapped first (so it is already Member #1 + the sole
- * Authority), which forces every admit below past the `count <= 1` bootstrap
+ * Manager), which forces every admit below past the `count <= 1` bootstrap
  * branch into the genuine signature-verifying branches of `Member.Authorized`.
  */
 
@@ -52,7 +52,7 @@ function freshKeyPair(): Ed25519KeyPair {
   return { privateKeyB64, publicKeyB64 };
 }
 
-async function tableCount(db: Database, table: 'Header' | 'Invite' | 'ConsumedInvite' | 'Member' | 'Authority'): Promise<number> {
+async function tableCount(db: Database, table: 'Header' | 'Invite' | 'ConsumedInvite' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
     return (row as { c: number }).c;
   }
@@ -62,7 +62,7 @@ async function tableCount(db: Database, table: 'Header' | 'Invite' | 'ConsumedIn
 interface Strand {
   db: Database;
   strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Authority. */
+  /** The founder keypair — Member #1 and the sole founding Manager. */
   founder: Ed25519KeyPair;
   shutdown: () => Promise<void>;
 }
@@ -105,10 +105,10 @@ afterEach(async () => {
 // ── Phase 1: invite issuance ─────────────────────────────────────────────────
 
 describe('issueInvite', () => {
-  it('an authority issues a single Invite row whose Key is the returned invite public key', async () => {
+  it('an manager issues a single Invite row whose Key is the returned invite public key', async () => {
     const { db, founder } = await openStrand('c');
 
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
 
     expect(await tableCount(db, 'Invite')).toBe(1);
     const row = await db.get('select Key, Expiration from Strand.Invite');
@@ -119,11 +119,11 @@ describe('issueInvite', () => {
     expect(getPublicKey(invitePrivateKey, 'ed25519', 'base64url', 'base64url')).toBe(inviteKey);
   }, 30_000);
 
-  it('rejects issuance signed by a non-authority key (no matching Authority row)', async () => {
+  it('rejects issuance signed by a non-manager key (no matching Manager row)', async () => {
     const { db } = await openStrand('c');
-    const notAnAuthority = freshKeyPair();
+    const notAManager = freshKeyPair();
 
-    await expect(issueInvite(db, { authorityKeyPair: notAnAuthority })).rejects.toThrow();
+    await expect(issueInvite(db, { managerKeyPair: notAManager })).rejects.toThrow();
     expect(await tableCount(db, 'Invite')).toBe(0);
   }, 30_000);
 
@@ -132,18 +132,18 @@ describe('issueInvite', () => {
     const invite = freshKeyPair();
     const inviteKey = invite.publicKeyB64;
 
-    // Authority signs the real payload, but the invite signature is over junk —
+    // Manager signs the real payload, but the invite signature is over junk —
     // so verify(..., new.Key, ...) (the issuer-holds-the-invite-key proof) fails.
     const payload = `${inviteKey}|`;
-    const authoritySignature = signStrandPayload(payload, founder.privateKeyB64);
+    const managerSignature = signStrandPayload(payload, founder.privateKeyB64);
     const badInviteSignature = signStrandPayload('a-different-payload', invite.privateKeyB64);
 
     await expect(
       db.exec(
         `insert into Strand.Invite (Key, Expiration)
-           with context AuthorityKey = ?, AuthoritySignature = ?, InviteSignature = ?
+           with context ManagerKey = ?, ManagerSignature = ?, InviteSignature = ?
            values (?, null)`,
-        [founder.publicKeyB64, authoritySignature, badInviteSignature, inviteKey],
+        [founder.publicKeyB64, managerSignature, badInviteSignature, inviteKey],
       ),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Invite')).toBe(0);
@@ -152,9 +152,9 @@ describe('issueInvite', () => {
   it('rejects issuance on an open strand (Invite is OnlyClosed)', async () => {
     const { db } = await openStrand('o');
 
-    // Open strands have no founding Authority; the insert is rejected by OnlyClosed
+    // Open strands have no founding Manager; the insert is rejected by OnlyClosed
     // (and InviteValid) regardless of the keypair used.
-    await expect(issueInvite(db, { authorityKeyPair: freshKeyPair() })).rejects.toThrow();
+    await expect(issueInvite(db, { managerKeyPair: freshKeyPair() })).rejects.toThrow();
     expect(await tableCount(db, 'Invite')).toBe(0);
   }, 30_000);
 
@@ -162,7 +162,7 @@ describe('issueInvite', () => {
     const { db, founder } = await openStrand('c');
     const expiration = Date.UTC(2031, 2, 4, 12, 34, 56); // 2031-03-04T12:34:56Z
 
-    const { inviteKey } = await issueInvite(db, { authorityKeyPair: founder, expiration });
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder, expiration });
 
     expect(await tableCount(db, 'Invite')).toBe(1);
     const row = await db.get('select Key, Expiration from Strand.Invite');
@@ -185,27 +185,27 @@ describe('issueInvite', () => {
     // Sign over the WRONG (hand-rolled) segment, but store the canonical column value,
     // so the CHECK's payload (Key || '|' || <canonical>) will not match the signature.
     const signedPayload = `${invite.publicKeyB64}|${handRolledIso}`;
-    const authoritySignature = signStrandPayload(signedPayload, founder.privateKeyB64);
+    const managerSignature = signStrandPayload(signedPayload, founder.privateKeyB64);
     const inviteSignature = signStrandPayload(signedPayload, invite.privateKeyB64);
 
     await expect(
       db.exec(
         `insert into Strand.Invite (Key, Expiration)
-           with context AuthorityKey = ?, AuthoritySignature = ?, InviteSignature = ?
+           with context ManagerKey = ?, ManagerSignature = ?, InviteSignature = ?
            values (?, ?)`,
-        [founder.publicKeyB64, authoritySignature, inviteSignature, invite.publicKeyB64, canonical],
+        [founder.publicKeyB64, managerSignature, inviteSignature, invite.publicKeyB64, canonical],
       ),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Invite')).toBe(0);
   }, 30_000);
 });
 
-// ── Phase 2: invite consumption (atomic) + authority admit ───────────────────
+// ── Phase 2: invite consumption (atomic) + manager admit ───────────────────
 
 describe('consumeInvite', () => {
   it('admits a second Member with a matching ConsumedInvite (both rows commit together)', async () => {
     const { db, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const member = freshKeyPair();
 
     await consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64 });
@@ -219,7 +219,7 @@ describe('consumeInvite', () => {
 
   it('rejects consumption with a wrong invite private key and rolls BOTH rows back (atomic)', async () => {
     const { db, founder } = await openStrand('c');
-    const { inviteKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
     const member = freshKeyPair();
     const wrongInvitePrivateKey = freshKeyPair().privateKeyB64;
 
@@ -258,7 +258,7 @@ describe('consumeInvite', () => {
   it('rejects consuming a past-expiry invite and rolls BOTH rows back (atomic)', async () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder, expiration: base });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder, expiration: base });
     const member = freshKeyPair();
 
     // Consume one day AFTER the invite expired.
@@ -276,7 +276,7 @@ describe('consumeInvite', () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
     const { inviteKey, invitePrivateKey } = await issueInvite(db, {
-      authorityKeyPair: founder,
+      managerKeyPair: founder,
       expiration: base + 86_400_000,
     });
     const member = freshKeyPair();
@@ -302,7 +302,7 @@ describe('consumeInvite', () => {
     // consumeInvite's doc comment for why the control layer's raw ISO Now is
     // safe in practice.)
     const { inviteKey, invitePrivateKey } = await issueInvite(db, {
-      authorityKeyPair: founder,
+      managerKeyPair: founder,
       expiration: base + 3_600_000,
     });
     const member = freshKeyPair();
@@ -316,7 +316,7 @@ describe('consumeInvite', () => {
   it('rejects consuming at the exact expiry instant (> is strict, expiry is exclusive)', async () => {
     const { db, founder } = await openStrand('c');
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder, expiration: base });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder, expiration: base });
     const member = freshKeyPair();
 
     // Now == Expiration: `Expiration > Now` is false, so the boundary is rejected
@@ -330,7 +330,7 @@ describe('consumeInvite', () => {
 
   it('still admits a null-expiry invite regardless of the Now context (regression)', async () => {
     const { db, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const member = freshKeyPair();
 
     // A null Expiration passes NotExpired (I.Expiration is null) for any Now, so
@@ -357,7 +357,7 @@ describe('consumeInvite', () => {
   // by `optimystic-insert-pk-uniqueness-not-enforced`, which has since been fixed.
   it('a double consume of the same invite is rejected (single-use enforced)', async () => {
     const { db, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const memberB = freshKeyPair();
     const memberC = freshKeyPair();
 
@@ -377,25 +377,25 @@ describe('consumeInvite', () => {
   }, 30_000);
 });
 
-describe('addMemberByAuthority', () => {
-  it('admits a second member by authority signature (non-bootstrap branch, count > 1)', async () => {
+describe('addMemberByManager', () => {
+  it('admits a second member by manager signature (non-bootstrap branch, count > 1)', async () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();
 
-    await addMemberByAuthority(db, { authorityKeyPair: founder, memberKey: member.publicKeyB64 });
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
 
     expect(await tableCount(db, 'Member')).toBe(2);
     const exists = await db.get('select Key from Strand.Member where Key = ?', [member.publicKeyB64]);
     expect(exists?.Key).toBe(member.publicKeyB64);
   }, 30_000);
 
-  it('rejects an authority-admit signed by a non-authority key', async () => {
+  it('rejects an manager-admit signed by a non-manager key', async () => {
     const { db } = await openStrand('c');
-    const notAnAuthority = freshKeyPair();
+    const notAManager = freshKeyPair();
     const member = freshKeyPair();
 
     await expect(
-      addMemberByAuthority(db, { authorityKeyPair: notAnAuthority, memberKey: member.publicKeyB64 }),
+      addMemberByManager(db, { managerKeyPair: notAManager, memberKey: member.publicKeyB64 }),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Member')).toBe(1);
   }, 30_000);
@@ -408,7 +408,7 @@ describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
     const { db, strandId, founder } = await openStrand('c');
     // An invite whose expiry is far in the past relative to wall-clock now, so the
     // pre-flight "door is open" count must filter it out (matching NotExpired).
-    await issueInvite(db, { authorityKeyPair: founder, expiration: Date.UTC(2000, 0, 1) });
+    await issueInvite(db, { managerKeyPair: founder, expiration: Date.UTC(2000, 0, 1) });
     const verifier = new StrandMemberVerifier(db);
 
     expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(false);
@@ -416,7 +416,7 @@ describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
 
   it('returns true when a future-expiry invite is outstanding', async () => {
     const { db, strandId, founder } = await openStrand('c');
-    await issueInvite(db, { authorityKeyPair: founder, expiration: Date.UTC(2999, 0, 1) });
+    await issueInvite(db, { managerKeyPair: founder, expiration: Date.UTC(2999, 0, 1) });
     const verifier = new StrandMemberVerifier(db);
 
     expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(true);
@@ -424,7 +424,7 @@ describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
 
   it('returns true when a never-expiring (null-expiry) invite is outstanding', async () => {
     const { db, strandId, founder } = await openStrand('c');
-    await issueInvite(db, { authorityKeyPair: founder });
+    await issueInvite(db, { managerKeyPair: founder });
     const verifier = new StrandMemberVerifier(db);
 
     expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(true);
@@ -444,7 +444,7 @@ function makeRegistration(strandId: string): { registration: MemberRegistration;
 describe('EnrollmentService backed by a strand DB', () => {
   it('registerMember writes a real Member via a valid invite (happy path)', async () => {
     const { db, strandId, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const { registration, signature, memberKey } = makeRegistration(strandId);
 
     const service = new EnrollmentService({
@@ -463,7 +463,7 @@ describe('EnrollmentService backed by a strand DB', () => {
 
   it('rejects a registration with an invalid self-proof signature', async () => {
     const { db, strandId, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const { registration } = makeRegistration(strandId);
     const wrongSignature = signStrandPayload('not-the-registration-payload', freshKeyPair().privateKeyB64);
 
@@ -486,7 +486,7 @@ describe('EnrollmentService backed by a strand DB', () => {
 
     const service = new EnrollmentService({
       memberVerifier: new StrandMemberVerifier(db),
-      memberRegistry: new StrandMemberRegistry(db, { mode: 'authority', authorityKeyPair: founder }),
+      memberRegistry: new StrandMemberRegistry(db, { mode: 'manager', managerKeyPair: founder }),
     });
 
     const result = await service.registerMember(registration, signature);
@@ -499,7 +499,7 @@ describe('EnrollmentService backed by a strand DB', () => {
 
   it('rejects re-registering an already-registered member', async () => {
     const { db, strandId, founder } = await openStrand('c');
-    const { inviteKey, invitePrivateKey } = await issueInvite(db, { authorityKeyPair: founder });
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
     const { registration, signature } = makeRegistration(strandId);
 
     const service = new EnrollmentService({
@@ -518,23 +518,23 @@ describe('EnrollmentService backed by a strand DB', () => {
     expect(await tableCount(db, 'Member')).toBe(2);
   }, 30_000);
 
-  it('admits a member by authority signature through the registry (authority mode)', async () => {
+  it('admits a member by manager signature through the registry (manager mode)', async () => {
     const { db, strandId, founder } = await openStrand('c');
     // Issue an invite so isAuthorizedToJoin's "door is open" check passes, but admit
-    // via the authority branch (no ConsumedInvite written).
-    await issueInvite(db, { authorityKeyPair: founder });
+    // via the manager branch (no ConsumedInvite written).
+    await issueInvite(db, { managerKeyPair: founder });
     const { registration, signature, memberKey } = makeRegistration(strandId);
 
     const service = new EnrollmentService({
       memberVerifier: new StrandMemberVerifier(db),
-      memberRegistry: new StrandMemberRegistry(db, { mode: 'authority', authorityKeyPair: founder }),
+      memberRegistry: new StrandMemberRegistry(db, { mode: 'manager', managerKeyPair: founder }),
     });
 
     const result = await service.registerMember(registration, signature);
 
     expect(result.success).toBe(true);
     expect(await tableCount(db, 'Member')).toBe(2);
-    expect(await tableCount(db, 'ConsumedInvite')).toBe(0); // authority admit, no invite consumed
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0); // manager admit, no invite consumed
     const row = await db.get('select Key from Strand.Member where Key = ?', [memberKey]);
     expect(row?.Key).toBe(memberKey);
   }, 30_000);

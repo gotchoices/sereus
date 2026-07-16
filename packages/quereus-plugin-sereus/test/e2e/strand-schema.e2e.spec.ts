@@ -20,13 +20,13 @@ import type { SereusPluginResult } from '../../src/types.js';
  *
  * Scope note: this ticket applies the schema and proves the constraints are
  * active (bootstrap accepted, unauthorized rejected). It does NOT sign writes —
- * the rejection cases reject because no matching `Authority`/`Header` row exists,
+ * the rejection cases reject because no matching `Manager`/`Header` row exists,
  * which is the same gate the (later) signed flows will satisfy with real ed25519
  * signatures.
  */
 
 /** The six membership tables the Strand schema must expose on every strand. */
-const STRAND_TABLES = ['Header', 'Invite', 'ConsumedInvite', 'Member', 'MemberPeer', 'Authority'] as const;
+const STRAND_TABLES = ['Header', 'Invite', 'ConsumedInvite', 'Member', 'MemberPeer', 'Manager'] as const;
 
 async function selectCount(db: Database, sql: string): Promise<number> {
 	for await (const row of db.eval(sql)) {
@@ -109,7 +109,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		// No `schema` option: the Strand schema must still be applied unconditionally.
 		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
 
-		expect(await selectCount(db, 'select count(*) as c from Strand.Authority')).toBe(0);
+		expect(await selectCount(db, 'select count(*) as c from Strand.Manager')).toBe(0);
 
 		// App.* must still be absent (no sApp schema was applied).
 		await expect(async () => {
@@ -132,7 +132,7 @@ describe('Strand membership schema (apply e2e)', () => {
 				await insertHeader(db1, 'c');
 				await db1.exec(
 					`insert into Strand.Member (Key)
-						with context AuthorityKey = null, AuthoritySignature = null
+						with context ManagerKey = null, ManagerSignature = null
 						values (?)`,
 					['m1'],
 				);
@@ -157,7 +157,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		expect(await selectCount(db, 'select count(*) as c from Strand.Header')).toBe(1);
 	});
 
-	it('accepts the bootstrap founding Member and Authority in a closed strand', async () => {
+	it('accepts the bootstrap founding Member and Manager in a closed strand', async () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
@@ -165,23 +165,23 @@ describe('Strand membership schema (apply e2e)', () => {
 
 		await insertHeader(db, 'c');
 
-		// First Member: the `count(Member) <= 1` bootstrap branch — no authority needed.
+		// First Member: the `count(Member) <= 1` bootstrap branch — no manager needed.
 		await db.exec(
 			`insert into Strand.Member (Key)
-				with context AuthorityKey = null, AuthoritySignature = null
+				with context ManagerKey = null, ManagerSignature = null
 				values (?)`,
 			['m1'],
 		);
 		expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(1);
 
-		// First Authority: the `count(Authority) <= 1` bootstrap branch — no authority needed.
+		// First Manager: the `count(Manager) <= 1` bootstrap branch — no manager needed.
 		await db.exec(
-			`insert into Strand.Authority (MemberKey)
-				with context AuthorityKey = null, Signature = null
+			`insert into Strand.Manager (MemberKey)
+				with context ManagerKey = null, Signature = null
 				values (?)`,
 			['m1'],
 		);
-		expect(await selectCount(db, 'select count(*) as c from Strand.Authority')).toBe(1);
+		expect(await selectCount(db, 'select count(*) as c from Strand.Manager')).toBe(1);
 	});
 
 	it('rejects unauthorized membership writes in a closed strand (constraints active)', async () => {
@@ -194,19 +194,19 @@ describe('Strand membership schema (apply e2e)', () => {
 		// Bootstrap the founder so the strand is past the `count <= 1` branch.
 		await db.exec(
 			`insert into Strand.Member (Key)
-				with context AuthorityKey = null, AuthoritySignature = null
+				with context ManagerKey = null, ManagerSignature = null
 				values (?)`,
 			['m1'],
 		);
 		await db.exec(
-			`insert into Strand.Authority (MemberKey)
-				with context AuthorityKey = null, Signature = null
+			`insert into Strand.Manager (MemberKey)
+				with context ManagerKey = null, Signature = null
 				values (?)`,
 			['m1'],
 		);
 
-		// A second Member that is neither authority-signed nor invite-backed: rejected
-		// by Member.Authorized (count is now 2, no matching Authority for a null key,
+		// A second Member that is neither manager-signed nor invite-backed: rejected
+		// by Member.Authorized (count is now 2, no matching Manager for a null key,
 		// no ConsumedInvite). The reject IS the proof the constraint is active — it
 		// fires the same SQL shape the accepted bootstrap case above used, so this is
 		// a genuine constraint failure, not a parse/no-op artifact. The deferred
@@ -217,20 +217,20 @@ describe('Strand membership schema (apply e2e)', () => {
 		await expect(
 			db.exec(
 				`insert into Strand.Member (Key)
-					with context AuthorityKey = null, AuthoritySignature = null
+					with context ManagerKey = null, ManagerSignature = null
 					values (?)`,
 				['m2'],
 			),
 		).rejects.toThrow();
 		expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(memberCountBefore);
 
-		// An Invite with no valid issuing Authority: rejected by Invite.InviteValid
-		// (no Authority row matches the non-existent AuthorityKey). The rejected row
+		// An Invite with no valid issuing Manager: rejected by Invite.InviteValid
+		// (no Manager row matches the non-existent ManagerKey). The rejected row
 		// must not survive the deferred-constraint rollback.
 		await expect(
 			db.exec(
 				`insert into Strand.Invite (Key, Expiration)
-					with context AuthorityKey = ?, AuthoritySignature = null, InviteSignature = null
+					with context ManagerKey = ?, ManagerSignature = null, InviteSignature = null
 					values (?, null)`,
 				['nobody', 'inv1'],
 			),
@@ -239,7 +239,7 @@ describe('Strand membership schema (apply e2e)', () => {
 	});
 
 	it('enforces OnlyClosed: membership inserts fail in an open strand, succeed in a closed one', async () => {
-		// Open strand: OnlyClosed must reject Member / Authority / Invite inserts even
+		// Open strand: OnlyClosed must reject Member / Manager / Invite inserts even
 		// though the row would otherwise satisfy its bootstrap branch. Each rejection
 		// is a deferred-constraint failure that the optimystic transactor rolls back,
 		// so the target table is left empty (regression guard for
@@ -255,7 +255,7 @@ describe('Strand membership schema (apply e2e)', () => {
 				await expect(
 					dbOpen.exec(
 						`insert into Strand.Member (Key)
-							with context AuthorityKey = null, AuthoritySignature = null
+							with context ManagerKey = null, ManagerSignature = null
 							values (?)`,
 						['m1'],
 					),
@@ -264,18 +264,18 @@ describe('Strand membership schema (apply e2e)', () => {
 
 				await expect(
 					dbOpen.exec(
-						`insert into Strand.Authority (MemberKey)
-							with context AuthorityKey = null, Signature = null
+						`insert into Strand.Manager (MemberKey)
+							with context ManagerKey = null, Signature = null
 							values (?)`,
 						['m1'],
 					),
 				).rejects.toThrow();
-				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Authority')).toBe(0);
+				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Manager')).toBe(0);
 
 				await expect(
 					dbOpen.exec(
 						`insert into Strand.Invite (Key, Expiration)
-							with context AuthorityKey = null, AuthoritySignature = null, InviteSignature = null
+							with context ManagerKey = null, ManagerSignature = null, InviteSignature = null
 							values (?, null)`,
 						['inv1'],
 					),
@@ -300,7 +300,7 @@ describe('Strand membership schema (apply e2e)', () => {
 			await insertHeader(db, 'c');
 			await db.exec(
 				`insert into Strand.Member (Key)
-					with context AuthorityKey = null, AuthoritySignature = null
+					with context ManagerKey = null, ManagerSignature = null
 					values (?)`,
 				['m1'],
 			);

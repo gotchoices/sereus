@@ -254,7 +254,7 @@ export async function composeStrand(
 		//
 		// This ticket only makes the tables present and their constraints active;
 		// nothing here writes membership rows. Founder bootstrap (Header, founding
-		// Authority/Member, invite/peer flows) is owned by the lifecycle ticket
+		// Manager/Member, invite/peer flows) is owned by the lifecycle ticket
 		// `strand-membership-lifecycle-population`.
 		log('Applying Strand membership schema for strand %s', strandId);
 		await db.exec(`

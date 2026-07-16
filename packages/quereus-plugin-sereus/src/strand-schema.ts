@@ -24,7 +24,7 @@
  *
  * Population note: this ticket applies the schema and makes its constraints
  * active — it does NOT write membership rows at runtime. Inserting the `Header`,
- * the founding `Authority`/`Member`, and the invite/peer flows is owned by
+ * the founding `Manager`/`Member`, and the invite/peer flows is owned by
  * `strand-membership-lifecycle-population`.
  */
 export const STRAND_SCHEMA = `    table Header (
@@ -67,15 +67,15 @@ export const STRAND_SCHEMA = `    table Header (
             exists (select 1 from Header H where H.Type = 'c')
         ),
         constraint InviteValid check on insert (
-            -- Can only be inserted by an authority,
-            exists (select 1 from Authority A
-                where A.MemberKey = context.AuthorityKey
-                    and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.AuthoritySignature, A.MemberKey, 'ed25519')
+            -- Can only be inserted by a manager,
+            exists (select 1 from Manager A
+                where A.MemberKey = context.ManagerKey
+                    and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.ManagerSignature, A.MemberKey, 'ed25519')
             )
-                -- and must also prove invite private key held by issuing authority
+                -- and must also prove invite private key held by issuing manager
                 and verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), context.InviteSignature, new.Key, 'ed25519')
         )
-    ) with context (AuthorityKey text null, AuthoritySignature text null, InviteSignature text null);
+    ) with context (ManagerKey text null, ManagerSignature text null, InviteSignature text null);
 
     -- Invite [InviteKey] has been used to add [MemberKey] as a member
     table ConsumedInvite (
@@ -111,11 +111,11 @@ export const STRAND_SCHEMA = `    table Header (
             -- There are no other records - first member needs no authorization
             (select count(1) from Member) <= 1
 
-                -- or added directly by authority
+                -- or added directly by manager
                 or exists (
-                    select 1 from Authority A
-                        where A.MemberKey = context.AuthorityKey
-                            and verify(digest(new.Key), context.AuthoritySignature, A.MemberKey, 'ed25519')
+                    select 1 from Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and verify(digest(new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
                 )
 
                 -- or added by invite
@@ -124,7 +124,7 @@ export const STRAND_SCHEMA = `    table Header (
                 )
         ),
         -- TODO: handle member revocation constraint
-    ) with context (AuthorityKey text null, AuthoritySignature text null);
+    ) with context (ManagerKey text null, ManagerSignature text null);
 
     -- A member-associated peer (node)
     table MemberPeer (
@@ -142,29 +142,29 @@ export const STRAND_SCHEMA = `    table Header (
         ),
     ) with context (Signature text null);
 
-    -- An authority is a member that can issue invites, authorize members, and rotate authorities
-    table Authority (
+    -- A manager is a member that can issue invites, authorize members, and rotate managers
+    table Manager (
         MemberKey text primary key,
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
         constraint Authorized check on insert, update, delete (
-            -- There are no existing records - first authority needs no authorization
-            (select count(1) from Authority) <= 1
+            -- There are no existing records - first manager needs no authorization
+            (select count(1) from Manager) <= 1
 
-                -- or authorized by this former authority
+                -- or authorized by this former manager
                 or (
                     old.MemberKey is not null
-                        and old.MemberKey = context.AuthorityKey
+                        and old.MemberKey = context.ManagerKey
                         and verify(digest(old.MemberKey), context.Signature, old.MemberKey, 'ed25519')
                 )
 
-                -- or authorized by another existing authority
+                -- or authorized by another existing manager
                 or exists (
-                    select 1 from Authority A
-                        where A.MemberKey = context.AuthorityKey
+                    select 1 from Manager A
+                        where A.MemberKey = context.ManagerKey
                             and verify(digest(coalesce(new.MemberKey, old.MemberKey)), context.Signature, A.MemberKey, 'ed25519')
                 )
         )
-    ) with context (AuthorityKey text null, Signature text null);
+    ) with context (ManagerKey text null, Signature text null);
 `;

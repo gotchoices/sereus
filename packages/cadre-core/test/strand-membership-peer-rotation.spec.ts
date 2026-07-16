@@ -7,10 +7,10 @@ import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-cry
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
   bootstrapFounderMembership,
-  addMemberByAuthority,
+  addMemberByManager,
   registerMemberPeer,
-  addAuthority,
-  removeAuthority,
+  addManager,
+  removeManager,
   signStrandPayload,
 } from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
@@ -19,14 +19,14 @@ import type { SAppConfig } from '../src/types.js';
 /**
  * Component coverage for the two remaining founder-reachable writers:
  * `MemberPeer` registration (a member binds its own network nodes, self-signed) and
- * `Authority` rotation (an existing authority promotes/removes admins, or an
- * authority resigns itself). Every test runs against a REAL closed strand DB in
+ * `Manager` rotation (an existing manager promotes/removes admins, or an
+ * manager resigns itself). Every test runs against a REAL closed strand DB in
  * bootstrap mode (libp2p node + MemoryRawStorage + the optimystic local transactor)
  * via `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *
- * The founder is bootstrapped first (Member #1 + the sole founding Authority), so an
- * authority add genuinely runs past the `count(Authority) <= 1` bootstrap branch
+ * The founder is bootstrapped first (Member #1 + the sole founding Manager), so an
+ * manager add genuinely runs past the `count(Manager) <= 1` bootstrap branch
  * (at commit the new row makes the count ≥ 2), exercising signature verification.
  */
 
@@ -47,7 +47,7 @@ function freshKeyPair(): Ed25519KeyPair {
   return { privateKeyB64, publicKeyB64 };
 }
 
-type StrandTable = 'Header' | 'Member' | 'MemberPeer' | 'Authority';
+type StrandTable = 'Header' | 'Member' | 'MemberPeer' | 'Manager';
 
 async function tableCount(db: Database, table: StrandTable): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
@@ -59,7 +59,7 @@ async function tableCount(db: Database, table: StrandTable): Promise<number> {
 interface Strand {
   db: Database;
   strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Authority. */
+  /** The founder keypair — Member #1 and the sole founding Manager. */
   founder: Ed25519KeyPair;
   shutdown: () => Promise<void>;
 }
@@ -176,10 +176,10 @@ describe('registerMemberPeer', () => {
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
-  it('a non-founder member admitted by authority can register its own peer (count > 1 branch)', async () => {
+  it('a non-founder member admitted by manager can register its own peer (count > 1 branch)', async () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();
-    await addMemberByAuthority(db, { authorityKeyPair: founder, memberKey: member.publicKeyB64 });
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
 
     await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-member' });
 
@@ -202,42 +202,42 @@ describe('registerMemberPeer', () => {
   }, 30_000);
 });
 
-// ── Phase 2: Authority rotation (add / remove admins) ─────────────────────────
+// ── Phase 2: Manager rotation (add / remove admins) ─────────────────────────
 
-/** Add `count` extra authorities (signed by the founder) and return their keypairs. */
-async function addExtraAuthorities(db: Database, founder: Ed25519KeyPair, count: number): Promise<Ed25519KeyPair[]> {
+/** Add `count` extra managers (signed by the founder) and return their keypairs. */
+async function addExtraManagers(db: Database, founder: Ed25519KeyPair, count: number): Promise<Ed25519KeyPair[]> {
   const extras: Ed25519KeyPair[] = [];
   for (let i = 0; i < count; i++) {
     const kp = freshKeyPair();
-    await addAuthority(db, { byAuthorityKeyPair: founder, newAuthorityKey: kp.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: kp.publicKeyB64 });
     extras.push(kp);
   }
   return extras;
 }
 
-describe('addAuthority', () => {
-  it('an existing authority promotes a second authority (non-bootstrap signature branch)', async () => {
+describe('addManager', () => {
+  it('an existing manager promotes a second manager (non-bootstrap signature branch)', async () => {
     const { db, founder } = await openStrand('c');
     const second = freshKeyPair();
 
-    await addAuthority(db, { byAuthorityKeyPair: founder, newAuthorityKey: second.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: second.publicKeyB64 });
 
-    // At commit the count is 2, so the `count(Authority) <= 1` bootstrap branch is
-    // false — this genuinely passed via the existing-authority signature branch.
-    expect(await tableCount(db, 'Authority')).toBe(2);
-    const row = await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [second.publicKeyB64]);
+    // At commit the count is 2, so the `count(Manager) <= 1` bootstrap branch is
+    // false — this genuinely passed via the existing-manager signature branch.
+    expect(await tableCount(db, 'Manager')).toBe(2);
+    const row = await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [second.publicKeyB64]);
     expect(row?.MemberKey).toBe(second.publicKeyB64);
   }, 30_000);
 
-  it('rejects an add whose signer is not an authority (no count<=1 shortcut once founder exists)', async () => {
+  it('rejects an add whose signer is not an manager (no count<=1 shortcut once founder exists)', async () => {
     const { db } = await openStrand('c');
-    const notAnAuthority = freshKeyPair();
+    const notAManager = freshKeyPair();
     const target = freshKeyPair();
 
     await expect(
-      addAuthority(db, { byAuthorityKeyPair: notAnAuthority, newAuthorityKey: target.publicKeyB64 }),
+      addManager(db, { byManagerKeyPair: notAManager, newManagerKey: target.publicKeyB64 }),
     ).rejects.toThrow();
-    expect(await tableCount(db, 'Authority')).toBe(1); // only the founder
+    expect(await tableCount(db, 'Manager')).toBe(1); // only the founder
   }, 30_000);
 
   it('rejects an add whose signature is over the wrong key (signature binding)', async () => {
@@ -245,93 +245,93 @@ describe('addAuthority', () => {
     const target = freshKeyPair();
     const someOtherKey = freshKeyPair().publicKeyB64;
 
-    // A real authority (founder) signs, but over a DIFFERENT key than the one being
+    // A real manager (founder) signs, but over a DIFFERENT key than the one being
     // inserted, so verify(digest(new.MemberKey=target), sig, founder) fails.
     const wrongSignature = signStrandPayload(someOtherKey, founder.privateKeyB64);
 
     await expect(
       db.exec(
-        `insert into Strand.Authority (MemberKey)
-           with context AuthorityKey = ?, Signature = ?
+        `insert into Strand.Manager (MemberKey)
+           with context ManagerKey = ?, Signature = ?
            values (?)`,
         [founder.publicKeyB64, wrongSignature, target.publicKeyB64],
       ),
     ).rejects.toThrow();
-    expect(await tableCount(db, 'Authority')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
-  it('rejects an authority add on an open strand (Authority is OnlyClosed)', async () => {
+  it('rejects an manager add on an open strand (Manager is OnlyClosed)', async () => {
     const { db } = await openStrand('o');
     const target = freshKeyPair();
 
-    // Open strands have no founding Authority and Authority is OnlyClosed; any add is rejected.
+    // Open strands have no founding Manager and Manager is OnlyClosed; any add is rejected.
     await expect(
-      addAuthority(db, { byAuthorityKeyPair: freshKeyPair(), newAuthorityKey: target.publicKeyB64 }),
+      addManager(db, { byManagerKeyPair: freshKeyPair(), newManagerKey: target.publicKeyB64 }),
     ).rejects.toThrow();
-    expect(await tableCount(db, 'Authority')).toBe(0);
+    expect(await tableCount(db, 'Manager')).toBe(0);
   }, 30_000);
 });
 
-describe('removeAuthority', () => {
+describe('removeManager', () => {
   // NOTE on what these prove: the writer builds a correctly-signed delete (the
-  // existing-authority branch for admin removal, the former-authority self branch
-  // for self-resignation — see removeAuthority's doc). The optimystic bootstrap-mode
+  // existing-manager branch for admin removal, the former-manager self branch
+  // for self-resignation — see removeManager's doc). The optimystic bootstrap-mode
   // transactor now evaluates deferred (subquery-bearing) CHECK constraints on DELETE
-  // — `Authority.Authorized` is one — so these acceptance tests genuinely exercise
+  // — `Manager.Authorized` is one — so these acceptance tests genuinely exercise
   // the signature branches (the founder/self signatures are valid for those
   // branches), and an unauthorized delete is rejected (see the test below). The
   // platform gap they previously documented is tracked by
   // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
-  it('an authority removes a DIFFERENT authority and leaves the other authorities intact', async () => {
+  it('an manager removes a DIFFERENT manager and leaves the other managers intact', async () => {
     const { db, founder } = await openStrand('c');
-    // 3 authorities total so removing one leaves 2 (≥ 2 after delete keeps the
-    // `count(Authority) <= 1` bootstrap branch false, so once delete enforcement
-    // lands this genuinely takes the existing-authority signature branch).
-    const [a2, a3] = await addExtraAuthorities(db, founder, 2);
-    expect(await tableCount(db, 'Authority')).toBe(3);
+    // 3 managers total so removing one leaves 2 (≥ 2 after delete keeps the
+    // `count(Manager) <= 1` bootstrap branch false, so once delete enforcement
+    // lands this genuinely takes the existing-manager signature branch).
+    const [a2, a3] = await addExtraManagers(db, founder, 2);
+    expect(await tableCount(db, 'Manager')).toBe(3);
 
-    await removeAuthority(db, { byAuthorityKeyPair: founder, targetAuthorityKey: a3.publicKeyB64 });
+    await removeManager(db, { byManagerKeyPair: founder, targetManagerKey: a3.publicKeyB64 });
 
-    expect(await tableCount(db, 'Authority')).toBe(2);
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a3.publicKeyB64])).toBeUndefined();
-    // The other authorities are untouched (only the targeted row was removed).
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+    expect(await tableCount(db, 'Manager')).toBe(2);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a3.publicKeyB64])).toBeUndefined();
+    // The other managers are untouched (only the targeted row was removed).
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
-  it('an authority resigns itself (self-targeted removal removes only its own row)', async () => {
+  it('an manager resigns itself (self-targeted removal removes only its own row)', async () => {
     const { db, founder } = await openStrand('c');
-    const [a2] = await addExtraAuthorities(db, founder, 2);
-    expect(await tableCount(db, 'Authority')).toBe(3);
+    const [a2] = await addExtraManagers(db, founder, 2);
+    expect(await tableCount(db, 'Manager')).toBe(3);
 
-    await removeAuthority(db, { byAuthorityKeyPair: a2, targetAuthorityKey: a2.publicKeyB64 });
+    await removeManager(db, { byManagerKeyPair: a2, targetManagerKey: a2.publicKeyB64 });
 
-    expect(await tableCount(db, 'Authority')).toBe(2);
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a2.publicKeyB64])).toBeUndefined();
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+    expect(await tableCount(db, 'Manager')).toBe(2);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeUndefined();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
   // Delete-side constraint enforcement: an unauthorized removal is rejected.
   //
-  // `Authority.Authorized` (a deferred, subquery-bearing CHECK) rejects a removal
-  // whose signer is neither an existing authority nor the target itself. The
+  // `Manager.Authorized` (a deferred, subquery-bearing CHECK) rejects a removal
+  // whose signer is neither an existing manager nor the target itself. The
   // optimystic bootstrap-mode vtab transactor now evaluates deferred CHECK
-  // constraints on DELETE (not only on INSERT), so a non-authority can no longer
-  // remove an Authority row. This pins the intended secure behavior; it previously
+  // constraints on DELETE (not only on INSERT), so a non-manager can no longer
+  // remove an Manager row. This pins the intended secure behavior; it previously
   // documented the platform gap tracked by
   // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
-  it('a non-authority removal is rejected (deferred CHECK enforced on delete)', async () => {
+  it('a non-manager removal is rejected (deferred CHECK enforced on delete)', async () => {
     const { db, founder } = await openStrand('c');
-    const [a2] = await addExtraAuthorities(db, founder, 2);
-    const notAnAuthority = freshKeyPair();
-    expect(await tableCount(db, 'Authority')).toBe(3);
+    const [a2] = await addExtraManagers(db, founder, 2);
+    const notAManager = freshKeyPair();
+    expect(await tableCount(db, 'Manager')).toBe(3);
 
     // No accepting branch matches (post-delete count 2 keeps the bootstrap branch
     // false), so the deferred Authorized CHECK rejects the delete at commit.
     await expect(
-      removeAuthority(db, { byAuthorityKeyPair: notAnAuthority, targetAuthorityKey: a2.publicKeyB64 }),
+      removeManager(db, { byManagerKeyPair: notAManager, targetManagerKey: a2.publicKeyB64 }),
     ).rejects.toThrow();
-    expect(await tableCount(db, 'Authority')).toBe(3); // unchanged — nothing was removed
-    expect(await db.get('select MemberKey from Strand.Authority where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
+    expect(await tableCount(db, 'Manager')).toBe(3); // unchanged — nothing was removed
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
   }, 30_000);
 });

@@ -123,7 +123,7 @@ function signedSApp() {
   return { id: pub, version: VERSION, schema: SCHEMA, signature: signSchema(SCHEMA, VERSION, priv) };
 }
 
-async function countRow(db: Database, table: 'Header' | 'Member' | 'Authority'): Promise<number> {
+async function countRow(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
     return (row as { c: number }).c;
   }
@@ -153,7 +153,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     node = undefined;
   });
 
-  it('founder of a closed strand: Header=1, Member=1, Authority=1 with derived key', async () => {
+  it('founder of a closed strand: Header=1, Member=1, Manager=1 with derived key', async () => {
     node = await startNode();
     const strandId = 'addstrand-closed-' + rand2();
     const memberPrivateKey = await generateStrandMemberKey();
@@ -168,16 +168,16 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     const db = instance.database!.getDatabase();
     expect(await countRow(db, 'Header')).toBe(1);
     expect(await countRow(db, 'Member')).toBe(1);
-    expect(await countRow(db, 'Authority')).toBe(1);
+    expect(await countRow(db, 'Manager')).toBe(1);
 
     const expectedKey = strandMemberKeyPair(memberPrivateKey).publicKeyB64;
     const member = await db.get('select Key from Strand.Member');
-    const authority = await db.get('select MemberKey from Strand.Authority');
+    const manager = await db.get('select MemberKey from Strand.Manager');
     expect(member?.Key).toBe(expectedKey);
-    expect(authority?.MemberKey).toBe(expectedKey);
+    expect(manager?.MemberKey).toBe(expectedKey);
   }, 60_000);
 
-  it('founder of an open strand: Header=1, Member=0, Authority=0, Header.Type=o', async () => {
+  it('founder of an open strand: Header=1, Member=0, Manager=0, Header.Type=o', async () => {
     node = await startNode();
     const strandId = 'addstrand-open-' + rand2();
 
@@ -191,7 +191,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
     const db = instance.database!.getDatabase();
     expect(await countRow(db, 'Header')).toBe(1);
     expect(await countRow(db, 'Member')).toBe(0);
-    expect(await countRow(db, 'Authority')).toBe(0);
+    expect(await countRow(db, 'Manager')).toBe(0);
 
     const header = await db.get('select Type from Strand.Header');
     expect(header?.Type).toBe('o');

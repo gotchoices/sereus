@@ -48,7 +48,7 @@ export interface StartStrandConfig {
   requireSignedSchemas?: boolean;
   /**
    * Whether this node founds the strand (vs. joins it). Forwarded to the
-   * StrandDatabase so the founder bootstrap (Header, founding Member/Authority)
+   * StrandDatabase so the founder bootstrap (Header, founding Member/Manager)
    * runs once at bring-up. Joiners leave this unset and write nothing. See
    * {@link StrandConfig.founder}.
    */
@@ -292,7 +292,7 @@ export class StrandInstanceManager {
         rawStorage: strandStorage,
         // Founder bootstrap inputs: the strand's type drives which membership rows
         // are written, and the closed-strand MemberPrivateKey derives the founding
-        // Member/Authority key. Both come off the control-network strand row.
+        // Member/Manager key. Both come off the control-network strand row.
         strandType: config.strandRow.Type,
         memberPrivateKey: config.strandRow.MemberPrivateKey ?? undefined,
         founder: config.founder

@@ -81,11 +81,11 @@ export {
 export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 
 // Closed-strand member key generation (ed25519 protobuf, base64) + the
-// protobuf->base64url bridge that derives the founding Member/Authority key.
+// protobuf->base64url bridge that derives the founding Member/Manager key.
 export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 
 // Strand membership writer (founder bootstrap, invite issuance/consumption,
-// authority-admit, member-peer registration, authority rotation, + shared signing
+// manager-admit, member-peer registration, manager rotation, + shared signing
 // primitives reused across the flows).
 export {
   signStrandPayload,
@@ -93,20 +93,20 @@ export {
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
-  addMemberByAuthority,
+  addMemberByManager,
   registerMemberPeer,
-  addAuthority,
-  removeAuthority,
+  addManager,
+  removeManager,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
   type FounderBootstrapParams,
   type IssueInviteParams,
   type IssuedInvite,
   type ConsumeInviteParams,
-  type AddMemberByAuthorityParams,
+  type AddMemberByManagerParams,
   type RegisterMemberPeerParams,
-  type AddAuthorityParams,
-  type RemoveAuthorityParams
+  type AddManagerParams,
+  type RemoveManagerParams
 } from './strand-membership-writer.js';
 
 // Engine-canonical datetime helper (shared by control + strand signed-write flows

@@ -458,7 +458,7 @@ export interface StrandConfig {
    * published the strand (the responder in formation, the creator in host/solo
    * paths; the same party that calls {@link CadreNode.publishStrand}). The founder
    * runs the one-time membership bootstrap at bring-up (writes `Strand.Header`, and
-   * for a closed strand the founding `Member`+`Authority`). A joiner leaves this
+   * for a closed strand the founding `Member`+`Manager`). A joiner leaves this
    * `false`/unset and writes nothing — it receives those rows via Optimystic sync.
    * Defaults to `false`.
    */

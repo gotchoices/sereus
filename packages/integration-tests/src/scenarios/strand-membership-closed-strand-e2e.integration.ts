@@ -3,7 +3,7 @@
  *
  * Capstone integration coverage for the `Strand.*` membership tables landed by the
  * `strand-membership-*` tickets (founder bootstrap → invite/join → member-peer →
- * authority rotation). Drives the full CLOSED-strand path across two REAL
+ * manager rotation). Drives the full CLOSED-strand path across two REAL
  * `CadreNode`s over libp2p, modelled on the proven two-node pattern in
  * `rbac-signed-write.integration.ts` (real nodes, `formStrand` over libp2p,
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
@@ -20,10 +20,10 @@
  * row; the founder passes `founder:true`, the joiner `founder:false`.
  *
  * ── WHERE THE WRITER LIFECYCLE RUNS (and why) ────────────────────────────────
- * The invite/join, member-peer, and authority-rotation writers all run against the
+ * The invite/join, member-peer, and manager-rotation writers all run against the
  * FOUNDER's strand DB — the authoritative DB where the founder bootstrap seated the
- * `Authority`/`Member`/`Header` those deferred constraints (`InviteValid`,
- * `MemberExists`, `Authority.Authorized`, …) read. Their accept/reject outcomes are
+ * `Manager`/`Member`/`Header` those deferred constraints (`InviteValid`,
+ * `MemberExists`, `Manager.Authorized`, …) read. Their accept/reject outcomes are
  * the gating deliverable. Cross-node replication of `Strand.*` rows to the JOINER's
  * DB is observed BEST-EFFORT and logged, never asserted as a gate: per the same
  * bootstrap-vs-networked caveat noted in `rbac-signed-write`, deferred-constraint-
@@ -50,7 +50,7 @@ import {
 	issueInvite,
 	consumeInvite,
 	registerMemberPeer,
-	addAuthority,
+	addManager,
 	signStrandPayload,
 	type StrandProvisioner,
 	type Ed25519KeyPair,
@@ -119,7 +119,7 @@ function freshKeyPair(): Ed25519KeyPair {
 /** Count rows in a `Strand.*` table as seen by a strand DB. */
 async function strandCount(
 	db: Database,
-	table: 'Header' | 'Member' | 'Authority' | 'Invite' | 'ConsumedInvite' | 'MemberPeer',
+	table: 'Header' | 'Member' | 'Manager' | 'Invite' | 'ConsumedInvite' | 'MemberPeer',
 ): Promise<number> {
 	const row = await db.get(`select count(1) as c from Strand.${table}`);
 	return (row?.c as number) ?? 0;
@@ -176,7 +176,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// ── Construct the shared CLOSED StrandRow directly ───────────────────
 			// Type:'c' + a minted MemberPrivateKey; both nodes attach the same row. The
-			// founder derives the founding Member/Authority key from MemberPrivateKey.
+			// founder derives the founding Member/Manager key from MemberPrivateKey.
 			const memberPrivateKey = await generateStrandMemberKey();
 			const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
 			const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' };
@@ -192,24 +192,24 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			const founderDb = founderStrand.database!.getDatabase();
 			const joinerDb = joinerStrand.database!.getDatabase();
 
-			// ── 1. Founder bootstrap: exactly Header(c) + founding Member + Authority ──
+			// ── 1. Founder bootstrap: exactly Header(c) + founding Member + Manager ──
 			expect(await strandCount(founderDb, 'Header')).toBe(1);
 			expect(await strandCount(founderDb, 'Member')).toBe(1);
-			expect(await strandCount(founderDb, 'Authority')).toBe(1);
+			expect(await strandCount(founderDb, 'Manager')).toBe(1);
 
 			const header = await founderDb.get('select Type from Strand.Header');
 			expect(header?.Type).toBe('c');
 			const founderMember = await founderDb.get('select Key from Strand.Member');
-			const founderAuthority = await founderDb.get('select MemberKey from Strand.Authority');
+			const founderManager = await founderDb.get('select MemberKey from Strand.Manager');
 			expect(founderMember?.Key).toBe(founderKeyPair.publicKeyB64);
-			expect(founderAuthority?.MemberKey).toBe(founderKeyPair.publicKeyB64);
+			expect(founderManager?.MemberKey).toBe(founderKeyPair.publicKeyB64);
 
 			// ── 2. Joiner writes nothing on bring-up (BEFORE any strand dial) ────
 			// No strand-level connection exists yet, so nothing could have synced — this
 			// proves the joiner's `addStrand({ founder:false })` inserted no rows itself.
 			expect(await strandCount(joinerDb, 'Header')).toBe(0);
 			expect(await strandCount(joinerDb, 'Member')).toBe(0);
-			expect(await strandCount(joinerDb, 'Authority')).toBe(0);
+			expect(await strandCount(joinerDb, 'Manager')).toBe(0);
 
 			// ── 3. Manually connect strand-level libp2p (peer discovery via control net is TODO) ──
 			const founderStrandAddrs = founderStrand.libp2pNode!.getMultiaddrs();
@@ -229,7 +229,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 					async () =>
 						(await strandCount(joinerDb, 'Header')) >= 1 &&
 						(await strandCount(joinerDb, 'Member')) >= 1 &&
-						(await strandCount(joinerDb, 'Authority')) >= 1,
+						(await strandCount(joinerDb, 'Manager')) >= 1,
 					{ timeoutMs: 8_000, intervalMs: 250, description: 'founder bootstrap rows replicate to joiner' },
 				);
 				syncObserved = true;
@@ -243,13 +243,13 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// ════ Writer-driven membership lifecycle (against the founder DB) ════
 
-			// ── 5. Invite issuance: authority accepts, non-authority rejects ─────
-			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { authorityKeyPair: founderKeyPair });
+			// ── 5. Invite issuance: manager accepts, non-manager rejects ─────
+			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
 			const issuedRow = await founderDb.get('select Key from Strand.Invite where Key = ?', [inviteKey]);
 			expect(issuedRow?.Key).toBe(inviteKey);
 
-			// A non-authority cannot issue an invite (InviteValid has no matching Authority).
-			await expect(issueInvite(founderDb, { authorityKeyPair: freshKeyPair() })).rejects.toThrow();
+			// A non-manager cannot issue an invite (InviteValid has no matching Manager).
+			await expect(issueInvite(founderDb, { managerKeyPair: freshKeyPair() })).rejects.toThrow();
 
 			// ── 6. Invite consumption: joiner joins with its own member keypair ──
 			const joinerMember = freshKeyPair();
@@ -267,7 +267,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// An unauthorized join — consume a fresh invite with the WRONG private key —
 			// is rejected (the invite-key possession proof fails at commit).
-			const { inviteKey: inviteKey2 } = await issueInvite(founderDb, { authorityKeyPair: founderKeyPair });
+			const { inviteKey: inviteKey2 } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
 			await expect(
 				consumeInvite(founderDb, {
 					inviteKey: inviteKey2,
@@ -307,17 +307,17 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				),
 			).rejects.toThrow();
 
-			// ── 8. Authority rotation: founder promotes the joiner to a 2nd authority ──
-			await addAuthority(founderDb, { byAuthorityKeyPair: founderKeyPair, newAuthorityKey: joinerMember.publicKeyB64 });
-			const promoted = await founderDb.get('select MemberKey from Strand.Authority where MemberKey = ?', [joinerMember.publicKeyB64]);
+			// ── 8. Manager rotation: founder promotes the joiner to a 2nd manager ──
+			await addManager(founderDb, { byManagerKeyPair: founderKeyPair, newManagerKey: joinerMember.publicKeyB64 });
+			const promoted = await founderDb.get('select MemberKey from Strand.Manager where MemberKey = ?', [joinerMember.publicKeyB64]);
 			expect(promoted?.MemberKey).toBe(joinerMember.publicKeyB64);
 			// At commit the count is 2, so this genuinely took the signature-verifying
-			// branch (not the `count(Authority) <= 1` bootstrap shortcut).
-			expect(await strandCount(founderDb, 'Authority')).toBe(2);
+			// branch (not the `count(Manager) <= 1` bootstrap shortcut).
+			expect(await strandCount(founderDb, 'Manager')).toBe(2);
 
-			// A non-authority cannot add an authority.
+			// A non-manager cannot add an manager.
 			await expect(
-				addAuthority(founderDb, { byAuthorityKeyPair: freshKeyPair(), newAuthorityKey: freshKeyPair().publicKeyB64 }),
+				addManager(founderDb, { byManagerKeyPair: freshKeyPair(), newManagerKey: freshKeyPair().publicKeyB64 }),
 			).rejects.toThrow();
 
 			// ── 9. A signed sApp write by the newly-admitted member is accepted ──
