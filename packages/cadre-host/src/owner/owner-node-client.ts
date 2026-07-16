@@ -19,7 +19,7 @@
  */
 
 import debug from 'debug';
-import type { CadreInvite } from '@serfab/cadre-core';
+import type { CadreInvite, DroneInitResult } from '@serfab/cadre-core';
 
 import type { OwnerAdminEndpoint } from '../orchestrator/index.js';
 import type { CadreNodeLike as TrustCircleCadreNodeLike } from '../auth/trust-circle.js';
@@ -150,6 +150,22 @@ export class OwnerNodeClient implements TrustCircleCadreNodeLike, NatCadreNodeLi
   async getMultiaddrs(): Promise<string[]> {
     const data = await this.request<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs');
     return data.multiaddrs;
+  }
+
+  // --- drone seeding (node-donation requester side) ---
+
+  /**
+   * Mint a seed authorizing a drone — a provider-hosted / donated node — to join
+   * this node's cadre. The node signs the seed with its own authority key; only
+   * the signed, public `encodedSeed` is returned (the private key never leaves
+   * the node). This is the requester ("phone") side of the node-donation flow:
+   * the donor host presents the returned seed to the donated node's `POST /seed`.
+   */
+  async addDrone(options: { dronePeerId: string; droneMultiaddrs: string[] }): Promise<DroneInitResult> {
+    return await this.request<DroneInitResult>('POST', '/admin/add-drone', {
+      dronePeerId: options.dronePeerId,
+      droneMultiaddrs: options.droneMultiaddrs,
+    });
   }
 
   // --- push-model invite addresses ---

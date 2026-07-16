@@ -57,6 +57,7 @@ export interface AdminServerOptions {
  * - `GET    /admin/authorized-members/:peerId` → `{ member: boolean }` (AUTHORIZED)
  * - `POST   /admin/invites`           → `{ invite, encodedInvite }`
  * - `POST   /admin/accept-phone`      → `{ ok: true }`
+ * - `POST   /admin/add-drone`         → `{ seed, encodedSeed }` (mint a seed authorizing a drone/donated node)
  * - `DELETE /admin/members/:peerId`   → `{ ok: true }`
  * - `PUT    /admin/invite-addresses`  → `{ ok: true }`
  */
@@ -196,6 +197,26 @@ export class AdminServer {
       const issuedInvite = body.issuedInvite as CadreInvite | undefined;
       await node.acceptPhone({ phonePeerId: body.phonePeerId, token }, issuedInvite);
       return { ok: true };
+    }
+
+    // Mint a seed authorizing a drone (a provider-hosted / donated node) to join
+    // this node's cadre. The node signs the seed with its own authority key; only
+    // the signed, public form (`encodedSeed`) transits. This is the requester
+    // ("phone") side of the node-donation flow: the donor host presents the
+    // returned seed to the donated node's `POST /seed`.
+    if (resource === 'add-drone' && method === 'POST') {
+      const body = await this.readJson(req);
+      if (typeof body.dronePeerId !== 'string' || body.dronePeerId.length === 0) {
+        throw new AdminError('bad_request', 'dronePeerId is required');
+      }
+      if (!Array.isArray(body.droneMultiaddrs) || !body.droneMultiaddrs.every((a) => typeof a === 'string')) {
+        throw new AdminError('bad_request', 'droneMultiaddrs must be an array of strings');
+      }
+      const { seed, encodedSeed } = await node.addDrone({
+        dronePeerId: body.dronePeerId,
+        droneMultiaddrs: body.droneMultiaddrs as string[],
+      });
+      return { seed, encodedSeed };
     }
 
     if (resource === 'invite-addresses' && method === 'PUT') {

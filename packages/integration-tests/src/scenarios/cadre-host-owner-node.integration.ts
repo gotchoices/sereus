@@ -1,6 +1,12 @@
 /**
  * Cross-package owner-node integration.
  *
+ * This is the **opt-in own-cadre (founder) scenario**: cadre-host spawns and
+ * drives a node that founds *its own* cadre. The complementary donate-a-node
+ * flow — where the host contributes a node to an *external* requester's cadre —
+ * is covered by `cadre-host-node-donation.integration.ts` (blocked on the
+ * `2-donation-service` surface; see that ticket's handoff).
+ *
  * Closes the loop the 6.7 delegation work left open: cadre-host's
  * `HostProcessOrchestrator` spawns the **real** `@serfab/cadre-cli` owner
  * node (`cadre-cli start --owner --admin-port … --identity-protobuf …`),

@@ -144,6 +144,18 @@ describe('OwnerNodeClient', () => {
     expect(JSON.parse(last!.body)).toEqual({ addresses: ['/dns4/h/tcp/1/p2p/x'] });
   });
 
+  it('addDrone POSTs /admin/add-drone with body and unwraps the seed result', async () => {
+    responder = () => ({ status: 200, payload: { ok: true, data: { seed: { partyId: 'p', peers: [] }, encodedSeed: 'enc-seed' } } });
+    const client = makeClient();
+    const result = await client.addDrone({ dronePeerId: '12D3KooWDrone', droneMultiaddrs: ['/ip4/10.0.0.9/tcp/4001'] });
+
+    expect(result.encodedSeed).toBe('enc-seed');
+    expect(last?.method).toBe('POST');
+    expect(last?.path).toBe('/admin/add-drone');
+    expect(last?.auth).toBe(`Bearer ${TOKEN}`);
+    expect(JSON.parse(last!.body)).toEqual({ dronePeerId: '12D3KooWDrone', droneMultiaddrs: ['/ip4/10.0.0.9/tcp/4001'] });
+  });
+
   it('encodeInvite mirrors cadre-core base64url(JSON)', () => {
     const client = makeClient();
     const invite = { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 };

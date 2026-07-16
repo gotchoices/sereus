@@ -61,6 +61,14 @@ class MockNode {
     }
   }
 
+  async addDrone(options: { dronePeerId: string; droneMultiaddrs: string[] }) {
+    this.record('addDrone', options);
+    if (this.seedUninitialized) {
+      throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
+    }
+    return { seed: { partyId: this.partyId, peers: [] }, encodedSeed: 'seed-' + options.dronePeerId };
+  }
+
   setInviteAddresses(addresses: string[] | null) {
     this.record('setInviteAddresses', addresses);
     this.pushedAddresses = addresses;
@@ -206,6 +214,55 @@ describe('AdminServer', () => {
     it('maps "seed bootstrap not initialized" errors to 503 not_ready', async () => {
       node.seedUninitialized = true;
       const res = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
+      expect(res.status).toBe(503);
+      expect((await res.json()).error.code).toBe('not_ready');
+    });
+  });
+
+  describe('add-drone route', () => {
+    const drone = { dronePeerId: '12D3KooWDrone', droneMultiaddrs: ['/ip4/10.0.0.9/tcp/4001'] };
+
+    it('POST /admin/add-drone forwards decoded args and returns the minted seed', async () => {
+      const res = await fetch(`${base}/admin/add-drone`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify(drone),
+      });
+      const body = await res.json();
+      expect(body.ok).toBe(true);
+      expect(body.data.encodedSeed).toBe('seed-12D3KooWDrone');
+      expect(body.data.seed).toBeDefined();
+      const call = node.calls.find((c) => c.method === 'addDrone');
+      expect(call?.args[0]).toEqual(drone);
+    });
+
+    it('rejects a missing dronePeerId (400)', async () => {
+      const res = await fetch(`${base}/admin/add-drone`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ droneMultiaddrs: [] }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('bad_request');
+    });
+
+    it('rejects a non-array droneMultiaddrs (400)', async () => {
+      const res = await fetch(`${base}/admin/add-drone`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify({ dronePeerId: '12D3KooWDrone', droneMultiaddrs: 'nope' }),
+      });
+      expect(res.status).toBe(400);
+      expect((await res.json()).error.code).toBe('bad_request');
+    });
+
+    it('maps seed-bootstrap-not-initialized to 503 not_ready', async () => {
+      node.seedUninitialized = true;
+      const res = await fetch(`${base}/admin/add-drone`, {
+        method: 'POST',
+        headers: auth({ 'content-type': 'application/json' }),
+        body: JSON.stringify(drone),
+      });
       expect(res.status).toBe(503);
       expect((await res.json()).error.code).toBe('not_ready');
     });
