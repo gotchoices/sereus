@@ -22,6 +22,8 @@ import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
 import type { UpdateService } from '../update/index.js';
 import { createUpdateHandlers } from '../update/index.js';
+import type { GrantService } from '../donation/index.js';
+import { createGrantAdminHandlers } from '../donation/index.js';
 
 import { EventBus } from './events/bus.js';
 import { registerSseRoute } from './events/sse-route.js';
@@ -35,6 +37,7 @@ import { registerUpdateRoutes } from './routes/update.js';
 import { registerStatusRoute } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
+import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
 import { HostSettingsStore } from './settings-store.js';
 
 export interface LocalUiServerOptions {
@@ -48,6 +51,12 @@ export interface LocalUiServerOptions {
   nat: NatService;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
+  /**
+   * Donation grant layer. When present, mounts the loopback admin surface at
+   * `/grants-admin` (issue/list/revoke). Optional so existing callers/tests
+   * that don't exercise donations need not wire it.
+   */
+  grants?: GrantService;
   /** Settings I/O facade. Defaults to a new one rooted at `dataDir`. */
   settingsStore?: HostSettingsStore;
   /** Bus instance — pass the same one to subsystems that publish events. */
@@ -110,6 +119,9 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   registerNatRoutes(app, { handlers: createNatHandlers(opts.nat), events });
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });
+  }
+  if (opts.grants) {
+    registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants) });
   }
 
   // Static mount registers as the not-found handler — declared last so the

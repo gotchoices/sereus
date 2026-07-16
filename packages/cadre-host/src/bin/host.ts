@@ -34,6 +34,7 @@ import { createServiceHost } from '../installer/service-host/index.js';
 import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
 import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
+import { GrantService, GrantStore } from '../donation/index.js';
 import { NatService } from '../nat/index.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
 import {
@@ -303,6 +304,11 @@ program
         cadreNode: owner,
       });
 
+      // Donation grant layer. Local-only: issue/validate/revoke are pure store
+      // ops (no node round-trip), so it needs no owner-node handle. The
+      // loopback `/grants-admin` surface is mounted by createLocalUiServer.
+      const grantService = new GrantService({ store: new GrantStore(cfg.dataDir) });
+
       // Push NAT-resolved invite addresses to the node on every NAT change.
       // NatService.start() also fires this once as an initial push, retried
       // until the freshly spawned owner node accepts it (bounded; the
@@ -332,6 +338,7 @@ program
         trustCircle,
         nat: natService,
         update: updateService,
+        grants: grantService,
         settingsStore,
       });
       const { url, port } = await server.start();
@@ -447,6 +454,22 @@ function printEnrollmentInvite(invite: { encodedInvite: string; expiresAt?: stri
   if (invite.expiresAt) {
     console.log(`  (expires ${invite.expiresAt})`);
   }
+}
+
+function printGrantToken(token: string, withQr: boolean): void {
+  if (withQr) {
+    // Best-effort QR render — fall back to the bare token if the lib chokes.
+    try {
+      const qr = requireForQr('qrcode-terminal') as { generate: (text: string, opts?: { small?: boolean }, cb?: (s: string) => void) => void };
+      qr.generate(token, { small: true }, (rendered) => {
+        console.error(rendered);
+      });
+    } catch (err) {
+      console.error(`(qrcode-terminal unavailable: ${(err as Error).message})`);
+    }
+  }
+  // The token goes to stdout alone so it can be piped/copied; metadata to stderr.
+  console.log(token);
 }
 
 program
@@ -586,6 +609,143 @@ trust
       return;
     }
     console.log(`revoked ${kind}: ${id}`);
+    process.exit(0);
+  });
+
+// ============================================================================
+// grant subcommands — donation grant tokens (who may ask this host for a node)
+// ============================================================================
+//
+// A grant token lets one grantee (friend/family) present a Bearer credential to
+// ask this host to donate cadre nodes, up to a per-grantee cap. These commands
+// are thin HTTP clients of the loopback `/grants-admin` admin surface — no
+// bearer (same-machine admin), same posture as `invite` / `trust`. The
+// grantee-facing provisioning surface lands in the donation-service ticket.
+
+const grant = program
+  .command('grant')
+  .description('Manage donation grant tokens (who may ask this host to donate a node)');
+
+grant
+  .command('issue')
+  .description('Issue a grant token for one grantee (prints the token + QR)')
+  .argument('<label>', 'Display label for the grantee (e.g. "Alice\'s cadre")')
+  .option('--max-nodes <n>', 'Max concurrently-live donated nodes this grant may hold', parseIntArg)
+  .option('--ttl <duration>', 'Grant lifetime (e.g. 30d, 12h); omit for no expiry')
+  .option('--no-qr', 'Print only the token, no QR code')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (label: string, opts: {
+    maxNodes?: number;
+    ttl?: string;
+    qr?: boolean;
+    port: string;
+    host: string;
+  }) => {
+    const payload: { label: string; maxNodes?: number; ttlMs?: number } = { label };
+    if (typeof opts.maxNodes === 'number') payload.maxNodes = opts.maxNodes;
+    if (opts.ttl) {
+      try {
+        payload.ttlMs = parseDuration(opts.ttl);
+      } catch (err) {
+        console.error(`Invalid --ttl: ${(err as Error).message}`);
+        process.exit(1);
+        return;
+      }
+    }
+
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/grants-admin`;
+    let response: Response;
+    try {
+      response = await fetch(url, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+    } catch (err) {
+      console.error(
+        `Failed to reach cadre-host at ${url}: ${(err as Error).message}\n` +
+        `Hint: is cadre-host running? Try \`cadre-host start\`.`,
+      );
+      process.exit(2);
+      return;
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+      process.exit(1);
+      return;
+    }
+    const body = await response.json() as { grant?: { token?: string; maxNodes?: number; expiresAt?: string } };
+    const issued = body.grant;
+    if (!issued?.token) {
+      console.error('cadre-host returned malformed response (missing grant token)');
+      process.exit(1);
+      return;
+    }
+    printGrantToken(issued.token, opts.qr !== false);
+    console.error(`(maxNodes ${issued.maxNodes ?? '?'}${issued.expiresAt ? `, expires ${issued.expiresAt}` : ', no expiry'})`);
+    process.exit(0);
+  });
+
+grant
+  .command('list')
+  .description('List issued grant tokens')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (opts: { port: string; host: string }) => {
+    const url = `http://${opts.host}:${resolvePort(opts.port)}/grants-admin`;
+    let response: Response;
+    try {
+      response = await fetch(url);
+    } catch (err) {
+      console.error(`Failed to reach cadre-host at ${url}: ${(err as Error).message}`);
+      process.exit(2);
+      return;
+    }
+    if (!response.ok) {
+      console.error(`cadre-host returned ${response.status}: ${response.statusText}`);
+      process.exit(1);
+      return;
+    }
+    const body = await response.json() as {
+      grants: Array<{ token: string; label: string; maxNodes: number; expiresAt?: string; revokedAt?: string }>;
+    };
+    console.log('Grants:');
+    if (body.grants.length === 0) {
+      console.log('  (none)');
+    } else {
+      for (const g of body.grants) {
+        const state = g.revokedAt ? ' [revoked]' : (g.expiresAt ? ` (expires ${g.expiresAt})` : '');
+        console.log(`  ${g.token}  ${g.label}  max=${g.maxNodes}${state}`);
+      }
+    }
+    process.exit(0);
+  });
+
+grant
+  .command('revoke')
+  .description('Revoke a grant token (blocks future requests; live nodes are not torn down)')
+  .argument('<token>', 'Grant token to revoke')
+  .option('--port <port>', 'cadre-host management API port', String(DEFAULT_PORT))
+  .option('--host <host>', 'cadre-host management API host', '127.0.0.1')
+  .action(async (token: string, opts: { port: string; host: string }) => {
+    const base = `http://${opts.host}:${resolvePort(opts.port)}`;
+    let response: Response;
+    try {
+      response = await fetch(`${base}/grants-admin/${encodeURIComponent(token)}`, { method: 'DELETE' });
+    } catch (err) {
+      console.error(`Failed to reach cadre-host at ${base}: ${(err as Error).message}`);
+      process.exit(2);
+      return;
+    }
+    if (!response.ok) {
+      const text = await response.text().catch(() => '');
+      console.error(`cadre-host returned ${response.status}: ${text || response.statusText}`);
+      process.exit(1);
+      return;
+    }
+    console.log(`revoked grant: ${token}`);
     process.exit(0);
   });
 

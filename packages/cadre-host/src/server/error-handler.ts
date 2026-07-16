@@ -22,6 +22,11 @@
  *       apply_in_progress                        → 409
  *       signature_invalid, unsupported_state_version,
  *       apply_failed, rollback_failed, storage_error → 500
+ *   - GrantError
+ *       invalid_label, invalid_max_nodes,
+ *       invalid_ttl                              → 400
+ *       not_found                                → 404
+ *       storage_error                            → 500
  *   - everything else                            → 500 (code "internal")
  */
 
@@ -31,6 +36,7 @@ import debug from 'debug';
 import { TrustCircleError, type TrustCircleErrorCode } from '../auth/types.js';
 import { NatError, type NatErrorCode } from '../nat/types.js';
 import { UpdateErrorException, type UpdateErrorCode } from '../update/types.js';
+import { GrantError, type GrantErrorCode } from '../donation/types.js';
 
 const log = debug('cadre:host:error-handler');
 
@@ -55,6 +61,14 @@ const NAT_STATUS: Record<NatErrorCode, number> = {
   ip_detection_failed: 500,
   ddns_update_failed: 500,
   node_unavailable: 503,
+};
+
+const GRANT_STATUS: Record<GrantErrorCode, number> = {
+  invalid_label: 400,
+  invalid_max_nodes: 400,
+  invalid_ttl: 400,
+  not_found: 404,
+  storage_error: 500,
 };
 
 const UPDATE_STATUS: Record<UpdateErrorCode, number> = {
@@ -99,6 +113,9 @@ function classify(err: FastifyError): Classified {
   }
   if (err instanceof UpdateErrorException) {
     return { status: UPDATE_STATUS[err.code] ?? 500, code: err.code, message: err.message };
+  }
+  if (err instanceof GrantError) {
+    return { status: GRANT_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }
   // Fastify body-parsing / validation errors have a statusCode we should honour.
   if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600) {

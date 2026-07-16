@@ -60,6 +60,26 @@ export type {
   TrustCircleErrorCode,
 } from './auth/index.js';
 
+/* ──────────────── donation grant tokens ──────────────── */
+
+export {
+  GrantStore,
+  GrantService,
+  createGrantAdminHandlers,
+  GrantError,
+  DEFAULT_MAX_NODES,
+} from './donation/index.js';
+export type {
+  Grant,
+  GrantDenyReason,
+  GrantValidation,
+  GrantValidator,
+  GrantFile,
+  GrantAdminHandlers,
+  GrantErrorCode,
+  GrantServiceOptions,
+} from './donation/index.js';
+
 export { Installer, readHostConfig, updateHostConfig, writeHostConfig } from './installer/index.js';
 export type {
   InstallOptions,

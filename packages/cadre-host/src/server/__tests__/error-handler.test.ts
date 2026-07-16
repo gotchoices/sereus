@@ -4,6 +4,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { TrustCircleError } from '../../auth/types.js';
 import { NatError } from '../../nat/types.js';
 import { UpdateErrorException } from '../../update/types.js';
+import { GrantError } from '../../donation/types.js';
 import { registerErrorHandler } from '../error-handler.js';
 
 describe('error handler', () => {
@@ -23,6 +24,10 @@ describe('error handler', () => {
     app.get('/update/:code', async (req: FastifyRequest) => {
       const { code } = req.params as { code: string };
       throw new UpdateErrorException(code as never, `update err: ${code}`);
+    });
+    app.get('/grant/:code', async (req: FastifyRequest) => {
+      const { code } = req.params as { code: string };
+      throw new GrantError(code as never, `grant err: ${code}`);
     });
     app.get('/unknown', async () => {
       throw new Error('mystery');
@@ -83,6 +88,23 @@ describe('error handler', () => {
   it('UpdateErrorException no_update_available → 400', async () => {
     const res = await app.inject({ method: 'GET', url: '/update/no_update_available' });
     expect(res.statusCode).toBe(400);
+  });
+
+  it('GrantError invalid_max_nodes → 400', async () => {
+    const res = await app.inject({ method: 'GET', url: '/grant/invalid_max_nodes' });
+    expect(res.statusCode).toBe(400);
+    const body = res.json() as { error: { code: string } };
+    expect(body.error.code).toBe('invalid_max_nodes');
+  });
+
+  it('GrantError not_found → 404', async () => {
+    const res = await app.inject({ method: 'GET', url: '/grant/not_found' });
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('GrantError storage_error → 500', async () => {
+    const res = await app.inject({ method: 'GET', url: '/grant/storage_error' });
+    expect(res.statusCode).toBe(500);
   });
 
   it('unknown Error → 500 internal', async () => {
