@@ -7,7 +7,8 @@
  * and delegates all owner/membership/identity operations to it over this
  * client. The client implements **both** trimmed `CadreNodeLike` interfaces —
  * the trust-circle one (`auth/trust-circle.ts`) and the NAT one
- * (`nat/nat-service.ts`) — plus `pushInviteAddresses`.
+ * (`nat/nat-service.ts`) — plus `pushInviteAddresses` and `addDrone` (the
+ * node-donation requester side).
  *
  * Transport: `Authorization: Bearer <token>` against
  * `http://127.0.0.1:<adminPort>`. Every response uses the cadre-provider

@@ -169,6 +169,7 @@ Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{
 | `GET /admin/authorized-members/:peerId` | authorized-membership probe |
 | `POST /admin/invites` | mint a `CadreInvite` → `{ invite, encodedInvite }` |
 | `POST /admin/accept-phone` | authorize a redeeming peer |
+| `POST /admin/add-drone` | mint a seed authorizing a drone/donated node → `{ seed, encodedSeed }` |
 | `DELETE /admin/members/:peerId` | signed `CadrePeer` delete |
 | `PUT /admin/invite-addresses` | push NAT-resolved invite addresses (resolver transport) |
 
