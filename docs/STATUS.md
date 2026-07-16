@@ -325,6 +325,30 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     correct bundle id, sandbox-vs-production match for the build under test) remains a human prerequisite, and the
     Firebase/Apple credential creation itself is out-of-agent infra work.
 
+## Cadre-host node-donation realignment
+
+cadre-host's primary role is now **node donor** — running OS-managed child-process nodes that join
+*other people's* cadres (the same donate-a-node contract `@serfab/cadre-provider` implements for
+Docker), with the recipient's device staying the authority and the host holding no owner keys.
+Running the host's *own* cadre (the **founder** role) is demoted to an opt-in flag. See
+[`docs/cadre-host.md`](cadre-host.md) → Node donation.
+
+- [x] Founder role demoted to opt-in `ownCadre.enabled` (default off); the donor stack + management
+  server are always up, the owner node / `/auth` / `/nat` only come up when the flag is set.
+- [x] Grant-token layer — `GrantService` / `GrantStore`, loopback `/grants-admin`, and
+  `cadre-host grant issue|list|revoke`. A grant is a long-lived, reusable-to-quota bearer, distinct
+  from a one-time trust-circle invite.
+- [x] Orchestrator pins the requester's owner public key into the donated child
+  (`createContainer` → `CADRE_OWNER_KEYS` → cold-start pinned-key trust policy) so the node accepts
+  the requester-signed seed. `donations.json` store + donation types landed.
+- [~] Grantee-facing `/grants` provisioning surface + `DonationService` lifecycle
+  (provision → peer → seed → terminate) + stale-`awaiting_seed` reap sweep — in progress
+  (`tickets/implement/2-donation-service.md`, Phase 2/3).
+- [ ] WAN reachability for the request surface and per-donated-node NAT/relay mapping — deferred
+  (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`); v1 donation is loopback-only.
+- [ ] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —
+  pending the `/grants` surface above.
+
 ## Testing / CI
 
 - [ ] Wire `@serfab/strand-proto` tests into workspace CI

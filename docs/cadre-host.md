@@ -1,19 +1,19 @@
 # @serfab/cadre-host
 
-`@serfab/cadre-host` is a self-hosted manager for running cadre nodes on a single always-on machine — the basement PC, the closet NAS, the family server in a spare bedroom. It is a sibling of `@serfab/cadre-provider`, not a mode of it, and ships its own orchestrator, authentication, installer, NAT layer, and local management UI.
+`@serfab/cadre-host` is a self-hosted manager for running cadre nodes on a single always-on machine — the basement PC, the closet NAS, the family server in a spare bedroom. Its primary job is to **donate nodes to other people's cadres**: someone you trust keeps their own device as the authority for their cadre, and this host contributes always-on capacity by running extra nodes that join *their* cadre. That is the same donate-a-node model `@serfab/cadre-provider` implements for paying tenants with Docker — only here the nodes are OS-managed child processes, and the recipients are your trust circle rather than customers. cadre-host is a sibling of `@serfab/cadre-provider`, not a mode of it, and ships its own orchestrator, donation layer, authentication, installer, NAT layer, and local management UI.
 
 This document describes the persona, the package boundary, and the deployment model. Sibling tickets (`cadre-host-process-orchestrator`, `cadre-host-trust-circle`, `cadre-host-nat`, `cadre-host-installer`, `cadre-host-local-ui`) implement the named subsystems.
 
 ## Who it's for
 
-The self-host persona is a technically curious, non-operator user who wants a cadre node for themselves and a small trust circle (family, friends, hobby group) without paying a provider and without learning Docker. They have:
+The self-host persona is a technically curious, non-operator user who runs one always-on box and wants to **contribute nodes to the cadres of people they trust** — family, friends, a hobby group — without paying a provider and without learning Docker. Optionally, and secondarily, they may also run *their own* personal cadre on the same box (an opt-in described below). They have:
 
 - One always-on machine (desktop, laptop in a dock, mini-PC, NAS). It is *not* a server in the operations sense — no monitoring stack, no firewall they understand, no spare hands at 3am.
-- A small number of people they trust completely. The trust boundary is social, not cryptographic — these are people who could call them on the phone.
+- A small number of people they trust completely — the people they'll hand a grant token to so those people's cadres can request nodes here. The trust boundary is social, not cryptographic — these are people who could call them on the phone.
 - A residential internet connection: probably NAT, possibly CGNAT, occasionally dynamic IP.
 - A willingness to install one app and answer a few setup questions, but no patience for ongoing maintenance.
 
-This persona is the opposite of `@serfab/cadre-provider`'s persona, which is a multi-tenant hosting service with API keys, billing, customer isolation, and Docker. The two packages share the cadre lifecycle model but diverge in nearly every operational concern.
+This persona is the opposite of `@serfab/cadre-provider`'s persona, which is a multi-tenant hosting service with API keys, billing, customer isolation, and Docker. The two packages share the same donate-a-node lifecycle but diverge in nearly every operational concern — and where the provider donates to paying strangers, cadre-host donates to a small social trust circle for free.
 
 ## Package boundary
 
@@ -57,7 +57,55 @@ Consequences when `ownCadre.enabled` is **false** (donor-only, the common case):
 
 Toggling the flag on later spawns the owner node on the next `start` (genesis is idempotent). Toggling it off later leaves the owner node's workdir + control-DB storage on disk, just unspawned — its data persists; nothing is deleted.
 
-Everything below in this document describes the **founder** role (the host's own cadre). It applies only when `ownCadre.enabled` is true.
+The **[Node donation](#node-donation-the-primary-role)** section immediately below describes that primary donor role end to end. The founder-specific sections follow it and are clearly marked.
+
+### Node donation (the primary role)
+
+This is the default reason to run cadre-host: contribute always-on nodes to cadres owned by people you trust. It is the exact model `@serfab/cadre-provider` implements for Docker tenants (see [architecture.md § Provider Integration](architecture.md#provider-integration)), with two differences — the nodes are OS-managed child processes instead of containers, and the recipients are your trust circle (gated by a grant token) rather than paying customers. The requester's device stays the cadre authority throughout; **this host never holds the requester's authority key.**
+
+#### Grant tokens (who may ask)
+
+Before anyone can request a node, the host admin issues that person a **grant token** — a high-entropy base64url secret, handed over out-of-band (QR / copy-paste), that the requester presents as `Authorization: Bearer <grant-token>` on every donation request. A grant is long-lived and reusable up to a per-grantee node cap (`maxNodes`), unlike a trust-circle invite (one-time). Issuing / validating / revoking a grant are pure local store operations (`grants.json`) — no node round-trip.
+
+- **Admin surface**: `/grants-admin` (loopback, no bearer — same-machine admin, matching the local-UI "no login" posture) and the `cadre-host grant issue|list|revoke` CLI. This is distinct from the grantee-facing `/grants` surface below, which *does* carry the bearer gate.
+- A revoked or expired grant is denied; the live-node tally (this grant's donations in a non-terminal status) is checked against `maxNodes` at provision time.
+
+#### The donate-a-node lifecycle
+
+The requester is an external cadre **authority** — typically a phone — that already owns a cadre and holds its own owner keypair. The host contributes capacity only:
+
+```
+requester (authority/phone)              cadre-host (donor)                donated node (child process)
+───────────────────────────             ──────────────────                ───────────────────────────
+1. POST /grants                ────────▶ validate grant + quota
+   { partyId, bootstrapNodes,            orchestrator.createContainer(…):  ── spawn: pin requester's
+     ownerKeys, profile? }               pin ownerKeys, join partyId          owner key, join partyId
+                               ◀──────── { id }  (seedToken stays host-side)   via bootstrapNodes
+2. GET /grants/:id/peer        ────────▶ node /status → peerId + multiaddrs
+                               ◀──────── { peerId, multiaddrs }
+3. requester: addDrone({ dronePeerId, droneMultiaddrs }) → { encodedSeed }   (signed with the
+                                                                              requester's authority key)
+4. PUT /grants/:id/seed        ────────▶ present host-side seedToken to node POST /seed
+   { seed: encodedSeed }                 node.applySeed (trusts the pinned owner key)
+                               ◀──────── { peersAdded }                     ── node dials requester's
+                                                                              cadre, syncs into partyId
+5. DELETE /grants/:id          ────────▶ orchestrator stop + remove
+```
+
+Two rules make this safe:
+
+- **The requester's owner key is pinned as a cold-start trust anchor.** A freshly spawned node defaults to a trust policy that rejects *every* seed, because its control DB has no owner keys yet. So the provision request carries the requester's owner *public* key(s) (`ownerKeys`), and the orchestrator threads them into the child via `CADRE_OWNER_KEYS`, which `cadre-cli start` turns into a pinned-key trust policy. Without this the node rejects the phone-signed seed at step 4 — "the node accepts the seed" is the check that proves the pinning is wired correctly.
+- **The `seedToken` never leaves the host.** The host↔node bearer that gates the node's own `POST /seed` is minted host-side and persisted in the donation record (so a host restart in the request→seed gap can still present the seed). It is stripped from every wire view returned to the requester — exactly as the provider redacts it.
+
+The host **never** receives the requester's authority private key: the seed is signed on the requester's device (step 3), and only its signed, public form transits the host (step 4). This is the same trust boundary as [architecture.md § Provider Integration](architecture.md#provider-integration) — "the provider never has access to user keys."
+
+#### Status of the donation surface
+
+Landed today: the grant-token layer (`GrantService` / `GrantStore` / `/grants-admin` / `cadre-host grant`), the orchestrator's pinned-owner-key wiring (`createContainer` → `CADRE_OWNER_KEYS`), and the `donations.json` store plus donation types. The grantee-facing **`/grants` provisioning surface** (`POST /grants`, `GET /grants/:id/peer`, `PUT /grants/:id/seed`, `DELETE /grants/:id`), the `DonationService` that drives the lifecycle above, and the stale-`awaiting_seed` reap sweep are being wired by the donation-service work — the design is fixed (this section); the routes are in progress.
+
+#### Reachability (loopback-only in v1)
+
+The `/grants` surface mounts on the **loopback** management server, same as the trust-circle and NAT surfaces. It is fully exercisable same-machine (and by same-machine tests), but a friend's phone on the far side of a home NAT cannot yet reach it. Making the donation request cross the internet to a residential box — and giving each donated node its own NAT/relay mapping so the requester's cadre can dial it — is deferred to [`backlog/feat-cadre-host-wan-grant-reachability`](../tickets/backlog/feat-cadre-host-wan-grant-reachability.md). **Do not read "donation works" as "WAN reachability works."**
 
 ### Control-plane separation (load-bearing principle)
 
@@ -66,7 +114,14 @@ There are two distinct planes, and conflating them is the mistake this section e
 - **Management plane** — how you talk *to* cadre-host: the loopback HTTP API + Svelte UI (and the `cadre-host` CLI, which is a thin HTTP client of that same API). This is *not* a cadre control network. It carries no owner keys on the wire and grants no cadre membership; it is same-machine admin access (see [Security posture](#security-posture)).
 - **Cadre control network** — the party's private Optimystic network (`CadreControl` schema) that only *cadre nodes* join. Owner operations (mint invite, `authorizePeer`, `removePeer`, report multiaddrs) happen **inside a cadre node**, never inside the manager process.
 
-cadre-host runs on a machine that *does* hold the admin's owner identity (unlike a provider, which never holds keys — architecture.md line 524). The consequence is **not** that the manager joins the control network; it is that one of the cadre nodes the manager spawns — the admin's **owner node** — carries that identity, and the manager delegates owner operations to it over the management channel.
+Whether cadre-host holds any owner identity **at all** depends on the role:
+
+- **Donated nodes (the primary role):** the host holds **no** authority key. A donated node pins the *requester's* owner public key and joins the *requester's* control network — the requester's device is the cadre authority, and the host is exactly like a provider, which "never has access to user keys" (see [architecture.md § Provider Integration](architecture.md#provider-integration)).
+- **The own-cadre owner node (opt-in founder role):** here, and only here, one of the cadre nodes the manager spawns — the admin's **owner node** — carries the admin's own identity, and the manager delegates owner operations to it over the management channel. This is the historical "the host holds the admin's owner identity" case; it is now the exception, not the rule.
+
+Either way the consequence is **not** that the *manager* joins any control network — only the spawned cadre nodes do.
+
+The remaining sections of this document — the single-owner-node topology just below, the node admin channel, the [trust circle](#trust-circle), and [NAT/DDNS](#nat-and-ddns) — describe the opt-in **founder** role and apply only when `ownCadre.enabled` is true.
 
 **Topology: a single household owner node.** cadre-host spawns exactly one cadre node — the admin's **owner node**, which founds/joins the party's control network and carries the host identity. Trust-circle members are *not* separate hosted nodes; they are `CadrePeer` rows (devices that dial in over libp2p), consistent with architecture.md's definition of a cadre as a single party's nodes sharing one control network. (Additional non-owner nodes can still be spawned via the orchestrator for scaling, but the manager only spawns and delegates to the one owner node.)
 
@@ -132,6 +187,8 @@ This node-side surface is established by `cadre-node-admin-channel`; `cadre-host
 The trust-circle invite flow lives in `cadre-host-trust-circle` and reuses the seed bootstrap and invite primitives from cadre-core.
 
 ## Trust circle
+
+> **Founder role only.** The trust circle governs membership in the host's *own* personal cadre (`ownCadre.enabled`). It is unrelated to [node donation](#node-donation-the-primary-role): donated nodes join *other people's* cadres and are gated by grant tokens, not trust-circle invites. Everything in this section applies only when the founder role is enabled.
 
 The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top. Note the owner node self-registers (the `--owner` flag above), so it is itself a `CadrePeer` and appears in the listing as an unlabeled member alongside the devices the admin has added:
 
@@ -420,14 +477,16 @@ The dotted lines from `TC`/`NAT` to the owner node are the **management channel*
 - `HostProcessOrchestrator` — runs cadre nodes as native child processes.
 - `TrustCircleService` + `TrustCircleStore` — invite issuance/redemption/revocation and the local labels file.
 - `NatService` + `NatStore` — UPnP/NAT-PMP port mapping, external-IP detection w/ CGNAT flag, DuckDNS dynamic DNS, secrets storage (keytar + 0600 fallback), and an `inviteAddressResolver` hook into cadre-core's invite flow.
-- CLI: `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings`; `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, brings up the orchestrator + donation grant layer, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`) — this is the always-on **node-donor** path. **Only when `ownCadre.enabled`** (the opt-in founder role) does it additionally **spawn the host's own owner node as a managed child and delegate owner operations to it over the loopback admin channel** (`6.6`/`6.7`) and bring up the trust-circle / NAT services; otherwise `/auth/*` and `/nat/*` are inactive (see [Two roles: donor and founder](#two-roles-donor-and-founder)). `ui` prints + opens the local-UI URL.
+- CLI: `grant issue <label>`, `grant list`, `grant revoke` (the always-on **node-donor** surface, talking to `/grants-admin`); `invite <label>`, `trust list`, `trust revoke`, `nat status`, `nat test`, `nat ddns set`, `nat ddns external`, `nat settings` (the opt-in founder surfaces); `install` / `uninstall` / `status` run the installer (`6.4.1`) — wizard, identity persistence, `host.config.json`, and service-host registration (systemd/launchd/NSSM). `start` loads config + identity, brings up the orchestrator + donation grant layer, and binds the Fastify management server on `127.0.0.1:<uiPort>` (`6.5.1`) — this is the always-on **node-donor** path. **Only when `ownCadre.enabled`** (the opt-in founder role) does it additionally **spawn the host's own owner node as a managed child and delegate owner operations to it over the loopback admin channel** (`6.6`/`6.7`) and bring up the trust-circle / NAT services; otherwise `/auth/*` and `/nat/*` are inactive (see [Two roles: donor and founder](#two-roles-donor-and-founder)). `ui` prints + opens the local-UI URL.
 - Owner-node delegation (`6.7`): `OwnerNodeClient` (`src/owner/`) is an HTTP client of the node's loopback admin channel implementing the trust-circle + NAT `CadreNodeLike` shapes plus `pushInviteAddresses`. `TrustCircleService` and `NatService` hold this client instead of an in-process `ControlDatabase`; the manager never joins the control network. Unreachable-node failures surface as `node_unavailable` (→ 503), and trust-circle listing degrades to the local labels file.
 - `UpdateService` + `UpdateStateStore` — signed-manifest fetch/verify (Ed25519), `<dataDir>/update-state.json`, `npm install -g` with rollback, and a `ServiceHost.restart(...)` hook for picking up the new binary.
 - Local UI server (`6.5.1`) — Fastify on 127.0.0.1 with origin guard, error envelope, SSE bus at `/api/events`, status / nodes / settings routes, and a static SPA mount. See the [Local UI server](#local-ui-server) section above.
 - Local UI SPA (`6.5.2`) — Svelte 5 single-page app (Home / Trust Circle / Connectivity / Nodes + per-node detail / Settings) hosted by the same Fastify instance. Built via `yarn workspace @serfab/cadre-host build` into `<package>/dist/ui/`. EventSource-driven live updates; hash-routed so the server needs no SPA-fallback rewrite. ≈ 43 KB gzipped.
 - Re-exports of the `Orchestrator` and container lifecycle types from `@serfab/cadre-provider` so consumers have a single import surface.
 
-**Control-plane realignment landed (`6.6`/`6.7`).** The manager spawns the admin's owner cadre node via `HostProcessOrchestrator` and delegates owner/membership/identity operations to it over the node's loopback admin channel (`OwnerNodeClient`). The earlier throwing stubs (`missingCadreNodeStub` / `missingNatNodeStub`) are gone, and the manager holds no in-process `ControlDatabase` — it is purely a management plane (see [Control-plane separation](#control-plane-separation-load-bearing-principle)). The full delegation surface — including the signed `CadrePeer` delete that was once blocked upstream — is now exercised end-to-end against a real cadre-cli child by `integration-tests/src/scenarios/cadre-host-owner-node.integration.ts`.
+**Control-plane realignment landed (`6.6`/`6.7`).** The manager spawns the admin's owner cadre node via `HostProcessOrchestrator` and delegates owner/membership/identity operations to it over the node's loopback admin channel (`OwnerNodeClient`). The earlier throwing stubs (`missingCadreNodeStub` / `missingNatNodeStub`) are gone, and the manager holds no in-process `ControlDatabase` — it is purely a management plane (see [Control-plane separation](#control-plane-separation-load-bearing-principle)). The full delegation surface — including the signed `CadrePeer` delete that was once blocked upstream — is now exercised end-to-end against a real cadre-cli child by `integration-tests/src/scenarios/cadre-host-owner-node.integration.ts` (which now stands as the **opt-in own-cadre / founder** scenario).
+
+**Node-donor realignment (in progress).** cadre-host's primary role is now **node donor** — contributing nodes to *external* cadres — with the founder role (its own cadre) demoted to the opt-in `ownCadre.enabled` path (see [Two roles](#two-roles-donor-and-founder) and [Node donation](#node-donation-the-primary-role)). **Landed:** the grant-token layer (`GrantService` / `GrantStore` / `/grants-admin` / `cadre-host grant`) and the orchestrator's pinned-owner-key wiring (`createContainer` → `CADRE_OWNER_KEYS`), plus the `donations.json` store and donation types. **In progress (donation-service):** the grantee-facing `/grants` provisioning routes, the `DonationService` lifecycle (provision → peer → seed → terminate), and the stale-`awaiting_seed` reap sweep. **Deferred:** WAN reachability for the request surface and per-donated-node NAT mapping (`backlog/feat-cadre-host-wan-grant-reachability`) — v1 donation is loopback-only. The cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) is filed as a follow-up gated on the `/grants` surface.
 
 ## See also
 

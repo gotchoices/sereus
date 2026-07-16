@@ -407,6 +407,8 @@ const { seed, encodedSeed } = await cadreNode.addDrone({
 await provider.initializeNode(droneInfo.containerId, encodedSeed);
 ```
 
+The same `addDrone` helper backs the [cadre-host node-donation flow](cadre-host.md#node-donation-the-primary-role) (step 3): the requester calls it against a node donated by a home host instead of a cloud provider, and delivers the resulting `encodedSeed` over the host's `/grants` surface.
+
 **Server invites Phone (QR/link flow)**:
 ```typescript
 // Server creates invite
@@ -620,6 +622,8 @@ No cross-network communication. Each network has its own connection pool, gossip
 ## Provider Integration
 
 Cloud providers can host cadre nodes on behalf of users. The provider never has access to user keys—nodes generate their own libp2p identity and are authorized via signed messages.
+
+> **`@serfab/cadre-host` is a second implementation of this same donate-a-node contract.** Where a cloud provider hosts nodes in Docker containers, [`@serfab/cadre-host`](cadre-host.md#node-donation-the-primary-role) hosts them as OS-managed child processes on a home machine and donates them to the cadres of the operator's trust circle. It implements the same `Orchestrator` interface and the same provision → peer-info → seed → terminate flow shown below — it is a sibling **donor**, **not** a cadre founder. As with a provider, the recipient's device is the authority and the host never holds owner keys.
 
 ### Provider Flow
 
@@ -1105,11 +1109,12 @@ Maestro Studio, with Appium as the documented fallback.
 - Billing integration: usage metering, Stripe-ready hooks, quota enforcement
 - Orchestration: Docker orchestrator, mock orchestrator, pluggable interface
 
-### `@serfab/cadre-host` (Complete)
+### `@serfab/cadre-host` (Founder role complete; donor lifecycle in progress)
 
-Self-hosted cadre node manager for basement-PC deployments — sibling of `@serfab/cadre-provider` (multi-tenant Docker hosting) targeting a single household / trust circle on one always-on machine. See [cadre-host.md](cadre-host.md) for persona, package boundary, and security posture.
+Self-hosted cadre node manager for basement-PC deployments — sibling of `@serfab/cadre-provider` (multi-tenant Docker hosting). Its primary role is **node donor**: a second `Orchestrator` implementation of the same donate-a-node contract as the provider (see [Provider Integration](#provider-integration)), hosting nodes as OS-managed child processes and donating them to the cadres of the operator's trust circle — the recipient's device stays the authority, and the host holds no owner keys. Running the host's *own* personal cadre — the **founder** role, with an owner node + trust circle + NAT — is opt-in (`ownCadre.enabled`, default off). See [cadre-host.md](cadre-host.md) for persona, package boundary, and security posture.
 
-- **CLI** (`cadre-host`): `install`, `start`, `status`, `uninstall`, `invite`, `trust list|revoke`, `nat status|test|ddns|settings`, `ui`.
+- **CLI** (`cadre-host`): `install`, `start`, `status`, `uninstall`, `ui`; `grant issue|list|revoke` (node-donor); `invite`, `trust list|revoke`, `nat status|test|ddns|settings` (opt-in founder).
+- **Node donation (donor role, primary)**: a **grant-token** gate (`GrantService` / `GrantStore` / loopback `/grants-admin` / `cadre-host grant`) authorizes who may request a node, long-lived and reusable up to a quota. The orchestrator pins the requester's owner public key into the spawned child (`createContainer` → `CADRE_OWNER_KEYS` → cold-start pinned-key trust policy) so it trusts the requester-signed seed, and the `donations.json` store persists the host-only `seedToken`. The grantee-facing `/grants` provisioning lifecycle (`DonationService`: provision → peer → seed → terminate) is being wired; the request surface is loopback-only in v1 (per-donated-node WAN reachability deferred to `backlog/feat-cadre-host-wan-grant-reachability`).
 - **Installer**: interactive + `--non-interactive` wizard, Ed25519 identity generation (mode 600), `host.config.json` / `nat.json` seeding, per-platform service-host registration (`systemd --user` on Linux, `LaunchAgent` on macOS, NSSM-managed `CadreHost` on Windows), best-effort browser open and first enrollment invite.
 - **HostProcessOrchestrator**: spawns cadre nodes as native child processes with PID-liveness, port allocator (health/metrics/p2p/admin), state store, and log rotation; survives orchestrator restart (children stay running, are re-adopted). Owns the **owner-node lifecycle** — `ensureOwnerNode`/`restartOwnerNode` spawn the admin's owner node (`cadre-cli start --owner --admin-port <p> --identity-protobuf …`) and expose its loopback admin endpoint.
 - **Owner-node delegation**: the manager holds no in-process `CadreNode`; `OwnerNodeClient` (an HTTP client of the node's `127.0.0.1:<adminPort>` admin channel) backs both the trust-circle and NAT `CadreNodeLike` shapes and pushes NAT-resolved invite addresses. Unreachable-node failures map to `node_unavailable` (→ 503). This keeps the manager out of the control network entirely (control-plane separation).
