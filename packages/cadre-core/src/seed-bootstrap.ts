@@ -466,6 +466,12 @@ export class SeedBootstrapService {
     // The authority branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
     // StampId) and re-binds VouchAuthority/VouchSig. Sign over the row's CURRENT StampId
     // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
+    // NOTE: this rebinds VouchAuthority to THIS node's authority key. Benign today — the
+    // write-while-alone drain only re-touches rows this node itself authored. If a future
+    // path lets one authority re-touch a row a DIFFERENT authority vouched, the voucher
+    // silently flips to this authority; that only matters once ticket-4's predicate checks
+    // VouchAuthority against a node-local anchor, and only if the two authorities differ in
+    // anchor membership.
     const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
       log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
