@@ -68,6 +68,9 @@ export {
   createGrantAdminHandlers,
   GrantError,
   DEFAULT_MAX_NODES,
+  DonationStore,
+  DonationService,
+  DonationError,
 } from './donation/index.js';
 export type {
   Grant,
@@ -78,6 +81,15 @@ export type {
   GrantAdminHandlers,
   GrantErrorCode,
   GrantServiceOptions,
+  Donation,
+  DonationView,
+  DonationStatus,
+  DonationFile,
+  DonationErrorCode,
+  DonationProvisionRequest,
+  DonationSeedResult,
+  DonationPeerInfo,
+  DonationServiceOptions,
 } from './donation/index.js';
 
 export { Installer, readHostConfig, updateHostConfig, writeHostConfig } from './installer/index.js';

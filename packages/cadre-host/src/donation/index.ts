@@ -15,7 +15,7 @@ export {
   DEFAULT_MAX_NODES,
 } from './grant-service.js';
 export type { GrantServiceOptions } from './grant-service.js';
-export { GrantError } from './types.js';
+export { GrantError, DonationError } from './types.js';
 export type {
   Grant,
   GrantDenyReason,
@@ -24,4 +24,22 @@ export type {
   GrantFile,
   GrantAdminHandlers,
   GrantErrorCode,
+} from './types.js';
+
+/* ──────────────── donation lifecycle (2-donation-service) ──────────────── */
+
+export { DonationStore } from './donation-store.js';
+export { DonationService } from './donation-service.js';
+export type {
+  DonationProvisionRequest,
+  DonationSeedResult,
+  DonationPeerInfo,
+  DonationServiceOptions,
+} from './donation-service.js';
+export type {
+  Donation,
+  DonationView,
+  DonationStatus,
+  DonationFile,
+  DonationErrorCode,
 } from './types.js';

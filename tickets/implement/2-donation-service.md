@@ -14,6 +14,39 @@ difficulty: hard
 
 # Donation service — the node-donor grant lifecycle
 
+## STATUS (updated by ticket `4-donor-node-donation-integration`, 2026-07-16)
+
+**`donation-service.ts` + the `DonationService` export now EXIST — do not re-write them.**
+Ticket 4's deliverable (the node-donation integration test) imports `DonationService`, which
+this ticket's dropped run never wrote. Rather than re-park, ticket 4 built the minimal slice
+its test drives in-process:
+
+- `packages/cadre-host/src/donation/donation-service.ts` — `DonationService` with
+  `provision` / `getPeer` / `applySeed` / `terminate` / `get` / `list`, plus a per-grant-token
+  provision lock (quota-race serialization). Exported from `donation/index.js` and the package
+  `index.ts`. Modeled faithfully on `ContainerService`; reclaims orchestrator resources on
+  failure; persists `seedToken`; redacts `seedToken`/`seedEndpoint` in `DonationView`.
+- It is proven green end-to-end by `cadre-host-node-donation.integration.ts` (5/5, real
+  cadre-cli children): provision→awaiting_seed, addDrone seed, applySeed `peersAdded ≥ 1`,
+  join party `P`, terminate.
+
+**What THIS ticket still owes (resume here — Phase 3 + the Phase 2 tests):**
+
+- Phase 3: `server/routes/grants.ts` (grantee-facing, bearer + ownership); remove the
+  generic-spawn `501` from `nodes.ts`; `bin/host.ts start` construct/mount
+  `GrantService`/`DonationService`; start the **reap sweep** for stale `awaiting_seed`
+  (not built by ticket 4) + reap-on-init.
+- The Phase 2 **unit tests** for `DonationService` (provision→awaiting_seed, seedToken
+  persistence across store reconstruct, quota-race serialization, reclaim-on-failure,
+  foreign-party no-push, reap of stale `awaiting_seed`). Ticket 4 added **no** unit tests —
+  the class is only exercised via the integration scenario. Re-verify the existing
+  `provision`/`applySeed`/`terminate` behavior against your unit tests and adjust the service
+  if a test surfaces a real defect (but coordinate — the integration test depends on the
+  current signatures).
+
+Phase 1 (orchestrator `pinnedOwnerKeys` → `CADRE_OWNER_KEYS`) remains done. `types.ts` +
+`donation-store.ts` remain done.
+
 ## Context
 
 This is the core of the realignment. cadre-provider already implements the exact
