@@ -13,23 +13,41 @@ This ticket's **only** deliverable is the cross-package integration test, and th
 imports `DonationService` (`provision` / `getPeer` / `applySeed` / `terminate`) and the
 grantee-facing `/grants` HTTP surface — **which still do not exist.** The prereq
 `2-donation-service` (slug `donation-service`) never landed its Phase 2/3: as of this
-writing it sits in `tickets/implement/2-donation-service.md` with a `<!-- resume-note -->`
-(it errored — see commit `3ffe2e8 tess: agent error on donation-service`). Only its
-Phase 1 (orchestrator pinned-owner-key wiring) plus the grant-token layer
-(`1-donation-grant-tokens`, complete) and `donation-store.ts` / `types.ts` are present;
-`donation-service.ts` and `server/routes/grants.ts` are absent, and `@serfab/cadre-host`
-exports no `DonationService`.
+writing it sits in `tickets/implement/2-donation-service.md` with a `<!-- resume-note -->`.
+
+**Root cause of the stall is transient, not logic (re-checked this run).** The prior
+`donation-service` run did NOT fail on a code/design problem — it died on an API
+connection drop: `API Error: Connection closed mid-response`, then
+`[RESULT ✗ ERROR | 518.1s]` (log:
+`tickets/.logs/2-donation-service.implement.2026-07-16T16-55-13-096Z.log`). By the time it
+dropped it had already written `donation/types.ts` and `donation/donation-store.ts` and was
+one step away from writing `donation/donation-service.ts` (it had just confirmed no
+`nanoid` dep and chose `randomBytes`). So the surface is *nearly* built — resuming the
+ticket (runner will, via its resume-note) should finish `donation-service.ts` +
+`server/routes/grants.ts` and export `DonationService` from `@serfab/cadre-host`. This is a
+**re-dispatch-to-completion** situation, not a broken-design one.
+
+Present today: the grant-token layer (`1-donation-grant-tokens`, complete), the orchestrator
+pinned-owner-key wiring, and `donation/donation-store.ts` + `donation/types.ts` (from the
+dropped run). Absent: `donation-service.ts`, `server/routes/grants.ts`, and any
+`DonationService` export (`grep DonationService packages/cadre-host/src` → empty, re-verified
+this run).
 
 A test against a non-existent class can't compile, so **the scenario cannot be written to
 a green build until `donation-service` lands.** This ticket is therefore kept in
 `implement/` (not blocked — "a sibling isn't done" is a `prereq:`, not a block) with the
 prereq declared so the runner defers it until that surface exists. The **buildable** part
 of the original ticket — the `add-drone` admin route the scenario's step 4 needs — was
-split off, built, tested, and advanced to `review/4-donor-add-drone-admin-route`.
+split off, built, tested, and has since advanced all the way to
+`complete/4-donor-add-drone-admin-route` (re-verified this run: client helper
+`owner-node-client.ts:165`, route `admin-server.ts:207`).
 
-**Human note:** the real blocker is that `donation-service` keeps erroring. If that chain
-stays stuck, this scenario stays stuck. Nothing here needs a decision — it needs
-`donation-service` to complete.
+**Human note:** the blocker is a *transient API drop* that killed the near-complete
+`donation-service` run — not a logic bug (see root-cause paragraph above). Re-running
+`donation-service` should carry it to completion, which unblocks this scenario. Nothing
+here needs a human decision; it needs `donation-service` to finish. If `donation-service`
+proves genuinely un-completable across repeated re-dispatches (not the case as of this
+run), *that* is when it — not this ticket — would escalate.
 
 ## What is already done (do NOT redo)
 
@@ -39,7 +57,7 @@ stays stuck, this scenario stays stuck. Nothing here needs a decision — it nee
   `{ seed, encodedSeed }` exists on the cadre-host client
   (`packages/cadre-host/src/owner/owner-node-client.ts`). **Step 4 below uses
   `OwnerNodeClient.addDrone` directly** — do not run the requester node in-process, and do
-  not re-add the route. (Landed + unit-tested in `review/4-donor-add-drone-admin-route`.)
+  not re-add the route. (Landed + unit-tested in `complete/4-donor-add-drone-admin-route`.)
 - **Orchestrator pin-key wiring** (`host-process-orchestrator.ts:~220-253`): threads
   `request.pinnedOwnerKeys` → `env.CADRE_OWNER_KEYS`; `cadre-cli start` unions that into a
   `pinnedKeyTrustPolicy`. This is the load-bearing bit that lets a cold donated node accept
