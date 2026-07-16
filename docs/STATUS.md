@@ -537,6 +537,13 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
 2. `membership-cadrepeer-voucher-persist` — persist the vouching authority (`VouchAuthority`/`VouchSig`)
    on each `CadrePeer` row (the sign/verify helpers in `peer-authorization.ts` already exist; the
    signature was just being discarded at write).
+   - `membership-cadrepeer-authority-antireplay` (inserted 2.5) — persisting the voucher on a replicated
+     row turned one signature over `digest(peerId)` into a lift-and-replay token for insert/delete/reauth.
+     Fix: a `not null unique` `StampId` nonce per row and action-scoped digests — insert/reauth sign
+     `digest(peerId, stampId)` (`cadrePeerVoucherDigest`), delete signs the distinct
+     `digest(peerId, stampId, 'remove')` (`cadrePeerRemoveDigest`) — and the combined `check on insert,
+     delete` splits into `AuthorizedInsert`/`AuthorizedDelete`, with `StampId`+voucher immutable on
+     self-update. (Insert-replay after a delete frees the nonce; that residual is subsumed by #6's gater.)
 3. `membership-node-local-authority-anchor` — build the node-local, non-replicated
    `TrustedAuthorityStore`, seeded out-of-band (genesis self-trust / invite-pinned keys); pulls the
    interim store from `seed-accepted-authority-persistence` forward.

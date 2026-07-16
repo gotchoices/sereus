@@ -296,11 +296,13 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Shared authority-signed `CadrePeer` INSERT. Signs `digest(peerId)` with the
-   * authority key (satisfying `AuthorizedInsert`) and writes the full record
-   * row. The authority signature does NOT cover the address columns — those are
-   * vouched only as far as the authority asserts them, and a peer's own `Sig`
-   * (when present) is what makes the row resolvable.
+   * Shared authority-signed `CadrePeer` INSERT. Mints a fresh single-use `StampId`
+   * and signs the voucher digest `digest(peerId, stampId)` ({@link cadrePeerVoucherDigest})
+   * with the authority key (satisfying `AuthorizedInsert`), then writes the full record
+   * row with the vouching (authority, signature) persisted into VouchAuthority/VouchSig.
+   * The authority signature does NOT cover the address columns — those are vouched only
+   * as far as the authority asserts them, and a peer's own `Sig` (when present) is what
+   * makes the row resolvable.
    */
   private async insertCadrePeerRow(row: {
     peerId: string;
@@ -315,6 +317,12 @@ export class SeedBootstrapService {
     // Fresh single-use nonce; the voucher signs digest(peerId, stampId) so a captured
     // insert can't be replayed (StampId is unique) and can't be repurposed as a delete
     // (which signs a distinct 'remove'-scoped digest).
+    // NOTE: StampId uniqueness only blocks insert-replay while the row (or its StampId)
+    // is still present — a delete frees the StampId, so a captured authorized insert could
+    // be replayed to re-add a peer the authority had removed (a revocation bypass). Fully
+    // subsumed by the connection gater (ticket 6): with no outsider write there is no
+    // replay at all. If that gate ever proves insufficient, bind inserts to a persistent
+    // per-peer sequence / tombstone instead of a row-scoped nonce.
     const stampId = generateStampId(row.peerId);
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
@@ -385,18 +393,30 @@ export class SeedBootstrapService {
   }
 
   /**
+   * Return the configured authority private key, or throw if none is set. The single
+   * precondition gate for every authority-signed write. {@link removePeer} /
+   * {@link reauthorizePeer} read the row's `StampId` from the DB BEFORE they sign, so
+   * they call this up front — otherwise a keyless service would either surface the
+   * wrong "Control database not initialized" error or, worse, silently no-op when the
+   * target row is absent (the early `stampId === null` return) instead of rejecting.
+   */
+  private requireAuthorityPrivateKey(): string {
+    if (!this.config.authorityPrivateKey) {
+      throw new Error('Authority private key required to authorize peers');
+    }
+    return this.config.authorityPrivateKey;
+  }
+
+  /**
    * Sign a base64url digest with the authority key (ed25519). The single place the
    * authority private key is applied; callers pass the canonical digest for the specific
    * action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
    * {@link peerAuthorizationDigest}). Throws if no authority key is set.
    */
   private signDigest(digestB64url: string): string {
-    if (!this.config.authorityPrivateKey) {
-      throw new Error('Authority private key required to authorize peers');
-    }
     return sign(
       digestB64url,
-      this.config.authorityPrivateKey,
+      this.requireAuthorityPrivateKey(),
       'ed25519',
       'base64url',
       'base64url',
@@ -407,11 +427,16 @@ export class SeedBootstrapService {
   /**
    * Remove a peer from the cadre by authority signature.
    *
-   * The constraint over CadrePeer's `check on insert, delete` validates a
-   * signature over `digest(old.PeerId)` by an authority key. We use the same
-   * digest pattern as authorizePeer.
+   * The `CadrePeer.AuthorizedDelete` (`check on delete`) constraint validates a
+   * signature over the DISTINCT 'remove'-scoped digest `digest(old.PeerId, old.StampId,
+   * 'remove')` ({@link cadrePeerRemoveDigest}) by an authority key — deliberately NOT the
+   * insert voucher digest, so the row's stored `VouchSig` can never be replayed to delete.
    */
   async removePeer(peerId: string): Promise<void> {
+    // Fail fast on a keyless service BEFORE any DB read: a non-authority cannot sign the
+    // remove digest, and this precedence (authority key, then control DB) is what the
+    // unit contract asserts.
+    this.requireAuthorityPrivateKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -460,6 +485,9 @@ export class SeedBootstrapService {
    *   re-sign another peer's row) or the control database is not initialized.
    */
   async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
+    // Fail fast on a keyless service before any DB read (see removePeer): a non-authority
+    // cannot re-sign the voucher, and must not silently no-op on an absent row.
+    this.requireAuthorityPrivateKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
