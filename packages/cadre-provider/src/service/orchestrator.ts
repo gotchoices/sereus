@@ -27,6 +27,19 @@ export interface OrchestratorCreateRequest {
    * resolving strictly by the launching tenant's id before calling this.
    */
   push?: PushCredentials;
+  /**
+   * Base64url owner public key(s) to pin as cold-start seed-trust anchors on the
+   * spawned node (repeatable `--pin-owner-key` / `CADRE_OWNER_KEYS`). A cold node
+   * defaults to a db-anchored trust policy that rejects every seed until its
+   * control DB holds an owner key — so a node meant to accept a seed signed by a
+   * *foreign* cadre authority (the node-donation flow in cadre-host) MUST be
+   * started with that authority's owner key(s) pinned, or `POST /seed` is refused.
+   *
+   * The Docker orchestrator (cadre-provider) ignores this for now — its tenants
+   * pin owner trust through their own path. Only cadre-host's HostProcessOrchestrator
+   * threads it into the child (as `CADRE_OWNER_KEYS`).
+   */
+  pinnedOwnerKeys?: string[];
 }
 
 /** Container creation result from orchestrator */

@@ -224,9 +224,21 @@ export class HostProcessOrchestrator implements Orchestrator {
       p2p: this.portAllocator.allocate(),
       admin: this.portAllocator.allocate(),
     };
+    // A node started with pinned owner keys belongs to a FOREIGN cadre (the
+    // node-donation flow: it trusts the requester's owner key, not the host's).
+    // The host's FCM/APNs credentials are minted for the host owner's own app
+    // and are meaningless to a foreign cadre — so donated nodes get NO push
+    // block. (Per-grantee push creds would be a future ticket; none in v1.)
+    const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
     // Only storage-profile nodes participate in strands and thus fan out push
     // wakes — a transaction-only node need not carry credentials.
-    const push = request.profile === 'storage' ? await this.resolvePush() : undefined;
+    const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
+    // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
+    // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
+    // node will accept the foreign-authority-signed seed presented via POST /seed.
+    const extraEnv = request.pinnedOwnerKeys?.length
+      ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
+      : undefined;
     return this.launchChild({
       containerId: request.containerId,
       partyId: request.partyId,
@@ -235,6 +247,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       owner: false,
       buildConfig: (workdir) => this.buildChildConfig(request, workdir, push),
       extraArgs: [],
+      ...(extraEnv ? { extraEnv } : {}),
       ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
     });
   }
@@ -376,6 +389,8 @@ export class HostProcessOrchestrator implements Orchestrator {
     owner: boolean;
     buildConfig: (workdir: string) => Record<string, unknown>;
     extraArgs: string[];
+    /** Extra env vars merged into the child's environment (e.g. CADRE_OWNER_KEYS). */
+    extraEnv?: Record<string, string>;
     memoryLimit?: string;
   }): OrchestratorCreateResult {
     const { containerId, ports } = opts;
@@ -405,6 +420,9 @@ export class HostProcessOrchestrator implements Orchestrator {
 
     const env: NodeJS.ProcessEnv = {
       ...process.env,
+      // Caller-supplied extras first — the fixed per-child vars below always win
+      // so extraEnv can never clobber the seed/startup tokens or port wiring.
+      ...opts.extraEnv,
       CADRE_STARTUP_TOKEN: token,
       CADRE_HEALTH_PORT: String(ports.health),
       CADRE_METRICS_PORT: String(ports.metrics),

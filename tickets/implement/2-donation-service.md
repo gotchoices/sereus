@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-07-16T16:55:13.096Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\2-donation-service.implement.2026-07-16T16-55-13-096Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ----
 description: Make cadre-host actually donate a node — a friend's phone asks the host over a small API, the host spawns a node that joins the phone's own cadre, and the host presents the phone-signed seed to that node without ever holding the phone's authority key.
 prereq: donation-grant-tokens

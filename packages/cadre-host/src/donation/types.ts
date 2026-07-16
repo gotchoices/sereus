@@ -106,6 +106,95 @@ export interface GrantAdminHandlers {
   deleteGrant(token: string): Promise<void>;
 }
 
+/* ──────────────── donation lifecycle (2-donation-service) ──────────────── */
+
+/**
+ * Lifecycle of one donated node:
+ *   provisioning  → the child process is being spawned.
+ *   awaiting_seed → spawned + reachable; waiting for the requester to present
+ *                   its phone-signed seed (`PUT /grants/:id/seed`).
+ *   seeded        → the seed was applied; the node has joined the requester's cadre.
+ *   error         → provisioning failed (orchestrator resources reclaimed).
+ *   terminated    → stopped + removed (kept in the store for audit).
+ *
+ * A donation is "live" (counts against a grant's `maxNodes` quota) while it is
+ * `provisioning`, `awaiting_seed`, or `seeded` — see `DonationStore.liveNodeCount`.
+ */
+export type DonationStatus =
+  | 'provisioning'
+  | 'awaiting_seed'
+  | 'seeded'
+  | 'error'
+  | 'terminated';
+
+/**
+ * One donated node, tracked host-side and persisted to `donations.json`.
+ *
+ * The host contributes capacity only: `partyId` is the REQUESTER's cadre (a
+ * foreign party), and `seedToken` gates the node's own `POST /seed` — it is
+ * minted host-side, persisted here (so a host restart in the request→seed gap
+ * can still present the seed), and NEVER returned to the grantee.
+ */
+export interface Donation {
+  /** "grn_<nanoid>" — also the donated node's orchestrator containerId. */
+  id: string;
+  /** The grant token that authorized this donation (the quota key). */
+  grantToken: string;
+  /** The REQUESTER's cadre (a foreign party this host merely hosts a node for). */
+  partyId: string;
+  /** Node profile. Defaults to `storage` so the node participates and is dialable. */
+  profile: 'storage' | 'transaction';
+  status: DonationStatus;
+  /** Orchestrator handle (opaque `pid:token`), set once the child is spawned. */
+  dockerId?: string;
+  /** libp2p peerId, once the node reports one. */
+  peerId?: string;
+  /** The node's loopback `POST /seed` URL. Host-internal — stripped from the wire view. */
+  seedEndpoint?: string;
+  /** Host↔node bearer gating `POST /seed`. Persisted; NEVER leaves the host. */
+  seedToken?: string;
+  createdAt: string;
+  updatedAt: string;
+  /** Failure detail when `status === 'error'`. */
+  error?: string;
+}
+
+/**
+ * Redacted wire shape returned to the grantee: the host-only secrets
+ * (`seedToken`) and host-internal loopback URL (`seedEndpoint`) are stripped.
+ */
+export type DonationView = Omit<Donation, 'seedToken' | 'seedEndpoint'>;
+
+/** On-disk shape of `donations.json`. Keyed by donation id. */
+export interface DonationFile {
+  version: 1;
+  donations: Record<string, Omit<Donation, 'id'>>;
+}
+
+/** Error codes thrown by the donation service / grantee-facing routes. */
+export type DonationErrorCode =
+  | 'unauthorized'        // 401 — missing / unknown grant bearer
+  | 'forbidden'           // 403 — revoked or expired grant
+  | 'quota_exceeded'      // 429 — grant already at its maxNodes cap
+  | 'invalid_request'     // 400 — malformed body
+  | 'not_found'           // 404 — no such donation (or not owned by this grant)
+  | 'invalid_state'       // 409 — op invalid for the donation's current status
+  | 'seed_failed'         // 502 — the node rejected the presented seed
+  | 'peer_unavailable'    // 503 — the node has no peer identity yet
+  | 'orchestrator_error'  // 500 — spawn / stop failure
+  | 'storage_error';      // 500 — donations.json read/write failure
+
+/** Typed donation error carrying a stable `code` for HTTP mapping. */
+export class DonationError extends Error {
+  readonly code: DonationErrorCode;
+
+  constructor(code: DonationErrorCode, message: string) {
+    super(message);
+    this.name = 'DonationError';
+    this.code = code;
+  }
+}
+
 /** Error codes thrown by GrantStore / GrantService. */
 export type GrantErrorCode =
   | 'not_found'          // unknown token on revoke
