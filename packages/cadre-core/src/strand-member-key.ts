@@ -26,7 +26,7 @@ export async function generateStrandMemberKey(): Promise<string> {
  * are *derived from it* — they are the `publicKeyB64` of the keypair this returns.
  * Decode the protobuf to a libp2p private key, then reuse
  * {@link ed25519KeyPairFromLibp2p} so the same seed→public derivation used for node
- * authority keys yields a stable `{ privateKeyB64, publicKeyB64 }` whose public
+ * owner keys yields a stable `{ privateKeyB64, publicKeyB64 }` whose public
  * key a later strand signature verifies against.
  *
  * @param memberPrivateKey - The strand's `MemberPrivateKey` (base64 protobuf).

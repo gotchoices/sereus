@@ -174,7 +174,7 @@ const PLACEHOLDER_CADRE_ADDR = /^cadre-[ab]-\d+\.local$/;
  * placeholders), and returned a strand vouched for by the responder party with a real id.
  *
  * `createdBy: 'responder'` means "the responder party vouches for / returns this strand."
- * Under provision-then-record that strand was minted authority-signed earlier (not created
+ * Under provision-then-record that strand was minted owner-signed earlier (not created
  * in-session), but it is still the responder party returning its own strand, so the marker
  * — and this structural validator — stay unchanged.
  *
