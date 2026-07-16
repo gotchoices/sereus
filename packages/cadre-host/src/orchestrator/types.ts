@@ -47,7 +47,7 @@ export interface NodePorts {
   health: number;
   metrics: number;
   p2p: number;
-  /** Loopback admin-channel port. Bound only by the authority node. */
+  /** Loopback admin-channel port. Bound only by the owner node. */
   admin: number;
 }
 
@@ -62,8 +62,8 @@ export interface Handle {
   spawnedAt: string;
   partyId: string;
   profile: 'storage' | 'transaction';
-  /** True for the admin's authority node (binds the admin channel). */
-  authority?: boolean;
+  /** True for the admin's owner node (binds the admin channel). */
+  owner?: boolean;
   /** Live ChildProcess reference; absent after re-attach via init(). */
   child?: ChildProcess;
   /** Marked false when init() finds the PID dead or token mismatched. */
@@ -83,16 +83,16 @@ export interface ManagedNodeInfo {
   spawnedAt: string;
   workdir: string;
   ports: NodePorts;
-  /** True for the admin's authority node. */
-  authority?: boolean;
+  /** True for the admin's owner node. */
+  owner?: boolean;
 }
 
 /**
- * Persisted spawn parameters for the admin's authority node. Stored alongside
- * the handles so an orchestrator restart can re-spawn the authority node from
+ * Persisted spawn parameters for the admin's owner node. Stored alongside
+ * the handles so an orchestrator restart can re-spawn the owner node from
  * `/api/nodes/:id/{start,restart}` without the caller re-supplying them.
  */
-export interface AuthoritySpawnConfig {
+export interface OwnerSpawnConfig {
   /** Absolute path to the host's libp2p protobuf identity (`identity.key`). */
   identityPath: string;
   /** Control-network partyId (the host's installId). */

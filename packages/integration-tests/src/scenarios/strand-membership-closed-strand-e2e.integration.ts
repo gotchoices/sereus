@@ -53,7 +53,7 @@ import {
 	addAuthority,
 	signStrandPayload,
 	type StrandProvisioner,
-	type AuthorityKeyPair,
+	type Ed25519KeyPair,
 } from '@serfab/cadre-core';
 import type { CadreNodeConfig, StrandRow, SAppConfig } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
@@ -110,7 +110,7 @@ function createSignedSAppConfig(schema: string, version: string): SAppConfig {
 }
 
 /** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): AuthorityKeyPair {
+function freshKeyPair(): Ed25519KeyPair {
 	const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
 	const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
 	return { privateKeyB64, publicKeyB64 };

@@ -126,9 +126,9 @@ Adding a new device to your cadre uses the Seed Bootstrap API:
 // On the new device: generate identity
 const enrollment = new EnrollmentService();
 const { peerId, privateKey } = await enrollment.createCadrePeer();
-// Store privateKey securely, send peerId + multiaddrs to authority
+// Store privateKey securely, send peerId + multiaddrs to owner
 
-// On authority device: authorize the new peer and create seed
+// On owner device: authorize the new peer and create seed
 await node.authorizePeer(newDevicePeerId, newDeviceMultiaddrs);
 const seed = await node.createSeed();
 

@@ -26,10 +26,10 @@ describe('CadreNode invite-address push model', () => {
     };
 
     // Stub the internals normally set during start(). createInvite reads the
-    // AuthorityKey table to populate invite.authorityKeys, so expose that.
+    // OwnerKey table to populate invite.ownerKeys, so expose that.
     (node as unknown as { controlNode: unknown }).controlNode = mockLibp2p;
     (node as unknown as { controlDatabase: ControlDatabase }).controlDatabase = {
-      getAuthorityKeys: async () => new Set<string>(),
+      getOwnerKeys: async () => new Set<string>(),
     } as unknown as ControlDatabase;
 
     return node;
@@ -37,44 +37,44 @@ describe('CadreNode invite-address push model', () => {
 
   it('embeds libp2p getMultiaddrs() when nothing has been pushed', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
-    const authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(authorityPrivateKey);
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    node.initializeSeedBootstrap(ownerPrivateKey);
 
     const { invite } = await node.createInvite();
-    expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+    expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
   });
 
   it('embeds pushed addresses after setInviteAddresses', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
-    const authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(authorityPrivateKey);
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000/p2p/12D3KooWHost']);
 
     const { invite } = await node.createInvite();
-    expect(invite.authorityAddrs).toEqual(['/dns4/home.duckdns.org/tcp/5000/p2p/12D3KooWHost']);
+    expect(invite.ownerAddrs).toEqual(['/dns4/home.duckdns.org/tcp/5000/p2p/12D3KooWHost']);
   });
 
   it('reverts to libp2p getMultiaddrs() when pushed addresses are cleared', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
-    const authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(authorityPrivateKey);
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000']);
     node.setInviteAddresses(null);
 
     const { invite } = await node.createInvite();
-    expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+    expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
   });
 
   it('treats an empty pushed array as an explicit override (not a fallback)', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
-    const authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    node.initializeSeedBootstrap(authorityPrivateKey);
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    node.initializeSeedBootstrap(ownerPrivateKey);
 
     node.setInviteAddresses([]);
 
     const { invite } = await node.createInvite();
-    expect(invite.authorityAddrs).toEqual([]);
+    expect(invite.ownerAddrs).toEqual([]);
   });
 });

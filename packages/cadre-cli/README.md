@@ -99,16 +99,16 @@ Create a new peer identity:
 cadre enroll create --output ./keys --name my-node
 ```
 
-Verify an authority's signature over a peer ID. This is an **offline check**:
+Verify an owner's signature over a peer ID. This is an **offline check**:
 it confirms the signature is valid but does **not** contact the control network
-or register the peer. Membership is granted by the running authority node
-(`cadre start --authority`), which self-registers and authorizes peers.
+or register the peer. Membership is granted by the running owner node
+(`cadre start --owner`), which self-registers and authorizes peers.
 
 ```bash
 cadre enroll register \
   --peer-id 12D3KooW... \
   --bootstrap /ip4/.../tcp/4001/p2p/12D3KooW... \
-  --authority-key <public-key> \
+  --owner-key <public-key> \
   --signature <signature>
 ```
 
@@ -135,7 +135,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
-| `CADRE_AUTHORITY_KEYS` | _(env only)_ | Comma-separated base64url authority keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-authority-key`). A cold node (empty `AuthorityKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor |
+| `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor |
 
 Environment variables override config file values.
 

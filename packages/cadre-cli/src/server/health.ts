@@ -24,8 +24,8 @@ export interface HealthServerOptions {
    *
    * NOTE: this protects the *delivery path* only — it is independent from seed
    * *trust*. Whether an applied seed is honoured is anchored by the node's
-   * `seedTrustPolicy` (operator-pinned via `CADRE_AUTHORITY_KEYS` /
-   * `--pin-authority-key`, unioned with DB-known authority keys). A request must
+   * `seedTrustPolicy` (operator-pinned via `CADRE_OWNER_KEYS` /
+   * `--pin-owner-key`, unioned with DB-known owner keys). A request must
    * clear BOTH layers: a valid bearer does not imply the seed's contents are
    * trusted, and a trusted seed still requires a valid bearer to be delivered.
    */
@@ -310,7 +310,7 @@ export class HealthServer {
     // Authenticate the *delivery path* before touching the body. This gate only
     // stops anonymous peers from driving applySeed / peer-store mutation; it does
     // NOT imply the seed contents are trusted. Trust is anchored separately by
-    // the node's `seedTrustPolicy` (operator-pinned authority keys unioned with
+    // the node's `seedTrustPolicy` (operator-pinned owner keys unioned with
     // DB-known keys), evaluated inside the applySeed call below — so a cold node
     // with no pin rejects the seed even with a valid bearer.
     if (!checkBearer(req, this.options.seedToken)) {

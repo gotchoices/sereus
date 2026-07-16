@@ -7,7 +7,7 @@
 		if (type.startsWith('control:')) return 'control';
 		if (type.startsWith('strand:')) return 'strand';
 		if (type.startsWith('seed:')) return 'seed';
-		if (type.startsWith('authority')) return 'authority';
+		if (type.startsWith('owner')) return 'owner';
 		return 'other';
 	}
 </script>
@@ -135,7 +135,7 @@
 		background: #ffe9b3;
 		color: #6b4d00;
 	}
-	.kind-authority {
+	.kind-owner {
 		background: #ede0fd;
 		color: #5b2c9c;
 	}

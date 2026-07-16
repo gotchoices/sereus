@@ -9,9 +9,9 @@ import { test, expect } from '@playwright/test';
  *  - the dialability guard: creating an invitation with no relay reservation is
  *    rejected with a clear error rather than silently failing;
  *  - the invalid-invitation guard: a malformed paste is rejected on join;
- *  - the authority gate: an unauthorized control write is rejected by the
+ *  - the owner gate: an unauthorized control write is rejected by the
  *    `CadreControl` constraints (the RBAC demonstration);
- *  - the diagnostics authorization surface reflects the genesis authority key and
+ *  - the diagnostics authorization surface reflects the genesis owner key and
  *    that no formation invites/usage exist yet.
  *
  * The happy-path two-party formation + cross-cohort convergence is **Tier 2**:
@@ -50,10 +50,10 @@ test.describe('Tier 1 / solo / formation + RBAC', () => {
 		await expect(page.getByTestId('formation-join-error')).toBeVisible({ timeout: 15_000 });
 	});
 
-	test('the authority gate rejects an unauthorized control write', async ({ page }) => {
+	test('the owner gate rejects an unauthorized control write', async ({ page }) => {
 		await page.goto('/#/diag');
-		// The cadre boots on any route; wait for the genesis authority to appear.
-		await expect(page.getByTestId('diag-authority-keys')).toHaveText(/[1-9]/, {
+		// The cadre boots on any route; wait for the genesis owner to appear.
+		await expect(page.getByTestId('diag-owner-keys')).toHaveText(/[1-9]/, {
 			timeout: 30_000,
 		});
 
@@ -64,16 +64,16 @@ test.describe('Tier 1 / solo / formation + RBAC', () => {
 
 		// The rejection must be the `Strand.Authorized` CHECK firing — not an
 		// incidental column/context error (e.g. a missing not-null StampId). Assert
-		// the surfaced error names the authority constraint so the demonstration
+		// the surfaced error names the owner constraint so the demonstration
 		// can't silently regress to a masked rejection.
 		await expect(page.getByTestId('diag-gate-detail')).toContainText('Authorized');
 	});
 
-	test('the authorization surface reflects genesis authority and no formation rows', async ({
+	test('the authorization surface reflects genesis owner and no formation rows', async ({
 		page,
 	}) => {
 		await page.goto('/#/diag');
-		await expect(page.getByTestId('diag-authority-keys')).toHaveText(/[1-9]/, {
+		await expect(page.getByTestId('diag-owner-keys')).toHaveText(/[1-9]/, {
 			timeout: 30_000,
 		});
 

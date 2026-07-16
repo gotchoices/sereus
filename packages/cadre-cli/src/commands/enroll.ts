@@ -44,20 +44,20 @@ export const enrollCommand = new Command('enroll')
         console.log(`  ID file:      ${idPath}`);
         console.log('');
         console.log('Next steps:');
-        console.log('1. Have an authority sign this peer ID to authorize it');
+        console.log('1. Have an owner sign this peer ID to authorize it');
         console.log('2. Run "cadre enroll register" with the signature');
       })
   )
   .addCommand(
     new Command('register')
-      .description('Verify an authority-signed peer authorization (offline check — does not contact the control network or register the peer)')
-      .requiredOption('-p, --peer-id <id>', 'Peer ID the authority signed')
+      .description('Verify an owner-signed peer authorization (offline check — does not contact the control network or register the peer)')
+      .requiredOption('-p, --peer-id <id>', 'Peer ID the owner signed')
       .requiredOption('-b, --bootstrap <addrs...>', 'Bootstrap node multiaddrs (advisory metadata; echoed back, not verified)')
-      .requiredOption('-a, --authority-key <key>', 'Authority public key that produced the signature (base64url)')
-      .requiredOption('-s, --signature <sig>', 'Authority signature over the peer ID (base64url)')
+      .requiredOption('-a, --owner-key <key>', 'Owner public key that produced the signature (base64url)')
+      .requiredOption('-s, --signature <sig>', 'Owner signature over the peer ID (base64url)')
       .option('-c, --config <path>', 'Config file for node settings (accepted for compatibility; not used by this offline check)', 'cadre.yaml')
       .action(async (options) => {
-        log('Verifying authority signature for peer: %s', options.peerId);
+        log('Verifying owner signature for peer: %s', options.peerId);
         log('Bootstrap nodes: %o', options.bootstrap);
 
         // Meaningful input validation (replaces the old length-only theatre).
@@ -77,8 +77,8 @@ export const enrollCommand = new Command('enroll')
           process.exit(1);
         }
 
-        if (!options.authorityKey) {
-          console.error('✗ Authority key is required');
+        if (!options.ownerKey) {
+          console.error('✗ Owner key is required');
           process.exit(1);
         }
 
@@ -87,27 +87,27 @@ export const enrollCommand = new Command('enroll')
           process.exit(1);
         }
 
-        // The one real job: verify the authority signature over the peer ID,
-        // using the same digest/scheme the authority used to produce it.
-        const valid = verifyPeerAuthorization(options.peerId, options.authorityKey, options.signature);
+        // The one real job: verify the owner signature over the peer ID,
+        // using the same digest/scheme the owner used to produce it.
+        const valid = verifyPeerAuthorization(options.peerId, options.ownerKey, options.signature);
 
         if (!valid) {
-          console.error('✗ Authority signature does not match this peer ID (peer is NOT authorized)');
+          console.error('✗ Owner signature does not match this peer ID (peer is NOT authorized)');
           console.error(`  Peer ID:   ${options.peerId}`);
-          console.error(`  Authority: ${options.authorityKey.substring(0, 20)}…`);
+          console.error(`  Owner: ${options.ownerKey.substring(0, 20)}…`);
           process.exit(1);
         }
 
-        console.log('✓ Authority signature is valid for this peer ID');
+        console.log('✓ Owner signature is valid for this peer ID');
         console.log(`  Peer ID:     ${options.peerId}`);
-        console.log(`  Authority:   ${options.authorityKey.substring(0, 20)}…`);
+        console.log(`  Owner:   ${options.ownerKey.substring(0, 20)}…`);
         console.log(`  Bootstrap:   ${options.bootstrap.length} node(s) (advisory; not registered)`);
         console.log('');
         console.log('This command ONLY verified the signature offline. It did NOT');
         console.log('register or enroll this peer anywhere. Membership is granted by');
-        console.log('the running authority node, which self-registers and authorizes');
-        console.log('peers — an operator on the authority node runs:');
-        console.log('  cadre start --authority');
+        console.log('the running owner node, which self-registers and authorizes');
+        console.log('peers — an operator on the owner node runs:');
+        console.log('  cadre start --owner');
       })
   );
 

@@ -40,9 +40,9 @@ export interface AdminServerOptions {
 }
 
 /**
- * Loopback admin channel for an authority cadre node.
+ * Loopback admin channel for an owner cadre node.
  *
- * Binds `127.0.0.1:<port>` and exposes authority/membership operations to a
+ * Binds `127.0.0.1:<port>` and exposes owner/membership operations to a
  * same-machine orchestrator (cadre-host). Every request must present
  * `Authorization: Bearer <token>` (constant-time compared). Responses use the
  * cadre-provider envelope: `{ ok: true, data }` or

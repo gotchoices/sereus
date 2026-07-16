@@ -42,7 +42,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { waitUntil, waitForCadrePeerConverged } from '../harness/index.js';
 
@@ -79,16 +79,16 @@ function nodeConfig(opts: NodeOpts): CadreNodeConfig {
 }
 
 /**
- * Make a freshly-started node its own control authority (genesis): enroll its
- * derived public key in `AuthorityKey` and wire seed-bootstrap with the matching
- * private key, so it can authority-sign `CadrePeer` inserts into its control DB.
- * (Mirrors `makeOwnAuthority` in push-wake-e2e.integration.ts.)
+ * Make a freshly-started node its own control owner (genesis): enroll its
+ * derived public key in `OwnerKey` and wire seed-bootstrap with the matching
+ * private key, so it can owner-sign `CadrePeer` inserts into its control DB.
+ * (Mirrors `makeOwnOwner` in push-wake-e2e.integration.ts.)
  */
-async function makeOwnAuthority(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(key);
+async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const db = node.getControlDatabase();
 	if (!db) throw new Error('control database missing after start');
-	await db.insertAuthorityKey(publicKeyB64);
+	await db.insertOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
 }
 
@@ -124,8 +124,8 @@ async function randomPeerId(): Promise<string> {
 }
 
 /**
- * Boot node A (authority + writer, storage profile so it holds the CadrePeer
- * blocks) and node B (a plain READER — deliberately NOT its own authority, so it
+ * Boot node A (owner + writer, storage profile so it holds the CadrePeer
+ * blocks) and node B (a plain READER — deliberately NOT its own owner, so it
  * can never self-insert any CadrePeer row; every row it observes must have
  * arrived over the wire), on a fresh party. Caller owns shutdown.
  */
@@ -135,7 +135,7 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 	const aKey = await generateKeyPair('Ed25519');
 	const A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 	await A.start();
-	await makeOwnAuthority(A, aKey);
+	await makeOwnOwner(A, aKey);
 
 	const bKey = await generateKeyPair('Ed25519');
 	const B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
@@ -148,11 +148,11 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 
 describe('Two-node control-DB convergence', () => {
 	// The control tables are network-backed (default vtab → optimystic network
-	// transactor), so an authority-written CadrePeer row on A converges to a connected
+	// transactor), so an owner-written CadrePeer row on A converges to a connected
 	// reader B by pull-on-read. The recipe is intentionally identical to the strand
 	// convergence scenarios.
 
-	it('replicates an authority-written CadrePeer row from node A to node B over the live control network', async () => {
+	it('replicates an owner-written CadrePeer row from node A to node B over the live control network', async () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {

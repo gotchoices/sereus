@@ -3,7 +3,7 @@ import debug from 'debug';
 
 import type { CadreInvite } from '@serfab/cadre-core';
 
-import { AuthorityNodeUnavailableError } from '../authority/authority-node-client.js';
+import { OwnerNodeUnavailableError } from '../owner/owner-node-client.js';
 
 import type { TrustCircleStore } from './trust-circle-store.js';
 import type {
@@ -53,9 +53,9 @@ export interface CadreNodeLike {
  * membership management.
  *
  * Membership is canonical in the cadre control DB (`CadrePeer` table),
- * reached over the authority node's admin channel; labels and pending tokens
+ * reached over the owner node's admin channel; labels and pending tokens
  * live in the host-local `TrustCircleStore`. When the node is unreachable,
- * authority operations surface `node_unavailable` (→ 503) and `list()`
+ * owner operations surface `node_unavailable` (→ 503) and `list()`
  * degrades to the local labels file.
  */
 export class TrustCircleService {
@@ -78,7 +78,7 @@ export class TrustCircleService {
 
   /**
    * Issue a new invite. Generates a token, persists a pending row, and
-   * delegates to cadre-core to embed the host's authority addresses.
+   * delegates to cadre-core to embed the host's owner addresses.
    */
   async issueInvite(opts: { label: string; ttlMs?: number }): Promise<{
     encodedInvite: string;
@@ -127,7 +127,7 @@ export class TrustCircleService {
    *
    * Crash-safety tradeoff: if the host crashes between `acceptPhone` success
    * and the durable `removePending`, a retry will dial in fine but the
-   * authority node's `acceptPhone` will reject the second `CadrePeer` insert
+   * owner node's `acceptPhone` will reject the second `CadrePeer` insert
    * with a PK constraint error (cadre-core does not upsert). That surfaces to
    * the redeemer as a non-`node_unavailable` failure; the admin can revoke
    * the lingering pending row. This is a narrower window than the prior
@@ -167,7 +167,7 @@ export class TrustCircleService {
       // matches by construction) and re-checks expiration.
       const reconstructed: CadreInvite = {
         partyId: '',
-        authorityAddrs: [],
+        ownerAddrs: [],
         token: pending.token,
         createdAt: new Date(pending.createdAt).getTime(),
         ...(pending.expiresAt ? { expiresAt: new Date(pending.expiresAt).getTime() } : {}),
@@ -242,7 +242,7 @@ export class TrustCircleService {
   /**
    * UI snapshot. Joins the canonical CadrePeer list (fetched over the admin
    * channel) with local labels; prunes any orphan labels (peer is no longer
-   * authorised). When the authority node is unreachable, degrades to the
+   * authorised). When the owner node is unreachable, degrades to the
    * local labels file so listing keeps working while the node is down.
    */
   async list(): Promise<TrustCircleSnapshot> {
@@ -260,7 +260,7 @@ export class TrustCircleService {
     try {
       controlMembers = await this.cadreNode.listMembers();
     } catch (err) {
-      if (!(err instanceof AuthorityNodeUnavailableError)) throw err;
+      if (!(err instanceof OwnerNodeUnavailableError)) throw err;
       controlMembers = null;
     }
 
@@ -306,8 +306,8 @@ export class TrustCircleService {
    * `never` so callers can `.catch(err => this.toDomainError(err))`.
    */
   private toDomainError(err: unknown): never {
-    if (err instanceof AuthorityNodeUnavailableError) {
-      throw new TrustCircleError('node_unavailable', `Authority node unavailable: ${err.message}`);
+    if (err instanceof OwnerNodeUnavailableError) {
+      throw new TrustCircleError('node_unavailable', `Owner node unavailable: ${err.message}`);
     }
     throw err instanceof Error ? err : new Error(String(err));
   }

@@ -54,17 +54,17 @@ Both networks run independently with their own FRET DHT, cluster coordination, a
 
 ## Seed Bootstrap Flow
 
-The phone is the authority (holds signing keys). The drone is a new node that needs to be bootstrapped into the cadre.
+The phone is the owner (holds signing keys). The drone is a new node that needs to be bootstrapped into the cadre.
 
 ```
 ┌──────────┐                              ┌──────────┐
 │  Phone   │                              │  Drone   │
-│(authority)│                              │  (new)   │
+│(owner)│                              │  (new)   │
 └────┬─────┘                              └────┬─────┘
      │  1. Start drone with --listen-for-seeds │
      │         and WebSocket listener          │
      │                                         │
-     │  2. Phone creates cadre (authority key)  │
+     │  2. Phone creates cadre (owner key)  │
      │     Phone generates seed:               │
      │       { partyId, peers, signature }     │
      │                                         │
@@ -437,7 +437,7 @@ For the first connection, both nodes start with empty peer caches. The phone's o
 
 If the nodes can't discover each other automatically (e.g., after a restart with stale state), you can manually exchange a seed:
 
-1. On the authority side, generate and encode a seed:
+1. On the owner side, generate and encode a seed:
    ```typescript
    const seed = await cadreNode.createSeed();
    const encoded = cadreNode.encodeSeed(seed); // base64url string
@@ -445,7 +445,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
-> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`dbAnchoredTrustPolicy`) trusts only authority keys already in the phone's `AuthorityKey` table. A cold-start phone that has not yet synced the issuing cadre's authority will therefore **reject** a seed signed by that cadre. To anchor trust out-of-band, paste the issuer's `CadreInvite` (which carries `authorityKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that one apply via `pinnedKeyTrustPolicy`. Leave it blank when the phone already trusts the signer.
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`dbAnchoredTrustPolicy`) trusts only owner keys already in the phone's `OwnerKey` table. A cold-start phone that has not yet synced the issuing cadre's owner will therefore **reject** a seed signed by that cadre. To anchor trust out-of-band, paste the issuer's `CadreInvite` (which carries `ownerKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that one apply via `pinnedKeyTrustPolicy`. Leave it blank when the phone already trusts the signer.
 
 ### Step 5: Create a Strand
 
@@ -536,13 +536,13 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 All three flows share `_setup.yaml` for the connect/seed/strand bootstrap.
 
 Under the secure-default seed-trust policy (`dbAnchoredTrustPolicy`), the cold
-phone would reject the drone's seed because the drone's authority key is not yet
-in its `AuthorityKey` table — a race against control-sync. To make the apply step
-deterministic, the drone fixture enrolls its own authority key
-(`ensureAuthorityKey`) and mints a `CadreInvite` carrying it; `start.mjs` writes
+phone would reject the drone's seed because the drone's owner key is not yet
+in its `OwnerKey` table — a race against control-sync. To make the apply step
+deterministic, the drone fixture enrolls its own owner key
+(`ensureOwnerKey`) and mints a `CadreInvite` carrying it; `start.mjs` writes
 this as `enrollInvite`, the orchestrator threads it in as `ENROLL_INVITE`, and
 `_setup.yaml` pastes it into `input-enroll-invite` before tapping **Apply Seed**
-so the phone pins the drone authority out-of-band (`pinnedKeyTrustPolicy`) for
+so the phone pins the drone owner out-of-band (`pinnedKeyTrustPolicy`) for
 that one apply. The success-modal title stays `"Seed applied"` (only the body
 text changes), so the assertion is unchanged.
 
@@ -569,7 +569,7 @@ Phases 1–6 exercise a single cadre (one party, two nodes). The next level of r
   Party A cadre                          Party B cadre
 ┌──────────────────────┐              ┌──────────────────────┐
 │  phone-A  ←WS→  drone-A  │←─ strand network ─→│  drone-B  ←WS→  phone-B  │
-│  (authority)    (storage) │              │  (storage)    (authority) │
+│  (owner)    (storage) │              │  (storage)    (owner) │
 └──────────────────────┘              └──────────────────────┘
         control-A                              control-B
    (intra-cadre only)                     (intra-cadre only)

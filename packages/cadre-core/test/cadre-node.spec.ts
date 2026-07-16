@@ -1011,7 +1011,7 @@ describe('CadreNode', () => {
       expect(() => node.recordStrandActivity('s-3')).not.toThrow();
     });
 
-    it('expireDeviceToken authority-deletes the row when an authority service is present', async () => {
+    it('expireDeviceToken owner-deletes the row when an owner service is present', async () => {
       const node = new CadreNode(createConfig());
       const deleted: string[] = [];
       (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
@@ -1023,7 +1023,7 @@ describe('CadreNode', () => {
       expect(deleted).toEqual(['peer-x']);
     });
 
-    it('expireDeviceToken is a best-effort no-op (re-registration log) for a non-authority node', async () => {
+    it('expireDeviceToken is a best-effort no-op (re-registration log) for a non-owner node', async () => {
       const node = new CadreNode(createConfig());
       // No seedBootstrapService → cannot delete; must resolve without throwing.
       await expect(node.expireDeviceToken('peer-x')).resolves.toBeUndefined();

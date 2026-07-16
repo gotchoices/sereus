@@ -2,7 +2,7 @@ import { existsSync, readFileSync, renameSync, writeFileSync, mkdirSync } from '
 import { dirname, join } from 'node:path';
 import debug from 'debug';
 
-import type { AuthoritySpawnConfig, NodePorts } from './types.js';
+import type { OwnerSpawnConfig, NodePorts } from './types.js';
 
 const log = debug('cadre:host:state-store');
 
@@ -21,15 +21,15 @@ export interface PersistedHandle {
   spawnedAt: string;          // ISO timestamp
   partyId: string;
   profile: 'storage' | 'transaction';
-  /** True for the admin's authority node. */
-  authority?: boolean;
+  /** True for the admin's owner node. */
+  owner?: boolean;
 }
 
 export interface PersistedState {
   version: 1;
   handles: PersistedHandle[];
-  /** Spawn parameters for the authority node, so it can be re-spawned on demand. */
-  authorityConfig?: AuthoritySpawnConfig;
+  /** Spawn parameters for the owner node, so it can be re-spawned on demand. */
+  ownerConfig?: OwnerSpawnConfig;
 }
 
 const STATE_VERSION = 1;
@@ -57,7 +57,7 @@ export class StateStore {
       return {
         version: STATE_VERSION,
         handles: parsed.handles,
-        ...(parsed.authorityConfig ? { authorityConfig: parsed.authorityConfig } : {}),
+        ...(parsed.ownerConfig ? { ownerConfig: parsed.ownerConfig } : {}),
       };
     } catch (err) {
       // A corrupt state file is operationally significant — surviving children
@@ -74,7 +74,7 @@ export class StateStore {
       {
         version: STATE_VERSION,
         handles: state.handles,
-        ...(state.authorityConfig ? { authorityConfig: state.authorityConfig } : {}),
+        ...(state.ownerConfig ? { ownerConfig: state.ownerConfig } : {}),
       },
       null,
       2,

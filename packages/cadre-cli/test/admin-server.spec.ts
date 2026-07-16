@@ -13,7 +13,7 @@ class MockNode {
   members: Array<{ peerId: string; multiaddr: string | null }> = [
     { peerId: '12D3KooWMemberA', multiaddr: '/ip4/10.0.0.1/tcp/4001' },
   ];
-  /** When true, authority methods throw the "not initialized" error. */
+  /** When true, owner methods throw the "not initialized" error. */
   seedUninitialized = false;
   /** When true, read methods throw an unclassifiable error (-> internal/500). */
   genericFailure = false;
@@ -43,7 +43,7 @@ class MockNode {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     const addrs = this.pushedAddresses ?? this.multiaddrs;
-    const invite: CadreInvite = { partyId: this.partyId, authorityAddrs: addrs, token, createdAt: 1700000000000 };
+    const invite: CadreInvite = { partyId: this.partyId, ownerAddrs: addrs, token, createdAt: 1700000000000 };
     return { invite, encodedInvite: 'encoded-' + addrs.join('|') };
   }
 
@@ -148,7 +148,7 @@ describe('AdminServer', () => {
     });
   });
 
-  describe('authority routes', () => {
+  describe('owner routes', () => {
     it('POST /admin/invites mints an invite with decoded args', async () => {
       const res = await fetch(`${base}/admin/invites`, {
         method: 'POST',
@@ -172,7 +172,7 @@ describe('AdminServer', () => {
     });
 
     it('POST /admin/accept-phone forwards peer id, token and invite', async () => {
-      const issuedInvite: CadreInvite = { partyId: 'party-xyz', authorityAddrs: [], token: 't', createdAt: 1 };
+      const issuedInvite: CadreInvite = { partyId: 'party-xyz', ownerAddrs: [], token: 't', createdAt: 1 };
       const res = await fetch(`${base}/admin/accept-phone`, {
         method: 'POST',
         headers: auth({ 'content-type': 'application/json' }),
@@ -224,13 +224,13 @@ describe('AdminServer', () => {
 
       const inviteRes = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const inviteBody = await inviteRes.json();
-      expect(inviteBody.data.invite.authorityAddrs).toEqual(pushed);
+      expect(inviteBody.data.invite.ownerAddrs).toEqual(pushed);
     });
 
     it('with no addresses pushed, the invite embeds getMultiaddrs()', async () => {
       const inviteRes = await fetch(`${base}/admin/invites`, { method: 'POST', headers: auth() });
       const inviteBody = await inviteRes.json();
-      expect(inviteBody.data.invite.authorityAddrs).toEqual(node.multiaddrs);
+      expect(inviteBody.data.invite.ownerAddrs).toEqual(node.multiaddrs);
     });
 
     it('rejects a non-array addresses payload (400)', async () => {

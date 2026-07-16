@@ -1,13 +1,13 @@
 /**
- * Cross-package authority-node integration.
+ * Cross-package owner-node integration.
  *
  * Closes the loop the 6.7 delegation work left open: cadre-host's
- * `HostProcessOrchestrator` spawns the **real** `@serfab/cadre-cli` authority
- * node (`cadre-cli start --authority --admin-port … --identity-protobuf …`),
- * and `AuthorityNodeClient` drives it end-to-end over the loopback admin
+ * `HostProcessOrchestrator` spawns the **real** `@serfab/cadre-cli` owner
+ * node (`cadre-cli start --owner --admin-port … --identity-protobuf …`),
+ * and `OwnerNodeClient` drives it end-to-end over the loopback admin
  * channel. Unlike the cadre-host unit suites — which spawn a fake CLI binding
- * the admin port (`orchestrator-authority.test.ts`) or point the client at a
- * stub admin HTTP server (`host-authority.smoke.test.ts`) — this exercises the
+ * the admin port (`orchestrator-owner.test.ts`) or point the client at a
+ * stub admin HTTP server (`host-owner.smoke.test.ts`) — this exercises the
  * genuine wire: real libp2p identity/multiaddrs, the real control DB, bearer
  * auth, and the cadre-provider envelope across a process boundary.
  *
@@ -15,7 +15,7 @@
  * override), so this requires `@serfab/cadre-cli` and `@serfab/cadre-host` to
  * be built. Real libp2p + control-DB startup is slow, so the node is spawned
  * once for the whole happy-path suite with generous timeouts; no full-network
- * dial is performed (the node is the founding authority of its own party).
+ * dial is performed (the node is the founding owner of its own party).
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
@@ -29,12 +29,12 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 
 import {
-  AUTHORITY_CONTAINER_ID,
-  AuthorityNodeClient,
-  AuthorityNodeUnavailableError,
+  OWNER_CONTAINER_ID,
+  OwnerNodeClient,
+  OwnerNodeUnavailableError,
   HostProcessOrchestrator,
-  type AuthorityAdminEndpoint,
-  type AuthoritySpawnConfig,
+  type OwnerAdminEndpoint,
+  type OwnerSpawnConfig,
   type ManagedNodeInfo,
 } from '@serfab/cadre-host';
 
@@ -69,13 +69,13 @@ async function pickClosedPort(): Promise<number> {
   });
 }
 
-describe('cadre-host ↔ real cadre-cli authority node', () => {
+describe('cadre-host ↔ real cadre-cli owner node', () => {
   let tmpRoot: string;
   let orchestrator: HostProcessOrchestrator;
   let node: ManagedNodeInfo;
-  let client: AuthorityNodeClient;
+  let client: OwnerNodeClient;
   let expectedPeerId: string;
-  const partyId = `authority-int-${Math.random().toString(36).slice(2)}`;
+  const partyId = `owner-int-${Math.random().toString(36).slice(2)}`;
 
   beforeAll(async () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-authnode-'));
@@ -91,7 +91,7 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
     });
     await orchestrator.init();
 
-    const cfg: AuthoritySpawnConfig = {
+    const cfg: OwnerSpawnConfig = {
       identityPath,
       partyId,
       // Ephemeral libp2p port — the OS assigns one and getMultiaddrs() reports
@@ -99,32 +99,32 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
       libp2pPort: 0,
       profile: 'storage',
     };
-    node = await orchestrator.ensureAuthorityNode(cfg);
-    expect(node.id).toBe(AUTHORITY_CONTAINER_ID);
-    expect(node.authority).toBe(true);
+    node = await orchestrator.ensureOwnerNode(cfg);
+    expect(node.id).toBe(OWNER_CONTAINER_ID);
+    expect(node.owner).toBe(true);
 
     // Endpoint is read via a getter so a respawn's new bearer would be picked up.
-    client = new AuthorityNodeClient(() => orchestrator.getAuthorityAdminEndpoint());
+    client = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
-    // Readiness: the admin channel binds only after node.start() + authority
+    // Readiness: the admin channel binds only after node.start() + owner
     // genesis + seed-bootstrap init, so a successful identity round-trip means
     // the whole stack is up. Transport errors during the bind window are
     // swallowed by waitUntil and retried (the "not-ready window" in practice).
     try {
       await waitUntil(
         async () => (await client.getPeerId()) === expectedPeerId,
-        { timeoutMs: STARTUP_MS, intervalMs: 250, description: 'authority admin channel ready' },
+        { timeoutMs: STARTUP_MS, intervalMs: 250, description: 'owner admin channel ready' },
       );
     } catch (err) {
       // Surface the child log to make a startup failure debuggable in CI.
       let log = '';
       try { log = await orchestrator.getLogs(node.dockerId, 200); } catch { /* ignore */ }
-      throw new Error(`authority node never became ready: ${(err as Error).message}\n--- node.log ---\n${log}`, { cause: err });
+      throw new Error(`owner node never became ready: ${(err as Error).message}\n--- node.log ---\n${log}`, { cause: err });
     }
   }, STARTUP_MS + 10_000);
 
   afterAll(async () => {
-    try { await orchestrator?.stopAuthorityNode(); } catch { /* ignore */ }
+    try { await orchestrator?.stopOwnerNode(); } catch { /* ignore */ }
     if (orchestrator) {
       for (const n of orchestrator.listNodes()) {
         try { await orchestrator.removeContainer(n.dockerId); } catch { /* ignore */ }
@@ -155,7 +155,7 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
     expect(typeof encodedInvite).toBe('string');
     expect(encodedInvite.length).toBeGreaterThan(0);
     expect(invite.partyId).toBe(partyId);
-    expect(Array.isArray(invite.authorityAddrs)).toBe(true);
+    expect(Array.isArray(invite.ownerAddrs)).toBe(true);
 
     // encodedInvite is base64url(JSON) — it must round-trip back to the invite.
     const decoded = JSON.parse(Buffer.from(encodedInvite, 'base64url').toString('utf8'));
@@ -164,7 +164,7 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
   }, OP_MS);
 
   it('listAuthorizedMembers()/isAuthorizedMember() report an empty membership on a fresh party', async () => {
-    // AUTHORIZED surface excludes self: a fresh authority self-registers a CadrePeer
+    // AUTHORIZED surface excludes self: a fresh owner self-registers a CadrePeer
     // address row (addressable surface), but has authorized no one — so the trust-facing
     // membership set is empty. (The addressable `listMembers()` includes the self row.)
     expect(await client.listAuthorizedMembers()).toEqual([]);
@@ -195,14 +195,14 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
     await client.pushInviteAddresses(pushed);
 
     const { invite } = await client.createInvite();
-    expect(invite.authorityAddrs).toEqual(pushed);
+    expect(invite.ownerAddrs).toEqual(pushed);
   }, OP_MS);
 
   it('rejects a bad bearer token with not_authorized', async () => {
-    const endpoint = orchestrator.getAuthorityAdminEndpoint();
+    const endpoint = orchestrator.getOwnerAdminEndpoint();
     expect(endpoint).toBeDefined();
-    const badClient = new AuthorityNodeClient({
-      baseUrl: (endpoint as AuthorityAdminEndpoint).baseUrl,
+    const badClient = new OwnerNodeClient({
+      baseUrl: (endpoint as OwnerAdminEndpoint).baseUrl,
       token: 'definitely-not-the-token',
     });
 
@@ -211,25 +211,25 @@ describe('cadre-host ↔ real cadre-cli authority node', () => {
       await badClient.getPeerId();
       expect.unreachable('bad bearer should have thrown');
     } catch (err) {
-      expect(err).toBeInstanceOf(AuthorityNodeUnavailableError);
-      expect((err as AuthorityNodeUnavailableError).nodeCode).toBe('not_authorized');
+      expect(err).toBeInstanceOf(OwnerNodeUnavailableError);
+      expect((err as OwnerNodeUnavailableError).nodeCode).toBe('not_authorized');
     }
   }, OP_MS);
 });
 
-describe('authority-node client — not-ready / unavailable window', () => {
-  it('surfaces AuthorityNodeUnavailableError when no node has been spawned', async () => {
+describe('owner-node client — not-ready / unavailable window', () => {
+  it('surfaces OwnerNodeUnavailableError when no node has been spawned', async () => {
     // getter returns undefined → the client cannot resolve an endpoint. This is
     // the pre-spawn state the trust-circle / NAT services translate to a 503.
-    const client = new AuthorityNodeClient(() => undefined);
-    await expect(client.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+    const client = new OwnerNodeClient(() => undefined);
+    await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
   });
 
-  it('surfaces AuthorityNodeUnavailableError (not a hang) on connection refused', async () => {
+  it('surfaces OwnerNodeUnavailableError (not a hang) on connection refused', async () => {
     // Models the spawn→admin-bind window: the endpoint exists but the port is
     // not yet listening. The client must reject cleanly rather than hang.
     const port = await pickClosedPort();
-    const client = new AuthorityNodeClient({ baseUrl: `http://127.0.0.1:${port}`, token: 'tok' });
-    await expect(client.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+    const client = new OwnerNodeClient({ baseUrl: `http://127.0.0.1:${port}`, token: 'tok' });
+    await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
   }, 15_000);
 });

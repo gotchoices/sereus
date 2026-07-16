@@ -2,7 +2,7 @@
  * E2E Enrollment integration tests.
  *
  * Exercises the full enrollment lifecycle over real libp2p:
- * - Authority creates seed, drone applies and connects
+ * - Owner creates seed, drone applies and connects
  * - addDrone helper with out-of-band seed encoding
  * - Invite flow for phone enrollment
  * - Multi-node cadre expansion
@@ -30,22 +30,22 @@ function extractPrivateKeyBase64(privateKey: Uint8Array): string {
 }
 
 /**
- * Create a SeedBootstrapService for a test party's authority node.
+ * Create a SeedBootstrapService for a test party's owner node.
  */
 function createSeedService(party: TestParty): SeedBootstrapService {
-	const privateKeyBase64 = extractPrivateKeyBase64(party.authorityPrivateKey);
+	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
-		authorityPrivateKey: privateKeyBase64,
-		authorityPublicKey: party.authorityPublicKey,
+		ownerPrivateKey: privateKeyBase64,
+		ownerPublicKey: party.ownerPublicKey,
 	});
-	service.initialize(party.authorityNode.libp2p, party.controlDatabase);
+	service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
 }
 
 /**
  * Create a receiving-only SeedBootstrapService for a drone/phone node.
- * No authority keys — can only receive and apply seeds.
+ * No owner keys — can only receive and apply seeds.
  */
 function createReceiverService(partyId: string, node: TestCadreNode, controlDatabase: TestParty['controlDatabase']): SeedBootstrapService {
 	const service = new SeedBootstrapService({ partyId });
@@ -54,13 +54,13 @@ function createReceiverService(partyId: string, node: TestCadreNode, controlData
 }
 
 /**
- * Register the authority's own peer in CadrePeer so seeds include it
- * with isAuthority=true and publicKey for signature validation.
+ * Register the owner's own peer in CadrePeer so seeds include it
+ * with isOwner=true and publicKey for signature validation.
  */
-async function registerAuthorityPeer(service: SeedBootstrapService, party: TestParty): Promise<void> {
+async function registerOwnerPeer(service: SeedBootstrapService, party: TestParty): Promise<void> {
 	await service.authorizePeer({
-		peerId: party.authorityNode.peerId,
-		multiaddrs: party.authorityNode.multiaddrs,
+		peerId: party.ownerNode.peerId,
+		multiaddrs: party.ownerNode.multiaddrs,
 	});
 }
 
@@ -91,82 +91,82 @@ describe('E2E Enrollment', () => {
 	// 1. Server creates seed, drone applies and connects
 	// =========================================================================
 	it('should enroll drone via seed creation + applySeed + dial', async () => {
-		const authority = await network.createParty({ name: 'auth-seed' });
+		const owner = await network.createParty({ name: 'auth-seed' });
 		const drone = await network.createParty({ name: 'drone-seed' });
 
-		const authService = createSeedService(authority);
-		const droneService = createReceiverService(authority.partyId, drone.authorityNode, drone.controlDatabase);
+		const authService = createSeedService(owner);
+		const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
-		// Authority must be in CadrePeer so the seed includes it as authority peer
-		await registerAuthorityPeer(authService, authority);
+		// Owner must be in CadrePeer so the seed includes it as owner peer
+		await registerOwnerPeer(authService, owner);
 
 		// Authorize the drone peer
 		await authService.authorizePeer({
-			peerId: drone.authorityNode.peerId,
-			multiaddrs: drone.authorityNode.multiaddrs,
+			peerId: drone.ownerNode.peerId,
+			multiaddrs: drone.ownerNode.multiaddrs,
 		});
 
 		// Create seed
 		const seed = await authService.createSeed();
 
 		// Verify seed structure
-		expect(seed.partyId).toBe(authority.partyId);
+		expect(seed.partyId).toBe(owner.partyId);
 		expect(seed.peers.length).toBeGreaterThanOrEqual(2);
 		expect(seed.signature).toBeDefined();
-		expect(seed.signerKey).toBe(authority.authorityPublicKey);
+		expect(seed.signerKey).toBe(owner.ownerPublicKey);
 
-		const authorityPeer = seed.peers.find(p => p.peerId === authority.authorityNode.peerId);
-		expect(authorityPeer?.isAuthority).toBe(true);
-		expect(authorityPeer?.publicKey).toBe(authority.authorityPublicKey);
+		const ownerPeer = seed.peers.find(p => p.peerId === owner.ownerNode.peerId);
+		expect(ownerPeer?.isOwner).toBe(true);
+		expect(ownerPeer?.publicKey).toBe(owner.ownerPublicKey);
 
 		// Validate seed signature before applying
 		expect(authService.validateSeedSignature(seed)).toBe(true);
 
-		// Drone applies the seed. It is cold-start (empty AuthorityKey table), so it
-		// pins the authority key out-of-band (as a CadreInvite would carry it);
+		// Drone applies the seed. It is cold-start (empty OwnerKey table), so it
+		// pins the owner key out-of-band (as a CadreInvite would carry it);
 		// otherwise the DB-anchored default policy would reject the seed.
 		const result = await droneService.applySeed(seed, {
-			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 		});
 		expect(result.success).toBe(true);
 		expect(result.peersAdded).toBeGreaterThanOrEqual(1);
 
-		// Drone should now have a connection to the authority
+		// Drone should now have a connection to the owner
 		await waitUntil(
-			() => drone.authorityNode.libp2p.getConnections().length >= 1,
-			{ timeoutMs: 5000, description: 'drone connects to authority after seed apply' }
+			() => drone.ownerNode.libp2p.getConnections().length >= 1,
+			{ timeoutMs: 5000, description: 'drone connects to owner after seed apply' }
 		);
 
-		const droneConnections = drone.authorityNode.libp2p.getConnections();
+		const droneConnections = drone.ownerNode.libp2p.getConnections();
 		expect(droneConnections.length).toBeGreaterThanOrEqual(1);
 
-		// Verify the connection is to the authority peer
+		// Verify the connection is to the owner peer
 		const connectedPeerIds = droneConnections.map(c => c.remotePeer.toString());
-		expect(connectedPeerIds).toContain(authority.authorityNode.peerId);
+		expect(connectedPeerIds).toContain(owner.ownerNode.peerId);
 	});
 
 	// =========================================================================
 	// 2. Server adds drone via addDrone helper + out-of-band seed
 	// =========================================================================
 	it('should add drone via addDrone helper with OOB seed encoding', async () => {
-		const authority = await network.createParty({ name: 'auth-oob' });
+		const owner = await network.createParty({ name: 'auth-oob' });
 		const drone = await network.createParty({ name: 'drone-oob' });
 
-		const authService = createSeedService(authority);
-		const droneService = createReceiverService(authority.partyId, drone.authorityNode, drone.controlDatabase);
+		const authService = createSeedService(owner);
+		const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
-		// Register authority in CadrePeer
-		await registerAuthorityPeer(authService, authority);
+		// Register owner in CadrePeer
+		await registerOwnerPeer(authService, owner);
 
 		// Use addDrone helper
 		const result = await authService.addDrone({
-			dronePeerId: drone.authorityNode.peerId,
-			droneMultiaddrs: drone.authorityNode.multiaddrs,
+			dronePeerId: drone.ownerNode.peerId,
+			droneMultiaddrs: drone.ownerNode.multiaddrs,
 		});
 
 		expect(result.seed).toBeDefined();
 		expect(result.encodedSeed).toBeDefined();
-		expect(result.seed.partyId).toBe(authority.partyId);
+		expect(result.seed.partyId).toBe(owner.partyId);
 
 		// Simulate out-of-band: encode → decode roundtrip
 		const decoded = authService.decodeSeed(result.encodedSeed);
@@ -178,21 +178,21 @@ describe('E2E Enrollment', () => {
 		const isValid = authService.validateSeedSignature(decoded);
 		expect(isValid).toBe(true);
 
-		// Drone applies the decoded seed (cold-start → pin the authority key).
+		// Drone applies the decoded seed (cold-start → pin the owner key).
 		const applyResult = await droneService.applySeed(decoded, {
-			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 		});
 		expect(applyResult.success).toBe(true);
 		expect(applyResult.peersAdded).toBeGreaterThanOrEqual(1);
 
-		// Drone should connect to authority
+		// Drone should connect to owner
 		await waitUntil(
-			() => drone.authorityNode.libp2p.getConnections().length >= 1,
+			() => drone.ownerNode.libp2p.getConnections().length >= 1,
 			{ timeoutMs: 5000, description: 'drone connects after OOB seed apply' }
 		);
 
-		// Verify CadrePeer on authority side has both peers
-		const peerCount = await countCadrePeers(authority);
+		// Verify CadrePeer on owner side has both peers
+		const peerCount = await countCadrePeers(owner);
 		expect(peerCount).toBeGreaterThanOrEqual(2);
 	});
 
@@ -204,13 +204,13 @@ describe('E2E Enrollment', () => {
 		const phone = await network.createParty({ name: 'phone-invite' });
 
 		const serverService = createSeedService(server);
-		const phoneService = createReceiverService(server.partyId, phone.authorityNode, phone.controlDatabase);
+		const phoneService = createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
 
 		// Server creates invite
 		const { invite, encodedInvite } = await serverService.createInvite('test-token-123', 60_000);
 
 		expect(invite.partyId).toBe(server.partyId);
-		expect(invite.authorityAddrs.length).toBeGreaterThan(0);
+		expect(invite.ownerAddrs.length).toBeGreaterThan(0);
 		expect(invite.token).toBe('test-token-123');
 		expect(invite.expiresAt).toBeDefined();
 
@@ -223,17 +223,17 @@ describe('E2E Enrollment', () => {
 
 		// Phone should be connected to server
 		await waitUntil(
-			() => phone.authorityNode.libp2p.getConnections().length >= 1,
+			() => phone.ownerNode.libp2p.getConnections().length >= 1,
 			{ timeoutMs: 5000, description: 'phone connects to server after dialInvite' }
 		);
 
-		const phoneConns = phone.authorityNode.libp2p.getConnections();
+		const phoneConns = phone.ownerNode.libp2p.getConnections();
 		const connectedPeerIds = phoneConns.map(c => c.remotePeer.toString());
-		expect(connectedPeerIds).toContain(server.authorityNode.peerId);
+		expect(connectedPeerIds).toContain(server.ownerNode.peerId);
 
 		// Server accepts phone (authorizes in CadrePeer)
 		await serverService.acceptPhone(
-			{ phonePeerId: phone.authorityNode.peerId, token: 'test-token-123' },
+			{ phonePeerId: phone.ownerNode.peerId, token: 'test-token-123' },
 			invite
 		);
 
@@ -241,7 +241,7 @@ describe('E2E Enrollment', () => {
 		const db = server.controlDatabase.getDatabase();
 		let phonePeerFound = false;
 		for await (const row of db.eval('select PeerId from CadreControl.CadrePeer')) {
-			if (row.PeerId === phone.authorityNode.peerId) {
+			if (row.PeerId === phone.ownerNode.peerId) {
 				phonePeerFound = true;
 			}
 		}
@@ -249,63 +249,63 @@ describe('E2E Enrollment', () => {
 	});
 
 	// =========================================================================
-	// 4. Multi-node enrollment (authority + 2 drones)
+	// 4. Multi-node enrollment (owner + 2 drones)
 	// =========================================================================
 	it('should enroll multiple drones into a cadre', async () => {
-		const authority = await network.createParty({ name: 'auth-multi' });
+		const owner = await network.createParty({ name: 'auth-multi' });
 		const drone1 = await network.createParty({ name: 'drone1-multi' });
 		const drone2 = await network.createParty({ name: 'drone2-multi' });
 
-		const authService = createSeedService(authority);
-		const drone1Service = createReceiverService(authority.partyId, drone1.authorityNode, drone1.controlDatabase);
-		const drone2Service = createReceiverService(authority.partyId, drone2.authorityNode, drone2.controlDatabase);
+		const authService = createSeedService(owner);
+		const drone1Service = createReceiverService(owner.partyId, drone1.ownerNode, drone1.controlDatabase);
+		const drone2Service = createReceiverService(owner.partyId, drone2.ownerNode, drone2.controlDatabase);
 
-		// Register authority in CadrePeer
-		await registerAuthorityPeer(authService, authority);
+		// Register owner in CadrePeer
+		await registerOwnerPeer(authService, owner);
 
 		// Enroll drone-1: authorize, create seed, apply
 		await authService.authorizePeer({
-			peerId: drone1.authorityNode.peerId,
-			multiaddrs: drone1.authorityNode.multiaddrs,
+			peerId: drone1.ownerNode.peerId,
+			multiaddrs: drone1.ownerNode.multiaddrs,
 		});
 		const seed1 = await authService.createSeed();
 		const result1 = await drone1Service.applySeed(seed1, {
-			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 		});
 		expect(result1.success).toBe(true);
 
 		// Enroll drone-2: authorize, create seed (now includes drone-1), apply
 		await authService.authorizePeer({
-			peerId: drone2.authorityNode.peerId,
-			multiaddrs: drone2.authorityNode.multiaddrs,
+			peerId: drone2.ownerNode.peerId,
+			multiaddrs: drone2.ownerNode.multiaddrs,
 		});
 		const seed2 = await authService.createSeed();
 		const result2 = await drone2Service.applySeed(seed2, {
-			trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 		});
 		expect(result2.success).toBe(true);
 
-		// seed2 should reflect all 3 peers (authority + drone1 + drone2)
+		// seed2 should reflect all 3 peers (owner + drone1 + drone2)
 		expect(seed2.peers.length).toBeGreaterThanOrEqual(3);
 
-		// All drones should connect to authority
+		// All drones should connect to owner
 		await waitUntil(
-			() => drone1.authorityNode.libp2p.getConnections().length >= 1,
-			{ timeoutMs: 5000, description: 'drone1 connected to authority' }
+			() => drone1.ownerNode.libp2p.getConnections().length >= 1,
+			{ timeoutMs: 5000, description: 'drone1 connected to owner' }
 		);
 		await waitUntil(
-			() => drone2.authorityNode.libp2p.getConnections().length >= 1,
-			{ timeoutMs: 5000, description: 'drone2 connected to authority' }
-		);
-
-		// Authority should have connections from both drones
-		await waitUntil(
-			() => authority.authorityNode.libp2p.getConnections().length >= 2,
-			{ timeoutMs: 5000, description: 'authority has 2+ connections' }
+			() => drone2.ownerNode.libp2p.getConnections().length >= 1,
+			{ timeoutMs: 5000, description: 'drone2 connected to owner' }
 		);
 
-		// Authority's CadrePeer should have 3 rows
-		const peerCount = await countCadrePeers(authority);
+		// Owner should have connections from both drones
+		await waitUntil(
+			() => owner.ownerNode.libp2p.getConnections().length >= 2,
+			{ timeoutMs: 5000, description: 'owner has 2+ connections' }
+		);
+
+		// Owner's CadrePeer should have 3 rows
+		const peerCount = await countCadrePeers(owner);
 		expect(peerCount).toBeGreaterThanOrEqual(3);
 	});
 
@@ -314,13 +314,13 @@ describe('E2E Enrollment', () => {
 	// =========================================================================
 	describe('negative cases', () => {
 		it('should reject tampered seed (modified partyId)', async () => {
-			const authority = await network.createParty({ name: 'auth-tamper' });
+			const owner = await network.createParty({ name: 'auth-tamper' });
 			const drone = await network.createParty({ name: 'drone-tamper' });
 
-			const authService = createSeedService(authority);
-			const droneService = createReceiverService(authority.partyId, drone.authorityNode, drone.controlDatabase);
+			const authService = createSeedService(owner);
+			const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
-			await registerAuthorityPeer(authService, authority);
+			await registerOwnerPeer(authService, owner);
 
 			const seed = await authService.createSeed();
 
@@ -333,20 +333,20 @@ describe('E2E Enrollment', () => {
 		});
 
 		it('should reject a valid self-asserting seed at a cold-start node with no trust anchor', async () => {
-			// Regression: a signature-valid seed signed by the authority must NOT be
-			// accepted by a cold-start node (empty AuthorityKey table, no pinned keys
+			// Regression: a signature-valid seed signed by the owner must NOT be
+			// accepted by a cold-start node (empty OwnerKey table, no pinned keys
 			// and the default DB-anchored policy). A seed can no longer vouch for its
 			// own signer.
-			const authority = await network.createParty({ name: 'auth-noauth' });
+			const owner = await network.createParty({ name: 'auth-noauth' });
 			const drone = await network.createParty({ name: 'drone-noauth' });
 
-			const authService = createSeedService(authority);
-			const droneService = createReceiverService(authority.partyId, drone.authorityNode, drone.controlDatabase);
+			const authService = createSeedService(owner);
+			const droneService = createReceiverService(owner.partyId, drone.ownerNode, drone.controlDatabase);
 
-			await registerAuthorityPeer(authService, authority);
+			await registerOwnerPeer(authService, owner);
 
 			// A fully valid, untampered seed — its signature verifies and it names the
-			// authority as an authority peer with a matching publicKey.
+			// owner as an owner peer with a matching publicKey.
 			const seed = await authService.createSeed();
 			expect(authService.validateSeedSignature(seed)).toBe(true);
 
@@ -354,9 +354,9 @@ describe('E2E Enrollment', () => {
 			expect(result.success).toBe(false);
 			expect(result.error).toMatch(/trust policy/i);
 
-			// With the authority key pinned out-of-band, the same seed is accepted.
+			// With the owner key pinned out-of-band, the same seed is accepted.
 			const pinned = await droneService.applySeed(seed, {
-				trustPolicy: pinnedKeyTrustPolicy([authority.authorityPublicKey]),
+				trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 			});
 			expect(pinned.success).toBe(true);
 		});
@@ -366,7 +366,7 @@ describe('E2E Enrollment', () => {
 			const phone = await network.createParty({ name: 'phone-expired' });
 
 			const serverService = createSeedService(server);
-			const phoneService = createReceiverService(server.partyId, phone.authorityNode, phone.controlDatabase);
+			const phoneService = createReceiverService(server.partyId, phone.ownerNode, phone.controlDatabase);
 
 			// Create invite that expired 1 second ago
 			const { invite } = await serverService.createInvite('expired-token', -1000);

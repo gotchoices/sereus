@@ -8,7 +8,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { InMemoryKeyStore, KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID, type KeyStore } from '../src/key-store.js';
 import { FileKeyStore } from '../src/key-store-file.js';
 import type { CadreNodeConfig } from '../src/types.js';
@@ -165,27 +165,27 @@ describe('CadreNode identity resolution', () => {
 	});
 });
 
-describe('CadreNode.getIdentityAuthorityKey', () => {
+describe('CadreNode.getIdentityOwnerKey', () => {
 	it('throws before the identity is resolved (not started)', () => {
 		const node = new CadreNode(makeConfig({ keyStore: new InMemoryKeyStore() }));
-		expect(() => node.getIdentityAuthorityKey()).toThrow(/not resolved/i);
+		expect(() => node.getIdentityOwnerKey()).toThrow(/not resolved/i);
 	});
 
-	it('throws on the ephemeral path even after resolve (no exposed authority key)', async () => {
+	it('throws on the ephemeral path even after resolve (no exposed owner key)', async () => {
 		const node = new CadreNode(makeConfig());
 		await resolve(node);
-		expect(() => node.getIdentityAuthorityKey()).toThrow();
+		expect(() => node.getIdentityOwnerKey()).toThrow();
 	});
 
-	it('returns the same pair as authorityKeyFromLibp2p(identityKey)', async () => {
+	it('returns the same pair as ed25519KeyPairFromLibp2p(identityKey)', async () => {
 		const node = new CadreNode(makeConfig({ keyStore: new InMemoryKeyStore() }));
 		await resolve(node);
-		expect(node.getIdentityAuthorityKey()).toEqual(authorityKeyFromLibp2p(identityOf(node)!));
+		expect(node.getIdentityOwnerKey()).toEqual(ed25519KeyPairFromLibp2p(identityOf(node)!));
 	});
 });
 
 describe('CadreNode identity path: no key-material leak in logs', () => {
-	it('never logs the stored protobuf bytes or the authority seed across resolve + sign', async () => {
+	it('never logs the stored protobuf bytes or the owner seed across resolve + sign', async () => {
 		const store = new InMemoryKeyStore();
 		const node = new CadreNode(makeConfig({ keyStore: store }));
 
@@ -208,7 +208,7 @@ describe('CadreNode identity path: no key-material leak in logs', () => {
 			(node as unknown as { controlNode: unknown }).controlNode = { peerId: peerIdFromPrivateKey(ik) };
 			const signing = (node as unknown as { getSelfSigningKey(): unknown }).getSelfSigningKey();
 			expect(signing).not.toBeNull();
-			node.getIdentityAuthorityKey();
+			node.getIdentityOwnerKey();
 		} finally {
 			createDebug.log = origLog;
 			createDebug.enable(prevNamespaces);
@@ -218,12 +218,12 @@ describe('CadreNode identity path: no key-material leak in logs', () => {
 		expect(captured.length).toBeGreaterThan(0);
 
 		const bytes = (await store.get(DEFAULT_IDENTITY_KEY_ID))!;
-		const authority = node.getIdentityAuthorityKey();
+		const owner = node.getIdentityOwnerKey();
 		const secrets = [
 			u8ToString(bytes, 'base64'),
 			u8ToString(bytes, 'base64url'),
 			u8ToString(bytes, 'hex'),
-			authority.privateKeyB64
+			owner.privateKeyB64
 		];
 
 		const blob = captured.join('\n');

@@ -9,10 +9,10 @@ import { TrustCircleService, createTrustCircleHandlers } from '../trust-circle.j
 import { TrustCircleStore } from '../trust-circle-store.js';
 import { TrustCircleError } from '../types.js';
 import type { CadreNodeLike } from '../trust-circle.js';
-import { AuthorityNodeUnavailableError } from '../../authority/authority-node-client.js';
+import { OwnerNodeUnavailableError } from '../../owner/owner-node-client.js';
 
 /**
- * Minimal in-memory mock of the authority-node channel adapter. Records calls
+ * Minimal in-memory mock of the owner-node channel adapter. Records calls
  * so assertions can verify the auth + redemption flow without standing up a
  * real libp2p control network or admin channel.
  */
@@ -24,14 +24,14 @@ class MockCadreNode implements CadreNodeLike {
 
   /** Toggle to make acceptPhone reject. */
   acceptShouldThrow: Error | null = null;
-  /** When false, membership calls throw AuthorityNodeUnavailableError. */
+  /** When false, membership calls throw OwnerNodeUnavailableError. */
   nodeAvailable = true;
 
   async createInvite(token?: string, expiresIn?: number) {
     this.issuedInvites.push({ token, expiresIn });
     const invite: CadreInvite = {
       partyId: 'party-test',
-      authorityAddrs: ['/ip4/127.0.0.1/tcp/4001'],
+      ownerAddrs: ['/ip4/127.0.0.1/tcp/4001'],
       token,
       createdAt: Date.now(),
       ...(expiresIn ? { expiresAt: Date.now() + expiresIn } : {}),
@@ -55,12 +55,12 @@ class MockCadreNode implements CadreNodeLike {
   }
 
   async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
-    if (!this.nodeAvailable) throw new AuthorityNodeUnavailableError('node down');
+    if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
     return [...this.authorizedPeers].map((peerId) => ({ peerId, multiaddr: null }));
   }
 
   async isMember(peerId: string): Promise<boolean> {
-    if (!this.nodeAvailable) throw new AuthorityNodeUnavailableError('node down');
+    if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
     return this.authorizedPeers.has(peerId);
   }
 }
@@ -201,7 +201,7 @@ describe('TrustCircleService.redeemInvite', () => {
 
   it('preserves the pending token when acceptPhone fails with node_unavailable', async () => {
     const { token } = await service.issueInvite({ label: 'Transient' });
-    cadreNode.acceptShouldThrow = new AuthorityNodeUnavailableError('node down');
+    cadreNode.acceptShouldThrow = new OwnerNodeUnavailableError('node down');
 
     await expect(service.redeemInvite({ token, peerId: 'pTrans' }))
       .rejects.toMatchObject({ code: 'node_unavailable' });
@@ -225,7 +225,7 @@ describe('TrustCircleService.redeemInvite', () => {
     // first redeem hits node_unavailable. The second redeem should still
     // bounce synchronously while the gate is held.
     let release!: () => void;
-    const gate = new Promise<void>((_, reject) => { release = () => reject(new AuthorityNodeUnavailableError('node down')); });
+    const gate = new Promise<void>((_, reject) => { release = () => reject(new OwnerNodeUnavailableError('node down')); });
     cadreNode.acceptPhone = async () => {
       await gate;
     };
@@ -349,7 +349,7 @@ describe('TrustCircleService.list', () => {
     expect(store.getMember('orphan')).toBeUndefined();
   });
 
-  it('falls back to local labels when the authority node is unavailable', async () => {
+  it('falls back to local labels when the owner node is unavailable', async () => {
     store.addMember({ peerId: 'pZ', label: 'Zoe', addedAt: 't' });
     cadreNode.nodeAvailable = false;
 
@@ -361,7 +361,7 @@ describe('TrustCircleService.list', () => {
 
   it('issueInvite surfaces node_unavailable when the channel is down', async () => {
     const downNode = new MockCadreNode();
-    downNode.createInvite = async () => { throw new AuthorityNodeUnavailableError('refused'); };
+    downNode.createInvite = async () => { throw new OwnerNodeUnavailableError('refused'); };
     const svc = new TrustCircleService({ cadreNode: downNode, store });
     await expect(svc.issueInvite({ label: 'Nina' }))
       .rejects.toMatchObject({ code: 'node_unavailable' });

@@ -74,10 +74,10 @@ export function decodeLengthPrefixedFrame(data: Uint8Array, maxLength = MAX_SEED
  *
  * An Ed25519 PeerId is an identity multihash of the public key, so
  * `peerIdFromString(id).publicKey.raw` is the 32-byte ed25519 key whose
- * base64url form matches the `AuthorityKey.Key` representation (and
- * `authorityKeyFromLibp2p().publicKeyB64`). Returns null for a non-Ed25519
+ * base64url form matches the `OwnerKey.Key` representation (and
+ * `ed25519KeyPairFromLibp2p().publicKeyB64`). Returns null for a non-Ed25519
  * id, a missing embedded key, or any parse failure — callers treat null as
- * "not an authority" rather than throwing.
+ * "not an owner" rather than throwing.
  */
 export function ed25519PublicKeyB64FromPeerId(peerId: string): string | null {
   try {
@@ -112,10 +112,10 @@ export function canonicalSeedPayload(
 export interface SeedBootstrapConfig {
   /** Party ID for this cadre */
   partyId: string;
-  /** Authority private key for signing seeds and peer authorizations (base64url) */
-  authorityPrivateKey?: string;
-  /** Authority public key (base64url) - derived from private key if not provided */
-  authorityPublicKey?: string;
+  /** Owner private key for signing seeds and peer authorizations (base64url) */
+  ownerPrivateKey?: string;
+  /** Owner public key (base64url) - derived from private key if not provided */
+  ownerPublicKey?: string;
   /**
    * Optional async resolver returning the multiaddrs to embed in invites.
    * When unset, `libp2pNode.getMultiaddrs()` is used. Hosts behind NAT supply
@@ -125,9 +125,9 @@ export interface SeedBootstrapConfig {
   inviteAddressResolver?: () => Promise<string[]>;
   /**
    * Trust anchor for incoming seeds. Decides whether a signature-verified
-   * `signerKey` should be trusted, against the receiver's known authority
+   * `signerKey` should be trusted, against the receiver's known owner
    * keys (NOT the seed body). Defaults to `dbAnchoredTrustPolicy()`, which
-   * rejects any signer not already in the `AuthorityKey` table. An enrollment
+   * rejects any signer not already in the `OwnerKey` table. An enrollment
    * caller can pass a per-seed override to `applySeed` instead.
    *
    * A `CadreNode` forwards its node-wide `CadreNodeConfig.seedTrustPolicy` here
@@ -172,7 +172,7 @@ export class SeedBootstrapService {
   private readonly config: SeedBootstrapConfig;
   private libp2pNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
-  private readonly authorityPublicKey: string | null;
+  private readonly ownerPublicKey: string | null;
   private readonly trustPolicy: SeedTrustPolicy;
   private readonly seedReadTimeoutMs: number;
   private readonly maxConcurrentSeeds: number;
@@ -187,15 +187,15 @@ export class SeedBootstrapService {
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
 
     // Derive public key from private key if not provided
-    if (config.authorityPrivateKey && !config.authorityPublicKey) {
-      this.authorityPublicKey = getPublicKey(
-        config.authorityPrivateKey,
+    if (config.ownerPrivateKey && !config.ownerPublicKey) {
+      this.ownerPublicKey = getPublicKey(
+        config.ownerPrivateKey,
         'ed25519',
         'base64url',
         'base64url'
       ) as string;
     } else {
-      this.authorityPublicKey = config.authorityPublicKey ?? null;
+      this.ownerPublicKey = config.ownerPublicKey ?? null;
     }
 
     log('SeedBootstrapService created for party: %s', config.partyId);
@@ -210,15 +210,15 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Whether this service holds an authority private key, i.e. can produce the
-   * authority signatures that gate `CadrePeer` / `DeviceToken` inserts, deletes,
+   * Whether this service holds an owner private key, i.e. can produce the
+   * owner signatures that gate `CadrePeer` / `DeviceToken` inserts, deletes,
    * and re-authorizations. A seed-listener-only service (`enableSeedListener`,
-   * no authority key) returns false: it can receive/apply seeds but cannot author
-   * or re-issue authority writes. Used by the write-while-alone re-replication
-   * drain to skip authority work on a non-authority node.
+   * no owner key) returns false: it can receive/apply seeds but cannot author
+   * or re-issue owner writes. Used by the write-while-alone re-replication
+   * drain to skip owner work on a non-owner node.
    */
   canAuthorize(): boolean {
-    return !!this.config.authorityPrivateKey;
+    return !!this.config.ownerPrivateKey;
   }
 
   /**
@@ -251,14 +251,14 @@ export class SeedBootstrapService {
 
   /**
    * Authorize a new peer to join the cadre.
-   * Signs the peer ID with the authority key and inserts into CadrePeer table.
+   * Signs the peer ID with the owner key and inserts into CadrePeer table.
    *
-   * The authority vouches the `PublicKey <-> PeerId` binding: rather than trust a
+   * The owner vouches the `PublicKey <-> PeerId` binding: rather than trust a
    * caller-supplied key, the binding is enforced by construction — `PublicKey` is
    * DERIVED from the (Ed25519) `peerId`. A non-Ed25519 peer id yields a null
    * `PublicKey`, and such a row can never be self-updated (it has no key to
    * verify against), which is correct. The row is inserted with a fresh
-   * `UpdatedAt` but no self-signature (`Sig` null) — the authority cannot produce
+   * `UpdatedAt` but no self-signature (`Sig` null) — the owner cannot produce
    * the peer's self-signature, so the peer must self-publish (see
    * {@link CadreNode.registerSelf}) before the row resolves.
    */
@@ -278,10 +278,10 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Authority-signed INSERT of this node's OWN self-signed address record.
+   * Owner-signed INSERT of this node's OWN self-signed address record.
    *
    * Used by {@link CadreNode.registerSelf} when the node is not yet a member and
-   * is its own authority (it holds the authority key): the row is authority-signed
+   * is its own owner (it holds the owner key): the row is owner-signed
    * (satisfying `AuthorizedInsert`) AND carries a valid self-`Sig`, so it resolves
    * immediately without a follow-up self-update.
    */
@@ -296,12 +296,12 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Shared authority-signed `CadrePeer` INSERT. Mints a fresh single-use `StampId`
+   * Shared owner-signed `CadrePeer` INSERT. Mints a fresh single-use `StampId`
    * and signs the voucher digest `digest(peerId, stampId)` ({@link cadrePeerVoucherDigest})
-   * with the authority key (satisfying `AuthorizedInsert`), then writes the full record
-   * row with the vouching (authority, signature) persisted into VouchAuthority/VouchSig.
-   * The authority signature does NOT cover the address columns — those are vouched only
-   * as far as the authority asserts them, and a peer's own `Sig` (when present) is what
+   * with the owner key (satisfying `AuthorizedInsert`), then writes the full record
+   * row with the vouching (owner, signature) persisted into VouchOwner/VouchSig.
+   * The owner signature does NOT cover the address columns — those are vouched only
+   * as far as the owner asserts them, and a peer's own `Sig` (when present) is what
    * makes the row resolvable.
    */
   private async insertCadrePeerRow(row: {
@@ -319,34 +319,34 @@ export class SeedBootstrapService {
     // (which signs a distinct 'remove'-scoped digest).
     // NOTE: StampId uniqueness only blocks insert-replay while the row (or its StampId)
     // is still present — a delete frees the StampId, so a captured authorized insert could
-    // be replayed to re-add a peer the authority had removed (a revocation bypass). Fully
+    // be replayed to re-add a peer the owner had removed (a revocation bypass). Fully
     // subsumed by the connection gater (ticket 6): with no outsider write there is no
     // replay at all. If that gate ever proves insufficient, bind inserts to a persistent
     // per-peer sequence / tombstone instead of a row-scoped nonce.
     const stampId = generateStampId(row.peerId);
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
-    // Persist the vouching (authority, signature) onto the row (VouchAuthority/VouchSig)
+    // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
     // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
-    // reader can later re-check the voucher against its node-local trusted-authority anchor.
+    // reader can later re-check the voucher against its node-local trusted-owner anchor.
     await db.exec(`
-      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchAuthority, VouchSig)
-        with context AuthorityKey = ?, Signature = ?
+      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
+        with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [this.authorityPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.authorityPublicKey, signature]);
+    `, [this.ownerPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.ownerPublicKey, signature]);
   }
 
   /**
-   * Authority-signed INSERT of a peer's OWN self-signed `DeviceToken` row.
+   * Owner-signed INSERT of a peer's OWN self-signed `DeviceToken` row.
    *
    * Counterpart to {@link insertSelfPeerRecord} for the device-token registry: the
-   * row is authority-signed (satisfying `DeviceToken.AuthorizedInsert`, which vouches
+   * row is owner-signed (satisfying `DeviceToken.AuthorizedInsert`, which vouches
    * membership exactly as `CadrePeer.AuthorizedInsert` does) AND carries the peer's
-   * own self-`Sig` over the token payload. The authority signature covers only the
+   * own self-`Sig` over the token payload. The owner signature covers only the
    * PeerId — it does NOT vouch the token contents; the peer's `Sig` (verified at
    * resolve time against the bound `CadrePeer.PublicKey`) is what makes the row
    * resolvable. Used by {@link CadreNode.registerDeviceToken} for the first publish
-   * when the node is its own authority.
+   * when the node is its own owner.
    */
   async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
     const signature = this.signPeerAuthorization(record.peerId);
@@ -356,17 +356,17 @@ export class SeedBootstrapService {
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig)
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?)
-    `, [this.authorityPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig]);
-    log('Device token inserted (authority-signed): %s', record.peerId);
+    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig]);
+    log('Device token inserted (owner-signed): %s', record.peerId);
   }
 
   /**
-   * Authority-signed DELETE of a peer's `DeviceToken` row (logout / token
+   * Owner-signed DELETE of a peer's `DeviceToken` row (logout / token
    * invalidation). The `DeviceToken.AuthorizedInsert` constraint gates both insert
-   * AND delete on an authority signature over `digest(old.PeerId)`, so — like
-   * {@link removePeer} for `CadrePeer` — clearing a token requires the authority key.
+   * AND delete on an owner signature over `digest(old.PeerId)`, so — like
+   * {@link removePeer} for `CadrePeer` — clearing a token requires the owner key.
    */
   async deleteDeviceToken(peerId: string): Promise<void> {
     const signature = this.signPeerAuthorization(peerId);
@@ -376,47 +376,47 @@ export class SeedBootstrapService {
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       delete from CadreControl.DeviceToken
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         where PeerId = ?
-    `, [this.authorityPublicKey, signature, peerId]);
-    log('Device token removed (authority-signed): %s', peerId);
+    `, [this.ownerPublicKey, signature, peerId]);
+    log('Device token removed (owner-signed): %s', peerId);
   }
 
   /**
-   * Sign a peer ID with the authority key for a `CadrePeer` / `DeviceToken`
+   * Sign a peer ID with the owner key for a `CadrePeer` / `DeviceToken`
    * insert-or-delete. The signed bytes come from the shared
    * {@link peerAuthorizationDigest} helper so the offline `cadre enroll register`
-   * verifier checks the exact same construction. Throws if no authority key is set.
+   * verifier checks the exact same construction. Throws if no owner key is set.
    */
   private signPeerAuthorization(peerId: string): string {
     return this.signDigest(peerAuthorizationDigest(peerId));
   }
 
   /**
-   * Return the configured authority private key, or throw if none is set. The single
-   * precondition gate for every authority-signed write. {@link removePeer} /
+   * Return the configured owner private key, or throw if none is set. The single
+   * precondition gate for every owner-signed write. {@link removePeer} /
    * {@link reauthorizePeer} read the row's `StampId` from the DB BEFORE they sign, so
    * they call this up front — otherwise a keyless service would either surface the
    * wrong "Control database not initialized" error or, worse, silently no-op when the
    * target row is absent (the early `stampId === null` return) instead of rejecting.
    */
-  private requireAuthorityPrivateKey(): string {
-    if (!this.config.authorityPrivateKey) {
-      throw new Error('Authority private key required to authorize peers');
+  private requireOwnerPrivateKey(): string {
+    if (!this.config.ownerPrivateKey) {
+      throw new Error('Owner private key required to authorize peers');
     }
-    return this.config.authorityPrivateKey;
+    return this.config.ownerPrivateKey;
   }
 
   /**
-   * Sign a base64url digest with the authority key (ed25519). The single place the
-   * authority private key is applied; callers pass the canonical digest for the specific
+   * Sign a base64url digest with the owner key (ed25519). The single place the
+   * owner private key is applied; callers pass the canonical digest for the specific
    * action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
-   * {@link peerAuthorizationDigest}). Throws if no authority key is set.
+   * {@link peerAuthorizationDigest}). Throws if no owner key is set.
    */
   private signDigest(digestB64url: string): string {
     return sign(
       digestB64url,
-      this.requireAuthorityPrivateKey(),
+      this.requireOwnerPrivateKey(),
       'ed25519',
       'base64url',
       'base64url',
@@ -425,18 +425,18 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Remove a peer from the cadre by authority signature.
+   * Remove a peer from the cadre by owner signature.
    *
    * The `CadrePeer.AuthorizedDelete` (`check on delete`) constraint validates a
    * signature over the DISTINCT 'remove'-scoped digest `digest(old.PeerId, old.StampId,
-   * 'remove')` ({@link cadrePeerRemoveDigest}) by an authority key — deliberately NOT the
+   * 'remove')` ({@link cadrePeerRemoveDigest}) by an owner key — deliberately NOT the
    * insert voucher digest, so the row's stored `VouchSig` can never be replayed to delete.
    */
   async removePeer(peerId: string): Promise<void> {
-    // Fail fast on a keyless service BEFORE any DB read: a non-authority cannot sign the
-    // remove digest, and this precedence (authority key, then control DB) is what the
+    // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
+    // remove digest, and this precedence (owner key, then control DB) is what the
     // unit contract asserts.
-    this.requireAuthorityPrivateKey();
+    this.requireOwnerPrivateKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -455,16 +455,16 @@ export class SeedBootstrapService {
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       delete from CadreControl.CadrePeer
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         where PeerId = ?
-    `, [this.authorityPublicKey, signature, peerId]);
+    `, [this.ownerPublicKey, signature, peerId]);
 
     log('Peer %s removed successfully', peerId);
   }
 
   /**
-   * Authority "re-touch" of an existing `CadrePeer` membership row: bump
-   * `UpdatedAt` under the authority branch of `CadrePeer.AuthorizedUpdate` (a
+   * Owner "re-touch" of an existing `CadrePeer` membership row: bump
+   * `UpdatedAt` under the owner branch of `CadrePeer.AuthorizedUpdate` (a
    * signature over `digest(peerId)` — the same construction {@link authorizePeer}
    * uses) so the row is re-emitted as a fresh, broadcasting transaction.
    *
@@ -481,24 +481,24 @@ export class SeedBootstrapService {
    *
    * @param peerId - the membership row to re-touch.
    * @param updatedAt - the strictly-increasing freshness stamp to write.
-   * @throws if no authority private key is configured (a non-authority cannot
+   * @throws if no owner private key is configured (a non-owner cannot
    *   re-sign another peer's row) or the control database is not initialized.
    */
   async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
-    // Fail fast on a keyless service before any DB read (see removePeer): a non-authority
+    // Fail fast on a keyless service before any DB read (see removePeer): a non-owner
     // cannot re-sign the voucher, and must not silently no-op on an absent row.
-    this.requireAuthorityPrivateKey();
+    this.requireOwnerPrivateKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // The authority branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
-    // StampId) and re-binds VouchAuthority/VouchSig. Sign over the row's CURRENT StampId
+    // The owner branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
+    // StampId) and re-binds VouchOwner/VouchSig. Sign over the row's CURRENT StampId
     // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
-    // NOTE: this rebinds VouchAuthority to THIS node's authority key. Benign today — the
+    // NOTE: this rebinds VouchOwner to THIS node's owner key. Benign today — the
     // write-while-alone drain only re-touches rows this node itself authored. If a future
-    // path lets one authority re-touch a row a DIFFERENT authority vouched, the voucher
-    // silently flips to this authority; that only matters once ticket-4's predicate checks
-    // VouchAuthority against a node-local anchor, and only if the two authorities differ in
+    // path lets one owner re-touch a row a DIFFERENT owner vouched, the voucher
+    // silently flips to this owner; that only matters once ticket-4's predicate checks
+    // VouchOwner against a node-local anchor, and only if the two owners differ in
     // anchor membership.
     const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
@@ -509,20 +509,20 @@ export class SeedBootstrapService {
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
       update CadreControl.CadrePeer
-        with context AuthorityKey = ?, Signature = ?
-        set UpdatedAt = ?, VouchAuthority = ?, VouchSig = ?
+        with context OwnerKey = ?, Signature = ?
+        set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?
         where PeerId = ?
-    `, [this.authorityPublicKey, signature, updatedAt, this.authorityPublicKey, signature, peerId]);
+    `, [this.ownerPublicKey, signature, updatedAt, this.ownerPublicKey, signature, peerId]);
     log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
   }
 
   /**
    * Create a seed from the current control network state.
-   * The seed contains peer information and is signed by an authority.
+   * The seed contains peer information and is signed by an owner.
    */
   async createSeed(): Promise<ControlNetworkSeed> {
-    if (!this.config.authorityPrivateKey || !this.authorityPublicKey) {
-      throw new Error('Authority key required to create seeds');
+    if (!this.config.ownerPrivateKey || !this.ownerPublicKey) {
+      throw new Error('Owner key required to create seeds');
     }
     
     if (!this.controlDatabase || !this.libp2pNode) {
@@ -545,7 +545,7 @@ export class SeedBootstrapService {
     const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
     const signature = sign(
       seedDigest,
-      this.config.authorityPrivateKey,
+      this.config.ownerPrivateKey,
       'ed25519',
       'base64url',
       'base64url',
@@ -555,7 +555,7 @@ export class SeedBootstrapService {
     const seed: ControlNetworkSeed = {
       ...seedData,
       signature,
-      signerKey: this.authorityPublicKey,
+      signerKey: this.ownerPublicKey,
     };
     
     log('Created seed with %d peers', peers.length);
@@ -567,9 +567,9 @@ export class SeedBootstrapService {
    *
    * Validates the seed signature, then evaluates a trust anchor for the
    * `signerKey` that does NOT come from the seed body: the receiver's
-   * `AuthorityKey` table (DB-anchored), optionally augmented by pinned keys or
+   * `OwnerKey` table (DB-anchored), optionally augmented by pinned keys or
    * TOFU via the configured/overriding `SeedTrustPolicy`. A forged
-   * self-asserting seed — one that merely lists its own signer as an authority
+   * self-asserting seed — one that merely lists its own signer as an owner
    * peer — no longer passes.
    *
    * @param seed - The seed to apply (already transport-decoded).
@@ -592,17 +592,17 @@ export class SeedBootstrapService {
       return { success: false, peersAdded: 0, error: 'Invalid seed signature' };
     }
 
-    // Evaluate the trust anchor for the signer key. The known-authority set is
+    // Evaluate the trust anchor for the signer key. The known-owner set is
     // sourced from the receiver's control DB, never from the seed itself; a
     // cold-start node with no DB and no override therefore sees an empty set.
-    const knownAuthorityKeys = this.controlDatabase
-      ? await this.controlDatabase.getAuthorityKeys()
+    const knownOwnerKeys = this.controlDatabase
+      ? await this.controlDatabase.getOwnerKeys()
       : new Set<string>();
     const policy = options?.trustPolicy ?? this.trustPolicy;
     const decision = await policy.evaluate({
       partyId: seed.partyId,
       signerKey: seed.signerKey,
-      knownAuthorityKeys,
+      knownOwnerKeys,
     });
     if (!decision.trusted) {
       return {
@@ -634,13 +634,13 @@ export class SeedBootstrapService {
       }
     }
 
-    // Dial authority peers to establish connections
-    for (const peer of seed.peers.filter(p => p.isAuthority)) {
+    // Dial owner peers to establish connections
+    for (const peer of seed.peers.filter(p => p.isOwner)) {
       try {
         if (peer.multiaddrs.length > 0) {
           const addr = multiaddr(peer.multiaddrs[0]);
 
-          log('Dialing authority peer: %s', peer.peerId);
+          log('Dialing owner peer: %s', peer.peerId);
           await this.libp2pNode.dial(addr);
         }
       } catch (error) {
@@ -775,19 +775,19 @@ export class SeedBootstrapService {
   /**
    * Query peers from the control database.
    *
-   * Authority identity is sourced from the `AuthorityKey` table, not from the
+   * Owner identity is sourced from the `OwnerKey` table, not from the
    * transport peer ID. An Ed25519 libp2p PeerId embeds its public key (identity
    * multihash), so each peer's ed25519 key is derivable from its `PeerId`; a
-   * peer is an authority iff that derived key is in the `AuthorityKey` set.
-   * This makes any authority node markable — not just the local one — and ties
-   * `isAuthority` to the control table rather than to `peerId === self`.
+   * peer is an owner iff that derived key is in the `OwnerKey` set.
+   * This makes any owner node markable — not just the local one — and ties
+   * `isOwner` to the control table rather than to `peerId === self`.
    */
   private async queryPeers(): Promise<SeedPeer[]> {
     if (!this.controlDatabase) {
       return [];
     }
 
-    const authorityKeys = await this.controlDatabase.getAuthorityKeys();
+    const ownerKeys = await this.controlDatabase.getOwnerKeys();
     const db = this.controlDatabase.getDatabase();
     const peers: SeedPeer[] = [];
 
@@ -797,16 +797,16 @@ export class SeedBootstrapService {
       const multiaddr = row.Multiaddr as string | null;
 
       // Derive the peer's ed25519 key from its PeerId; a non-Ed25519 peer or an
-      // unparsable id yields null and is treated as a non-authority rather than
+      // unparsable id yields null and is treated as a non-owner rather than
       // failing the whole seed creation.
       const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
-      const isAuthority = pubKeyB64 !== null && authorityKeys.has(pubKeyB64);
+      const isOwner = pubKeyB64 !== null && ownerKeys.has(pubKeyB64);
 
       peers.push({
         peerId,
         multiaddrs: multiaddr ? multiaddr.split(',') : [],
-        isAuthority,
-        ...(isAuthority ? { publicKey: pubKeyB64 } : {}),
+        isOwner,
+        ...(isOwner ? { publicKey: pubKeyB64 } : {}),
       });
     }
 
@@ -985,29 +985,29 @@ export class SeedBootstrapService {
     // configured (typically by `@serfab/cadre-host`'s NatService), it takes
     // priority — it may substitute a DDNS hostname and externally-mapped
     // port for the raw LAN multiaddrs libp2p reports.
-    let authorityAddrs: string[];
+    let ownerAddrs: string[];
     if (this.config.inviteAddressResolver) {
       try {
-        authorityAddrs = await this.config.inviteAddressResolver();
+        ownerAddrs = await this.config.inviteAddressResolver();
       } catch (err) {
         log('inviteAddressResolver threw, falling back to libp2pNode.getMultiaddrs(): %o', err);
-        authorityAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
+        ownerAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
       }
     } else {
-      authorityAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
+      ownerAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
     }
 
-    // Carry the cadre's authority keys out-of-band so a cold-start invitee can
-    // pin the trusted authority set before applying any seed.
-    const authorityKeys = this.controlDatabase
-      ? Array.from(await this.controlDatabase.getAuthorityKeys())
+    // Carry the cadre's owner keys out-of-band so a cold-start invitee can
+    // pin the trusted owner set before applying any seed.
+    const ownerKeys = this.controlDatabase
+      ? Array.from(await this.controlDatabase.getOwnerKeys())
       : [];
 
     const now = Date.now();
     const invite: CadreInvite = {
       partyId: this.config.partyId,
-      authorityAddrs,
-      authorityKeys: authorityKeys.length ? authorityKeys : undefined,
+      ownerAddrs,
+      ownerKeys: ownerKeys.length ? ownerKeys : undefined,
       token,
       createdAt: now,
       expiresAt: expiresIn ? now + expiresIn : undefined,
@@ -1015,7 +1015,7 @@ export class SeedBootstrapService {
 
     const encodedInvite = this.encodeInvite(invite);
 
-    log('Invite created with %d authority addresses, %d authority keys', authorityAddrs.length, authorityKeys.length);
+    log('Invite created with %d owner addresses, %d owner keys', ownerAddrs.length, ownerKeys.length);
 
     return { invite, encodedInvite };
   }
@@ -1109,11 +1109,11 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Dial an authority from an invite.
-   * Use this on a phone after receiving an invite to connect to the authority.
+   * Dial an owner from an invite.
+   * Use this on a phone after receiving an invite to connect to the owner.
    *
    * @param invite - The invite received out-of-band
-   * @returns Connection to the authority
+   * @returns Connection to the owner
    */
   async dialInvite(invite: CadreInvite): Promise<void> {
     if (!this.libp2pNode) {
@@ -1125,15 +1125,15 @@ export class SeedBootstrapService {
       throw new Error('Invite has expired');
     }
 
-    log('Dialing invite authority with %d addresses', invite.authorityAddrs.length);
+    log('Dialing invite owner with %d addresses', invite.ownerAddrs.length);
 
-    // Try each authority address until one succeeds
+    // Try each owner address until one succeeds
     let lastError: Error | null = null;
-    for (const addrStr of invite.authorityAddrs) {
+    for (const addrStr of invite.ownerAddrs) {
       try {
         const addr = multiaddr(addrStr);
         await this.libp2pNode.dial(addr);
-        log('Connected to authority at: %s', addrStr);
+        log('Connected to owner at: %s', addrStr);
         return;
       } catch (error) {
         lastError = error instanceof Error ? error : new Error(String(error));
@@ -1141,7 +1141,7 @@ export class SeedBootstrapService {
       }
     }
 
-    throw lastError ?? new Error('No authority addresses available');
+    throw lastError ?? new Error('No owner addresses available');
   }
 }
 

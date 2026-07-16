@@ -5,14 +5,14 @@
  * connected (and thus replicating), without devolving into an N² mesh.
  *
  * FRET only needs a *connected* graph with the block clusters reachable, not a
- * full mesh. Storage/authority nodes are the stable, publicly-dialable backbone
+ * full mesh. Storage/owner nodes are the stable, publicly-dialable backbone
  * that hold the control blocks, so the policy is **backbone-preferential with a
  * bounded out-degree**:
  *
- * - **Always dial every backbone (authority) member** — the authority set is
+ * - **Always dial every backbone (owner) member** — the owner set is
  *   small by design, and routing cohort formation through publicly-dialable
- *   authority nodes keeps the cohort ≥2 where authority-signed writes originate.
- * - **Fill the remainder** up to `targetDegree` with non-authority members,
+ *   owner nodes keeps the cohort ≥2 where owner-signed writes originate.
+ * - **Fill the remainder** up to `targetDegree` with non-owner members,
  *   ordered deterministically (peerId sort) so every node makes the same stable
  *   choice across passes and load spreads predictably.
  *
@@ -32,8 +32,8 @@ import type { CohortPeerRow } from './strand-cohort.js';
 export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 15_000;
 
 /**
- * Default cap on the number of **non-authority** members a single reconcile pass
- * proactively dials. Backbone (authority) members are always dialed and do NOT
+ * Default cap on the number of **non-owner** members a single reconcile pass
+ * proactively dials. Backbone (owner) members are always dialed and do NOT
  * count against this cap.
  */
 export const DEFAULT_CONTROL_COHORT_TARGET_DEGREE = 6;
@@ -41,14 +41,14 @@ export const DEFAULT_CONTROL_COHORT_TARGET_DEGREE = 6;
 /** Outcome of {@link selectControlCohortDials}: who to dial + what the cap dropped. */
 export interface ControlCohortSelection {
   /**
-   * Siblings to dial this pass, backbone first then the bounded non-authority
+   * Siblings to dial this pass, backbone first then the bounded non-owner
    * fill. Already self-excluded (the caller must pass self-excluded `siblings`).
    * Still includes peers that may turn out to be already-connected — the caller
    * diffs against live connections separately.
    */
   dials: CohortPeerRow[];
-  /** Non-authority members dropped by the `targetDegree` cap (0 when none). */
-  cappedNonAuthority: number;
+  /** Non-owner members dropped by the `targetDegree` cap (0 when none). */
+  cappedNonOwner: number;
 }
 
 /** Stable peerId ordering so the bounded fill is identical across passes/nodes. */
@@ -63,19 +63,19 @@ function byPeerId(a: CohortPeerRow, b: CohortPeerRow): number {
  * to dial.
  *
  * A member is **backbone** iff the ed25519 key derived from its peerId
- * (see {@link ed25519PublicKeyB64FromPeerId}) is in `authorityKeys`. All backbone
- * members are selected; non-authority members fill up to `targetDegree` in
+ * (see {@link ed25519PublicKeyB64FromPeerId}) is in `ownerKeys`. All backbone
+ * members are selected; non-owner members fill up to `targetDegree` in
  * deterministic peerId order.
  *
  * @param siblings - cadre members EXCLUDING self (the caller filters self out).
- * @param authorityKeys - the converged `AuthorityKey` set; may be empty/partial
- *   before authority convergence, in which case no member classifies as backbone
+ * @param ownerKeys - the converged `OwnerKey` set; may be empty/partial
+ *   before owner convergence, in which case no member classifies as backbone
  *   yet and the bounded fill still makes progress (preference sharpens later).
- * @param targetDegree - cap on non-authority dials (negative is treated as 0).
+ * @param targetDegree - cap on non-owner dials (negative is treated as 0).
  */
 export function selectControlCohortDials(
   siblings: CohortPeerRow[],
-  authorityKeys: ReadonlySet<string>,
+  ownerKeys: ReadonlySet<string>,
   targetDegree: number,
 ): ControlCohortSelection {
   const backbone: CohortPeerRow[] = [];
@@ -83,7 +83,7 @@ export function selectControlCohortDials(
 
   for (const peer of siblings) {
     const pubKey = ed25519PublicKeyB64FromPeerId(peer.peerId);
-    if (pubKey !== null && authorityKeys.has(pubKey)) {
+    if (pubKey !== null && ownerKeys.has(pubKey)) {
       backbone.push(peer);
     } else {
       rest.push(peer);
@@ -98,6 +98,6 @@ export function selectControlCohortDials(
 
   return {
     dials: [...backbone, ...fill],
-    cappedNonAuthority: rest.length - fill.length,
+    cappedNonOwner: rest.length - fill.length,
   };
 }

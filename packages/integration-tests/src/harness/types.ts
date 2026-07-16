@@ -8,7 +8,7 @@ import type { ControlDatabase } from '@serfab/cadre-core';
 
 /**
  * Represents a party (person/organization) in the Sereus network.
- * A party has an authority (signing keys) and a cadre of nodes.
+ * A party has an owner (signing keys) and a cadre of nodes.
  */
 export interface TestParty {
   /** Unique identifier for this party */
@@ -17,14 +17,14 @@ export interface TestParty {
   /** Human-readable name for test output */
   name: string;
 
-  /** Ed25519 private key for signing authority operations */
-  authorityPrivateKey: Uint8Array;
+  /** Ed25519 private key for signing owner operations */
+  ownerPrivateKey: Uint8Array;
 
   /** Ed25519 public key (base64 encoded) for verification */
-  authorityPublicKey: string;
+  ownerPublicKey: string;
 
-  /** The authority node ("phone") - has the signing keys */
-  authorityNode: TestCadreNode;
+  /** The owner node ("phone") - has the signing keys */
+  ownerNode: TestCadreNode;
 
   /** Additional drone nodes (provider-hosted) */
   droneNodes: TestCadreNode[];
@@ -118,7 +118,7 @@ export interface CreateStrandOptions {
   /** The sApp schema SQL */
   schema: string;
   
-  /** sApp ID (defaults to party's authority key) */
+  /** sApp ID (defaults to party's owner key) */
   sAppId?: string;
   
   /** Strand type (default: 'o' for open) */

@@ -1,10 +1,10 @@
 /**
- * HostProcessOrchestrator authority-node lifecycle tests.
+ * HostProcessOrchestrator owner-node lifecycle tests.
  *
  * Uses the `spawn.entrypoint` hook with a fake CLI that writes its startup
  * token and binds a minimal `/admin/identity` endpoint on the admin port —
  * enough to validate spawn, idempotency, admin-port allocation/persistence,
- * the end-to-end AuthorityNodeClient round-trip, and init() re-attach.
+ * the end-to-end OwnerNodeClient round-trip, and init() re-attach.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -12,13 +12,13 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { HostProcessOrchestrator, AUTHORITY_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
+import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
 import { decodeDockerId } from '../orchestrator/types.js';
-import { AuthorityNodeClient } from '../authority/authority-node-client.js';
+import { OwnerNodeClient } from '../owner/owner-node-client.js';
 
-const FAKE_AUTHORITY_CLI = `
+const FAKE_OWNER_CLI = `
 import fs from 'node:fs';
 import http from 'node:http';
 
@@ -55,7 +55,7 @@ if (adminPort && token) {
 }
 
 process.on('SIGTERM', () => process.exit(0));
-console.log('fake authority up');
+console.log('fake owner up');
 setInterval(() => {}, 1 << 30);
 `;
 
@@ -65,13 +65,13 @@ const orchestrators: HostProcessOrchestrator[] = [];
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-auth-'));
-  scriptPath = join(tmpRoot, 'fake-authority.mjs');
-  writeFileSync(scriptPath, FAKE_AUTHORITY_CLI, 'utf8');
+  scriptPath = join(tmpRoot, 'fake-owner.mjs');
+  writeFileSync(scriptPath, FAKE_OWNER_CLI, 'utf8');
 });
 
 afterEach(async () => {
   for (const orch of orchestrators) {
-    try { await orch.stopAuthorityNode(); } catch { /* ignore */ }
+    try { await orch.stopOwnerNode(); } catch { /* ignore */ }
     for (const dockerId of listDockerIds(orch)) {
       try { await orch.removeContainer(dockerId); } catch { /* ignore */ }
     }
@@ -113,66 +113,66 @@ function sleep(ms: number): Promise<void> {
 
 const CFG = { identityPath: 'C:/fake/identity.key', partyId: 'install-id-123', libp2pPort: 4555 };
 
-describe('HostProcessOrchestrator.ensureAuthorityNode', () => {
-  it('spawns the authority node, allocates+persists an admin port', async () => {
+describe('HostProcessOrchestrator.ensureOwnerNode', () => {
+  it('spawns the owner node, allocates+persists an admin port', async () => {
     const orch = makeOrchestrator(join(tmpRoot, 'a'));
     await orch.init();
-    const node = await orch.ensureAuthorityNode(CFG);
+    const node = await orch.ensureOwnerNode(CFG);
 
-    expect(node.id).toBe(AUTHORITY_CONTAINER_ID);
-    expect(node.authority).toBe(true);
+    expect(node.id).toBe(OWNER_CONTAINER_ID);
+    expect(node.owner).toBe(true);
     expect(node.ports.admin).toBeGreaterThanOrEqual(18500);
     expect(node.ports.p2p).toBe(4555);
 
-    const endpoint = orch.getAuthorityAdminEndpoint();
+    const endpoint = orch.getOwnerAdminEndpoint();
     expect(endpoint).toBeDefined();
     expect(endpoint!.baseUrl).toBe(`http://127.0.0.1:${node.ports.admin}`);
 
-    // Persisted with admin port + authority flag + authorityConfig.
+    // Persisted with admin port + owner flag + ownerConfig.
     const persisted = new StateStore(join(tmpRoot, 'a')).load();
-    expect(persisted.authorityConfig).toMatchObject({ partyId: 'install-id-123', libp2pPort: 4555 });
-    const ph = persisted.handles.find((h) => h.containerId === AUTHORITY_CONTAINER_ID);
-    expect(ph?.authority).toBe(true);
+    expect(persisted.ownerConfig).toMatchObject({ partyId: 'install-id-123', libp2pPort: 4555 });
+    const ph = persisted.handles.find((h) => h.containerId === OWNER_CONTAINER_ID);
+    expect(ph?.owner).toBe(true);
     expect(typeof ph?.ports.admin).toBe('number');
   });
 
   it('is idempotent — a second call does not spawn a second child', async () => {
     const orch = makeOrchestrator(join(tmpRoot, 'b'));
     await orch.init();
-    const first = await orch.ensureAuthorityNode(CFG);
+    const first = await orch.ensureOwnerNode(CFG);
     await waitFor(() => orch.isRunning(first.dockerId));
 
-    const second = await orch.ensureAuthorityNode(CFG);
+    const second = await orch.ensureOwnerNode(CFG);
     expect(second.dockerId).toBe(first.dockerId);
     expect(orch.listNodes()).toHaveLength(1);
   });
 
-  it('the AuthorityNodeClient reaches the spawned admin channel', async () => {
+  it('the OwnerNodeClient reaches the spawned admin channel', async () => {
     const orch = makeOrchestrator(join(tmpRoot, 'c'));
     await orch.init();
-    const node = await orch.ensureAuthorityNode(CFG);
+    const node = await orch.ensureOwnerNode(CFG);
     await waitFor(() => orch.isRunning(node.dockerId));
 
-    const client = new AuthorityNodeClient(() => orch.getAuthorityAdminEndpoint());
+    const client = new OwnerNodeClient(() => orch.getOwnerAdminEndpoint());
     await waitFor(async () => {
       try { return (await client.getPeerId()) === 'FAKEPEER'; } catch { return false; }
     });
     expect(await client.getPeerId()).toBe('FAKEPEER');
   });
 
-  it('getAuthorityAdminEndpoint() survives an init() re-attach', async () => {
+  it('getOwnerAdminEndpoint() survives an init() re-attach', async () => {
     const rootDir = join(tmpRoot, 'd');
     const a = makeOrchestrator(rootDir);
     await a.init();
-    const node = await a.ensureAuthorityNode(CFG);
+    const node = await a.ensureOwnerNode(CFG);
     await waitFor(() => a.isRunning(node.dockerId));
-    const before = a.getAuthorityAdminEndpoint();
+    const before = a.getOwnerAdminEndpoint();
 
     const b = makeOrchestrator(rootDir);
     await b.init();
-    expect(b.isAuthorityNode(AUTHORITY_CONTAINER_ID)).toBe(true);
-    expect(b.hasAuthorityConfig()).toBe(true);
-    const after = b.getAuthorityAdminEndpoint();
+    expect(b.isOwnerNode(OWNER_CONTAINER_ID)).toBe(true);
+    expect(b.hasOwnerConfig()).toBe(true);
+    const after = b.getOwnerAdminEndpoint();
     expect(after).toEqual(before);
     expect(await b.isRunning(node.dockerId)).toBe(true);
 
@@ -180,14 +180,14 @@ describe('HostProcessOrchestrator.ensureAuthorityNode', () => {
     expect(isPidAlive(pid)).toBe(true);
   });
 
-  it('restartAuthorityNode preserves the workdir and re-spawns', async () => {
+  it('restartOwnerNode preserves the workdir and re-spawns', async () => {
     const orch = makeOrchestrator(join(tmpRoot, 'e'));
     await orch.init();
-    const first = await orch.ensureAuthorityNode(CFG);
+    const first = await orch.ensureOwnerNode(CFG);
     await waitFor(() => orch.isRunning(first.dockerId));
     const { pid: firstPid } = decodeDockerId(first.dockerId);
 
-    const restarted = await orch.restartAuthorityNode();
+    const restarted = await orch.restartOwnerNode();
     await waitFor(() => orch.isRunning(restarted.dockerId));
 
     // New child (different pid/token), still exactly one node, workdir reused.

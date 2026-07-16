@@ -3,7 +3,7 @@ import { Command } from 'commander';
 import debug from 'debug';
 import {
   CadreNode,
-  authorityKeyFromLibp2p,
+  ed25519KeyPairFromLibp2p,
   pinnedKeyTrustPolicy,
   type CadreNodeConfig,
   type ControlNetworkSeed,
@@ -54,14 +54,14 @@ function decodeSeed(encoded: string): ControlNetworkSeed {
   return JSON.parse(json) as ControlNetworkSeed;
 }
 
-/** Commander collector for the repeatable `--pin-authority-key` option. */
+/** Commander collector for the repeatable `--pin-owner-key` option. */
 function collectPinKey(value: string, previous: string[]): string[] {
   return [...previous, value];
 }
 
 /**
- * Union the operator's pinned authority keys from the repeatable
- * `--pin-authority-key` flag and the comma-separated `CADRE_AUTHORITY_KEYS`
+ * Union the operator's pinned owner keys from the repeatable
+ * `--pin-owner-key` flag and the comma-separated `CADRE_OWNER_KEYS`
  * env var. Trims each entry, drops empties, and dedupes — so the same key via
  * both sources appears once and a whitespace-only env (`",, "`) yields `[]`.
  *
@@ -69,7 +69,7 @@ function collectPinKey(value: string, previous: string[]): string[] {
  * simply never matches a real `signerKey`, so the seed is rejected by the trust
  * policy with its reason rather than silently accepted.
  */
-export function collectPinnedAuthorityKeys(
+export function collectPinnedOwnerKeys(
   flagKeys: string[] | undefined,
   env: string | undefined,
 ): string[] {
@@ -89,9 +89,9 @@ export const startCommand = new Command('start')
   .option('--ws-port <port>', 'WebSocket listen port (convenience: appends /ip4/0.0.0.0/tcp/<port>/ws to listen addresses)')
   .option('--startup-token-file <path>', 'After successful node.start(), write $CADRE_STARTUP_TOKEN to this file. Used by external orchestrators to verify the spawned child is the one they expected (vs a recycled PID).')
   .option('--identity-protobuf <path>', 'Load the node identity from a libp2p protobuf private key file (e.g. cadre-host\'s identity.key). Takes precedence over config identity.')
-  .option('--authority', 'Run as the authority node: initialize seed-bootstrap from the node identity and perform the idempotent genesis AuthorityKey insert on a fresh party.')
+  .option('--owner', 'Run as the owner node: initialize seed-bootstrap from the node identity and perform the idempotent genesis OwnerKey insert on a fresh party.')
   .option('--admin-port <port>', 'Bind the loopback admin channel (127.0.0.1) on this port. Requires CADRE_STARTUP_TOKEN in env.')
-  .option('--pin-authority-key <b64url>', 'Pin a base64url authority key as a cold-start seed-trust anchor (repeatable; unions with CADRE_AUTHORITY_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
+  .option('--pin-owner-key <b64url>', 'Pin a base64url owner key as a cold-start seed-trust anchor (repeatable; unions with CADRE_OWNER_KEYS). Required for a cold node to accept --seed / POST /seed.', collectPinKey, [])
   .action(async (options) => {
     if (options.debug) {
       debug.enable('cadre:*,sereus:*');
@@ -125,15 +125,15 @@ export const startCommand = new Command('start')
         }
       }
 
-      // Operator-pinned authority keys anchor cold-start seed trust. Build the
+      // Operator-pinned owner keys anchor cold-start seed trust. Build the
       // policy BEFORE constructing CadreNode so every later service-construction
       // site (seed listener, temp-service for applySeed / POST /seed) captures
       // it as the node-wide default — it is read at construction time.
-      const pinnedKeys = collectPinnedAuthorityKeys(options.pinAuthorityKey, process.env.CADRE_AUTHORITY_KEYS);
+      const pinnedKeys = collectPinnedOwnerKeys(options.pinOwnerKey, process.env.CADRE_OWNER_KEYS);
       const seedTrustPolicy: SeedTrustPolicy | undefined =
         pinnedKeys.length > 0 ? pinnedKeyTrustPolicy(pinnedKeys) : undefined;
       if (pinnedKeys.length > 0) {
-        console.log(`✓ Pinned ${pinnedKeys.length} authority key(s) for cold-start seed trust`);
+        console.log(`✓ Pinned ${pinnedKeys.length} owner key(s) for cold-start seed trust`);
       }
 
       const nodeConfig: CadreNodeConfig = {
@@ -220,7 +220,7 @@ export const startCommand = new Command('start')
         }
       }
 
-      // The admin channel is created after authority init below; declared here
+      // The admin channel is created after owner init below; declared here
       // so graceful shutdown can close it.
       let adminServer: AdminServer | null = null;
 
@@ -255,38 +255,38 @@ export const startCommand = new Command('start')
         }
       }
 
-      // Authority init: bridge the libp2p identity into a base64url authority
+      // Owner init: bridge the libp2p identity into a base64url owner
       // keypair, run the idempotent genesis insert on a fresh party, then bring
       // up seed-bootstrap so this node can mint invites and authorize peers.
-      if (options.authority) {
+      if (options.owner) {
         if (!config.privateKey) {
-          throw new Error('--authority requires a node identity (set identity.protobufKeyFile, --identity-protobuf, or identity.keyFile)');
+          throw new Error('--owner requires a node identity (set identity.protobufKeyFile, --identity-protobuf, or identity.keyFile)');
         }
-        const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(config.privateKey);
+        const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(config.privateKey);
 
         const controlDb = node.getControlDatabase();
         if (!controlDb) {
-          throw new Error('Control database unavailable after start; cannot run authority genesis');
+          throw new Error('Control database unavailable after start; cannot run owner genesis');
         }
-        const inserted = await controlDb.ensureAuthorityKey(publicKeyB64);
+        const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
         console.log(inserted
-          ? '✓ Genesis: inserted founding authority key'
-          : '• Authority key already present; skipping genesis');
+          ? '✓ Genesis: inserted founding owner key'
+          : '• Owner key already present; skipping genesis');
 
         node.initializeSeedBootstrap(privateKeyB64);
-        console.log('✓ Authority seed-bootstrap initialized');
+        console.log('✓ Owner seed-bootstrap initialized');
 
-        // Write the authority's own signed CadrePeer row up-front, before any
+        // Write the owner's own signed CadrePeer row up-front, before any
         // seed can be minted. The background heartbeat keeps it fresh, but it
         // fires too late for the first invite/seed — without this, createSeed()
-        // would omit the authority peer, so a freshly-seeded node would have no
-        // authority multiaddr to dial (applySeed dials the seed's isAuthority
+        // would omit the owner peer, so a freshly-seeded node would have no
+        // owner multiaddr to dial (applySeed dials the seed's isOwner
         // peers) until the ~7.5 min heartbeat first published the row.
         const selfReg = await node.registerSelf();
         const selfRegMessage: Record<typeof selfReg, string> = {
-          inserted: '✓ Authority self-registered into CadrePeer (row inserted)',
-          refreshed: '✓ Authority CadrePeer record refreshed',
-          skipped: '• Authority self-registration skipped (no self-signing key available)',
+          inserted: '✓ Owner self-registered into CadrePeer (row inserted)',
+          refreshed: '✓ Owner CadrePeer record refreshed',
+          skipped: '• Owner self-registration skipped (no self-signing key available)',
         };
         console.log(selfRegMessage[selfReg]);
       }
@@ -321,7 +321,7 @@ export const startCommand = new Command('start')
           const seed = decodeSeed(options.seed);
           log('Applying seed for party: %s', seed.partyId);
           // Pass the pinned policy as the per-call override too: self-documenting,
-          // and covers the cold path where neither --authority nor
+          // and covers the cold path where neither --owner nor
           // --listen-for-seeds initialized a service (temp-service reads the
           // configured default, but the explicit override is unambiguous).
           const result = await node.applySeed(seed, seedTrustPolicy ? { trustPolicy: seedTrustPolicy } : undefined);

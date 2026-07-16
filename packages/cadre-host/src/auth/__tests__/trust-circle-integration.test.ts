@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 
 import { TrustCircleService } from '../trust-circle.js';
 import { TrustCircleStore } from '../trust-circle-store.js';
@@ -29,19 +29,19 @@ describe('TrustCircleService — real CadreNode integration', () => {
   let host: CadreNode;
   let store: TrustCircleStore;
   let service: TrustCircleService;
-  let hostAuthorityPrivateKey: string;
-  let hostAuthorityPublicKey: string;
+  let hostOwnerPrivateKey: string;
+  let hostOwnerPublicKey: string;
 
   beforeEach(async () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-tc-int-'));
 
-    // Own-authority host: the node's libp2p identity key IS its authority key
-    // (the cadre-cli `--authority` shape), so registerSelf can authority-sign the
+    // Own-owner host: the node's libp2p identity key IS its owner key
+    // (the cadre-cli `--owner` shape), so registerSelf can owner-sign the
     // INSERT of its own CadrePeer row.
     const hostKey = await generateKeyPair('Ed25519');
-    const authority = authorityKeyFromLibp2p(hostKey);
-    hostAuthorityPrivateKey = authority.privateKeyB64;
-    hostAuthorityPublicKey = authority.publicKeyB64;
+    const owner = ed25519KeyPairFromLibp2p(hostKey);
+    hostOwnerPrivateKey = owner.privateKeyB64;
+    hostOwnerPublicKey = owner.publicKeyB64;
 
     const baseId = Math.random().toString(36).slice(2);
 
@@ -55,11 +55,11 @@ describe('TrustCircleService — real CadreNode integration', () => {
 
     const db = host.getControlDatabase();
     expect(db).not.toBeNull();
-    await db!.insertAuthorityKey(hostAuthorityPublicKey);
+    await db!.insertOwnerKey(hostOwnerPublicKey);
 
-    host.initializeSeedBootstrap(hostAuthorityPrivateKey);
+    host.initializeSeedBootstrap(hostOwnerPrivateKey);
 
-    // The authority writes its own CadrePeer row up-front (the implement ticket's
+    // The owner writes its own CadrePeer row up-front (the implement ticket's
     // CLI change). After this the host's own peerId is a member, so it shows up
     // alongside any redeemed peers in the trust-circle listing.
     await host.registerSelf();

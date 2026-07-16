@@ -9,7 +9,7 @@ import type { PortMapper, PortMappingResult } from '../port-mapper.js';
 import type { SecretsStore } from '../secrets/index.js';
 import { ddnsAccount } from '../secrets/index.js';
 import type { CadreNodeLike } from '../nat-service.js';
-import { AuthorityNodeUnavailableError } from '../../authority/authority-node-client.js';
+import { OwnerNodeUnavailableError } from '../../owner/owner-node-client.js';
 
 class StubMapper implements PortMapper {
   mapCalls = 0;
@@ -53,8 +53,8 @@ function makeNode(peerId = '12D3KooWHost', addrs: string[] = ['/ip4/192.168.1.10
 }
 
 /**
- * A node that mimics a freshly spawned authority child: `getPeerId` throws
- * `AuthorityNodeUnavailableError` for the first `failTimes` calls (admin channel
+ * A node that mimics a freshly spawned owner child: `getPeerId` throws
+ * `OwnerNodeUnavailableError` for the first `failTimes` calls (admin channel
  * not bound yet), then returns a real peer ID. Exposes the call count so tests
  * can assert how many attempts the retry loop made.
  */
@@ -67,7 +67,7 @@ function makeFlakyNode(
   const node: CadreNodeLike = {
     getPeerId: async () => {
       calls += 1;
-      if (calls <= failTimes) throw new AuthorityNodeUnavailableError('admin channel not bound yet');
+      if (calls <= failTimes) throw new OwnerNodeUnavailableError('admin channel not bound yet');
       return peerId;
     },
     getMultiaddrs: async () => addrs,
@@ -421,7 +421,7 @@ describe('NatService — initial invite-address push retry', () => {
   it('gives up after the bounded timeout but still resolves start() (best-effort)', async () => {
     // Always unavailable — the retry budget elapses without a successful push.
     const node: CadreNodeLike = {
-      getPeerId: async () => { throw new AuthorityNodeUnavailableError('never ready'); },
+      getPeerId: async () => { throw new OwnerNodeUnavailableError('never ready'); },
       getMultiaddrs: async () => [],
     };
     const svc = new NatService({

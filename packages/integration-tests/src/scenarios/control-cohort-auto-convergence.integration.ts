@@ -6,14 +6,14 @@
  * store replicates once the cohort is connected, but it forms that cohort with a
  * test-only manual `dial()` over `getControlNode()` (its `connectControlNodes`
  * stand-in). This scenario removes that scaffolding: a reader node B is given a
- * way to reach authority A only through the PRODUCTION cold-start path
- * (`applySeed`, which populates B's peerStore and dials the authority), and the
+ * way to reach owner A only through the PRODUCTION cold-start path
+ * (`applySeed`, which populates B's peerStore and dials the owner), and the
  * in-node `reconcileControlCohort` routine (eager pass + a short recurring
  * cadence configured below) keeps the control cohort connected. B then observes
- * an authority-written `CadrePeer` row with ZERO manual control dials.
+ * an owner-written `CadrePeer` row with ZERO manual control dials.
  *
  * Honesty note (for reviewers): in a 2-node party the FIRST connection is
- * necessarily established by the cold-start path (`applySeed`'s authority dial) —
+ * necessarily established by the cold-start path (`applySeed`'s owner dial) —
  * `reconcileControlCohort` cannot bootstrap from nothing, because it dials only
  * siblings already in the converged `CadrePeer` table (see the ticket's "address
  * source priority"). What this test proves is that the node's OWN wiring carries
@@ -31,7 +31,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, authorityKeyFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { waitUntil, waitForCadrePeerConverged } from '../harness/index.js';
 
@@ -71,15 +71,15 @@ function nodeConfig(opts: NodeOpts): CadreNodeConfig {
 }
 
 /**
- * Make a freshly-started node its own control authority (genesis): enroll its
- * derived public key in `AuthorityKey` and wire seed-bootstrap with the matching
- * private key, so it can authority-sign `CadrePeer` inserts and mint seeds.
+ * Make a freshly-started node its own control owner (genesis): enroll its
+ * derived public key in `OwnerKey` and wire seed-bootstrap with the matching
+ * private key, so it can owner-sign `CadrePeer` inserts and mint seeds.
  */
-async function makeOwnAuthority(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(key);
+async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const db = node.getControlDatabase();
 	if (!db) throw new Error('control database missing after start');
-	await db.insertAuthorityKey(publicKeyB64);
+	await db.insertOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
 }
 
@@ -91,27 +91,27 @@ async function randomPeerId(): Promise<string> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Control-cohort auto-convergence (no manual dial)', () => {
-	it('B converges on an authority-written CadrePeer row via in-node reconcile (production cold-start only)', async () => {
+	it('B converges on an owner-written CadrePeer row via in-node reconcile (production cold-start only)', async () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {
 			const partyId = `cohort-auto-${Date.now()}`;
 
-			// A: authority + storage (holds the CadrePeer blocks) + relay.
+			// A: owner + storage (holds the CadrePeer blocks) + relay.
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 			await A.start();
-			await makeOwnAuthority(A, aKey);
+			await makeOwnOwner(A, aKey);
 			const aPeerId = A.peerId!.toString();
 
-			// B: a plain reader (NOT its own authority) with a short reconcile cadence
+			// B: a plain reader (NOT its own owner) with a short reconcile cadence
 			// so the proactive routine fires several times within the convergence window.
 			const bKey = await generateKeyPair('Ed25519');
 			B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction', reconcileMs: 2_000 }));
 			await B.start();
 
 			// Wait for A to self-register its own CadrePeer row WITH a dialable address,
-			// so the seed it mints carries A's authority address for B to dial.
+			// so the seed it mints carries A's owner address for B to dial.
 			await waitUntil(
 				async () => {
 					const rec = await A!.getControlDatabase()!.queryPeerRecord(aPeerId);
@@ -121,11 +121,11 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			);
 
 			// Production cold-start: B applies A's seed (pinned-key trust, the
-			// CadreInvite.authorityKeys cold-start path). This populates B's peerStore
+			// CadreInvite.ownerKeys cold-start path). This populates B's peerStore
 			// and best-effort dials A — NOT a raw test-side getControlNode().dial().
-			const { publicKeyB64: aAuthorityKey } = authorityKeyFromLibp2p(aKey);
+			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
-			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aAuthorityKey]) });
+			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
 
 			// A third peer X that exists ONLY as a row A writes — never started, never

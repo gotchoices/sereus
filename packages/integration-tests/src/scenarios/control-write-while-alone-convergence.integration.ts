@@ -25,7 +25,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, authorityKeyFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { waitUntil, waitForCadrePeerConverged } from '../harness/index.js';
 
@@ -61,12 +61,12 @@ function nodeConfig(opts: NodeOpts): CadreNodeConfig {
 	};
 }
 
-/** Make a freshly-started node its own control authority (genesis). */
-async function makeOwnAuthority(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(key);
+/** Make a freshly-started node its own control owner (genesis). */
+async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const db = node.getControlDatabase();
 	if (!db) throw new Error('control database missing after start');
-	await db.insertAuthorityKey(publicKeyB64);
+	await db.insertOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
 }
 
@@ -101,8 +101,8 @@ async function randomPeerId(): Promise<string> {
 }
 
 /**
- * Boot node A (authority + writer, storage profile so it holds the CadrePeer
- * blocks) and node B (a plain READER — never its own authority), on a fresh party,
+ * Boot node A (owner + writer, storage profile so it holds the CadrePeer
+ * blocks) and node B (a plain READER — never its own owner), on a fresh party,
  * DISCONNECTED. Caller owns shutdown.
  */
 async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
@@ -111,7 +111,7 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 	const aKey = await generateKeyPair('Ed25519');
 	const A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 	await A.start();
-	await makeOwnAuthority(A, aKey);
+	await makeOwnOwner(A, aKey);
 
 	const bKey = await generateKeyPair('Ed25519');
 	const B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
@@ -123,7 +123,7 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Control-DB write-while-alone re-replication', () => {
-	it('re-replicates an authority CadrePeer row written while alone, once the cohort forms', async () => {
+	it('re-replicates an owner CadrePeer row written while alone, once the cohort forms', async () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {

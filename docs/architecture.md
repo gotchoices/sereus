@@ -9,7 +9,7 @@ A **cadre** is a party's personal cluster of nodes that collectively represent t
 - **Unified control**: A single control network through which a party manages all their nodes
 - **Strand participation**: Automatic lifecycle management for joining, syncing, and leaving strand networks
 - **Flexible deployment**: Support for self-hosted nodes (see [@serfab/cadre-host](cadre-host.md) for basement-PC deployments), provider-hosted containers, and mobile devices
-- **Key-based authorization**: Cryptographic authority delegation without central servers
+- **Key-based authorization**: Cryptographic owner delegation without central servers
 
 ```mermaid
 graph TD
@@ -31,7 +31,7 @@ The control network is a private Optimystic network involving only the party's o
 
 | Table | Purpose |
 |-------|---------|
-| `AuthorityKey` | Keys authorized to make control changes |
+| `OwnerKey` | Keys authorized to make control changes |
 | `ValidationKey` | Keys that can validate strand formation disclosures |
 | `Strand` | List of strands the party participates in |
 | `CadrePeer` | Registry of nodes in the cadre |
@@ -66,7 +66,7 @@ A cadre node is a running instance of the `@serfab/cadre-core` library. Each nod
 2. **Watches the `Strand` table** for changes (reactive pattern - which is a TODO for Optimystic so we'll have to poll for now)
 3. **Starts/stops strand instances** as rows are added/removed
 4. **Publishes a signed peer-address record** to its own `CadrePeer` row (`CadreNode.registerSelf`): its current dialable/relay multiaddrs (signaling `/p2p-circuit` first), an ed25519 `PublicKey` whose libp2p identity *is* its PeerId, a monotonic `UpdatedAt` freshness stamp, and a self-`Sig` over those fields. It re-publishes on relay-reservation/address change and on a TTL heartbeat. Any member can then **resolve** another member's current signaling address from its PeerId alone via `CadreNode.resolvePeerAddrs(peerId)` — which re-verifies the signature, checks the `PublicKey↔PeerId` binding and freshness, and applies a pluggable trust gate — so a NAT-to-NAT WebRTC dial can be negotiated without copy/paste.
-5. **Publishes a signed device push token** to its own `DeviceToken` row (`CadreNode.registerDeviceToken(platform, token)`), modeled on the `CadrePeer` record: an FCM/APNs `Token`, a monotonic `UpdatedAt`, and a self-`Sig` verified at resolve time against the `CadrePeer.PublicKey` bound to the same PeerId. Because a control-network libp2p dial cannot reach an OS-suspended phone, a server peer instead **resolves** the phone's token via `CadreNode.resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, returning `null` on any failure) and delivers a push-wake over the platform push channel. `clearDeviceToken()` removes the row on logout/invalidation. The first `DeviceToken` row, like `CadrePeer`, is authority-signed (insert/delete are authority-gated); a member self-updates its own token thereafter. The push *sender* (server fan-out) and the RN registration call are downstream of this registry.
+5. **Publishes a signed device push token** to its own `DeviceToken` row (`CadreNode.registerDeviceToken(platform, token)`), modeled on the `CadrePeer` record: an FCM/APNs `Token`, a monotonic `UpdatedAt`, and a self-`Sig` verified at resolve time against the `CadrePeer.PublicKey` bound to the same PeerId. Because a control-network libp2p dial cannot reach an OS-suspended phone, a server peer instead **resolves** the phone's token via `CadreNode.resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, returning `null` on any failure) and delivers a push-wake over the platform push channel. `clearDeviceToken()` removes the row on logout/invalidation. The first `DeviceToken` row, like `CadrePeer`, is owner-signed (insert/delete are owner-gated); a member self-updates its own token thereafter. The push *sender* (server fan-out) and the RN registration call are downstream of this registry.
 
 ```mermaid
 graph TD
@@ -147,8 +147,8 @@ interface ControlNetworkSeed {
 interface SeedPeer {
   peerId: string;           // libp2p peer ID
   multiaddrs: string[];     // Dial hints (may be empty if NAT'd)
-  isAuthority: boolean;     // Hint: an authority-hosting peer to prefer dialing
-  publicKey?: string;       // ed25519 public key (base64url) — set on authority peers (derived from the AuthorityKey table, not used to gate the seed's own signerKey)
+  isOwner: boolean;     // Hint: an owner-hosting peer to prefer dialing
+  publicKey?: string;       // ed25519 public key (base64url) — set on owner peers (derived from the OwnerKey table, not used to gate the seed's own signerKey)
 }
 ```
 
@@ -164,13 +164,13 @@ interface PeerAddressRecord {
 }
 ```
 
-The peer self-publishes and self-signs this record (the `CadreControl.CadrePeer` schema enforces the self-signature, monotonic `UpdatedAt`, and immutable `PeerId`/`PublicKey` on update); a resolver re-verifies it. Unlike a `SeedPeer` dial hint, a `PeerAddressRecord` is freshness-stamped and individually trust-checkable, so `resolvePeerAddrs` never hands back a stale relay reservation. The **authority node self-registers its own `CadrePeer` row at startup** (`registerSelf`, wired into `cadre start --authority` right after seed-bootstrap init), so every seed it mints already carries the authority's own dialable address as an authority peer — otherwise the seed would omit the authority (and thus any address for a receiver to dial it) until the TTL heartbeat first published the row. Trust in a seed rests on its `signerKey` being a known/pinned authority, not on the authority peer being present (see `SeedTrustPolicy`); self-registration furnishes the dial target, it does not pass a gate. The background heartbeat keeps the row fresh thereafter. A FRET-backed, coordinate-keyed liveness store remains future work (`tickets/backlog/fret-backed-peer-record-liveness.md`).
+The peer self-publishes and self-signs this record (the `CadreControl.CadrePeer` schema enforces the self-signature, monotonic `UpdatedAt`, and immutable `PeerId`/`PublicKey` on update); a resolver re-verifies it. Unlike a `SeedPeer` dial hint, a `PeerAddressRecord` is freshness-stamped and individually trust-checkable, so `resolvePeerAddrs` never hands back a stale relay reservation. The **owner node self-registers its own `CadrePeer` row at startup** (`registerSelf`, wired into `cadre start --owner` right after seed-bootstrap init), so every seed it mints already carries the owner's own dialable address as an owner peer — otherwise the seed would omit the owner (and thus any address for a receiver to dial it) until the TTL heartbeat first published the row. Trust in a seed rests on its `signerKey` being a known/pinned owner, not on the owner peer being present (see `SeedTrustPolicy`); self-registration furnishes the dial target, it does not pass a gate. The background heartbeat keeps the row fresh thereafter. A FRET-backed, coordinate-keyed liveness store remains future work (`tickets/backlog/fret-backed-peer-record-liveness.md`).
 
 > **Convergence prerequisites and current status.** The replicated `CadrePeer` form described above replicates in the wiring, a party's control nodes now auto-connect, and a write made while alone now re-replicates on cohort growth — only the **delete-while-alone** path remains an open durability gap:
 >
 > - **The control tables are network-backed.** ✅ `ControlDatabase.initialize()` now makes `optimystic` the default vtab (`setDefaultVtabName('optimystic')` + `setDefaultVtabArgs({ transactor: 'network', … })`) and hydrates the catalog before applying `CONTROL_SCHEMA` — exactly as `connectToStrand` does for strand tables. The `declare schema CadreControl` tables (no per-table `using optimystic(...)`) therefore route to the Optimystic **network transactor**, so a control write replicates peer-to-peer (verified by `control-db-two-node-convergence.integration.ts`: a `CadrePeer` row written on A is observed on a connected B in ~1s). This required closing a transaction-semantics gap in the Optimystic vtab: a deferred `CHECK` referencing `committed.<Table>` (the `FormationUsage.Monotonic` anti-replay) now reads the pre-transaction snapshot via Quereus's `_readCommitted` flag, and the vtab now enforces secondary `unique` constraints (the single-use `StampId` / `MemberPrivateKey` anti-replay columns) — both landed in the `../optimystic` workspace under `control-db-network-backed`.
-> - **The cohort auto-connects.** ✅ Each node runs an in-node `reconcileControlCohort` routine (`CadreNode`, wired into the post-start background work + a `.unref()`'d ~15s cadence + `self:peer:update`): it reads its known siblings (`listMembers`), classifies the authority members as a publicly-dialable **backbone** (always dialed), fills the remainder up to a bounded out-degree (`NetworkConfig.controlCohort.targetDegree`, default 6, deterministic peerId order), skips already-connected peers, and dials the rest best-effort via `resolvePeerAddrs` (signed `CadrePeer` record) with a libp2p peerStore cold-start fallback. This is what makes a party's control nodes form the FRET cohort without the test-only manual `dial()` the convergence scenario uses — proven by `control-cohort-auto-convergence.integration.ts` (B converges with zero manual control dials). Cold start is still broken by the existing seed/`bootstrapNodes`/relay paths (the routine consumes that first connection, then maintains+extends the cohort from converged rows). WebRTC/DCUtR upgrade-to-direct for sustained relay-only edge↔edge links remains future transport work (`rn-webrtc-transport`).
-> - **Write-while-alone durability (inserts/updates).** ✅ A write made while a node is alone (its block's cluster ≤1) commits **local-only** (no broadcast). `CadreNode` now detects this — the pragmatic proxy is `controlNode.getConnections().length === 0`, a sound lower bound for "alone" (the precise signal would be the block's `getClusterSize`, noted as a future tightening) — queues the affected row, and **re-issues it on the 0→≥1 control-connection growth edge** (a `connection:open` listener; single-flight drain). Self rows re-publish via the idempotent `registerSelf`/`registerDeviceToken` refresh; an authority's other-peer membership rows are re-touched via an authority-signed `UpdatedAt` bump (`SeedBootstrapService.reauthorizePeer`, the authority branch of `CadrePeer.AuthorizedUpdate`). On the first growth after start, an authority also reconstructs the queue by re-touching every `Sig`-null membership row it may have authored (covering writes from before this process started — `Sig`-bearing rows are the owning peer's to republish and are skipped). Re-touch is safe to over-apply (monotonic `UpdatedAt`; the schema rejects a replayed older record). Proven by `control-write-while-alone-convergence.integration.ts` (a `CadrePeer` row and a `DeviceToken` both written while alone converge to a connected reader). Landed in `control-write-ensure-replicated`.
+> - **The cohort auto-connects.** ✅ Each node runs an in-node `reconcileControlCohort` routine (`CadreNode`, wired into the post-start background work + a `.unref()`'d ~15s cadence + `self:peer:update`): it reads its known siblings (`listMembers`), classifies the owner members as a publicly-dialable **backbone** (always dialed), fills the remainder up to a bounded out-degree (`NetworkConfig.controlCohort.targetDegree`, default 6, deterministic peerId order), skips already-connected peers, and dials the rest best-effort via `resolvePeerAddrs` (signed `CadrePeer` record) with a libp2p peerStore cold-start fallback. This is what makes a party's control nodes form the FRET cohort without the test-only manual `dial()` the convergence scenario uses — proven by `control-cohort-auto-convergence.integration.ts` (B converges with zero manual control dials). Cold start is still broken by the existing seed/`bootstrapNodes`/relay paths (the routine consumes that first connection, then maintains+extends the cohort from converged rows). WebRTC/DCUtR upgrade-to-direct for sustained relay-only edge↔edge links remains future transport work (`rn-webrtc-transport`).
+> - **Write-while-alone durability (inserts/updates).** ✅ A write made while a node is alone (its block's cluster ≤1) commits **local-only** (no broadcast). `CadreNode` now detects this — the pragmatic proxy is `controlNode.getConnections().length === 0`, a sound lower bound for "alone" (the precise signal would be the block's `getClusterSize`, noted as a future tightening) — queues the affected row, and **re-issues it on the 0→≥1 control-connection growth edge** (a `connection:open` listener; single-flight drain). Self rows re-publish via the idempotent `registerSelf`/`registerDeviceToken` refresh; an owner's other-peer membership rows are re-touched via an owner-signed `UpdatedAt` bump (`SeedBootstrapService.reauthorizePeer`, the owner branch of `CadrePeer.AuthorizedUpdate`). On the first growth after start, an owner also reconstructs the queue by re-touching every `Sig`-null membership row it may have authored (covering writes from before this process started — `Sig`-bearing rows are the owning peer's to republish and are skipped). Re-touch is safe to over-apply (monotonic `UpdatedAt`; the schema rejects a replayed older record). Proven by `control-write-while-alone-convergence.integration.ts` (a `CadrePeer` row and a `DeviceToken` both written while alone converge to a connected reader). Landed in `control-write-ensure-replicated`.
 > - **Delete-while-alone durability (open, security-relevant).** A `removePeer` (or `clearDeviceToken`) that commits while alone physically removes the row locally, so it **cannot** be re-issued the way an insert/update can — a re-issued `delete … where PeerId = X` matches nothing once the row is gone, so the removal does not propagate, and a revoked peer may persist as a member elsewhere. The commit-alone is **logged loudly** and a best-effort re-issue is attempted (it only helps if the row is somehow still present), but full durability needs a schema **tombstone** (soft delete that IS re-issuable + reconstructable across restart) — tracked in `tickets/backlog/control-delete-while-alone-tombstone.md`.
 >
 > Reads are **pull-on-read**: `resolvePeerAddrs`/`isMember` do a single read with no wait, so callers converge by **polling/refresh** (the "periodic refresh until reactivity" below).
@@ -182,7 +182,7 @@ The seed is **cache pre-population**, not a separate database. After applying th
 After applying a seed, a node follows a simple unified algorithm regardless of network topology:
 
 1. Populate peerstore with peers + multiaddrs from seed
-2. Attempt outbound dials (best effort) — prefer peers flagged `isAuthority` first
+2. Attempt outbound dials (best effort) — prefer peers flagged `isOwner` first
 3. Once connected: begin control network sync (Optimystic), refresh via `select * from CadrePeer`
 4. Periodic refresh (until reactivity): re-query CadrePeer, update local cache
 
@@ -194,7 +194,7 @@ The most common case: a user on a NAT'd phone adds a provider-hosted node.
 
 ```mermaid
 sequenceDiagram
-    participant Ph as Phone (Authority, NAT'd)
+    participant Ph as Phone (Owner, NAT'd)
     participant P as Provider API
     participant D as Drone (New)
     Ph->>P: 1. createContainer (plan, payment)
@@ -224,7 +224,7 @@ When a server (public IP) adds a phone to its cadre:
 
 ```mermaid
 sequenceDiagram
-    participant S as Server (Authority)
+    participant S as Server (Owner)
     participant Ph as Phone (New)
     S->>Ph: 1. Share invite out-of-band (QR/link)<br/>Contains: partyId, serverMultiaddr
     Note over Ph: 2. createCadrePeer() — generate keypair
@@ -242,7 +242,7 @@ When a server adds another provider-hosted node:
 
 ```mermaid
 sequenceDiagram
-    participant S as Server (Authority)
+    participant S as Server (Owner)
     participant P as Provider API
     participant D as Drone (New)
     S->>P: 1. createContainer
@@ -281,7 +281,7 @@ Seeds can be delivered through multiple mechanisms. For direct delivery when the
 
 ```mermaid
 sequenceDiagram
-    participant I as Instigator (Authority)
+    participant I as Instigator (Owner)
     participant N as New Node (listening on /sereus/seed/1.0.0)
     I->>N: 1. Dial /sereus/seed/1.0.0
     I->>N: 2. Send SeedMessage {partyId, peers, signature}
@@ -298,8 +298,8 @@ sequenceDiagram
 interface SeedMessage {
   partyId: string;                    // Control network to join
   peers: SeedPeer[];                  // Authorization cache entries
-  signature: string;                  // Signed by an authority key
-  signerKey: string;                  // Authority ed25519 public key (base64url)
+  signature: string;                  // Signed by an owner key
+  signerKey: string;                  // Owner ed25519 public key (base64url)
 }
 
 // New Node → Instigator
@@ -312,12 +312,12 @@ interface SeedAckMessage {
 **Validation**:
 - The `signature` is an ed25519 signature over `digest([canonicalJson({partyId, peers})], 'sha256')` — a canonical (recursively key-sorted, `undefined`-dropped, whitespace-free) serialization shared with cadre-host's update-manifest signing. Both signer and verifier route through the same `canonicalSeedPayload` builder so the signed bytes are independent of key insertion order
 - New node verifies `signature` using `signerKey` (ed25519)
-- `signerKey` must clear a **trust anchor that does not come from the seed body** — a signature only proves the seed is internally consistent, and both `signerKey` and the seed's own `isAuthority` peer flags are attacker-supplied, so a forged self-asserting seed must not be able to vouch for itself. The receiver evaluates a `SeedTrustPolicy` against its *own* known authority keys (`CadreControl.AuthorityKey`), in priority order:
-  - **DB-anchored** (default): the signer is trusted iff its key is already in the receiver's `AuthorityKey` table (steady state — the node is enrolled / has synced control state).
-  - **Pinned out-of-band**: authority keys delivered outside the seed — carried by `CadreInvite.authorityKeys`, or pinned by operator config — let a cold-start invitee accept its first seed.
+- `signerKey` must clear a **trust anchor that does not come from the seed body** — a signature only proves the seed is internally consistent, and both `signerKey` and the seed's own `isOwner` peer flags are attacker-supplied, so a forged self-asserting seed must not be able to vouch for itself. The receiver evaluates a `SeedTrustPolicy` against its *own* known owner keys (`CadreControl.OwnerKey`), in priority order:
+  - **DB-anchored** (default): the signer is trusted iff its key is already in the receiver's `OwnerKey` table (steady state — the node is enrolled / has synced control state).
+  - **Pinned out-of-band**: owner keys delivered outside the seed — carried by `CadreInvite.ownerKeys`, or pinned by operator config — let a cold-start invitee accept its first seed.
   - **TOFU (opt-in)**: an interactive confirmation callback invoked on first sight of an unknown signer key; off by default.
-  - **Secure default**: a cold-start node with an empty `AuthorityKey` table, no pinned keys, and no TOFU confirmation **rejects** the seed.
-- Authority identity is sourced from the `AuthorityKey` table, **not** from the libp2p `peerId`. An Ed25519 PeerId embeds its public key, so each peer's ed25519 key is derived from its `PeerId` and a peer is marked `isAuthority` iff that derived key is in `AuthorityKey` — making multi-authority cadres representable and decoupling authority status from the transport identity.
+  - **Secure default**: a cold-start node with an empty `OwnerKey` table, no pinned keys, and no TOFU confirmation **rejects** the seed.
+- Owner identity is sourced from the `OwnerKey` table, **not** from the libp2p `peerId`. An Ed25519 PeerId embeds its public key, so each peer's ed25519 key is derived from its `PeerId` and a peer is marked `isOwner` iff that derived key is in `OwnerKey` — making multi-owner cadres representable and decoupling owner status from the transport identity.
 - A seed carries only peer-address hints (`peers[]`); warm-cache prepopulation with signed Optimystic log entries is deferred (see backlog `seed-warm-cache-prepopulation`)
 - **Receiver hardening (within-membership DoS):** even a membership-gated peer could misbehave, so the inbound handler bounds two resources. Each stream read runs under `seedReadTimeoutMs` (default 10s) — a peer that opens a stream and never half-closes its write end is aborted rather than awaited forever — and concurrent inbound seed streams are capped by `maxConcurrentSeeds` (default 100), over which a non-accepting ack is returned without applying a seed. The cap is per-service, not per-remote-peer. The shared read/frame primitives (`control-stream.ts`, also used by push-wake) own the timeout-and-abort logic.
 
@@ -394,7 +394,7 @@ The Seed Bootstrap API includes helper functions for common enrollment patterns:
 
 **Server/Phone adds Drone (via provider API)**:
 ```typescript
-// Authority receives drone info from provider API
+// Owner receives drone info from provider API
 const droneInfo = await provider.createContainer(plan);
 
 // One call: authorize + create seed
@@ -430,8 +430,8 @@ await serverNode.acceptPhone(
 
 **Phone adds Phone (NAT-to-NAT via relay)**:
 ```typescript
-// Authority phone adds new phone with relay support
-const { seed, encodedSeed } = await authorityPhone.addPhoneWithRelay(newPhonePeerId);
+// Owner phone adds new phone with relay support
+const { seed, encodedSeed } = await ownerPhone.addPhoneWithRelay(newPhonePeerId);
 // Seed includes relay addresses for the new phone to dial through
 
 // Share encodedSeed out-of-band
@@ -482,7 +482,7 @@ A strand is its own libp2p network on a separate port, so a node needs a sibling
 
 When forming a new strand with another party, a native cadre-core formation transport (`strand-formation-protocol.ts`, protocol id `/sereus/formation/1.0.0`) negotiates provisioning. It mirrors the non-deprecated seed-bootstrap service (length-prefixed JSON frames over libp2p streams) and replaces the deprecated `strand-proto`. The `StrandFormationManager` drives it from the `cadre-core` interfaces, carrying the caller's **real** invitation token + `StrandFormationDisclosure` and **both** parties' real cadre peer addresses end-to-end:
 
-- **`StrandFormationManager`**: Responder side wires the inbound `FormationListener` to `DisclosureValidator` (identity), `FormationUsageRecorder` (token), and `StrandProvisioner` (provisioning); initiator side validates the responder's result via `FormationResponseValidator`. `ControlFormationUsageRecorder` (`control-formation-recorder.ts`) is the DB-backed `FormationUsageRecorder`. It follows the **provision-then-record** model: the host pre-creates the (closed) strand authority-signed and mints a `FormationInvite` **bound to it** via the invite's `StrandId` column (signed into the row-bound authorization). When an invitee redeems a bound invite, the recorder resolves that pre-existing host strand (`resolveStrand`) and writes exactly **one** `FormationUsage` consent row against it (record-only — no new `Strand` insert), returning the host strand id **and its `MemberPrivateKey`** (the closed-strand read-gating secret) back through the protocol for delivery to the validated invitee. A bound invite whose named host strand has **not yet converged** on this responder (`resolveStrand` → `missing`) is rejected cleanly — no usage row, no disclosure — instead of recording consent against a non-existent strand (which would fail the deferred `FormationUsage.StrandExists` CHECK at commit and drop the result frame). An unbound invite (`StrandId` null) takes the responder-provisions path: a DB-backed recorder mints a fresh open strand **and** records its one `FormationUsage` consent row **atomically** (`provisionAndRecord` → `ControlDatabase.redeemInvitation`), so the unbound redemption is single-use exactly like the bound path; only when no DB recorder is wired does it fall back to the `StrandProvisioner` (or a structural placeholder), which carry no single-use accounting.
+- **`StrandFormationManager`**: Responder side wires the inbound `FormationListener` to `DisclosureValidator` (identity), `FormationUsageRecorder` (token), and `StrandProvisioner` (provisioning); initiator side validates the responder's result via `FormationResponseValidator`. `ControlFormationUsageRecorder` (`control-formation-recorder.ts`) is the DB-backed `FormationUsageRecorder`. It follows the **provision-then-record** model: the host pre-creates the (closed) strand owner-signed and mints a `FormationInvite` **bound to it** via the invite's `StrandId` column (signed into the row-bound authorization). When an invitee redeems a bound invite, the recorder resolves that pre-existing host strand (`resolveStrand`) and writes exactly **one** `FormationUsage` consent row against it (record-only — no new `Strand` insert), returning the host strand id **and its `MemberPrivateKey`** (the closed-strand read-gating secret) back through the protocol for delivery to the validated invitee. A bound invite whose named host strand has **not yet converged** on this responder (`resolveStrand` → `missing`) is rejected cleanly — no usage row, no disclosure — instead of recording consent against a non-existent strand (which would fail the deferred `FormationUsage.StrandExists` CHECK at commit and drop the result frame). An unbound invite (`StrandId` null) takes the responder-provisions path: a DB-backed recorder mints a fresh open strand **and** records its one `FormationUsage` consent row **atomically** (`provisionAndRecord` → `ControlDatabase.redeemInvitation`), so the unbound redemption is single-use exactly like the bound path; only when no DB recorder is wired does it fall back to the `StrandProvisioner` (or a structural placeholder), which carry no single-use accounting.
 - **`StrandSolicitationService.registerResponder(node)`**: Registers the libp2p node to handle incoming formation requests
 - **`StrandSolicitationService.formStrand(invitation, disclosure, node)`**: Initiates strand formation over the real protocol
 - **`CadreNode` high-level API**: `createOpenInvitation()`, `formStrand()`, `encodeInvitation()`, `decodeInvitation()`
@@ -505,7 +505,7 @@ sequenceDiagram
 
 Three independent consent/RBAC layers coexist; do not conflate them:
 
-1. **Control / cadre layer** (`CadreControl.*` in the shared control DB): `Strand`, `FormationInvite`/`FormationUsage`, `AuthorityKey`, `CadrePeer`. Governs which cadre operates a strand and cadre-operator consent to *form* it. The control-layer `Strand.MemberPrivateKey` is the closed-strand read-gating secret; the `MemberKeyClosedOnly` CHECK enforces that it is null on an open strand (`Type='o'`), so only a closed strand (`Type='c'`) may carry one.
+1. **Control / cadre layer** (`CadreControl.*` in the shared control DB): `Strand`, `FormationInvite`/`FormationUsage`, `OwnerKey`, `CadrePeer`. Governs which cadre operates a strand and cadre-operator consent to *form* it. The control-layer `Strand.MemberPrivateKey` is the closed-strand read-gating secret; the `MemberKeyClosedOnly` CHECK enforces that it is null on an open strand (`Type='o'`), so only a closed strand (`Type='c'`) may carry one.
 2. **Strand RBAC layer** (`Strand.*` inside each strand DB, applied from `schemas/strand.qsql` by `composeStrand`): the authoritative per-strand membership/RBAC — `Header`, `Invite`/`ConsumedInvite`, `Member`, `MemberPeer`, `Authority`.
 3. **sApp layer** (`App.*`): application-data RBAC declared by the sApp schema, gated by its own `verify()`-bound CHECK constraints.
 
@@ -513,7 +513,7 @@ Three independent consent/RBAC layers coexist; do not conflate them:
 
 - **Plumbing**: an explicit `founder?: boolean` flows `CadreNode.addStrand(StrandConfig)` → `launchStrand` → `StrandInstanceManager.startStrand` → `buildStrandRuntime` → `StrandDatabase`. The bootstrap runs in `StrandDatabase.initialize()` *after* `connectToStrand` returns (schema is applied by then), gated on `founder === true`. The control-discovered join path never sets `founder`, so a discovering peer only syncs. A throw during bootstrap propagates out of `initialize()` so `buildStrandRuntime`'s rollback tears the half-built strand down.
 - **Open strand (`Type='o'`)**: insert `Header` only — `Member`/`Authority`/`Invite` are `OnlyClosed`.
-- **Closed strand (`Type='c'`)**: insert `Header(Type='c')`, then the founding `Member`, then the founding `Authority`, in that order (the deferred `OnlyClosed` checks on Member/Authority see the committed closed `Header`). The founding `Member.Key` and `Authority.MemberKey` are *derived from* the control-layer `MemberPrivateKey` via the **key bridge** (`strandMemberKeyPair`): the base64-protobuf libp2p ed25519 key is decoded and run through `authorityKeyFromLibp2p`, yielding a base64url `{ privateKeyB64, publicKeyB64 }` whose `publicKeyB64` is the founding member/authority key. The first-row inserts use the schema's `count(…) <= 1` bootstrap branch, so they need **no** signature.
+- **Closed strand (`Type='c'`)**: insert `Header(Type='c')`, then the founding `Member`, then the founding `Authority`, in that order (the deferred `OnlyClosed` checks on Member/Authority see the committed closed `Header`). The founding `Member.Key` and `Authority.MemberKey` are *derived from* the control-layer `MemberPrivateKey` via the **key bridge** (`strandMemberKeyPair`): the base64-protobuf libp2p ed25519 key is decoded and run through `ed25519KeyPairFromLibp2p`, yielding a base64url `{ privateKeyB64, publicKeyB64 }` whose `publicKeyB64` is the founding member/authority key. The first-row inserts use the schema's `count(…) <= 1` bootstrap branch, so they need **no** signature.
 - **Idempotency**: every write is insert-if-absent (guarded by a `select count(1) from Strand.<T>`), so a founder restart / re-`addStrand` / `resumeStrand` is a no-op and never double-inserts or trips `InsertOnly`.
 - **Signing idiom (for the later signed flows)**: `schemas/strand.qsql` verifies a **single digest over a `'|'`-joined payload** (`verify(digest(payload), signature, pubkey, 'ed25519')`), distinct from the control layer's multi-field `buildAuthorizationMessage` digest. `signStrandPayload(payload, privateKeyB64)` is the matching signer (hash the payload to raw bytes, ed25519-sign those bytes) and `verifyStrandPayload(payload, signature, pubkey)` its off-engine verifier; the invite/peer/rotation flows reuse them. `Header.Engine`/`EngineVersion` are pinned constants (`STRAND_ENGINE` = `quereus`) — a real engine-selection seam is future work.
 
@@ -586,7 +586,7 @@ stateDiagram-v2
 4. **Imperative lifecycle** (implemented, platform-agnostic): for a mobile `BackgroundRunner` that drives lifecycle from OS app-state and push events rather than the internal timers, `CadreNode` exposes imperative entry points onto the same state machine. `hibernateStrand(strandId)` / `hibernateAll()` force-hibernate now — bypassing `idleTimeout + hibernateTimeout` on background entry — by cancelling the strand's pending idle/hibernate **and** check-in timers (so no stray timer resurrects a strand the runner means to keep down) and running the standard `onHibernate` path; realtime strands are skipped. `serviceWake(strandId, opts?)` runs the check-in cycle (wake → bounded `checkInWindowMs` window → re-hibernate-if-idle) on demand for a push-delivered wake, coalescing per-strand and sharing one runtime build with a racing push-wake via `HibernationManager` wake coalescing, and returning a branchable `ServiceWakeResult` rather than throwing. `running` / `controlConnected` getters give headless callers a synchronous readiness snapshot (the pollable form of the `control:connected`/`control:disconnected` events). The RN runner that consumes these — an `AppState`-driven `BackgroundRunner` (`packages/reference-app-rn/src/background-runner.ts`) that force-hibernates on background entry, drops to a hibernating state on the real `control:disconnected` edge, and runs an epoch-guarded, bounded resume (surfacing `resuming`/`degraded` to the UI) on foreground return — has shipped.
 5. **Mobile push-wake receive + server fan-out** (implemented): a suspended app keeps no network up, so a wake for a hibernating phone arrives over the platform push channel (FCM on Android, APNs on iOS) rather than the control network. The server's fan-out (*who* to wake and *when* — `PushFanoutService`, `push-fanout.ts`) decides the wake and resolves the target phone's token via `DeviceToken` (`resolveDeviceToken`) and hands a **data-only** message `{ type:'strand-wake', strandId, reason }` to the platform-push **sender** (implemented): `PushNotifier` (`packages/cadre-core/src/push-notifier.ts`), a credential- and transport-injected router that delivers over **FCM HTTP v1** (`push-notifier-fcm.ts`: cached OAuth2 access token from an RS256 service-account JWT, `POST …/v1/projects/{projectId}/messages:send`, high-priority `data` message) or **APNs HTTP/2** (`push-notifier-apns.ts`: cached ES256 provider JWT, `POST /3/device/{token}`, `apns-push-type: background`, `apns-priority: 5`, `content-available`), returning failures as values and mapping a permanently-invalid token (FCM 404 `UNREGISTERED`/400-on-token, APNs 410 `Unregistered`/400 `BadDeviceToken`) to `unregistered: true` so the fan-out can expire the stale row. Credentials ride `CadreNodeConfig.push` (`PushCredentials`), now **provisioned per spawned node end-to-end**: `cadre-host` resolves FCM/APNs secrets from its secret store (re-read on every node respawn — no raw key persisted) and `cadre-provider` resolves them per tenant from config, each writing the `push` block into that node's config (host → `cadre.json`; provider → the `CADRE_PUSH` env var), and `cadre-cli` carries it into `CadreNodeConfig.push` so `CadreNode.start` builds the fan-out. Push is opt-in (no creds ⇒ no block ⇒ no fan-out), private keys are never logged, and per-tenant credentials are isolated (one tenant's creds never reach another tenant's node); **on-device validation** (real token, correct bundle id, sandbox-vs-production match) and the Firebase/Apple credential creation itself remain human/infra prerequisites. The FCM/APNs modules are server-only (`node:crypto`/`node:http2`) and stay out of the RN/browser bundle because the cross-platform `cadre-core` entry re-exports only their *types*. The shared payload contract now lives in cadre-core (`strand-wake-payload.ts`: `STRAND_WAKE_TYPE` + `StrandWakePayload`), imported by both the sender and the RN receiver. On the phone, an `expo-notifications` background notification task (registered via `expo-task-manager` in `index.js`, native wiring in `push-wake-native.ts`) parses the payload and — while backgrounded — ensures the node is up, awaits a bounded control connection, then drives one `serviceWake(strandId, { windowMs })` cycle and lets the strand re-hibernate. A push that arrives while foregrounded routes instead to a plain `wakeStrand` + `recordStrandActivity` (the user is viewing the strand; the AppState `BackgroundRunner` owns lifecycle). Token lifecycle: on node start the phone calls `getDevicePushTokenAsync`, maps `ios→apns`/`android→fcm`, and publishes via `registerDeviceToken` (re-published on rotation via `addPushTokenListener`, cleared via `clearDeviceToken` on logout). iOS silent push is **best-effort** — APNs coalesces/drops background pushes under low-power — and Android Doze defers data messages without a battery-optimization opt-out, so the check-in wake (mechanism 2) remains the backstop; the library choice (Expo first-party modules over bare-RN headless JS / `notifee`), App Store review notes, FGS-vs-data-message tradeoff, and the human prerequisites (`google-services.json`, paid APNs creds, on-device validation) are documented in the ticket review handoff.
 
-   **Fan-out trigger + policy** (`PushFanoutService`, `push-fanout.ts`): `CadreNode.start` constructs the service only when `config.push` is present (a `PushNotifier` built from those credentials via a guarded dynamic import, so the Node-only `node:http2`/`node:crypto` modules never enter a cross-platform node's graph); without `config.push` the node behaves exactly as before. The **v1 trigger is explicit**: `CadreNode.notifyStrandActivity(strandId, reason?)` is the imperative seam an always-on host/relay/sApp calls when it observes activity, and `recordStrandActivity` additionally drives it — so whatever already pulls-on-read on the server's strand also fans out, no new contract. (A *passive* Optimystic-level detector — fan-out with zero application involvement — is **deferred**: `IRepo` exposes no commit/block-received hook, the same constraint behind the blind check-in resume; it is an enhancement over the explicit trigger, not a correctness gap.) On `notify(strandId)` the service: gates on participation (`getStrand` undefined ⇒ no-op), debounces per strand (`debounceMs`, default 10 s) and coalesces concurrent triggers into one in-flight pass, enumerates `listMembers()` excluding self, skips any peer within the per-`(peer,strand)` cooldown (`cooldownMs`, default 5 min — the anti-spam guarantee), then **wakes each survivor direct-first**: `pushWake` (a *resolved* `WakeAck` — even `accepted:false` — means the control path reached the peer, so **no** platform push, avoiding a double-wake) and, only on a dial/transport **rejection** (the phone is suspended), falls back to `resolveDeviceToken` → `notifier.send`. An `unregistered` send marks the token dead (skipping its next resolve→send) and calls `CadreNode.expireDeviceToken(peerId)` — an authority node deletes the `DeviceToken` row, a non-authority node logs that a re-registration is needed. The cooldown/debounce/dead-token state is **in-memory and acceptably lossy** (a restart at worst re-sends one duplicate, and `serviceWake` is idempotent); **cross-strand coalescing** into a single push is **not** done in v1 (each strand-wake names its own `strandId`); both are documented limits. The whole path is best-effort and never throws to the trigger — the check-in wake (mechanism 2) is the backstop for any dropped push.
+   **Fan-out trigger + policy** (`PushFanoutService`, `push-fanout.ts`): `CadreNode.start` constructs the service only when `config.push` is present (a `PushNotifier` built from those credentials via a guarded dynamic import, so the Node-only `node:http2`/`node:crypto` modules never enter a cross-platform node's graph); without `config.push` the node behaves exactly as before. The **v1 trigger is explicit**: `CadreNode.notifyStrandActivity(strandId, reason?)` is the imperative seam an always-on host/relay/sApp calls when it observes activity, and `recordStrandActivity` additionally drives it — so whatever already pulls-on-read on the server's strand also fans out, no new contract. (A *passive* Optimystic-level detector — fan-out with zero application involvement — is **deferred**: `IRepo` exposes no commit/block-received hook, the same constraint behind the blind check-in resume; it is an enhancement over the explicit trigger, not a correctness gap.) On `notify(strandId)` the service: gates on participation (`getStrand` undefined ⇒ no-op), debounces per strand (`debounceMs`, default 10 s) and coalesces concurrent triggers into one in-flight pass, enumerates `listMembers()` excluding self, skips any peer within the per-`(peer,strand)` cooldown (`cooldownMs`, default 5 min — the anti-spam guarantee), then **wakes each survivor direct-first**: `pushWake` (a *resolved* `WakeAck` — even `accepted:false` — means the control path reached the peer, so **no** platform push, avoiding a double-wake) and, only on a dial/transport **rejection** (the phone is suspended), falls back to `resolveDeviceToken` → `notifier.send`. An `unregistered` send marks the token dead (skipping its next resolve→send) and calls `CadreNode.expireDeviceToken(peerId)` — an owner node deletes the `DeviceToken` row, a non-owner node logs that a re-registration is needed. The cooldown/debounce/dead-token state is **in-memory and acceptably lossy** (a restart at worst re-sends one duplicate, and `serviceWake` is idempotent); **cross-strand coalescing** into a single push is **not** done in v1 (each strand-wake names its own `strandId`); both are documented limits. The whole path is best-effort and never throws to the trigger — the check-in wake (mechanism 2) is the backstop for any dropped push.
 
 **sApp Latency Hints:**
 
@@ -641,7 +641,7 @@ sequenceDiagram
     Note over C: Watch Strand table
 ```
 
-Provider only sees: container ID, network traffic, opaque seed. Provider never has: authority keys, strand data.
+Provider only sees: container ID, network traffic, opaque seed. Provider never has: owner keys, strand data.
 
 ### Relay Integration
 
@@ -661,7 +661,7 @@ When both nodes are NAT'd (e.g., phone adding another phone), the seed includes 
 
 ```mermaid
 sequenceDiagram
-    participant P1 as Phone 1 (Authority)
+    participant P1 as Phone 1 (Owner)
     participant R as Relay
     participant P2 as Phone 2 (New)
     Note over P1: Seed includes relay addr:<br/>/dns4/.../p2p-circuit/p2p/&lt;phone1&gt;
@@ -682,7 +682,7 @@ Once multiple nodes with public IPs exist in the cadre, the control network beco
 
 ### Standard (Phone + Cloud Node)
 
-- **Phone** (transaction-only, has authority keys) ↔ **Cloud Node** (storage profile, always online, public IP, archival storage)
+- **Phone** (transaction-only, has owner keys) ↔ **Cloud Node** (storage profile, always online, public IP, archival storage)
 - Benefits: redundancy (either can serve control network), storage capacity for strand data, cloud node as bootstrap for new nodes/peers
 
 ### Enterprise (Multi-Node Mixed)
@@ -762,11 +762,11 @@ interface CadreNodeConfig {
 ### Node Key Material & the KeyStore Seam
 
 A cadre node holds two sensitive keys at rest: the libp2p **peer/node identity**
-key, and the **authority** signing key. In the single-key reference model the
-authority key is *derived from* the identity key (`authorityKeyFromLibp2p` —
+key, and the **owner** signing key. In the single-key reference model the
+owner key is *derived from* the identity key (`ed25519KeyPairFromLibp2p` —
 libp2p's 64-byte Ed25519 raw key carries the 32-byte seed the crypto plugin
-treats as the authority private key), so the node's PeerId and its authority key
-are one keypair. Protecting the identity therefore protects the authority key.
+treats as the owner private key), so the node's PeerId and its owner key
+are one keypair. Protecting the identity therefore protects the owner key.
 
 `@serfab/cadre-core` stores key material behind a backend-agnostic **`KeyStore`**
 interface (`key-store.ts`), so a platform-secure backend (iOS Keychain / Android
@@ -813,19 +813,19 @@ any libp2p/network bring-up, into a private resolved field):
 3. `privateKey` set → use it (legacy behavior).
 4. Neither → libp2p generates an ephemeral key (legacy behavior).
 
-Authority genesis stays **app-controlled**: cadre-core resolves and protects the
-identity, then exposes the derived authority pair via
-`CadreNode.getIdentityAuthorityKey()` (available after `start()`); the hosting app
-drives `ensureAuthorityKey(pub)` + `initializeSeedBootstrap(priv)` itself rather
-than cadre-core silently running genesis. A future separate-authority slot
-(`authorityKeyId`) is anticipated but not yet built.
+Owner genesis stays **app-controlled**: cadre-core resolves and protects the
+identity, then exposes the derived owner pair via
+`CadreNode.getIdentityOwnerKey()` (available after `start()`); the hosting app
+drives `ensureOwnerKey(pub)` + `initializeSeedBootstrap(priv)` itself rather
+than cadre-core silently running genesis. A future separate-owner slot
+(`ownerKeyId`) is anticipated but not yet built.
 
 #### Mobile secure backend (`SecureStoreKeyStore`)
 
 The React Native reference app (`reference-app-rn`) backs the seam with
 **`expo-secure-store`** (`src/secure-key-store.ts`): iOS **Keychain**
 (`kSecClassGenericPassword`) and Android **Keystore**-encrypted SharedPreferences.
-The phone node's identity (and the authority key derived from it) therefore lives
+The phone node's identity (and the owner key derived from it) therefore lives
 in the platform enclave rather than the plaintext LevelDB the app used before.
 `cadre-phone.ts` constructs the store and passes it as `keyStore` — cadre-core's
 load-or-create path does the rest. Bridging details the backend handles:
@@ -860,14 +860,14 @@ under Expo Go**.
 **One-time migration.** On upgrade, if the secure slot is empty and the old
 plaintext LevelDB identity DB (`sereus-peer-identity`) holds a key, the app lifts
 it into the enclave once (then clears the plaintext copy), so the device keeps its
-PeerId/authority across the upgrade. A failed legacy read falls through to fresh
+PeerId/owner across the upgrade. A failed legacy read falls through to fresh
 generation (logged, never logging key material).
 
 **Reinstall & recovery behavior:**
 
 | Platform | After app uninstall/reinstall |
 | --- | --- |
-| **iOS** | Keychain items **persist** by default → identity/authority survive; the node resumes with the same PeerId. |
+| **iOS** | Keychain items **persist** by default → identity/owner survive; the node resumes with the same PeerId. |
 | **Android** | Uninstall wipes the app's SharedPreferences → the Keystore-encrypted entries are **lost**; the node generates a new identity on reinstall. |
 
 - **Biometric invalidation.** Entries written with `requireAuthentication: true`
@@ -882,9 +882,9 @@ generation (logged, never logging key material).
 - **Recovery.** A node that has lost its enclave entries (Android reinstall,
   biometric invalidation, device loss) does **not** recover the old key. It
   re-enrolls from another cadre node via the existing invite/seed flow
-  (`applySeed` with the inviting cadre's authority keys pinned — see
+  (`applySeed` with the inviting cadre's owner keys pinned — see
   [Enrollment and Bootstrap](#enrollment-and-bootstrap)), receiving a fresh
-  identity. The settings screen surfaces the node's **authority
+  identity. The settings screen surfaces the node's **owner
   public key** (base64url) precisely so it can be shared for that (re-)pairing.
 
 ### Strand Instance State
@@ -1004,15 +1004,15 @@ transport-only demos:
 |-----|----------|---------|----------|
 | `packages/reference-app-rn` | React Native / Hermes (phone) | `LevelDBRawStorage` | control network + open chat strand; seed apply; WebSocket/relay transports; Maestro e2e (drone fixture + sidecar) |
 | `packages/reference-app-ns` | NativeScript / V8 (Android) · JSC (iOS) | SQLite (`db-p2p-storage-ns`) | control network + open chat strand; seed apply; WebSocket/relay transports; **reuses the RN Maestro e2e** (only the app id differs) |
-| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo authority self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; WebSocket/relay/WebRTC transports |
+| `packages/reference-app-web` | Browser | `IndexedDBRawStorage` | control network + **signed** open chat strand (schema-signature gate); solo owner self-genesis; **consent/invitation strand formation** (closed strands) + `CadreControl` authorization-gate ("RBAC") observability; WebSocket/relay/WebRTC transports |
 
 The browser app ([reference-app-web/README.md](../packages/reference-app-web/README.md))
 drives the full **consent/invitation formation path** end-to-end — it is the
 first reference to call `createOpenInvitation` / `encodeInvitation` (responder)
 and `decodeInvitation` / `formStrand` + closed-strand `addStrand` (initiator) —
-and surfaces the `CadreControl` authorization gates (authority keys, formation
+and surfaces the `CadreControl` authorization gates (owner keys, formation
 invites/usage, strand membership type + member-key presence) on its Diagnostics
-page, including a live authority-gate probe that shows an unauthorized control
+page, including a live owner-gate probe that shows an unauthorized control
 write being rejected. Becoming **dialable** for formation requires a circuit-relay
 reservation (resolved from a runtime relay manifest, like the ICE manifest); a
 tab with no relay configured stays solo and surfaces a clear "not dialable" error
@@ -1077,7 +1077,7 @@ Maestro Studio, with Appium as the documented fallback.
 - **StrandInstanceManager**: Per-strand libp2p node creation with isolated storage paths, sApp schema application, and ed25519 schema signature verification on strand start
 - **Schema Verification**: `signSchema()`, `verifySchema()`, `assertSchemaSignature()` — ed25519 signature verification of sApp schemas gating strand join. **Enforced by default (fail-closed)**: the `requireSignedSchemas` node policy defaults to `true`, so an unsigned schema is rejected (`'missing signature'`, distinct from `'invalid signature'`) before any libp2p node or schema DDL is brought up. The policy may be relaxed only by explicit opt-out (`requireSignedSchemas: false`) for dev/test with unsigned demo schemas (e.g. `reference-app-rn`).
 - **EnrollmentService**: `createCadrePeer()` for Ed25519 keypair generation
-- **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived authority pair via `getIdentityAuthorityKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The platform-secure (`expo-secure-store`) mobile backend lands in a dependent ticket.
+- **KeyStore seam**: backend-agnostic `KeyStore` interface (`get`/`set`/`delete`/`list`, `KeyStoreAccessError`) with `InMemoryKeyStore` (root export) and `FileKeyStore` (subpath `@serfab/cadre-core/key-store-file`) reference backends. `CadreNode` resolves its identity through it (`keyStore` + `identityKeyId`, mutually exclusive with `privateKey`) and exposes the derived owner pair via `getIdentityOwnerKey()` — see [Node Key Material & the KeyStore Seam](#node-key-material--the-keystore-seam). The platform-secure (`expo-secure-store`) mobile backend lands in a dependent ticket.
 - **Seed Bootstrap API**: `createSeed()`, `applySeed()`, `deliverSeed()`, `encodeSeed()`/`decodeSeed()`, helper functions (`addDrone`, `createInvite`, `acceptPhone`, `addPhoneWithRelay`)
 - **Member Registration API**: `registerMember()`, `validateMemberRegistration()` with pluggable verifier/registry interfaces
 - **Strand Solicitation API**: `createOpenInvitation()`, `formStrand()`, `validateStrandFormation()` with full `strand-proto` SessionManager integration via `StrandFormationManager`
@@ -1088,7 +1088,7 @@ Maestro Studio, with Appium as the documented fallback.
 
 - CLI commands: `cadre start`, `cadre status`, `cadre enroll`, `cadre strands`
   - `cadre status` reads **live runtime** from the running node's health `/status` endpoint (`--health-host`/`--health-port`, env `CADRE_HEALTH_PORT`): it reports the live `running`/`peerId`/`multiaddrs`/strand counts when a node answers, clearly distinguished from the static "Configuration" summary. A missing config is non-fatal (the live query still runs); when no node is reachable it says so (and exits non-zero, code `3`) rather than asserting `running: false`.
-  - `cadre enroll register` is an **offline signature verification** — it checks that the supplied authority signature is valid over the peer ID (the same digest/scheme the authority signs with, via `verifyPeerAuthorization`) and does **not** contact the control network or register the peer. Membership is granted by the running authority node (`cadre start --authority`), which self-registers and authorizes peers.
+  - `cadre enroll register` is an **offline signature verification** — it checks that the supplied owner signature is valid over the peer ID (the same digest/scheme the owner signs with, via `verifyPeerAuthorization`) and does **not** contact the control network or register the peer. Membership is granted by the running owner node (`cadre start --owner`), which self-registers and authorizes peers.
 - YAML/JSON config with environment variable overrides
 - Systemd service file with security hardening, graceful shutdown
 
@@ -1111,10 +1111,10 @@ Self-hosted cadre node manager for basement-PC deployments — sibling of `@serf
 
 - **CLI** (`cadre-host`): `install`, `start`, `status`, `uninstall`, `invite`, `trust list|revoke`, `nat status|test|ddns|settings`, `ui`.
 - **Installer**: interactive + `--non-interactive` wizard, Ed25519 identity generation (mode 600), `host.config.json` / `nat.json` seeding, per-platform service-host registration (`systemd --user` on Linux, `LaunchAgent` on macOS, NSSM-managed `CadreHost` on Windows), best-effort browser open and first enrollment invite.
-- **HostProcessOrchestrator**: spawns cadre nodes as native child processes with PID-liveness, port allocator (health/metrics/p2p/admin), state store, and log rotation; survives orchestrator restart (children stay running, are re-adopted). Owns the **authority-node lifecycle** — `ensureAuthorityNode`/`restartAuthorityNode` spawn the admin's authority node (`cadre-cli start --authority --admin-port <p> --identity-protobuf …`) and expose its loopback admin endpoint.
-- **Authority-node delegation**: the manager holds no in-process `CadreNode`; `AuthorityNodeClient` (an HTTP client of the node's `127.0.0.1:<adminPort>` admin channel) backs both the trust-circle and NAT `CadreNodeLike` shapes and pushes NAT-resolved invite addresses. Unreachable-node failures map to `node_unavailable` (→ 503). This keeps the manager out of the control network entirely (control-plane separation).
+- **HostProcessOrchestrator**: spawns cadre nodes as native child processes with PID-liveness, port allocator (health/metrics/p2p/admin), state store, and log rotation; survives orchestrator restart (children stay running, are re-adopted). Owns the **owner-node lifecycle** — `ensureOwnerNode`/`restartOwnerNode` spawn the admin's owner node (`cadre-cli start --owner --admin-port <p> --identity-protobuf …`) and expose its loopback admin endpoint.
+- **Owner-node delegation**: the manager holds no in-process `CadreNode`; `OwnerNodeClient` (an HTTP client of the node's `127.0.0.1:<adminPort>` admin channel) backs both the trust-circle and NAT `CadreNodeLike` shapes and pushes NAT-resolved invite addresses. Unreachable-node failures map to `node_unavailable` (→ 503). This keeps the manager out of the control network entirely (control-plane separation).
 - **Trust-circle auth**: Ed25519-signed invite tokens with TTL, persistent store, revoke, list members (over the admin channel; degrades to the local labels file when the node is down); mounted at `/auth/*`.
-- **NAT layer**: UPnP/NAT-PMP port mapping, external-IP probe, reachability tests, DuckDNS DDNS provider with updater, secrets via keytar (with file-store fallback); pushes invite addresses to the authority node on change; mounted at `/nat/*`.
+- **NAT layer**: UPnP/NAT-PMP port mapping, external-IP probe, reachability tests, DuckDNS DDNS provider with updater, secrets via keytar (with file-store fallback); pushes invite addresses to the owner node on change; mounted at `/nat/*`.
 - **Local UI server**: Fastify on `127.0.0.1:<uiPort>` (loopback only) with Origin/Host guard against DNS-rebind, SSE event bus at `/api/events`, settings store, `/api/status`, `/api/nodes/:id/{logs,stop,start,restart}`, `/api/settings`; serves the Svelte 5 SPA from `dist/ui/`.
 - **Update service**: notify-by-default with opt-in auto-apply, signed manifest fetch from `releases.serfab.io/cadre-host/latest.json`, Ed25519 signature verification, npm-channel apply with service-host restart; `/update/*` routes.
 

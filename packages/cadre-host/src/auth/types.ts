@@ -62,7 +62,7 @@ export interface TrustCircleSnapshot {
  *   - `not_found`   → 404 (unknown token / unknown peer)
  *   - `expired`     → 410 (invite past expiresAt)
  *   - `already_redeemed` → 409 (token was used and is gone)
- *   - `node_unavailable` → 503 (authority node admin channel down/not ready)
+ *   - `node_unavailable` → 503 (owner node admin channel down/not ready)
  *   - default       → 500
  */
 export interface TrustCircleHandlers {
@@ -84,7 +84,7 @@ export type TrustCircleErrorCode =
   | 'invalid_label'
   | 'invalid_token'
   | 'storage_error'
-  /** The authority node's admin channel is unreachable / not ready. */
+  /** The owner node's admin channel is unreachable / not ready. */
   | 'node_unavailable';
 
 /** Typed error carrying a stable `code` for HTTP mapping. */

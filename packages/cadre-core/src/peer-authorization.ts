@@ -4,12 +4,12 @@ import { digest, verify } from '@optimystic/quereus-plugin-crypto';
 const log = debug('sereus:cadre:peer-authorization');
 
 /**
- * Canonical digest an authority signs to authorize a peer.
+ * Canonical digest an owner signs to authorize a peer.
  *
  * This is the exact byte construction {@link SeedBootstrapService.authorizePeer}
  * signs over when it inserts an authorized `CadrePeer` row:
  * `digest([peerId], 'sha256', 'base64url')`. Factored into one place so the
- * producer (authority signing) and the verifier (the offline `cadre enroll
+ * producer (owner signing) and the verifier (the offline `cadre enroll
  * register` check) can never drift apart — change the digest here and both move
  * together. The SQL mirror is the bare single-field `digest(coalesce(new.PeerId, old.PeerId))`.
  */
@@ -18,8 +18,8 @@ export function peerAuthorizationDigest(peerId: string): string {
 }
 
 /**
- * Canonical digest an authority signs to VOUCH a `CadrePeer` membership row (insert
- * and the authority re-touch update). Binds the peer id to the row's single-use
+ * Canonical digest an owner signs to VOUCH a `CadrePeer` membership row (insert
+ * and the owner re-touch update). Binds the peer id to the row's single-use
  * `StampId` nonce, so a captured signed insert cannot be replayed (the `StampId` is
  * unique) and — because {@link cadrePeerRemoveDigest} scopes a DIFFERENT payload — the
  * stored voucher (`VouchSig`) cannot be replayed to authorize a delete.
@@ -32,7 +32,7 @@ export function cadrePeerVoucherDigest(peerId: string, stampId: string): string 
 }
 
 /**
- * Canonical digest an authority signs to REMOVE a `CadrePeer` row. Deliberately a
+ * Canonical digest an owner signs to REMOVE a `CadrePeer` row. Deliberately a
  * distinct payload from {@link cadrePeerVoucherDigest} (adds the `'remove'` action
  * tag) so the row's stored voucher — a signature over the voucher digest — can never
  * satisfy this delete check. The signature is supplied in write context and never
@@ -46,13 +46,13 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
 }
 
 /**
- * Verify that `signature` is a valid authority ed25519 signature over `peerId`'s
- * authorization digest, using `authorityPublicKey` (base64url).
+ * Verify that `signature` is a valid owner ed25519 signature over `peerId`'s
+ * authorization digest, using `ownerPublicKey` (base64url).
  *
  * This is the mirror of the signing done in
  * {@link SeedBootstrapService.authorizePeer}: it checks the signature against
  * {@link peerAuthorizationDigest}. A `true` result means the holder of the
- * authority private key vouched for this peer ID — it does NOT mean the peer is
+ * owner private key vouched for this peer ID — it does NOT mean the peer is
  * registered anywhere.
  *
  * Returns a boolean and never throws: malformed base64url, a bad/garbage key, or
@@ -61,14 +61,14 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
  */
 export function verifyPeerAuthorization(
   peerId: string,
-  authorityPublicKey: string,
+  ownerPublicKey: string,
   signature: string
 ): boolean {
   try {
     return verify(
       peerAuthorizationDigest(peerId),
       signature,
-      authorityPublicKey,
+      ownerPublicKey,
       'ed25519',
       'base64url',
       'base64url',

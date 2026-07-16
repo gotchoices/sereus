@@ -50,9 +50,9 @@ export default function SettingsScreen() {
 
   // ── Seed ───────────────────────────────────────────────────────────────
 
-  // Apply a cold-start seed, optionally anchoring trust on the authority keys
-  // carried by a pasted CadreInvite. A cold node has no foreign authority key in
-  // its AuthorityKey table, so the secure default rejects a seed signed by
+  // Apply a cold-start seed, optionally anchoring trust on the owner keys
+  // carried by a pasted CadreInvite. A cold node has no foreign owner key in
+  // its OwnerKey table, so the secure default rejects a seed signed by
   // another cadre; pinning the invite's keys lets the first seed through. An
   // empty/older invite yields no pins — the alert says so rather than implying a
   // pin succeeded.
@@ -62,7 +62,7 @@ export default function SettingsScreen() {
     try {
       const enrollInvite = enrollInviteInput.trim();
       const pins = enrollInvite
-        ? cadre.authorityKeysFromInvite(enrollInvite)
+        ? cadre.ownerKeysFromInvite(enrollInvite)
         : undefined;
       await cadre.applySeed(seed, pins);
       setSeedInput('');
@@ -70,8 +70,8 @@ export default function SettingsScreen() {
       showAlert(
         'Seed applied',
         pins?.length
-          ? `Pinned ${pins.length} authority key(s); peer cache updated`
-          : 'Peer cache updated (no authority keys pinned)',
+          ? `Pinned ${pins.length} owner key(s); peer cache updated`
+          : 'Peer cache updated (no owner keys pinned)',
       );
     } catch (err) {
       showAlert('Seed failed', String(err));
@@ -139,18 +139,18 @@ export default function SettingsScreen() {
           <>
             <InfoRow label="Status" value="Connected" color="#4caf50" />
             <InfoRow label="Peer ID" value={cadre.peerId ?? '—'} />
-            {/* Authority public key (base64url): share out-of-band for pairing /
+            {/* Owner public key (base64url): share out-of-band for pairing /
                 enrollment. Tap to view + select the full key. Read-only; the
                 private half never leaves the secure enclave. */}
             <InfoRow
-              label="Authority Key"
-              value={cadre.authorityPublicKey ?? '—'}
+              label="Owner Key"
+              value={cadre.ownerPublicKey ?? '—'}
               onPress={
-                cadre.authorityPublicKey
-                  ? () => showAlert('Authority Public Key', cadre.authorityPublicKey ?? '')
+                cadre.ownerPublicKey
+                  ? () => showAlert('Owner Public Key', cadre.ownerPublicKey ?? '')
                   : undefined
               }
-              testID={TEST_IDS.settings.authorityKeyRow}
+              testID={TEST_IDS.settings.ownerKeyRow}
             />
             <InfoRow label="Strands" value={String(cadre.strands.size)} />
             <Btn label="Disconnect" onPress={handleDisconnect} color="#f44336" testID={TEST_IDS.settings.disconnectBtn} />
@@ -179,7 +179,7 @@ export default function SettingsScreen() {
           <LabelledInput label="Paste seed" value={seedInput} onChangeText={setSeedInput} placeholder="base64url seed string" multiline testID={TEST_IDS.settings.seedInput} />
           <Text style={styles.hint}>
             Optional: paste an enrollment invite (CadreInvite) to pin its
-            authority keys as the trust anchor for this seed. A cold node rejects
+            owner keys as the trust anchor for this seed. A cold node rejects
             a seed signed by another cadre unless its key is pinned. Distinct from
             the closed-strand "Paste invite" below.
           </Text>

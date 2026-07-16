@@ -11,7 +11,7 @@ Sereus is a Web3 programming fabric built on consent-based strands where users c
 
 ### Core Concepts
 - **Strand**: An invitation-only trust domain backed by a shared SQL database with RBAC.
-- **Cadre**: The set of nodes (phone, laptop, NAS, cloud server, …) that one party uses to participate. A cadre has a private **control network** (its own Optimystic DB on the `CadreControl` schema) that tracks members, authority keys, and strand participation.
+- **Cadre**: The set of nodes (phone, laptop, NAS, cloud server, …) that one party uses to participate. A cadre has a private **control network** (its own Optimystic DB on the `CadreControl` schema) that tracks members, owner keys, and strand participation.
 - **Cohort**: All cadres of all members of a given strand — the combined peer set that hosts that strand's data.
 - **Transport**: libp2p (NAT traversal, relays, encrypted streams).
 

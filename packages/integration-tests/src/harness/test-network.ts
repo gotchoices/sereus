@@ -28,7 +28,7 @@ import type {
  * message bytes and signs them DIRECTLY — no SHA-256 pre-hash and no re-encode, since
  * ed25519 hashes internally and the bytes are already canonical.
  *
- * Exported so scenarios that insert their own authority-signed control rows
+ * Exported so scenarios that insert their own owner-signed control rows
  * (e.g. bespoke `FormationInvite`s) sign through the SAME proven path the harness
  * uses for {@link TestCadreNetwork.createOpenInvitation}, rather than re-deriving it.
  */
@@ -100,7 +100,7 @@ export class TestCadreNetwork {
    */
   async createStrand(party: TestParty, options: CreateStrandOptions): Promise<TestStrand> {
     const strandId = `strand-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`;
-    const sAppId = options.sAppId ?? party.authorityPublicKey;
+    const sAppId = options.sAppId ?? party.ownerPublicKey;
     const strandType = options.type ?? 'o';
 
     log('Creating strand %s for party %s', strandId, party.name);
@@ -111,8 +111,8 @@ export class TestCadreNetwork {
     await party.controlDatabase.insertStrand(
       strandId,
       strandType,
-      party.authorityPublicKey,
-      (message: Uint8Array) => signMessageEd25519(message, party.authorityPrivateKey)
+      party.ownerPublicKey,
+      (message: Uint8Array) => signMessageEd25519(message, party.ownerPrivateKey)
     );
 
     // Track locally for test assertions
@@ -142,7 +142,7 @@ export class TestCadreNetwork {
 
     log('Creating invitation for strand %s from party %s', strand.strandId, party.name);
 
-    // Persist an authority-signed FormationInvite into the INVITING party's control
+    // Persist an owner-signed FormationInvite into the INVITING party's control
     // network (the consent tables are intra-cadre). TotalUses is left null
     // (unlimited) so multi-party join scenarios can redeem the same invite more
     // than once. The signer mirrors createStrand: ed25519 over the raw row-bound
@@ -151,8 +151,8 @@ export class TestCadreNetwork {
     await party.controlDatabase.insertFormationInvite(
       token,
       strand.sAppId,
-      party.authorityPublicKey,
-      (message: Uint8Array) => signMessageEd25519(message, party.authorityPrivateKey),
+      party.ownerPublicKey,
+      (message: Uint8Array) => signMessageEd25519(message, party.ownerPrivateKey),
       { expiresAtMs: Date.now() + expirationMs }
     );
 
@@ -206,9 +206,9 @@ export class TestCadreNetwork {
    * `expectedRows` rows in `table`.
    *
    * SCOPE — authoritative view only: the harness builds ONE `ControlDatabase`
-   * per party, on the authority node (`createTestParty` in test-party.ts). Drone
+   * per party, on the owner node (`createTestParty` in test-party.ts). Drone
    * nodes are libp2p peers in the same `control-<partyId>` network but have no
-   * `ControlDatabase` instance, so this polls the AUTHORITY's control DB only. It
+   * `ControlDatabase` instance, so this polls the OWNER's control DB only. It
    * proves the authoritative control-network view holds the rows — NOT that any
    * drone has converged. That is sufficient for the current scenarios; proving
    * drone-side convergence would require standing up a `ControlDatabase` on a
@@ -220,7 +220,7 @@ export class TestCadreNetwork {
     expectedRows: number,
     timeoutMs?: number
   ): Promise<void> {
-    log('Waiting for control sync (authority view): %s.%s >= %d rows', party.name, table, expectedRows);
+    log('Waiting for control sync (owner view): %s.%s >= %d rows', party.name, table, expectedRows);
 
     await waitForCount(
       () => party.controlDatabase.countRows(table),
@@ -259,7 +259,7 @@ export class TestCadreNetwork {
  * Wait until a predicate over an ARBITRARY node's control database holds.
  *
  * SCOPE — deliberately broader than {@link TestCadreNetwork.waitForControlSync},
- * which is pinned to a single party's *authority* control DB (the harness builds
+ * which is pinned to a single party's *owner* control DB (the harness builds
  * exactly one `ControlDatabase` per party). This waiter takes ANY node's
  * `ControlDatabase` directly, so a scenario can prove that a row written on
  * node A becomes readable on a SECOND node B over the live control network —

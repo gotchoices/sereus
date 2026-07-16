@@ -161,7 +161,7 @@ Goal: define and implement how a user manages a **cadre** (their personal cluste
   - [ ] Transport expectations (direct vs relay, addressing, reachability)
   - [ ] Operational requirements (headless node, backups, monitoring)
 - [ ] Create an initial Cadre schema doc (suggested: `sereus/docs/cadre-schema.md`)
-  - [~] Tables — a control/cadre schema exists at `schemas/control.qsql` (schema `CadreControl`) with `AuthorityKey`, `ValidationKey`, `Strand`, `CadrePeer`, `DeviceToken`, `FormationInvite`, `FormationUsage`; the actual shape differs from the proposed `cadres`/`cadre_nodes`/`node_keys`
+  - [~] Tables — a control/cadre schema exists at `schemas/control.qsql` (schema `CadreControl`) with `OwnerKey`, `ValidationKey`, `Strand`, `CadrePeer`, `DeviceToken`, `FormationInvite`, `FormationUsage`; the actual shape differs from the proposed `cadres`/`cadre_nodes`/`node_keys`
   - [ ] RBAC / permissions model (who can add/remove nodes)
   - [ ] Audit trail requirements
 - [x] Decide where the schema lives long-term: as `.qsql` artifacts under `schemas/`
@@ -222,15 +222,15 @@ Strand lifecycle resource management in `@serfab/cadre-core`
 - [x] Device-token registry (the resolve primitive FCM/APNs delivery needs)
   - `DeviceToken` control-network table (in `control-schema.ts` + `schemas/control.qsql`), modeled on
     `CadrePeer`: self-published, monotonic `UpdatedAt`, self-`Sig` over `(PeerId|Platform|Token|UpdatedAt)`
-    verified at resolve time against the bound `CadrePeer.PublicKey`. Insert/delete authority-gated; a
+    verified at resolve time against the bound `CadrePeer.PublicKey`. Insert/delete owner-gated; a
     member self-updates its own token (rotation / platform switch).
   - `device-token.ts` (`deviceTokenSignedPayload` / `signDeviceTokenRecord` / `verifyDeviceTokenSignature` /
     `isPushPlatform`) mirrors `peer-record.ts`. `CadreNode.registerDeviceToken(platform, token)` /
     `resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, `null` on any failure) /
     `clearDeviceToken()` reuse the `registerSelf` / `resolvePeerAddrs` write+gate paths.
   - **Downstream of this registry**: the platform push **sender** (`PushNotifier`) and the automatic
-    fan-out/trigger (`PushFanoutService`) have both since shipped (see below). A non-authority phone cannot yet self-insert its first `DeviceToken` row — like
-    `CadrePeer`, the initial row is authority-gated, so the phone→server registration handshake (downstream
+    fan-out/trigger (`PushFanoutService`) have both since shipped (see below). A non-owner phone cannot yet self-insert its first `DeviceToken` row — like
+    `CadrePeer`, the initial row is owner-gated, so the phone→server registration handshake (downstream
     "RN registration" ticket) must seed it before the phone can self-refresh.
 - [x] Imperative background-lifecycle primitives (platform-agnostic; for a mobile `BackgroundRunner`)
   - `CadreNode.hibernateStrand(strandId)` / `hibernateAll()` force-hibernate now, bypassing the
@@ -295,13 +295,13 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     cooldown (`cooldownMs`, default 5 min), then wakes **direct-first**: a resolved `WakeAck` (even `accepted:false`)
     = reached ⇒ no platform push (no double-wake); only a dial/transport **rejection** falls back to
     `resolveDeviceToken` → `notifier.send`. An `unregistered` send marks the token dead (skips next resolve→send)
-    and calls `CadreNode.expireDeviceToken(peerId)` — authority deletes the row, non-authority logs re-registration.
+    and calls `CadreNode.expireDeviceToken(peerId)` — owner deletes the row, non-owner logs re-registration.
   - **Honest caveats**: cooldown/debounce/dead-token state is **in-memory, acceptably lossy** across restarts
     (`serviceWake` is idempotent ⇒ a duplicate is harmless); **no cross-strand coalescing** in v1 (each wake names
     its own `strandId`); **passive detection deferred** (above). Never throws to the trigger — the check-in wake
     is the backstop.
   - 18 unit tests (`push-fanout.spec.ts` fakes the node primitives + notifier; `cadre-node.spec.ts` covers the
-    `recordStrandActivity → notify` binding, the no-push-config no-op, and `expireDeviceToken` authority-vs-not).
+    `recordStrandActivity → notify` binding, the no-push-config no-op, and `expireDeviceToken` owner-vs-not).
     **Not exercised**: the RN-bundle build (Metro lacks a `node:http2` shim — see the ticket review handoff) and
     real-network fan-out.
 
@@ -314,7 +314,7 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     `push:fcm` / `push:apns`); non-secret bits (APNs `bundleId`, sandbox/prod, cooldown/debounce) live in
     `host.config.json`. `cadre-host push {fcm,apns,options,status,clear}` is the entry path. The orchestrator
     **re-resolves on every (re-)spawn** via a `pushResolver` (no raw key in `state.json`) and writes `config.push`
-    for the authority/storage node (and managed storage nodes); transaction nodes get none. Tested:
+    for the owner/storage node (and managed storage nodes); transaction nodes get none. Tested:
     `push.test.ts`, `orchestrator-push.test.ts`.
   - **cadre-provider**: per-tenant `push` config (provider-level `default` + `tenants[customerId]` overrides);
     `validate.ts` rejects a partial set at `loadConfig`; `ContainerService` resolves **strictly by the launching
@@ -438,8 +438,8 @@ The FRET root-cure ticket (`network-scoped-ring-admission`, `../fret/tickets/pla
 required to unblock Sereus, but remains wanted as defense-in-depth on the routing substrate.
 
 ### Adding a cadre member (cadre-cli)
-- [x] **Works** for the realistic topology: one `storage`/authority node + `transaction`
-  member(s). Verified live: authority (`cadre start --authority --admin-port`) →
+- [x] **Works** for the realistic topology: one `storage`/owner node + `transaction`
+  member(s). Verified live: owner (`cadre start --owner --admin-port`) →
   `POST /admin/accept-phone` authorizes the member → member joins via
   `controlNetwork.bootstrapNodes` → both nodes converge on the `CadrePeer` roster
   **and** the member self-registers its dialable address (`registerSelf: refreshed`).
@@ -513,19 +513,19 @@ With the cross-network blocker cleared, the full integration suite is **98 passe
 residual failures share one root cause and are **not** related to the optimystic work: `isMember()`
 is `listMembers().some(...)`, and `listMembers()` returns raw `CadrePeer` **address records**, so
 membership = "has published an address record", not "is authorized". Effects: (1) a fresh party lists
-its own self-registered row (`cadre-host-authority-node` fresh-party test — expected `[]`); (2) an
+its own self-registered row (`cadre-host-owner-node` fresh-party test — expected `[]`); (2) an
 outsider that has seeded its own `CadrePeer` row passes the push-wake authorization gate
 (`push-wake-e2e` non-member test — a non-member wakes a hibernating strand).
 
 **Update (2026-07-03): decision made (Option B), spike done, implement chain filed.** The scope
-question ("pull the deferred node-local trusted-authority anchor forward?") was routed to the human
+question ("pull the deferred node-local trusted-owner anchor forward?") was routed to the human
 via `blocked/membership-gate-authority-anchor-decision.md`, and the ticket's own "single
 highest-value next step" — the empirical spike settling **Option A (cheap) vs B (robust)** — was run.
 **Result: pollution CONFIRMED.** A focused two-`CadreNode` integration spike measured that a same-party
-self-appointed-authority outsider's self-minted key replicates into a legitimate peer's *local*
-`AuthorityKey` table the instant they connect (Rx's table went 0 → 1 == O's key). So checking a
-recorded voucher against the *replicated* `AuthorityKey` table (Option A) is **unsound** — a correct
-fix needs a **node-local, non-replicated trusted-authority anchor** (Option B). The spike also exposed
+self-appointed-owner outsider's self-minted key replicates into a legitimate peer's *local*
+`OwnerKey` table the instant they connect (Rx's table went 0 → 1 == O's key). So checking a
+recorded voucher against the *replicated* `OwnerKey` table (Option A) is **unsound** — a correct
+fix needs a **node-local, non-replicated trusted-owner anchor** (Option B). The spike also exposed
 a second victim of the same false anchor: `dbAnchoredTrustPolicy` (the "secure default" for accepting
 seeds) sources its trust set from the same pollutable replicated table.
 
@@ -534,7 +534,7 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
 1. `membership-authorized-surface-split` — split the *addressable* set (dial/seed/fan-out, includes
    self) from the *authorized-member* set (wake gate, excludes self); no trust change. Fixes the
    fresh-party self-listing test.
-2. `membership-cadrepeer-voucher-persist` — persist the vouching authority (`VouchAuthority`/`VouchSig`)
+2. `membership-cadrepeer-voucher-persist` — persist the vouching owner (`VouchOwner`/`VouchSig`)
    on each `CadrePeer` row (the sign/verify helpers in `peer-authorization.ts` already exist; the
    signature was just being discarded at write).
    - `membership-cadrepeer-authority-antireplay` (inserted 2.5) — persisting the voucher on a replicated
@@ -548,10 +548,10 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
    `TrustedAuthorityStore`, seeded out-of-band (genesis self-trust / invite-pinned keys); pulls the
    interim store from `seed-accepted-authority-persistence` forward.
 4. `membership-authorized-predicate-and-gates` — `isAuthorizedMember` = voucher recorded ∧ its
-   authority ∈ node-local anchor ∧ signature verifies ∧ not-self; routes the wake/strand-addr gates
+   owner ∈ node-local anchor ∧ signature verifies ∧ not-self; routes the wake/strand-addr gates
    through it and reworks the cross-node convergence/push-wake tests to model real enrollment. **Closes
    the non-member wake hole.**
-5. `seed-trust-anchor-from-local-store` — repoint seed-trust's `knownAuthorityKeys` from the replicated
+5. `seed-trust-anchor-from-local-store` — repoint seed-trust's `knownOwnerKeys` from the replicated
    table to the node-local anchor (closes the `dbAnchoredTrustPolicy` variant of the same hole).
 6. `membership-connection-gater` — defense-in-depth: reject the sensitive control protocols
    (control-DB repo / wake / strand-addr) from unauthorized peers at stream/connection time, with an

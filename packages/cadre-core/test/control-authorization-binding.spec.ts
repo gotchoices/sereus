@@ -12,7 +12,7 @@ import type { ControlDatabase } from '../src/control-database.js';
 
 /**
  * Verifies the row-bound, single-use authorization scheme for the privileged control
- * tables (AuthorityKey / ValidationKey / Strand). Each authority signature is bound to
+ * tables (OwnerKey / ValidationKey / Strand). Each owner signature is bound to
  * the row's contents (not a bare stamp), and the StampId is a unique single-use column,
  * so a captured `(StampId, Signature)` pair cannot be transplanted onto an attacker-
  * chosen row (privilege escalation) or replayed.
@@ -25,12 +25,12 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   let node: CadreNode;
   let db: ControlDatabase;
   let rawDb: Database;
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
 
   // ed25519-sign the raw canonical message bytes (no pre-hash), as the writers expect.
   const signMessage = (message: Uint8Array): string =>
-    cryptoSign(message, authorityPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    cryptoSign(message, ownerPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
   const freshStamp = (): string => randomBytes(256, 'base64url') as string;
 
@@ -39,8 +39,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     return Number(row?.c ?? 0);
   }
 
-  async function authorityKeyCount(): Promise<number> {
-    const row = await rawDb.get('select count(1) as c from CadreControl.AuthorityKey');
+  async function ownerKeyCount(): Promise<number> {
+    const row = await rawDb.get('select count(1) as c from CadreControl.OwnerKey');
     return Number(row?.c ?? 0);
   }
 
@@ -58,27 +58,27 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   ): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
-         with context AuthorityKey = ?, Signature = ?
+         with context OwnerKey = ?, Signature = ?
          values (?, ?, ?, ?)`,
-      [authorityPublicKey, sig, id, type, memberPrivateKey, stampId],
+      [ownerPublicKey, sig, id, type, memberPrivateKey, stampId],
     );
   }
 
-  function rawInsertAuthorityKey(sig: string | null, key: string, stampId: string): Promise<void> {
+  function rawInsertOwnerKey(sig: string | null, key: string, stampId: string): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.AuthorityKey (Key, StampId)
-         with context AuthorityKey = ?, Signature = ?
+      `insert into CadreControl.OwnerKey (Key, StampId)
+         with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [authorityPublicKey, sig, key, stampId],
+      [ownerPublicKey, sig, key, stampId],
     );
   }
 
   function rawInsertValidationKey(sig: string | null, key: string, stampId: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.ValidationKey (Key, StampId)
-         with context AuthorityKey = ?, Signature = ?
+         with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [authorityPublicKey, sig, key, stampId],
+      [ownerPublicKey, sig, key, stampId],
     );
   }
 
@@ -128,18 +128,18 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   ): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StampId)
-         with context AuthorityKey = ?, Signature = ?
+         with context OwnerKey = ?, Signature = ?
          values (?, ?, ?, ?, ?, ?)`,
-      [authorityPublicKey, sig, token, sAppId, expiresAt, totalUses, validationUrl, stampId],
+      [ownerPublicKey, sig, token, sAppId, expiresAt, totalUses, validationUrl, stampId],
     );
   }
 
   function rawDeleteFormationInvite(sig: string | null, token: string): Promise<void> {
     return rawDb.exec(
       `delete from CadreControl.FormationInvite
-         with context AuthorityKey = ?, Signature = ?
+         with context OwnerKey = ?, Signature = ?
          where Token = ?`,
-      [authorityPublicKey, sig, token],
+      [ownerPublicKey, sig, token],
     );
   }
 
@@ -151,8 +151,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   }
 
   beforeAll(async () => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 
     node = new CadreNode({
       controlNetwork: {
@@ -168,17 +168,17 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     db = controlDb!;
     rawDb = db.getDatabase();
 
-    // Bootstrap founding authority (unsigned branch). Idempotent + single row.
-    expect(await db.ensureAuthorityKey(authorityPublicKey)).toBe(true);
-    expect(await authorityKeyCount()).toBe(1);
+    // Bootstrap founding owner (unsigned branch). Idempotent + single row.
+    expect(await db.ensureOwnerKey(ownerPublicKey)).toBe(true);
+    expect(await ownerKeyCount()).toBe(1);
   }, 60_000);
 
   afterAll(async () => {
     await node?.stop();
   });
 
-  it('bootstrap persisted a unique StampId on the founding authority row', async () => {
-    const row = await rawDb.get('select StampId from CadreControl.AuthorityKey where Key = ?', [authorityPublicKey]);
+  it('bootstrap persisted a unique StampId on the founding owner row', async () => {
+    const row = await rawDb.get('select StampId from CadreControl.OwnerKey where Key = ?', [ownerPublicKey]);
     expect(typeof row?.StampId).toBe('string');
     expect((row?.StampId as string).length).toBeGreaterThan(0);
   });
@@ -187,7 +187,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const before = await strandCount();
     const strandId = 'strand-happy-' + Math.random().toString(36).slice(2);
 
-    await db.insertStrand(strandId, 'o', authorityPublicKey, signMessage);
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
 
     expect(await strandCount()).toBe(before + 1);
     const row = await rawDb.get('select Type, StampId from CadreControl.Strand where Id = ?', [strandId]);
@@ -205,7 +205,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const strandId = 'strand-closed-' + Math.random().toString(36).slice(2);
     const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 
-    await db.insertStrand(strandId, 'c', authorityPublicKey, signMessage, memberPrivateKey);
+    await db.insertStrand(strandId, 'c', ownerPublicKey, signMessage, memberPrivateKey);
 
     expect(await strandCount()).toBe(before + 1);
     const row = await rawDb.get(
@@ -222,7 +222,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const s1 = 'strand-src-' + Math.random().toString(36).slice(2);
     const s2 = 'strand-attacker-' + Math.random().toString(36).slice(2);
 
-    // Authority signs a valid authorization for s1 (Id, Type, '', stamp).
+    // Owner signs a valid authorization for s1 (Id, Type, '', stamp).
     const sig = signMessage(buildAuthorizationMessage([s1, 'o', '', stamp]));
 
     const before = await strandCount();
@@ -232,7 +232,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [s2])).toBeUndefined();
   });
 
-  it('cross-table transplant rejected: a Strand signature cannot authorize an AuthorityKey insert', async () => {
+  it('cross-table transplant rejected: a Strand signature cannot authorize an OwnerKey insert', async () => {
     const stamp = freshStamp();
     const sId = 'strand-xtab-' + Math.random().toString(36).slice(2);
     // A valid Strand authorization (4-field message).
@@ -241,11 +241,11 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const attackerKey = generatePrivateKey('ed25519', 'base64url') as string;
     const attackerPub = getPublicKey(attackerKey, 'ed25519', 'base64url', 'base64url') as string;
 
-    const before = await authorityKeyCount();
-    // Self-grant authority by reusing the Strand pair on the AuthorityKey table.
-    await expect(rawInsertAuthorityKey(strandSig, attackerPub, stamp)).rejects.toThrow();
-    expect(await authorityKeyCount()).toBe(before);
-    expect(await rawDb.get('select Key from CadreControl.AuthorityKey where Key = ?', [attackerPub])).toBeUndefined();
+    const before = await ownerKeyCount();
+    // Self-grant owner by reusing the Strand pair on the OwnerKey table.
+    await expect(rawInsertOwnerKey(strandSig, attackerPub, stamp)).rejects.toThrow();
+    expect(await ownerKeyCount()).toBe(before);
+    expect(await rawDb.get('select Key from CadreControl.OwnerKey where Key = ?', [attackerPub])).toBeUndefined();
   });
 
   it('replay rejected: re-using the exact (Id, StampId, Signature) is blocked by the unique StampId', async () => {
@@ -291,7 +291,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const before = await validationKeyCount();
     const valKey = 'val-' + (generatePrivateKey('ed25519', 'base64url') as string);
 
-    await db.insertValidationKey(valKey, authorityPublicKey, signMessage);
+    await db.insertValidationKey(valKey, ownerPublicKey, signMessage);
 
     expect(await validationKeyCount()).toBe(before + 1);
     const row = await rawDb.get('select StampId from CadreControl.ValidationKey where Key = ?', [valKey]);
@@ -323,18 +323,18 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     expect(await validationKeyCount()).toBe(after);
   });
 
-  it('AuthorityKey happy path: an existing authority can enroll a new authority by row-bound signature', async () => {
+  it('OwnerKey happy path: an existing owner can enroll a new owner by row-bound signature', async () => {
     const stamp = freshStamp();
     const newAuthKey = generatePrivateKey('ed25519', 'base64url') as string;
     const newAuthPub = getPublicKey(newAuthKey, 'ed25519', 'base64url', 'base64url') as string;
     const sig = signMessage(buildAuthorizationMessage([newAuthPub, stamp]));
 
-    const before = await authorityKeyCount();
-    await rawInsertAuthorityKey(sig, newAuthPub, stamp);
-    expect(await authorityKeyCount()).toBe(before + 1);
+    const before = await ownerKeyCount();
+    await rawInsertOwnerKey(sig, newAuthPub, stamp);
+    expect(await ownerKeyCount()).toBe(before + 1);
   });
 
-  it('AuthorityKey transplant rejected: a captured pair cannot self-grant a different authority', async () => {
+  it('OwnerKey transplant rejected: a captured pair cannot self-grant a different owner', async () => {
     const stamp = freshStamp();
     const k1 = generatePrivateKey('ed25519', 'base64url') as string;
     const k1Pub = getPublicKey(k1, 'ed25519', 'base64url', 'base64url') as string;
@@ -348,11 +348,11 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     // Valid authorization built for k1Pub ...
     const sig = signMessage(buildAuthorizationMessage([k1Pub, stamp]));
 
-    const before = await authorityKeyCount();
+    const before = await ownerKeyCount();
     // ... transplanted onto an attacker-chosen key. Rebound verify fails.
-    await expect(rawInsertAuthorityKey(sig, attackerPub, stamp)).rejects.toThrow();
-    expect(await authorityKeyCount()).toBe(before);
-    expect(await rawDb.get('select Key from CadreControl.AuthorityKey where Key = ?', [attackerPub])).toBeUndefined();
+    await expect(rawInsertOwnerKey(sig, attackerPub, stamp)).rejects.toThrow();
+    expect(await ownerKeyCount()).toBe(before);
+    expect(await rawDb.get('select Key from CadreControl.OwnerKey where Key = ?', [attackerPub])).toBeUndefined();
   });
 
   // --- FormationInvite: row-bound + single-use stamp (this ticket) ----------------------
@@ -370,7 +370,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const token = 'fi-happy-' + Math.random().toString(36).slice(2);
     const expiresAtMs = Date.parse('2031-03-04T12:34:56Z');
 
-    await db.insertFormationInvite(token, 'sapp-fi', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-fi', ownerPublicKey, signMessage, {
       expiresAtMs,
       totalUses: 5,
       validationUrl: 'https://hook.example/validate',
@@ -395,7 +395,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const t1 = 'fi-src-' + Math.random().toString(36).slice(2);
     const t2 = 'fi-attacker-' + Math.random().toString(36).slice(2);
 
-    // Authority signs a valid authorization for invite t1 (single-use, no expiry/url).
+    // Owner signs a valid authorization for invite t1 (single-use, no expiry/url).
     const sig = signMessage(inviteMessage({ token: t1, sAppId: 'sapp-a', totalUses: 1, stampId: stamp }));
 
     const before = await inviteCount();
@@ -523,7 +523,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     // insert a legit invite then UPDATE the consent parameters (TotalUses / ExpiresAt) with
     // NO signature, defeating the whole point. FormationInvite rows are insert/delete only.
     const token = 'fi-noupd-' + Math.random().toString(36).slice(2);
-    await db.insertFormationInvite(token, 'sapp-noupd', authorityPublicKey, signMessage, { totalUses: 1 });
+    await db.insertFormationInvite(token, 'sapp-noupd', ownerPublicKey, signMessage, { totalUses: 1 });
 
     await expect(rawUpdateInviteTotalUses(token, 999999)).rejects.toThrow();
     const row = await rawDb.get('select TotalUses from CadreControl.FormationInvite where Token = ?', [token]);

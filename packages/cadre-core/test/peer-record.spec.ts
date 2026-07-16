@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
 import {
   peerRecordSignedPayload,
@@ -28,7 +28,7 @@ async function makeRecord(addrs: string[], updatedAt: number): Promise<{
   peerId: string;
 }> {
   const libp2pKey = await generateKeyPair('Ed25519');
-  const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(libp2pKey);
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const peerId = peerIdFromPrivateKey(libp2pKey).toString();
   const record = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs, updatedAt }, privateKeyB64);
   return { record, privateKeyB64, publicKeyB64, peerId };
@@ -79,7 +79,7 @@ describe('signPeerRecord / verifyPeerRecordSignature', () => {
     const { record, peerId, publicKeyB64 } = await makeRecord(['/a'], 10);
     // Re-sign the same payload with an unrelated key, keep the original publicKey.
     const otherKey = await generateKeyPair('Ed25519');
-    const { privateKeyB64: otherPriv } = authorityKeyFromLibp2p(otherKey);
+    const { privateKeyB64: otherPriv } = ed25519KeyPairFromLibp2p(otherKey);
     const forgedSig = sign(
       peerRecordSignedPayload(peerId, record.addrs.join(','), record.updatedAt),
       otherPriv, 'ed25519', 'base64url', 'base64url', 'base64url'
@@ -141,7 +141,7 @@ describe('signaling address ordering', () => {
 });
 
 describe('currentMemberTrustPolicy', () => {
-  it('trusts any present record (membership = authority-vouched row)', async () => {
+  it('trusts any present record (membership = owner-vouched row)', async () => {
     const { record, peerId, publicKeyB64 } = await makeRecord(['/a'], 10);
     const decision = await currentMemberTrustPolicy().evaluate({
       peerId, publicKey: publicKeyB64, partyId: 'p', record,

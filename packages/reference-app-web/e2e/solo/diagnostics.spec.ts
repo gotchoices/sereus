@@ -74,9 +74,9 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 		await expect(page.getByTestId('diag-strand-status')).toHaveText('active', {
 			timeout: 30_000,
 		});
-		// Solo authority self-genesis must succeed (genesis on a fresh party,
+		// Solo owner self-genesis must succeed (genesis on a fresh party,
 		// existing on a warm reload) — never 'error'.
-		await expect(page.getByTestId('diag-authority')).toHaveText(/genesis|existing/, {
+		await expect(page.getByTestId('diag-owner')).toHaveText(/genesis|existing/, {
 			timeout: 30_000,
 		});
 

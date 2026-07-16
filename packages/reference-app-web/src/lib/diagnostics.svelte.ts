@@ -22,7 +22,7 @@ import {
 	getCadreNode,
 	getChatStrand,
 	getChatStrandId,
-	getAuthorityState,
+	getOwnerState,
 	getRelayState,
 	readControlAuthorizationState,
 	attemptUnauthorizedStrandWrite,
@@ -30,7 +30,7 @@ import {
 	type FormationInviteRow,
 	type FormationUsageRow,
 	type ControlStrandRow,
-	type AuthorityGateProbe,
+	type OwnerGateProbe,
 } from './cadre-web.js';
 import type { Libp2p, Connection } from '@libp2p/interface';
 import { IndexedDBRawStorage } from '@optimystic/db-p2p-storage-web';
@@ -117,29 +117,29 @@ export interface CadreInfo {
 	controlPeerIdShort: string | null;
 	cadrePeerCount: number | null;
 	cadrePeerError: string | null;
-	authority: string;
-	authorityError: string | null;
+	owner: string;
+	ownerError: string | null;
 	strand: CadreStrandInfo | null;
 }
 
 /**
  * Control-network authorization ("RBAC") surface: the gates the `CadreControl`
- * schema enforces, made observable. Authority/validation key counts, the
+ * schema enforces, made observable. Owner/validation key counts, the
  * formation invite/usage audit rows, per-strand membership type + member-key
  * presence, the relay-dialability posture, and the result of a manual
- * authority-gate probe (an unauthorized write that *should* be rejected).
+ * owner-gate probe (an unauthorized write that *should* be rejected).
  */
 export interface AuthorizationInfo {
 	available: boolean;
 	error: string | null;
-	authorityKeyCount: number;
+	ownerKeyCount: number;
 	validationKeyCount: number;
 	formationInvites: FormationInviteRow[];
 	formationUsage: FormationUsageRow[];
 	strands: ControlStrandRow[];
 	relay: RelayState;
-	/** Result of the last manual "verify authority gate" probe (null until run). */
-	gateProbe: AuthorityGateProbe | null;
+	/** Result of the last manual "verify owner gate" probe (null until run). */
+	gateProbe: OwnerGateProbe | null;
 }
 
 export interface CryptoSanityInfo {
@@ -179,8 +179,8 @@ function emptyCadre(): CadreInfo {
 		controlPeerIdShort: null,
 		cadrePeerCount: null,
 		cadrePeerError: null,
-		authority: 'pending',
-		authorityError: null,
+		owner: 'pending',
+		ownerError: null,
 		strand: null,
 	};
 }
@@ -189,7 +189,7 @@ function emptyAuthorization(): AuthorizationInfo {
 	return {
 		available: false,
 		error: null,
-		authorityKeyCount: 0,
+		ownerKeyCount: 0,
 		validationKeyCount: 0,
 		formationInvites: [],
 		formationUsage: [],
@@ -375,7 +375,7 @@ function detectCryptoSanity(): CryptoSanityInfo {
 
 /**
  * Cadre-level state: party id, control connection + peer id, CadrePeer
- * membership count, authority self-genesis outcome, and the chat strand's
+ * membership count, owner self-genesis outcome, and the chat strand's
  * status / peers / latency / error. The CadrePeer count is a best-effort
  * control-DB read (local on a solo node) guarded so a transactor hiccup never
  * sinks the tick.
@@ -385,7 +385,7 @@ async function collectCadre(): Promise<CadreInfo> {
 	const control = getControlNode();
 	const strandId = getChatStrandId();
 	const strand = getChatStrand();
-	const auth = getAuthorityState();
+	const auth = getOwnerState();
 
 	let cadrePeerCount: number | null = null;
 	let cadrePeerError: string | null = null;
@@ -406,8 +406,8 @@ async function collectCadre(): Promise<CadreInfo> {
 		controlPeerIdShort: shortPeerId(controlPeerId),
 		cadrePeerCount,
 		cadrePeerError,
-		authority: auth.state,
-		authorityError: auth.error,
+		owner: auth.state,
+		ownerError: auth.error,
 		strand: strandId
 			? {
 					id: strandId,
@@ -421,15 +421,15 @@ async function collectCadre(): Promise<CadreInfo> {
 	};
 }
 
-// Manual authority-gate probe result persists across polls (it is button-driven,
+// Manual owner-gate probe result persists across polls (it is button-driven,
 // not part of the cheap per-tick read).
-let lastGateProbe: AuthorityGateProbe | null = null;
+let lastGateProbe: OwnerGateProbe | null = null;
 
 /**
  * Control-network authorization ("RBAC") state. Cheap read-only SQL over the
  * control database's Quereus handle (no network), guarded so a transactor hiccup
  * surfaces as `error` rather than sinking the whole tick. Carries the relay
- * posture and the most recent manual authority-gate probe result.
+ * posture and the most recent manual owner-gate probe result.
  */
 async function collectAuthorization(): Promise<AuthorizationInfo> {
 	const node = getCadreNode();
@@ -451,18 +451,18 @@ async function collectAuthorization(): Promise<AuthorizationInfo> {
 }
 
 /**
- * Run the authority-gate demonstration: attempt an unauthorized control write
+ * Run the owner-gate demonstration: attempt an unauthorized control write
  * and record whether the `CadreControl` constraints rejected it. The result is
  * stashed so it survives the next poll, and pushed to the snapshot immediately.
  */
-export async function runAuthorityGateProbe(): Promise<void> {
+export async function runOwnerGateProbe(): Promise<void> {
 	try {
 		lastGateProbe = await attemptUnauthorizedStrandWrite();
 	} catch (err) {
 		// An unexpected throw (node not started, control db missing) is itself a
 		// failed probe — record it rather than letting it escape to the UI handler.
 		lastGateProbe = { rejected: false, error: err instanceof Error ? err.message : String(err) };
-		pushError('authorityGateProbe', err);
+		pushError('ownerGateProbe', err);
 	}
 	snapshot.authorization = { ...snapshot.authorization, gateProbe: lastGateProbe };
 }

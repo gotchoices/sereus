@@ -165,7 +165,7 @@ export interface NetworkConfig {
   transports?: Libp2pTransports;
   /**
    * Optional async resolver returning the multiaddrs to embed in invites
-   * (and other authority-address contexts). When unset, `libp2pNode.getMultiaddrs()`
+   * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
    * is used. Hosts behind NAT supply this to substitute their DDNS hostname
    * and externally-mapped port — see `@serfab/cadre-host`'s NatService.
    */
@@ -190,8 +190,8 @@ export interface NetworkConfig {
    */
   controlCohort?: {
     /**
-     * Cap on the number of NON-authority siblings dialed per reconcile pass
-     * (backbone/authority members are always dialed and do not count). Defaults
+     * Cap on the number of NON-owner siblings dialed per reconcile pass
+     * (backbone/owner members are always dialed and do not count). Defaults
      * to {@link DEFAULT_CONTROL_COHORT_TARGET_DEGREE}.
      */
     targetDegree?: number;
@@ -254,10 +254,10 @@ export interface CadreNodeConfig {
    * form). Mutually exclusive with {@link privateKey}. Absent ⇒ legacy behavior
    * (use `privateKey`, else libp2p generates an ephemeral key).
    *
-   * In the single-key reference model the authority signing key is *derived from*
-   * the node identity (see {@link CadreNode.getIdentityAuthorityKey}), so
-   * protecting the identity in a secure enclave protects the authority key too.
-   * A future separate-authority slot (`authorityKeyId`) is anticipated but not
+   * In the single-key reference model the owner signing key is *derived from*
+   * the node identity (see {@link CadreNode.getIdentityOwnerKey}), so
+   * protecting the identity in a secure enclave protects the owner key too.
+   * A future separate-owner slot (`ownerKeyId`) is anticipated but not
    * built here.
    */
   keyStore?: KeyStore;
@@ -296,7 +296,7 @@ export interface CadreNodeConfig {
 
   /**
    * Node-wide default trust anchor for INBOUND control-network seeds. Forwarded
-   * into every SeedBootstrapService this node constructs (authority, receive-only
+   * into every SeedBootstrapService this node constructs (owner, receive-only
    * listener, and the temp service used by applySeed when no service exists), and
    * used as the service-level default the libp2p seed-protocol handler relies on
    * (that path has no per-call override seam). Defaults to dbAnchoredTrustPolicy()
@@ -638,11 +638,11 @@ export interface PeerAddressRecord {
 
 /**
  * Outcome of {@link CadreNode.registerSelf}, surfaced so callers (e.g. the CLI
- * `--authority` branch) can log what happened:
- * - `inserted` — the first authority-signed INSERT of this node's `CadrePeer` row.
+ * `--owner` branch) can log what happened:
+ * - `inserted` — the first owner-signed INSERT of this node's `CadrePeer` row.
  * - `refreshed` — a self-signed UPDATE of an existing row (heartbeat / addr change).
  * - `skipped` — nothing written (no self-signing key, or not yet a member with no
- *   authority service to self-insert).
+ *   owner service to self-insert).
  */
 export type SelfRegistrationOutcome = 'inserted' | 'refreshed' | 'skipped';
 
@@ -661,7 +661,7 @@ export interface ResolveOpts {
   /**
    * Pluggable trust gate, evaluated after signature + freshness pass. Defaults
    * to {@link currentMemberTrustPolicy} (any existing — therefore
-   * authority-vouched — CadrePeer member is trusted). Inject a stricter policy
+   * owner-vouched — CadrePeer member is trusted). Inject a stricter policy
    * (e.g. from `seed-signerkey-trust-policy`) to reject otherwise-valid records
    * before dialing.
    */
@@ -809,9 +809,9 @@ export interface SeedPeer {
   peerId: string;
   /** Multiaddrs for connecting to this peer */
   multiaddrs: string[];
-  /** Whether this peer holds an authority key */
-  isAuthority: boolean;
-  /** ed25519 public key (base64url) — present on authority peers for signerKey verification */
+  /** Whether this peer holds an owner key */
+  isOwner: boolean;
+  /** ed25519 public key (base64url) — present on owner peers for signerKey verification */
   publicKey?: string;
 }
 
@@ -826,9 +826,9 @@ export interface ControlNetworkSeed {
   partyId: string;
   /** Known peers in the cadre */
   peers: SeedPeer[];
-  /** Signature over the seed by an authority key */
+  /** Signature over the seed by an owner key */
   signature: string;
-  /** The authority key that signed this seed */
+  /** The owner key that signed this seed */
   signerKey: string;
 }
 
@@ -841,9 +841,9 @@ export interface SeedMessage {
   partyId: string;
   /** Known peers in the cadre */
   peers: SeedPeer[];
-  /** Signature by an authority key */
+  /** Signature by an owner key */
   signature: string;
-  /** The authority key that signed this message */
+  /** The owner key that signed this message */
   signerKey: string;
 }
 
@@ -953,15 +953,15 @@ export type NodeTopology = 'public' | 'nat';
 export interface CadreInvite {
   /** Party ID of the cadre */
   partyId: string;
-  /** Multiaddrs to dial the authority */
-  authorityAddrs: string[];
+  /** Multiaddrs to dial the owner */
+  ownerAddrs: string[];
   /**
-   * Authority ed25519 public keys (base64url) of the cadre, carried out-of-band
-   * so a cold-start invitee can pin the trusted authority set before applying
+   * Owner ed25519 public keys (base64url) of the cadre, carried out-of-band
+   * so a cold-start invitee can pin the trusted owner set before applying
    * any seed (the seed itself cannot vouch for its own signer). Populated by
-   * `createInvite` from the issuer's `AuthorityKey` table.
+   * `createInvite` from the issuer's `OwnerKey` table.
    */
-  authorityKeys?: string[];
+  ownerKeys?: string[];
   /** Optional invite token for validation */
   token?: string;
   /** Timestamp when invite was created */

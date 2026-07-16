@@ -1,14 +1,14 @@
 /**
- * Server-level smoke: the /auth/* HTTP contract over the authority-node
+ * Server-level smoke: the /auth/* HTTP contract over the owner-node
  * channel adapter. Validates the two behaviours the realignment must
  * preserve:
  *   1. With the node up, POST /auth/invites returns an encodedInvite (no 500).
  *   2. With the node refusing connections, GET /auth/trust-circle still lists
  *      local labels, and POST /auth/invites returns 503 (not a raw 500).
  *
- * The authority node is represented by a stub HTTP server matching the 6.6
+ * The owner node is represented by a stub HTTP server matching the 6.6
  * admin contract (the spawn path itself is covered by
- * orchestrator-authority.test.ts).
+ * orchestrator-owner.test.ts).
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -19,7 +19,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { TrustCircleService, TrustCircleStore, createTrustCircleHandlers } from '../auth/index.js';
-import { AuthorityNodeClient } from '../authority/index.js';
+import { OwnerNodeClient } from '../owner/index.js';
 import { registerErrorHandler } from '../server/error-handler.js';
 import { registerTrustCircleRoutes } from '../server/routes/trust-circle.js';
 import { EventBus } from '../server/events/bus.js';
@@ -51,7 +51,7 @@ describe('host /auth delegation — node up', () => {
         }
         if (req.url === '/admin/invites' && req.method === 'POST') {
           res.writeHead(200, { 'content-type': 'application/json' });
-          res.end(JSON.stringify({ ok: true, data: { invite: { partyId: 'p', authorityAddrs: [], token: 't', createdAt: 1 }, encodedInvite: 'ENC' } }));
+          res.end(JSON.stringify({ ok: true, data: { invite: { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 }, encodedInvite: 'ENC' } }));
           return;
         }
         if (req.url === '/admin/members' && req.method === 'GET') {
@@ -70,7 +70,7 @@ describe('host /auth delegation — node up', () => {
   afterEach(async () => { await new Promise<void>((resolve) => server.close(() => resolve())); });
 
   it('POST /auth/invites returns an encodedInvite (no 500)', async () => {
-    const client = new AuthorityNodeClient({ baseUrl, token: TOKEN });
+    const client = new OwnerNodeClient({ baseUrl, token: TOKEN });
     const service = new TrustCircleService({ cadreNode: client, store: new TrustCircleStore(tmpRoot) });
     const app = buildApp(service);
     try {
@@ -103,7 +103,7 @@ describe('host /auth delegation — node refusing connections', () => {
     const store = new TrustCircleStore(tmpRoot);
     store.addMember({ peerId: '12D3KooWLocal', label: 'My laptop', addedAt: '2025-01-01T00:00:00Z' });
 
-    const client = new AuthorityNodeClient({ baseUrl: closedBaseUrl, token: TOKEN });
+    const client = new OwnerNodeClient({ baseUrl: closedBaseUrl, token: TOKEN });
     const service = new TrustCircleService({ cadreNode: client, store });
     const app = buildApp(service);
     try {

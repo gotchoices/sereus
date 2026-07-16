@@ -140,19 +140,19 @@ Each phone runs its own CadreNode. To chat between two phones:
 1. Start the drone — it acts as the rendezvous point
 2. Both phones connect to the same Party ID and drone bootstrap address (at startup or via **Add Peer** later)
 3. Phone A creates a strand — the app **publishes** its `Strand` row to the shared
-   control database (an authority-signed insert; each phone self-genesis as its
-   own authority at startup, so the first node to enroll its key is the founding
-   authority)
+   control database (an owner-signed insert; each phone self-genesis as its
+   own owner at startup, so the first node to enroll its key is the founding
+   owner)
 4. Phone B's node observes the new row via control-network sync and emits
    `strand:discovered`; the app auto-joins it via `joinChatStrand`
 5. Both phones can now send and receive messages on the shared strand — once the
    strand-level cohort converges (peers find each other through the control
    network's `CadrePeer` records; see the cohort-bootstrap wiring)
 
-> **Note:** joining a discovered strand needs no authority, but publishing a
-> **new** strand does. In a shared party the founding authority is whichever node
+> **Note:** joining a discovered strand needs no owner, but publishing a
+> **new** strand does. In a shared party the founding owner is whichever node
 > enrolled its key first, so a second phone may be able to join strands without
-> being able to create its own. This is a demo simplification of the authority
+> being able to create its own. This is a demo simplification of the owner
 > model.
 
 > **On Party IDs:** a Party ID names **one party's private control network** —
@@ -174,7 +174,7 @@ through an explicit host→invitee consent handshake. The Settings screen's
    - mints a `MemberPrivateKey` and creates a closed strand
      (`publishStrand(id, 'c', memberKey)` + local `addStrand` with `Type:'c'`),
    - mints an `OpenInvitation` (`createOpenInvitation(CHAT_SAPP_ID, …)`) and
-     **persists** the matching `FormationInvite` row under the host's authority,
+     **persists** the matching `FormationInvite` row under the host's owner,
      **bound to that strand** (`publishFormationInvite(token, sApp, { strandId })`),
      so the token is redeemable and the responder knows which strand to provision,
    - shows a single copyable, base64url-encoded `OpenInvitation` code
@@ -309,7 +309,7 @@ reference-app-rn/
 
 ## Key Concepts
 
-**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an authority-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event.
+**Control network** — The shared Optimystic network (keyed by Party ID) where nodes discover each other and advertise strands. Creating a strand publishes a `Strand` row here (an owner-signed write); every other node's strand watcher then sees the row and the app auto-joins via the `strand:discovered` event.
 
 **Strand** — An isolated P2P database. The quick-start creates strands of type `'o'` (open), meaning any connected node can participate. The trust-model demo also creates type `'c'` (closed) strands, which are invitation-only and gated by a membership key — see "Trust model / closed strands" below.
 

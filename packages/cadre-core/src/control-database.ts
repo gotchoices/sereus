@@ -54,7 +54,7 @@ function parseStoredDatetimeMs(value: string | number): number {
 }
 
 /**
- * Build the canonical authorization message that authority signatures are bound to.
+ * Build the canonical authorization message that owner signatures are bound to.
  *
  * The message is a SINGLE framed SHA-256 digest over the ordered tuple of fields (the
  * crypto plugin's injective multi-field encoding), in a fixed field order, with the
@@ -111,7 +111,7 @@ interface OptimysticPluginResult {
  * `waitForControlSync`) a typo-proof table argument.
  */
 export type ControlTable =
-  | 'AuthorityKey'
+  | 'OwnerKey'
   | 'ValidationKey'
   | 'Strand'
   | 'CadrePeer'
@@ -121,7 +121,7 @@ export type ControlTable =
 
 /** Runtime guard mirroring {@link ControlTable} for the dynamic-`from` count. */
 const CONTROL_TABLES: ReadonlySet<ControlTable> = new Set<ControlTable>([
-  'AuthorityKey',
+  'OwnerKey',
   'ValidationKey',
   'Strand',
   'CadrePeer',
@@ -329,7 +329,7 @@ export class ControlDatabase {
    * into the `from` clause: the names are not user input, but the check keeps the
    * dynamic query off the injection surface and fails loudly on a typo instead of
    * emitting a malformed statement. The count reflects only the rows this node's
-   * control DB has converged on — in the integration harness that is the authority
+   * control DB has converged on — in the integration harness that is the owner
    * node (one ControlDatabase per party), i.e. the authoritative control-network
    * view, not a per-drone convergence guarantee.
    */
@@ -353,44 +353,44 @@ export class ControlDatabase {
   }
 
   /**
-   * Check whether any authority key exists in the control database.
+   * Check whether any owner key exists in the control database.
    * Used to decide whether a fresh-party genesis insert is required.
    */
-  async hasAuthorityKey(): Promise<boolean> {
+  async hasOwnerKey(): Promise<boolean> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval('select count(1) as Count from CadreControl.AuthorityKey')) {
+    for await (const row of this.db!.eval('select count(1) as Count from CadreControl.OwnerKey')) {
       return (row.Count as number) > 0;
     }
     return false;
   }
 
   /**
-   * Idempotent genesis: insert `key` as the founding authority key only when
-   * the party has none yet. Returns true if it inserted, false if an authority
-   * key already existed (so a repeat `--authority` start is a no-op).
+   * Idempotent genesis: insert `key` as the founding owner key only when
+   * the party has none yet. Returns true if it inserted, false if an owner
+   * key already existed (so a repeat `--owner` start is a no-op).
    */
-  async ensureAuthorityKey(key: string): Promise<boolean> {
+  async ensureOwnerKey(key: string): Promise<boolean> {
     this.ensureInitialized();
-    if (await this.hasAuthorityKey()) {
-      log('Authority key already present; skipping genesis insert');
+    if (await this.hasOwnerKey()) {
+      log('Owner key already present; skipping genesis insert');
       return false;
     }
-    await this.insertAuthorityKey(key);
+    await this.insertOwnerKey(key);
     return true;
   }
 
   /**
-   * Collect every authority key (`CadreControl.AuthorityKey.Key`) as a set.
+   * Collect every owner key (`CadreControl.OwnerKey.Key`) as a set.
    *
    * This is the steady-state trust anchor for seeds: a seed's signer key is
    * trusted only if it is already enrolled here (see `SeedTrustPolicy`). It is
-   * also the authority-identity source for `queryPeers`, decoupling authority
+   * also the owner-identity source for `queryPeers`, decoupling owner
    * status from the libp2p transport peer ID.
    */
-  async getAuthorityKeys(): Promise<Set<string>> {
+  async getOwnerKeys(): Promise<Set<string>> {
     this.ensureInitialized();
     const keys = new Set<string>();
-    for await (const row of this.db!.eval('select Key from CadreControl.AuthorityKey')) {
+    for await (const row of this.db!.eval('select Key from CadreControl.OwnerKey')) {
       keys.add(row.Key as string);
     }
     return keys;
@@ -399,15 +399,15 @@ export class ControlDatabase {
   /**
    * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
    */
-  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchAuthority: string | null; vouchSig: string | null }>> {
+  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }>> {
     this.ensureInitialized();
-    const rows: Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchAuthority: string | null; vouchSig: string | null }> = [];
-    for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchAuthority, VouchSig from CadreControl.CadrePeer')) {
+    const rows: Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }> = [];
+    for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
       rows.push({
         peerId: row.PeerId as string,
         multiaddr: (row.Multiaddr as string | null) ?? null,
         stampId: (row.StampId as string | null) ?? null,
-        vouchAuthority: (row.VouchAuthority as string | null) ?? null,
+        vouchOwner: (row.VouchOwner as string | null) ?? null,
         vouchSig: (row.VouchSig as string | null) ?? null,
       });
     }
@@ -416,7 +416,7 @@ export class ControlDatabase {
 
   /**
    * Read a single `CadrePeer` row's single-use `StampId` nonce (null when the row
-   * does not exist). Used by the authority delete / re-touch paths, which must bind
+   * does not exist). Used by the owner delete / re-touch paths, which must bind
    * their signature to the row's CURRENT nonce ({@link cadrePeerRemoveDigest} /
    * {@link cadrePeerVoucherDigest}).
    */
@@ -461,8 +461,8 @@ export class ControlDatabase {
    *
    * Authorization is carried entirely by the record: the `Sig` column (verified
    * by the `AuthorizedUpdate` self-branch against the stored `PublicKey`) plus
-   * the strictly-increasing `UpdatedAt`. No authority key is involved, so this
-   * is the refresh path for any member — authority or drone — once its row
+   * the strictly-increasing `UpdatedAt`. No owner key is involved, so this
+   * is the refresh path for any member — owner or drone — once its row
    * exists. `PublicKey` is intentionally not in the SET list (it is immutable on
    * self-update and the constraint enforces `new.PublicKey = old.PublicKey`).
    */
@@ -471,7 +471,7 @@ export class ControlDatabase {
     const multiaddr = record.addrs.join(',');
     await this.db!.exec(`
       update CadreControl.CadrePeer
-        with context AuthorityKey = null, Signature = ?
+        with context OwnerKey = null, Signature = ?
         set Multiaddr = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
     `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
@@ -509,7 +509,7 @@ export class ControlDatabase {
    *
    * Authorization is carried entirely by the record: the `Sig` column (verified by
    * the `DeviceToken.AuthorizedUpdate` self-branch against the stored
-   * `CadrePeer.PublicKey`) plus the strictly-increasing `UpdatedAt`. No authority key
+   * `CadrePeer.PublicKey`) plus the strictly-increasing `UpdatedAt`. No owner key
    * is involved, so this is the refresh / rotation path for any member once both its
    * `CadrePeer` row (for the PublicKey) and its `DeviceToken` row exist. `PeerId` is
    * intentionally not in the SET list (immutable; the constraint enforces
@@ -519,7 +519,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     await this.db!.exec(`
       update CadreControl.DeviceToken
-        with context AuthorityKey = null, Signature = ?
+        with context OwnerKey = null, Signature = ?
         set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
     `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]);
@@ -527,44 +527,44 @@ export class ControlDatabase {
   }
 
   /**
-   * Insert the initial authority key (bootstrap - no existing authorities required)
+   * Insert the initial owner key (bootstrap - no existing owners required)
    */
-  async insertAuthorityKey(key: string): Promise<void> {
+  async insertOwnerKey(key: string): Promise<void> {
     this.ensureInitialized();
-    log('Inserting authority key: %s', key);
+    log('Inserting owner key: %s', key);
 
-    // Bootstrap is authorized by the schema's `(select count(1) from AuthorityKey) <= 1`
+    // Bootstrap is authorized by the schema's `(select count(1) from OwnerKey) <= 1`
     // branch, so no signature is needed. We still persist a fresh, unique StampId in the
     // row's own column to satisfy the not-null/unique anti-replay constraint — the StampId
     // is now a real column value, not the optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
     await this.db!.exec(`
-      insert into CadreControl.AuthorityKey (Key, StampId)
-        with context AuthorityKey = null, Signature = null
+      insert into CadreControl.OwnerKey (Key, StampId)
+        with context OwnerKey = null, Signature = null
         values (?, ?)
     `, [key, stampId]);
-    log('Authority key inserted');
+    log('Owner key inserted');
   }
 
   /**
-   * Insert a strand into the control database using an authority signature.
+   * Insert a strand into the control database using an owner signature.
    *
-   * The authority signs the canonical row-bound authorization message (see
+   * The owner signs the canonical row-bound authorization message (see
    * {@link buildAuthorizationMessage}) — NOT a bare stamp — so the signature is bound to
    * this strand's contents and cannot be transplanted onto an attacker-chosen row. The
    * StampId is persisted as a unique column for single-use anti-replay.
    *
    * @param strandId - Unique identifier for the strand
    * @param type - Strand type: 'o' for open, 'c' for closed
-   * @param authorityKey - Public key of the authorizing authority
+   * @param ownerKey - Public key of the authorizing owner
    * @param signMessage - Function that ed25519-signs the raw message bytes (no pre-hash)
-   *   with the authority's private key, returning a base64url signature
+   *   with the owner's private key, returning a base64url signature
    * @param memberPrivateKey - Optional private key for membership in closed strands
    */
   async insertStrand(
     strandId: string,
     type: 'o' | 'c',
-    authorityKey: string,
+    ownerKey: string,
     signMessage: (message: Uint8Array) => string,
     memberPrivateKey?: string
   ): Promise<void> {
@@ -583,29 +583,29 @@ export class ControlDatabase {
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
     await this.db!.exec(`
       insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?)
-    `, [authorityKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
 
     log('Strand inserted: %s', strandId);
   }
 
   /**
-   * Insert a validation key into the control database using an authority signature.
+   * Insert a validation key into the control database using an owner signature.
    *
-   * Mirrors {@link insertStrand}: the authority signs the canonical row-bound
+   * Mirrors {@link insertStrand}: the owner signs the canonical row-bound
    * authorization message over (Key, StampId), and the StampId is persisted as a unique
    * column for single-use anti-replay. A `ValidationKey` authorizes verifying strand
    * formation disclosures.
    *
    * @param key - The validation public key to enroll
-   * @param authorityKey - Public key of the authorizing authority
+   * @param ownerKey - Public key of the authorizing owner
    * @param signMessage - Function that ed25519-signs the raw message bytes (no pre-hash)
-   *   with the authority's private key, returning a base64url signature
+   *   with the owner's private key, returning a base64url signature
    */
   async insertValidationKey(
     key: string,
-    authorityKey: string,
+    ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
     this.ensureInitialized();
@@ -620,22 +620,22 @@ export class ControlDatabase {
 
     await this.db!.exec(`
       insert into CadreControl.ValidationKey (Key, StampId)
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         values (?, ?)
-    `, [authorityKey, signature, key, stampId]);
+    `, [ownerKey, signature, key, stampId]);
 
     log('Validation key inserted: %s', key);
   }
 
   /**
-   * Insert an authority-signed `FormationInvite` (open invitation token).
+   * Insert an owner-signed `FormationInvite` (open invitation token).
    *
    * The invite is the on-network record that later authorizes an
-   * authority-signature-FREE `Strand` creation: an invited cadre peer redeems it
+   * owner-signature-FREE `Strand` creation: an invited cadre peer redeems it
    * by inserting a matching `FormationUsage` row (see {@link redeemInvitation}),
    * which satisfies the consent branch of `Strand.Authorized`.
    *
-   * Like {@link insertStrand}/{@link insertValidationKey}, the authority signs the
+   * Like {@link insertStrand}/{@link insertValidationKey}, the owner signs the
    * canonical row-bound authorization message (see {@link buildAuthorizationMessage})
    * over (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId) — NOT a
    * bare stamp — so the signature is bound to this invite's contents and cannot be
@@ -660,7 +660,7 @@ export class ControlDatabase {
    *
    * @param token - Invitation token (the `FormationInvite` primary key)
    * @param sAppId - The sApp a redeemed strand will use
-   * @param authorityKey - Public key of the authorizing authority
+   * @param ownerKey - Public key of the authorizing owner
    * @param signMessage - ed25519-signs the raw message bytes (no pre-hash),
    *   returning a base64url signature — the same callback shape {@link insertStrand} uses
    * @param options - Optional `expiresAtMs` (epoch ms), `totalUses`, `validationUrl`,
@@ -669,7 +669,7 @@ export class ControlDatabase {
   async insertFormationInvite(
     token: string,
     sAppId: string,
-    authorityKey: string,
+    ownerKey: string,
     signMessage: (message: Uint8Array) => string,
     options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
@@ -704,10 +704,10 @@ export class ControlDatabase {
     // unique column (single-use anti-replay), no longer a context value.
     await this.db!.exec(`
       insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
-        with context AuthorityKey = ?, Signature = ?
+        with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?, ?)
     `, [
-      authorityKey, signature,
+      ownerKey, signature,
       token, sAppId,
       expiresAtCanonical,
       options.totalUses ?? null,
@@ -728,7 +728,7 @@ export class ControlDatabase {
    * `FormationUsage.StrandExists` requires the `Strand` row. Both CHECKs contain
    * subqueries, so Quereus auto-defers them to transaction commit — wrapping both
    * inserts in a single explicit `begin … commit` lets both deferred CHECKs see
-   * both rows at commit. The strand is authorised WITHOUT an authority signature
+   * both rows at commit. The strand is authorised WITHOUT an owner signature
    * (the `FormationUsage` branch of `Strand.Authorized`) but still gets a fresh,
    * unique `StampId` column to satisfy the not-null/unique anti-replay column.
    *
@@ -763,11 +763,11 @@ export class ControlDatabase {
 
     await this.db!.beginTransaction();
     try {
-      // 1. Strand row — authorised by the FormationUsage branch (no authority sig),
+      // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
       //    still carrying a fresh unique StampId for the anti-replay column.
       await this.db!.exec(`
         insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
-          with context AuthorityKey = null, Signature = null
+          with context OwnerKey = null, Signature = null
           values (?, ?, ?, ?)
       `, [strandId, type, memberPrivateKey ?? null, strandStampId]);
 
@@ -795,7 +795,7 @@ export class ControlDatabase {
   /**
    * Record a `FormationUsage` against an **already-existing** `Strand` (no strand
    * insert). This is the redemption path when the strand was provisioned
-   * separately (e.g. authority-signed) and the consent record is added after the
+   * separately (e.g. owner-signed) and the consent record is added after the
    * fact: the single insert auto-commits, and the deferred `StrandExists` CHECK
    * is satisfied by the pre-existing committed strand row. Returns the assigned
    * `UseNumber`.

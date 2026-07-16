@@ -79,8 +79,8 @@
 		</span>
 	</div>
 	<div class="row">
-		<span class="label">Authority</span>
-		<span class="value" data-testid="home-authority">{node.authority}</span>
+		<span class="label">Owner</span>
+		<span class="value" data-testid="home-owner">{node.owner}</span>
 	</div>
 	<div class="row">
 		<span class="label">Relay</span>
@@ -213,7 +213,7 @@
 		Identity and party id persist in IndexedDB and survive reloads. The solo
 		chat strand runs in bootstrap mode; a strand formed via an invitation is a
 		closed strand keyed by the minted member key. Control-network authorization
-		(authority keys, formation invites/usage, strand membership) is visible on
+		(owner keys, formation invites/usage, strand membership) is visible on
 		the <a href="#/diag">Diagnostics</a> page.
 	</p>
 </footer>

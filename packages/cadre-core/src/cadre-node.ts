@@ -34,7 +34,7 @@ import type {
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
-import { authorityKeyFromLibp2p, type AuthorityKeyPair } from './authority-key.js';
+import { ed25519KeyPairFromLibp2p, type Ed25519KeyPair } from './ed25519-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -109,7 +109,7 @@ export class CadreNode implements SAppIdLookup {
    * The resolved node identity key, set once by {@link resolveIdentityKey}
    * during {@link start} (from `config.keyStore`, else `config.privateKey`).
    * Left undefined when neither is configured — libp2p then generates an
-   * ephemeral key internally and there is no exposed authority key. Every
+   * ephemeral key internally and there is no exposed owner key. Every
    * identity-dependent path (control node creation, self-record signing, strand
    * launch) reads this resolved field, never `config.privateKey` directly.
    */
@@ -187,7 +187,7 @@ export class CadreNode implements SAppIdLookup {
   private reconcileControlCohortInFlight: Promise<void> | null = null;
   /**
    * Single-flight guard for {@link registerSelf}. Concurrent callers (the explicit
-   * CLI `--authority` publish, the 1s startup timer, the TTL heartbeat, and the
+   * CLI `--owner` publish, the 1s startup timer, the TTL heartbeat, and the
    * address-change listener) share one in-flight publish so two of them can never
    * both read "no row yet" and race a duplicate INSERT (a `CadrePeer` PK conflict).
    */
@@ -195,7 +195,7 @@ export class CadreNode implements SAppIdLookup {
 
   // ── Write-while-alone re-replication (control-write-ensure-replicated) ──────
   /**
-   * Re-replication queue for authority control writes that committed while this
+   * Re-replication queue for owner control writes that committed while this
    * node was alone — `controlNode.getConnections().length === 0` at write time
    * means the Optimystic commit was local-only (the block's cluster was ≤1) and
    * never broadcast. Maps the affected subject peerId → the write to re-issue once
@@ -209,7 +209,7 @@ export class CadreNode implements SAppIdLookup {
   /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
   private pendingSelfDeviceWrite = false;
   /**
-   * Guards the one-shot, first-cohort-growth reconstruction: an authority re-touches
+   * Guards the one-shot, first-cohort-growth reconstruction: an owner re-touches
    * every membership row it may have authored that could be unreplicated (covering
    * writes made before this process started, which the in-memory queue cannot know).
    * Set true after the first drain so later passes only drain the in-memory queue.
@@ -658,7 +658,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Schedule the node's initial self-record publish + ongoing refresh shortly
    * after start (non-blocking). {@link registerSelf} is idempotent and safely
-   * no-ops when it cannot yet sign/insert (e.g. authority key not installed),
+   * no-ops when it cannot yet sign/insert (e.g. owner key not installed),
    * so the timer is harmless even when registration only becomes possible later.
    */
   private scheduleSelfRegistration(): void {
@@ -691,10 +691,10 @@ export class CadreNode implements SAppIdLookup {
    *   (signaling/`p2p-circuit` first), signed with the ed25519 key behind its
    *   PeerId (the resolved node identity from `keyStore`/`config.privateKey`).
    * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
-   * - If not, and the node is its own authority: an authority-signed INSERT that
+   * - If not, and the node is its own owner: an owner-signed INSERT that
    *   also carries the self-signature.
-   * - Otherwise: logs and returns (a non-authority node with no row yet must
-   *   wait for an authority to insert it; it can then self-refresh).
+   * - Otherwise: logs and returns (a non-owner node with no row yet must
+   *   wait for an owner to insert it; it can then self-refresh).
    *
    * Safe to call repeatedly (heartbeat / address-change driven); each successful
    * publish strictly increases `UpdatedAt`. Concurrent calls are collapsed into a
@@ -750,14 +750,14 @@ export class CadreNode implements SAppIdLookup {
       return 'refreshed';
     }
     if (this.seedBootstrapService) {
-      // First-time row: requires an authority signature (the node is its own
-      // authority). insertSelfPeerRecord throws if no authority key is present.
+      // First-time row: requires an owner signature (the node is its own
+      // owner). insertSelfPeerRecord throws if no owner key is present.
       await this.seedBootstrapService.insertSelfPeerRecord(record);
       if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-      log('registerSelf: inserted own CadrePeer record (authority-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
+      log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
       return 'inserted';
     }
-    log('registerSelf: not yet a CadrePeer member and no authority service to self-insert; skipping (an authority must add this peer first)');
+    log('registerSelf: not yet a CadrePeer member and no owner service to self-insert; skipping (an owner must add this peer first)');
     return 'skipped';
   }
 
@@ -775,43 +775,43 @@ export class CadreNode implements SAppIdLookup {
       return null;
     }
     try {
-      const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(this.identityKey);
+      const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(this.identityKey);
       if (publicKeyB64 === ed25519PublicKeyB64FromPeerId(peerId)) {
         return { privateKeyB64, publicKeyB64 };
       }
       log('getSelfSigningKey: resolved identity key does not match control node peerId; cannot self-sign');
     } catch (error) {
-      // Logs the error shape only; authorityKeyFromLibp2p never embeds key material.
+      // Logs the error shape only; ed25519KeyPairFromLibp2p never embeds key material.
       log('getSelfSigningKey: failed to derive ed25519 key from identity key: %o', error);
     }
     return null;
   }
 
   /**
-   * The authority keypair (base64url Ed25519) derived from this node's resolved
-   * identity key. In the single-key reference model the authority signing key is
-   * *derived from* the node identity (see {@link authorityKeyFromLibp2p}), so the
+   * The owner keypair (base64url Ed25519) derived from this node's resolved
+   * identity key. In the single-key reference model the owner signing key is
+   * *derived from* the node identity (see {@link ed25519KeyPairFromLibp2p}), so the
    * same key material protected in a secure enclave backs both.
    *
-   * Exposed so the hosting app retains control of authority genesis: cadre-core
+   * Exposed so the hosting app retains control of owner genesis: cadre-core
    * resolves + protects the identity, then the app sources this pair to drive
-   * `ensureAuthorityKey(pub)` + `initializeSeedBootstrap(priv)` itself — cadre-core
-   * never silently runs genesis. A future separate-authority slot would return a
+   * `ensureOwnerKey(pub)` + `initializeSeedBootstrap(priv)` itself — cadre-core
+   * never silently runs genesis. A future separate-owner slot would return a
    * distinct key here instead of the identity-derived one.
    *
-   * @returns The base64url seed/public-key authority pair.
+   * @returns The base64url seed/public-key owner pair.
    * @throws If called before {@link start} has resolved the identity, or when the
    *   node runs on an ephemeral libp2p key (no `keyStore`/`privateKey` configured),
    *   since that key is internal to libp2p and not exposed.
    */
-  getIdentityAuthorityKey(): AuthorityKeyPair {
+  getIdentityOwnerKey(): Ed25519KeyPair {
     if (!this.identityKey) {
       throw new Error(
-        'getIdentityAuthorityKey: node identity not resolved — call start() first, and ' +
-        'configure `keyStore` or `privateKey` (an ephemeral libp2p identity exposes no authority key)'
+        'getIdentityOwnerKey: node identity not resolved — call start() first, and ' +
+        'configure `keyStore` or `privateKey` (an ephemeral libp2p identity exposes no owner key)'
       );
     }
-    return authorityKeyFromLibp2p(this.identityKey);
+    return ed25519KeyPairFromLibp2p(this.identityKey);
   }
 
   /**
@@ -905,7 +905,7 @@ export class CadreNode implements SAppIdLookup {
 
     // Reset the write-while-alone re-replication state so a stop()→start() cycle
     // re-arms the growth edge and re-runs the first-growth reconstruction. Any
-    // queued local-only writes are moot once the node is torn down; authority
+    // queued local-only writes are moot once the node is torn down; owner
     // inserts are re-covered by reconstruction on the next start, and the
     // (already-loudly-logged) delete gap is tracked for follow-up.
     this.hasControlConnection = false;
@@ -1063,18 +1063,18 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
-    // 2. Classify backbone (authority) members and select a bounded dial set.
-    const authorityKeys = await this.controlDatabase.getAuthorityKeys();
+    // 2. Classify backbone (owner) members and select a bounded dial set.
+    const ownerKeys = await this.controlDatabase.getOwnerKeys();
     if (!this._running || !this.controlNode) {
       return;
     }
     const targetDegree = this.config.network?.controlCohort?.targetDegree
       ?? DEFAULT_CONTROL_COHORT_TARGET_DEGREE;
-    const { dials, cappedNonAuthority } = selectControlCohortDials(siblings, authorityKeys, targetDegree);
-    if (cappedNonAuthority > 0) {
+    const { dials, cappedNonOwner } = selectControlCohortDials(siblings, ownerKeys, targetDegree);
+    if (cappedNonOwner > 0) {
       // Don't silently bound coverage — surface what the out-degree cap dropped.
-      log('reconcileControlCohort: capped %d non-authority sibling(s) at targetDegree=%d',
-        cappedNonAuthority, targetDegree);
+      log('reconcileControlCohort: capped %d non-owner sibling(s) at targetDegree=%d',
+        cappedNonOwner, targetDegree);
     }
 
     // 3. Skip already-connected peers (no re-dial / churn for live connections).
@@ -1103,7 +1103,7 @@ export class CadreNode implements SAppIdLookup {
    *
    * A per-peer failure (NAT, offline, relay down, connection-gater denial) is
    * logged and swallowed so one unreachable sibling never aborts the pass —
-   * exactly like {@link SeedBootstrapService.applySeed}'s authority-dial loop. A
+   * exactly like {@link SeedBootstrapService.applySeed}'s owner-dial loop. A
    * failed dial is simply retried on the next pass.
    */
   private async dialControlSibling(sibling: CohortPeerRow): Promise<boolean> {
@@ -1167,7 +1167,7 @@ export class CadreNode implements SAppIdLookup {
   // Write-while-alone re-replication (control-write-ensure-replicated)
   //
   // Optimystic's coordinator commits a control write WITHOUT broadcasting when the
-  // block's cluster has ≤1 member. An authority that authorizes/removes a peer or
+  // block's cluster has ≤1 member. An owner that authorizes/removes a peer or
   // (re)publishes its own record while no sibling is connected therefore writes a
   // row that exists ONLY in its local control DB — a sibling that connects later
   // never observes it (pull-on-read routes to the block's cluster, which never
@@ -1194,7 +1194,7 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Record (or clear) a just-committed authority membership write in the
+   * Record (or clear) a just-committed owner membership write in the
    * write-while-alone re-replication queue. If the control node had no connections
    * at commit, the Optimystic write was local-only and must be re-issued once the
    * cohort grows; otherwise the write replicated and any stale queue entry for this
@@ -1268,7 +1268,7 @@ export class CadreNode implements SAppIdLookup {
       this.pendingSelfDeviceWrite = false;
     }
 
-    // 2. First growth: an authority reconstructs membership rows it may have
+    // 2. First growth: an owner reconstructs membership rows it may have
     //    authored that never replicated (covers writes from before this process
     //    started). Rows already tracked in the in-memory queue are handled by
     //    step 3 — skipped here to avoid a double re-touch.
@@ -1277,7 +1277,7 @@ export class CadreNode implements SAppIdLookup {
       await this.reconstructAuthoredMembership();
     }
 
-    // 3. In-session pending authority membership writes (authorize / remove).
+    // 3. In-session pending owner membership writes (authorize / remove).
     await this.drainPendingPeerWrites();
   }
 
@@ -1306,16 +1306,16 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * One-shot, first-cohort-growth reconstruction of the write-while-alone queue for
-   * an AUTHORITY node: re-touch every membership row that may be an unreplicated
-   * authority insert. A row is a candidate iff it is not self (handled by
+   * an OWNER node: re-touch every membership row that may be an unreplicated
+   * owner insert. A row is a candidate iff it is not self (handled by
    * {@link registerSelf}), is not already tracked in the in-memory queue (handled by
    * {@link drainPendingPeerWrites}), and carries no self-`Sig` yet (an
-   * authority-authored row the peer has not self-published — the only kind safe to
+   * owner-authored row the peer has not self-published — the only kind safe to
    * bump without invalidating a self-signature). O(rows) on the small control
-   * tables; safe to over-apply (a monotonic authority bump on an already-replicated
+   * tables; safe to over-apply (a monotonic owner bump on an already-replicated
    * row is a no-op-equivalent).
    *
-   * A node with no authority private key skips this entirely — it cannot re-sign
+   * A node with no owner private key skips this entirely — it cannot re-sign
    * rows for other peers, and rows it merely holds are not its to re-issue. DELETEs
    * cannot be reconstructed here (a removed row leaves no local trace and the schema
    * carries no tombstone) — see the delete-path note in {@link drainPendingPeerWrites}.
@@ -1350,17 +1350,17 @@ export class CadreNode implements SAppIdLookup {
       }
     }
     if (touched > 0) {
-      log('drain: reconstructed %d authority-authored membership row(s) on first cohort growth', touched);
+      log('drain: reconstructed %d owner-authored membership row(s) on first cohort growth', touched);
     }
   }
 
   /**
-   * Drain the in-session write-while-alone queue: re-issue each pending authority
+   * Drain the in-session write-while-alone queue: re-issue each pending owner
    * membership write now that the cohort can broadcast it. Sequential (no fan-out)
    * to avoid a thundering re-touch; an entry is cleared only on success, so a
    * failure (or a still-alone re-commit) leaves it queued for the next growth.
    *
-   * - `authorize`: re-issue as an idempotent monotonic authority UPDATE
+   * - `authorize`: re-issue as an idempotent monotonic owner UPDATE
    *   ({@link reissuePeerAuthorize}). Skipped (and cleared) if the row vanished
    *   (raced a delete) or now carries a self-`Sig` (the peer self-published and owns
    *   its republish).
@@ -1376,7 +1376,7 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     if (!this.seedBootstrapService?.canAuthorize()) {
-      // A non-authority node cannot have authored these writes; drop any stray entries.
+      // A non-owner node cannot have authored these writes; drop any stray entries.
       this.pendingPeerWrites.clear();
       return;
     }
@@ -1388,7 +1388,7 @@ export class CadreNode implements SAppIdLookup {
         if (kind === 'authorize') {
           const record = await this.controlDatabase.queryPeerRecord(peerId);
           if (!record || record.sig) {
-            // Removed since, or peer self-published — nothing for the authority to re-issue.
+            // Removed since, or peer self-published — nothing for the owner to re-issue.
             this.pendingPeerWrites.delete(peerId);
             continue;
           }
@@ -1406,9 +1406,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Re-issue an authority membership row as a monotonic authority UPDATE: bump
+   * Re-issue an owner membership row as a monotonic owner UPDATE: bump
    * `UpdatedAt` strictly above the stored value (and the wall clock) and re-sign via
-   * the authority branch of `CadrePeer.AuthorizedUpdate`. The row already exists
+   * the owner branch of `CadrePeer.AuthorizedUpdate`. The row already exists
    * locally (it committed there, just local-only), so this is an UPDATE, not the
    * original INSERT.
    */
@@ -1527,11 +1527,11 @@ export class CadreNode implements SAppIdLookup {
    *   for any member — the `AuthorizedUpdate` self-branch verifies the new `Sig`
    *   against the bound `CadrePeer.PublicKey`). Platform/Token may change here
    *   (rotation / platform switch / reinstall are all normal self-updates).
-   * - If not, and the node holds an authority service: an authority-signed INSERT
+   * - If not, and the node holds an owner service: an owner-signed INSERT
    *   that also carries the self-signature.
    * - Otherwise: throws. Like `CadrePeer`, the first `DeviceToken` row requires an
-   *   authority signature; a non-authority peer (e.g. a phone) must have its row
-   *   seeded by an authority — typically the server it enrolled with — before it
+   *   owner signature; a non-owner peer (e.g. a phone) must have its row
+   *   seeded by an owner — typically the server it enrolled with — before it
    *   can self-refresh. (Establishing that phone→server registration handshake is
    *   the downstream "RN registration" ticket; this node only owns the cadre-core
    *   write path.)
@@ -1542,7 +1542,7 @@ export class CadreNode implements SAppIdLookup {
    * @param platform - `'fcm'` (Android/Firebase) or `'apns'` (Apple).
    * @param token - the opaque platform device/registration token.
    * @throws if the node is not started, exposes no self-signing key, or has no
-   *   existing row and no authority service to self-insert.
+   *   existing row and no owner service to self-insert.
    */
   async registerDeviceToken(platform: PushPlatform, token: string): Promise<void> {
     if (!this._running || !this.controlNode || !this.controlDatabase) {
@@ -1574,12 +1574,12 @@ export class CadreNode implements SAppIdLookup {
     if (this.seedBootstrapService) {
       await this.seedBootstrapService.insertSelfDeviceToken(record);
       if (this.committedAlone()) this.pendingSelfDeviceWrite = true;
-      log('registerDeviceToken: inserted own DeviceToken (authority-signed, platform=%s, updatedAt=%d)', platform, updatedAt);
+      log('registerDeviceToken: inserted own DeviceToken (owner-signed, platform=%s, updatedAt=%d)', platform, updatedAt);
       return;
     }
     throw new Error(
       `Cannot register device token for ${peerId}: no existing row to self-update and no ` +
-      'authority service to self-insert. An authority must seed this peer\'s DeviceToken ' +
+      'owner service to self-insert. An owner must seed this peer\'s DeviceToken ' +
       'row first (mirrors CadrePeer enrollment).'
     );
   }
@@ -1650,11 +1650,11 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Delete this node's own `DeviceToken` row (logout / token invalidation). No-op
    * when no row exists. Like {@link registerDeviceToken}'s first insert, the delete
-   * is gated on an authority signature (`DeviceToken.AuthorizedInsert` covers insert
-   * AND delete), so it requires this node's authority service; a non-authority peer
-   * must route the clear through its authority (downstream RN registration path).
+   * is gated on an owner signature (`DeviceToken.AuthorizedInsert` covers insert
+   * AND delete), so it requires this node's owner service; a non-owner peer
+   * must route the clear through its owner (downstream RN registration path).
    *
-   * @throws if the node is not started, or a row exists but no authority service is
+   * @throws if the node is not started, or a row exists but no owner service is
    *   available to sign the delete.
    */
   async clearDeviceToken(): Promise<void> {
@@ -1669,8 +1669,8 @@ export class CadreNode implements SAppIdLookup {
     }
     if (!this.seedBootstrapService) {
       throw new Error(
-        `Cannot clear device token for ${peerId}: delete requires an authority signature ` +
-        'and no authority service is initialized.'
+        `Cannot clear device token for ${peerId}: delete requires an owner signature ` +
+        'and no owner service is initialized.'
       );
     }
     await this.seedBootstrapService.deleteDeviceToken(peerId);
@@ -1682,10 +1682,10 @@ export class CadreNode implements SAppIdLookup {
    * unregistered during a push-wake fan-out. Unlike {@link clearDeviceToken}
    * (self-only — it hardcodes the local peerId), this takes an arbitrary peerId.
    *
-   * - When this node holds an authority seed service, it deletes the row
-   *   (`deleteDeviceToken` is authority-gated and accepts any peerId), so the peer
+   * - When this node holds an owner seed service, it deletes the row
+   *   (`deleteDeviceToken` is owner-gated and accepts any peerId), so the peer
    *   is not retried until it re-registers.
-   * - When this node is NOT an authority it cannot delete the row, so it only logs
+   * - When this node is NOT an owner it cannot delete the row, so it only logs
    *   that a re-registration is needed. The fan-out's own in-memory dead-token set
    *   is what actually stops re-pushing to the dead token this process — see
    *   {@link PushFanoutService}. That set is acceptably lossy across restarts (a
@@ -1697,13 +1697,13 @@ export class CadreNode implements SAppIdLookup {
     if (this.seedBootstrapService) {
       try {
         await this.seedBootstrapService.deleteDeviceToken(peerId);
-        log('expireDeviceToken: authority-deleted stale DeviceToken for %s', peerId);
+        log('expireDeviceToken: owner-deleted stale DeviceToken for %s', peerId);
       } catch (error) {
-        log('expireDeviceToken: authority delete for %s failed: %o', peerId, error);
+        log('expireDeviceToken: owner delete for %s failed: %o', peerId, error);
       }
       return;
     }
-    log('expireDeviceToken: %s token is stale but this node is not an authority; re-registration required', peerId);
+    log('expireDeviceToken: %s token is stale but this node is not an owner; re-registration required', peerId);
   }
 
   private async handleStrandAdded(strand: StrandRow): Promise<void> {
@@ -2071,19 +2071,19 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Publish a strand row to the shared control database under this node's own
-   * authority identity, so other cadre members discover it via control-network
+   * owner identity, so other cadre members discover it via control-network
    * sync (their {@link StrandWatcher} fires `strand:discovered`).
    *
-   * This is the authority-signed `Strand` INSERT that {@link addStrand}
+   * This is the owner-signed `Strand` INSERT that {@link addStrand}
    * deliberately omits: `addStrand` only starts the LOCAL strand instance,
    * whereas publishing makes the strand visible cadre-wide. A typical creator
    * does both (start locally + publish); a discovering peer only does
    * `addStrand` (the row already exists).
    *
    * The insert is signed with the ed25519 key behind this node's PeerId — which
-   * {@link authorityKeyFromLibp2p} also exposes as the node's authority keypair,
-   * so peer identity and authority key are one and the same. That key must be
-   * enrolled in `AuthorityKey` (e.g. via {@link ControlDatabase.ensureAuthorityKey}
+   * {@link ed25519KeyPairFromLibp2p} also exposes as the node's owner keypair,
+   * so peer identity and owner key are one and the same. That key must be
+   * enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
    * at genesis) or the schema's `Strand.Authorized` constraint rejects the write.
    * Failing loudly here is intentional: a silently-unpublished strand would run
    * as a local-only island that no peer could ever discover or join.
@@ -2092,7 +2092,7 @@ export class CadreNode implements SAppIdLookup {
    *   {@link addStrand}).
    * @param type - `'o'` for open (default) or `'c'` for closed.
    * @param memberPrivateKey - Optional membership key for a closed strand.
-   * @throws if the node is not started, exposes no authority signing key, or the
+   * @throws if the node is not started, exposes no owner signing key, or the
    *   control DB rejects the (unauthorized) insert.
    */
   async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
@@ -2102,22 +2102,22 @@ export class CadreNode implements SAppIdLookup {
     const signingKey = this.getSelfSigningKey();
     if (!signingKey) {
       throw new Error(
-        `Cannot publish strand ${strandId}: no authority signing key available ` +
-        '(node identity is unavailable or does not match the node PeerId). Run authority ' +
-        'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
+        `Cannot publish strand ${strandId}: no owner signing key available ` +
+        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
+        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
       );
     }
     // insertStrand hands this callback the canonical row-bound message BYTES (see
     // buildAuthorizationMessage); ed25519-sign them directly (no pre-hash) with
-    // the authority private key, returning a base64url signature.
+    // the owner private key, returning a base64url signature.
     const signMessage = (message: Uint8Array): string =>
       sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
     await this.controlDatabase.insertStrand(strandId, type, signingKey.publicKeyB64, signMessage, memberPrivateKey);
-    log('Published strand %s (type %s) to control DB under authority %s', strandId, type, signingKey.publicKeyB64);
+    log('Published strand %s (type %s) to control DB under owner %s', strandId, type, signingKey.publicKeyB64);
   }
 
   /**
-   * Publish an authority-signed `FormationInvite` (open-invitation token) to the
+   * Publish an owner-signed `FormationInvite` (open-invitation token) to the
    * shared control database, so a later {@link formStrand} redemption can be
    * validated against it (the consent branch of `Strand.Authorized`).
    *
@@ -2128,8 +2128,8 @@ export class CadreNode implements SAppIdLookup {
    * from this row. A host minting a closed-strand invite does both (mint +
    * publish), exactly as the integration harness's `createInvitation` does.
    *
-   * Signs with the same self-authority key as {@link publishStrand} (the ed25519
-   * key behind this node's PeerId, which must be an enrolled `AuthorityKey`).
+   * Signs with the same self-owner key as {@link publishStrand} (the ed25519
+   * key behind this node's PeerId, which must be an enrolled `OwnerKey`).
    * Throws loudly if the node isn't started or exposes no signing key.
    *
    * @param token - Invitation token (the `FormationInvite` primary key); use the
@@ -2149,15 +2149,15 @@ export class CadreNode implements SAppIdLookup {
     const signingKey = this.getSelfSigningKey();
     if (!signingKey) {
       throw new Error(
-        `Cannot publish formation invite ${token}: no authority signing key available ` +
-        '(node identity is unavailable or does not match the node PeerId). Run authority ' +
-        'genesis (ensureAuthorityKey + initializeSeedBootstrap) before publishing.'
+        `Cannot publish formation invite ${token}: no owner signing key available ` +
+        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
+        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
       );
     }
     const signMessage = (message: Uint8Array): string =>
       sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
     await this.controlDatabase.insertFormationInvite(token, sAppId, signingKey.publicKeyB64, signMessage, options);
-    log('Published formation invite %s (sApp %s) under authority %s', token, sAppId, signingKey.publicKeyB64);
+    log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signingKey.publicKeyB64);
   }
 
   /**
@@ -2476,19 +2476,19 @@ export class CadreNode implements SAppIdLookup {
   // ============================================================================
 
   /**
-   * Initialize the seed bootstrap service with an authority key.
+   * Initialize the seed bootstrap service with an owner key.
    * Must be called before using seed-related methods that require signing.
    *
-   * @param authorityPrivateKey - The authority's private key (base64url encoded)
+   * @param ownerPrivateKey - The owner's private key (base64url encoded)
    */
-  initializeSeedBootstrap(authorityPrivateKey: string): void {
+  initializeSeedBootstrap(ownerPrivateKey: string): void {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before initializing seed bootstrap');
     }
 
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
-      authorityPrivateKey,
+      ownerPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
       trustPolicy: this.config.seedTrustPolicy,
     });
@@ -2557,8 +2557,8 @@ export class CadreNode implements SAppIdLookup {
    * strand-address gates consult this set, NOT the addressable one.
    *
    * NOTE: this is the addressable set minus self for now. The real trust predicate
-   * (voucher recorded on the row ∈ node-local trusted-authority anchor, signature
-   * verified) lands with the `membership-node-local-authority-anchor` /
+   * (voucher recorded on the row ∈ node-local trusted-owner anchor, signature
+   * verified) lands with the `membership-node-local-owner-anchor` /
    * `membership-authorized-predicate-and-gates` tickets; keeping the filter in this one
    * method means that change touches a single place.
    */
@@ -2607,8 +2607,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Enable the seed listener for receiving seeds via the /sereus/seed/1.0.0 protocol.
-   * This is for drone nodes that need to receive seeds without being an authority.
-   * Does not require an authority key.
+   * This is for drone nodes that need to receive seeds without being an owner.
+   * Does not require an owner key.
    */
   enableSeedListener(): void {
     if (!this.controlNode || !this.controlDatabase) {
@@ -2623,7 +2623,7 @@ export class CadreNode implements SAppIdLookup {
 
     this.seedBootstrapService = new SeedBootstrapService({
       partyId: this.config.controlNetwork.partyId,
-      // No authority key - this node only receives seeds
+      // No owner key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
       trustPolicy: this.config.seedTrustPolicy,
     });
@@ -2647,7 +2647,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Authorize a new peer to join the cadre.
-   * Signs the peer ID with the authority key and inserts into CadrePeer table.
+   * Signs the peer ID with the owner key and inserts into CadrePeer table.
    *
    * @param peerId - The peer ID to authorize
    * @param multiaddrs - Optional multiaddrs for the peer
@@ -2663,7 +2663,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Remove a previously-authorized peer from the cadre.
-   * Signs the peer ID with the authority key and deletes the CadrePeer row.
+   * Signs the peer ID with the owner key and deletes the CadrePeer row.
    *
    * @param peerId - The peer ID to remove
    */
@@ -2678,7 +2678,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Create a seed from the current control network state.
-   * The seed contains peer information and is signed by an authority.
+   * The seed contains peer information and is signed by an owner.
    */
   async createSeed(): Promise<ControlNetworkSeed> {
     if (!this.seedBootstrapService) {
@@ -2693,7 +2693,7 @@ export class CadreNode implements SAppIdLookup {
    * Validates the seed signature, then evaluates a trust anchor for the signer
    * key (see `SeedTrustPolicy`). An enrollment caller can pass a per-seed
    * `trustPolicy` override — e.g. a `pinnedKeyTrustPolicy` built from a
-   * `CadreInvite.authorityKeys` — so a cold-start node can accept its first
+   * `CadreInvite.ownerKeys` — so a cold-start node can accept its first
    * seed without reconfiguring the service.
    */
   async applySeed(
@@ -2701,7 +2701,7 @@ export class CadreNode implements SAppIdLookup {
     options?: { trustPolicy?: SeedTrustPolicy }
   ): Promise<ApplySeedResult> {
     if (!this.seedBootstrapService) {
-      // Create a temporary service for applying seeds (doesn't need authority key).
+      // Create a temporary service for applying seeds (doesn't need owner key).
       // partyId is the attacker-influenced seed.partyId — it only labels logs; the
       // trust decision rests solely on signerKey vs the anchor set (configured
       // default below, or the per-call options.trustPolicy override).
@@ -2833,7 +2833,7 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Dial an authority from an invite (for phone joining via invite).
+   * Dial an owner from an invite (for phone joining via invite).
    */
   async dialInvite(invite: CadreInvite): Promise<void> {
     if (!this.seedBootstrapService) {

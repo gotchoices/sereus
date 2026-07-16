@@ -19,7 +19,7 @@ import {
   memberRegistrationPayload,
 } from '../src/strand-member-registry.js';
 import { EnrollmentService } from '../src/enrollment.js';
-import type { AuthorityKeyPair } from '../src/authority-key.js';
+import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { SAppConfig, MemberRegistration } from '../src/types.js';
 
 /**
@@ -46,7 +46,7 @@ function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
 }
 
 /** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): AuthorityKeyPair {
+function freshKeyPair(): Ed25519KeyPair {
   const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
   const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
   return { privateKeyB64, publicKeyB64 };
@@ -63,7 +63,7 @@ interface Strand {
   db: Database;
   strandId: string;
   /** The founder keypair — Member #1 and the sole founding Authority. */
-  founder: AuthorityKeyPair;
+  founder: Ed25519KeyPair;
   shutdown: () => Promise<void>;
 }
 

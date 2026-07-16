@@ -46,7 +46,7 @@ function injectCohort(
   node: CadreNode,
   opts: {
     members: Array<{ peerId: string; multiaddr: string | null }>;
-    authorityKeys?: Set<string>;
+    ownerKeys?: Set<string>;
     connections?: string[];
     selfPeerId?: string;
     running?: boolean;
@@ -64,7 +64,7 @@ function injectCohort(
   });
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     queryCadrePeers: async () => { queries++; return opts.members; },
-    getAuthorityKeys: async () => opts.authorityKeys ?? new Set<string>()
+    getOwnerKeys: async () => opts.ownerKeys ?? new Set<string>()
   };
   (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
     async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
@@ -175,7 +175,7 @@ describe('CadreNode.reconcileControlCohort', () => {
         { peerId: 'self-peer', multiaddr: null },
         { peerId: siblingPeerId, multiaddr: null }
       ],
-      getAuthorityKeys: async () => new Set<string>()
+      getOwnerKeys: async () => new Set<string>()
     };
     // Signed-record resolution yields nothing → must consult the peerStore fallback.
     (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
@@ -202,7 +202,7 @@ describe('CadreNode.reconcileControlCohort', () => {
         { peerId: 'sibling-a', multiaddr: null },
         { peerId: 'sibling-b', multiaddr: null }
       ],
-      getAuthorityKeys: async () => new Set<string>()
+      getOwnerKeys: async () => new Set<string>()
     };
     (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
       async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
@@ -251,14 +251,14 @@ describe('CadreNode.reconcileControlCohort', () => {
     (node as unknown as { controlNode: unknown }).controlNode = null;
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
       queryCadrePeers: async () => { throw new Error('should not query'); },
-      getAuthorityKeys: async () => new Set<string>()
+      getOwnerKeys: async () => new Set<string>()
     };
 
     await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
   });
 
   it('honors the configured targetDegree cap end-to-end', async () => {
-    // Self + 4 non-authority siblings, targetDegree 2 → only 2 dials. (The
+    // Self + 4 non-owner siblings, targetDegree 2 → only 2 dials. (The
     // synthetic non-Ed25519 ids never classify as backbone; the backbone-preference
     // ordering itself is covered by control-cohort.spec.ts.)
     const node = new CadreNode(createConfig({ network: { controlCohort: { targetDegree: 2 } } }));

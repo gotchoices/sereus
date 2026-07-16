@@ -14,7 +14,7 @@ import { CONTROL_SCHEMA } from '../src/control-schema.js';
  *     which no runtime code path does).
  *
  * Because this schema gates every control-plane mutation (the `verify(...)` checks
- * for AuthorityKey / ValidationKey / Strand / CadrePeer / FormationInvite /
+ * for OwnerKey / ValidationKey / Strand / CadrePeer / FormationInvite /
  * FormationUsage), a one-sided edit is a silent security regression. This test
  * fails the build whenever the two copies drift.
  *

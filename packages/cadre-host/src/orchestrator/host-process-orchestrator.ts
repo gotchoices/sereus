@@ -30,7 +30,7 @@ import type { PushCredentials } from '@serfab/cadre-core';
 import {
   decodeDockerId,
   encodeDockerId,
-  type AuthoritySpawnConfig,
+  type OwnerSpawnConfig,
   type Handle,
   type HostProcessConfig,
   type ManagedNodeInfo,
@@ -53,11 +53,11 @@ const STARTUP_TOKEN_FILE = '.startup-token';
 const CONFIG_FILE = 'cadre.json';
 const LIVENESS_POLL_MS = 100;
 
-/** Fixed friendly id for the admin's authority node. */
-export const AUTHORITY_CONTAINER_ID = 'authority';
+/** Fixed friendly id for the admin's owner node. */
+export const OWNER_CONTAINER_ID = 'owner';
 
-/** Endpoint + bearer for the authority node's loopback admin channel (6.6). */
-export interface AuthorityAdminEndpoint {
+/** Endpoint + bearer for the owner node's loopback admin channel (6.6). */
+export interface OwnerAdminEndpoint {
   /** e.g. `http://127.0.0.1:<adminPort>`. */
   baseUrl: string;
   /** The child's `CADRE_STARTUP_TOKEN`, used as the admin bearer secret. */
@@ -108,8 +108,8 @@ export class HostProcessOrchestrator implements Orchestrator {
   private readonly pushResolver?: PushCredentialsResolver;
   /** State-change listeners — invoked when a handle's alive state changes. */
   private readonly stateListeners = new Set<NodeStateListener>();
-  /** Persisted spawn config for the authority node (re-spawn on demand). */
-  private authorityConfig?: AuthoritySpawnConfig;
+  /** Persisted spawn config for the owner node (re-spawn on demand). */
+  private ownerConfig?: OwnerSpawnConfig;
 
   constructor(private readonly cfg: HostProcessConfig) {
     this.rootDir = resolvePath(cfg.rootDir);
@@ -135,7 +135,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    */
   async init(): Promise<void> {
     const state = this.stateStore.load();
-    this.authorityConfig = state.authorityConfig;
+    this.ownerConfig = state.ownerConfig;
     for (const persisted of state.handles) {
       const alive = isPidAlive(persisted.pid) && tokenMatches(persisted.workdir, persisted.startupToken);
       const handle: Handle = {
@@ -148,7 +148,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         spawnedAt: persisted.spawnedAt,
         partyId: persisted.partyId,
         profile: persisted.profile,
-        ...(persisted.authority ? { authority: true } : {}),
+        ...(persisted.owner ? { owner: true } : {}),
         alive,
       };
       this.handles.set(handle.dockerId, handle);
@@ -232,7 +232,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       partyId: request.partyId,
       profile: request.profile,
       ports,
-      authority: false,
+      owner: false,
       buildConfig: (workdir) => this.buildChildConfig(request, workdir, push),
       extraArgs: [],
       ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
@@ -261,32 +261,32 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Ensure the admin's authority node is running, spawning it if absent or
+   * Ensure the admin's owner node is running, spawning it if absent or
    * dead. Idempotent: a second call with the node already alive returns the
    * existing handle without launching a second child. The spawn parameters
    * are persisted so a later `/api/nodes/:id/{start,restart}` (or an
    * orchestrator restart) can re-spawn it without re-supplying them.
    *
-   * The authority node is spawned as `cadre-cli start --authority
+   * The owner node is spawned as `cadre-cli start --owner
    * --admin-port <p> --identity-protobuf <identityPath>` so it carries the
    * host's libp2p identity, founds/joins the control network, and exposes the
    * loopback admin channel the manager delegates to.
    */
-  async ensureAuthorityNode(cfg?: AuthoritySpawnConfig): Promise<ManagedNodeInfo> {
-    const config = cfg ?? this.authorityConfig;
+  async ensureOwnerNode(cfg?: OwnerSpawnConfig): Promise<ManagedNodeInfo> {
+    const config = cfg ?? this.ownerConfig;
     if (!config) {
-      throw new Error('ensureAuthorityNode: no authority config supplied and none persisted');
+      throw new Error('ensureOwnerNode: no owner config supplied and none persisted');
     }
-    this.authorityConfig = config;
+    this.ownerConfig = config;
 
-    const existing = this.findAuthorityHandle();
+    const existing = this.findOwnerHandle();
     if (existing && isPidAlive(existing.pid) && tokenMatches(existing.workdir, existing.startupToken)) {
       this.persist();
       return toNodeInfo(existing);
     }
     if (existing) {
       // Drop the stale handle and release its ports — but DO NOT delete the
-      // workdir: the authority node's control-DB storage lives there and must
+      // workdir: the owner node's control-DB storage lives there and must
       // survive a restart. launchChild reuses the same workdir.
       this.releasePorts(existing.ports);
       this.handles.delete(existing.dockerId);
@@ -300,7 +300,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       health: this.portAllocator.allocate(),
       metrics: this.portAllocator.allocate(),
       admin: this.portAllocator.allocate(),
-      // The authority node must listen on the configured libp2p port so the
+      // The owner node must listen on the configured libp2p port so the
       // NAT mapping (external → internal) lands on it. That port is outside
       // the managed range, so markUsed is a harmless no-op.
       p2p: config.libp2pPort,
@@ -308,21 +308,21 @@ export class HostProcessOrchestrator implements Orchestrator {
     this.portAllocator.markUsed(config.libp2pPort);
 
     const result = this.launchChild({
-      containerId: AUTHORITY_CONTAINER_ID,
+      containerId: OWNER_CONTAINER_ID,
       partyId: config.partyId,
       profile,
       ports,
-      authority: true,
-      buildConfig: (workdir) => this.buildAuthorityChildConfig(config, profile, workdir, push),
-      extraArgs: ['--authority', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
+      owner: true,
+      buildConfig: (workdir) => this.buildOwnerChildConfig(config, profile, workdir, push),
+      extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
     });
     const handle = this.handles.get(result.dockerId)!;
     return toNodeInfo(handle);
   }
 
-  /** Endpoint + bearer for the authority node's admin channel, if spawned. */
-  getAuthorityAdminEndpoint(): AuthorityAdminEndpoint | undefined {
-    const handle = this.findAuthorityHandle();
+  /** Endpoint + bearer for the owner node's admin channel, if spawned. */
+  getOwnerAdminEndpoint(): OwnerAdminEndpoint | undefined {
+    const handle = this.findOwnerHandle();
     if (!handle) return undefined;
     return {
       baseUrl: `http://127.0.0.1:${handle.ports.admin}`,
@@ -330,41 +330,41 @@ export class HostProcessOrchestrator implements Orchestrator {
     };
   }
 
-  /** Whether spawn parameters for the authority node are known (persisted). */
-  hasAuthorityConfig(): boolean {
-    return this.authorityConfig !== undefined;
+  /** Whether spawn parameters for the owner node are known (persisted). */
+  hasOwnerConfig(): boolean {
+    return this.ownerConfig !== undefined;
   }
 
-  /** Whether the given friendly/docker id refers to the authority node. */
-  isAuthorityNode(idOrDockerId: string): boolean {
-    if (idOrDockerId === AUTHORITY_CONTAINER_ID) return true;
+  /** Whether the given friendly/docker id refers to the owner node. */
+  isOwnerNode(idOrDockerId: string): boolean {
+    if (idOrDockerId === OWNER_CONTAINER_ID) return true;
     const direct = this.handles.get(idOrDockerId);
-    if (direct?.authority) return true;
+    if (direct?.owner) return true;
     for (const h of this.handles.values()) {
-      if (h.authority && h.containerId === idOrDockerId) return true;
+      if (h.owner && h.containerId === idOrDockerId) return true;
     }
     return false;
   }
 
-  /** Stop the authority node (if running). Used on graceful shutdown. */
-  async stopAuthorityNode(): Promise<void> {
-    const handle = this.findAuthorityHandle();
+  /** Stop the owner node (if running). Used on graceful shutdown. */
+  async stopOwnerNode(): Promise<void> {
+    const handle = this.findOwnerHandle();
     if (handle && isPidAlive(handle.pid)) {
       await this.stopContainer(handle.dockerId);
     }
   }
 
-  /** Stop the authority node (if running), then re-spawn it from saved config. */
-  async restartAuthorityNode(): Promise<ManagedNodeInfo> {
-    const handle = this.findAuthorityHandle();
+  /** Stop the owner node (if running), then re-spawn it from saved config. */
+  async restartOwnerNode(): Promise<ManagedNodeInfo> {
+    const handle = this.findOwnerHandle();
     if (handle && isPidAlive(handle.pid)) {
       await this.stopContainer(handle.dockerId);
     }
-    return this.ensureAuthorityNode();
+    return this.ensureOwnerNode();
   }
 
   /**
-   * Core spawn mechanics shared by `createContainer` and `ensureAuthorityNode`.
+   * Core spawn mechanics shared by `createContainer` and `ensureOwnerNode`.
    * The caller has already allocated `ports`. Releases the ports on a
    * synchronous spawn failure.
    */
@@ -373,7 +373,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     partyId: string;
     profile: 'storage' | 'transaction';
     ports: NodePorts;
-    authority: boolean;
+    owner: boolean;
     buildConfig: (workdir: string) => Record<string, unknown>;
     extraArgs: string[];
     memoryLimit?: string;
@@ -472,7 +472,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       spawnedAt: new Date().toISOString(),
       partyId: opts.partyId,
       profile: opts.profile,
-      ...(opts.authority ? { authority: true } : {}),
+      ...(opts.owner ? { owner: true } : {}),
       child,
       alive: true,
     };
@@ -502,10 +502,10 @@ export class HostProcessOrchestrator implements Orchestrator {
     };
   }
 
-  /** Locate the authority node's handle, if one has been spawned. */
-  private findAuthorityHandle(): Handle | undefined {
+  /** Locate the owner node's handle, if one has been spawned. */
+  private findOwnerHandle(): Handle | undefined {
     for (const h of this.handles.values()) {
-      if (h.authority || h.containerId === AUTHORITY_CONTAINER_ID) return h;
+      if (h.owner || h.containerId === OWNER_CONTAINER_ID) return h;
     }
     return undefined;
   }
@@ -688,12 +688,12 @@ export class HostProcessOrchestrator implements Orchestrator {
   }
 
   /**
-   * Child config for the authority node. It founds/joins the control network
+   * Child config for the owner node. It founds/joins the control network
    * for `partyId` (no bootstrap peers — it is the founding node), and carries
    * the host identity via `--identity-protobuf` (passed as a spawn arg).
    */
-  private buildAuthorityChildConfig(
-    cfg: AuthoritySpawnConfig,
+  private buildOwnerChildConfig(
+    cfg: OwnerSpawnConfig,
     profile: 'storage' | 'transaction',
     workdir: string,
     push?: PushCredentials,
@@ -709,7 +709,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     if (profile === 'storage') {
       config.storage = { type: 'file', path: join(workdir, 'storage') };
     }
-    // The always-on authority/storage node participates in strands, so it owns
+    // The always-on owner/storage node participates in strands, so it owns
     // the push-wake fan-out when credentials are configured. Written into
     // cadre.json (same host trust boundary as the workdir's control-DB); keys
     // are never logged — only the redacted presence line in resolvePush.
@@ -721,7 +721,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     const state: PersistedState = {
       version: 1,
       handles: [...this.handles.values()].map((h) => this.toPersisted(h)),
-      ...(this.authorityConfig ? { authorityConfig: this.authorityConfig } : {}),
+      ...(this.ownerConfig ? { ownerConfig: this.ownerConfig } : {}),
     };
     this.stateStore.save(state);
   }
@@ -749,7 +749,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       spawnedAt: h.spawnedAt,
       partyId: h.partyId,
       profile: h.profile,
-      ...(h.authority ? { authority: true } : {}),
+      ...(h.owner ? { owner: true } : {}),
     };
   }
 }
@@ -764,7 +764,7 @@ function toNodeInfo(h: Handle): ManagedNodeInfo {
     spawnedAt: h.spawnedAt,
     workdir: h.workdir,
     ports: { ...h.ports },
-    ...(h.authority ? { authority: true } : {}),
+    ...(h.owner ? { owner: true } : {}),
   };
 }
 

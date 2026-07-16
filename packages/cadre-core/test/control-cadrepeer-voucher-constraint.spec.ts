@@ -7,7 +7,7 @@ import { Database } from '@quereus/quereus';
  *
  * The real `CadrePeer.AuthorizedInsert` / `AuthorizedUpdate` constraints ALSO carry a
  * crypto `verify(digest(...))` branch (covered by the real-crypto replication specs), but
- * the voucher-binding portion — "the stored (VouchAuthority, VouchSig) MUST equal the
+ * the voucher-binding portion — "the stored (VouchOwner, VouchSig) MUST equal the
  * insert context pair" and "the voucher is immutable on self-update" — is pure equality,
  * no crypto. This spec applies a MINIMAL schema carrying only those predicates and
  * exercises the truth table directly, exactly as `control-member-key-constraint.spec.ts`
@@ -24,15 +24,15 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
         table CadrePeer (
           PeerId text primary key,
           StampId text not null unique,
-          VouchAuthority text null,
+          VouchOwner text null,
           VouchSig text null,
           constraint VoucherBind check on insert (
-            new.VouchAuthority = context.AuthorityKey and new.VouchSig = context.Signature
+            new.VouchOwner = context.OwnerKey and new.VouchSig = context.Signature
           ),
           constraint Immutable check on update (
-            new.StampId = old.StampId and new.VouchAuthority = old.VouchAuthority and new.VouchSig = old.VouchSig
+            new.StampId = old.StampId and new.VouchOwner = old.VouchOwner and new.VouchSig = old.VouchSig
           )
-        ) with context (AuthorityKey text null, Signature text null);
+        ) with context (OwnerKey text null, Signature text null);
       }
       apply schema Probe;
     `);
@@ -43,16 +43,16 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     db: Database,
     peerId: string,
     stampId: string,
-    ctxAuthority: string | null,
+    ctxOwner: string | null,
     ctxSig: string | null,
-    vouchAuthority: string | null,
+    vouchOwner: string | null,
     vouchSig: string | null,
   ): Promise<void> {
     await db.exec(
-      `insert into Probe.CadrePeer (PeerId, StampId, VouchAuthority, VouchSig)
-         with context AuthorityKey = ?, Signature = ?
+      `insert into Probe.CadrePeer (PeerId, StampId, VouchOwner, VouchSig)
+         with context OwnerKey = ?, Signature = ?
          values (?, ?, ?, ?)`,
-      [ctxAuthority, ctxSig, peerId, stampId, vouchAuthority, vouchSig],
+      [ctxOwner, ctxSig, peerId, stampId, vouchOwner, vouchSig],
     );
   }
 
@@ -65,14 +65,14 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     const db = await freshDb();
     await insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', 'AUTH', 'SIG');
     expect(await count(db)).toBe(1);
-    const row = await db.get(`select VouchAuthority, VouchSig from Probe.CadrePeer where PeerId = 'p1'`);
-    expect(row?.VouchAuthority).toBe('AUTH');
+    const row = await db.get(`select VouchOwner, VouchSig from Probe.CadrePeer where PeerId = 'p1'`);
+    expect(row?.VouchOwner).toBe('AUTH');
     expect(row?.VouchSig).toBe('SIG');
   });
 
-  it('rejects an insert whose stored VouchAuthority differs from the signing authority', async () => {
+  it('rejects an insert whose stored VouchOwner differs from the signing owner', async () => {
     const db = await freshDb();
-    // Writer names a DIFFERENT authority than the one whose signature it presents.
+    // Writer names a DIFFERENT owner than the one whose signature it presents.
     await expect(insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', 'OTHER', 'SIG')).rejects.toThrow();
     expect(await count(db)).toBe(0);
   });
@@ -97,12 +97,12 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     await insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', 'AUTH', 'SIG');
     await expect(
       db.exec(
-        `update Probe.CadrePeer with context AuthorityKey = null, Signature = null
-           set VouchAuthority = 'HIJACK' where PeerId = 'p1'`,
+        `update Probe.CadrePeer with context OwnerKey = null, Signature = null
+           set VouchOwner = 'HIJACK' where PeerId = 'p1'`,
       ),
     ).rejects.toThrow();
-    const row = await db.get(`select VouchAuthority from Probe.CadrePeer where PeerId = 'p1'`);
-    expect(row?.VouchAuthority).toBe('AUTH');
+    const row = await db.get(`select VouchOwner from Probe.CadrePeer where PeerId = 'p1'`);
+    expect(row?.VouchOwner).toBe('AUTH');
   });
 
   it('rejects a self-update that tries to rotate the StampId', async () => {
@@ -110,7 +110,7 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     await insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', 'AUTH', 'SIG');
     await expect(
       db.exec(
-        `update Probe.CadrePeer with context AuthorityKey = null, Signature = null
+        `update Probe.CadrePeer with context OwnerKey = null, Signature = null
            set StampId = 'stamp-2' where PeerId = 'p1'`,
       ),
     ).rejects.toThrow();
@@ -122,8 +122,8 @@ describe('CadrePeer voucher-binding predicates (crypto-free)', () => {
     const db = await freshDb();
     await insert(db, 'p1', 'stamp-1', 'AUTH', 'SIG', 'AUTH', 'SIG');
     await db.exec(
-      `update Probe.CadrePeer with context AuthorityKey = null, Signature = null
-         set VouchAuthority = VouchAuthority where PeerId = 'p1'`,
+      `update Probe.CadrePeer with context OwnerKey = null, Signature = null
+         set VouchOwner = VouchOwner where PeerId = 'p1'`,
     );
     expect(await count(db)).toBe(1);
   });

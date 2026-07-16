@@ -3,33 +3,33 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
  * demo calls (in `createChatStrand`) to make a newly-created strand discoverable
- * cadre-wide, the authority-signed `Strand` INSERT that `addStrand` deliberately
+ * cadre-wide, the owner-signed `Strand` INSERT that `addStrand` deliberately
  * omits.
  *
  * The DB-level `insertStrand` happy path is covered by
  * `control-authorization-binding.spec.ts`; this pins the node wrapper end-to-end:
- * it self-signs with the node's own authority key (the `getSelfSigningKey` path)
+ * it self-signs with the node's own owner key (the `getSelfSigningKey` path)
  * and lands a real `Strand` row. Mirrors `publish-formation-invite.spec.ts`.
  *
  * Boots a self-signing node the way `seed-bootstrap.spec.ts` does: the node's
- * libp2p key IS its authority key (`authorityKeyFromLibp2p`), enrolled in
- * `AuthorityKey` so its self-signed control writes are authorised.
+ * libp2p key IS its owner key (`ed25519KeyPairFromLibp2p`), enrolled in
+ * `OwnerKey` so its self-signed control writes are authorised.
  */
 describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () => {
   let node: CadreNode | undefined;
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
-  async function startSelfAuthorityNode(enrollAuthority: boolean): Promise<CadreNode> {
+  async function startSelfOwnerNode(enrollOwner: boolean): Promise<CadreNode> {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
 
     const n = new CadreNode({
       controlNetwork: {
@@ -41,11 +41,11 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     });
     await n.start();
 
-    if (enrollAuthority) {
+    if (enrollOwner) {
       const db = n.getControlDatabase();
       expect(db).not.toBeNull();
       // Enroll the node's own key so its self-signed Strand insert is authorised.
-      await db!.insertAuthorityKey(publicKeyB64);
+      await db!.insertOwnerKey(publicKeyB64);
     }
     return n;
   }
@@ -56,7 +56,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   });
 
   it('happy path: lands a Strand row queryable from the control DB', async () => {
-    node = await startSelfAuthorityNode(true);
+    node = await startSelfOwnerNode(true);
     const db = node.getControlDatabase()!;
     const strandId = 'strand-' + rand();
 
@@ -75,7 +75,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   }, 60_000);
 
   it('closed strand: persists the member key so an invitee can later attach', async () => {
-    node = await startSelfAuthorityNode(true);
+    node = await startSelfOwnerNode(true);
     const db = node.getControlDatabase()!;
     const strandId = 'strand-c-' + rand();
     const memberKey = 'member-key-' + rand();
@@ -87,11 +87,11 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     expect(stored?.MemberPrivateKey).toBe(memberKey);
   }, 60_000);
 
-  it('rejects when the node is not an enrolled authority (constraint propagates)', async () => {
+  it('rejects when the node is not an enrolled owner (constraint propagates)', async () => {
     // Self-signing key is present (past the "no signing key" guard), but it is
-    // not enrolled in AuthorityKey, so the Strand.Authorized gate rejects the
+    // not enrolled in OwnerKey, so the Strand.Authorized gate rejects the
     // insert and the rejection must surface (no silent local-only strand).
-    node = await startSelfAuthorityNode(false);
+    node = await startSelfOwnerNode(false);
     const db = node.getControlDatabase()!;
     const before = await db.getDatabase().get('select count(1) as c from CadreControl.Strand');
 
@@ -137,14 +137,14 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
 
   async function startNode(): Promise<CadreNode> {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
     const n = new CadreNode({
       controlNetwork: { partyId: 'addstrand-founder-' + rand2(), bootstrapNodes: [] },
       privateKey: nodeKey,
       profile: 'transaction',
     });
     await n.start();
-    await n.getControlDatabase()!.insertAuthorityKey(publicKeyB64);
+    await n.getControlDatabase()!.insertOwnerKey(publicKeyB64);
     return n;
   }
 

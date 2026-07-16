@@ -2,7 +2,7 @@
  * Backend-agnostic store for raw private key material.
  *
  * Mobile cadre nodes hold sensitive key material at rest: the libp2p
- * peer/node identity key and (in the single-key reference model) the authority
+ * peer/node identity key and (in the single-key reference model) the owner
  * signing key derived from it. This module defines the seam those keys flow
  * through so a platform-secure backend (iOS Keychain / Android Keystore) can be
  * plugged in without `@serfab/cadre-core` taking any platform dependency.

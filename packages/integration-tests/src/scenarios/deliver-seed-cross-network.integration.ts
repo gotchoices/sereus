@@ -36,20 +36,20 @@ function extractPrivateKeyBase64(privateKey: Uint8Array): string {
 }
 
 function createSeedService(party: TestParty): SeedBootstrapService {
-	const privateKeyBase64 = extractPrivateKeyBase64(party.authorityPrivateKey);
+	const privateKeyBase64 = extractPrivateKeyBase64(party.ownerPrivateKey);
 	const service = new SeedBootstrapService({
 		partyId: party.partyId,
-		authorityPrivateKey: privateKeyBase64,
-		authorityPublicKey: party.authorityPublicKey,
+		ownerPrivateKey: privateKeyBase64,
+		ownerPublicKey: party.ownerPublicKey,
 	});
-	service.initialize(party.authorityNode.libp2p, party.controlDatabase);
+	service.initialize(party.ownerNode.libp2p, party.controlDatabase);
 	return service;
 }
 
-async function registerAuthorityPeer(service: SeedBootstrapService, party: TestParty): Promise<void> {
+async function registerOwnerPeer(service: SeedBootstrapService, party: TestParty): Promise<void> {
 	await service.authorizePeer({
-		peerId: party.authorityNode.peerId,
-		multiaddrs: party.authorityNode.multiaddrs,
+		peerId: party.ownerNode.peerId,
+		multiaddrs: party.ownerNode.multiaddrs,
 	});
 }
 
@@ -176,9 +176,9 @@ describe('deliverSeed cross-network stream negotiation', () => {
 	// FIX: correct handler signature with full round-trip
 	// =========================================================================
 	it('fix: correct v3.x handler with length-prefixed seed roundtrip', async () => {
-		const authority = await network.createParty({ name: 'auth-fix' });
-		const authService = createSeedService(authority);
-		await registerAuthorityPeer(authService, authority);
+		const owner = await network.createParty({ name: 'auth-fix' });
+		const authService = createSeedService(owner);
+		await registerOwnerPeer(authService, owner);
 
 		const sender = await createPlainNode();
 		const receiver = await createPlainNode();
@@ -270,16 +270,16 @@ describe('deliverSeed cross-network stream negotiation', () => {
 
 		expect(ack.accepted).toBe(true);
 		expect(receivedSeed).not.toBeNull();
-		expect(receivedSeed!.partyId).toBe(authority.partyId);
+		expect(receivedSeed!.partyId).toBe(owner.partyId);
 	});
 
 	// =========================================================================
 	// FIX: cross-network delivery (network-scoped sender → plain receiver)
 	// =========================================================================
 	it('fix: cross-network delivery works with correct handler signature', async () => {
-		const authority = await network.createParty({ name: 'auth-cross-fix' });
-		const authService = createSeedService(authority);
-		await registerAuthorityPeer(authService, authority);
+		const owner = await network.createParty({ name: 'auth-cross-fix' });
+		const authService = createSeedService(owner);
+		await registerOwnerPeer(authService, owner);
 
 		// Plain receiver (different "network")
 		const receiver = await createPlainNode();
@@ -322,7 +322,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 			await stream.close();
 		});
 
-		// Use the network-scoped authority node to dial the plain receiver
+		// Use the network-scoped owner node to dial the plain receiver
 		const seed = await authService.createSeed();
 		const seedMessage = JSON.stringify({
 			partyId: seed.partyId,
@@ -332,7 +332,7 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		});
 
 		const addr = multiaddr(receiverAddr);
-		const stream = await authority.authorityNode.libp2p.dialProtocol(addr, SEED_PROTOCOL);
+		const stream = await owner.ownerNode.libp2p.dialProtocol(addr, SEED_PROTOCOL);
 
 		expect(stream.writeStatus).toBe('writable');
 
@@ -359,40 +359,40 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		const ack = JSON.parse(respJson);
 
 		expect(ack.accepted).toBe(true);
-		expect(receivedPartyId).toBe(authority.partyId);
+		expect(receivedPartyId).toBe(owner.partyId);
 	});
 
 	// =========================================================================
 	// E2E: SeedBootstrapService.deliverSeed() → SeedBootstrapService handler
 	// =========================================================================
 	it('e2e: deliverSeed round-trips through service handler on both sides', async () => {
-		// Sender party (authority that creates + delivers seed)
+		// Sender party (owner that creates + delivers seed)
 		const senderParty = await network.createParty({ name: 'auth-e2e-sender' });
 		const senderService = createSeedService(senderParty);
-		await registerAuthorityPeer(senderService, senderParty);
+		await registerOwnerPeer(senderService, senderParty);
 
 		// Receiver party (has its own SeedBootstrapService with registered handler).
-		// The receiver is cold-start with respect to the *sender's* authority key,
+		// The receiver is cold-start with respect to the *sender's* owner key,
 		// so it must pin that key out-of-band (as a CadreInvite would) for the
 		// DB-anchored default policy not to reject the delivered seed.
 		const receiverParty = await network.createParty({ name: 'auth-e2e-receiver' });
 		const receiverService = new SeedBootstrapService({
 			partyId: receiverParty.partyId,
-			// The receiver self-registers its own peer (registerAuthorityPeer below),
-			// which requires its own authority key for signing — independent of the
+			// The receiver self-registers its own peer (registerOwnerPeer below),
+			// which requires its own owner key for signing — independent of the
 			// pinned trust anchor used to accept the *sender's* delivered seed.
-			authorityPrivateKey: extractPrivateKeyBase64(receiverParty.authorityPrivateKey),
-			authorityPublicKey: receiverParty.authorityPublicKey,
-			trustPolicy: pinnedKeyTrustPolicy([senderParty.authorityPublicKey]),
+			ownerPrivateKey: extractPrivateKeyBase64(receiverParty.ownerPrivateKey),
+			ownerPublicKey: receiverParty.ownerPublicKey,
+			trustPolicy: pinnedKeyTrustPolicy([senderParty.ownerPublicKey]),
 		});
-		receiverService.initialize(receiverParty.authorityNode.libp2p, receiverParty.controlDatabase);
+		receiverService.initialize(receiverParty.ownerNode.libp2p, receiverParty.controlDatabase);
 		// Register the receiver's own handler + peer entry.
-		await registerAuthorityPeer(receiverService, receiverParty);
+		await registerOwnerPeer(receiverService, receiverParty);
 
 		// Authorize receiver's peer on sender side so the seed includes it
-		const receiverAddr = receiverParty.authorityNode.multiaddrs[0];
+		const receiverAddr = receiverParty.ownerNode.multiaddrs[0];
 		await senderService.authorizePeer({
-			peerId: receiverParty.authorityNode.peerId,
+			peerId: receiverParty.ownerNode.peerId,
 			multiaddrs: [receiverAddr],
 		});
 

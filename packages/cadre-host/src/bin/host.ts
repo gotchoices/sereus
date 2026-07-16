@@ -43,7 +43,7 @@ import {
   clearPushSecret,
   pushStatus,
 } from '../push/index.js';
-import { AuthorityNodeClient } from '../authority/index.js';
+import { OwnerNodeClient } from '../owner/index.js';
 import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
 
@@ -260,8 +260,8 @@ program
       updateService.start();
 
       // Wire the long-lived HTTP management server. The manager holds no
-      // in-process cadre node: it spawns the admin's **authority node** as a
-      // managed child and delegates authority/membership/identity operations
+      // in-process cadre node: it spawns the admin's **owner node** as a
+      // managed child and delegates owner/membership/identity operations
       // to it over the node's loopback admin channel (the 6.6 contract). The
       // manager never joins the control network (see docs/cadre-host.md
       // § Control-plane separation).
@@ -276,41 +276,41 @@ program
       });
       await orchestrator.init();
 
-      // Spawn the authority node. Best-effort: a spawn failure leaves the
+      // Spawn the owner node. Best-effort: a spawn failure leaves the
       // management API up (trust-circle listing degrades to local labels,
-      // authority ops return 503) rather than taking down the whole process.
+      // owner ops return 503) rather than taking down the whole process.
       try {
-        await orchestrator.ensureAuthorityNode({
+        await orchestrator.ensureOwnerNode({
           identityPath: idPath,
           partyId: cfg.installId,
           libp2pPort: cfg.libp2pPort,
         });
-        console.log('cadre-host: authority node spawned');
+        console.log('cadre-host: owner node spawned');
       } catch (err) {
-        console.error(`authority node spawn failed: ${(err as Error).message}`);
+        console.error(`owner node spawn failed: ${(err as Error).message}`);
       }
 
       // The client reads the admin endpoint lazily so a node restart's fresh
       // bearer token is picked up automatically.
-      const authority = new AuthorityNodeClient(() => orchestrator.getAuthorityAdminEndpoint());
+      const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
       const trustCircle = new TrustCircleService({
-        cadreNode: authority,
+        cadreNode: owner,
         store: new TrustCircleStore(cfg.dataDir),
       });
       const natService = new NatService({
         rootDir: cfg.dataDir,
-        cadreNode: authority,
+        cadreNode: owner,
       });
 
       // Push NAT-resolved invite addresses to the node on every NAT change.
       // NatService.start() also fires this once as an initial push, retried
-      // until the freshly spawned authority node accepts it (bounded; the
+      // until the freshly spawned owner node accepts it (bounded; the
       // management API that mints invites comes up only after start() resolves).
       natService.onAddressesChanged(async (addresses) => {
         if (addresses.length === 0) return;
         try {
-          await authority.pushInviteAddresses(addresses);
+          await owner.pushInviteAddresses(addresses);
         } catch (err) {
           console.error(`invite-address push failed: ${(err as Error).message}`);
         }
@@ -343,7 +343,7 @@ program
       await waitForTermination();
       try { await server.stop(); } catch { /* ignore */ }
       try { await natService.stop(); } catch { /* ignore */ }
-      try { await orchestrator.stopAuthorityNode(); } catch { /* ignore */ }
+      try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
       updateService.stop();
       console.log('cadre-host stopped.');
       process.exit(0);
@@ -741,7 +741,7 @@ ddns
 // do NOT go through the running management API). Private keys land in the OS
 // keychain (keytar) or the 0600 file-store fallback; the non-secret bits (APNs
 // bundle id / sandbox toggle, cooldown/debounce) land in host.config.json. New
-// credentials take effect on the next authority-node (re)spawn — run
+// credentials take effect on the next owner-node (re)spawn — run
 // `cadre-host` restart (or restart the service) to apply them immediately.
 
 const push = program
@@ -771,7 +771,7 @@ push
       clientEmail: opts.clientEmail,
       privateKey,
     });
-    console.log('✓ FCM credentials stored. Restart cadre-host to apply on the authority node.');
+    console.log('✓ FCM credentials stored. Restart cadre-host to apply on the owner node.');
     process.exit(0);
   });
 
@@ -808,7 +808,7 @@ push
     });
     console.log(
       `✓ APNs credentials stored (${opts.production ? 'production' : 'sandbox'}). ` +
-      `Restart cadre-host to apply on the authority node.`,
+      `Restart cadre-host to apply on the owner node.`,
     );
     process.exit(0);
   });

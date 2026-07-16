@@ -12,10 +12,10 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
 ```
 
 - **Control network** — an Optimystic network named `control-<partyId>` carrying
-  the `CadreControl` schema (authority keys, cadre peers, strands).
-- **Authority self-genesis** — a solo node seeds itself as its own authority,
-  mirroring `cadre-cli start --authority` (bridge the libp2p identity into a
-  base64url authority key, idempotent genesis `AuthorityKey` insert, then
+  the `CadreControl` schema (owner keys, cadre peers, strands).
+- **Owner self-genesis** — a solo node seeds itself as its own owner,
+  mirroring `cadre-cli start --owner` (bridge the libp2p identity into a
+  base64url owner key, idempotent genesis `OwnerKey` insert, then
   `initializeSeedBootstrap`).
 - **Signed chat strand** — an open strand whose chat sApp schema is **signed**;
   `StrandInstanceManager` verifies the signature on start
@@ -30,9 +30,9 @@ Identity (Ed25519 peer key) and the party id persist in IndexedDB across reloads
 It also drives the **consent/invitation strand-formation flow** (Phase 2): a tab
 can mint an `OpenInvitation` for the chat sApp (responder) or join via a pasted
 invitation (initiator), forming a **closed** strand keyed by a minted member key.
-The `CadreControl` authorization gates ("RBAC") — authority keys, formation
+The `CadreControl` authorization gates ("RBAC") — owner keys, formation
 invites/usage, strand membership type + member-key presence, and a live
-authority-gate probe — are observable on the Diagnostics page.
+owner-gate probe — are observable on the Diagnostics page.
 
 > **Live convergence is covered.** Two-party **cross-cohort convergence** (a
 > message written by one party replicating to another through a shared closed
@@ -63,14 +63,14 @@ and stored messages.
 ## Routes
 
 - `#/` — **Home** — node status, party id, peer id, control-network connection,
-  chat-strand status, authority state, relay (dialability) status, Restart, and
+  chat-strand status, owner state, relay (dialability) status, Restart, and
   the **strand-formation panel**: create an invitation (responder) / join via a
   pasted invitation (initiator), showing the resulting strand id + membership type.
 - `#/messages` — compose / list chat messages backed by the strand's
   `App.Member` / `App.Message` tables (Quereus SQL). The chat sApp is
   append-only — there is no edit/delete (that belonged to the old demo app).
 - `#/log` — **Activity** — a CadreNode lifecycle event log
-  (`control:*`, `strand:*`, `seed:*`, authority genesis), newest first.
+  (`control:*`, `strand:*`, `seed:*`, owner genesis), newest first.
 - `#/diag` — diagnostics surface (see below).
 
 ## Storage bridge (`lib/strand-storage.ts`)
@@ -87,13 +87,13 @@ of time — and the provider returns a cached `IndexedDBRawStorage` per key.
 ## Solo cadre (Phase 1)
 
 No control bootstrap, no listen addresses. The node self-seeds as its own
-authority and hosts a single signed chat strand in `bootstrap` mode. Send →
+owner and hosts a single signed chat strand in `bootstrap` mode. Send →
 list round-trips and the data survives reload (DML persists to the strand's
 IndexedDB database). This is the single-node analogue of the RN reference's
 current coverage, plus the schema-signature gate.
 
-Authority genesis is **fail-soft**: the chat round-trip runs in bootstrap mode
-and does not depend on authority, so a genesis failure is surfaced on Home /
+Owner genesis is **fail-soft**: the chat round-trip runs in bootstrap mode
+and does not depend on owner, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
 
 ## Strand formation (consent / invitation flow)
@@ -135,13 +135,13 @@ at a dialable responder.)
 There is no app-level role engine — "RBAC" here is the authorization model the
 `CadreControl` schema constraints enforce, plus strand membership:
 
-- `AuthorityKey` / `ValidationKey` inserts are authority-signed (genesis bootstraps
+- `OwnerKey` / `ValidationKey` inserts are owner-signed (genesis bootstraps
   the first).
-- `Strand` inserts are authorized by an authority signature **or** a valid
+- `Strand` inserts are authorized by an owner signature **or** a valid
   `FormationUsage` row (indirect consent via a consumed `FormationInvite`).
 - Closed strands (`Type: 'c'`) carry a member private key; open strands don't.
 
-These gates are observable on Diagnostics (see below). The "Verify authority gate"
+These gates are observable on Diagnostics (see below). The "Verify owner gate"
 button attempts an *unauthorized* `Strand` insert (a non-enrolled key + bogus
 signature, no consuming `FormationUsage`); the `CadreControl` constraint rejects it
 at commit, demonstrating the gate is live.
@@ -155,12 +155,12 @@ at commit, demonstrating the gate is live.
 Polls every two seconds while the tab is visible. Surfaces:
 
 - **Cadre** — party id, control-network connection + control peer id, CadrePeer
-  membership count, authority self-genesis outcome, and the chat strand's status
+  membership count, owner self-genesis outcome, and the chat strand's status
   / connected peers / latency hint / sApp id / error.
 - **Control authorization (RBAC)** — the `CadreControl` gates made observable:
-  authority/validation key counts, the `FormationInvite` / `FormationUsage` audit
+  owner/validation key counts, the `FormationInvite` / `FormationUsage` audit
   rows, each control-DB `Strand`'s membership type (open/closed) + member-key
-  presence, the relay-dialability posture, and a "Verify authority gate" button
+  presence, the relay-dialability posture, and a "Verify owner gate" button
   that probes an unauthorized control write (expected: rejected).
 - **Identity** — peer ID, persistence badge, first-seen timestamp and age.
 - **Connectivity** — control-node status, listen multiaddrs (empty in a browser
@@ -231,7 +231,7 @@ src/
   polyfills.ts           # Buffer global + timer .ref/.unref shim
   main.css               # global styles
   lib/
-    cadre-web.ts             # CadreNode lifecycle (control net, authority genesis, chat strand)
+    cadre-web.ts             # CadreNode lifecycle (control net, owner genesis, chat strand)
     strand-storage.ts        # per-strand IndexedDB IRawStorage provider (pre-open bridge)
     chat-strand.ts           # chat sApp schema + signed SAppConfig + strand id
     store.svelte.ts          # Svelte 5 runes store: node state + CadreNode event log
@@ -270,8 +270,8 @@ yarn workspace @serfab/reference-app-web test:e2e
   (`formation-rbac.spec.ts`) the **formation + RBAC** surface a single tab can
   prove: the formation panel renders, the dialability guard rejects *Create
   invitation* with no relay, a malformed invitation is rejected on join, the
-  **authority gate** rejects an unauthorized control write, and the authorization
-  surface reflects the genesis authority + zero formation rows.
+  **owner gate** rejects an unauthorized control write, and the authorization
+  surface reflects the genesis owner + zero formation rows.
 - **Tier 2 — formation → convergence** (`e2e/distributed/formation-convergence.spec.ts`)
   — the live two-party tier. The dialable second party is an **in-process headless
   cadre responder** (`e2e/fixtures/formation-responder.ts`), booted in the spec's

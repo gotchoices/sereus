@@ -1,8 +1,8 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import http from 'node:http';
 
-import { AuthorityNodeClient, AuthorityNodeUnavailableError } from '../authority-node-client.js';
-import type { AuthorityAdminEndpoint } from '../../orchestrator/index.js';
+import { OwnerNodeClient, OwnerNodeUnavailableError } from '../owner-node-client.js';
+import type { OwnerAdminEndpoint } from '../../orchestrator/index.js';
 
 /**
  * Stub HTTP server matching the 6.6 admin contract. Records the last request
@@ -52,16 +52,16 @@ afterEach(async () => {
   await new Promise<void>((resolve) => server.close(() => resolve()));
 });
 
-function makeClient(): AuthorityNodeClient {
-  const endpoint: AuthorityAdminEndpoint = { baseUrl, token: TOKEN };
-  return new AuthorityNodeClient(endpoint);
+function makeClient(): OwnerNodeClient {
+  const endpoint: OwnerAdminEndpoint = { baseUrl, token: TOKEN };
+  return new OwnerNodeClient(endpoint);
 }
 
-describe('AuthorityNodeClient', () => {
+describe('OwnerNodeClient', () => {
   it('createInvite POSTs /admin/invites with bearer + body and unwraps data', async () => {
     responder = () => ({
       status: 200,
-      payload: { ok: true, data: { invite: { partyId: 'p', authorityAddrs: [], token: 't', createdAt: 1 }, encodedInvite: 'enc' } },
+      payload: { ok: true, data: { invite: { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 }, encodedInvite: 'enc' } },
     });
     const client = makeClient();
     const result = await client.createInvite('t', 60_000);
@@ -75,7 +75,7 @@ describe('AuthorityNodeClient', () => {
 
   it('acceptPhone POSTs /admin/accept-phone', async () => {
     const client = makeClient();
-    await client.acceptPhone({ phonePeerId: '12D3KooWX', token: 't' }, { partyId: 'p', authorityAddrs: [], token: 't', createdAt: 1 });
+    await client.acceptPhone({ phonePeerId: '12D3KooWX', token: 't' }, { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 });
     expect(last?.method).toBe('POST');
     expect(last?.path).toBe('/admin/accept-phone');
     const body = JSON.parse(last!.body);
@@ -146,20 +146,20 @@ describe('AuthorityNodeClient', () => {
 
   it('encodeInvite mirrors cadre-core base64url(JSON)', () => {
     const client = makeClient();
-    const invite = { partyId: 'p', authorityAddrs: [], token: 't', createdAt: 1 };
+    const invite = { partyId: 'p', ownerAddrs: [], token: 't', createdAt: 1 };
     const encoded = client.encodeInvite(invite);
     const decoded = JSON.parse(Buffer.from(encoded, 'base64url').toString('utf8'));
     expect(decoded).toEqual(invite);
   });
 
-  it('maps a non-2xx response to AuthorityNodeUnavailableError carrying the code', async () => {
+  it('maps a non-2xx response to OwnerNodeUnavailableError carrying the code', async () => {
     responder = () => ({ status: 503, payload: { ok: false, error: { code: 'not_ready', message: 'node booting' } } });
     const client = makeClient();
-    await expect(client.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+    await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
     await expect(client.getPeerId()).rejects.toMatchObject({ nodeCode: 'not_ready' });
   });
 
-  it('maps a refused connection to AuthorityNodeUnavailableError', async () => {
+  it('maps a refused connection to OwnerNodeUnavailableError', async () => {
     // Bind a throwaway server to claim a port, then close it so the address
     // is guaranteed refused.
     const tmp = http.createServer();
@@ -171,12 +171,12 @@ describe('AuthorityNodeClient', () => {
     });
     await new Promise<void>((resolve) => tmp.close(() => resolve()));
 
-    const client = new AuthorityNodeClient({ baseUrl: `http://127.0.0.1:${closedPort}`, token: TOKEN });
-    await expect(client.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+    const client = new OwnerNodeClient({ baseUrl: `http://127.0.0.1:${closedPort}`, token: TOKEN });
+    await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
   });
 
-  it('throws AuthorityNodeUnavailableError when the endpoint is undefined', async () => {
-    const client = new AuthorityNodeClient(() => undefined);
-    await expect(client.getPeerId()).rejects.toBeInstanceOf(AuthorityNodeUnavailableError);
+  it('throws OwnerNodeUnavailableError when the endpoint is undefined', async () => {
+    const client = new OwnerNodeClient(() => undefined);
+    await expect(client.getPeerId()).rejects.toBeInstanceOf(OwnerNodeUnavailableError);
   });
 });

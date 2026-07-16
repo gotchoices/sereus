@@ -2,10 +2,10 @@
  * Seed Bootstrap integration test.
  * 
  * Verifies the seed bootstrap flow for adding new nodes to a cadre:
- * 1. Authority creates and initializes SeedBootstrapService
- * 2. Authority authorizes a new drone peer
+ * 1. Owner creates and initializes SeedBootstrapService
+ * 2. Owner authorizes a new drone peer
  * 3. Drone receives seed and applies it
- * 4. Drone connects to authority
+ * 4. Drone connects to owner
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -38,23 +38,23 @@ describe('Seed Bootstrap', () => {
   });
 
   it('should authorize a peer and create a seed', async () => {
-    // Create authority party (server with signing keys)
-    const alice = await network.createParty({ name: 'alice-authority' });
+    // Create owner party (server with signing keys)
+    const alice = await network.createParty({ name: 'alice-owner' });
 
     // Extract the raw Ed25519 private key for the service
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.authorityPrivateKey);
+    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
 
     // Create SeedBootstrapService
-    // Use the same public key format that was inserted into AuthorityKey table
+    // Use the same public key format that was inserted into OwnerKey table
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      authorityPrivateKey: privateKeyBase64,
-      authorityPublicKey: alice.authorityPublicKey  // base64url encoded
+      ownerPrivateKey: privateKeyBase64,
+      ownerPublicKey: alice.ownerPublicKey  // base64url encoded
     });
 
     // Initialize with the party's libp2p and control database
     seedService.initialize(
-      alice.authorityNode.libp2p,
+      alice.ownerNode.libp2p,
       alice.controlDatabase
     );
 
@@ -85,16 +85,16 @@ describe('Seed Bootstrap', () => {
   it('should encode and decode seeds for out-of-band delivery', async () => {
     const alice = await network.createParty({ name: 'alice-encode' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.authorityPrivateKey);
+    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      authorityPrivateKey: privateKeyBase64,
-      authorityPublicKey: alice.authorityPublicKey
+      ownerPrivateKey: privateKeyBase64,
+      ownerPublicKey: alice.ownerPublicKey
     });
     
     seedService.initialize(
-      alice.authorityNode.libp2p,
+      alice.ownerNode.libp2p,
       alice.controlDatabase
     );
     
@@ -113,19 +113,19 @@ describe('Seed Bootstrap', () => {
     expect(decoded.signature).toBe(seed.signature);
   });
 
-  it('should validate seed signature from authority', async () => {
+  it('should validate seed signature from owner', async () => {
     const alice = await network.createParty({ name: 'alice-validate' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.authorityPrivateKey);
+    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      authorityPrivateKey: privateKeyBase64,
-      authorityPublicKey: alice.authorityPublicKey
+      ownerPrivateKey: privateKeyBase64,
+      ownerPublicKey: alice.ownerPublicKey
     });
     
     seedService.initialize(
-      alice.authorityNode.libp2p,
+      alice.ownerNode.libp2p,
       alice.controlDatabase
     );
     
@@ -144,16 +144,16 @@ describe('Seed Bootstrap', () => {
   it('should use addDrone helper to authorize drone and create seed', async () => {
     const alice = await network.createParty({ name: 'alice-drone' });
 
-    const privateKeyBase64 = extractPrivateKeyBase64(alice.authorityPrivateKey);
+    const privateKeyBase64 = extractPrivateKeyBase64(alice.ownerPrivateKey);
 
     const seedService = new SeedBootstrapService({
       partyId: alice.partyId,
-      authorityPrivateKey: privateKeyBase64,
-      authorityPublicKey: alice.authorityPublicKey
+      ownerPrivateKey: privateKeyBase64,
+      ownerPublicKey: alice.ownerPublicKey
     });
     
     seedService.initialize(
-      alice.authorityNode.libp2p,
+      alice.ownerNode.libp2p,
       alice.controlDatabase
     );
     

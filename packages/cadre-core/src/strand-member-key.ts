@@ -1,6 +1,6 @@
 import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
-import { authorityKeyFromLibp2p, type AuthorityKeyPair } from './authority-key.js';
+import { ed25519KeyPairFromLibp2p, type Ed25519KeyPair } from './ed25519-key.js';
 
 /**
  * Mint a fresh ed25519 strand member private key, encoded as base64 protobuf.
@@ -25,7 +25,7 @@ export async function generateStrandMemberKey(): Promise<string> {
  * secret; the founding `Member.Key`/`Authority.MemberKey` (the strand RBAC layer)
  * are *derived from it* — they are the `publicKeyB64` of the keypair this returns.
  * Decode the protobuf to a libp2p private key, then reuse
- * {@link authorityKeyFromLibp2p} so the same seed→public derivation used for node
+ * {@link ed25519KeyPairFromLibp2p} so the same seed→public derivation used for node
  * authority keys yields a stable `{ privateKeyB64, publicKeyB64 }` whose public
  * key a later strand signature verifies against.
  *
@@ -33,7 +33,7 @@ export async function generateStrandMemberKey(): Promise<string> {
  * @returns The base64url seed/public-key pair for founding membership/authority.
  * @throws If the decoded key is not Ed25519 or the raw bytes are malformed.
  */
-export function strandMemberKeyPair(memberPrivateKey: string): AuthorityKeyPair {
+export function strandMemberKeyPair(memberPrivateKey: string): Ed25519KeyPair {
   const privateKey = privateKeyFromProtobuf(uint8ArrayFromString(memberPrivateKey, 'base64'));
-  return authorityKeyFromLibp2p(privateKey);
+  return ed25519KeyPairFromLibp2p(privateKey);
 }

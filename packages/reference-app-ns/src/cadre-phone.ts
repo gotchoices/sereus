@@ -126,7 +126,7 @@ export async function stopPhoneNode(): Promise<void> {
 // ── Seed helpers ────────────────────────────────────────────────────────────────
 
 /**
- * Apply a seed received from the drone (or another authority).
+ * Apply a seed received from the drone (or another owner).
  */
 export async function applySeed(seed: ControlNetworkSeed): Promise<ApplySeedResult> {
 	if (!node) throw new Error('Phone node not started');

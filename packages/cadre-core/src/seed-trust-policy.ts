@@ -3,20 +3,20 @@
  *
  * A seed carries an ed25519 signature over its body and the `signerKey` that
  * produced it. Verifying that signature only proves the seed is internally
- * consistent — it does NOT prove the signer is an authority, because both the
- * signer key and the seed's own `isAuthority` peer flags are attacker-supplied.
+ * consistent — it does NOT prove the signer is an owner, because both the
+ * signer key and the seed's own `isOwner` peer flags are attacker-supplied.
  * The trust decision must therefore rest on an anchor that does not come from
  * the seed body:
  *
- *  1. DB-anchored — keys already in the receiver's `CadreControl.AuthorityKey`
+ *  1. DB-anchored — keys already in the receiver's `CadreControl.OwnerKey`
  *     table (steady state: the node is enrolled / has synced control state).
  *  2. Pinned out-of-band — keys handed to the node from outside the seed
- *     (carried by a `CadreInvite.authorityKeys`, or pinned by an operator).
+ *     (carried by a `CadreInvite.ownerKeys`, or pinned by an operator).
  *  3. TOFU (opt-in) — an explicit confirmation callback invoked on first sight
  *     of an unknown signer key. Interactive hosts only; off by default.
  *
  * Secure default (`dbAnchoredTrustPolicy`): a cold-start node with an empty
- * `AuthorityKey` table and no pinned keys rejects the seed — a seed can no
+ * `OwnerKey` table and no pinned keys rejects the seed — a seed can no
  * longer vouch for its own signer.
  */
 export interface SeedTrustContext {
@@ -25,10 +25,10 @@ export interface SeedTrustContext {
   /** ed25519 base64url signer key — already signature-verified by `applySeed`. */
   signerKey: string;
   /**
-   * The receiver's known authority keys, sourced from its `AuthorityKey`
+   * The receiver's known owner keys, sourced from its `OwnerKey`
    * table — NOT from the seed. Empty for a cold-start node.
    */
-  knownAuthorityKeys: ReadonlySet<string>;
+  knownOwnerKeys: ReadonlySet<string>;
 }
 
 export interface SeedTrustDecision {
@@ -48,45 +48,45 @@ export interface SeedTrustPolicy {
 
 /**
  * Default policy: trust only keys already present in the receiver's
- * `AuthorityKey` table. A cold-start node (empty table) rejects every seed.
+ * `OwnerKey` table. A cold-start node (empty table) rejects every seed.
  */
 export function dbAnchoredTrustPolicy(): SeedTrustPolicy {
   return {
-    evaluate({ signerKey, knownAuthorityKeys }) {
-      if (knownAuthorityKeys.has(signerKey)) {
+    evaluate({ signerKey, knownOwnerKeys }) {
+      if (knownOwnerKeys.has(signerKey)) {
         return { trusted: true };
       }
       return {
         trusted: false,
-        reason: 'Signer key is not a known authority (DB-anchored trust policy)',
+        reason: 'Signer key is not a known owner (DB-anchored trust policy)',
       };
     },
   };
 }
 
 /**
- * Cold-start policy: trust keys in the receiver's `AuthorityKey` table plus a
- * set pinned out-of-band (typically `CadreInvite.authorityKeys` or operator
+ * Cold-start policy: trust keys in the receiver's `OwnerKey` table plus a
+ * set pinned out-of-band (typically `CadreInvite.ownerKeys` or operator
  * config). Lets an unenrolled invitee accept its first seed without the seed
  * vouching for itself.
  */
 export function pinnedKeyTrustPolicy(pinned: Iterable<string>): SeedTrustPolicy {
   const pinnedSet = new Set(pinned);
   return {
-    evaluate({ signerKey, knownAuthorityKeys }) {
-      if (knownAuthorityKeys.has(signerKey) || pinnedSet.has(signerKey)) {
+    evaluate({ signerKey, knownOwnerKeys }) {
+      if (knownOwnerKeys.has(signerKey) || pinnedSet.has(signerKey)) {
         return { trusted: true };
       }
       return {
         trusted: false,
-        reason: 'Signer key is neither a known nor a pinned authority (pinned-key trust policy)',
+        reason: 'Signer key is neither a known nor a pinned owner (pinned-key trust policy)',
       };
     },
   };
 }
 
 /**
- * Opt-in interactive policy: trust keys already in the `AuthorityKey` table,
+ * Opt-in interactive policy: trust keys already in the `OwnerKey` table,
  * and on an unknown key invoke `confirm` (e.g. a trust-circle UI prompt). The
  * key is trusted iff `confirm` resolves true. Not enabled by default.
  */
@@ -95,7 +95,7 @@ export function tofuTrustPolicy(
 ): SeedTrustPolicy {
   return {
     async evaluate(ctx) {
-      if (ctx.knownAuthorityKeys.has(ctx.signerKey)) {
+      if (ctx.knownOwnerKeys.has(ctx.signerKey)) {
         return { trusted: true };
       }
       const accepted = await confirm(ctx);

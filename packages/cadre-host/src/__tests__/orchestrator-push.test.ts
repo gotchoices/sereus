@@ -13,7 +13,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import type { PushCredentials } from '@serfab/cadre-core';
-import { HostProcessOrchestrator, AUTHORITY_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
+import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
 
 const FAKE_CLI = `
 import fs from 'node:fs';
@@ -42,7 +42,7 @@ beforeEach(() => {
 
 afterEach(async () => {
   for (const orch of orchestrators) {
-    try { await orch.stopAuthorityNode(); } catch { /* ignore */ }
+    try { await orch.stopOwnerNode(); } catch { /* ignore */ }
   }
   orchestrators.length = 0;
   await sleep(50);
@@ -62,7 +62,7 @@ function makeOrchestrator(rootDir: string, pushResolver?: () => Promise<PushCred
   return orch;
 }
 
-function readChildConfig(rootDir: string, containerId = AUTHORITY_CONTAINER_ID): Record<string, unknown> {
+function readChildConfig(rootDir: string, containerId = OWNER_CONTAINER_ID): Record<string, unknown> {
   const raw = readFileSync(join(rootDir, containerId, 'cadre.json'), 'utf8');
   return JSON.parse(raw) as Record<string, unknown>;
 }
@@ -76,7 +76,7 @@ describe('HostProcessOrchestrator push injection', () => {
     const rootDir = join(tmpRoot, 'a');
     const orch = makeOrchestrator(rootDir, async () => ({ fcm: FCM, apns: APNS, cooldownMs: 1000 }));
     await orch.init();
-    await orch.ensureAuthorityNode(CFG);
+    await orch.ensureOwnerNode(CFG);
 
     const cfg = readChildConfig(rootDir);
     expect(cfg.push).toEqual({ fcm: FCM, apns: APNS, cooldownMs: 1000 });
@@ -86,7 +86,7 @@ describe('HostProcessOrchestrator push injection', () => {
     const rootDir = join(tmpRoot, 'b');
     const orch = makeOrchestrator(rootDir);
     await orch.init();
-    await orch.ensureAuthorityNode(CFG);
+    await orch.ensureOwnerNode(CFG);
 
     const cfg = readChildConfig(rootDir);
     expect(cfg.push).toBeUndefined();
@@ -96,7 +96,7 @@ describe('HostProcessOrchestrator push injection', () => {
     const rootDir = join(tmpRoot, 'c');
     const orch = makeOrchestrator(rootDir, async () => undefined);
     await orch.init();
-    await orch.ensureAuthorityNode(CFG);
+    await orch.ensureOwnerNode(CFG);
 
     expect(readChildConfig(rootDir).push).toBeUndefined();
   });
@@ -106,8 +106,8 @@ describe('HostProcessOrchestrator push injection', () => {
     const orch = makeOrchestrator(rootDir, async () => { throw new Error('partial creds'); });
     await orch.init();
     // Spawn still succeeds.
-    const node = await orch.ensureAuthorityNode(CFG);
-    expect(node.id).toBe(AUTHORITY_CONTAINER_ID);
+    const node = await orch.ensureOwnerNode(CFG);
+    expect(node.id).toBe(OWNER_CONTAINER_ID);
     expect(readChildConfig(rootDir).push).toBeUndefined();
   });
 
@@ -116,7 +116,7 @@ describe('HostProcessOrchestrator push injection', () => {
     let current: PushCredentials | undefined = { fcm: FCM };
     const orch = makeOrchestrator(rootDir, async () => current);
     await orch.init();
-    await orch.ensureAuthorityNode(CFG);
+    await orch.ensureOwnerNode(CFG);
     expect(readChildConfig(rootDir).push).toEqual({ fcm: FCM });
 
     // state.json must not carry the raw key — only re-resolvable references.
@@ -125,7 +125,7 @@ describe('HostProcessOrchestrator push injection', () => {
 
     // Rotate the resolver's answer, then restart — the new spawn must pick it up.
     current = { apns: APNS };
-    await orch.restartAuthorityNode();
+    await orch.restartOwnerNode();
     const cfg2 = readChildConfig(rootDir);
     expect(cfg2.push).toEqual({ apns: APNS });
     expect((cfg2.push as PushCredentials).fcm).toBeUndefined();

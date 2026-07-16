@@ -4,7 +4,7 @@
  * - WebSocket + circuit-relay transports (no TCP in RN)
  * - LevelDB-backed storage via db-p2p-storage-rn (rn-leveldb under the hood)
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
- * - Authority role: the phone holds the signing keys
+ * - Owner role: the phone holds the signing keys
  */
 
 import { CadreNode, ControlFormationUsageRecorder, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
@@ -60,7 +60,7 @@ function createStorage(strandId: string) {
 }
 
 // ── Peer identity (secure enclave) ────────────────────────────────────────────
-// The phone's single Ed25519 keypair (its PeerId, and the authority key derived
+// The phone's single Ed25519 keypair (its PeerId, and the owner key derived
 // from it) is held in the platform secure enclave — iOS Keychain / Android
 // Keystore-encrypted storage — via expo-secure-store, NOT plaintext LevelDB.
 // cadre-core loads/generates the identity through this store on start().
@@ -156,7 +156,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // One-time: lift any pre-existing plaintext LevelDB identity into the secure
   // store BEFORE the node's load-or-create path runs. If we didn't, cadre-core
   // would see an empty slot and generate a fresh key, losing the device's PeerId
-  // and authority identity across the upgrade. Gated on the slot being empty, so
+  // and owner identity across the upgrade. Gated on the slot being empty, so
   // it copies (and clears the legacy plaintext) at most once.
   await migrateLegacyIdentity({
     store: keyStore,
@@ -216,7 +216,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 
   node = new CadreNode(config);
   await node.start();
-  await runAuthorityGenesis(node);
+  await runOwnerGenesis(node);
   initializeFormationResponder(node);
   return node;
 }
@@ -256,55 +256,55 @@ function initializeFormationResponder(cadre: CadreNode): void {
 }
 
 /**
- * Self-genesis the phone as its own party authority. A node must enroll an
- * authority key before it can author control-network writes — notably the
- * authority-signed `Strand` INSERT that {@link CadreNode.publishStrand} performs
- * when the phone creates a strand. This mirrors `cadre-cli start --authority`
- * and the web reference app's `runAuthorityGenesis`: bridge the libp2p identity
- * into a base64url authority keypair, run the idempotent genesis `AuthorityKey`
+ * Self-genesis the phone as its own party owner. A node must enroll an
+ * owner key before it can author control-network writes — notably the
+ * owner-signed `Strand` INSERT that {@link CadreNode.publishStrand} performs
+ * when the phone creates a strand. This mirrors `cadre-cli start --owner`
+ * and the web reference app's `runOwnerGenesis`: bridge the libp2p identity
+ * into a base64url owner keypair, run the idempotent genesis `OwnerKey`
  * insert, then bring up seed-bootstrap (which also lets the node author its own
  * `CadrePeer` row via {@link CadreNode.registerSelf}).
  *
- * Authority model (demo): the FIRST node to enroll its key into the shared
- * control DB becomes the founding authority; `ensureAuthorityKey` is then a
+ * Owner model (demo): the FIRST node to enroll its key into the shared
+ * control DB becomes the founding owner; `ensureOwnerKey` is then a
  * no-op for later joiners that have already synced it. A second phone can always
- * JOIN a discovered strand (joining needs no authority), but only an enrolled
- * authority can publish NEW strands.
+ * JOIN a discovered strand (joining needs no owner), but only an enrolled
+ * owner can publish NEW strands.
  *
  * Fail-soft: a genesis failure is logged but does not abort startup — the phone
  * can still join discovered strands and sync. The failure resurfaces loudly at
  * {@link CadreNode.publishStrand} time if the phone later tries to create one.
  */
-async function runAuthorityGenesis(cadre: CadreNode): Promise<void> {
+async function runOwnerGenesis(cadre: CadreNode): Promise<void> {
   try {
-    // Source the authority pair from the node's resolved (secure-stored) identity
+    // Source the owner pair from the node's resolved (secure-stored) identity
     // rather than a key this module loaded itself — cadre-core owns the identity now.
-    const { privateKeyB64, publicKeyB64 } = cadre.getIdentityAuthorityKey();
+    const { privateKeyB64, publicKeyB64 } = cadre.getIdentityOwnerKey();
     const controlDb = cadre.getControlDatabase();
     if (!controlDb) {
-      throw new Error('control database unavailable after start; cannot run authority genesis');
+      throw new Error('control database unavailable after start; cannot run owner genesis');
     }
-    await controlDb.ensureAuthorityKey(publicKeyB64);
+    await controlDb.ensureOwnerKey(publicKeyB64);
     cadre.initializeSeedBootstrap(privateKeyB64);
   } catch (err) {
-    console.warn('[cadre-phone] authority self-genesis failed:', err);
+    console.warn('[cadre-phone] owner self-genesis failed:', err);
   }
 }
 
 /**
- * The node's authority **public** key (base64url) for out-of-band pairing /
+ * The node's owner **public** key (base64url) for out-of-band pairing /
  * enrollment. Derived from the secure-stored identity (single-key model), so it
  * is the same value an enrolling cadre pins as a trust anchor. Returns null
  * before start or if the identity is not resolved. Never exposes private material.
  */
-export function getAuthorityPublicKey(): string | null {
+export function getOwnerPublicKey(): string | null {
   if (!node?.isRunning) return null;
   try {
-    return node.getIdentityAuthorityKey().publicKeyB64;
+    return node.getIdentityOwnerKey().publicKeyB64;
   } catch (err) {
     // Only reachable on the ephemeral path (no keyStore) — not expected for the
     // phone node, which always configures a secure key store. Log, don't throw.
-    console.warn('[cadre-phone] authority public key unavailable:', err);
+    console.warn('[cadre-phone] owner public key unavailable:', err);
     return null;
   }
 }
@@ -322,7 +322,7 @@ export async function stopPhoneNode(): Promise<void> {
 // ── Seed helpers ─────────────────────────────────────────────────────────────
 
 /**
- * Apply a seed received from the drone (or another authority).
+ * Apply a seed received from the drone (or another owner).
  */
 export async function applySeed(seed: ControlNetworkSeed): Promise<ApplySeedResult> {
   if (!node) throw new Error('Phone node not started');
@@ -388,7 +388,7 @@ export async function createOpenInvitation(
 }
 
 /**
- * Persist the authority-signed `FormationInvite` row backing a minted
+ * Persist the owner-signed `FormationInvite` row backing a minted
  * invitation token, so a later redemption validates. Thin pass-through to
  * {@link CadreNode.publishFormationInvite}.
  *

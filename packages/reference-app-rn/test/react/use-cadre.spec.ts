@@ -131,7 +131,7 @@ vi.mock('../../src/cadre-phone', () => ({
   stopPhoneNode: vi.fn(async () => {
     h.ctl.node = null;
   }),
-  getAuthorityPublicKey: () => (h.ctl.node ? `authpub-${h.ctl.node.id}` : null),
+  getOwnerPublicKey: () => (h.ctl.node ? `authpub-${h.ctl.node.id}` : null),
   dialPeer: vi.fn(async () => {}),
   createOpenInvitation: vi.fn(),
   publishFormationInvite: vi.fn(),

@@ -8,10 +8,10 @@ import {
 } from '../src/peer-authorization.js';
 
 /** Sign a peer authorization the way SeedBootstrapService.authorizePeer does. */
-function authoritySign(peerId: string, authorityPrivateKey: string): string {
+function ownerSign(peerId: string, ownerPrivateKey: string): string {
   return sign(
     peerAuthorizationDigest(peerId),
-    authorityPrivateKey,
+    ownerPrivateKey,
     'ed25519',
     'base64url',
     'base64url',
@@ -34,58 +34,58 @@ describe('peerAuthorizationDigest', () => {
 });
 
 describe('verifyPeerAuthorization', () => {
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
   let peerId: string;
 
   beforeEach(async () => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
     const peerKey = await generateKeyPair('Ed25519');
     peerId = peerIdFromPrivateKey(peerKey).toString();
   });
 
-  it('round-trips: a valid authority signature over the peer ID verifies true', () => {
-    const signature = authoritySign(peerId, authorityPrivateKey);
-    expect(verifyPeerAuthorization(peerId, authorityPublicKey, signature)).toBe(true);
+  it('round-trips: a valid owner signature over the peer ID verifies true', () => {
+    const signature = ownerSign(peerId, ownerPrivateKey);
+    expect(verifyPeerAuthorization(peerId, ownerPublicKey, signature)).toBe(true);
   });
 
   it('rejects a signature made for a different peer ID', async () => {
-    const signature = authoritySign(peerId, authorityPrivateKey);
+    const signature = ownerSign(peerId, ownerPrivateKey);
     const otherKey = await generateKeyPair('Ed25519');
     const otherPeerId = peerIdFromPrivateKey(otherKey).toString();
-    expect(verifyPeerAuthorization(otherPeerId, authorityPublicKey, signature)).toBe(false);
+    expect(verifyPeerAuthorization(otherPeerId, ownerPublicKey, signature)).toBe(false);
   });
 
-  it('rejects a signature verified against a different authority key', () => {
-    const signature = authoritySign(peerId, authorityPrivateKey);
+  it('rejects a signature verified against a different owner key', () => {
+    const signature = ownerSign(peerId, ownerPrivateKey);
     const wrongPrivate = generatePrivateKey('ed25519', 'base64url') as string;
     const wrongPublic = getPublicKey(wrongPrivate, 'ed25519', 'base64url', 'base64url') as string;
     expect(verifyPeerAuthorization(peerId, wrongPublic, signature)).toBe(false);
   });
 
   it('rejects a tampered signature', () => {
-    const signature = authoritySign(peerId, authorityPrivateKey);
+    const signature = ownerSign(peerId, ownerPrivateKey);
     // Flip the leading character to a different valid base64url char.
     const tampered = (signature[0] === 'A' ? 'B' : 'A') + signature.slice(1);
-    expect(verifyPeerAuthorization(peerId, authorityPublicKey, tampered)).toBe(false);
+    expect(verifyPeerAuthorization(peerId, ownerPublicKey, tampered)).toBe(false);
   });
 
   it('returns false (does not throw) on a malformed base64url signature', () => {
     expect(() =>
-      expect(verifyPeerAuthorization(peerId, authorityPublicKey, 'not valid base64url!!! ***')).toBe(false)
+      expect(verifyPeerAuthorization(peerId, ownerPublicKey, 'not valid base64url!!! ***')).toBe(false)
     ).not.toThrow();
   });
 
-  it('returns false (does not throw) on a garbage authority key', () => {
-    const signature = authoritySign(peerId, authorityPrivateKey);
+  it('returns false (does not throw) on a garbage owner key', () => {
+    const signature = ownerSign(peerId, ownerPrivateKey);
     expect(() =>
       expect(verifyPeerAuthorization(peerId, 'garbage-key-not-32-bytes', signature)).toBe(false)
     ).not.toThrow();
   });
 
   it('returns false on an empty signature without throwing', () => {
-    expect(verifyPeerAuthorization(peerId, authorityPublicKey, '')).toBe(false);
+    expect(verifyPeerAuthorization(peerId, ownerPublicKey, '')).toBe(false);
   });
 
   it('regression: a signature produced via the inline authorizePeer construction still verifies', () => {
@@ -95,12 +95,12 @@ describe('verifyPeerAuthorization', () => {
     const inlineDigest = digest([peerId], 'sha256', 'base64url') as string;
     const signature = sign(
       inlineDigest,
-      authorityPrivateKey,
+      ownerPrivateKey,
       'ed25519',
       'base64url',
       'base64url',
       'base64url'
     ) as string;
-    expect(verifyPeerAuthorization(peerId, authorityPublicKey, signature)).toBe(true);
+    expect(verifyPeerAuthorization(peerId, ownerPublicKey, signature)).toBe(true);
   });
 });

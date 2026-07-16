@@ -3,7 +3,7 @@
  * (iOS Keychain / Android Keystore-encrypted SharedPreferences).
  *
  * This is the mobile secure-enclave backend for the cadre-core key-material seam:
- * the phone node's libp2p identity (and the authority key derived from it) lives
+ * the phone node's libp2p identity (and the owner key derived from it) lives
  * here instead of plaintext LevelDB. The class is platform-agnostic — it talks to
  * an injected {@link SecureStoreApi} (the three `expo-secure-store` async methods
  * it needs), so the production wiring passes the real module while unit tests pass
@@ -321,7 +321,7 @@ export interface LegacyIdentityMigrationDeps {
  * and never touches the legacy store — so the actual copy + legacy delete happen
  * at most once. Must run BEFORE the node's load-or-create path, otherwise that
  * path would generate a fresh key into the empty slot and the legacy PeerId/
- * authority identity would be lost.
+ * owner identity would be lost.
  *
  * Safety: a `store.get` rejection (access denied) PROPAGATES — we never migrate or
  * regenerate over an unreadable slot. A `readLegacy` failure is swallowed to

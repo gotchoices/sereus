@@ -1,10 +1,10 @@
 /**
- * HTTP client for the authority node's loopback admin channel (the 6.6
+ * HTTP client for the owner node's loopback admin channel (the 6.6
  * `cadre-node-admin-channel` contract).
  *
  * cadre-host's manager process holds no in-process `CadreNode`; it spawns the
- * admin's authority node as a managed child (see `HostProcessOrchestrator`)
- * and delegates all authority/membership/identity operations to it over this
+ * admin's owner node as a managed child (see `HostProcessOrchestrator`)
+ * and delegates all owner/membership/identity operations to it over this
  * client. The client implements **both** trimmed `CadreNodeLike` interfaces —
  * the trust-circle one (`auth/trust-circle.ts`) and the NAT one
  * (`nat/nat-service.ts`) — plus `pushInviteAddresses`.
@@ -13,7 +13,7 @@
  * `http://127.0.0.1:<adminPort>`. Every response uses the cadre-provider
  * envelope `{ ok: true, data }` / `{ ok: false, error: { code, message } }`.
  * A refused connection, a transport error, or any non-2xx response surfaces
- * as {@link AuthorityNodeUnavailableError}; the trust-circle / NAT services
+ * as {@link OwnerNodeUnavailableError}; the trust-circle / NAT services
  * translate that into a `node_unavailable` domain error so the management API
  * returns a clear 503 rather than a raw 500.
  */
@@ -21,49 +21,49 @@
 import debug from 'debug';
 import type { CadreInvite } from '@serfab/cadre-core';
 
-import type { AuthorityAdminEndpoint } from '../orchestrator/index.js';
+import type { OwnerAdminEndpoint } from '../orchestrator/index.js';
 import type { CadreNodeLike as TrustCircleCadreNodeLike } from '../auth/trust-circle.js';
 import type { CadreNodeLike as NatCadreNodeLike } from '../nat/nat-service.js';
 
-const log = debug('cadre:host:authority-client');
+const log = debug('cadre:host:owner-client');
 
 /**
- * Raised when the authority node's admin channel can't be reached or returns
+ * Raised when the owner node's admin channel can't be reached or returns
  * a non-success response. Carries the node's stable error `code` when one was
  * present in the envelope (e.g. `not_ready`, `not_authorized`).
  */
-export class AuthorityNodeUnavailableError extends Error {
+export class OwnerNodeUnavailableError extends Error {
   /** The admin-channel error code, when the node answered with an envelope. */
   readonly nodeCode?: string;
 
   constructor(message: string, nodeCode?: string) {
     super(message);
-    this.name = 'AuthorityNodeUnavailableError';
+    this.name = 'OwnerNodeUnavailableError';
     if (nodeCode !== undefined) this.nodeCode = nodeCode;
   }
 }
 
 /** Endpoint provided directly or via a getter (so it tracks re-spawns). */
 type EndpointSource =
-  | AuthorityAdminEndpoint
-  | (() => AuthorityAdminEndpoint | undefined)
+  | OwnerAdminEndpoint
+  | (() => OwnerAdminEndpoint | undefined)
   | undefined;
 
-export interface AuthorityNodeClientOptions {
+export interface OwnerNodeClientOptions {
   /** Fetch override for tests. Defaults to the global `fetch`. */
   fetch?: typeof fetch;
 }
 
-export class AuthorityNodeClient implements TrustCircleCadreNodeLike, NatCadreNodeLike {
+export class OwnerNodeClient implements TrustCircleCadreNodeLike, NatCadreNodeLike {
   private readonly endpointSource: EndpointSource;
   private readonly fetchImpl: typeof fetch;
 
   /**
    * @param endpoint Either a fixed `{ baseUrl, token }` or a getter returning
-   *   the current endpoint (pass `orchestrator.getAuthorityAdminEndpoint`
+   *   the current endpoint (pass `orchestrator.getOwnerAdminEndpoint`
    *   bound, so a restart's new bearer token is picked up automatically).
    */
-  constructor(endpoint: EndpointSource, opts: AuthorityNodeClientOptions = {}) {
+  constructor(endpoint: EndpointSource, opts: OwnerNodeClientOptions = {}) {
     this.endpointSource = endpoint;
     this.fetchImpl = opts.fetch ?? fetch;
   }
@@ -161,10 +161,10 @@ export class AuthorityNodeClient implements TrustCircleCadreNodeLike, NatCadreNo
 
   // --- internals ---
 
-  private resolveEndpoint(): AuthorityAdminEndpoint {
+  private resolveEndpoint(): OwnerAdminEndpoint {
     const ep = typeof this.endpointSource === 'function' ? this.endpointSource() : this.endpointSource;
     if (!ep) {
-      throw new AuthorityNodeUnavailableError('Authority node admin endpoint is not available');
+      throw new OwnerNodeUnavailableError('Owner node admin endpoint is not available');
     }
     return ep;
   }
@@ -184,7 +184,7 @@ export class AuthorityNodeClient implements TrustCircleCadreNodeLike, NatCadreNo
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       log('admin %s %s transport error: %s', method, path, message);
-      throw new AuthorityNodeUnavailableError(`Authority node unreachable: ${message}`);
+      throw new OwnerNodeUnavailableError(`Owner node unreachable: ${message}`);
     }
 
     const envelope = await this.parseEnvelope(res);
@@ -192,7 +192,7 @@ export class AuthorityNodeClient implements TrustCircleCadreNodeLike, NatCadreNo
       const code = envelope.error?.code;
       const message = envelope.error?.message ?? `admin ${method} ${path} → HTTP ${res.status}`;
       log('admin %s %s failed: [%s] %s', method, path, code ?? res.status, message);
-      throw new AuthorityNodeUnavailableError(message, code);
+      throw new OwnerNodeUnavailableError(message, code);
     }
     return envelope.data as T;
   }

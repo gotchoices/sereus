@@ -5,7 +5,7 @@
 		startDiagnostics,
 		stopDiagnostics,
 		refreshDiagnostics,
-		runAuthorityGateProbe,
+		runOwnerGateProbe,
 		clearErrors,
 		formatBytes,
 		formatDuration,
@@ -29,7 +29,7 @@
 	async function onVerifyGate() {
 		gateBusy = true;
 		try {
-			await runAuthorityGateProbe();
+			await runOwnerGateProbe();
 		} finally {
 			gateBusy = false;
 		}
@@ -80,15 +80,15 @@
 					{diag.cadre.cadrePeerCount ?? '—'}
 				{/if}
 			</dd>
-			<dt>Authority</dt>
+			<dt>Owner</dt>
 			<dd>
 				<span
 					class="badge"
-					class:bad={diag.cadre.authority === 'error'}
-					data-testid="diag-authority">{diag.cadre.authority}</span
+					class:bad={diag.cadre.owner === 'error'}
+					data-testid="diag-owner">{diag.cadre.owner}</span
 				>
-				{#if diag.cadre.authorityError}
-					<span class="bad">{diag.cadre.authorityError}</span>
+				{#if diag.cadre.ownerError}
+					<span class="bad">{diag.cadre.ownerError}</span>
 				{/if}
 			</dd>
 			<dt>Chat strand</dt>
@@ -122,15 +122,15 @@
 		<header class="card-header">
 			<h3>Control authorization (RBAC)</h3>
 			<button type="button" onclick={onVerifyGate} disabled={gateBusy} data-testid="diag-verify-gate">
-				{gateBusy ? 'Verifying…' : 'Verify authority gate'}
+				{gateBusy ? 'Verifying…' : 'Verify owner gate'}
 			</button>
 		</header>
 		{#if diag.authorization.error}
 			<p class="bad" data-testid="diag-authz-error">{diag.authorization.error}</p>
 		{/if}
 		<dl>
-			<dt>Authority keys</dt>
-			<dd data-testid="diag-authority-keys">{diag.authorization.authorityKeyCount}</dd>
+			<dt>Owner keys</dt>
+			<dd data-testid="diag-owner-keys">{diag.authorization.ownerKeyCount}</dd>
 			<dt>Validation keys</dt>
 			<dd data-testid="diag-validation-keys">{diag.authorization.validationKeyCount}</dd>
 			<dt>Relay</dt>
@@ -152,7 +152,7 @@
 					</ul>
 				{/if}
 			</dd>
-			<dt>Authority gate</dt>
+			<dt>Owner gate</dt>
 			<dd>
 				{#if diag.authorization.gateProbe}
 					<span
@@ -168,7 +168,7 @@
 						<div class="muted gate-detail" data-testid="diag-gate-detail">{diag.authorization.gateProbe.error}</div>
 					{/if}
 				{:else}
-					<span class="muted">not run — click “Verify authority gate”</span>
+					<span class="muted">not run — click “Verify owner gate”</span>
 				{/if}
 			</dd>
 			<dt>Formation invites</dt>

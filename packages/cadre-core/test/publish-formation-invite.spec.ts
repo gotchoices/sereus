@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 
 /**
@@ -10,22 +10,22 @@ import { ControlFormationUsageRecorder } from '../src/control-formation-recorder
  *
  * The DB-level `insertFormationInvite` is covered by
  * `control-formation-invite.spec.ts`; this pins the node wrapper end-to-end:
- * it self-signs with the node's own authority key (the `getSelfSigningKey`
+ * it self-signs with the node's own owner key (the `getSelfSigningKey`
  * path), lands a real `FormationInvite` row, and the row validates through a
  * `ControlFormationUsageRecorder` — i.e. the host's consent gate is armed.
  *
  * Boots a self-signing node the way `seed-bootstrap.spec.ts` does: the node's
- * libp2p key IS its authority key (`authorityKeyFromLibp2p`), enrolled in
- * `AuthorityKey` so its self-signed control writes are authorised.
+ * libp2p key IS its owner key (`ed25519KeyPairFromLibp2p`), enrolled in
+ * `OwnerKey` so its self-signed control writes are authorised.
  */
 describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish)', () => {
   let node: CadreNode | undefined;
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
-  async function startSelfAuthorityNode(enrollAuthority: boolean): Promise<CadreNode> {
+  async function startSelfOwnerNode(enrollOwner: boolean): Promise<CadreNode> {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
 
     const n = new CadreNode({
       controlNetwork: {
@@ -37,11 +37,11 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     });
     await n.start();
 
-    if (enrollAuthority) {
+    if (enrollOwner) {
       const db = n.getControlDatabase();
       expect(db).not.toBeNull();
       // Enroll the node's own key so its self-signed FormationInvite insert is authorised.
-      await db!.insertAuthorityKey(publicKeyB64);
+      await db!.insertOwnerKey(publicKeyB64);
     }
     return n;
   }
@@ -52,7 +52,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
   });
 
   it('happy path: lands a FormationInvite row that validates via the recorder', async () => {
-    node = await startSelfAuthorityNode(true);
+    node = await startSelfOwnerNode(true);
     const db = node.getControlDatabase()!;
     const token = 'invite-' + rand();
 
@@ -74,11 +74,11 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     expect(check.invitation?.sAppId).toBe('sapp-publish');
   }, 60_000);
 
-  it('rejects when the node is not an enrolled authority (constraint propagates)', async () => {
+  it('rejects when the node is not an enrolled owner (constraint propagates)', async () => {
     // Self-signing key is present (so it gets past the "no signing key" guard),
-    // but it is not enrolled in AuthorityKey, so the
+    // but it is not enrolled in OwnerKey, so the
     // FormationInvite.AuthorizedAddOrRemove gate rejects the insert.
-    node = await startSelfAuthorityNode(false);
+    node = await startSelfOwnerNode(false);
     const db = node.getControlDatabase()!;
     const before = await db.getDatabase().get('select count(1) as c from CadreControl.FormationInvite');
 

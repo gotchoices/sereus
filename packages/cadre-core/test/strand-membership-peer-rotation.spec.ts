@@ -13,7 +13,7 @@ import {
   removeAuthority,
   signStrandPayload,
 } from '../src/strand-membership-writer.js';
-import type { AuthorityKeyPair } from '../src/authority-key.js';
+import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { SAppConfig } from '../src/types.js';
 
 /**
@@ -41,7 +41,7 @@ function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
 }
 
 /** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): AuthorityKeyPair {
+function freshKeyPair(): Ed25519KeyPair {
   const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
   const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
   return { privateKeyB64, publicKeyB64 };
@@ -60,7 +60,7 @@ interface Strand {
   db: Database;
   strandId: string;
   /** The founder keypair — Member #1 and the sole founding Authority. */
-  founder: AuthorityKeyPair;
+  founder: Ed25519KeyPair;
   shutdown: () => Promise<void>;
 }
 
@@ -205,8 +205,8 @@ describe('registerMemberPeer', () => {
 // ── Phase 2: Authority rotation (add / remove admins) ─────────────────────────
 
 /** Add `count` extra authorities (signed by the founder) and return their keypairs. */
-async function addExtraAuthorities(db: Database, founder: AuthorityKeyPair, count: number): Promise<AuthorityKeyPair[]> {
-  const extras: AuthorityKeyPair[] = [];
+async function addExtraAuthorities(db: Database, founder: Ed25519KeyPair, count: number): Promise<Ed25519KeyPair[]> {
+  const extras: Ed25519KeyPair[] = [];
   for (let i = 0; i < count; i++) {
     const kp = freshKeyPair();
     await addAuthority(db, { byAuthorityKeyPair: founder, newAuthorityKey: kp.publicKeyB64 });

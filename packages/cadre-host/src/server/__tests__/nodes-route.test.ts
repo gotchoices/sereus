@@ -21,7 +21,7 @@ interface FakeOrchestrator extends HostProcessOrchestrator {
 
 function fakeOrchestrator(
   initial: ManagedNodeInfo[] = [],
-  opts: { authorityId?: string; hasAuthorityConfig?: boolean } = {},
+  opts: { ownerId?: string; hasOwnerConfig?: boolean } = {},
 ): FakeOrchestrator {
   const nodes = new Map(initial.map((n) => [n.dockerId, n]));
   const listeners = new Set<NodeStateListener>();
@@ -41,21 +41,21 @@ function fakeOrchestrator(
       for (const n of nodes.values()) if (n.id === id) return n.dockerId;
       return undefined;
     },
-    isAuthorityNode: (id: string) => {
-      if (!opts.authorityId) return false;
+    isOwnerNode: (id: string) => {
+      if (!opts.ownerId) return false;
       const node = findById(id);
-      return id === opts.authorityId || node?.id === opts.authorityId;
+      return id === opts.ownerId || node?.id === opts.ownerId;
     },
-    hasAuthorityConfig: () => opts.hasAuthorityConfig ?? false,
-    ensureAuthorityNode: async () => {
+    hasOwnerConfig: () => opts.hasOwnerConfig ?? false,
+    ensureOwnerNode: async () => {
       counters.ensured++;
-      const node = opts.authorityId ? findById(opts.authorityId) : undefined;
-      return node ?? { id: opts.authorityId, status: 'running' } as unknown as ManagedNodeInfo;
+      const node = opts.ownerId ? findById(opts.ownerId) : undefined;
+      return node ?? { id: opts.ownerId, status: 'running' } as unknown as ManagedNodeInfo;
     },
-    restartAuthorityNode: async () => {
+    restartOwnerNode: async () => {
       counters.restarted++;
-      const node = opts.authorityId ? findById(opts.authorityId) : undefined;
-      return node ?? { id: opts.authorityId, status: 'running' } as unknown as ManagedNodeInfo;
+      const node = opts.ownerId ? findById(opts.ownerId) : undefined;
+      return node ?? { id: opts.ownerId, status: 'running' } as unknown as ManagedNodeInfo;
     },
     onStateChange: (l: NodeStateListener) => { listeners.add(l); return () => { listeners.delete(l); }; },
     stopContainer: async (dockerId: string) => {
@@ -171,14 +171,14 @@ describe('/api/nodes routes', () => {
     ]);
   });
 
-  it('POST /api/nodes/:id/start on a non-authority node returns 501 not_implemented', async () => {
+  it('POST /api/nodes/:id/start on a non-owner node returns 501 not_implemented', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/start' });
     expect(res.statusCode).toBe(501);
     const body = res.json() as { error: { code: string } };
     expect(body.error.code).toBe('not_implemented');
   });
 
-  it('POST /api/nodes/:id/restart on a non-authority node returns 501 not_implemented', async () => {
+  it('POST /api/nodes/:id/restart on a non-owner node returns 501 not_implemented', async () => {
     const res = await app.inject({ method: 'POST', url: '/api/nodes/alice/restart' });
     expect(res.statusCode).toBe(501);
   });
@@ -191,9 +191,9 @@ describe('/api/nodes routes', () => {
   });
 });
 
-describe('/api/nodes — authority node start/restart', () => {
-  const AUTHORITY_NODE: ManagedNodeInfo = {
-    id: 'authority',
+describe('/api/nodes — owner node start/restart', () => {
+  const OWNER_NODE: ManagedNodeInfo = {
+    id: 'owner',
     dockerId: '999:tok',
     partyId: 'install-id',
     profile: 'storage',
@@ -201,7 +201,7 @@ describe('/api/nodes — authority node start/restart', () => {
     spawnedAt: '2025-01-01T00:00:00Z',
     workdir: '',
     ports: { health: 1, metrics: 2, p2p: 4555, admin: 3 },
-    authority: true,
+    owner: true,
   };
 
   let app: ReturnType<typeof Fastify>;
@@ -210,30 +210,30 @@ describe('/api/nodes — authority node start/restart', () => {
   beforeEach(() => {
     app = Fastify();
     registerErrorHandler(app);
-    orchestrator = fakeOrchestrator([AUTHORITY_NODE], { authorityId: 'authority', hasAuthorityConfig: true });
+    orchestrator = fakeOrchestrator([OWNER_NODE], { ownerId: 'owner', hasOwnerConfig: true });
     registerNodesRoutes(app, { orchestrator });
   });
 
   afterEach(async () => { await app.close(); });
 
-  it('start ensures the authority node', async () => {
-    const res = await app.inject({ method: 'POST', url: '/api/nodes/authority/start' });
+  it('start ensures the owner node', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/owner/start' });
     expect(res.statusCode).toBe(200);
     expect(orchestrator.__ensured).toBe(1);
   });
 
-  it('restart re-spawns the authority node', async () => {
-    const res = await app.inject({ method: 'POST', url: '/api/nodes/authority/restart' });
+  it('restart re-spawns the owner node', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/nodes/owner/restart' });
     expect(res.statusCode).toBe(200);
     expect(orchestrator.__restarted).toBe(1);
   });
 
-  it('start returns 501 when there is no saved authority config', async () => {
+  it('start returns 501 when there is no saved owner config', async () => {
     const app2 = Fastify();
     registerErrorHandler(app2);
-    const orch2 = fakeOrchestrator([AUTHORITY_NODE], { authorityId: 'authority', hasAuthorityConfig: false });
+    const orch2 = fakeOrchestrator([OWNER_NODE], { ownerId: 'owner', hasOwnerConfig: false });
     registerNodesRoutes(app2, { orchestrator: orch2 });
-    const res = await app2.inject({ method: 'POST', url: '/api/nodes/authority/start' });
+    const res = await app2.inject({ method: 'POST', url: '/api/nodes/owner/start' });
     expect(res.statusCode).toBe(501);
     await app2.close();
   });

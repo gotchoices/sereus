@@ -24,7 +24,7 @@ import {
   type BuildInviteAddressesInput,
 } from './address-resolver.js';
 import { createSecretsStore, ddnsAccount, type SecretsStore } from './secrets/index.js';
-import { AuthorityNodeUnavailableError } from '../authority/authority-node-client.js';
+import { OwnerNodeUnavailableError } from '../owner/owner-node-client.js';
 
 const log = debug('cadre:host:nat-service');
 
@@ -41,7 +41,7 @@ function sleep(ms: number): Promise<void> {
  * so tests can inject a mock without a real libp2p stack. Mirrors
  * `CadreNodeLike` in `auth/trust-circle.ts`.
  *
- * Both methods are async: in production they round-trip over the authority
+ * Both methods are async: in production they round-trip over the owner
  * node's loopback admin channel (`GET /admin/identity`, `GET /admin/multiaddrs`).
  * Synchronous test mocks can return a value directly (it's awaited).
  */
@@ -165,7 +165,7 @@ export class NatService {
     await this.ddnsUpdater.start();
 
     // Initial invite-address push. Retries on `node_unavailable` until the
-    // freshly spawned authority node accepts it (bounded; best-effort after).
+    // freshly spawned owner node accepts it (bounded; best-effort after).
     await this.pushInitialAddresses();
   }
 
@@ -237,7 +237,7 @@ export class NatService {
 
   /**
    * Build the multiaddrs to embed in invites. The peer ID and libp2p
-   * fallback addresses are fetched over the authority node's admin channel; a
+   * fallback addresses are fetched over the owner node's admin channel; a
    * node-unavailable failure surfaces as `NatError('node_unavailable')`.
    */
   async getInviteAddresses(): Promise<string[]> {
@@ -247,8 +247,8 @@ export class NatService {
       peerId = await this.cadreNode.getPeerId();
       libp2pAddrs = await this.cadreNode.getMultiaddrs();
     } catch (err) {
-      if (err instanceof AuthorityNodeUnavailableError) {
-        throw new NatError('node_unavailable', `Authority node unavailable: ${err.message}`);
+      if (err instanceof OwnerNodeUnavailableError) {
+        throw new NatError('node_unavailable', `Owner node unavailable: ${err.message}`);
       }
       throw err;
     }
@@ -256,7 +256,7 @@ export class NatService {
     // an empty peerId. Building addresses now would mint malformed `…/p2p/`
     // suffixes (and push them to the node), so treat it as not-ready.
     if (!peerId) {
-      throw new NatError('node_unavailable', 'Authority node has no peer ID yet (not ready)');
+      throw new NatError('node_unavailable', 'Owner node has no peer ID yet (not ready)');
     }
     const status = this.getStatus();
     const input: BuildInviteAddressesInput = {
@@ -273,7 +273,7 @@ export class NatService {
   /**
    * Register a listener fired when the invite addresses may have changed
    * (after `start`, `putSettings`, and `testReachability`). `cadre-host start`
-   * wires this to `AuthorityNodeClient.pushInviteAddresses`. Returns an
+   * wires this to `OwnerNodeClient.pushInviteAddresses`. Returns an
    * unsubscribe fn.
    */
   onAddressesChanged(listener: AddressesChangedListener): () => void {
@@ -283,7 +283,7 @@ export class NatService {
 
   /**
    * Recompute invite addresses and notify listeners. Best-effort: when the
-   * authority node is unreachable (or the build fails), the notification is
+   * owner node is unreachable (or the build fails), the notification is
    * skipped — the push is retried on the next NAT event.
    */
   private async fireAddressesChanged(): Promise<void> {
@@ -310,7 +310,7 @@ export class NatService {
   }
 
   /**
-   * Initial invite-address push. The authority node's admin channel is a freshly
+   * Initial invite-address push. The owner node's admin channel is a freshly
    * spawned detached child that may not be bound yet (and may not have a libp2p
    * peer ID yet), so a single attempt races readiness and silently drops the first
    * NAT-resolved address set. Retry on `node_unavailable` until the node accepts it

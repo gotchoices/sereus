@@ -2,7 +2,7 @@
  * store.svelte.ts — Svelte 5 runes store owning the browser CadreNode singleton.
  *
  * Replaces the old bare-libp2p store. Exposes node status, peer id, party id,
- * control-network connection state, chat-strand status, and the authority
+ * control-network connection state, chat-strand status, and the owner
  * self-genesis outcome to the UI. Also owns a small ring buffer of CadreNode
  * lifecycle events (`control:*`, `strand:*`, `seed:*`) that powers the Activity
  * (`/log`) page.
@@ -19,9 +19,9 @@ import {
 	getChatStrand,
 	getChatStrandId,
 	getPartyId,
-	getAuthorityState,
+	getOwnerState,
 	getRelayState,
-	type AuthorityState,
+	type OwnerState,
 	type RelayState,
 } from './cadre-web.js';
 import type { CadreNode, StrandStatus } from '@serfab/cadre-core';
@@ -41,7 +41,7 @@ interface NodeState {
 	strandStatus: StrandStatus | null;
 	strandPeers: number | null;
 	strandError: string | null;
-	authority: AuthorityState;
+	owner: OwnerState;
 	relay: RelayState;
 }
 
@@ -64,7 +64,7 @@ const state = $state<NodeState>({
 	strandStatus: null,
 	strandPeers: null,
 	strandError: null,
-	authority: 'pending',
+	owner: 'pending',
 	relay: { status: 'none', addrs: [], circuitAddrs: [], error: null },
 });
 
@@ -151,14 +151,14 @@ export async function start(): Promise<void> {
 		state.peerId = node.peerId?.toString() ?? null;
 		state.partyId = getPartyId();
 		state.controlConnected = node.isRunning;
-		state.authority = getAuthorityState().state;
+		state.owner = getOwnerState().state;
 		// control:connected fires inside start(), before we can subscribe; record
 		// it synthetically so the event log opens with the real lifecycle step.
 		record('control:connected', state.partyId ?? '');
-		if (state.authority === 'error') {
-			record('authority:error', getAuthorityState().error ?? 'unknown');
+		if (state.owner === 'error') {
+			record('owner:error', getOwnerState().error ?? 'unknown');
 		} else {
-			record(`authority:${state.authority}`);
+			record(`owner:${state.owner}`);
 		}
 
 		// Relay reservation (dialability for formation) settles inside start().
@@ -196,7 +196,7 @@ export async function stop(): Promise<void> {
 		state.strandStatus = null;
 		state.strandPeers = null;
 		state.strandError = null;
-		state.authority = 'pending';
+		state.owner = 'pending';
 		state.relay = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 		state.status = 'stopped';
 	} catch (err) {

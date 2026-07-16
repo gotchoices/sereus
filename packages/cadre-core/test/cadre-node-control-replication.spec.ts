@@ -131,7 +131,7 @@ describe('CadreNode write-while-alone re-replication', () => {
   });
 
   describe('drain re-issues', () => {
-    it('re-issues a pending authorize as a monotonic authority UPDATE', async () => {
+    it('re-issues a pending authorize as a monotonic owner UPDATE', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, {
         members: [],
@@ -235,8 +235,8 @@ describe('CadreNode write-while-alone re-replication', () => {
     });
   });
 
-  describe('non-authority safety', () => {
-    it('does not re-sign rows it merely holds (no authority key)', async () => {
+  describe('non-owner safety', () => {
+    it('does not re-sign rows it merely holds (no owner key)', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, {
         canAuthorize: false,
@@ -249,7 +249,7 @@ describe('CadreNode write-while-alone re-replication', () => {
 
       expect(seed.reauthorizeCalls).toEqual([]);
       expect(seed.removeCalls).toEqual([]);
-      // The stray queue entry is dropped (a non-authority cannot have authored it).
+      // The stray queue entry is dropped (a non-owner cannot have authored it).
       expect(pending(node).has('peer-X')).toBe(false);
     });
   });

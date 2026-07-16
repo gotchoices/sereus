@@ -37,7 +37,7 @@ import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage, type Libp2pTransports } from '@optimystic/db-p2p';
 import {
 	CadreNode,
-	authorityKeyFromLibp2p,
+	ed25519KeyPairFromLibp2p,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
@@ -138,19 +138,19 @@ function buildResponderConfig(privateKey: CadreNodeConfig['privateKey'], partyId
 }
 
 /**
- * Genesis-seed the node's own authority, mirroring `cadre-web.ts` `runAuthorityGenesis`
- * — bridge the libp2p identity into a base64url authority keypair, run the idempotent
- * `AuthorityKey` insert, then initialize seed-bootstrap. Unlike the browser's fail-soft
- * path this throws on failure: a responder with no authority cannot sign the invite or
+ * Genesis-seed the node's own owner, mirroring `cadre-web.ts` `runOwnerGenesis`
+ * — bridge the libp2p identity into a base64url owner keypair, run the idempotent
+ * `OwnerKey` insert, then initialize seed-bootstrap. Unlike the browser's fail-soft
+ * path this throws on failure: a responder with no owner cannot sign the invite or
  * the host Strand row, so there is nothing to test.
  */
-async function runAuthorityGenesis(node: CadreNode, privateKey: NonNullable<CadreNodeConfig['privateKey']>): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(privateKey);
+async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNodeConfig['privateKey']>): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) {
-		throw new Error('control database unavailable after start; cannot run responder authority genesis');
+		throw new Error('control database unavailable after start; cannot run responder owner genesis');
 	}
-	await controlDb.ensureAuthorityKey(publicKeyB64);
+	await controlDb.ensureOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
 }
 
@@ -160,7 +160,7 @@ async function runAuthorityGenesis(node: CadreNode, privateKey: NonNullable<Cadr
  * Sequence (each step mirrors the documented production path it is named after):
  *  1. Boot a `CadreNode` with a WS transport + memory storage, listening on an
  *     ephemeral `/ws` port.
- *  2. Genesis-seed its authority (fail-loud).
+ *  2. Genesis-seed its owner (fail-loud).
  *  3. Wire the formation responder (`initializeStrandSolicitation` + a real
  *     `ControlFormationUsageRecorder`) — registers the `/sereus/formation/1.0.0` handler.
  *  4. Create the host CLOSED chat strand byte-identically to the browser
@@ -183,7 +183,7 @@ export async function startFormationResponder(opts?: {
 	await node.start();
 
 	try {
-		await runAuthorityGenesis(node, identityKey);
+		await runOwnerGenesis(node, identityKey);
 
 		// Wire consent + register the responder. The DB-backed recorder makes token
 		// validity + single-use real and threads the bound host strand back

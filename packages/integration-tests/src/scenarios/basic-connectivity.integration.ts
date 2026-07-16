@@ -21,13 +21,13 @@ describe('Basic Connectivity', () => {
     await network.shutdown();
   });
 
-  it('should create a single party with authority node', async () => {
+  it('should create a single party with owner node', async () => {
     const alice = await network.createParty({ name: 'alice' });
     
     expect(alice.partyId).toMatch(/^party-alice-/);
-    expect(alice.authorityNode).toBeDefined();
-    expect(alice.authorityNode.peerId).toMatch(/^12D3KooW/); // Ed25519 peer ID format
-    expect(alice.authorityNode.multiaddrs.length).toBeGreaterThan(0);
+    expect(alice.ownerNode).toBeDefined();
+    expect(alice.ownerNode.peerId).toMatch(/^12D3KooW/); // Ed25519 peer ID format
+    expect(alice.ownerNode.multiaddrs.length).toBeGreaterThan(0);
     expect(alice.droneNodes).toHaveLength(0);
   });
 
@@ -47,7 +47,7 @@ describe('Basic Connectivity', () => {
     }
   });
 
-  it('should have drone nodes connected to authority node', async () => {
+  it('should have drone nodes connected to owner node', async () => {
     const carol = await network.createParty({
       name: 'carol',
       droneCount: 2
@@ -56,16 +56,16 @@ describe('Basic Connectivity', () => {
     // Give nodes a moment to establish connections via FRET
     // FRET is fast, but there's still network latency
     await waitForCount(
-      () => carol.authorityNode.libp2p.getConnections().length,
+      () => carol.ownerNode.libp2p.getConnections().length,
       2,
       { 
         timeoutMs: 5000,
-        description: 'authority node has 2 connections'
+        description: 'owner node has 2 connections'
       }
     );
     
-    const authorityConnections = carol.authorityNode.libp2p.getConnections();
-    expect(authorityConnections.length).toBeGreaterThanOrEqual(2);
+    const ownerConnections = carol.ownerNode.libp2p.getConnections();
+    expect(ownerConnections.length).toBeGreaterThanOrEqual(2);
     
     // Verify drones are connected
     for (const drone of carol.droneNodes) {
@@ -81,7 +81,7 @@ describe('Basic Connectivity', () => {
     });
     
     const allPeerIds = [
-      dave.authorityNode.peerId,
+      dave.ownerNode.peerId,
       ...dave.droneNodes.map(d => d.peerId)
     ];
     
@@ -93,7 +93,7 @@ describe('Basic Connectivity', () => {
     const eve = await network.createParty({ name: 'eve' });
     
     // The coordinatedRepo should be attached by createLibp2pNode
-    expect(eve.authorityNode.coordinatedRepo).toBeDefined();
+    expect(eve.ownerNode.coordinatedRepo).toBeDefined();
   });
 });
 

@@ -107,7 +107,7 @@ export type NatErrorCode =
   | 'secrets_unavailable'
   | 'storage_error'
   | 'invalid_config'
-  /** The authority node's admin channel is unreachable / not ready. */
+  /** The owner node's admin channel is unreachable / not ready. */
   | 'node_unavailable';
 
 /** Typed error carrying a stable `code` for HTTP mapping in the local-ui. */

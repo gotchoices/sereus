@@ -2,13 +2,13 @@
  * Happy-path integration: cadre bring-up + real intra-cadre control records.
  *
  * What this exercises for real:
- *   - Party/cadre bring-up over real libp2p (authority + drone nodes).
+ *   - Party/cadre bring-up over real libp2p (owner + drone nodes).
  *   - Real writes to the INVITING party's ControlDatabase, each asserted by
- *     reading the authority's control DB back (waitForControlSync / queryStrands)
+ *     reading the owner's control DB back (waitForControlSync / queryStrands)
  *     through the real CadreControl CHECK constraints: a Strand row
  *     (createStrand), a FormationInvite (createInvitation), and one FormationUsage
  *     per redemption (joinStrand).
- *   - Intra-cadre libp2p connectivity (authority <-> its own drones).
+ *   - Intra-cadre libp2p connectivity (owner <-> its own drones).
  *
  * What this deliberately does NOT do: a real CROSS-party strand join. The
  * FormationInvite/FormationUsage consent model is intra-cadre — the invite lives
@@ -52,17 +52,17 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
       droneProfile: 'storage'
     });
 
-    expect(alice.authorityNode).toBeDefined();
+    expect(alice.ownerNode).toBeDefined();
     expect(alice.droneNodes).toHaveLength(2);
     expect(alice.bootstrapAddrs.length).toBeGreaterThan(0);
 
-    // Bob is a customer with just an authority node (phone)
+    // Bob is a customer with just an owner node (phone)
     const bob = await network.createParty({
       name: 'bob-customer',
       droneCount: 0
     });
 
-    expect(bob.authorityNode).toBeDefined();
+    expect(bob.ownerNode).toBeDefined();
     expect(bob.droneNodes).toHaveLength(0);
 
     // ========================================
@@ -75,10 +75,10 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
     });
 
     expect(strand.strandId).toBeDefined();
-    expect(strand.sAppId).toBe(alice.authorityPublicKey);
+    expect(strand.sAppId).toBe(alice.ownerPublicKey);
     expect(strand.type).toBe('o');
 
-    // Real control-DB read: the authority's CadreControl.Strand now holds the row
+    // Real control-DB read: the owner's CadreControl.Strand now holds the row
     // (createStrand inserts it through the schema's Authorized constraint). This
     // replaces the old `strand.parties` (harness-stub) membership assertion.
     await network.waitForControlSync(alice, 'Strand', 1);
@@ -116,15 +116,15 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
 
     // Alice's cadre should be fully connected
     await waitForCount(
-      () => alice.authorityNode.libp2p.getConnections().length,
+      () => alice.ownerNode.libp2p.getConnections().length,
       2, // Connected to both drones
       {
         timeoutMs: 5000,
-        description: 'alice authority connected to drones'
+        description: 'alice owner connected to drones'
       }
     );
 
-    // Each drone should be connected to authority
+    // Each drone should be connected to owner
     for (const drone of alice.droneNodes) {
       const connections = drone.libp2p.getConnections();
       expect(connections.length).toBeGreaterThanOrEqual(1);
@@ -136,8 +136,8 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
 
     const usageCount = await alice.controlDatabase.countRows('FormationUsage');
     console.log('\n=== Happy Path Complete ===');
-    console.log(`Alice (${alice.partyId}): 1 authority + ${alice.droneNodes.length} drones`);
-    console.log(`Bob (${bob.partyId}): 1 authority`);
+    console.log(`Alice (${alice.partyId}): 1 owner + ${alice.droneNodes.length} drones`);
+    console.log(`Bob (${bob.partyId}): 1 owner`);
     console.log(`Strand: ${strand.strandId}`);
     console.log(`Alice control DB: ${aliceStrands.length} strand(s), ${usageCount} usage(s) (intra-cadre)`);
     console.log('===========================\n');

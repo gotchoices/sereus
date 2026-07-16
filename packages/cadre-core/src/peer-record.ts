@@ -61,7 +61,7 @@ export function peerRecordSignedPayload(peerId: string, multiaddr: string, updat
  * preserved and is the order signed over).
  *
  * @param fields - the record fields to sign (signaling addr first by convention)
- * @param privateKeyB64 - base64url ed25519 seed (see `authorityKeyFromLibp2p`)
+ * @param privateKeyB64 - base64url ed25519 seed (see `ed25519KeyPairFromLibp2p`)
  */
 export function signPeerRecord(
   fields: { peerId: string; publicKey: string; addrs: string[]; updatedAt: number },
@@ -132,8 +132,8 @@ export function orderSignalingFirst(addrs: string[]): string[] {
 /**
  * Default resolve trust gate: trust any peer that has a `CadrePeer` row.
  *
- * A row only exists because an authority signed its `AuthorizedInsert`, so row
- * presence already means "authority-vouched member". This is the seam where a
+ * A row only exists because an owner signed its `AuthorizedInsert`, so row
+ * presence already means "owner-vouched member". This is the seam where a
  * stricter policy (trust circle, pinned keys) plugs in — see
  * {@link PeerResolveTrustPolicy}.
  */

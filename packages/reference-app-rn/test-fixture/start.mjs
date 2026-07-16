@@ -14,7 +14,7 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { writeFile } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { CadreNode, authorityPublicKeyFromPrivate } from '@serfab/cadre-core';
+import { CadreNode, ed25519PublicKeyFromPrivate } from '@serfab/cadre-core';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
@@ -56,8 +56,8 @@ const CHAT_SAPP_CONFIG = {
 async function main() {
 	console.log('Starting drone test fixture...');
 
-	// Generate authority keypair — raw 32-byte Ed25519 seed, base64url-encoded.
-	const authorityPrivateKey = randomBytes(32).toString('base64url');
+	// Generate owner keypair — raw 32-byte Ed25519 seed, base64url-encoded.
+	const ownerPrivateKey = randomBytes(32).toString('base64url');
 
 	// Pre-generate strand ID for deterministic test data
 	const strandId = randomUUID();
@@ -94,17 +94,17 @@ async function main() {
 	console.log(`  Peer ID: ${node.peerId.toString()}`);
 
 	// Seed bootstrap — allows creating + delivering seeds
-	node.initializeSeedBootstrap(authorityPrivateKey);
+	node.initializeSeedBootstrap(ownerPrivateKey);
 
-	// Enroll the drone's own authority key so a cold-start invitee can pin it
-	// out-of-band. Without this, getAuthorityKeys() is empty and the minted
-	// invite carries no authorityKeys (undefined) — useless for trust anchoring.
-	const authorityPublicKey = authorityPublicKeyFromPrivate(authorityPrivateKey);
+	// Enroll the drone's own owner key so a cold-start invitee can pin it
+	// out-of-band. Without this, getOwnerKeys() is empty and the minted
+	// invite carries no ownerKeys (undefined) — useless for trust anchoring.
+	const ownerPublicKey = ed25519PublicKeyFromPrivate(ownerPrivateKey);
 	const controlDb = node.getControlDatabase();
-	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone authority');
-	await controlDb.ensureAuthorityKey(authorityPublicKey);
+	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone owner');
+	await controlDb.ensureOwnerKey(ownerPublicKey);
 
-	// Mint an enrollment invite carrying the drone authority key out-of-band.
+	// Mint an enrollment invite carrying the drone owner key out-of-band.
 	const { encodedInvite } = await node.createInvite();
 
 	// Create pre-configured chat strand

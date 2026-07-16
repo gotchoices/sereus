@@ -62,7 +62,7 @@ export function defaultFakeCadreNode(): CadreNodeLike {
 			return {
 				invite: {
 					partyId: '',
-					authorityAddrs: [],
+					ownerAddrs: [],
 					token: t,
 					createdAt: Date.now(),
 				} as never,

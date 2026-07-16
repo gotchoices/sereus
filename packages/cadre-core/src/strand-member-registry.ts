@@ -2,7 +2,7 @@ import debug from 'debug';
 import type { Database, SqlValue } from '@quereus/quereus';
 import type { MemberRegistration } from './types.js';
 import type { MemberRegistry, MemberVerifier } from './enrollment.js';
-import type { AuthorityKeyPair } from './authority-key.js';
+import type { Ed25519KeyPair } from './ed25519-key.js';
 import {
   verifyStrandPayload,
   consumeInvite,
@@ -40,7 +40,7 @@ export type StrandAdmission =
       /** Admit directly by authority signature (the authority-side join). */
       readonly mode: 'authority';
       /** The admitting authority's strand keypair. */
-      readonly authorityKeyPair: AuthorityKeyPair;
+      readonly authorityKeyPair: Ed25519KeyPair;
     };
 
 /**

@@ -263,7 +263,7 @@ export interface DeviceTokenRegistrar {
   /**
    * Publish the raw FCM/APNs token into this node's `DeviceToken` row. Returns
    * `true` on success, `false` if it was deferred (node not started, or the peer
-   * isn't yet a member / has no authority-seeded row) — the native layer retries
+   * isn't yet a member / has no owner-seeded row) — the native layer retries
    * on the next start / token event rather than treating a defer as fatal.
    */
   register(platform: PushPlatform, token: string): Promise<boolean>;
@@ -275,7 +275,7 @@ export interface DeviceTokenRegistrar {
  * Build a {@link DeviceTokenRegistrar} over the node singleton. Wraps
  * `CadreNode.registerDeviceToken` / `clearDeviceToken` with the deferred-retry
  * semantics the push path needs: registration legitimately fails before the node
- * is started or before an authority has seeded the first `DeviceToken` row, and
+ * is started or before an owner has seeded the first `DeviceToken` row, and
  * that must not crash token acquisition.
  */
 export function createDeviceTokenRegistrar(deps: DeviceTokenRegistrarDeps): DeviceTokenRegistrar {
@@ -289,7 +289,7 @@ export function createDeviceTokenRegistrar(deps: DeviceTokenRegistrarDeps): Devi
       await node.registerDeviceToken(platform, token);
       return true;
     } catch (err) {
-      // Expected before membership / first authority-seeded row exists. Retried
+      // Expected before membership / first owner-seeded row exists. Retried
       // on the next start or token-rotation event.
       console.warn('[push-wake] device-token registration deferred:', err);
       return false;

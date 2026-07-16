@@ -43,7 +43,7 @@ export function deviceTokenSignedPayload(record: Omit<DeviceTokenRecord, 'sig'>)
  * Returns a fully-populated {@link DeviceTokenRecord}.
  *
  * @param fields - the record fields to sign
- * @param privateKeyB64 - base64url ed25519 seed (see `authorityKeyFromLibp2p`)
+ * @param privateKeyB64 - base64url ed25519 seed (see `ed25519KeyPairFromLibp2p`)
  */
 export function signDeviceTokenRecord(
   fields: Omit<DeviceTokenRecord, 'sig'>,

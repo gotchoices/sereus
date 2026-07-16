@@ -1,12 +1,12 @@
 ## Cadre peer authorization (Seed Bootstrap API):
 
-Authority nodes authorize new peers via signed seeds containing peer info and control network state.
+Owner nodes authorize new peers via signed seeds containing peer info and control network state.
 
 ```ts
 // Create peer identity (on new node)
 createCadrePeer(): Promise<{ peerId: PeerId; privateKey: Uint8Array }>;
 
-// Authorize and create seed (on authority node)
+// Authorize and create seed (on owner node)
 authorizePeer(peerId: string, multiaddrs?: string[]): Promise<void>;
 createSeed(): Promise<ControlNetworkSeed>;
 

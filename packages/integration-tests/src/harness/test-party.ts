@@ -1,7 +1,7 @@
 /**
  * TestParty factory for integration tests.
  *
- * Creates parties with authority nodes and optional drone nodes,
+ * Creates parties with owner nodes and optional drone nodes,
  * all using real libp2p networking and real ControlDatabase.
  */
 
@@ -77,7 +77,7 @@ async function createTestNode(
 }
 
 /**
- * Create a test party with authority node and optional drones
+ * Create a test party with owner node and optional drones
  */
 export async function createTestParty(options: CreatePartyOptions): Promise<TestParty> {
   const { name, droneCount = 0, droneProfile = 'storage' } = options;
@@ -88,28 +88,28 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   
   log('Creating test party: %s (id: %s)', name, partyId);
   
-  // Generate authority keypair
-  const authorityKey = await generateKeyPair('Ed25519');
-  const authorityPrivateKey = privateKeyToProtobuf(authorityKey);
-  const authorityPeerId = peerIdFromPrivateKey(authorityKey);
+  // Generate owner keypair
+  const ownerKey = await generateKeyPair('Ed25519');
+  const ownerPrivateKey = privateKeyToProtobuf(ownerKey);
+  const ownerPeerId = peerIdFromPrivateKey(ownerKey);
   // Extract raw Ed25519 public key (32 bytes after 4-byte header and 32-byte seed)
   // and encode as base64url for use with crypto functions
-  const rawPublicKey = authorityPrivateKey.slice(36, 68);
-  const authorityPublicKey = uint8ArrayToString(rawPublicKey, 'base64url');
+  const rawPublicKey = ownerPrivateKey.slice(36, 68);
+  const ownerPublicKey = uint8ArrayToString(rawPublicKey, 'base64url');
 
-  log('Generated authority key: %s (peerId: %s)', authorityPublicKey, authorityPeerId.toString());
+  log('Generated owner key: %s (peerId: %s)', ownerPublicKey, ownerPeerId.toString());
 
-  // Create authority node first (no bootstrap - it IS the bootstrap).
-  // The authority node MUST adopt the authority keypair as its libp2p identity:
-  // seed/CadrePeer authority marking derives each peer's ed25519 key from its
-  // transport PeerId and checks it against the AuthorityKey table
+  // Create owner node first (no bootstrap - it IS the bootstrap).
+  // The owner node MUST adopt the owner keypair as its libp2p identity:
+  // seed/CadrePeer owner marking derives each peer's ed25519 key from its
+  // transport PeerId and checks it against the OwnerKey table
   // (see seed-bootstrap.ts `ed25519PublicKeyB64FromPeerId` / `queryPeers`). A
-  // fresh random node key would never match, so the authority would never be
-  // marked `isAuthority` in its own seeds.
-  const authorityNode = await createTestNode(networkName, [], 'transaction', authorityKey);
+  // fresh random node key would never match, so the owner would never be
+  // marked `isOwner` in its own seeds.
+  const ownerNode = await createTestNode(networkName, [], 'transaction', ownerKey);
   
-  // Get bootstrap addresses from authority node
-  const bootstrapAddrs = authorityNode.multiaddrs;
+  // Get bootstrap addresses from owner node
+  const bootstrapAddrs = ownerNode.multiaddrs;
   
   // Create drone nodes if requested
   const droneNodes: TestCadreNode[] = [];
@@ -124,22 +124,22 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   // Create and initialize the ControlDatabase for this party
   const controlDatabase = new ControlDatabase({
     partyId,
-    libp2pNode: authorityNode.libp2p,
-    coordinatedRepo: authorityNode.coordinatedRepo
+    libp2pNode: ownerNode.libp2p,
+    coordinatedRepo: ownerNode.coordinatedRepo
   });
   await controlDatabase.initialize();
   log('ControlDatabase initialized for party %s', name);
 
-  // Bootstrap: insert the authority key
-  await controlDatabase.insertAuthorityKey(authorityPublicKey);
-  log('Authority key inserted for party %s', name);
+  // Bootstrap: insert the owner key
+  await controlDatabase.insertOwnerKey(ownerPublicKey);
+  log('Owner key inserted for party %s', name);
 
   return {
     partyId,
     name,
-    authorityPrivateKey,
-    authorityPublicKey,
-    authorityNode,
+    ownerPrivateKey,
+    ownerPublicKey,
+    ownerNode,
     droneNodes,
     bootstrapAddrs,
     controlDatabase
@@ -160,7 +160,7 @@ export async function shutdownTestParty(party: TestParty): Promise<void> {
     log('Error closing ControlDatabase for %s: %s', party.name, (err as Error).message);
   }
 
-  const allNodes = [party.authorityNode, ...party.droneNodes];
+  const allNodes = [party.ownerNode, ...party.droneNodes];
   const ports: number[] = [];
 
   for (const node of allNodes) {

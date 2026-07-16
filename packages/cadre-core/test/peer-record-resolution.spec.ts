@@ -3,7 +3,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
 import { signPeerRecord, verifyPeerRecordSignature } from '../src/peer-record.js';
 import type { PeerAddressRecord } from '../src/types.js';
@@ -28,10 +28,10 @@ interface BootedNode {
   peerId: string;
 }
 
-/** Boot a CadreNode that is its own authority (so it can self-INSERT). */
-async function bootAuthorityNode(): Promise<BootedNode> {
+/** Boot a CadreNode that is its own owner (so it can self-INSERT). */
+async function bootOwnerNode(): Promise<BootedNode> {
   const libp2pKey: PrivateKey = await generateKeyPair('Ed25519');
-  const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(libp2pKey);
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const node = new CadreNode({
     controlNetwork: {
       partyId: 'peer-record-' + Math.random().toString(36).slice(2),
@@ -43,28 +43,28 @@ async function bootAuthorityNode(): Promise<BootedNode> {
   await node.start();
   const db = node.getControlDatabase();
   expect(db).not.toBeNull();
-  await db!.insertAuthorityKey(publicKeyB64);
+  await db!.insertOwnerKey(publicKeyB64);
   node.initializeSeedBootstrap(privateKeyB64);
   return { node, privateKeyB64, publicKeyB64, peerId: node.peerId!.toString() };
 }
 
 /**
  * Mint a self-signed record for a brand-new (different) peer and insert it via
- * the authority node — the authority signs the INSERT, the row carries the
+ * the owner node — the owner signs the INSERT, the row carries the
  * other peer's own valid Sig, so it resolves like a peer that self-published.
  */
 async function insertForeignMember(
-  authority: BootedNode,
+  owner: BootedNode,
   addrs: string[],
   updatedAt: number,
   overrides?: Partial<PeerAddressRecord>
 ): Promise<{ peerId: string; record: PeerAddressRecord }> {
   const key = await generateKeyPair('Ed25519');
-  const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(key);
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
   const peerId = peerIdFromPrivateKey(key).toString();
   const signed = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs, updatedAt }, privateKeyB64);
   const record = { ...signed, ...overrides };
-  await authority.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
+  await owner.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
   return { peerId, record };
 }
 
@@ -72,7 +72,7 @@ describe('peer-record resolution layer (real control DB)', () => {
   let booted: BootedNode;
 
   beforeEach(async () => {
-    booted = await bootAuthorityNode();
+    booted = await bootOwnerNode();
   }, 60_000);
 
   afterEach(async () => {
@@ -144,7 +144,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     const current = await node.getControlDatabase()!.queryPeerRecord(peerId);
 
     // Re-sign with updatedAt EQUAL to the stored one → monotonic clause fails,
-    // authority branch absent (context AuthorityKey null) → constraint rejects.
+    // owner branch absent (context OwnerKey null) → constraint rejects.
     const stale = signPeerRecord(
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/4.4.4.4/tcp/4001'], updatedAt: current!.updatedAt },
       privateKeyB64
@@ -166,7 +166,7 @@ describe('peer-record resolution layer (real control DB)', () => {
     // Sign a (monotonic) update with an unrelated key, but keep the row's real
     // PublicKey — the constraint verifies Sig against PublicKey → fails.
     const attacker = await generateKeyPair('Ed25519');
-    const { privateKeyB64: attackerPriv } = authorityKeyFromLibp2p(attacker);
+    const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
     const forged = signPeerRecord(
       { peerId, publicKey: publicKeyB64, addrs: ['/ip4/6.6.6.6/tcp/4001'], updatedAt: current!.updatedAt + 1 },
       attackerPriv
@@ -205,20 +205,20 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(await node.resolvePeerAddrs(otherPeerId)).toEqual([]);
   }, 60_000);
 
-  it('lets a NON-authority member self-update its own row with its OWN key, then resolves', async () => {
+  it('lets a NON-owner member self-update its own row with its OWN key, then resolves', async () => {
     const { node } = booted;
-    // Authority inserts a drone with a derived PublicKey but no Sig (Sig = null):
+    // Owner inserts a drone with a derived PublicKey but no Sig (Sig = null):
     // it is a member but does not resolve until it self-publishes.
     const drone = await generateKeyPair('Ed25519');
-    const { privateKeyB64: dronePriv, publicKeyB64: dronePub } = authorityKeyFromLibp2p(drone);
+    const { privateKeyB64: dronePriv, publicKeyB64: dronePub } = ed25519KeyPairFromLibp2p(drone);
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
     expect(await node.resolvePeerAddrs(dronePeerId)).toEqual([]);
 
-    // The drone signs an update to its OWN row with its own peer key — no authority
+    // The drone signs an update to its OWN row with its own peer key — no owner
     // context — exercising the AuthorizedUpdate self-branch with a key distinct
-    // from the authority key (the authority node's own self-update happens to sign
-    // with the authority key, so this is the only coverage of a true drone refresh).
+    // from the owner key (the owner node's own self-update happens to sign
+    // with the owner key, so this is the only coverage of a true drone refresh).
     const current = await node.getControlDatabase()!.queryPeerRecord(dronePeerId);
     const droneSig = circuitAddr(dronePeerId);
     const direct = '/ip4/10.0.0.1/tcp/4001';

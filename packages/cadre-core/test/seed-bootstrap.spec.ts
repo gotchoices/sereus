@@ -15,7 +15,7 @@ import {
   tofuTrustPolicy
 } from '../src/seed-trust-policy.js';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -53,14 +53,14 @@ function cadreNodeInternals(node: CadreNode): CadreNodeTestInternals {
 }
 
 describe('SeedBootstrapService', () => {
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
   const partyId = 'test-party-123';
 
   beforeEach(() => {
-    // Generate a fresh authority key pair for each test
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    // Generate a fresh owner key pair for each test
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
 
   describe('constructor', () => {
@@ -72,7 +72,7 @@ describe('SeedBootstrapService', () => {
     it('should derive public key from private key', () => {
       const service = new SeedBootstrapService({
         partyId,
-        authorityPrivateKey
+        ownerPrivateKey
       });
       expect(service).toBeDefined();
     });
@@ -80,8 +80,8 @@ describe('SeedBootstrapService', () => {
     it('should accept explicit public key', () => {
       const service = new SeedBootstrapService({
         partyId,
-        authorityPrivateKey,
-        authorityPublicKey
+        ownerPrivateKey,
+        ownerPublicKey
       });
       expect(service).toBeDefined();
     });
@@ -97,11 +97,11 @@ describe('SeedBootstrapService', () => {
           {
             peerId: '12D3KooWTestPeer1',
             multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-            isAuthority: true
+            isOwner: true
           }
         ],
         signature: 'test-signature',
-        signerKey: authorityPublicKey
+        signerKey: ownerPublicKey
       };
 
       const encoded = service.encodeSeed(seed);
@@ -124,7 +124,7 @@ describe('SeedBootstrapService', () => {
           {
             peerId: '12D3KooWTestPeer1',
             multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-            isAuthority: true
+            isOwner: true
           }
         ]
       };
@@ -134,7 +134,7 @@ describe('SeedBootstrapService', () => {
       const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest,
-        authorityPrivateKey,
+        ownerPrivateKey,
         'ed25519',
         'base64url',
         'base64url',
@@ -144,7 +144,7 @@ describe('SeedBootstrapService', () => {
       const seed: ControlNetworkSeed = {
         ...seedData,
         signature,
-        signerKey: authorityPublicKey
+        signerKey: ownerPublicKey
       };
 
       expect(service.validateSeedSignature(seed)).toBe(true);
@@ -157,7 +157,7 @@ describe('SeedBootstrapService', () => {
         partyId,
         peers: [],
         signature: 'invalid-signature',
-        signerKey: authorityPublicKey
+        signerKey: ownerPublicKey
       };
 
       expect(service.validateSeedSignature(seed)).toBe(false);
@@ -172,7 +172,7 @@ describe('SeedBootstrapService', () => {
       const seedDigest = digest([seedJson], 'sha256', 'base64url') as string;
       const signature = sign(
         seedDigest,
-        authorityPrivateKey,
+        ownerPrivateKey,
         'ed25519',
         'base64url',
         'base64url',
@@ -184,7 +184,7 @@ describe('SeedBootstrapService', () => {
         partyId: 'different-party',  // Changed!
         peers: [],
         signature,
-        signerKey: authorityPublicKey
+        signerKey: ownerPublicKey
       };
 
       expect(service.validateSeedSignature(tamperedSeed)).toBe(false);
@@ -216,17 +216,17 @@ describe('SeedBootstrapService', () => {
       const peerA: SeedPeer = {
         peerId: '12D3KooWTestPeer1',
         multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-        isAuthority: true,
-        publicKey: authorityPublicKey,
+        isOwner: true,
+        publicKey: ownerPublicKey,
       };
-      const seed = signSeed(authorityPrivateKey, authorityPublicKey, { partyId, peers: [peerA] });
+      const seed = signSeed(ownerPrivateKey, ownerPublicKey, { partyId, peers: [peerA] });
 
       // Rebuild the peer with keys in a different insertion order.
       const reordered: ControlNetworkSeed = {
         ...seed,
         peers: [{
-          publicKey: authorityPublicKey,
-          isAuthority: true,
+          publicKey: ownerPublicKey,
+          isOwner: true,
           multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
           peerId: '12D3KooWTestPeer1',
         }],
@@ -313,19 +313,19 @@ describe('Seed Types', () => {
       const peer: SeedPeer = {
         peerId: '12D3KooWTestPeer',
         multiaddrs: ['/ip4/127.0.0.1/tcp/4001'],
-        isAuthority: true
+        isOwner: true
       };
 
       expect(peer.peerId).toBe('12D3KooWTestPeer');
       expect(peer.multiaddrs).toHaveLength(1);
-      expect(peer.isAuthority).toBe(true);
+      expect(peer.isOwner).toBe(true);
     });
 
     it('should allow empty multiaddrs', () => {
       const peer: SeedPeer = {
         peerId: '12D3KooWTestPeer',
         multiaddrs: [],
-        isAuthority: false
+        isOwner: false
       };
 
       expect(peer.multiaddrs).toHaveLength(0);
@@ -353,7 +353,7 @@ describe('Seed Types', () => {
       const message: SeedMessage = {
         partyId: 'test-party',
         peers: [
-          { peerId: 'peer1', multiaddrs: [], isAuthority: true }
+          { peerId: 'peer1', multiaddrs: [], isOwner: true }
         ],
         signature: 'sig',
         signerKey: 'key'
@@ -389,12 +389,12 @@ describe('Seed Types', () => {
     it('should have required fields', () => {
       const invite: CadreInvite = {
         partyId: 'test-party',
-        authorityAddrs: ['/ip4/1.2.3.4/tcp/4001'],
+        ownerAddrs: ['/ip4/1.2.3.4/tcp/4001'],
         createdAt: Date.now()
       };
 
       expect(invite.partyId).toBe('test-party');
-      expect(invite.authorityAddrs).toHaveLength(1);
+      expect(invite.ownerAddrs).toHaveLength(1);
       expect(invite.createdAt).toBeGreaterThan(0);
     });
 
@@ -402,7 +402,7 @@ describe('Seed Types', () => {
       const now = Date.now();
       const invite: CadreInvite = {
         partyId: 'test-party',
-        authorityAddrs: [],
+        ownerAddrs: [],
         token: 'secret-token',
         createdAt: now,
         expiresAt: now + 3600000
@@ -435,7 +435,7 @@ describe('Seed Types', () => {
       const result: InviteResult = {
         invite: {
           partyId: 'test-party',
-          authorityAddrs: ['/ip4/1.2.3.4/tcp/4001'],
+          ownerAddrs: ['/ip4/1.2.3.4/tcp/4001'],
           createdAt: Date.now()
         },
         encodedInvite: 'base64url-encoded-invite'
@@ -448,15 +448,15 @@ describe('Seed Types', () => {
 });
 
 describe('Seed trust policy', () => {
-	let authorityPrivateKey: string;
-	let authorityPublicKey: string;
+	let ownerPrivateKey: string;
+	let ownerPublicKey: string;
 	let attackerPrivateKey: string;
 	let attackerPublicKey: string;
 	const partyId = 'test-party-vuln';
 
 	beforeEach(() => {
-		authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-		authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+		ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 		attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 		attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 	});
@@ -489,25 +489,25 @@ describe('Seed trust policy', () => {
 		};
 	}
 
-	/** Inject a fake control DB exposing only the authority-key set used by applySeed. */
-	function withKnownAuthorityKeys(service: SeedBootstrapService, keys: string[]) {
+	/** Inject a fake control DB exposing only the owner-key set used by applySeed. */
+	function withKnownOwnerKeys(service: SeedBootstrapService, keys: string[]) {
 		serviceInternals(service).controlDatabase = {
-			getAuthorityKeys: async () => new Set(keys),
+			getOwnerKeys: async () => new Set(keys),
 		};
 	}
 
-	it('rejects a forged self-asserting seed against an empty AuthorityKey table (default policy)', async () => {
+	it('rejects a forged self-asserting seed against an empty OwnerKey table (default policy)', async () => {
 		// The regression: attacker signs a seed that names its own key as an
-		// authority peer. Signature is valid, but the receiver has no anchor.
+		// owner peer. Signature is valid, but the receiver has no anchor.
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		// No control DB → empty known-authority set, default dbAnchoredTrustPolicy.
+		// No control DB → empty known-owner set, default dbAnchoredTrustPolicy.
 
 		const peers: SeedPeer[] = [
 			{
 				peerId: '12D3KooWAttacker',
 				multiaddrs: ['/ip4/1.2.3.4/tcp/4001'],
-				isAuthority: true,
+				isOwner: true,
 				publicKey: attackerPublicKey,
 			},
 		];
@@ -519,12 +519,12 @@ describe('Seed trust policy', () => {
 		expect(result.error).toMatch(/trust policy/i);
 	});
 
-	it('DB-anchored accept: signer key present in the AuthorityKey table is trusted', async () => {
+	it('DB-anchored accept: signer key present in the OwnerKey table is trusted', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownAuthorityKeys(service, [authorityPublicKey]);
+		withKnownOwnerKeys(service, [ownerPublicKey]);
 
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const result = await service.applySeed(seed);
 
 		expect(result.success).toBe(true);
@@ -533,11 +533,11 @@ describe('Seed trust policy', () => {
 	it('pinned-key accept: signer supplied via pinnedKeyTrustPolicy is trusted with an empty DB', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		// Empty DB; pin the authority key as if carried by a CadreInvite.
+		// Empty DB; pin the owner key as if carried by a CadreInvite.
 
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const result = await service.applySeed(seed, {
-			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
 		});
 
 		expect(result.success).toBe(true);
@@ -549,7 +549,7 @@ describe('Seed trust policy', () => {
 
 		const seed = createSignedSeed(attackerPrivateKey, attackerPublicKey, []);
 		const result = await service.applySeed(seed, {
-			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
 		});
 
 		expect(result.success).toBe(false);
@@ -557,7 +557,7 @@ describe('Seed trust policy', () => {
 	});
 
 	it('TOFU: confirm=false rejects, confirm=true accepts, and confirm is called once with the unknown key', async () => {
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 
 		// confirm returns false → rejected
 		const declineCalls: string[] = [];
@@ -570,7 +570,7 @@ describe('Seed trust policy', () => {
 			}),
 		});
 		expect(declined.success).toBe(false);
-		expect(declineCalls).toEqual([authorityPublicKey]);
+		expect(declineCalls).toEqual([ownerPublicKey]);
 
 		// confirm returns true → accepted, invoked exactly once
 		const acceptCalls: string[] = [];
@@ -583,16 +583,16 @@ describe('Seed trust policy', () => {
 			}),
 		});
 		expect(accepted.success).toBe(true);
-		expect(acceptCalls).toEqual([authorityPublicKey]);
+		expect(acceptCalls).toEqual([ownerPublicKey]);
 	});
 
 	it('TOFU does not consult confirm when the key is already DB-anchored', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownAuthorityKeys(service, [authorityPublicKey]);
+		withKnownOwnerKeys(service, [ownerPublicKey]);
 
 		let confirmCalls = 0;
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const result = await service.applySeed(seed, {
 			trustPolicy: tofuTrustPolicy(async () => {
 				confirmCalls++;
@@ -607,10 +607,10 @@ describe('Seed trust policy', () => {
 	it('signature is still required even with a valid trust anchor', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownAuthorityKeys(service, [authorityPublicKey]);
+		withKnownOwnerKeys(service, [ownerPublicKey]);
 
 		// Valid signer key, but a corrupted signature.
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const tampered: ControlNetworkSeed = { ...seed, signature: 'not-a-valid-signature' };
 		const result = await service.applySeed(tampered);
 
@@ -623,11 +623,11 @@ describe('Seed trust policy', () => {
 		// by configuring an explicit pinned default and omitting the override.
 		const service = new SeedBootstrapService({
 			partyId,
-			trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
 		});
 		serviceInternals(service).libp2pNode = createMockLibp2p();
 
-		const seed = createSignedSeed(authorityPrivateKey, authorityPublicKey, []);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const result = await service.applySeed(seed);
 
 		expect(result.success).toBe(true);
@@ -635,30 +635,30 @@ describe('Seed trust policy', () => {
 		expect(dbAnchoredTrustPolicy().evaluate({
 			partyId,
 			signerKey: attackerPublicKey,
-			knownAuthorityKeys: new Set(),
+			knownOwnerKeys: new Set(),
 		})).toMatchObject({ trusted: false });
 	});
 
-	it('SeedPeer should support publicKey field for authority peers', () => {
+	it('SeedPeer should support publicKey field for owner peers', () => {
 		const peer: SeedPeer = {
 			peerId: '12D3KooWTestPeer',
 			multiaddrs: [],
-			isAuthority: true,
-			publicKey: authorityPublicKey,
+			isOwner: true,
+			publicKey: ownerPublicKey,
 		};
 
-		expect(peer.publicKey).toBe(authorityPublicKey);
+		expect(peer.publicKey).toBe(ownerPublicKey);
 	});
 });
 
-describe('queryPeers — authority identity from the AuthorityKey table', () => {
+describe('queryPeers — owner identity from the OwnerKey table', () => {
 	/** Build a fake control DB exposing the two surfaces queryPeers consumes. */
 	function makeMockControlDb(
-		authorityKeys: string[],
+		ownerKeys: string[],
 		cadrePeers: Array<{ PeerId: string; Multiaddr: string | null }>
 	) {
 		return {
-			getAuthorityKeys: async () => new Set(authorityKeys),
+			getOwnerKeys: async () => new Set(ownerKeys),
 			getDatabase: () => ({
 				eval: async function* (sql: string) {
 					if (sql.includes('CadrePeer')) {
@@ -683,7 +683,7 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 		expect(ed25519PublicKeyB64FromPeerId(id)).toBe(keyB64);
 	});
 
-	it('marks two distinct authority peers, even though only one could match a local peerId', async () => {
+	it('marks two distinct owner peers, even though only one could match a local peerId', async () => {
 		const a = await peerIdFor();
 		const b = await peerIdFor();
 		const service = new SeedBootstrapService({ partyId: 'p' });
@@ -699,50 +699,50 @@ describe('queryPeers — authority identity from the AuthorityKey table', () => 
 		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(2);
 		const byId = new Map(peers.map((p) => [p.peerId, p]));
-		expect(byId.get(a.id)).toMatchObject({ isAuthority: true, publicKey: a.keyB64 });
-		expect(byId.get(b.id)).toMatchObject({ isAuthority: true, publicKey: b.keyB64 });
+		expect(byId.get(a.id)).toMatchObject({ isOwner: true, publicKey: a.keyB64 });
+		expect(byId.get(b.id)).toMatchObject({ isOwner: true, publicKey: b.keyB64 });
 	});
 
-	it('marks a peer whose key is absent from AuthorityKey as non-authority with no publicKey', async () => {
-		const authority = await peerIdFor();
+	it('marks a peer whose key is absent from OwnerKey as non-owner with no publicKey', async () => {
+		const owner = await peerIdFor();
 		const plain = await peerIdFor();
 		const service = new SeedBootstrapService({ partyId: 'p' });
-		serviceInternals(service).libp2pNode = { peerId: { toString: () => authority.id } };
+		serviceInternals(service).libp2pNode = { peerId: { toString: () => owner.id } };
 		serviceInternals(service).controlDatabase = makeMockControlDb(
-			[authority.keyB64], // plain's key is NOT present
+			[owner.keyB64], // plain's key is NOT present
 			[{ PeerId: plain.id, Multiaddr: '/ip4/3.3.3.3/tcp/4001' }]
 		);
 
 		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(1);
-		expect(peers[0].isAuthority).toBe(false);
+		expect(peers[0].isOwner).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();
 	});
 
-	it('treats a non-Ed25519 / unparsable peerId as non-authority without throwing', async () => {
+	it('treats a non-Ed25519 / unparsable peerId as non-owner without throwing', async () => {
 		const service = new SeedBootstrapService({ partyId: 'p' });
 		serviceInternals(service).libp2pNode = { peerId: { toString: () => 'self' } };
 		serviceInternals(service).controlDatabase = makeMockControlDb(
-			['some-authority-key'],
+			['some-owner-key'],
 			[{ PeerId: 'not-a-valid-peer-id', Multiaddr: null }]
 		);
 
 		const peers: SeedPeer[] = await serviceInternals(service).queryPeers();
 		expect(peers).toHaveLength(1);
-		expect(peers[0].isAuthority).toBe(false);
+		expect(peers[0].isOwner).toBe(false);
 		expect(peers[0].publicKey).toBeUndefined();
 		expect(peers[0].multiaddrs).toEqual([]);
 	});
 });
 
 describe('SeedBootstrapService Helper Methods', () => {
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
   const partyId = 'test-party-456';
 
   beforeEach(() => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
 
   describe('encodeInvite / decodeInvite', () => {
@@ -751,7 +751,7 @@ describe('SeedBootstrapService Helper Methods', () => {
 
       const invite: CadreInvite = {
         partyId,
-        authorityAddrs: ['/ip4/192.168.1.1/tcp/4001', '/ip4/10.0.0.1/tcp/4001'],
+        ownerAddrs: ['/ip4/192.168.1.1/tcp/4001', '/ip4/10.0.0.1/tcp/4001'],
         token: 'my-secret-token',
         createdAt: 1700000000000,
         expiresAt: 1700003600000
@@ -770,7 +770,7 @@ describe('SeedBootstrapService Helper Methods', () => {
 
       const invite: CadreInvite = {
         partyId,
-        authorityAddrs: [],
+        ownerAddrs: [],
         createdAt: 1700000000000
       };
 
@@ -786,12 +786,12 @@ describe('SeedBootstrapService Helper Methods', () => {
     it('should reject expired invite', async () => {
       const service = new SeedBootstrapService({
         partyId,
-        authorityPrivateKey
+        ownerPrivateKey
       });
 
       const expiredInvite: CadreInvite = {
         partyId,
-        authorityAddrs: [],
+        ownerAddrs: [],
         createdAt: Date.now() - 7200000,
         expiresAt: Date.now() - 3600000  // Expired 1 hour ago
       };
@@ -804,12 +804,12 @@ describe('SeedBootstrapService Helper Methods', () => {
     it('should reject invalid token', async () => {
       const service = new SeedBootstrapService({
         partyId,
-        authorityPrivateKey
+        ownerPrivateKey
       });
 
       const invite: CadreInvite = {
         partyId,
-        authorityAddrs: [],
+        ownerAddrs: [],
         token: 'correct-token',
         createdAt: Date.now()
       };
@@ -821,14 +821,14 @@ describe('SeedBootstrapService Helper Methods', () => {
   });
 
   describe('removePeer', () => {
-    it('requires an authority private key', async () => {
+    it('requires an owner private key', async () => {
       const service = new SeedBootstrapService({ partyId });
       await expect(service.removePeer('12D3KooWTestPeer'))
-        .rejects.toThrow('Authority private key required');
+        .rejects.toThrow('Owner private key required');
     });
 
     it('requires the control database to be initialized', async () => {
-      const service = new SeedBootstrapService({ partyId, authorityPrivateKey });
+      const service = new SeedBootstrapService({ partyId, ownerPrivateKey });
       await expect(service.removePeer('12D3KooWTestPeer'))
         .rejects.toThrow('Control database not initialized');
     });
@@ -857,7 +857,7 @@ describe('SeedBootstrapService Helper Methods', () => {
 
   describe('authorizePeer / removePeer — round-trip against a real control DB', () => {
     /**
-     * Boot a real CadreNode + ControlDatabase, insert the authority key,
+     * Boot a real CadreNode + ControlDatabase, insert the owner key,
      * initialize seed bootstrap, then exercise authorizePeer + removePeer
      * end-to-end and read CadrePeer back to confirm the row is gone.
      *
@@ -866,7 +866,7 @@ describe('SeedBootstrapService Helper Methods', () => {
      * the `AuthorizedInsert` constraint (which signs over `coalesce(new,
      * old).PeerId`).
      */
-    it('inserts then deletes a CadrePeer row via authority signature', async () => {
+    it('inserts then deletes a CadrePeer row via owner signature', async () => {
       const node = new CadreNode({
         controlNetwork: {
           partyId: 'test-party-' + Math.random().toString(36).slice(2),
@@ -880,9 +880,9 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         const db = node.getControlDatabase();
         expect(db).not.toBeNull();
-        await db!.insertAuthorityKey(authorityPublicKey);
+        await db!.insertOwnerKey(ownerPublicKey);
 
-        node.initializeSeedBootstrap(authorityPrivateKey);
+        node.initializeSeedBootstrap(ownerPrivateKey);
 
         // Use a real Ed25519-derived peerId so the value is shape-valid,
         // though the constraint actually only cares about the signature
@@ -919,9 +919,9 @@ describe('SeedBootstrapService Helper Methods', () => {
   describe('applySeed — DB-anchored trust against a real control DB', () => {
     /**
      * End-to-end coverage the mocked unit tests can't give: a live Quereus
-     * control DB feeds `getAuthorityKeys()`, which the default
+     * control DB feeds `getOwnerKeys()`, which the default
      * `dbAnchoredTrustPolicy` consults. Proves the real `select Key from
-     * AuthorityKey` round-trips into the security gate — an anchored signer is
+     * OwnerKey` round-trips into the security gate — an anchored signer is
      * accepted and an unanchored one rejected — with no per-call override.
      */
     function signSeed(privateKey: string, publicKey: string): ControlNetworkSeed {
@@ -934,7 +934,7 @@ describe('SeedBootstrapService Helper Methods', () => {
       return { ...seedData, signature, signerKey: publicKey };
     }
 
-    it('accepts an anchored signer and rejects an unanchored one via the live AuthorityKey table', async () => {
+    it('accepts an anchored signer and rejects an unanchored one via the live OwnerKey table', async () => {
       const node = new CadreNode({
         controlNetwork: {
           partyId: 'test-party-' + Math.random().toString(36).slice(2),
@@ -948,15 +948,15 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         const db = node.getControlDatabase();
         expect(db).not.toBeNull();
-        await db!.insertAuthorityKey(authorityPublicKey);
+        await db!.insertOwnerKey(ownerPublicKey);
 
-        node.initializeSeedBootstrap(authorityPrivateKey);
+        node.initializeSeedBootstrap(ownerPrivateKey);
 
         // The live table returns exactly the inserted key.
-        expect(await db!.getAuthorityKeys()).toEqual(new Set([authorityPublicKey]));
+        expect(await db!.getOwnerKeys()).toEqual(new Set([ownerPublicKey]));
 
         // Anchored signer → accepted by the default DB-anchored policy, no override.
-        const accepted = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+        const accepted = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
         expect(accepted.success).toBe(true);
 
         // Unanchored signer → rejected by the same default against the live table.
@@ -983,7 +983,7 @@ describe('SeedBootstrapService Helper Methods', () => {
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
-      expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+      expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
     });
 
     it('uses the resolver when configured (NAT host substitutes DDNS hostname)', async () => {
@@ -992,7 +992,7 @@ describe('SeedBootstrapService Helper Methods', () => {
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
-      expect(invite.authorityAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
+      expect(invite.ownerAddrs).toEqual(['/dns4/foo.duckdns.org/tcp/4001/p2p/12D3KooWHost']);
     });
 
     it('falls back to libp2pNode.getMultiaddrs() when the resolver throws', async () => {
@@ -1001,37 +1001,37 @@ describe('SeedBootstrapService Helper Methods', () => {
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
 
       const { invite } = await service.createInvite();
-      expect(invite.authorityAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
+      expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
     });
 
-    it('carries the AuthorityKey table as invite.authorityKeys', async () => {
+    it('carries the OwnerKey table as invite.ownerKeys', async () => {
       const service = new SeedBootstrapService({ partyId });
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
       serviceInternals(service).controlDatabase = {
-        getAuthorityKeys: async () => new Set([authorityPublicKey, 'second-authority-key']),
+        getOwnerKeys: async () => new Set([ownerPublicKey, 'second-owner-key']),
       };
 
       const { invite } = await service.createInvite();
-      expect(invite.authorityKeys).toBeDefined();
-      expect(new Set(invite.authorityKeys)).toEqual(
-        new Set([authorityPublicKey, 'second-authority-key'])
+      expect(invite.ownerKeys).toBeDefined();
+      expect(new Set(invite.ownerKeys)).toEqual(
+        new Set([ownerPublicKey, 'second-owner-key'])
       );
     });
 
-    it('omits authorityKeys when the AuthorityKey table is empty', async () => {
+    it('omits ownerKeys when the OwnerKey table is empty', async () => {
       const service = new SeedBootstrapService({ partyId });
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
       serviceInternals(service).controlDatabase = {
-        getAuthorityKeys: async () => new Set<string>(),
+        getOwnerKeys: async () => new Set<string>(),
       };
 
       const { invite } = await service.createInvite();
-      expect(invite.authorityKeys).toBeUndefined();
+      expect(invite.ownerKeys).toBeUndefined();
     });
   });
 });
 
-describe('registerSelf — authority self-registration into CadrePeer', () => {
+describe('registerSelf — owner self-registration into CadrePeer', () => {
   /** Minimal libp2p surface the receiver's applySeed consumes (merge + dial). */
   function makeReceiverLibp2p() {
     return {
@@ -1041,22 +1041,22 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
   }
 
   /**
-   * The CLI `--authority` shape: the node's libp2p identity key IS its authority
-   * key (authorityKeyFromLibp2p), so it can authority-sign the INSERT of its OWN
+   * The CLI `--owner` shape: the node's libp2p identity key IS its owner
+   * key (ed25519KeyPairFromLibp2p), so it can owner-sign the INSERT of its OWN
    * self-signed address record. This is the gap the implement ticket closes —
-   * before registerSelf the authority is absent from the seed it mints; after,
-   * the seed carries it as an authority peer, and a receiver that trusts the
+   * before registerSelf the owner is absent from the seed it mints; after,
+   * the seed carries it as an owner peer, and a receiver that trusts the
    * signer accepts it.
    *
    * NOTE: the ticket described the receiver check as a literal
-   * `seed.peers.some(p => p.isAuthority && p.publicKey === seed.signerKey)` gate.
+   * `seed.peers.some(p => p.isOwner && p.publicKey === seed.signerKey)` gate.
    * That inline gate was superseded by the pluggable trust-policy design (see
-   * `applySeed`); this test asserts the still-true contract — the authority is
+   * `applySeed`); this test asserts the still-true contract — the owner is
    * present in the seed AND a signer-trusting receiver applies it successfully.
    */
-  it('inserts the authority into CadrePeer so seeds include it, and a receiver accepts the seed', async () => {
+  it('inserts the owner into CadrePeer so seeds include it, and a receiver accepts the seed', async () => {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
 
     const node = new CadreNode({
       controlNetwork: {
@@ -1081,30 +1081,30 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
 
       node.initializeSeedBootstrap(privateKeyB64);
 
-      // Before self-registration the authority is not a CadrePeer, so the seed
+      // Before self-registration the owner is not a CadrePeer, so the seed
       // it mints omits its own peer.
       const before = await node.createSeed();
       expect(before.peers.some((p) => p.peerId === selfPeerId)).toBe(false);
 
-      // Enable authority-signed inserts, then self-register up-front.
+      // Enable owner-signed inserts, then self-register up-front.
       const db = node.getControlDatabase();
       expect(db).not.toBeNull();
-      await db!.insertAuthorityKey(publicKeyB64);
+      await db!.insertOwnerKey(publicKeyB64);
 
       const outcome = await node.registerSelf();
       expect(outcome).toBe('inserted');
 
-      // The seed now carries the authority as an authority peer whose key is the
+      // The seed now carries the owner as an owner peer whose key is the
       // seed's own signer.
       const after = await node.createSeed();
       const selfPeer = after.peers.find((p) => p.peerId === selfPeerId);
       expect(selfPeer).toBeDefined();
-      expect(selfPeer!.isAuthority).toBe(true);
+      expect(selfPeer!.isOwner).toBe(true);
       expect(after.signerKey).toBe(publicKeyB64);
       expect(selfPeer!.publicKey).toBe(after.signerKey);
 
       // A second node accepts the seed once it trusts the signer (pinned key) —
-      // the signer is now backed by an authority peer the seed carries.
+      // the signer is now backed by an owner peer the seed carries.
       const receiver = new SeedBootstrapService({ partyId: after.partyId });
       serviceInternals(receiver).libp2pNode = makeReceiverLibp2p();
       const applied = await receiver.applySeed(after, {
@@ -1122,15 +1122,15 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
 
   /**
    * Regression guard for the single-flight semantics of registerSelf. Two truly
-   * concurrent callers (the CLI's explicit `--authority` publish + a background
+   * concurrent callers (the CLI's explicit `--owner` publish + a background
    * timer is the production shape) must collapse into ONE publish: without the
    * `registerSelfInFlight` guard both would observe "no row yet", both attempt
-   * the authority-signed INSERT, and the loser would reject on a CadrePeer PK
-   * conflict — which, for the awaited CLI call, exits the authority node.
+   * the owner-signed INSERT, and the loser would reject on a CadrePeer PK
+   * conflict — which, for the awaited CLI call, exits the owner node.
    */
   it('collapses concurrent registerSelf calls into a single INSERT (no PK-conflict race)', async () => {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(nodeKey);
+    const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
 
     const node = new CadreNode({
       controlNetwork: {
@@ -1149,7 +1149,7 @@ describe('registerSelf — authority self-registration into CadrePeer', () => {
 
       node.initializeSeedBootstrap(privateKeyB64);
       const db = node.getControlDatabase();
-      await db!.insertAuthorityKey(publicKeyB64);
+      await db!.insertOwnerKey(publicKeyB64);
 
       // Fire both before either has a chance to settle. The guard makes the
       // second join the first's in-flight publish, so neither hits a conflict

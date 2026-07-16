@@ -6,8 +6,8 @@
  * `onStateChange` (forwarded by `createLocalUiServer.start`) — the route
  * handlers don't re-publish.
  *
- * start/restart are real for the admin's authority node (re-spawned from the
- * persisted `AuthoritySpawnConfig`). Generic per-member node spawn from saved
+ * start/restart are real for the admin's owner node (re-spawned from the
+ * persisted `OwnerSpawnConfig`). Generic per-member node spawn from saved
  * config is out of scope and returns `not_implemented`. Stop works for any
  * running node.
  */
@@ -83,17 +83,17 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
     return { ok: true };
   });
 
-  // start / restart: real for the admin's authority node (spawned from the
-  // persisted AuthoritySpawnConfig). Generic per-member node spawn from saved
+  // start / restart: real for the admin's owner node (spawned from the
+  // persisted OwnerSpawnConfig). Generic per-member node spawn from saved
   // config is out of scope — those ids return a clear not_implemented; unknown
   // ids 404.
   app.post<{ Params: { id: string } }>('/api/nodes/:id/start', async (request, reply) => {
     const { id } = request.params;
-    if (orchestrator.isAuthorityNode(id)) {
-      if (!orchestrator.hasAuthorityConfig()) {
-        return notImplemented(reply, `start ${id}: authority node has no saved spawn config.`);
+    if (orchestrator.isOwnerNode(id)) {
+      if (!orchestrator.hasOwnerConfig()) {
+        return notImplemented(reply, `start ${id}: owner node has no saved spawn config.`);
       }
-      const node = await orchestrator.ensureAuthorityNode();
+      const node = await orchestrator.ensureOwnerNode();
       return { ok: true, data: { node } };
     }
     return startRestartFallback(reply, orchestrator, id, 'start');
@@ -101,18 +101,18 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
 
   app.post<{ Params: { id: string } }>('/api/nodes/:id/restart', async (request, reply) => {
     const { id } = request.params;
-    if (orchestrator.isAuthorityNode(id)) {
-      if (!orchestrator.hasAuthorityConfig()) {
-        return notImplemented(reply, `restart ${id}: authority node has no saved spawn config.`);
+    if (orchestrator.isOwnerNode(id)) {
+      if (!orchestrator.hasOwnerConfig()) {
+        return notImplemented(reply, `restart ${id}: owner node has no saved spawn config.`);
       }
-      const node = await orchestrator.restartAuthorityNode();
+      const node = await orchestrator.restartOwnerNode();
       return { ok: true, data: { node } };
     }
     return startRestartFallback(reply, orchestrator, id, 'restart');
   });
 }
 
-/** 404 for unknown ids; 501 not_implemented for known non-authority nodes. */
+/** 404 for unknown ids; 501 not_implemented for known non-owner nodes. */
 function startRestartFallback(
   reply: import('fastify').FastifyReply,
   orchestrator: HostProcessOrchestrator,
@@ -127,7 +127,7 @@ function startRestartFallback(
   }
   return notImplemented(
     reply,
-    `${verb} ${id}: only the authority node is start/restart-able; generic node spawn is out of scope.`,
+    `${verb} ${id}: only the owner node is start/restart-able; generic node spawn is out of scope.`,
   );
 }
 

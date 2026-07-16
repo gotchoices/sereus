@@ -19,7 +19,7 @@ export const TEST_IDS = {
 		createClosedStrandBtn: 'btn-create-closed-strand',
 		inviteInput: 'input-invite',
 		joinViaInviteBtn: 'btn-join-via-invite',
-		authorityKeyRow: 'row-authority-key',
+		ownerKeyRow: 'row-owner-key',
 		modalTitle: 'modal-title',
 		modalOkBtn: 'btn-modal-ok',
 	},

@@ -19,12 +19,12 @@
  *   1. Happy path — direct dial of a hibernating member, wake accepted.
  *   2. NAT'd receiver reachable only via a circuit relay, wake accepted.
  *   3. Non-member sender — receiver rejects, strand stays hibernating.
- *   4. Replication-backed authorization — membership written ONLY on an authority
+ *   4. Replication-backed authorization — membership written ONLY on an owner
  *      node converges to the sender and receiver over the live control network, so
  *      the wake passes the `isMember` / `resolvePeerAddrs` gates via REPLICATION,
  *      with no local seeding on the node that consults them.
  *
- * ── Control-DB replication & the single shared authority (READ THIS) ──
+ * ── Control-DB replication & the single shared owner (READ THIS) ──
  *
  * The wake gate (`isMember`, read on the RECEIVER) and the sender's address resolve
  * (`resolvePeerAddrs`, read on the SENDER) both consult a node's LOCAL control DB.
@@ -34,21 +34,21 @@
  * `control-db-two-node-convergence.integration.ts`).
  *
  * A direct consequence: two nodes in one party can no longer each self-appoint as
- * genesis authority — the second `AuthorityKey` insert fails the `Authorized`
+ * genesis owner — the second `OwnerKey` insert fails the `Authorized`
  * bootstrap CHECK once the first has replicated. So scenarios 1, 2 and 4 each elect
- * ONE authority and make the other nodes plain members; that authority writes the
+ * ONE owner and make the other nodes plain members; that owner writes the
  * membership facts and they converge to whoever gates on them:
- *   - Scenario 1 (direct): the SENDER S is the sole authority + storage. It writes its
+ *   - Scenario 1 (direct): the SENDER S is the sole owner + storage. It writes its
  *     OWN membership (Rx's `isMember(S)` converges) and Rx's address record (S resolves
  *     its own write locally). Direct dial, a 2-node {S, Rx} cohort.
- *   - Scenario 2 (NAT/relay): the RELAY L is the sole authority + storage. It writes
+ *   - Scenario 2 (NAT/relay): the RELAY L is the sole owner + storage. It writes
  *     S's membership (Rx converges) and Rx's circuit address record (S converges).
  *     Every write is a 2-node {L, S} commit; Rx joins LAST and only reads.
- *   - Scenario 4 (replication-backed): a DEDICATED authority A — neither sender nor
+ *   - Scenario 4 (replication-backed): a DEDICATED owner A — neither sender nor
  *     receiver — writes both facts; S and Rx each read a SIBLING-written row. The
  *     deepest replication proof (full mesh, A the only writer).
  *
- * Scenario 3 is the lone exception: its outsider O is its own authority but never
+ * Scenario 3 is the lone exception: its outsider O is its own owner but never
  * forms a cohort (genesis local-only), so the non-member rejection stays a pure local
  * gate (`isMember(O) === false`; Rx authorized no one). Every byte of the real
  * dial/handle/framing/resolve path is exercised in all four.
@@ -89,7 +89,7 @@ import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-cry
 import {
 	CadreNode,
 	signSchema,
-	authorityKeyFromLibp2p,
+	ed25519KeyPairFromLibp2p,
 	signPeerRecord,
 	ed25519PublicKeyB64FromPeerId,
 } from '@serfab/cadre-core';
@@ -156,32 +156,32 @@ function controlAddrs(node: CadreNode): string[] {
 }
 
 /**
- * Make a freshly-started node its own control authority (genesis): enroll its
- * derived public key in `AuthorityKey` and wire the seed-bootstrap service with
- * the matching private key, so it can authority-sign `CadrePeer` inserts into its
+ * Make a freshly-started node its own control owner (genesis): enroll its
+ * derived public key in `OwnerKey` and wire the seed-bootstrap service with
+ * the matching private key, so it can owner-sign `CadrePeer` inserts into its
  * own local control DB.
  */
-async function makeOwnAuthority(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(key);
+async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const db = node.getControlDatabase();
 	if (!db) throw new Error('control database missing after start');
-	await db.insertAuthorityKey(publicKeyB64);
+	await db.insertOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
 }
 
 /**
- * Authority-signed INSERT of the receiver's own self-signed `CadrePeer` record
- * into `authorityNode`'s control DB, exactly as the receiver would self-publish —
- * so `authorityNode.resolvePeerAddrs(rxPeerId)` passes its binding + self-sig +
+ * Owner-signed INSERT of the receiver's own self-signed `CadrePeer` record
+ * into `ownerNode`'s control DB, exactly as the receiver would self-publish —
+ * so `ownerNode.resolvePeerAddrs(rxPeerId)` passes its binding + self-sig +
  * freshness gates and dials the supplied addrs (signaling/relay first).
  */
 async function seedReceiverRecord(
-	authorityNode: CadreNode,
+	ownerNode: CadreNode,
 	rxPeerId: string,
 	rxKey: PrivateKey,
 	rxAddrs: string[],
 ): Promise<PeerAddressRecord> {
-	const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(rxKey);
+	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(rxKey);
 	// The binding gate `resolvePeerAddrs` enforces: the record's publicKey MUST be
 	// the ed25519 key embedded in the peerId (both derived from rxKey here).
 	expect(publicKeyB64).toBe(ed25519PublicKeyB64FromPeerId(rxPeerId));
@@ -189,7 +189,7 @@ async function seedReceiverRecord(
 		{ peerId: rxPeerId, publicKey: publicKeyB64, addrs: rxAddrs, updatedAt: Date.now() },
 		privateKeyB64,
 	);
-	await authorityNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);
+	await ownerNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);
 	return record;
 }
 
@@ -256,19 +256,19 @@ describe('E2E push-wake over the control network', () => {
 			const partyId = `pushwake-direct-${Date.now()}`;
 			const strandId = `strand-direct-${Date.now()}`;
 
-			// SINGLE SHARED AUTHORITY (see file header): S is the party's SOLE authority +
+			// SINGLE SHARED OWNER (see file header): S is the party's SOLE owner +
 			// storage hub AND the sender; Rx is a plain member that never genesis. S's
-			// authority key is enrolled explicitly (independent of its EPHEMERAL node
+			// owner key is enrolled explicitly (independent of its EPHEMERAL node
 			// identity — so S never self-publishes an addr-bearing CadrePeer row that would
 			// pollute Rx's strand-resume cohort seed, exactly as scenario 4). Genesis ALONE
-			// before forming a cohort so the lone AuthorityKey commits with no collision.
+			// before forming a cohort so the lone OwnerKey commits with no collision.
 			const sKey = await generateKeyPair('Ed25519');
 			S = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
 			await S.start();
-			await makeOwnAuthority(S, sKey);
+			await makeOwnOwner(S, sKey);
 			const sPeerId = S.peerId!.toString();
 
-			// Receiver Rx: hibernating plain member — NOT its own authority, so every
+			// Receiver Rx: hibernating plain member — NOT its own owner, so every
 			// membership fact it consults must have been written by S and pulled over the wire.
 			const rxKey = await generateKeyPair('Ed25519');
 			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
@@ -310,11 +310,11 @@ describe('E2E push-wake over the control network', () => {
 
 	// ── 2. NAT'd receiver reachable only via a circuit relay ──────────────────
 	//
-	// SINGLE SHARED AUTHORITY (see file header). The network-backed `CadreControl`
+	// SINGLE SHARED OWNER (see file header). The network-backed `CadreControl`
 	// store is party-shared, so two nodes can no longer each self-genesis — the
-	// in-memory-era "every node is its own authority" recipe collides on `Authorized`.
-	// The relay L is therefore the party's SOLE authority + storage hub (legitimate:
-	// it is already dedicated transport infra, mirroring scenario 4's authority+storage
+	// in-memory-era "every node is its own owner" recipe collides on `Authorized`.
+	// The relay L is therefore the party's SOLE owner + storage hub (legitimate:
+	// it is already dedicated transport infra, mirroring scenario 4's owner+storage
 	// `A`). S and Rx are plain members that never genesis.
 	//
 	// Every control WRITE the assertions hinge on is a clean 2-node `{L, S}` commit
@@ -334,14 +334,14 @@ describe('E2E push-wake over the control network', () => {
 			const partyId = `pushwake-nat-${Date.now()}`;
 			const strandId = `strand-nat-${Date.now()}`;
 
-			// Relay L: dedicated transport infra AND the party's SOLE authority + storage
-			// hub. Genesis ALONE (cohort {L}, before S/Rx connect) so its lone AuthorityKey
-			// commits with no shared-authority collision. Storage profile so it holds the
+			// Relay L: dedicated transport infra AND the party's SOLE owner + storage
+			// hub. Genesis ALONE (cohort {L}, before S/Rx connect) so its lone OwnerKey
+			// commits with no shared-owner collision. Storage profile so it holds the
 			// CadrePeer blocks the readers pull.
 			const lKey = await generateKeyPair('Ed25519');
 			L = new CadreNode(nodeConfig({ partyId, profile: 'storage', enableRelay: true }));
 			await L.start();
-			await makeOwnAuthority(L, lKey);
+			await makeOwnOwner(L, lKey);
 			const lAddrs = controlAddrs(L);
 			expect(lAddrs.length).toBeGreaterThan(0);
 			const lAddr = lAddrs[0]!; // /ip4/127.0.0.1/tcp/<port>/ws/p2p/<L>
@@ -365,7 +365,7 @@ describe('E2E push-wake over the control network', () => {
 
 			// L — and ONLY L — writes both membership facts, each a clean {L, S} 2-node commit:
 			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
-			//   • Rx's self-signed address record (`seedReceiverRecord` — one authority insert
+			//   • Rx's self-signed address record (`seedReceiverRecord` — one owner insert
 			//     carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes. The synthetic
 			//     direct addr is kept so signaling-first ordering (circuit sorts ahead of
 			//     direct) stays observable.
@@ -455,19 +455,19 @@ describe('E2E push-wake over the control network', () => {
 			const strandId = `strand-nonmember-${Date.now()}`;
 
 			// Receiver Rx: hibernating. Its control DB recognizes NO members, so any
-			// sender is a non-member. (No authority needed — it authorizes no one.)
+			// sender is a non-member. (No owner needed — it authorizes no one.)
 			const rxKey = await generateKeyPair('Ed25519');
 			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
-			// Outsider O: its own authority so it can seed Rx's record and thus RESOLVE
+			// Outsider O: its own owner so it can seed Rx's record and thus RESOLVE
 			// + dial Rx (the default trust policy trusts any peer with a row) — but Rx
 			// never authorized O, so the receiver rejects on `isMember(O) === false`.
 			const oKey = await generateKeyPair('Ed25519');
 			O = new CadreNode(nodeConfig({ partyId, privateKey: oKey }));
 			await O.start();
-			await makeOwnAuthority(O, oKey);
+			await makeOwnOwner(O, oKey);
 			const oPeerId = O.peerId!.toString();
 
 			const rxAddrs = controlAddrs(Rx);
@@ -487,9 +487,9 @@ describe('E2E push-wake over the control network', () => {
 		}
 	}, 60_000);
 
-	// ── 4. Replication-backed authorization: membership written only on an authority ──
+	// ── 4. Replication-backed authorization: membership written only on an owner ──
 	//
-	// The production path: a single party authority writes the membership facts ONCE,
+	// The production path: a single party owner writes the membership facts ONCE,
 	// they replicate over the live control network, and the consulting node reads a
 	// SIBLING-written row — no local seeding on the node that gates on it. This proves
 	// the `isMember` (receiver) and `resolvePeerAddrs` (sender) gates pass via
@@ -502,9 +502,9 @@ describe('E2E push-wake over the control network', () => {
 	//    concurrent — two cadre nodes committing to the same CadrePeer tree block at once
 	//    collide (`stale revision` / stream reset), and the transactor does not retry. The
 	//    two-node convergence test is clean because ONE node writes and the other only
-	//    reads. So here the authority A is the SOLE writer the test depends on: it writes
+	//    reads. So here the owner A is the SOLE writer the test depends on: it writes
 	//    S's membership (`authorizePeer`) AND vouches Rx's full self-signed address record
-	//    (`seedReceiverRecord` → one authority-signed insert carrying Rx's own `Sig`). S
+	//    (`seedReceiverRecord` → one owner-signed insert carrying Rx's own `Sig`). S
 	//    and Rx never write a row the assertions hinge on; they pull A's rows on read.
 	//    (Rx's own background `registerSelf` is best-effort and non-fatal — it can only
 	//    self-UPDATE its already-resolvable row, never a row the test waits on.)
@@ -515,7 +515,7 @@ describe('E2E push-wake over the control network', () => {
 	//    star (only S→A, Rx→A) leaves S↔Rx unlinked and resets streams it cannot route.
 	//    This is the ticket's "ensure all three are connected" precondition.
 	//
-	// 3. EPHEMERAL NON-AUTHORITY IDENTITIES. Authority A and sender S use EPHEMERAL libp2p
+	// 3. EPHEMERAL NON-OWNER IDENTITIES. Owner A and sender S use EPHEMERAL libp2p
 	//    identities (no `privateKey`), so they never self-publish a `CadrePeer` address
 	//    row (`registerSelf` skips without an identity key — cadre-node.ts:600-604).
 	//    The woken strand's `networked` resume no longer seeds from CadrePeer addrs at all:
@@ -530,24 +530,24 @@ describe('E2E push-wake over the control network', () => {
 	//    direct WebSocket dials keep the cohort stable. (Only Rx needs a stable key — to
 	//    bind the self-signature in the address record A vouches for it.)
 	it('wakes a member whose authorization and address were learned by control-DB replication, not local seeding', async () => {
-		let A: CadreNode | undefined;  // sole party authority + storage (holds the CadrePeer blocks)
-		let S: CadreNode | undefined;  // sender — NOT an authority; learns Rx's address by replication
-		let Rx: CadreNode | undefined; // hibernating receiver — NOT an authority; learns S's membership by replication
+		let A: CadreNode | undefined;  // sole party owner + storage (holds the CadrePeer blocks)
+		let S: CadreNode | undefined;  // sender — NOT an owner; learns Rx's address by replication
+		let Rx: CadreNode | undefined; // hibernating receiver — NOT an owner; learns S's membership by replication
 		try {
 			const partyId = `pushwake-repl-${Date.now()}`;
 			const strandId = `strand-repl-${Date.now()}`;
 
-			// Authority A: the single genesis authority + sole control-DB writer. Storage
-			// profile so it holds the CadrePeer blocks the readers pull. Its authority keypair
+			// Owner A: the single genesis owner + sole control-DB writer. Storage
+			// profile so it holds the CadrePeer blocks the readers pull. Its owner keypair
 			// is enrolled explicitly (independent of the node's ephemeral identity). Genesis
-			// BEFORE forming a cohort so its lone AuthorityKey commits without a shared-authority
+			// BEFORE forming a cohort so its lone OwnerKey commits without a shared-owner
 			// collision. NOT a relay (see the design note) — direct dials keep the cohort stable.
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
 			await A.start();
-			await makeOwnAuthority(A, aKey);
+			await makeOwnOwner(A, aKey);
 
-			// Sender S and receiver Rx are plain members — NEITHER is its own authority, so
+			// Sender S and receiver Rx are plain members — NEITHER is its own owner, so
 			// neither can self-insert any control row. Every membership fact they consult must
 			// have been written by A and pulled over the wire. S's session peerId is stable.
 			S = new CadreNode(nodeConfig({ partyId }));
@@ -571,7 +571,7 @@ describe('E2E push-wake over the control network', () => {
 
 			// A — and ONLY A — writes the membership facts the assertions hinge on:
 			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
-			//   • Rx's full self-signed address record (`seedReceiverRecord` — one authority
+			//   • Rx's full self-signed address record (`seedReceiverRecord` — one owner
 			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
 			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
 			// `seedReceiverRecord(S, ...)`): each consulting node reads a SIBLING-written row.

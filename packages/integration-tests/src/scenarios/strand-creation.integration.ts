@@ -30,7 +30,7 @@ describe('Strand Creation', () => {
     });
     
     expect(strand.strandId).toMatch(/^strand-/);
-    expect(strand.sAppId).toBe(alice.authorityPublicKey);
+    expect(strand.sAppId).toBe(alice.ownerPublicKey);
     expect(strand.type).toBe('o');
 
     // Real control-DB read: the row really landed in Alice's CadreControl.Strand

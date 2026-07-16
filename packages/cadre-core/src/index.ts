@@ -10,10 +10,10 @@ export { CadreNode } from './cadre-node.js';
 // Control database
 export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig, type ControlTable } from './control-database.js';
 
-// Authority key bridge (libp2p Ed25519 -> base64url authority keypair)
-export { authorityKeyFromLibp2p, authorityPublicKeyFromPrivate, type AuthorityKeyPair } from './authority-key.js';
+// Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
+export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 
-// Pluggable key store (backend-agnostic identity/authority key material seam).
+// Pluggable key store (backend-agnostic identity/owner key material seam).
 // Dependency-free: the interface, error, default slot id, and in-memory backend
 // are safe in every (RN/browser/Node) entry graph. The Node FileKeyStore is a
 // separate subpath module ('@serfab/cadre-core/key-store-file') so its node:fs
@@ -131,7 +131,7 @@ export {
   type SeedEventCallbacks
 } from './seed-bootstrap.js';
 
-// Peer Authorization (shared authority-signature digest + offline verifier)
+// Peer Authorization (shared owner-signature digest + offline verifier)
 export {
   peerAuthorizationDigest,
   cadrePeerVoucherDigest,

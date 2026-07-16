@@ -13,8 +13,8 @@
  *     across reloads.
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
- * The node self-seeds as its own authority (mirroring `cadre-cli start
- * --authority`); the solo chat strand runs in `bootstrap` mode so DML lands on
+ * The node self-seeds as its own owner (mirroring `cadre-cli start
+ * --owner`); the solo chat strand runs in `bootstrap` mode so DML lands on
  * the strand's IndexedDB without any peers.
  *
  * Beyond the solo strand, this module also drives the **consent/invitation
@@ -27,7 +27,7 @@
 
 import {
 	CadreNode,
-	authorityKeyFromLibp2p,
+	ed25519KeyPairFromLibp2p,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
 } from '@serfab/cadre-core';
@@ -73,8 +73,8 @@ import { insertChatMessage, selectChatMessages } from './chat-dml.js';
  */
 type TransportFactory = Libp2pTransports[number];
 
-/** Outcome of the solo authority self-genesis step. */
-export type AuthorityState = 'pending' | 'genesis' | 'existing' | 'error';
+/** Outcome of the solo owner self-genesis step. */
+export type OwnerState = 'pending' | 'genesis' | 'existing' | 'error';
 
 /**
  * Relay-reservation posture for the dialable side of formation.
@@ -109,7 +109,7 @@ export interface FormedStrand {
 }
 
 /** Result of an attempted unauthorized control write (the RBAC gate demo). */
-export interface AuthorityGateProbe {
+export interface OwnerGateProbe {
 	/** True when the `CadreControl` constraint rejected the write (gate working). */
 	rejected: boolean;
 	/** The rejection message (when `rejected`), else null. */
@@ -140,7 +140,7 @@ export interface ControlStrandRow {
 
 /** Control-network authorization ("RBAC") state, for the diagnostics surface. */
 export interface ControlAuthorizationState {
-	authorityKeyCount: number;
+	ownerKeyCount: number;
 	validationKeyCount: number;
 	formationInvites: FormationInviteRow[];
 	formationUsage: FormationUsageRow[];
@@ -159,8 +159,8 @@ let controlStorage: IRawStorage | null = null;
 let partyId: string | null = null;
 let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
-let authorityState: AuthorityState = 'pending';
-let authorityError: string | null = null;
+let ownerState: OwnerState = 'pending';
+let ownerError: string | null = null;
 let relayState: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 let solicitationReady = false;
 const formedStrands = new Map<string, FormedStrand>();
@@ -203,8 +203,8 @@ export function getIdentityFirstSeenMs(): number | null {
 	return identityFirstSeenMs;
 }
 
-export function getAuthorityState(): { state: AuthorityState; error: string | null } {
-	return { state: authorityState, error: authorityError };
+export function getOwnerState(): { state: OwnerState; error: string | null } {
+	return { state: ownerState, error: ownerError };
 }
 
 /** Relay-reservation posture (dialability for formation). */
@@ -325,38 +325,38 @@ export async function startCadre(): Promise<CadreNode> {
 	await node.start();
 
 	exposeDebugHook(node);
-	await runAuthorityGenesis(node, privateKey);
+	await runOwnerGenesis(node, privateKey);
 	await reserveRelay(node, relayAddrs);
 
 	return node;
 }
 
 /**
- * Solo authority self-genesis. A single-node cadre must seed itself as the
- * authority before it can author control-network writes. This reproduces the
- * `cadre-cli start --authority` path: bridge the libp2p identity into a
- * base64url authority keypair, run the idempotent genesis `AuthorityKey` insert,
+ * Solo owner self-genesis. A single-node cadre must seed itself as the
+ * owner before it can author control-network writes. This reproduces the
+ * `cadre-cli start --owner` path: bridge the libp2p identity into a
+ * base64url owner keypair, run the idempotent genesis `OwnerKey` insert,
  * then initialize seed-bootstrap.
  *
  * Fail-soft: the Phase-1 chat round-trip runs in `bootstrap` mode and does not
- * depend on authority, so a genesis failure is captured for diagnostics rather
+ * depend on owner, so a genesis failure is captured for diagnostics rather
  * than aborting node startup.
  */
-async function runAuthorityGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
+async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
 	try {
-		const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(privateKey);
+		const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
 		const controlDb = cadre.getControlDatabase();
 		if (!controlDb) {
-			throw new Error('control database unavailable after start; cannot run authority genesis');
+			throw new Error('control database unavailable after start; cannot run owner genesis');
 		}
-		const inserted = await controlDb.ensureAuthorityKey(publicKeyB64);
+		const inserted = await controlDb.ensureOwnerKey(publicKeyB64);
 		cadre.initializeSeedBootstrap(privateKeyB64);
-		authorityState = inserted ? 'genesis' : 'existing';
-		authorityError = null;
+		ownerState = inserted ? 'genesis' : 'existing';
+		ownerError = null;
 	} catch (err) {
-		authorityState = 'error';
-		authorityError = err instanceof Error ? err.message : String(err);
-		console.warn('[reference-app-web] authority self-genesis failed:', err);
+		ownerState = 'error';
+		ownerError = err instanceof Error ? err.message : String(err);
+		console.warn('[reference-app-web] owner self-genesis failed:', err);
 	}
 }
 
@@ -469,7 +469,7 @@ export interface CreatedInvitation {
 
 /**
  * Host side of closed-strand formation: mint a membership key, publish the
- * `Strand` row (`Type:'c'`) under this node's authority, and attach the local
+ * `Strand` row (`Type:'c'`) under this node's owner, and attach the local
  * instance against the signed chat schema. Mirrors RN `createClosedChatStrand`
  * (`reference-app-rn/src/chat-strand.ts`); the web chat schema carries no member
  * role column, so unlike RN there is no owner/member role assignment to mirror —
@@ -498,7 +498,7 @@ async function createClosedChatStrand(
 		// failure mode. `networked` launches even before the cohort peer dials in.
 		mode: 'networked',
 		// This node provisioned + published the strand, so it is the founder: run the
-		// one-time genesis bootstrap that seats Header/Member/Authority from
+		// one-time genesis bootstrap that seats Header/Member/Owner from
 		// MemberPrivateKey. Idempotent (insert-if-absent) across reload / re-addStrand.
 		founder: true,
 	});
@@ -619,8 +619,8 @@ export async function joinViaInvitation(
 // ── RBAC / authorization gate (observability) ─────────────────────────────────
 
 /**
- * Demonstrate the `CadreControl` authority gate: attempt a `Strand` insert that
- * claims an authority it does not hold (a non-enrolled key + bogus signature) and
+ * Demonstrate the `CadreControl` owner gate: attempt a `Strand` insert that
+ * claims an owner it does not hold (a non-enrolled key + bogus signature) and
  * carries no consuming `FormationUsage` row. The `Strand.Authorized` constraint
  * satisfies *neither* branch, so the write must be rejected at commit.
  *
@@ -628,26 +628,26 @@ export async function joinViaInvitation(
  * (the RBAC gate is working) and `{ rejected: false }` if it unexpectedly
  * succeeds — a regression worth surfacing.
  */
-export async function attemptUnauthorizedStrandWrite(): Promise<AuthorityGateProbe> {
+export async function attemptUnauthorizedStrandWrite(): Promise<OwnerGateProbe> {
 	if (!node) throw new Error('CadreNode not started');
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) throw new Error('control database unavailable');
 	const db = controlDb.getDatabase();
 	const probeId = `rbac-probe-${node.peerId?.toString() ?? 'anon'}`;
 	// Mirror the canonical authorized insert (control-database.ts `insertStrand`):
-	// the `Strand` context is exactly `(AuthorityKey, Signature)` and `StampId` is a
+	// the `Strand` context is exactly `(OwnerKey, Signature)` and `StampId` is a
 	// real `not null unique` column supplied in `values`. Providing a fresh StampId
 	// keeps the not-null/anti-replay column satisfied so the ONLY failing condition
-	// is the `Authorized` check — no enrolled authority matches the bogus key and no
-	// `FormationUsage` row consents — proving the rejection is the authority gate
+	// is the `Authorized` check — no enrolled owner matches the bogus key and no
+	// `FormationUsage` row consents — proving the rejection is the owner gate
 	// itself, not an incidental column/context error.
 	const stampId = `rbac-probe-stamp-${crypto.randomUUID()}`;
 	try {
 		await db.exec(
 			`insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
-				with context AuthorityKey = ?, Signature = ?
+				with context OwnerKey = ?, Signature = ?
 				values (?, 'o', null, ?)`,
-			['not-an-authority-key', 'bogus-signature', probeId, stampId],
+			['not-an-owner-key', 'bogus-signature', probeId, stampId],
 		);
 		// Reaching here means the gate let an unauthorized write through. Best-effort
 		// cleanup is not attempted (the row is itself a regression marker).
@@ -659,7 +659,7 @@ export async function attemptUnauthorizedStrandWrite(): Promise<AuthorityGatePro
 
 /**
  * Read the control-network authorization ("RBAC") state for diagnostics: counts
- * of authority/validation keys, the `FormationInvite` / `FormationUsage` rows,
+ * of owner/validation keys, the `FormationInvite` / `FormationUsage` rows,
  * and each `Strand`'s membership type + member-key presence. Pure read-only SQL
  * over the control database's Quereus handle — no network round-trips.
  */
@@ -669,7 +669,7 @@ export async function readControlAuthorizationState(): Promise<ControlAuthorizat
 	if (!controlDb) throw new Error('control database unavailable');
 	const db = controlDb.getDatabase();
 
-	const authorityKeyCount = await countRows(db, 'CadreControl.AuthorityKey');
+	const ownerKeyCount = await countRows(db, 'CadreControl.OwnerKey');
 	const validationKeyCount = await countRows(db, 'CadreControl.ValidationKey');
 
 	const formationInvites: FormationInviteRow[] = [];
@@ -701,7 +701,7 @@ export async function readControlAuthorizationState(): Promise<ControlAuthorizat
 		hasMemberKey: s.MemberPrivateKey != null && s.MemberPrivateKey.length > 0,
 	}));
 
-	return { authorityKeyCount, validationKeyCount, formationInvites, formationUsage, strands };
+	return { ownerKeyCount, validationKeyCount, formationInvites, formationUsage, strands };
 }
 
 /** Count rows in a fully-qualified control table via a scalar aggregate. */
@@ -745,8 +745,8 @@ export async function stopCadre(): Promise<void> {
 	partyId = null;
 	activeStrandId = null;
 	identityFirstSeenMs = null;
-	authorityState = 'pending';
-	authorityError = null;
+	ownerState = 'pending';
+	ownerError = null;
 	relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 	solicitationReady = false;
 	formedStrands.clear();
@@ -873,7 +873,7 @@ function exposeDebugHook(cadre: CadreNode): void {
 		getControlPeerId: () => cadre.getControlNode()?.peerId.toString() ?? null,
 		getConnectionCount: () => cadre.getControlNode()?.getConnections().length ?? 0,
 		getStrandStatus: () => getChatStrand()?.status ?? null,
-		getAuthorityState: () => authorityState,
+		getOwnerState: () => ownerState,
 		// Phase 2 — formation + RBAC, surfaced for e2e drive/assert.
 		getRelayState: () => relayState,
 		getFormedStrands: () => getFormedStrands(),

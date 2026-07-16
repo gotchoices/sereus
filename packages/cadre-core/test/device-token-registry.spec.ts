@@ -3,13 +3,13 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { signDeviceTokenRecord } from '../src/device-token.js';
 
 /**
  * End-to-end coverage of the device-token registry against a real Quereus control
  * DB. This is the only place that exercises the new `DeviceToken` schema (the
- * authority-signed `AuthorizedInsert` and the self-signed `AuthorizedUpdate` branch
+ * owner-signed `AuthorizedInsert` and the self-signed `AuthorizedUpdate` branch
  * verifying `Sig` against the bound `CadrePeer.PublicKey`, with monotonic/immutable
  * checks) — the publish path (`registerDeviceToken`), the resolve path
  * (`resolveDeviceToken`), and the clear path (`clearDeviceToken`) ride on top.
@@ -24,10 +24,10 @@ interface BootedNode {
   peerId: string;
 }
 
-/** Boot a CadreNode that is its own authority (so it can self-INSERT). */
-async function bootAuthorityNode(): Promise<BootedNode> {
+/** Boot a CadreNode that is its own owner (so it can self-INSERT). */
+async function bootOwnerNode(): Promise<BootedNode> {
   const libp2pKey: PrivateKey = await generateKeyPair('Ed25519');
-  const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(libp2pKey);
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const node = new CadreNode({
     controlNetwork: {
       partyId: 'device-token-' + Math.random().toString(36).slice(2),
@@ -39,20 +39,20 @@ async function bootAuthorityNode(): Promise<BootedNode> {
   await node.start();
   const db = node.getControlDatabase();
   expect(db).not.toBeNull();
-  await db!.insertAuthorityKey(publicKeyB64);
+  await db!.insertOwnerKey(publicKeyB64);
   node.initializeSeedBootstrap(privateKeyB64);
-  // The authority node must have its own CadrePeer row (PublicKey) before any
+  // The owner node must have its own CadrePeer row (PublicKey) before any
   // DeviceToken it publishes can be resolved (membership + self-sig binding).
   await node.registerSelf();
   return { node, privateKeyB64, publicKeyB64, peerId: node.peerId!.toString() };
 }
 
 /**
- * Boot a started node that can self-sign (has its privateKey) but holds NO authority
+ * Boot a started node that can self-sign (has its privateKey) but holds NO owner
  * service — i.e. a phone-shaped peer. It can self-update an existing row but cannot
- * authority-insert its first one.
+ * owner-insert its first one.
  */
-async function bootNonAuthorityNode(): Promise<CadreNode> {
+async function bootNonOwnerNode(): Promise<CadreNode> {
   const libp2pKey: PrivateKey = await generateKeyPair('Ed25519');
   const node = new CadreNode({
     controlNetwork: {
@@ -70,14 +70,14 @@ describe('device-token registry (real control DB)', () => {
   let booted: BootedNode;
 
   beforeEach(async () => {
-    booted = await bootAuthorityNode();
+    booted = await bootOwnerNode();
   }, 60_000);
 
   afterEach(async () => {
     await booted.node.stop();
   });
 
-  it('registers a self-signed token (authority insert) and resolves it back', async () => {
+  it('registers a self-signed token (owner insert) and resolves it back', async () => {
     const { node, peerId } = booted;
     await node.registerDeviceToken('fcm', 'fcm-token-1');
 
@@ -105,7 +105,7 @@ describe('device-token registry (real control DB)', () => {
     expect(resolved!.token).toBe('apns-token-2');
 
     // Replay the FIRST record (equal/lower UpdatedAt) → monotonic clause fails,
-    // authority branch absent (context AuthorityKey null) → constraint rejects.
+    // owner branch absent (context OwnerKey null) → constraint rejects.
     const replay = signDeviceTokenRecord(
       { peerId, platform: 'fcm', token: 'fcm-token-1', updatedAt: first!.updatedAt },
       privateKeyB64
@@ -127,12 +127,12 @@ describe('device-token registry (real control DB)', () => {
     expect(second!.updatedAt).toBeGreaterThan(first!.updatedAt);
   }, 60_000);
 
-  it('lets a NON-authority member self-update its own token with its OWN key, then resolves', async () => {
+  it('lets a NON-owner member self-update its own token with its OWN key, then resolves', async () => {
     const { node } = booted;
-    // Authority enrolls a drone (CadrePeer row → PublicKey) and seeds its DeviceToken
+    // Owner enrolls a drone (CadrePeer row → PublicKey) and seeds its DeviceToken
     // row carrying the drone's own self-sig. The drone then self-updates with its key.
     const drone = await generateKeyPair('Ed25519');
-    const { privateKeyB64: dronePriv } = authorityKeyFromLibp2p(drone);
+    const { privateKeyB64: dronePriv } = ed25519KeyPairFromLibp2p(drone);
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
 
@@ -143,9 +143,9 @@ describe('device-token registry (real control DB)', () => {
     await node.getSeedBootstrapService()!.insertSelfDeviceToken(seed);
     expect((await node.resolveDeviceToken(dronePeerId))!.token).toBe('drone-tok-1');
 
-    // Drone self-updates its OWN row with its own key — no authority context —
+    // Drone self-updates its OWN row with its own key — no owner context —
     // exercising the AuthorizedUpdate self-branch with a key distinct from the
-    // authority key.
+    // owner key.
     const update = signDeviceTokenRecord(
       { peerId: dronePeerId, platform: 'apns', token: 'drone-tok-2', updatedAt: seed.updatedAt + 1 },
       dronePriv
@@ -160,7 +160,7 @@ describe('device-token registry (real control DB)', () => {
   it('rejects a self-update signed by a key other than the bound CadrePeer.PublicKey', async () => {
     const { node } = booted;
     const drone = await generateKeyPair('Ed25519');
-    const { privateKeyB64: dronePriv } = authorityKeyFromLibp2p(drone);
+    const { privateKeyB64: dronePriv } = ed25519KeyPairFromLibp2p(drone);
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
     const seed = signDeviceTokenRecord(
@@ -172,7 +172,7 @@ describe('device-token registry (real control DB)', () => {
     // Monotonic update, but signed with an unrelated key → verify against the bound
     // CadrePeer.PublicKey fails.
     const attacker = await generateKeyPair('Ed25519');
-    const { privateKeyB64: attackerPriv } = authorityKeyFromLibp2p(attacker);
+    const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
     const forged = signDeviceTokenRecord(
       { peerId: dronePeerId, platform: 'fcm', token: 'd2', updatedAt: seed.updatedAt + 1 },
       attackerPriv
@@ -186,11 +186,11 @@ describe('device-token registry (real control DB)', () => {
     const dronePeerId = peerIdFromPrivateKey(drone).toString();
     await node.authorizePeer(dronePeerId, []);
 
-    // Authority CAN insert the row (insert only vouches the PeerId), but the carried
+    // Owner CAN insert the row (insert only vouches the PeerId), but the carried
     // Sig is forged by an unrelated key → resolve re-verifies against the bound
     // CadrePeer.PublicKey and rejects it.
     const attacker = await generateKeyPair('Ed25519');
-    const { privateKeyB64: attackerPriv } = authorityKeyFromLibp2p(attacker);
+    const { privateKeyB64: attackerPriv } = ed25519KeyPairFromLibp2p(attacker);
     const forged = signDeviceTokenRecord(
       { peerId: dronePeerId, platform: 'fcm', token: 'x', updatedAt: Date.now() },
       attackerPriv
@@ -223,7 +223,7 @@ describe('device-token registry (real control DB)', () => {
     expect(await node.resolveDeviceToken(peerId, { maxAgeMs: 0 })).toBeNull();
   }, 60_000);
 
-  it('clears the token (authority delete); subsequent resolve is null', async () => {
+  it('clears the token (owner delete); subsequent resolve is null', async () => {
     const { node, peerId } = booted;
     await node.registerDeviceToken('fcm', 'to-be-cleared');
     expect(await node.resolveDeviceToken(peerId)).not.toBeNull();
@@ -236,13 +236,13 @@ describe('device-token registry (real control DB)', () => {
     await node.clearDeviceToken();
   }, 60_000);
 
-  it('throws when a non-authority node tries to self-insert its first token (no row, no authority)', async () => {
+  it('throws when a non-owner node tries to self-insert its first token (no row, no owner)', async () => {
     // A phone-shaped peer: it can self-sign, but with no pre-existing row and no
-    // authority service it cannot satisfy DeviceToken.AuthorizedInsert. The contract
-    // is an explicit throw directing an authority to seed the row first.
-    const node = await bootNonAuthorityNode();
+    // owner service it cannot satisfy DeviceToken.AuthorizedInsert. The contract
+    // is an explicit throw directing an owner to seed the row first.
+    const node = await bootNonOwnerNode();
     try {
-      await expect(node.registerDeviceToken('fcm', 'phone-token')).rejects.toThrow(/authority/i);
+      await expect(node.registerDeviceToken('fcm', 'phone-token')).rejects.toThrow(/owner/i);
     } finally {
       await node.stop();
     }

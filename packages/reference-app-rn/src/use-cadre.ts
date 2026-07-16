@@ -13,7 +13,7 @@ import {
   startPhoneNode,
   stopPhoneNode,
   getPhoneNode,
-  getAuthorityPublicKey,
+  getOwnerPublicKey,
   dialPeer as dialPeerImpl,
   createOpenInvitation,
   publishFormationInvite,
@@ -52,10 +52,10 @@ export interface UseCadreResult {
   /** This node's peer ID string (null until connected) */
   peerId: string | null;
   /**
-   * This node's authority **public** key (base64url), shareable out-of-band for
+   * This node's owner **public** key (base64url), shareable out-of-band for
    * pairing / enrollment. Null until connected. Never carries private material.
    */
-  authorityPublicKey: string | null;
+  ownerPublicKey: string | null;
   /** Active strand instances */
   strands: Map<string, StrandInstance>;
   /** Explicitly selected strand id (null = use the deterministic default). */
@@ -76,10 +76,10 @@ export interface UseCadreResult {
   start: (opts: PhoneNodeOptions) => Promise<void>;
   /** Stop the node */
   stop: () => Promise<void>;
-  /** Apply a base64url-encoded seed, optionally pinning authority keys (e.g. from a CadreInvite). */
-  applySeed: (encoded: string, pinnedAuthorityKeys?: string[]) => Promise<void>;
-  /** Decode a pasted base64url CadreInvite and return its pinned authority keys (empty if none). */
-  authorityKeysFromInvite: (encodedInvite: string) => string[];
+  /** Apply a base64url-encoded seed, optionally pinning owner keys (e.g. from a CadreInvite). */
+  applySeed: (encoded: string, pinnedOwnerKeys?: string[]) => Promise<void>;
+  /** Decode a pasted base64url CadreInvite and return its pinned owner keys (empty if none). */
+  ownerKeysFromInvite: (encodedInvite: string) => string[];
   /** Dial a peer by multiaddr while already connected */
   dialPeer: (addr: string) => Promise<void>;
   /** Create a new chat strand and return its instance */
@@ -107,8 +107,8 @@ export function useCadreInternal(): UseCadreResult {
   const [peerId, setPeerId] = useState<string | null>(
     () => getPhoneNode()?.peerId?.toString() ?? null,
   );
-  const [authorityPublicKey, setAuthorityPublicKey] = useState<string | null>(
-    () => getAuthorityPublicKey(),
+  const [ownerPublicKey, setOwnerPublicKey] = useState<string | null>(
+    () => getOwnerPublicKey(),
   );
   const [strands, setStrands] = useState<Map<string, StrandInstance>>(
     () => getPhoneNode()?.getStrands() ?? new Map(),
@@ -209,7 +209,7 @@ export function useCadreInternal(): UseCadreResult {
     setNode(started);
     nodeRef.current = started;
     setPeerId(started.peerId?.toString() ?? null);
-    setAuthorityPublicKey(getAuthorityPublicKey());
+    setOwnerPublicKey(getOwnerPublicKey());
     setStrands(new Map(started.getStrands()));
   }, []);
 
@@ -250,7 +250,7 @@ export function useCadreInternal(): UseCadreResult {
       setNode(started);
       nodeRef.current = started;
       setPeerId(started.peerId?.toString() ?? null);
-      setAuthorityPublicKey(getAuthorityPublicKey());
+      setOwnerPublicKey(getOwnerPublicKey());
       setStrands(new Map(started.getStrands()));
       setStatus('connected');
       // Acquire + publish the FCM/APNs device token so a server peer can push-wake
@@ -273,18 +273,18 @@ export function useCadreInternal(): UseCadreResult {
     setNode(null);
     nodeRef.current = null;
     setPeerId(null);
-    setAuthorityPublicKey(null);
+    setOwnerPublicKey(null);
     setStrands(new Map());
     setSelectedStrandId(null);
     setStatus('idle');
   }, []);
 
-  const applySeed = useCallback(async (encoded: string, pinnedAuthorityKeys?: string[]) => {
+  const applySeed = useCallback(async (encoded: string, pinnedOwnerKeys?: string[]) => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
     const seed = current.decodeSeed(encoded);
-    const trustPolicy = pinnedAuthorityKeys?.length
-      ? pinnedKeyTrustPolicy(pinnedAuthorityKeys)
+    const trustPolicy = pinnedOwnerKeys?.length
+      ? pinnedKeyTrustPolicy(pinnedOwnerKeys)
       : undefined;
     const result = await current.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
     if (!result.success) {
@@ -292,14 +292,14 @@ export function useCadreInternal(): UseCadreResult {
     }
   }, []);
 
-  // Decode a pasted CadreInvite and surface its pinned authority keys so the
+  // Decode a pasted CadreInvite and surface its pinned owner keys so the
   // caller can anchor a cold-start seed against `pinnedKeyTrustPolicy`. An older
-  // invite without `authorityKeys` yields `[]` (no pin). Guard ordering matches
+  // invite without `ownerKeys` yields `[]` (no pin). Guard ordering matches
   // `applySeed`: throw 'Node not started' before touching the node.
-  const authorityKeysFromInvite = useCallback((encodedInvite: string): string[] => {
+  const ownerKeysFromInvite = useCallback((encodedInvite: string): string[] => {
     const current = nodeRef.current;
     if (!current) throw new Error('Node not started');
-    return current.decodeInvite(encodedInvite).authorityKeys ?? [];
+    return current.decodeInvite(encodedInvite).ownerKeys ?? [];
   }, []);
 
   const dialPeer = useCallback(async (addr: string) => {
@@ -363,10 +363,10 @@ export function useCadreInternal(): UseCadreResult {
   }, [refreshStrands]);
 
   return {
-    status, node, peerId, authorityPublicKey, strands,
+    status, node, peerId, ownerPublicKey, strands,
     selectedStrandId, activeStrand, selectStrand,
     error, runnerState, resuming, degraded,
-    start, stop, applySeed, authorityKeysFromInvite, dialPeer, createStrand,
+    start, stop, applySeed, ownerKeysFromInvite, dialPeer, createStrand,
     createClosedStrandWithInvite, joinViaInvite,
   };
 }

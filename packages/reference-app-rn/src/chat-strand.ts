@@ -4,7 +4,7 @@
  * Wraps CadreNode.addStrand() with the chat-simple schema and provides helpers
  * to create or join chat strands — both the existing **open** strand (anyone
  * can participate) and a **closed** strand gated by a member key + an
- * authority-minted invitation (the trust-model demonstration).
+ * owner-minted invitation (the trust-model demonstration).
  */
 
 import type {
@@ -72,12 +72,12 @@ export function getChatSAppConfig(): SAppConfig {
  * Two steps, in order:
  *   1. Publish the `Strand` row to the shared control database so other cadre
  *      members discover it via control-network sync (their node fires
- *      `strand:discovered`). This is an authority-signed insert — the phone must
- *      be an enrolled authority (see `runAuthorityGenesis` in cadre-phone.ts).
+ *      `strand:discovered`). This is an owner-signed insert — the phone must
+ *      be an enrolled owner (see `runOwnerGenesis` in cadre-phone.ts).
  *   2. Start the local strand instance with the chat sApp config.
  *
  * Publishing FIRST means a publish failure (e.g. this node is not an enrolled
- * authority) surfaces as a thrown error and we never start a local-only strand
+ * owner) surfaces as a thrown error and we never start a local-only strand
  * that no peer could ever join — the masked-failure mode this replaces.
  *
  * @param cadreNode  Running CadreNode
@@ -134,10 +134,10 @@ export interface CreateClosedStrandResult {
  *
  * Mirrors {@link createChatStrand} but mints a `MemberPrivateKey` so the strand
  * is invitation-only rather than open, publishes the row with `type:'c'` + that
- * key under this node's authority, starts the instance, and assigns the creator
+ * key under this node's owner, starts the instance, and assigns the creator
  * the app-level `owner` role.
  *
- * @param cadreNode  Running CadreNode (must be an enrolled authority to publish)
+ * @param cadreNode  Running CadreNode (must be an enrolled owner to publish)
  * @param strandId   Unique strand identifier (caller-generated UUID)
  */
 export async function createClosedChatStrand(

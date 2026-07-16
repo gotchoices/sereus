@@ -3,13 +3,13 @@
  *
  * What this exercises for real:
  *   - Bringing up SEPARATE parties, each with its own `control-<partyId>`
- *     network and authority ControlDatabase.
+ *     network and owner ControlDatabase.
  *   - Real writes to the INVITING party's ControlDatabase, each asserted by
- *     reading that authority's control DB back through the real CadreControl
+ *     reading that owner's control DB back through the real CadreControl
  *     CHECK constraints (waitForControlSync / queryStrands / countFormationUsage):
  *     Strand (createStrand), FormationInvite (createInvitation), and one
  *     FormationUsage per redemption (joinStrand).
- *   - Real intra-cadre libp2p connectivity (each authority <-> its own drones).
+ *   - Real intra-cadre libp2p connectivity (each owner <-> its own drones).
  *
  * What this deliberately does NOT do: a real CROSS-party strand join / data sync.
  * The FormationInvite/FormationUsage consent model is intra-cadre — the invite and
@@ -86,23 +86,23 @@ describe('Multi-Party - Independent cadres & intra-cadre control records', () =>
     });
 
     // Each party runs its own control network; this asserts only real intra-cadre
-    // connectivity (authority <-> its own drone). Cross-party strand transport is
+    // connectivity (owner <-> its own drone). Cross-party strand transport is
     // out of scope here (see header → strand-formation-e2e.integration.ts).
     await waitForCount(
-      () => carol.authorityNode.libp2p.getConnections().length,
+      () => carol.ownerNode.libp2p.getConnections().length,
       1,
       {
         timeoutMs: 5000,
-        description: 'carol authority connected to its drone'
+        description: 'carol owner connected to its drone'
       }
     );
 
     await waitForCount(
-      () => dave.authorityNode.libp2p.getConnections().length,
+      () => dave.ownerNode.libp2p.getConnections().length,
       1,
       {
         timeoutMs: 5000,
-        description: 'dave authority connected to its drone'
+        description: 'dave owner connected to its drone'
       }
     );
   });

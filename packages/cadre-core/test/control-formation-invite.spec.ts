@@ -12,17 +12,17 @@ import { ControlFormationUsageRecorder } from '../src/control-formation-recorder
 /**
  * Exercises the FormationInvite / FormationUsage consent path:
  *
- *  1. An authority-signed `FormationInvite` insert. The schema verifies the
- *     authority signature with `verify(digest(...), Sig, Key, 'ed25519')` over the
+ *  1. An owner-signed `FormationInvite` insert. The schema verifies the
+ *     owner signature with `verify(digest(...), Sig, Key, 'ed25519')` over the
  *     row-bound field tuple. Before the Phase-1 curve fix the verify defaulted to
  *     secp256k1 and swallowed the curve-mismatch (returning false), so a real
- *     ed25519 authority signature was ALWAYS rejected — this happy-path insert
+ *     ed25519 owner signature was ALWAYS rejected — this happy-path insert
  *     therefore FAILS against the pre-fix schema and PASSES after it, pinning the
  *     bug.
  *  2. Redemption: inserting the `Strand` row + its `FormationUsage` row in ONE
  *     transaction so the mutually-circular deferred CHECKs (`Strand.Authorized`'s
  *     consent branch ↔ `FormationUsage.StrandExists`) both see both rows at
- *     commit. The strand carries NO authority signature — it is authorised purely
+ *     commit. The strand carries NO owner signature — it is authorised purely
  *     by the FormationUsage branch of `Strand.Authorized`.
  *  3. Rejection of redemptions against a non-existent or expired invite.
  *
@@ -33,12 +33,12 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   let node: CadreNode;
   let db: ControlDatabase;
   let rawDb: Database;
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
 
   // ed25519-sign the raw message bytes (no pre-hash), matching insertFormationInvite.
   const signMessage = (message: Uint8Array): string =>
-    cryptoSign(message, authorityPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    cryptoSign(message, ownerPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
@@ -56,8 +56,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   }
 
   beforeAll(async () => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 
     node = new CadreNode({
       controlNetwork: {
@@ -73,19 +73,19 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     db = controlDb!;
     rawDb = db.getDatabase();
 
-    // Bootstrap founding authority (unsigned branch).
-    expect(await db.ensureAuthorityKey(authorityPublicKey)).toBe(true);
+    // Bootstrap founding owner (unsigned branch).
+    expect(await db.ensureOwnerKey(ownerPublicKey)).toBe(true);
   }, 60_000);
 
   afterAll(async () => {
     await node?.stop();
   });
 
-  it('happy path: an authority-signed FormationInvite inserts (pins the curve fix)', async () => {
+  it('happy path: an owner-signed FormationInvite inserts (pins the curve fix)', async () => {
     const before = await inviteCount();
     const token = 'invite-' + rand();
 
-    await db.insertFormationInvite(token, 'sapp-test', authorityPublicKey, signMessage);
+    await db.insertFormationInvite(token, 'sapp-test', ownerPublicKey, signMessage);
 
     expect(await inviteCount()).toBe(before + 1);
     const row = await rawDb.get(
@@ -96,26 +96,26 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(row?.sAppId).toBe('sapp-test');
   });
 
-  it('rejects a FormationInvite whose signature is from a non-authority key', async () => {
+  it('rejects a FormationInvite whose signature is from a non-owner key', async () => {
     const strangerKey = generatePrivateKey('ed25519', 'base64url') as string;
     const strangerPub = getPublicKey(strangerKey, 'ed25519', 'base64url', 'base64url') as string;
     const signStranger = (message: Uint8Array): string =>
       cryptoSign(message, strangerKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
     const before = await inviteCount();
-    // Signed correctly, but `strangerPub` is not enrolled in AuthorityKey, so the
-    // `exists (select 1 from AuthorityKey ...)` gate fails.
+    // Signed correctly, but `strangerPub` is not enrolled in OwnerKey, so the
+    // `exists (select 1 from OwnerKey ...)` gate fails.
     await expect(
       db.insertFormationInvite('invite-' + rand(), 'sapp-x', strangerPub, signStranger),
     ).rejects.toThrow();
     expect(await inviteCount()).toBe(before);
   });
 
-  it('redeems an invite by inserting Strand + FormationUsage atomically (consent branch, no authority sig)', async () => {
+  it('redeems an invite by inserting Strand + FormationUsage atomically (consent branch, no owner sig)', async () => {
     const token = 'invite-' + rand();
     const strandId = 'strand-' + rand();
     // Far-future expiry so `FI.ExpiresAt > context.Now` holds.
-    await db.insertFormationInvite(token, 'sapp-redeem', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-redeem', ownerPublicKey, signMessage, {
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
 
@@ -127,7 +127,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
 
-    // The strand exists purely via the FormationUsage branch — no authority sig
+    // The strand exists purely via the FormationUsage branch — no owner sig
     // was supplied on its insert.
     const strand = await rawDb.get('select Id, Type from CadreControl.Strand where Id = ?', [strandId]);
     expect(strand?.Id).toBe(strandId);
@@ -158,7 +158,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const token = 'invite-expired-' + rand();
     const strandId = 'strand-' + rand();
     // Expiry far in the past: `FI.ExpiresAt > context.Now` is false.
-    await db.insertFormationInvite(token, 'sapp-expired', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-expired', ownerPublicKey, signMessage, {
       expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
     });
 
@@ -179,7 +179,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // compares `FI.ExpiresAt > context.Now` lexically, and both operands are the
     // engine `datetime()` form via canonicalDatetime, so the time-of-day decides.
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
-    await db.insertFormationInvite(token, 'sapp-sameday', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-sameday', ownerPublicKey, signMessage, {
       expiresAtMs: base + 3_600_000,
     });
 
@@ -197,7 +197,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandId = 'strand-sameday-past-' + rand();
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
     // ExpiresAt one hour BEFORE nowMs — same calendar day but already past.
-    await db.insertFormationInvite(token, 'sapp-sameday-past', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-sameday-past', ownerPublicKey, signMessage, {
       expiresAtMs: base - 3_600_000,
     });
 
@@ -215,7 +215,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandId = 'strand-boundary-' + rand();
     const base = Date.UTC(2031, 2, 4, 12, 0, 0);
     // nowMs == expiresAtMs: ExpiresAt > Now is false (strict inequality).
-    await db.insertFormationInvite(token, 'sapp-boundary', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-boundary', ownerPublicKey, signMessage, {
       expiresAtMs: base,
     });
 
@@ -228,12 +228,12 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(await usageCount()).toBe(usageBefore);
   }, 30_000);
 
-  it('recordFormationUsage adds usage rows against a pre-existing (authority-signed) strand, monotonically', async () => {
+  it('recordFormationUsage adds usage rows against a pre-existing (owner-signed) strand, monotonically', async () => {
     const token = 'invite-rec-' + rand();
     const strandId = 'strand-authsigned-' + rand();
-    await db.insertFormationInvite(token, 'sapp-rec', authorityPublicKey, signMessage);
-    // Strand created the normal way (authority signature), NOT via consent.
-    await db.insertStrand(strandId, 'o', authorityPublicKey, signMessage);
+    await db.insertFormationInvite(token, 'sapp-rec', ownerPublicKey, signMessage);
+    // Strand created the normal way (owner signature), NOT via consent.
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
 
     expect(await db.recordFormationUsage({ token, strandId })).toBe(1);
     expect(await db.recordFormationUsage({ token, strandId })).toBe(2);
@@ -249,7 +249,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     it('rejects an open strand with a non-null MemberPrivateKey', async () => {
       const before = await strandCount();
       await expect(
-        db.insertStrand('strand-' + rand(), 'o', authorityPublicKey, signMessage, 'memkey-' + rand()),
+        db.insertStrand('strand-' + rand(), 'o', ownerPublicKey, signMessage, 'memkey-' + rand()),
       ).rejects.toThrow();
       expect(await strandCount()).toBe(before);
     });
@@ -257,7 +257,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     it('admits a closed strand with a MemberPrivateKey', async () => {
       const strandId = 'strand-closed-' + rand();
       const before = await strandCount();
-      await db.insertStrand(strandId, 'c', authorityPublicKey, signMessage, 'memkey-' + rand());
+      await db.insertStrand(strandId, 'c', ownerPublicKey, signMessage, 'memkey-' + rand());
       expect(await strandCount()).toBe(before + 1);
       const row = await rawDb.get('select Type from CadreControl.Strand where Id = ?', [strandId]);
       expect(row?.Type).toBe('c');
@@ -266,7 +266,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     it('admits an open strand with a null MemberPrivateKey', async () => {
       const strandId = 'strand-open-' + rand();
       const before = await strandCount();
-      await db.insertStrand(strandId, 'o', authorityPublicKey, signMessage);
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
       expect(await strandCount()).toBe(before + 1);
       const row = await rawDb.get('select Type from CadreControl.Strand where Id = ?', [strandId]);
       expect(row?.Type).toBe('o');
@@ -278,7 +278,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const recorder = new ControlFormationUsageRecorder(db);
 
       const token = 'invite-rv-' + rand();
-      await db.insertFormationInvite(token, 'sapp-rv', authorityPublicKey, signMessage, {
+      await db.insertFormationInvite(token, 'sapp-rv', ownerPublicKey, signMessage, {
         expiresAtMs: Date.now() + 60_000,
       });
       const ok = await recorder.isTokenValid(token);
@@ -288,7 +288,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect((await recorder.isTokenValid('nope-' + rand())).valid).toBe(false);
 
       const expired = 'invite-rv-exp-' + rand();
-      await db.insertFormationInvite(expired, 'sapp-rv', authorityPublicKey, signMessage, {
+      await db.insertFormationInvite(expired, 'sapp-rv', ownerPublicKey, signMessage, {
         expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
       });
       expect((await recorder.isTokenValid(expired)).valid).toBe(false);
@@ -297,13 +297,13 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     it('isTokenUsed: respects TotalUses, and recordUsage records consent against a pre-existing strand', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
-      // provision-then-record: the host strand is minted authority-signed UP FRONT, so
+      // provision-then-record: the host strand is minted owner-signed UP FRONT, so
       // recordUsage is record-only (no Strand insert). Single-use invite: not used until
       // its one consent row lands.
       const single = 'invite-single-' + rand();
       const singleStrand = 'strand-su-' + rand();
-      await db.insertStrand(singleStrand, 'o', authorityPublicKey, signMessage);
-      await db.insertFormationInvite(single, 'sapp-su', authorityPublicKey, signMessage, { totalUses: 1 });
+      await db.insertStrand(singleStrand, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(single, 'sapp-su', ownerPublicKey, signMessage, { totalUses: 1 });
       expect(await recorder.isTokenUsed(single)).toBe(false);
       await recorder.recordUsage(single, 'peer-x', singleStrand);
       expect(await recorder.isTokenUsed(single)).toBe(true);
@@ -311,8 +311,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // Unlimited invite (null TotalUses): never "used up".
       const unlimited = 'invite-unl-' + rand();
       const unlimitedStrand = 'strand-unl-' + rand();
-      await db.insertStrand(unlimitedStrand, 'o', authorityPublicKey, signMessage);
-      await db.insertFormationInvite(unlimited, 'sapp-unl', authorityPublicKey, signMessage);
+      await db.insertStrand(unlimitedStrand, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(unlimited, 'sapp-unl', ownerPublicKey, signMessage);
       await recorder.recordUsage(unlimited, 'peer-y', unlimitedStrand);
       expect(await recorder.isTokenUsed(unlimited)).toBe(false);
     });
@@ -324,9 +324,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // kind 'bound', carrying that strand id + its MemberPrivateKey.
       const hostStrand = 'strand-bound-' + rand();
       const hostMemberKey = 'memkey-' + rand();
-      await db.insertStrand(hostStrand, 'c', authorityPublicKey, signMessage, hostMemberKey);
+      await db.insertStrand(hostStrand, 'c', ownerPublicKey, signMessage, hostMemberKey);
       const bound = 'invite-bound-' + rand();
-      await db.insertFormationInvite(bound, 'sapp-bound', authorityPublicKey, signMessage, {
+      await db.insertFormationInvite(bound, 'sapp-bound', ownerPublicKey, signMessage, {
         strandId: hostStrand,
       });
       expect(await recorder.resolveStrand(bound)).toEqual({
@@ -337,7 +337,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
       // Unbound invite (legacy/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
-      await db.insertFormationInvite(unbound, 'sapp-unbound', authorityPublicKey, signMessage);
+      await db.insertFormationInvite(unbound, 'sapp-unbound', ownerPublicKey, signMessage);
       expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
 
       // Unknown token: no binding to act on → unbound.
@@ -346,7 +346,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // Bound but the named Strand row was NEVER inserted (unconverged host) → kind 'missing'.
       const missingStrand = 'strand-missing-' + rand();
       const boundMissing = 'invite-bound-missing-' + rand();
-      await db.insertFormationInvite(boundMissing, 'sapp-bm', authorityPublicKey, signMessage, {
+      await db.insertFormationInvite(boundMissing, 'sapp-bm', ownerPublicKey, signMessage, {
         strandId: missingStrand,
       });
       expect(await recorder.resolveStrand(boundMissing)).toEqual({
@@ -361,7 +361,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // UNBOUND single-use invite → provisionAndRecord mints a fresh open strand and
       // records its one consent row in a single transaction.
       const token = 'invite-par-' + rand();
-      await db.insertFormationInvite(token, 'sapp-par', authorityPublicKey, signMessage, {
+      await db.insertFormationInvite(token, 'sapp-par', ownerPublicKey, signMessage, {
         totalUses: 1,
         expiresAtMs: Date.now() + 60_000,
       });

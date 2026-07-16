@@ -113,12 +113,12 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   let node: CadreNode;
   let db: ControlDatabase;
   let rawDb: Database;
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
 
   // ed25519-sign the raw message bytes (no pre-hash), matching insert* signers.
   const signMessage = (message: Uint8Array): string =>
-    cryptoSign(message, authorityPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+    cryptoSign(message, ownerPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
@@ -135,8 +135,8 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   }
 
   beforeAll(async () => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 
     node = new CadreNode({
       controlNetwork: { partyId: 'formation-consent-' + rand(), bootstrapNodes: [] },
@@ -149,7 +149,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     db = controlDb!;
     rawDb = db.getDatabase();
 
-    expect(await db.ensureAuthorityKey(authorityPublicKey)).toBe(true);
+    expect(await db.ensureOwnerKey(ownerPublicKey)).toBe(true);
   }, 60_000);
 
   afterAll(async () => {
@@ -172,10 +172,10 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
   it('(a) rejects an expired token (no disclosure, no usage row)', async () => {
     const hostStrandId = 'strand-host-exp-' + rand();
-    await db.insertStrand(hostStrandId, 'c', authorityPublicKey, signMessage, await generateStrandMemberKey());
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
 
     const token = 'invite-exp-' + rand();
-    await db.insertFormationInvite(token, 'sapp-exp', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-exp', ownerPublicKey, signMessage, {
       strandId: hostStrandId,
       expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
     });
@@ -191,13 +191,13 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   });
 
   it('(b,c,d) records one consent row, returns the host strand + membership key, single-use', async () => {
-    // Host pre-creates the closed strand authority-signed, then mints a bound single-use invite.
+    // Host pre-creates the closed strand owner-signed, then mints a bound single-use invite.
     const hostStrandId = 'strand-host-' + rand();
     const hostMemberKey = await generateStrandMemberKey();
-    await db.insertStrand(hostStrandId, 'c', authorityPublicKey, signMessage, hostMemberKey);
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, hostMemberKey);
 
     const token = 'invite-consent-' + rand();
-    await db.insertFormationInvite(token, 'sapp-consent', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-consent', ownerPublicKey, signMessage, {
       totalUses: 1,
       strandId: hostStrandId,
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
@@ -242,7 +242,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   it('(e) unbound single-use: provisions a fresh strand, records one usage, rejects reuse', async () => {
     // UNBOUND invite (no strandId) → responder-provisions path through provisionAndRecord.
     const token = 'invite-unbound-1use-' + rand();
-    await db.insertFormationInvite(token, 'sapp-unbound', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-unbound', ownerPublicKey, signMessage, {
       totalUses: 1,
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
@@ -282,7 +282,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
   it('(f) unbound multi-use: provisions distinct strands until TotalUses is exhausted', async () => {
     const token = 'invite-unbound-2use-' + rand();
-    await db.insertFormationInvite(token, 'sapp-unbound-multi', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-unbound-multi', ownerPublicKey, signMessage, {
       totalUses: 2,
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,
     });
@@ -327,7 +327,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // StrandExists CHECK threw, and the stream closed WITHOUT a result frame.
     const missingStrandId = 'strand-never-inserted-' + rand();
     const token = 'invite-missing-' + rand();
-    await db.insertFormationInvite(token, 'sapp-missing', authorityPublicKey, signMessage, {
+    await db.insertFormationInvite(token, 'sapp-missing', ownerPublicKey, signMessage, {
       totalUses: 1,
       strandId: missingStrandId,
       expiresAtMs: Date.now() + 365 * 24 * 3600_000,

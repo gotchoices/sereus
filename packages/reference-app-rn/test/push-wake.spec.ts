@@ -313,7 +313,7 @@ describe('createDeviceTokenRegistrar', () => {
   });
 
   it('register defers (false) when registerDeviceToken throws (pre-membership)', async () => {
-    node.registerDeviceToken.mockRejectedValueOnce(new Error('no authority-seeded row yet'));
+    node.registerDeviceToken.mockRejectedValueOnce(new Error('no owner-seeded row yet'));
     const reg = createDeviceTokenRegistrar({ getNode: () => asNode(node) });
     await expect(reg.register('fcm', 't')).resolves.toBe(false);
   });

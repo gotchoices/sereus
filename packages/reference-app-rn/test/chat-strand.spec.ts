@@ -5,7 +5,7 @@ import { createChatStrand, createClosedChatStrand } from '../src/chat-strand.js'
 /**
  * Regression guard: createChatStrand and createClosedChatStrand must pass
  * `founder: true` to `addStrand`. This catches callers silently dropping the
- * flag, which would leave newly-created strands with no Header/Member/Authority
+ * flag, which would leave newly-created strands with no Header/Member/Owner
  * rows (the genesis bootstrap never fires).
  */
 

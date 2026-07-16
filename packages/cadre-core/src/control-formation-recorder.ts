@@ -16,7 +16,7 @@ const NEVER_EXPIRES = new Date(8640000000000000);
  * usage questions, and writes the consent row that records a redemption. Two
  * provisioning shapes are supported, keyed on whether the invite binds a host strand:
  *
- * - **Bound (provision-then-record):** the host strand already exists (authority-signed
+ * - **Bound (provision-then-record):** the host strand already exists (owner-signed
  *   up front and named by the invite's `StrandId`), so {@link resolveStrand} reports it
  *   and {@link recordUsage} writes the consent row against that pre-existing strand
  *   (record-only) rather than inserting a new `Strand`.
@@ -74,7 +74,7 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * Record consent against an **already-existing** host strand (record-only): the
    * single `FormationUsage` insert auto-commits and the deferred `StrandExists`
    * CHECK is satisfied by the pre-existing strand. This is the provision-then-record
-   * commitment — the strand was minted authority-signed up front, so we do NOT
+   * commitment — the strand was minted owner-signed up front, so we do NOT
    * re-insert it (which would double-insert the same PK). `initiatorKey` is carried
    * as the usage `PeerId` (advisory). Use {@link ControlDatabase.redeemInvitation}
    * for the consent-creates-strand path instead.

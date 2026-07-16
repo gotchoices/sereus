@@ -27,19 +27,19 @@ export type {
   ContainerResources,
 } from '@serfab/cadre-provider';
 
-export { HostProcessOrchestrator, AUTHORITY_CONTAINER_ID } from './orchestrator/index.js';
+export { HostProcessOrchestrator, OWNER_CONTAINER_ID } from './orchestrator/index.js';
 export type {
   HostProcessConfig,
   PersistedHandle,
   ManagedNodeInfo,
   NodeStateListener,
   NodePorts,
-  AuthorityAdminEndpoint,
-  AuthoritySpawnConfig,
+  OwnerAdminEndpoint,
+  OwnerSpawnConfig,
 } from './orchestrator/index.js';
 
-export { AuthorityNodeClient, AuthorityNodeUnavailableError } from './authority/index.js';
-export type { AuthorityNodeClientOptions } from './authority/index.js';
+export { OwnerNodeClient, OwnerNodeUnavailableError } from './owner/index.js';
+export type { OwnerNodeClientOptions } from './owner/index.js';
 
 export {
   TrustCircleService,

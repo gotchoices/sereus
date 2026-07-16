@@ -21,7 +21,7 @@ import type {
  * Wiring coverage for the `CadreNodeConfig.seedTrustPolicy` seam.
  *
  * The node forwards its node-wide default policy into ALL THREE
- * `SeedBootstrapService` construction sites — the authority service
+ * `SeedBootstrapService` construction sites — the owner service
  * (`initializeSeedBootstrap`), the receive-only listener (`enableSeedListener`),
  * and the temp service `applySeed` builds when no service exists. A missed site
  * silently reverts that path to the db-anchored default and the cold-start
@@ -33,16 +33,16 @@ import type {
  *          └─ dbAnchoredTrustPolicy()       ← secure fallback (unset → cold reject)
  */
 describe('CadreNode seedTrustPolicy wiring', () => {
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
   let attackerPrivateKey: string;
   let attackerPublicKey: string;
   /** Fixed party the signed seeds claim; node partyIds are randomized below. */
   const seedParty = 'seed-trust-party';
 
   beforeEach(() => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
     attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
@@ -57,7 +57,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     return { ...seedData, signature, signerKey: publicKey };
   }
 
-  /** A cold (empty AuthorityKey table, no bootstrap peers) CadreNode. */
+  /** A cold (empty OwnerKey table, no bootstrap peers) CadreNode. */
   function makeColdNode(seedTrustPolicy?: SeedTrustPolicy): CadreNode {
     return new CadreNode({
       controlNetwork: {
@@ -82,7 +82,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       await startClean(node);
       // No initializeSeedBootstrap / enableSeedListener → applySeed builds a temp
       // service. Unset policy must fall through to dbAnchoredTrustPolicy().
-      const result = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/DB-anchored trust policy/i);
     } finally {
@@ -91,11 +91,11 @@ describe('CadreNode seedTrustPolicy wiring', () => {
   }, 60_000);
 
   it('cold node with a configured pinned default applies a seed via the temp-service path (no per-call override)', async () => {
-    const node = makeColdNode(pinnedKeyTrustPolicy([authorityPublicKey]));
+    const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {
       await startClean(node);
       // The configured default is the ONLY seam a network-delivered seed can use.
-      const result = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(true);
     } finally {
       await node.stop();
@@ -110,7 +110,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     const node = makeColdNode(pinnedKeyTrustPolicy([attackerPublicKey]));
     try {
       await startClean(node);
-      const seed = signSeed(authorityPrivateKey, authorityPublicKey);
+      const seed = signSeed(ownerPrivateKey, ownerPublicKey);
 
       // Without an override the forwarded configured default rejects.
       const rejected = await node.applySeed(seed);
@@ -118,7 +118,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
 
       // A per-call override pinning the real signer wins over the default.
       const accepted = await node.applySeed(seed, {
-        trustPolicy: pinnedKeyTrustPolicy([authorityPublicKey]),
+        trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
       });
       expect(accepted.success).toBe(true);
     } finally {
@@ -132,12 +132,12 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     // SEED_PROTOCOL and the resulting DuplicateProtocolHandlerError surfaced as an
     // unhandled promise rejection (the caller fire-and-forgets the handle() promise).
     // Pin the real signer so both calls succeed and the only thing under test is safety.
-    const node = makeColdNode(pinnedKeyTrustPolicy([authorityPublicKey]));
+    const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown): void => { rejections.push(reason); };
     try {
       await startClean(node);
-      const seed = signSeed(authorityPrivateKey, authorityPublicKey);
+      const seed = signSeed(ownerPrivateKey, ownerPublicKey);
 
       // Scope the listener to the applySeed window — the only place the duplicate
       // handle() rejection would originate.
@@ -169,13 +169,13 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     // After a temp-service applySeed, no discarded service owns SEED_PROTOCOL, so a
     // subsequently-enabled persistent listener can register the handler cleanly —
     // no DuplicateProtocolHandlerError, no unhandled rejection.
-    const node = makeColdNode(pinnedKeyTrustPolicy([authorityPublicKey]));
+    const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     const rejections: unknown[] = [];
     const onRejection = (reason: unknown): void => { rejections.push(reason); };
     try {
       await startClean(node);
       process.on('unhandledRejection', onRejection);
-      const applied = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const applied = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(applied.success).toBe(true);
 
       // No leaked handler from the temp service before the listener owns it.
@@ -194,14 +194,14 @@ describe('CadreNode seedTrustPolicy wiring', () => {
 
   it('enableSeedListener forwards the configured policy: pinned default applies, unset rejects', async () => {
     // With a configured pinned default the listener-built service applies a cold seed.
-    const withPolicy = makeColdNode(pinnedKeyTrustPolicy([authorityPublicKey]));
+    const withPolicy = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {
       await startClean(withPolicy);
       withPolicy.enableSeedListener();
       const svc = withPolicy.getSeedBootstrapService();
       expect(svc).not.toBeNull();
       // getSeedBootstrapService().applySeed is the same entry the protocol handler uses.
-      const result = await svc!.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await svc!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(true);
     } finally {
       await withPolicy.stop();
@@ -213,7 +213,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       await startClean(noPolicy);
       noPolicy.enableSeedListener();
       const svc = noPolicy.getSeedBootstrapService();
-      const result = await svc!.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await svc!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(false);
       expect(result.error).toMatch(/DB-anchored trust policy/i);
     } finally {
@@ -222,7 +222,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
   }, 60_000);
 
   it('enableSeedListener is idempotent and retains the policy captured on first construction', async () => {
-    const node = makeColdNode(pinnedKeyTrustPolicy([authorityPublicKey]));
+    const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {
       await startClean(node);
       node.enableSeedListener();
@@ -231,29 +231,29 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       const second = node.getSeedBootstrapService();
       expect(second).toBe(first);
       // Policy captured on first construction still applies after the no-op call.
-      const result = await second!.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await second!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(true);
     } finally {
       await node.stop();
     }
   }, 60_000);
 
-  it('authority path forwards the policy and a pinned default never narrows DB-anchored trust', async () => {
-    // Pin a DIFFERENT key as the configured default, then enroll the real authority
-    // in the AuthorityKey table. pinnedKeyTrustPolicy unions DB-anchored ∪ pinned,
+  it('owner path forwards the policy and a pinned default never narrows DB-anchored trust', async () => {
+    // Pin a DIFFERENT key as the configured default, then enroll the real owner
+    // in the OwnerKey table. pinnedKeyTrustPolicy unions DB-anchored ∪ pinned,
     // so the DB-anchored signer must still apply (the default does not narrow trust).
     const node = makeColdNode(pinnedKeyTrustPolicy([attackerPublicKey]));
     try {
       await startClean(node);
       const db = node.getControlDatabase();
       expect(db).not.toBeNull();
-      await db!.insertAuthorityKey(authorityPublicKey);
+      await db!.insertOwnerKey(ownerPublicKey);
 
-      // initializeSeedBootstrap is the authority construction site — exercise that it
+      // initializeSeedBootstrap is the owner construction site — exercise that it
       // forwards the configured policy.
-      node.initializeSeedBootstrap(authorityPrivateKey);
+      node.initializeSeedBootstrap(ownerPrivateKey);
 
-      const result = await node.applySeed(signSeed(authorityPrivateKey, authorityPublicKey));
+      const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(true);
     } finally {
       await node.stop();
@@ -269,14 +269,14 @@ describe('CadreNode seedTrustPolicy wiring', () => {
  * full read-apply-ack path is exercised without two real networked nodes.
  */
 describe('seed protocol handler — configured-default rejection surfaces in the ack', () => {
-  let authorityPrivateKey: string;
-  let authorityPublicKey: string;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
   let attackerPublicKey: string;
   const seedParty = 'seed-ack-party';
 
   beforeEach(() => {
-    authorityPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorityPublicKey = getPublicKey(authorityPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
     const attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
   });
@@ -285,9 +285,9 @@ describe('seed protocol handler — configured-default rejection surfaces in the
     const seedData = { partyId: seedParty, peers: [] as SeedPeer[] };
     const seedDigest = digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string;
     const signature = sign(
-      seedDigest, authorityPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
+      seedDigest, ownerPrivateKey, 'ed25519', 'base64url', 'base64url', 'base64url'
     ) as string;
-    return { ...seedData, signature, signerKey: authorityPublicKey };
+    return { ...seedData, signature, signerKey: ownerPublicKey };
   }
 
   function frame(obj: unknown): Uint8Array {
@@ -308,14 +308,14 @@ describe('seed protocol handler — configured-default rejection surfaces in the
       dial: async () => {},
     };
 
-    // Configured default pins a DIFFERENT key, so the real authority signer is rejected.
+    // Configured default pins a DIFFERENT key, so the real owner signer is rejected.
     const service = new SeedBootstrapService({
       partyId: seedParty,
       trustPolicy: pinnedKeyTrustPolicy([attackerPublicKey]),
     });
     service.initialize(
       libp2p as never,
-      { getAuthorityKeys: async () => new Set<string>() } as never
+      { getOwnerKeys: async () => new Set<string>() } as never
     );
     expect(captured).toBeDefined();
 

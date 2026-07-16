@@ -2,7 +2,7 @@ import debug from 'debug';
 import type { Database } from '@quereus/quereus';
 import { digest, sign, verify, generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { SAppConfig } from './types.js';
-import type { AuthorityKeyPair } from './authority-key.js';
+import type { Ed25519KeyPair } from './ed25519-key.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 
 const log = debug('sereus:cadre:strand-membership');
@@ -86,7 +86,7 @@ export interface FounderBootstrapParams {
    * `publicKeyB64` becomes the founding `Member.Key` and `Authority.MemberKey`.
    * Required for a closed strand; ignored for an open strand.
    */
-  founderKeyPair?: AuthorityKeyPair;
+  founderKeyPair?: Ed25519KeyPair;
 }
 
 /**
@@ -242,7 +242,7 @@ export interface IssueInviteParams {
    * The issuing authority's strand keypair. Its `publicKeyB64` must already be a
    * `Strand.Authority` row (the `InviteValid` constraint rejects a non-authority).
    */
-  authorityKeyPair: AuthorityKeyPair;
+  authorityKeyPair: Ed25519KeyPair;
   /**
    * Optional invite expiry as epoch milliseconds. When set, it is canonicalised
    * via {@link canonicalDatetime} so the signed payload segment byte-matches the
@@ -419,7 +419,7 @@ export interface AddMemberByAuthorityParams {
    * The admitting authority's strand keypair. Its `publicKeyB64` must be a
    * `Strand.Authority` row; it signs the new member key directly.
    */
-  authorityKeyPair: AuthorityKeyPair;
+  authorityKeyPair: Ed25519KeyPair;
   /** The joining member's ed25519 PUBLIC key (base64url) — the new `Member.Key`. */
   memberKey: string;
 }
@@ -461,10 +461,10 @@ export interface RegisterMemberPeerParams {
    * `MemberPeer.Authorized` verifies the signature against `MemberKey` itself, so a
    * peer can only be registered by the very member it belongs to (no authority
    * involved). The founder passes its `strandMemberKeyPair`; an invited member
-   * passes its own keypair. Typed as {@link AuthorityKeyPair} only for the shared
+   * passes its own keypair. Typed as {@link Ed25519KeyPair} only for the shared
    * base64url keypair shape — no authority privilege is implied.
    */
-  memberKeyPair: AuthorityKeyPair;
+  memberKeyPair: Ed25519KeyPair;
   /** The peer/node id (libp2p peer id string) to associate with the member. */
   peerId: string;
 }
@@ -536,7 +536,7 @@ export interface AddAuthorityParams {
    * rejects a non-authority once the founder authority exists); it signs the new
    * authority key and is bound as `context.AuthorityKey`.
    */
-  byAuthorityKeyPair: AuthorityKeyPair;
+  byAuthorityKeyPair: Ed25519KeyPair;
   /** The member key to promote — the new `Authority.MemberKey` row. */
   newAuthorityKey: string;
 }
@@ -583,7 +583,7 @@ export interface RemoveAuthorityParams {
    * context construction satisfies whichever branch applies — see
    * {@link removeAuthority}.
    */
-  byAuthorityKeyPair: AuthorityKeyPair;
+  byAuthorityKeyPair: Ed25519KeyPair;
   /** The `Authority.MemberKey` row to delete. */
   targetAuthorityKey: string;
 }

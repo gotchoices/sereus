@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { authorityKeyFromLibp2p } from '../src/authority-key.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import {
   deviceTokenSignedPayload,
   signDeviceTokenRecord,
@@ -18,7 +18,7 @@ async function makeRecord(
   updatedAt: number
 ): Promise<{ record: DeviceTokenRecord; privateKeyB64: string; publicKeyB64: string; peerId: string }> {
   const libp2pKey = await generateKeyPair('Ed25519');
-  const { privateKeyB64, publicKeyB64 } = authorityKeyFromLibp2p(libp2pKey);
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
   const peerId = peerIdFromPrivateKey(libp2pKey).toString();
   const record = signDeviceTokenRecord({ peerId, platform, token, updatedAt }, privateKeyB64);
   return { record, privateKeyB64, publicKeyB64, peerId };
@@ -55,14 +55,14 @@ describe('signDeviceTokenRecord / verifyDeviceTokenSignature', () => {
   it('rejects a record verified against a different key', async () => {
     const { record } = await makeRecord('apns', 'tok-2', 10);
     const other = await generateKeyPair('Ed25519');
-    const { publicKeyB64: otherPub } = authorityKeyFromLibp2p(other);
+    const { publicKeyB64: otherPub } = ed25519KeyPairFromLibp2p(other);
     expect(verifyDeviceTokenSignature(record, otherPub)).toBe(false);
   });
 
   it('rejects a record whose sig was made by a different key', async () => {
     const { record, publicKeyB64 } = await makeRecord('fcm', 'tok-3', 10);
     const otherKey = await generateKeyPair('Ed25519');
-    const { privateKeyB64: otherPriv } = authorityKeyFromLibp2p(otherKey);
+    const { privateKeyB64: otherPriv } = ed25519KeyPairFromLibp2p(otherKey);
     const forgedSig = sign(
       deviceTokenSignedPayload(record),
       otherPriv, 'ed25519', 'base64url', 'base64url', 'base64url'
