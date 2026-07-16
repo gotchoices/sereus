@@ -229,7 +229,7 @@ describe('addManager', () => {
     expect(row?.MemberKey).toBe(second.publicKeyB64);
   }, 30_000);
 
-  it('rejects an add whose signer is not an manager (no count<=1 shortcut once founder exists)', async () => {
+  it('rejects an add whose signer is not a manager (no count<=1 shortcut once founder exists)', async () => {
     const { db } = await openStrand('c');
     const notAManager = freshKeyPair();
     const target = freshKeyPair();
@@ -260,7 +260,7 @@ describe('addManager', () => {
     expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
-  it('rejects an manager add on an open strand (Manager is OnlyClosed)', async () => {
+  it('rejects a manager add on an open strand (Manager is OnlyClosed)', async () => {
     const { db } = await openStrand('o');
     const target = freshKeyPair();
 
@@ -282,7 +282,7 @@ describe('removeManager', () => {
   // branches), and an unauthorized delete is rejected (see the test below). The
   // platform gap they previously documented is tracked by
   // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
-  it('an manager removes a DIFFERENT manager and leaves the other managers intact', async () => {
+  it('a manager removes a DIFFERENT manager and leaves the other managers intact', async () => {
     const { db, founder } = await openStrand('c');
     // 3 managers total so removing one leaves 2 (≥ 2 after delete keeps the
     // `count(Manager) <= 1` bootstrap branch false, so once delete enforcement
@@ -299,7 +299,7 @@ describe('removeManager', () => {
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
-  it('an manager resigns itself (self-targeted removal removes only its own row)', async () => {
+  it('a manager resigns itself (self-targeted removal removes only its own row)', async () => {
     const { db, founder } = await openStrand('c');
     const [a2] = await addExtraManagers(db, founder, 2);
     expect(await tableCount(db, 'Manager')).toBe(3);
@@ -317,7 +317,7 @@ describe('removeManager', () => {
   // whose signer is neither an existing manager nor the target itself. The
   // optimystic bootstrap-mode vtab transactor now evaluates deferred CHECK
   // constraints on DELETE (not only on INSERT), so a non-manager can no longer
-  // remove an Manager row. This pins the intended secure behavior; it previously
+  // remove a Manager row. This pins the intended secure behavior; it previously
   // documented the platform gap tracked by
   // `optimystic-deferred-check-not-enforced-on-delete` (backlog), now fixed.
   it('a non-manager removal is rejected (deferred CHECK enforced on delete)', async () => {

@@ -315,7 +315,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// branch (not the `count(Manager) <= 1` bootstrap shortcut).
 			expect(await strandCount(founderDb, 'Manager')).toBe(2);
 
-			// A non-manager cannot add an manager.
+			// A non-manager cannot add a manager.
 			await expect(
 				addManager(founderDb, { byManagerKeyPair: freshKeyPair(), newManagerKey: freshKeyPair().publicKeyB64 }),
 			).rejects.toThrow();

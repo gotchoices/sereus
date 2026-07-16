@@ -105,7 +105,7 @@ afterEach(async () => {
 // ── Phase 1: invite issuance ─────────────────────────────────────────────────
 
 describe('issueInvite', () => {
-  it('an manager issues a single Invite row whose Key is the returned invite public key', async () => {
+  it('a manager issues a single Invite row whose Key is the returned invite public key', async () => {
     const { db, founder } = await openStrand('c');
 
     const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
@@ -389,7 +389,7 @@ describe('addMemberByManager', () => {
     expect(exists?.Key).toBe(member.publicKeyB64);
   }, 30_000);
 
-  it('rejects an manager-admit signed by a non-manager key', async () => {
+  it('rejects a manager-admit signed by a non-manager key', async () => {
     const { db } = await openStrand('c');
     const notAManager = freshKeyPair();
     const member = freshKeyPair();
