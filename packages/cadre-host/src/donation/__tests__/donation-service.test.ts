@@ -1,0 +1,290 @@
+/**
+ * DonationService unit tests — the donate-a-node lifecycle on the host side,
+ * exercised against a fake orchestrator (no real child processes) and a real
+ * on-disk DonationStore + GrantService.
+ *
+ * Covers: provision → awaiting_seed (pinned keys threaded, seedToken persisted +
+ * redacted), seedToken survival across a store reconstruct, per-grant quota-race
+ * serialization, reclaim-on-post-spawn-failure, and the stale-awaiting_seed reap.
+ *
+ * getPeer / applySeed do real `fetch` to a live node, so their happy paths live
+ * in the cross-package integration scenario (`cadre-host-node-donation`), not
+ * here.
+ */
+
+import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
+import type {
+  Orchestrator,
+  OrchestratorCreateRequest,
+  OrchestratorCreateResult,
+  OrchestratorStats,
+} from '@serfab/cadre-provider';
+
+import { DonationService } from '../donation-service.js';
+import { DonationStore } from '../donation-store.js';
+import { GrantService } from '../grant-service.js';
+import { GrantStore } from '../grant-store.js';
+import { DonationError } from '../types.js';
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((res) => setTimeout(res, ms));
+}
+
+/** Records every create/stop/remove; returns deterministic, unique spawn results. */
+class FakeOrchestrator implements Orchestrator {
+  createCalls: OrchestratorCreateRequest[] = [];
+  stopped: string[] = [];
+  removed: string[] = [];
+  failCreate = false;
+  createDelayMs = 0;
+  private counter = 0;
+
+  async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
+    this.createCalls.push(request);
+    if (this.createDelayMs) await sleep(this.createDelayMs);
+    if (this.failCreate) throw new Error('spawn boom');
+    const n = ++this.counter;
+    return {
+      dockerId: `dock_${n}`,
+      healthEndpoint: `http://127.0.0.1:${9000 + n}/health`,
+      metricsEndpoint: `http://127.0.0.1:${9000 + n}/metrics`,
+      seedEndpoint: `http://127.0.0.1:${9000 + n}/seed`,
+      seedToken: `seed-token-${n}`,
+      p2pPort: 4000 + n,
+    };
+  }
+
+  async stopContainer(dockerId: string): Promise<void> {
+    this.stopped.push(dockerId);
+  }
+
+  async removeContainer(dockerId: string): Promise<void> {
+    this.removed.push(dockerId);
+  }
+
+  async getStats(): Promise<OrchestratorStats> {
+    return { cpuPercent: 0, memoryBytes: 0, networkRxBytes: 0, networkTxBytes: 0 };
+  }
+
+  async isRunning(): Promise<boolean> {
+    return true;
+  }
+
+  async getLogs(): Promise<string> {
+    return '';
+  }
+}
+
+let tmpRoot: string;
+
+beforeEach(() => {
+  tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-donation-svc-'));
+});
+
+afterEach(() => {
+  try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
+});
+
+function makeGrants(opts?: { maxNodes?: number }): { grants: GrantService; token: string } {
+  const grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
+  const token = grants.issue({ label: 'Alice', ...(opts?.maxNodes ? { maxNodes: opts.maxNodes } : {}) }).token;
+  return { grants, token };
+}
+
+const baseRequest = (grantToken: string) => ({
+  grantToken,
+  partyId: 'party-P',
+  bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+  ownerKeys: ['owner-key-b64url'],
+});
+
+describe('DonationService.provision', () => {
+  it('spawns → awaiting_seed, threads pinned owner keys, persists (redacts) the seedToken', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const view = await svc.provision(baseRequest(token));
+
+    expect(view.status).toBe('awaiting_seed');
+    expect(view.partyId).toBe('party-P');
+    expect(view.profile).toBe('storage'); // default
+    expect(view.grantToken).toBe(token);
+    // Redacted: host-only secret + loopback URL never cross the boundary.
+    expect((view as Record<string, unknown>).seedToken).toBeUndefined();
+    expect((view as Record<string, unknown>).seedEndpoint).toBeUndefined();
+
+    // The orchestrator got the requester's pinned owner key (the seed-trust anchor).
+    expect(orch.createCalls).toHaveLength(1);
+    expect(orch.createCalls[0].pinnedOwnerKeys).toEqual(['owner-key-b64url']);
+    expect(orch.createCalls[0].containerId).toBe(view.id);
+    expect(orch.createCalls[0].partyId).toBe('party-P');
+
+    // But the record on disk DOES retain the seedToken (crash-recovery).
+    const stored = store.get(view.id);
+    expect(stored?.seedToken).toBe('seed-token-1');
+    expect(stored?.seedEndpoint).toBe('http://127.0.0.1:9001/seed');
+    expect(store.liveNodeCount(token)).toBe(1);
+  });
+
+  it('honours an explicit transaction profile', async () => {
+    const orch = new FakeOrchestrator();
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({
+      orchestrator: orch,
+      grants,
+      store: new DonationStore(join(tmpRoot, 'donations')),
+    });
+
+    const view = await svc.provision({ ...baseRequest(token), profile: 'transaction' });
+    expect(view.profile).toBe('transaction');
+    expect(orch.createCalls[0].profile).toBe('transaction');
+  });
+
+  it('denies an unknown grant token before spawning (unauthorized)', async () => {
+    const orch = new FakeOrchestrator();
+    const { grants } = makeGrants();
+    const svc = new DonationService({
+      orchestrator: orch,
+      grants,
+      store: new DonationStore(join(tmpRoot, 'donations')),
+    });
+
+    await expect(svc.provision(baseRequest('not-a-real-token')))
+      .rejects.toMatchObject({ code: 'unauthorized' });
+    expect(orch.createCalls).toHaveLength(0);
+  });
+});
+
+describe('DonationService seedToken persistence', () => {
+  it('reproduces the seedToken from a store rebuilt off disk (host-restart gap)', async () => {
+    const orch = new FakeOrchestrator();
+    const dir = join(tmpRoot, 'donations');
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store: new DonationStore(dir) });
+
+    const view = await svc.provision(baseRequest(token));
+
+    // Simulate a host restart: brand-new store instance, same directory.
+    const reloaded = new DonationStore(dir);
+    const record = reloaded.get(view.id);
+    expect(record?.status).toBe('awaiting_seed');
+    expect(record?.seedToken).toBe('seed-token-1');
+    expect(record?.seedEndpoint).toBe('http://127.0.0.1:9001/seed');
+  });
+});
+
+describe('DonationService quota-race serialization', () => {
+  it('serializes per grant so two concurrent provisions at the boundary cannot both pass', async () => {
+    const orch = new FakeOrchestrator();
+    orch.createDelayMs = 40; // widen the check→create window so an unserialized impl would race
+    const { grants, token } = makeGrants({ maxNodes: 1 });
+    const svc = new DonationService({
+      orchestrator: orch,
+      grants,
+      store: new DonationStore(join(tmpRoot, 'donations')),
+    });
+
+    const [a, b] = await Promise.allSettled([
+      svc.provision(baseRequest(token)),
+      svc.provision(baseRequest(token)),
+    ]);
+
+    const fulfilled = [a, b].filter((r) => r.status === 'fulfilled');
+    const rejected = [a, b].filter((r) => r.status === 'rejected');
+    expect(fulfilled).toHaveLength(1);
+    expect(rejected).toHaveLength(1);
+    expect((rejected[0] as PromiseRejectedResult).reason).toMatchObject({ code: 'quota_exceeded' });
+    // Exactly one node was actually spawned.
+    expect(orch.createCalls).toHaveLength(1);
+  });
+});
+
+describe('DonationService reclaim-on-failure', () => {
+  it('reclaims the spawned resources and marks error when persistence fails after spawn', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    // Fail the SECOND put — the awaiting_seed write, after the orchestrator has
+    // already handed back a dockerId. The service must reclaim it.
+    const realPut = store.put.bind(store);
+    let puts = 0;
+    (store as unknown as { put: (d: unknown) => void }).put = (d: unknown) => {
+      puts += 1;
+      if (puts === 2) throw new DonationError('storage_error', 'disk full');
+      realPut(d as never);
+    };
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    await expect(svc.provision(baseRequest(token)))
+      .rejects.toMatchObject({ code: 'orchestrator_error' });
+
+    // The spawned child was reclaimed (removeContainer called with its dockerId).
+    expect(orch.removed).toEqual(['dock_1']);
+    // The record is marked error (the 3rd put, which succeeds) → not counted live.
+    const errored = store.list().find((d) => d.grantToken === token);
+    expect(errored?.status).toBe('error');
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('does not reclaim when the spawn itself throws (nothing was allocated)', async () => {
+    const orch = new FakeOrchestrator();
+    orch.failCreate = true;
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    await expect(svc.provision(baseRequest(token)))
+      .rejects.toMatchObject({ code: 'orchestrator_error' });
+    expect(orch.removed).toEqual([]);
+    expect(store.list().find((d) => d.grantToken === token)?.status).toBe('error');
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+});
+
+describe('DonationService.reapStaleAwaitingSeed', () => {
+  it('terminates awaiting_seed donations past the TTL and leaves fresh ones alone', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    // Old donation (enters awaiting_seed at T0).
+    const old = await svc.provision(baseRequest(token));
+
+    // Advance well past the TTL, then provision a fresh one at the new "now".
+    const ttlMs = 30 * 60 * 1000;
+    clock = new Date(Date.parse('2025-01-01T00:00:00.000Z') + ttlMs + 60_000);
+    const fresh = await svc.provision(baseRequest(token));
+
+    const reaped = await svc.reapStaleAwaitingSeed(ttlMs);
+
+    expect(reaped).toEqual([old.id]);
+    expect(store.get(old.id)?.status).toBe('terminated');
+    expect(store.get(fresh.id)?.status).toBe('awaiting_seed');
+    // The stale child was stopped + removed.
+    expect(orch.stopped).toContain('dock_1');
+    expect(orch.removed).toContain('dock_1');
+    // Only the fresh donation still counts against the quota.
+    expect(store.liveNodeCount(token)).toBe(1);
+  });
+
+  it('is a no-op when nothing is stale', async () => {
+    const orch = new FakeOrchestrator();
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({
+      orchestrator: orch,
+      grants,
+      store: new DonationStore(join(tmpRoot, 'donations')),
+    });
+    await svc.provision(baseRequest(token));
+    expect(await svc.reapStaleAwaitingSeed(30 * 60 * 1000)).toEqual([]);
+    expect(orch.removed).toEqual([]);
+  });
+});

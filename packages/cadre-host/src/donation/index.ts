@@ -29,7 +29,11 @@ export type {
 /* ──────────────── donation lifecycle (2-donation-service) ──────────────── */
 
 export { DonationStore } from './donation-store.js';
-export { DonationService } from './donation-service.js';
+export {
+  DonationService,
+  DONATION_AWAITING_SEED_TTL_MS,
+  DONATION_REAP_SWEEP_MS,
+} from './donation-service.js';
 export type {
   DonationProvisionRequest,
   DonationSeedResult,

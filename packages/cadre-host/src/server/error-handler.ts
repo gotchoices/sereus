@@ -27,6 +27,16 @@
  *       invalid_ttl                              → 400
  *       not_found                                → 404
  *       storage_error                            → 500
+ *   - DonationError
+ *       invalid_request                          → 400
+ *       unauthorized                             → 401
+ *       forbidden                                → 403
+ *       not_found                                → 404
+ *       invalid_state                            → 409
+ *       quota_exceeded                           → 429
+ *       orchestrator_error, storage_error        → 500
+ *       seed_failed                              → 502
+ *       peer_unavailable                         → 503
  *   - everything else                            → 500 (code "internal")
  */
 
@@ -36,7 +46,7 @@ import debug from 'debug';
 import { TrustCircleError, type TrustCircleErrorCode } from '../auth/types.js';
 import { NatError, type NatErrorCode } from '../nat/types.js';
 import { UpdateErrorException, type UpdateErrorCode } from '../update/types.js';
-import { GrantError, type GrantErrorCode } from '../donation/types.js';
+import { GrantError, type GrantErrorCode, DonationError, type DonationErrorCode } from '../donation/types.js';
 
 const log = debug('cadre:host:error-handler');
 
@@ -68,6 +78,19 @@ const GRANT_STATUS: Record<GrantErrorCode, number> = {
   invalid_max_nodes: 400,
   invalid_ttl: 400,
   not_found: 404,
+  storage_error: 500,
+};
+
+const DONATION_STATUS: Record<DonationErrorCode, number> = {
+  unauthorized: 401,
+  forbidden: 403,
+  quota_exceeded: 429,
+  invalid_request: 400,
+  not_found: 404,
+  invalid_state: 409,
+  seed_failed: 502,
+  peer_unavailable: 503,
+  orchestrator_error: 500,
   storage_error: 500,
 };
 
@@ -116,6 +139,9 @@ function classify(err: FastifyError): Classified {
   }
   if (err instanceof GrantError) {
     return { status: GRANT_STATUS[err.code] ?? 500, code: err.code, message: err.message };
+  }
+  if (err instanceof DonationError) {
+    return { status: DONATION_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }
   // Fastify body-parsing / validation errors have a statusCode we should honour.
   if (typeof err.statusCode === 'number' && err.statusCode >= 400 && err.statusCode < 600) {

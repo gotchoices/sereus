@@ -22,7 +22,7 @@ import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
 import type { UpdateService } from '../update/index.js';
 import { createUpdateHandlers } from '../update/index.js';
-import type { GrantService } from '../donation/index.js';
+import type { GrantService, DonationService } from '../donation/index.js';
 import { createGrantAdminHandlers } from '../donation/index.js';
 
 import { EventBus } from './events/bus.js';
@@ -38,6 +38,7 @@ import { registerStatusRoute } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
 import { registerSettingsRoutes } from './routes/settings.js';
 import { registerGrantsAdminRoutes } from './routes/grants-admin.js';
+import { registerGrantsRoutes } from './routes/grants.js';
 import { HostSettingsStore } from './settings-store.js';
 
 export interface LocalUiServerOptions {
@@ -67,6 +68,13 @@ export interface LocalUiServerOptions {
    * that don't exercise donations need not wire it.
    */
   grants?: GrantService;
+  /**
+   * Donation lifecycle service. When present (alongside `grants`), mounts the
+   * bearer-gated grantee-facing provisioning surface at `/grants`
+   * (provision / peer / seed / terminate). Optional so callers/tests that don't
+   * exercise the donor path need not wire it.
+   */
+  donations?: DonationService;
   /** Settings I/O facade. Defaults to a new one rooted at `dataDir`. */
   settingsStore?: HostSettingsStore;
   /** Bus instance — pass the same one to subsystems that publish events. */
@@ -139,6 +147,11 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   }
   if (opts.grants) {
     registerGrantsAdminRoutes(app, { handlers: createGrantAdminHandlers(opts.grants) });
+    // Grantee-facing provisioning surface needs both the donation service and a
+    // grant validator (the GrantService doubles as the validator).
+    if (opts.donations) {
+      registerGrantsRoutes(app, { donations: opts.donations, grants: opts.grants });
+    }
   }
 
   // Static mount registers as the not-found handler — declared last so the

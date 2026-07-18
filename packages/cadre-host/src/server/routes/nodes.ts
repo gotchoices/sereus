@@ -7,9 +7,10 @@
  * handlers don't re-publish.
  *
  * start/restart are real for the admin's owner node (re-spawned from the
- * persisted `OwnerSpawnConfig`). Generic per-member node spawn from saved
- * config is out of scope and returns `not_implemented`. Stop works for any
- * running node.
+ * persisted `OwnerSpawnConfig`). Generic node lifecycle is owned by the
+ * grantee-facing donation surface (`/grants`) — this route no longer spawns
+ * generic nodes; start/restart of a known non-owner node points the caller
+ * there. Stop works for any running node.
  */
 
 import { existsSync, openSync, readSync, closeSync, statSync } from 'node:fs';
@@ -84,9 +85,9 @@ export function registerNodesRoutes(app: FastifyInstance, opts: NodesRoutesOptio
   });
 
   // start / restart: real for the admin's owner node (spawned from the
-  // persisted OwnerSpawnConfig). Generic per-member node spawn from saved
-  // config is out of scope — those ids return a clear not_implemented; unknown
-  // ids 404.
+  // persisted OwnerSpawnConfig). Generic node lifecycle now belongs to the
+  // donation surface (/grants) — those ids return a clear not_implemented that
+  // points there; unknown ids 404.
   app.post<{ Params: { id: string } }>('/api/nodes/:id/start', async (request, reply) => {
     const { id } = request.params;
     if (orchestrator.isOwnerNode(id)) {
@@ -127,7 +128,7 @@ function startRestartFallback(
   }
   return notImplemented(
     reply,
-    `${verb} ${id}: only the owner node is start/restart-able; generic node spawn is out of scope.`,
+    `${verb} ${id}: only the owner node is start/restart-able here; generic donated-node lifecycle is owned by the donation surface — use POST /grants to provision and DELETE /grants/:id to terminate.`,
   );
 }
 

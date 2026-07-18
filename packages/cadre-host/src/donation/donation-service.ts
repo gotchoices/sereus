@@ -14,6 +14,20 @@ import { DonationError } from './types.js';
 
 const log = debug('cadre:host:donation-service');
 
+/**
+ * Default age after which a donation still stuck in `awaiting_seed` is
+ * auto-terminated: the requester provisioned a node but never presented a seed
+ * (it vanished, or abandoned the flow), leaving an orphaned child holding host
+ * ports. 30 minutes.
+ *
+ * NOTE: not operator-configurable yet — a single module constant. If hosts need
+ * to tune the grace period, promote this to `host.config.json`.
+ */
+export const DONATION_AWAITING_SEED_TTL_MS = 30 * 60 * 1000;
+
+/** How often the reap sweep runs while cadre-host is up. 5 minutes. */
+export const DONATION_REAP_SWEEP_MS = 5 * 60 * 1000;
+
 /** A grantee-driven request to provision one donated node. */
 export interface DonationProvisionRequest {
   /** The grant token that authorizes this donation (the quota key). */
@@ -261,6 +275,32 @@ export class DonationService {
     }
     this.store.put({ ...donation, status: 'terminated', updatedAt: this.now().toISOString() });
     log('donation %s terminated', id);
+  }
+
+  /**
+   * Auto-terminate donations still `awaiting_seed` past `ttlMs` — a requester
+   * that provisioned a node but never presented a seed leaves an orphaned child
+   * holding host ports. Run on a periodic sweep and once at startup for records
+   * recovered from disk. Age is measured from the record's `updatedAt` (set when
+   * it entered `awaiting_seed`). Best-effort per record: a failed terminate is
+   * logged and the sweep continues. Returns the reaped donation ids.
+   */
+  async reapStaleAwaitingSeed(ttlMs: number = DONATION_AWAITING_SEED_TTL_MS): Promise<string[]> {
+    const cutoff = this.now().getTime() - ttlMs;
+    const stale = this.store
+      .list()
+      .filter((d) => d.status === 'awaiting_seed' && Date.parse(d.updatedAt) < cutoff);
+    const reaped: string[] = [];
+    for (const donation of stale) {
+      try {
+        await this.terminate(donation.id);
+        reaped.push(donation.id);
+        log('reaped stale awaiting_seed donation %s (age > %dms)', donation.id, ttlMs);
+      } catch (err) {
+        log('failed to reap donation %s: %s', donation.id, errorMessage(err));
+      }
+    }
+    return reaped;
   }
 
   /** One donation (redacted), or undefined when unknown. */

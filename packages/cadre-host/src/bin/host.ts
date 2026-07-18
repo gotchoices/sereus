@@ -34,7 +34,14 @@ import { createServiceHost } from '../installer/service-host/index.js';
 import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
 import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
-import { GrantService, GrantStore } from '../donation/index.js';
+import {
+  GrantService,
+  GrantStore,
+  DonationService,
+  DonationStore,
+  DONATION_AWAITING_SEED_TTL_MS,
+  DONATION_REAP_SWEEP_MS,
+} from '../donation/index.js';
 import { NatService } from '../nat/index.js';
 import { createSecretsStore } from '../nat/secrets/index.js';
 import {
@@ -289,6 +296,28 @@ program
       // mounted by createLocalUiServer regardless of the founder persona.
       const grantService = new GrantService({ store: new GrantStore(cfg.dataDir) });
 
+      // Donation lifecycle service — consumes a validated grant to actually
+      // spawn a donated node into the requester's cadre. Drives the
+      // grantee-facing `/grants` surface (mounted by createLocalUiServer below).
+      const donationService = new DonationService({
+        orchestrator,
+        grants: grantService,
+        store: new DonationStore(cfg.dataDir),
+      });
+
+      // Reap orphaned donations: a requester that provisioned a node but never
+      // presented a seed leaves an `awaiting_seed` child holding host ports.
+      // Sweep once at startup (for records recovered from disk by
+      // orchestrator.init()), then periodically.
+      const reapStale = (): void => {
+        void donationService
+          .reapStaleAwaitingSeed(DONATION_AWAITING_SEED_TTL_MS)
+          .catch((err) => console.error(`donation reap failed: ${(err as Error).message}`));
+      };
+      reapStale();
+      const reapTimer = setInterval(reapStale, DONATION_REAP_SWEEP_MS);
+      reapTimer.unref();
+
       // Founder stack (opt-in). Absent `ownCadre.enabled`, cadre-host is a pure
       // donor: no owner node, and the /auth + /nat surfaces stay unmounted
       // (they 404). Per-donated-node WAN reachability is deferred to
@@ -362,6 +391,7 @@ program
         ...(natService ? { nat: natService } : {}),
         update: updateService,
         grants: grantService,
+        donations: donationService,
         settingsStore,
       });
       const { url, port } = await server.start();
@@ -371,6 +401,7 @@ program
       console.log(`cadre-host local UI: ${url}`);
 
       await waitForTermination();
+      clearInterval(reapTimer);
       try { await server.stop(); } catch { /* ignore */ }
       try { await natService?.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
