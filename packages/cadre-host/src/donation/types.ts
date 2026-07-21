@@ -147,7 +147,12 @@ export interface Donation {
   status: DonationStatus;
   /** Orchestrator handle (opaque `pid:token`), set once the child is spawned. */
   dockerId?: string;
-  /** libp2p peerId, once the node reports one. */
+  /**
+   * Reserved: a donation's live peer identity is read fresh from the node's
+   * `/status` on each `getPeer` call and is NOT persisted here — this field is
+   * currently never written. Kept for a future cache if `/status` fan-out ever
+   * shows up as hot.
+   */
   peerId?: string;
   /** The node's loopback `POST /seed` URL. Host-internal — stripped from the wire view. */
   seedEndpoint?: string;

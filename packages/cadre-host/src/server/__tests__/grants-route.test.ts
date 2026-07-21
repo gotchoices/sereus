@@ -132,6 +132,14 @@ describe('POST /grants', () => {
   });
 });
 
+describe('GET /grants auth', () => {
+  it('rejects an unknown bearer → 401 unauthorized (code matches the status)', async () => {
+    const res = await app.inject({ method: 'GET', url: '/grants', headers: bearer('nope') });
+    expect(res.statusCode).toBe(401);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('unauthorized');
+  });
+});
+
 describe('GET /grants (ownership isolation)', () => {
   it('lists only the donations the presented grant authorized', async () => {
     const other = grants.issue({ label: 'Carol' }).token;

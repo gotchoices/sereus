@@ -65,7 +65,12 @@ function authenticate(
   }
   const validation = grants.validate(token);
   if (!validation.ok) {
-    errorResponse(reply, 'forbidden', `Grant is ${validation.reason ?? 'invalid'}`, denyStatus(validation.reason));
+    const status = denyStatus(validation.reason);
+    // Keep the envelope code aligned with the status (and with the POST path,
+    // which surfaces an unknown token as `unauthorized`): 401 → unauthorized,
+    // 403 → forbidden. A 401 labelled `forbidden` is self-contradictory.
+    const code = status === 403 ? 'forbidden' : 'unauthorized';
+    errorResponse(reply, code, `Grant is ${validation.reason ?? 'invalid'}`, status);
     return null;
   }
   return token;
