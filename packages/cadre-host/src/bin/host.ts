@@ -374,11 +374,17 @@ program
           console.error(`NAT start failed: ${(err as Error).message}`);
         }
       } else {
-        // NOTE: if ownCadre was toggled off after a prior founder run, an owner
-        // child may still be running and orchestrator.init() re-attaches it (it
-        // then shows in listNodes but has no trustCircle/nat wired). Harmless —
-        // stopOwnerNode() on shutdown reaps it. If this surprises operators,
-        // reap a re-attached owner here when ownCadre is disabled.
+        // Donor-only. If ownCadre was toggled off after a prior founder run,
+        // orchestrator.init() re-attaches the still-running owner child (it would
+        // otherwise linger in listNodes with no trustCircle/nat wired, serving
+        // the host's own cadre despite being disabled). Reap it now so a disabled
+        // own-cadre is actually stopped — its workdir + control-DB persist on
+        // disk, so toggling ownCadre back on re-spawns it from saved config.
+        try {
+          await orchestrator.stopOwnerNode();
+        } catch (err) {
+          console.error(`owner node reap failed: ${(err as Error).message}`);
+        }
         console.log('cadre-host: node-donor mode (host-own-cadre disabled — no owner node; /auth + /nat inactive)');
       }
 
