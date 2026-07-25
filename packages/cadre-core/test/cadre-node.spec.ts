@@ -9,6 +9,7 @@ import { StrandWakeService } from '../src/strand-wake-protocol.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { CadreNodeConfig, StrandRow, StrandConfig, SAppConfig, StrandInstance, CadreNodeEvents } from '../src/types.js';
+import type { PushNotifier } from '../src/push-notifier.js';
 import { duplexPair } from './wake-stream-helpers.js';
 
 describe('CadreNode', () => {
@@ -1009,6 +1010,29 @@ describe('CadreNode', () => {
       expect((node as unknown as { pushFanoutService: unknown }).pushFanoutService).toBeNull();
       expect(() => node.notifyStrandActivity('s-3')).not.toThrow();
       expect(() => node.recordStrandActivity('s-3')).not.toThrow();
+    });
+
+    it('buildPushFanout wires the injected notifier and owns its close lifecycle', async () => {
+      // A Node host constructs the notifier (from '@serfab/cadre-core/push-node')
+      // and injects the instance; the node builds its fan-out over that exact
+      // instance and owns its teardown. A fake in-memory PushNotifier lets us
+      // assert the identity/lifecycle without exercising node:crypto/node:http2.
+      const node = new CadreNode(createConfig());
+      const state = { closed: 0 };
+      const notifier: PushNotifier = {
+        send: async () => ({ ok: true }),
+        close: async () => { state.closed++; },
+      };
+
+      const build = (node as unknown as {
+        buildPushFanout(push: { notifier: PushNotifier }): { close(): Promise<void> };
+      }).buildPushFanout.bind(node);
+      const fanout = build({ notifier });
+
+      // Closing the fan-out closes the injected notifier — proving that specific
+      // instance is the one wired in (the ownership transfer CadreNode.stop relies on).
+      await fanout.close();
+      expect(state.closed).toBe(1);
     });
 
     it('expireDeviceToken owner-deletes the row when an owner service is present', async () => {

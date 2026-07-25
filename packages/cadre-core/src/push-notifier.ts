@@ -1,30 +1,26 @@
 /**
- * push-notifier.ts — the platform-push **delivery** seam for strand-wake.
+ * push-notifier.ts — the platform-push **delivery** contract for strand-wake.
  *
- * Given a resolved mobile peer token, send one `strand-wake` data message over
- * the right platform channel (FCM for Android, APNs for iOS). This module owns no
- * policy — *who* to wake and *when* is the fan-out (`push-fanout.ts`). It is the
- * reusable, credential-injected, transport-injected unit the fan-out constructs
- * inside a participating `CadreNode` when push credentials are configured.
+ * This module is the cross-platform-safe *interface* half: the message shape
+ * ({@link PushMessage}), the outcome value ({@link PushSendResult}), and the
+ * {@link PushNotifier} port a `CadreNode` sends over. It carries ZERO runtime
+ * dependencies and imports no implementation — so the RN/browser entry graph can
+ * reference the type without ever resolving `node:crypto` / `node:http2`.
  *
- * `createPushNotifier` returns a router that dispatches by `msg.platform` to an
- * `FcmPushNotifier` and/or `ApnsPushNotifier`, constructing only the
- * implementations whose credentials are present. Failures are values, never
- * thrown — mirroring `ServiceWakeResult` / `resolveDeviceToken`'s no-throw
- * conventions so a best-effort fan-out can branch on the outcome.
+ * The concrete FCM/APNs implementations (`push-notifier-fcm.ts` /
+ * `push-notifier-apns.ts`) and the `createPushNotifier` router that builds them
+ * live behind the Node-only subpath `@serfab/cadre-core/push-node`
+ * (`push-node.ts`). A Node host constructs a notifier from that subpath and
+ * injects the instance into `CadreNodeConfig.push.notifier`; the cross-platform
+ * core never constructs one, so the Node-only builtins stay out of its graph.
  *
- * Server-only by construction: the FCM/APNs implementations reach for
- * `node:crypto` / `node:http2`. They are never pulled into the RN/browser bundle
- * because the cross-platform `index.ts` re-exports only the *types* here (a
- * type-only re-export is erased at emit), and the only runtime constructor of a
- * notifier is the in-package fan-out that runs inside a Node `CadreNode`. A
- * cross-platform consumer imports the payload contract + types, never this value.
+ * Keep this file zero-import (beyond erased type-only imports): the whole point
+ * of the seam is that referencing the interface can never drag an implementation
+ * module into a bundler's graph.
  */
 
-import type { PushPlatform, PushCredentials } from './types.js';
+import type { PushPlatform } from './types.js';
 import type { StrandWakePayload } from './strand-wake-payload.js';
-import { createFcmPushNotifier, type FcmPushDeps } from './push-notifier-fcm.js';
-import { createApnsPushNotifier, type ApnsPushDeps } from './push-notifier-apns.js';
 
 /** One strand-wake data message addressed to one device. */
 export interface PushMessage {
@@ -53,41 +49,4 @@ export interface PushNotifier {
   send(msg: PushMessage): Promise<PushSendResult>;
   /** Release transport resources (e.g. the APNs HTTP/2 session). */
   close(): Promise<void>;
-}
-
-/**
- * Per-platform transport/clock/log seams, injected by tests. Defaults are the
- * real implementations (global `fetch` for FCM, a `node:http2` session for APNs).
- */
-export interface PushNotifierDeps {
-  fcm?: FcmPushDeps;
-  apns?: ApnsPushDeps;
-}
-
-/**
- * Build a {@link PushNotifier} router over the configured credentials. Only the
- * platforms whose credentials are present get a backing implementation; a `send`
- * for an unconfigured platform returns a best-effort `no <platform> credentials`
- * failure rather than throwing.
- */
-export function createPushNotifier(creds: PushCredentials, deps: PushNotifierDeps = {}): PushNotifier {
-  const fcm = creds.fcm ? createFcmPushNotifier(creds.fcm, deps.fcm) : undefined;
-  const apns = creds.apns ? createApnsPushNotifier(creds.apns, deps.apns) : undefined;
-
-  async function send(msg: PushMessage): Promise<PushSendResult> {
-    if (msg.platform === 'fcm') return fcm ? fcm.send(msg) : noCreds('fcm');
-    if (msg.platform === 'apns') return apns ? apns.send(msg) : noCreds('apns');
-    return { ok: false, unregistered: false, error: `unknown platform ${String(msg.platform)}` };
-  }
-
-  async function close(): Promise<void> {
-    await Promise.all([fcm?.close(), apns?.close()]);
-  }
-
-  return { send, close };
-}
-
-/** Best-effort no-op result for a platform with no configured credentials. */
-function noCreds(platform: PushPlatform): PushSendResult {
-  return { ok: false, unregistered: false, error: `no ${platform} credentials` };
 }

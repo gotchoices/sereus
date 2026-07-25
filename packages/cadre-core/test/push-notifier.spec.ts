@@ -3,7 +3,7 @@ import { generateKeyPairSync } from 'node:crypto';
 import { STRAND_WAKE_TYPE } from '../src/strand-wake-payload.js';
 import type { StrandWakePayload } from '../src/strand-wake-payload.js';
 import type { ApnsCredentials, FcmCredentials } from '../src/types.js';
-import { createPushNotifier } from '../src/push-notifier.js';
+import { createPushNotifier } from '../src/push-node.js';
 import { createFcmPushNotifier, type FcmFetch, type FcmResponseLike } from '../src/push-notifier-fcm.js';
 import {
   createApnsPushNotifier,

@@ -262,9 +262,11 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     prerequisites (`google-services.json`, paid APNs creds + push capability) and on-device validation are
     out-of-agent; steps recorded in `tickets/review/3-mobile-push-wake-receive.md`.
 - [x] Platform push **delivery** sender (`PushNotifier`, cadre-core)
-  - `push-notifier.ts`: `createPushNotifier(creds, deps?)` returns a credential- and transport-injected
-    router dispatching by `PushMessage.platform` to FCM/APNs, constructing only the implementations whose
-    credentials are present. `send` returns a `PushSendResult` (`{ ok:true }` | `{ ok:false, unregistered, error }`)
+  - `push-node.ts` (Node-only subpath `@serfab/cadre-core/push-node`): `createPushNotifier(creds, deps?)` returns
+    a credential- and transport-injected router dispatching by `PushMessage.platform` to FCM/APNs, constructing
+    only the implementations whose credentials are present. `push-notifier.ts` is the cross-platform **interface**
+    half (`PushMessage`/`PushSendResult`/`PushNotifier`), zero-import so referencing it pulls in no Node builtins.
+    `send` returns a `PushSendResult` (`{ ok:true }` | `{ ok:false, unregistered, error }`)
     as a value and never throws; a platform with no creds yields a best-effort `no <platform> credentials`.
   - `push-notifier-fcm.ts` (HTTP v1): RS256 service-account JWT → cached OAuth2 access token (re-minted once
     on a 401), `POST …/v1/projects/{projectId}/messages:send` with a high-priority `data` message. 404
@@ -274,19 +276,23 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     GOAWAY/throw). `POST /3/device/{token}` with `apns-push-type: background` / `apns-priority: 5` /
     `content-available`; 410 `Unregistered` / 400 `BadDeviceToken` → `unregistered:true`. `close()` ends the session.
   - The shared contract `strand-wake-payload.ts` (`STRAND_WAKE_TYPE` + `StrandWakePayload`) **moved into
-    cadre-core** — imported by both sender and RN receiver. Credentials ride `CadreNodeConfig.push`
-    (`PushCredentials`/`FcmCredentials`/`ApnsCredentials`; `privateKey` fields are secrets, never logged).
-    Server-only modules (`node:crypto`/`node:http2`) stay out of the RN/browser bundle — the cross-platform
-    `cadre-core` entry re-exports only their *types*.
-  - 22 unit tests (`push-notifier.spec.ts`, fake fetch/http2 transports) cover request shape, every documented
-    response-code mapping, access-token cache + 401 re-mint, provider-JWT refresh, GOAWAY re-establish, router
-    dispatch + missing-credentials no-op, and no-secret-in-logs. *Who*/*when* to wake, constructing the notifier
-    inside `CadreNode.start`, and expiring `unregistered` rows are now owned by the fan-out below; **real-network /
-    on-device validation remains out-of-agent** (no network is exercised in unit tests).
+    cadre-core** — imported by both sender and RN receiver. `CadreNodeConfig.push` carries an **injected**
+    `{ notifier, cooldownMs?, debounceMs? }`; the raw `PushCredentials`/`FcmCredentials`/`ApnsCredentials`
+    (`privateKey` fields secret, never logged) are read only by the Node host that builds the notifier.
+    Node-only modules (`node:crypto`/`node:http2`) stay out of the RN/browser bundle: the FCM/APNs impls +
+    `createPushNotifier` live behind the `@serfab/cadre-core/push-node` subpath, and the cross-platform entry
+    re-exports only the `PushNotifier` *interface* — the host injects the instance into `config.push.notifier`.
+  - 22 unit tests (`push-notifier.spec.ts`, importing `createPushNotifier` from `push-node.ts`, fake fetch/http2
+    transports) cover request shape, every documented response-code mapping, access-token cache + 401 re-mint,
+    provider-JWT refresh, GOAWAY re-establish, router dispatch + missing-credentials no-op, and no-secret-in-logs.
+    *Who*/*when* to wake, driving the **injected** notifier, and expiring `unregistered` rows are now owned by the
+    fan-out below; **real-network / on-device validation remains out-of-agent** (no network is exercised in unit tests).
 - [x] Server push-wake **fan-out + trigger policy** (`PushFanoutService`, `push-fanout.ts`)
-  - `CadreNode.start` constructs the service only when `config.push` is set — a `PushNotifier` built from those
-    credentials via a **guarded dynamic import** of `push-notifier.js`, so a cross-platform node that never sets
-    `config.push` keeps `node:http2`/`node:crypto` out of its graph. Without `config.push` the node is unchanged.
+  - `CadreNode.start` constructs the fan-out only when `config.push` is set. The `PushNotifier` is **injected**,
+    not built in-core: the Node host (cadre-cli) constructs it from the Node-only subpath
+    `@serfab/cadre-core/push-node` (`createPushNotifier(credentials)`) and passes the instance in
+    `config.push.notifier`, so `node:http2`/`node:crypto` never enter a cross-platform node's graph. The node owns
+    the injected notifier's lifecycle (closed on `stop` via the fan-out). Without `config.push` the node is unchanged.
   - **v1 trigger is explicit** (no passive Optimystic detector — `IRepo` has no commit/block-received hook, so
     it is **deferred** to backlog as an enhancement, not a correctness gap): `CadreNode.notifyStrandActivity(strandId, reason?)`
     is the imperative seam, and `recordStrandActivity` additionally drives it (same seam local-wake uses).

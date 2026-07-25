@@ -34,9 +34,11 @@ config.resolver.nodeModulesPaths = nodeModulesPaths;
 //   os, crypto       — real shims providing subset APIs via react-native / @noble/hashes
 //   stream, buffer   — npm packages providing Node-equivalent APIs
 //   net, tls         — empty stubs (imported by transitive libp2p deps but never called at runtime)
-//   http2            — empty stub: cadre-core's server-only push-notifier (APNs HTTP/2) is reachable
-//                      via CadreNode's guarded dynamic import, but a phone never sets config.push so the
-//                      fan-out/notifier never loads — the stub only satisfies Metro's graph resolution.
+//   http2            — empty stub (defensive): cadre-core's APNs push-notifier now lives behind the
+//                      Node-only '@serfab/cadre-core/push-node' subpath and is NOT reachable from the
+//                      cross-platform entry, so this stub should no longer be needed for cadre-core; kept
+//                      as belt-and-suspenders for any transitive Node-only importer. Removable pending a
+//                      real Metro release build to confirm nothing else pulls node:http2.
 const emptyShim = path.resolve(__dirname, 'polyfills/empty.js');
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),

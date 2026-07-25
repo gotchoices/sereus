@@ -183,13 +183,13 @@ export {
 // Strand-wake payload contract (canonical; shared by the server sender + RN receiver)
 export { STRAND_WAKE_TYPE, type StrandWakePayload } from './strand-wake-payload.js';
 
-// Platform push delivery — server-only PushNotifier (FCM HTTP v1 / APNs HTTP/2).
-// TYPES ONLY here: the implementations import node:http2/node:crypto and are
-// constructed solely by `CadreNode.start` (via a guarded dynamic import) when
-// push credentials are configured. A type-only re-export is erased at emit, so the
-// cross-platform (RN/browser) entry graph never pulls these modules in.
-// `createPushNotifier` is imported directly from './push-notifier.js' only by that
-// dynamic import, never re-exported as a runtime value.
+// Platform push delivery — the cross-platform `PushNotifier` *contract* only.
+// The FCM/APNs implementations (node:http2/node:crypto) and the
+// `createPushNotifier` router that builds them live behind the Node-only subpath
+// `@serfab/cadre-core/push-node` (`push-node.ts`), never in this graph. A Node
+// host constructs a notifier from that subpath and injects the instance into
+// `CadreNodeConfig.push.notifier`. These re-exports are type-only (erased at
+// emit), so the RN/browser entry graph never pulls the Node modules in.
 export type { PushNotifier, PushMessage, PushSendResult } from './push-notifier.js';
 
 // Push-credential validation + log redaction. Dependency-free (type-only imports),

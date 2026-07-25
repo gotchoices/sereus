@@ -132,9 +132,9 @@ export class CadreNode implements SAppIdLookup {
   private strandAddrService: StrandAddrService | null = null;
   /**
    * Server-side push-wake fan-out. Constructed by {@link start} only when
-   * `config.push` (FCM/APNs credentials) is present — without it the node behaves
-   * exactly as before (no notifier, no fan-out). Owns who/when to wake
-   * hibernating mobile peers on strand activity.
+   * `config.push` (an injected `PushNotifier` + policy) is present — without it
+   * the node behaves exactly as before (no notifier, no fan-out). Owns who/when
+   * to wake hibernating mobile peers on strand activity.
    */
   private pushFanoutService: PushFanoutService | null = null;
   /** Backing field for the {@link running} / {@link isRunning} getters. */
@@ -460,26 +460,10 @@ export class CadreNode implements SAppIdLookup {
       });
       this.strandAddrService.initialize(this.controlNode);
 
-      // Server-side push-wake fan-out: only when push credentials are configured.
-      // The PushNotifier reaches for node:http2/node:crypto, so it is loaded via a
-      // guarded DYNAMIC import — a cross-platform (RN/browser) node that never sets
-      // config.push never pulls those modules into its static graph. The fan-out
-      // service itself is import-clean (PushNotifier type only) and statically imported.
+      // Server-side push-wake fan-out: only when push is configured.
       if (this.config.push) {
-        const { createPushNotifier } = await import('./push-notifier.js');
-        const notifier = createPushNotifier(this.config.push);
-        this.pushFanoutService = new PushFanoutService({
-          listMembers: () => this.listMembers(),
-          getStrand: (strandId) => this.strandManager.getInstance(strandId),
-          selfPeerId: () => this.controlNode?.peerId.toString(),
-          pushWake: (peerId, strandId, reason) => this.pushWake(peerId, strandId, reason),
-          resolveDeviceToken: (peerId) => this.resolveDeviceToken(peerId),
-          expireDeviceToken: (peerId) => this.expireDeviceToken(peerId),
-          notifier,
-          cooldownMs: this.config.push.cooldownMs,
-          debounceMs: this.config.push.debounceMs,
-        });
-        log('Push-wake fan-out enabled (FCM=%s, APNs=%s)', !!this.config.push.fcm, !!this.config.push.apns);
+        this.pushFanoutService = this.buildPushFanout(this.config.push);
+        log('Push-wake fan-out enabled (injected notifier)');
       }
 
       this._running = true;
@@ -500,6 +484,32 @@ export class CadreNode implements SAppIdLookup {
       await this.cleanup();
       throw error;
     }
+  }
+
+  /**
+   * Build the server-side push-wake fan-out over an injected {@link PushNotifier}.
+   *
+   * The notifier reaches for `node:http2`/`node:crypto`, so the cross-platform
+   * core never constructs it — the Node host builds it from
+   * `@serfab/cadre-core/push-node` and passes the instance in
+   * `CadreNodeConfig.push`. This node owns that instance's lifecycle from here:
+   * {@link cleanup} closes the fan-out, which closes the notifier (freeing the
+   * APNs HTTP/2 session). Every other primitive the fan-out needs (member
+   * enumeration, participation, direct dial, token resolve/expire) is an
+   * import-clean closure over this node.
+   */
+  private buildPushFanout(push: NonNullable<CadreNodeConfig['push']>): PushFanoutService {
+    return new PushFanoutService({
+      listMembers: () => this.listMembers(),
+      getStrand: (strandId) => this.strandManager.getInstance(strandId),
+      selfPeerId: () => this.controlNode?.peerId.toString(),
+      pushWake: (peerId, strandId, reason) => this.pushWake(peerId, strandId, reason),
+      resolveDeviceToken: (peerId) => this.resolveDeviceToken(peerId),
+      expireDeviceToken: (peerId) => this.expireDeviceToken(peerId),
+      notifier: push.notifier,
+      cooldownMs: push.cooldownMs,
+      debounceMs: push.debounceMs,
+    });
   }
 
   /**

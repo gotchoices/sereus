@@ -1,8 +1,16 @@
 /**
  * push-notifier-apns.ts — APNs HTTP/2 strand-wake delivery.
  *
- * Server-only: signs a provider JWT (ES256, JOSE raw r‖s via `node:crypto`) and
- * sends a background data push over an HTTP/2 session to Apple's gateway.
+ * Node-only: signs a provider JWT (ES256, JOSE raw r‖s via `node:crypto`) and
+ * sends a background data push over an HTTP/2 session to Apple's gateway. APNs
+ * mandates HTTP/2, so `node:http2` is unavoidable here — one reason the push
+ * path is injected rather than rebuilt on WebCrypto/`fetch`.
+ *
+ * Reachable only through the `@serfab/cadre-core/push-node` subpath — never from
+ * the cross-platform `./index.js` graph — so the `node:crypto` / `node:http2`
+ * imports below are safe: no RN/browser bundler ever resolves this module. (Plain
+ * named imports; the old namespace-import-to-only-warn dance is obsolete now that
+ * the module is unreachable from a browser build by construction.)
  *
  * The HTTP/2 call is behind an injected `Http2Requester` seam (bundled with a
  * `close` into an {@link ApnsTransport}) so unit tests assert the request shape
@@ -19,12 +27,8 @@
  * token prefix.
  */
 
-// Namespace import (not `import { sign }`): a *named* import of the
-// browser-externalized `node:crypto` hard-fails the web build, whereas a
-// namespace import only warns — same reasoning as the `node:http2` import below
-// and the matching note in push-notifier-fcm.ts. Server-only; never run in browser.
-import * as nodeCrypto from 'node:crypto';
-import * as http2 from 'node:http2';
+import { sign } from 'node:crypto';
+import { connect, type ClientHttp2Session } from 'node:http2';
 import debug from 'debug';
 import type { ApnsCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
@@ -171,7 +175,7 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
     const header = { alg: 'ES256', kid: creds.keyId };
     const claims = { iss: creds.teamId, iat };
     const signingInput = `${b64urlJson(header)}.${b64urlJson(claims)}`;
-    const sig = nodeCrypto.sign('SHA256', Buffer.from(signingInput), {
+    const sig = sign('SHA256', Buffer.from(signingInput), {
       key: creds.privateKey,
       dsaEncoding: 'ieee-p1363',
     }).toString('base64url');
@@ -195,11 +199,11 @@ export function createApnsPushNotifier(creds: ApnsCredentials, deps: ApnsPushDep
  * network) — tests inject a fake transport; the real path is validated out-of-band.
  */
 function createHttp2Transport(host: string): ApnsTransport {
-  let session: http2.ClientHttp2Session | null = null;
+  let session: ClientHttp2Session | null = null;
 
-  function ensureSession(): http2.ClientHttp2Session {
+  function ensureSession(): ClientHttp2Session {
     if (session && !session.closed && !session.destroyed) return session;
-    const s = http2.connect(host);
+    const s = connect(host);
     // Drop a dead session so ensureSession recreates it on the next request.
     s.on('error', () => { if (session === s) session = null; });
     s.on('goaway', () => { s.destroy(); });

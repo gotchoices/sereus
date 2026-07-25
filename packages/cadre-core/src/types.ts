@@ -4,6 +4,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
+import type { PushNotifier } from './push-notifier.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -308,13 +309,32 @@ export interface CadreNodeConfig {
   seedTrustPolicy?: SeedTrustPolicy;
 
   /**
-   * Platform push-delivery credentials (FCM and/or APNs). When present, the node
-   * can deliver strand-wake data messages to suspended mobile peers over the
-   * platform push channel — the server fan-out constructs a `PushNotifier` from
-   * this. Absent ⇒ no platform push (control-network push-wake only). Injected
-   * per node by `cadre-host`; `privateKey` fields are secrets and are never logged.
+   * Platform push-delivery for suspended mobile peers. When present, the node's
+   * server fan-out can deliver strand-wake data messages over the platform push
+   * channel (FCM/APNs). Absent ⇒ no platform push (control-network push-wake only).
+   *
+   * The `notifier` is **injected**, not constructed here: a Node host builds it
+   * from `@serfab/cadre-core/push-node` (`createPushNotifier(credentials)`) and
+   * passes the instance, so the FCM/APNs modules (`node:crypto`/`node:http2`)
+   * stay out of the cross-platform core graph. Ownership transfers to the node on
+   * injection — `CadreNode.stop` closes the notifier (via `PushFanoutService`),
+   * releasing its APNs HTTP/2 session; a host must NOT also close an injected
+   * notifier itself. `cooldownMs`/`debounceMs` carry the fan-out anti-spam policy.
    */
-  push?: PushCredentials;
+  push?: {
+    /** The Node-constructed push router (see `@serfab/cadre-core/push-node`). */
+    notifier: PushNotifier;
+    /**
+     * Per-`(peer, strand)` minimum gap between push-wakes the fan-out emits.
+     * Default {@link DEFAULT_PUSH_COOLDOWN_MS} (5 min).
+     */
+    cooldownMs?: number;
+    /**
+     * Per-strand burst-coalescing window: a second trigger within it is dropped.
+     * Default {@link DEFAULT_PUSH_DEBOUNCE_MS} (10 s).
+     */
+    debounceMs?: number;
+  };
 }
 
 /**

@@ -1,9 +1,15 @@
 /**
  * push-notifier-fcm.ts — FCM HTTP v1 strand-wake delivery.
  *
- * Server-only: mints a Google OAuth2 access token (RS256 JWT bearer grant signed
+ * Node-only: mints a Google OAuth2 access token (RS256 JWT bearer grant signed
  * with `node:crypto`) and POSTs a data message to the FCM v1 endpoint. The legacy
  * server-key `fcm.googleapis.com/fcm/send` API is deprecated, so we use HTTP v1.
+ *
+ * Reachable only through the `@serfab/cadre-core/push-node` subpath — never from
+ * the cross-platform `./index.js` graph — so the `node:crypto` import below is
+ * safe: no RN/browser bundler ever resolves this module. (Plain named import;
+ * the old namespace-import-to-only-warn dance is obsolete now that the module is
+ * unreachable from a browser build by construction.)
  *
  * The network call is behind an injected `fetch`-like seam so unit tests assert
  * the request shape and map every documented response code with no real network
@@ -14,14 +20,7 @@
  * code and a redacted token prefix.
  */
 
-// Namespace import (not `import { sign }`): this module is server-only and is
-// reached only via the guarded dynamic import in CadreNode, but bundlers still
-// analyse that lazy chunk. A *named* import of `node:crypto` hard-fails the
-// browser build ("sign is not exported by __vite-browser-external"), whereas a
-// namespace import of the deliberately-unaliased external only warns (matching
-// the `node:http2` namespace import in push-notifier-apns.ts). The browser
-// never executes this code (config.push is node-only), so the warning is benign.
-import * as nodeCrypto from 'node:crypto';
+import { sign } from 'node:crypto';
 import debug from 'debug';
 import type { FcmCredentials } from './types.js';
 import type { PushMessage, PushNotifier, PushSendResult } from './push-notifier.js';
@@ -166,7 +165,7 @@ export function createFcmPushNotifier(creds: FcmCredentials, deps: FcmPushDeps =
       exp: iat + 3600,
     };
     const signingInput = `${b64urlJson(header)}.${b64urlJson(claims)}`;
-    const sig = nodeCrypto.sign('RSA-SHA256', Buffer.from(signingInput), creds.privateKey).toString('base64url');
+    const sig = sign('RSA-SHA256', Buffer.from(signingInput), creds.privateKey).toString('base64url');
     return `${signingInput}.${sig}`;
   }
 

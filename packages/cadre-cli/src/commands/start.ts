@@ -10,6 +10,7 @@ import {
   type SeedTrustPolicy,
   type StorageConfig,
 } from '@serfab/cadre-core';
+import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { fromString } from 'uint8arrays';
@@ -148,8 +149,17 @@ export const startCommand = new Command('start')
         seedTrustPolicy,
         // Platform push credentials provisioned by the orchestrator (cadre-host
         // writes the `push` block into cadre.json; cadre-provider injects it via
-        // CADRE_PUSH). Present ⇒ CadreNode.start builds the push-wake fan-out.
-        push: config.push,
+        // CADRE_PUSH). This CLI is the Node host, so it constructs the
+        // `PushNotifier` from the Node-only `@serfab/cadre-core/push-node`
+        // subpath (keeping node:crypto/node:http2 out of the cross-platform core
+        // graph) and injects the instance; CadreNode owns its lifecycle.
+        push: config.push
+          ? {
+              notifier: createPushNotifier(config.push),
+              cooldownMs: config.push.cooldownMs,
+              debounceMs: config.push.debounceMs,
+            }
+          : undefined,
       };
 
       const node = new CadreNode(nodeConfig);
