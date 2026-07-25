@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-07-25T19:23:43.492Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\consumer-apps-drop-push-shims.implement.2026-07-25T19-23-43-492Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ----
 description: After the push code is isolated server-side, our example phone and desktop apps still carry build-config workarounds for it; remove the now-unneeded ones and prove a React Native release bundle builds clean.
 prereq: push-notifier-node-subpath

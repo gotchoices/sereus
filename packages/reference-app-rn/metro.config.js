@@ -7,16 +7,24 @@ const fs = require('fs');
 
 const config = getDefaultConfig(__dirname);
 
-// Resolve workspace root for symlinked packages
+// Resolve workspace root for symlinked packages. optimystic/db-p2p portals
+// `p2p-fret` (the FRET DHT) from the sibling ../Fret monorepo, so Metro must be
+// allowed to follow that symlink out to Fret's real path or the release bundle
+// fails with "Unable to resolve module p2p-fret". On EAS the portal resolutions
+// are stripped (see scripts/eas-build-pre-install.sh) and p2p-fret comes from
+// npm, so — exactly like optimystic/quereus — this sibling root only matters for
+// local bundling and is harmless when the directory is absent.
 const workspaceRoot = path.resolve(__dirname, '../..');
 const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
 const quereusRoot = path.resolve(__dirname, '../../../quereus');
+const fretRoot = path.resolve(__dirname, '../../../Fret');
 
 config.watchFolders = [
   ...(config.watchFolders ?? []),
   workspaceRoot,
   optimysticRoot,
   quereusRoot,
+  fretRoot,
 ];
 
 config.resolver.unstable_enableSymlinks = true;
@@ -27,18 +35,21 @@ const nodeModulesPaths = [
   path.resolve(workspaceRoot, 'node_modules'),
   path.resolve(optimysticRoot, 'node_modules'),
   path.resolve(quereusRoot, 'node_modules'),
+  path.resolve(fretRoot, 'node_modules'),
 ];
 config.resolver.nodeModulesPaths = nodeModulesPaths;
 
 // Polyfill Node.js built-ins for React Native.
-//   os, crypto       — real shims providing subset APIs via react-native / @noble/hashes
+//   os               — real shim: networkInterfaces()/platform() subset via react-native.
+//   crypto           — real shim: createHash (sha256/sha512) via @noble/hashes. Still demanded by
+//                      transitive deps unrelated to push: multiformats sha2/sha1 (Node variant's
+//                      `import crypto from 'crypto'` → createHash), @chainsafe/libp2p-noise's
+//                      crypto/index (imports node:crypto), and @libp2p/crypto's Node key modules
+//                      before the browser rewrite below redirects them to their noble variants.
+//                      cadre-core's FCM/APNs push notifiers no longer reach it — they moved behind
+//                      the Node-only '@serfab/cadre-core/push-node' subpath.
 //   stream, buffer   — npm packages providing Node-equivalent APIs
 //   net, tls         — empty stubs (imported by transitive libp2p deps but never called at runtime)
-//   http2            — empty stub (defensive): cadre-core's APNs push-notifier now lives behind the
-//                      Node-only '@serfab/cadre-core/push-node' subpath and is NOT reachable from the
-//                      cross-platform entry, so this stub should no longer be needed for cadre-core; kept
-//                      as belt-and-suspenders for any transitive Node-only importer. Removable pending a
-//                      real Metro release build to confirm nothing else pulls node:http2.
 const emptyShim = path.resolve(__dirname, 'polyfills/empty.js');
 config.resolver.extraNodeModules = {
   ...(config.resolver.extraNodeModules ?? {}),
@@ -48,14 +59,12 @@ config.resolver.extraNodeModules = {
   'node:crypto': path.resolve(__dirname, 'polyfills/node-crypto.js'),
   'node:net': emptyShim,
   'node:tls': emptyShim,
-  'node:http2': emptyShim,
   os: path.resolve(__dirname, 'polyfills/node-os.js'),
   stream: require.resolve('readable-stream'),
   buffer: require.resolve('buffer'),
   crypto: path.resolve(__dirname, 'polyfills/node-crypto.js'),
   net: emptyShim,
   tls: emptyShim,
-  http2: emptyShim,
 };
 
 // Several @libp2p packages ship parallel `.browser.js` variants of their

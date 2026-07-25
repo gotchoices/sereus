@@ -269,20 +269,17 @@ module.exports = (env) => {
 	// ── Silence the known upstream skew warnings ──────────────────────────────
 	// With exportsPresence:'warn' the renamed/removed named imports above no
 	// longer fail the build, but each emits a "export 'X' was not found in 'Y'"
-	// warning — ~24 of them, which bury any genuinely new warning. Suppress ONLY
-	// these specific, known-benign cases (the names are never reached on the
-	// TCP-free browser-transport rn path), scoped to the exact upstream modules
-	// that renamed them, plus our createHash-only node-crypto shim's missing
-	// `sign`. Any OTHER missing export — including a new one from these same
-	// modules — still surfaces as a warning, so this isn't a blanket mute.
+	// warning — which bury any genuinely new warning. Suppress ONLY these
+	// specific, known-benign cases (the names are never reached on the TCP-free
+	// browser-transport rn path), scoped to the exact upstream modules that
+	// renamed them. Any OTHER missing export — including a new one from these
+	// same modules — still surfaces as a warning, so this isn't a blanket mute.
 	const SKEW_WARNINGS = [
 		// gossipsub vs @libp2p/interface
 		/export 'Strict(Sign|NoSign)' .*was not found in '@libp2p\/interface'/,
 		/export 'TopicValidatorResult' .*was not found in '@libp2p\/interface'/,
 		// @libp2p/autonat vs protons-runtime
 		/export 'streamMessage' .*was not found in 'protons-runtime'/,
-		// node-crypto shim (createHash-only) — `sign` is on an unreached branch
-		/export 'sign' .*was not found in 'node:crypto'/,
 	];
 	config.ignoreWarnings = [
 		...(config.ignoreWarnings ?? []),

@@ -341,7 +341,7 @@ React Native uses the [Hermes](https://hermesengine.dev/) JS engine, which is fa
 | `hermes.js` | Timer `.ref()` / `.unref()` wrappers | @optimystic/db-p2p, undici, libp2p internals |
 | `event.js` | `EventTarget`, `Event` (via `event-target-polyfill` npm), `CustomEvent` (inline) | libp2p, @libp2p/interface |
 | `intl-pluralrules.js` | `Intl.PluralRules` (English-only) | moat-maker (error messages) |
-| `node-crypto.js` | `createHash()` (sha256, sha512) | multiformats/hashes/sha2 (Node variant) |
+| `node-crypto.js` | `createHash()` (sha256, sha512) | multiformats/hashes/sha2 (Node variant), @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
 | `node-os.js` | `networkInterfaces()`, `platform()`, etc. | @libp2p/utils (network detection) |
 | `empty.js` | `net`, `tls` empty stubs | libp2p transitive imports — never reached at RN runtime, but must resolve so the bundle builds |
 
