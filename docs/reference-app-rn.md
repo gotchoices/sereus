@@ -247,7 +247,7 @@ These are configured in `metro.config.js` via `extraNodeModules` and map both `n
 | Module | Target | Source | Required by |
 |--------|--------|--------|-------------|
 | `os` / `node:os` | `packages/reference-app-rn/polyfills/node-os.js` | Custom shim (networkInterfaces, platform, type, hostname) | @libp2p/utils |
-| `crypto` / `node:crypto` | `packages/reference-app-rn/polyfills/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | multiformats/hashes/sha2 |
+| `crypto` / `node:crypto` | `packages/reference-app-rn/polyfills/node-crypto.js` | Custom shim — `createHash()` for SHA-256/SHA-512 via @noble/hashes | multiformats/hashes/sha2, @chainsafe/libp2p-noise crypto/index, @libp2p/crypto Node key modules (before the browser rewrite). *Not* cadre-core push — the FCM/APNs notifiers moved behind the Node-only `@serfab/cadre-core/push-node` subpath. |
 | `stream` / `node:stream` | `readable-stream` (npm) | Metro `extraNodeModules` | libp2p stream handling |
 | `buffer` / `node:buffer` | `buffer` (npm) | Metro `extraNodeModules` | libp2p, multiformats |
 | `net` / `node:net` | `packages/reference-app-rn/polyfills/empty.js` | Empty stub | libp2p transitive imports — never reached at RN runtime, but needs to resolve so the bundle builds |
@@ -322,18 +322,25 @@ const path = require('path');
 
 const config = getDefaultConfig(__dirname);
 
-// Resolve workspace roots for symlinked packages
+// Resolve workspace roots for symlinked packages. `fretRoot` is required because
+// @optimystic/db-p2p portals `p2p-fret` from the sibling ../Fret monorepo; Metro
+// must be allowed to follow that symlink out of the tree or a local release
+// bundle fails with "Unable to resolve module p2p-fret". On EAS the portal
+// resolutions are stripped and p2p-fret resolves from npm, so — like the
+// optimystic/quereus roots — this only matters for local bundling.
 const workspaceRoot = path.resolve(__dirname, '../..');
 const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
 const quereusRoot = path.resolve(__dirname, '../../../quereus');
+const fretRoot = path.resolve(__dirname, '../../../Fret');
 
-config.watchFolders = [workspaceRoot, optimysticRoot, quereusRoot];
+config.watchFolders = [workspaceRoot, optimysticRoot, quereusRoot, fretRoot];
 config.resolver.unstable_enableSymlinks = true;
 config.resolver.nodeModulesPaths = [
   path.resolve(__dirname, 'node_modules'),
   path.resolve(workspaceRoot, 'node_modules'),
   path.resolve(optimysticRoot, 'node_modules'),
   path.resolve(quereusRoot, 'node_modules'),
+  path.resolve(fretRoot, 'node_modules'),
 ];
 
 // Map Node.js built-ins to polyfills/npm packages

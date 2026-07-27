@@ -14,6 +14,10 @@ const config = getDefaultConfig(__dirname);
 // are stripped (see scripts/eas-build-pre-install.sh) and p2p-fret comes from
 // npm, so — exactly like optimystic/quereus — this sibling root only matters for
 // local bundling and is harmless when the directory is absent.
+// NOTE: local bundling now depends on three sibling monorepos (optimystic,
+// quereus, Fret) being present and portaled. If a fourth portaled sibling is ever
+// added to the graph, the local release bundle fails with "Unable to resolve
+// module <x>" until its root is added to watchFolders + nodeModulesPaths here.
 const workspaceRoot = path.resolve(__dirname, '../..');
 const optimysticRoot = path.resolve(__dirname, '../../../optimystic');
 const quereusRoot = path.resolve(__dirname, '../../../quereus');
