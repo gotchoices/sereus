@@ -13,6 +13,9 @@ const empty = resolve(here, 'src/shims/empty.ts');
 //
 // node:crypto / crypto are deliberately NOT aliased — anything reaching for
 // them in a browser bundle is a real bug we want surfaced, not papered over.
+// (cadre-core's FCM/APNs push senders used to import node:crypto; they now live
+// behind the Node-only '@serfab/cadre-core/push-node' subpath, so a `vite build`
+// resolves the whole graph with no node:crypto externalization from cadre-core.)
 export default defineConfig({
 	plugins: [svelte()],
 	resolve: {

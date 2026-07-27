@@ -195,7 +195,10 @@ which statically imports `@libp2p/tcp`; the existing `net`/`os`/`tls` aliases
 already cover its Node built-ins, and `tcp()` is never called (the app supplies
 an explicit transports array), so nothing TCP-related runs. **`node:crypto` /
 `crypto` are deliberately not aliased**: anything reaching for them in a browser
-bundle is a real bug we want surfaced.
+bundle is a real bug we want surfaced. (cadre-core's push notifiers formerly
+imported `node:crypto`; they now live behind the Node-only
+`@serfab/cadre-core/push-node` subpath, so a production `vite build` externalizes
+no `node:crypto` from cadre-core.)
 
 `src/polyfills.ts` handles the two residual gaps even modern browsers don't
 cover:
