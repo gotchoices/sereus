@@ -175,6 +175,49 @@ describe('registerMemberPeer', () => {
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
+  it('re-registering ONE of a member\'s peers skips only that peer (siblings + new peers unaffected)', async () => {
+    const { db, founder } = await openStrand('c');
+
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-phone' });
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-laptop' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(2);
+
+    // The existence guard scans this member's peers, so `peer-laptop` is among the
+    // rows it walks — an incorrect PeerId comparison would false-positive here.
+    await expect(
+      registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-phone' }),
+    ).resolves.toBeUndefined();
+    expect(await tableCount(db, 'MemberPeer')).toBe(2);
+
+    // A genuinely new PeerId under the same member still inserts.
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-tablet' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(3);
+  }, 30_000);
+
+  it('two different members may register the SAME PeerId (guard keys on MemberKey too)', async () => {
+    const { db, founder } = await openStrand('c');
+    const second = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: second.publicKeyB64 });
+
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-shared' });
+    // The second member's registration must NOT be skipped just because some other
+    // member already registered `peer-shared` — the guard re-checks MemberKey in JS.
+    await registerMemberPeer(db, { memberKeyPair: second, peerId: 'peer-shared' });
+
+    expect(await tableCount(db, 'MemberPeer')).toBe(2);
+    // Per-MemberKey counts (not a bare table count) prove a row landed for EACH member.
+    const founderPeers = await db.get(
+      'select count(1) as c from Strand.MemberPeer where MemberKey = ?',
+      [founder.publicKeyB64],
+    );
+    expect(founderPeers?.c).toBe(1);
+    const secondPeers = await db.get(
+      'select count(1) as c from Strand.MemberPeer where MemberKey = ?',
+      [second.publicKeyB64],
+    );
+    expect(secondPeers?.c).toBe(1);
+  }, 30_000);
+
   it('a non-founder member admitted by manager can register its own peer (count > 1 branch)', async () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();

@@ -478,11 +478,14 @@ export interface RegisterMemberPeerParams {
  * key can register peers for it. A deferred `MemberExists` additionally requires the
  * `Member` row to already exist, so a peer for a non-member is rejected at commit.
  *
- * Insert-if-absent on the composite PK `(MemberKey, PeerId)`: a re-register on
- * restart (or a redundant call) is a no-op. The platform DOES reject a duplicate-PK
- * insert, but a restart-safe re-register should succeed quietly rather than throw, so
- * the writer guards on existence instead of catching. A member may register multiple
- * DISTINCT `PeerId`s (multi-device); each is its own row under the same `MemberKey`.
+ * Insert-if-absent: a re-register on restart (or a redundant call) is a no-op. The
+ * platform DOES reject a duplicate-PK insert, but a restart-safe re-register should
+ * succeed quietly rather than throw, so the writer guards on existence instead of
+ * catching. The guard ({@link memberPeerExists}) scans the member's peers and compares
+ * both key columns in JavaScript rather than seeking the composite primary key — see
+ * its doc for why a full-PK point lookup is not reliable on a networked strand. A member
+ * may register multiple DISTINCT `PeerId`s (multi-device); each is its own row under the
+ * same `MemberKey`.
  *
  * Out of scope: peer DELETION. The schema's `MemberExists` reads `new.MemberKey`,
  * which is null on delete, so a `MemberPeer` delete is currently rejected by the
@@ -515,13 +518,43 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
   log('Registered MemberPeer (%s, %s)', memberKey, peerId);
 }
 
-/** True iff a `MemberPeer` row already exists for this `(MemberKey, PeerId)`. */
+/**
+ * True iff a `MemberPeer` row already exists for this `(MemberKey, PeerId)`.
+ *
+ * Deliberately does NOT filter on the full composite primary key. `MemberPeer`'s PK
+ * is `(MemberKey, PeerId)`, so a `where MemberKey = ? and PeerId = ?` predicate puts
+ * an equality on BOTH key columns — which the optimystic virtual-table module reports
+ * as fully handled and serves via a single-key point lookup (one `find` descent), with
+ * the SQL engine adding no filter of its own. On a networked strand that descent is not
+ * reliable: a miss returns zero rows for a row that provably exists, the guard answers
+ * `false`, and `registerMemberPeer` re-inserts a duplicate.
+ *
+ * Filtering on only the LEADING key column is a partial PK match, which the same module
+ * explicitly declines to handle — it falls through to a table scan and the SQL engine
+ * applies `MemberKey = ?` itself. No seek is involved, so no seek can miss. Both columns
+ * are then re-compared here in JavaScript, so correctness depends only on the scan
+ * returning a SUPERSET of the matching rows — the weakest possible assumption about the
+ * storage layer. The `where` clause is a size optimization, not a correctness dependency:
+ * a dropped or mis-applied predicate cannot produce a false positive (e.g. a different
+ * member that happens to have registered the same `PeerId`).
+ */
 async function memberPeerExists(db: Database, memberKey: string, peerId: string): Promise<boolean> {
+  // NOTE: this scans one member's peers per registerMemberPeer call. Fine at
+  // member × devices scale; if MemberPeer ever grows large per member, the fix is a
+  // reliable composite-key seek, not a bigger scan.
+  // NOTE: if a secondary index on MemberPeer.MemberKey is ever added, this query stops
+  // being a scan and becomes an index seek — re-introducing the seek dependency this
+  // shape exists to remove.
+  // NOTE: check-then-insert is not atomic. Two nodes registering the same
+  // (MemberKey, PeerId) concurrently can both observe "absent"; the primary key is the
+  // real backstop. This guard is for the sequential restart / re-register path.
   for await (const row of db.eval(
-    'select count(1) as Count from Strand.MemberPeer where MemberKey = ? and PeerId = ?',
-    [memberKey, peerId],
+    'select MemberKey, PeerId from Strand.MemberPeer where MemberKey = ?',
+    [memberKey],
   )) {
-    return ((row.Count as number) ?? 0) > 0;
+    if (row.MemberKey === memberKey && row.PeerId === peerId) {
+      return true;
+    }
   }
   return false;
 }

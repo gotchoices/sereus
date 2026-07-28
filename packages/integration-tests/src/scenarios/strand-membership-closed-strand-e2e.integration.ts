@@ -282,14 +282,23 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			const joinerPeerId = joinerStrand.libp2pNode!.peerId.toString();
 			await registerMemberPeer(founderDb, { memberKeyPair: joinerMember, peerId: joinerPeerId });
 			// Assert via a bare select (exactly one MemberPeer row exists at this point —
-			// the impostor reject below uses a distinct PeerId and runs AFTER this): the
-			// optimystic networked transactor does not reliably serve a full composite-PK
-			// (`where MemberKey = ? and PeerId = ?`) point lookup, so we read the singleton
-			// row directly rather than seeking it.
+			// the impostor reject below uses a distinct PeerId and runs AFTER this).
 			expect(await strandCount(founderDb, 'MemberPeer')).toBe(1);
 			const peerRow = await founderDb.get('select MemberKey, PeerId from Strand.MemberPeer');
 			expect(peerRow?.MemberKey).toBe(joinerMember.publicKeyB64);
 			expect(peerRow?.PeerId).toBe(joinerPeerId);
+
+			// Re-registering the same (MemberKey, PeerId) is a quiet no-op ON A NETWORKED
+			// STRAND — this is the case that used to duplicate. registerMemberPeer's
+			// existence guard scans the member's peers and compares both key columns in JS
+			// instead of seeking the composite PK, which the networked transactor does not
+			// reliably serve. Must run BEFORE the impostor insert below: per this file's
+			// rejection floor, a rejected write is only asserted to throw, so no count
+			// assertion is safe after one.
+			await expect(
+				registerMemberPeer(founderDb, { memberKeyPair: joinerMember, peerId: joinerPeerId }),
+			).resolves.toBeUndefined();
+			expect(await strandCount(founderDb, 'MemberPeer')).toBe(1);
 
 			// A peer insert for the joiner's key under a DIFFERENT signer is rejected
 			// (MemberPeer.Authorized verifies the self-signature against MemberKey itself).
