@@ -242,10 +242,26 @@ gossipsub` imports `StrictSign` / `StrictNoSign` / `TopicValidatorResult` and
 `@libp2p/autonat` imports `streamMessage` from versions of `@libp2p/interface` /
 `protons-runtime` that renamed them. Metro tolerates missing named exports;
 webpack treats them as hard errors for strict ESM. Downgrading to warnings makes
-the build reflect the same working-at-runtime reality as the RN app. This is the
-source of the bundle's ~22 warnings (4 distinct missing exports). Tracked for
-upstream resolution in `tickets/backlog/optimystic-db-p2p-libp2p-dep-skew.md`;
-resolving it upstream would let the NS app restore strict missing-export detection.
+the build reflect the same working-at-runtime reality as the RN app. The 22
+resulting warnings (4 distinct missing exports) are then allowlisted by message
+regex via `ignoreWarnings`, so a clean build reports **0 errors, 0 warnings** —
+and `scripts/bundle-check.js` treats any warning as fatal, which is what keeps a
+*new* missing export from slipping through the `'warn'` downgrade.
+
+Two independent causes, neither fixed by the (landed) upstream
+`optimystic-db-p2p-libp2p-dep-skew` dependency alignment:
+
+- `@nativescript/webpack`'s base config prepends this app's **absolute**
+  `node_modules` path to `resolve.modules`, so every bare specifier resolves
+  against it first — even imports originating inside
+  `../optimystic/packages/db-p2p/node_modules`, which has the correct nested
+  `protons-runtime@6` copy. The hoisted `protons-runtime@5.6.0` wins instead.
+- `@chainsafe/libp2p-gossipsub` (14.1.2, the latest published release as of
+  2026-07) still declares `@libp2p/interface@^2`, a different major than the
+  `^3.x` the rest of the stack uses. No `^3`-compatible release exists upstream.
+
+Removing the override today reintroduces all 22 as hard errors. Tracked in
+`tickets/backlog/debt-reference-app-ns-resolve-nested-libp2p-deps.md`.
 
 ## Testing Strategy
 
@@ -259,7 +275,8 @@ resolving it upstream would let the NS app restore strict missing-export detecti
 ### Bundle smoke (the agent-runnable gate)
 
 `scripts/bundle-check.js` runs the webpack compile and asserts the whole graph
-resolves. It is the only runtime-adjacent gate an agent or CI without an Android
+resolves with 0 errors **and 0 warnings** (see `exportsPresence: 'warn'` above for
+why warnings are fatal). It is the only runtime-adjacent gate an agent or CI without an Android
 device can run; everything that requires the native SQLite / WebSocket plugins is
 device-only. A green bundle proves resolution and parse, **not** execution.
 

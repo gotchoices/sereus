@@ -273,7 +273,8 @@ module.exports = (env) => {
 	// specific, known-benign cases (the names are never reached on the TCP-free
 	// browser-transport rn path), scoped to the exact upstream modules that
 	// renamed them. Any OTHER missing export — including a new one from these
-	// same modules — still surfaces as a warning, so this isn't a blanket mute.
+	// same modules — still surfaces as a warning, and scripts/bundle-check.js
+	// fails on any warning, so this isn't a blanket mute.
 	const SKEW_WARNINGS = [
 		// gossipsub vs @libp2p/interface
 		/export 'Strict(Sign|NoSign)' .*was not found in '@libp2p\/interface'/,
