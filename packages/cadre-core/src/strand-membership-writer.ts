@@ -605,14 +605,10 @@ export interface RemoveManagerParams {
  *
  * The caller selects the case purely by which keypair it passes — no branching here.
  *
- * KNOWN PLATFORM GAP (not fixable here): the optimystic bootstrap-mode transactor
- * evaluates deferred (subquery-bearing) CHECK constraints only on INSERT, not on
- * DELETE. `Manager.Authorized` is deferred, so the platform currently accepts ANY
- * `Manager` delete regardless of signature — `removeManager`'s authorization is
- * effectively unenforced at runtime until that gap is closed (filed as
- * `optimystic-deferred-check-not-enforced-on-delete`). This writer still builds the
- * correct, signed delete so it works unchanged once enforcement lands — exactly as
- * the invite path issues correct inserts despite the open PK-uniqueness gap.
+ * The optimystic bootstrap-mode transactor evaluates deferred (subquery-bearing)
+ * CHECK constraints on DELETE as well as INSERT, so `Manager.Authorized` — deferred —
+ * IS enforced here: a signer that is neither an existing manager nor the target
+ * itself is rejected at commit.
  *
  * KNOWN SCHEMA HAZARD (not guarded here): even with enforcement, `Manager.
  * Authorized`'s `(select count(1) from Manager) <= 1` bootstrap branch is true at

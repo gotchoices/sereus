@@ -19,13 +19,13 @@ import type { SAppConfig } from '../src/types.js';
 /**
  * Component coverage for the two remaining founder-reachable writers:
  * `MemberPeer` registration (a member binds its own network nodes, self-signed) and
- * `Manager` rotation (an existing manager promotes/removes admins, or an
+ * `Manager` rotation (an existing manager promotes/removes admins, or a
  * manager resigns itself). Every test runs against a REAL closed strand DB in
  * bootstrap mode (libp2p node + MemoryRawStorage + the optimystic local transactor)
  * via `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *
- * The founder is bootstrapped first (Member #1 + the sole founding Manager), so an
+ * The founder is bootstrapped first (Member #1 + the sole founding Manager), so a
  * manager add genuinely runs past the `count(Manager) <= 1` bootstrap branch
  * (at commit the new row makes the count ≥ 2), exercising signature verification.
  */
@@ -284,8 +284,8 @@ describe('removeManager', () => {
   it('a manager removes a DIFFERENT manager and leaves the other managers intact', async () => {
     const { db, founder } = await openStrand('c');
     // 3 managers total so removing one leaves 2 (≥ 2 after delete keeps the
-    // `count(Manager) <= 1` bootstrap branch false, so once delete enforcement
-    // lands this genuinely takes the existing-manager signature branch).
+    // `count(Manager) <= 1` bootstrap branch false, so this genuinely takes the
+    // existing-manager signature branch).
     const [a2, a3] = await addExtraManagers(db, founder, 2);
     expect(await tableCount(db, 'Manager')).toBe(3);
 
@@ -331,6 +331,29 @@ describe('removeManager', () => {
       removeManager(db, { byManagerKeyPair: notAManager, targetManagerKey: a2.publicKeyB64 }),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Manager')).toBe(3); // unchanged — nothing was removed
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('rejects a removal whose signature is over the wrong key (signature binding on delete)', async () => {
+    const { db, founder } = await openStrand('c');
+    const [a2] = await addExtraManagers(db, founder, 2);
+    const someOtherKey = freshKeyPair().publicKeyB64;
+    expect(await tableCount(db, 'Manager')).toBe(3);
+
+    // A real manager (founder) signs, but over a DIFFERENT key than the row being
+    // deleted, so verify(digest(old.MemberKey=a2), sig, founder) fails — the delete
+    // analog of the addManager signature-binding test.
+    const wrongSignature = signStrandPayload(someOtherKey, founder.privateKeyB64);
+
+    await expect(
+      db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, wrongSignature, a2.publicKeyB64],
+      ),
+    ).rejects.toThrow();
+    expect(await tableCount(db, 'Manager')).toBe(3);
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
   }, 30_000);
 });
