@@ -318,6 +318,7 @@ interface SeedAckMessage {
   - **TOFU (opt-in)**: an interactive confirmation callback invoked on first sight of an unknown signer key; off by default.
   - **Secure default**: a cold-start node with an empty `OwnerKey` table, no pinned keys, and no TOFU confirmation **rejects** the seed.
 - Owner identity is sourced from the `OwnerKey` table, **not** from the libp2p `peerId`. An Ed25519 PeerId embeds its public key, so each peer's ed25519 key is derived from its `PeerId` and a peer is marked `isOwner` iff that derived key is in `OwnerKey` — making multi-owner cadres representable and decoupling owner status from the transport identity.
+- **Node-local trusted-owner anchor** (`TrustedOwnerStore`, `trusted-owner-store.ts`): the replicated `OwnerKey` table itself cannot ultimately anchor trust — any connecting node can genesis-insert its own key into its local copy and that row replicates into every peer's table. Each node therefore also keeps a NON-replicated, per-party record of owner keys established out of band: founding genesis (`initializeSeedBootstrap` anchors the founder's own key), the invite's pinned `ownerKeys` at enrollment (`CadreNode.trustOwnerKeys` / `CadreNodeConfig.trustedOwners.pinnedKeys`), or operator pins (cadre-cli `--pin-owner-key` / `CADRE_OWNER_KEYS`). File-backed next to the identity key on Node hosts (`@serfab/cadre-core/trusted-owner-store-file`, same `node:fs` isolation as `key-store-file`), in-memory elsewhere. The authorized-membership predicate and the seed-trust `knownOwnerKeys` source are being repointed at this anchor (in-flight tickets); the replicated table remains the replication/`isOwner`-derivation mechanism, not a trust anchor.
 - A seed carries only peer-address hints (`peers[]`); warm-cache prepopulation with signed Optimystic log entries is deferred (see backlog `seed-warm-cache-prepopulation`)
 - **Receiver hardening (within-membership DoS):** even a membership-gated peer could misbehave, so the inbound handler bounds two resources. Each stream read runs under `seedReadTimeoutMs` (default 10s) — a peer that opens a stream and never half-closes its write end is aborted rather than awaited forever — and concurrent inbound seed streams are capped by `maxConcurrentSeeds` (default 100), over which a non-accepting ack is returned without applying a seed. The cap is per-service, not per-remote-peer. The shared read/frame primitives (`control-stream.ts`, also used by push-wake) own the timeout-and-abort logic.
 
@@ -507,7 +508,7 @@ sequenceDiagram
 
 Three independent consent/RBAC layers coexist; do not conflate them:
 
-1. **Control / cadre layer** (`CadreControl.*` in the shared control DB): `Strand`, `FormationInvite`/`FormationUsage`, `OwnerKey`, `CadrePeer`. Governs which cadre operates a strand and cadre-operator consent to *form* it. The control-layer `Strand.MemberPrivateKey` is the closed-strand read-gating secret; the `MemberKeyClosedOnly` CHECK enforces that it is null on an open strand (`Type='o'`), so only a closed strand (`Type='c'`) may carry one.
+1. **Control / cadre layer** (`CadreControl.*` in the shared control DB): `Strand`, `FormationInvite`/`FormationUsage`, `OwnerKey`, `CadrePeer`. Governs which cadre operates a strand and cadre-operator consent to *form* it. The control-layer `Strand.MemberPrivateKey` is the closed-strand read-gating secret; the `MemberKeyClosedOnly` CHECK enforces that it is null on an open strand (`Type='o'`), so only a closed strand (`Type='c'`) may carry one. It is stored **unencrypted** and replicated to every node of the party by design — see [Closed-strand member keys — accepted residual risk](#closed-strand-member-keys--accepted-residual-risk).
 2. **Strand RBAC layer** (`Strand.*` inside each strand DB, applied from `schemas/strand.qsql` by `composeStrand`): the authoritative per-strand membership/RBAC — `Header`, `Invite`/`ConsumedInvite`, `Member`, `MemberPeer`, `Manager`.
 3. **sApp layer** (`App.*`): application-data RBAC declared by the sApp schema, gated by its own `verify()`-bound CHECK constraints.
 
@@ -890,6 +891,43 @@ generation (logged, never logging key material).
   [Enrollment and Bootstrap](#enrollment-and-bootstrap)), receiving a fresh
   identity. The settings screen surfaces the node's **owner
   public key** (base64url) precisely so it can be shared for that (re-)pairing.
+
+#### Closed-strand member keys — accepted residual risk
+
+The KeyStore seam above covers the **node identity** (and the owner key derived
+from it). It deliberately does **not** cover the closed-strand
+`Strand.MemberPrivateKey`, which stays **plaintext in the control database**
+(`control-schema.ts`, `schemas/control.qsql`; minted by `generateStrandMemberKey`,
+delivered to the initiator in `FormationProvisionResult.memberPrivateKey`).
+
+This is a recorded threat-model decision (2026-07), not an oversight:
+
+- **Why plaintext.** The control DB is an Optimystic database replicated to *all
+  of a party's own cadre nodes*. That replication is what makes cadre nodes
+  **fungible** for closed strands — any node holds the member key, so any node can
+  serve or participate in the strand, including nodes added to the cadre after the
+  strand exists. There is no cadre-wide shared-secret infrastructure today; the
+  `KeyStore` seam and its RN secure-store backend are strictly **per-device**.
+- **Residual risk accepted.** A stolen/rooted device exposes the member private
+  keys of every closed strand in that party's control DB, granting the attacker
+  read access to those strands as that member.
+- **Why acceptable for now.** The exposure is bounded by the same app-storage
+  boundary (mobile LevelDB) that already holds the rest of the control DB's strand
+  data, so protecting only this column is partial hardening. The
+  higher-value, hard-to-rotate keys (peer identity + derived owner/authority) are
+  already enclave-protected. Member keys are per-strand, intentionally replicated,
+  and rotatable by re-forming the strand.
+- **What would change the call.** Any hardening that preserves fungibility
+  (envelope-encrypting the column under a per-cadre key held in each node's
+  enclave) first requires **cadre-wide secret distribution** — provisioning one
+  key into every node's enclave, including late joiners — which does not exist and
+  has no second consumer yet. Revisit when either a second consumer appears for
+  cadre-wide secrets, or the threat model changes (e.g. shipping to devices where
+  app-storage compromise is expected). Alternatives that bind a strand to one
+  device's enclave were rejected: they break node fungibility.
+
+See [`docs/strands.md`](strands.md#closed-strand-member-key-handling) for the
+same decision in strand terms.
 
 ### Strand Instance State
 

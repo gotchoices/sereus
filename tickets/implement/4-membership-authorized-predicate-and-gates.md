@@ -42,6 +42,16 @@ ticket 1, so they inherit the real check with no further wiring. Address resolut
 
 ## Test rework — model real enrollment
 
+> **Precondition (2026-07-27): the two-node integration scenarios are RED at HEAD for an
+> unrelated reason.** `control-db-two-node-convergence`, `strand-membership-closed-strand-e2e`,
+> and the `quereus-plugin-sereus` `networked.e2e` suite fail 6/6 runs with
+> `membership-not-admitted:low-confidence-downsize`: optimystic's newer member-side admission
+> gate (`../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts` `admitMembership`) rejects a
+> cohort smaller than the configured `clusterSize`, and Sereus hardcodes `clusterSize: 3` while
+> these scenarios boot 2 nodes. Tracked in `blocked/control-db-convergence-optimystic-p2p`
+> (awaiting a human A/B call). Do **not** treat those reds as caused by this ticket, and do not
+> "fix" them by changing the production `clusterSize` call sites.
+
 The predicate change means "a reader trusts an authority it never pinned" is no longer
 true, which is exactly the leak we are closing. Several cross-node scenarios currently
 assert a reader's `isMember`/wake passes off a *replicated* authority it never pinned;

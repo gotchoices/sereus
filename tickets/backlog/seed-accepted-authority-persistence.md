@@ -3,6 +3,14 @@ description: Persist cold-start-accepted authority keys and apply seed transacti
 files: packages/cadre-core/src/seed-bootstrap.ts, packages/cadre-core/src/control-database.ts, schemas/control.qsql
 ----
 
+> **Largely superseded — delete once the membership chain lands.** Its node-local pinned-trust
+> store is being built by `implement/3-membership-node-local-authority-anchor`, and its
+> DB-anchored-trust premise is exactly the hole `implement/5-seed-trust-anchor-from-local-store`
+> closes (the replicated owner-key table is pollutable by any peer that connects). What may
+> survive: applying the seed's transactions to warm the cache — overlapping
+> `backlog/later/seed-warm-cache-prepopulation`. Re-read this ticket after ticket 5 completes
+> and either delete it or reduce it to the residue.
+
 After `seed-trust-policy-and-authority-identity` lands, a cold-start node (empty `AuthorityKey` table) can only accept a seed when the signer key is supplied out-of-band as a pinned key (via `CadreInvite.authorityKeys` or operator config), or via opt-in TOFU. The accepted key is **not** persisted, so every subsequent seed on a not-yet-fully-synced node still needs the pinned anchor — it never transitions to the DB-anchored steady state on its own.
 
 Two related gaps, both deliberately deferred from the trust-policy ticket:

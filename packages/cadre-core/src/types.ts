@@ -4,6 +4,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
+import type { TrustedOwnerStore } from './trusted-owner-store.js';
 import type { PushNotifier } from './push-notifier.js';
 
 /**
@@ -307,6 +308,38 @@ export interface CadreNodeConfig {
    * from a CadreInvite).
    */
   seedTrustPolicy?: SeedTrustPolicy;
+
+  /**
+   * Node-local trusted-owner anchor (see `trusted-owner-store.ts`): the
+   * NON-replicated, per-party record of owner keys established out of band —
+   * the anchor membership/seed trust can rest on, since the replicated
+   * `OwnerKey` table can be polluted by a stranger's self-genesis. Absent ⇒ an
+   * in-memory store is created at start() (ephemeral: anchored trust does not
+   * survive the process).
+   */
+  trustedOwners?: {
+    /**
+     * Injected store instance — e.g. a `FileTrustedOwnerStore` from the
+     * Node-only subpath `@serfab/cadre-core/trusted-owner-store-file`,
+     * persisted next to the identity key (same injection/isolation pattern as
+     * {@link keyStore}). Its `partyId` must match `controlNetwork.partyId`;
+     * start() fails closed on a mismatch.
+     */
+    store?: TrustedOwnerStore;
+    /**
+     * Owner keys (base64url ed25519) established out of band and seeded into
+     * the store during start(): operator pins (e.g. cadre-cli
+     * `--pin-owner-key` / `CADRE_OWNER_KEYS`) or a `CadreInvite.ownerKeys`
+     * already known at config time. Seeding is idempotent across restarts.
+     */
+    pinnedKeys?: string[];
+    /**
+     * Provenance recorded for {@link pinnedKeys}. Default: 'operator'.
+     * ('genesis' is reserved for the node's own founding key, seeded
+     * internally by `initializeSeedBootstrap`.)
+     */
+    pinnedSource?: 'invite' | 'operator';
+  };
 
   /**
    * Platform push-delivery for suspended mobile peers. When present, the node's

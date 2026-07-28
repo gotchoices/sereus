@@ -279,8 +279,10 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
   // Load private key if specified. The protobuf identity (installer-written
   // `identity.key`) takes precedence, then a raw/hex key file, then inline hex.
   let privateKey: PrivateKey | undefined;
+  let identityProtobufKeyFile: string | undefined;
   if (fileConfig.identity?.protobufKeyFile) {
     privateKey = loadProtobufPrivateKey(fileConfig.identity.protobufKeyFile);
+    identityProtobufKeyFile = fileConfig.identity.protobufKeyFile;
   } else if (fileConfig.identity?.keyFile) {
     privateKey = decodePrivateKey(await loadPrivateKey(fileConfig.identity.keyFile));
   } else if (fileConfig.identity?.privateKeyHex) {
@@ -289,6 +291,7 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
 
   return {
     privateKey,
+    identityProtobufKeyFile,
     controlNetwork: fileConfig.controlNetwork,
     profile: fileConfig.profile,
     strandFilter: parseStrandFilter(fileConfig.strandFilter),

@@ -91,3 +91,50 @@ _(TODO: not yet documented here. See the strand-formation and seed-bootstrap cov
 ## Inviting Parties
 
 _(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
+
+## Closed-Strand Member Key Handling
+
+A closed strand's read-gating secret is the control-layer `Strand.MemberPrivateKey`
+(an Ed25519 key minted by `generateStrandMemberKey`; the founding `Member`/`Manager`
+keys derive from it). It is held **unencrypted** in the party's control database,
+which Optimystic replicates to **every node the party owns**.
+
+**That replication is the point.** It is what makes a party's cadre nodes
+*fungible* for closed strands: any node has the member key, so any node can serve
+or participate in the strand — including a node added to the cadre long after the
+strand was formed, and a node that comes up headless (push-woken, background
+runner) with no user present to unlock anything. Formation likewise puts the raw
+key on the wire (`FormationProvisionResult.memberPrivateKey`, disclosed only after
+token + disclosure validation) and the initiator records it into its own control DB.
+
+**Accepted residual risk (decided 2026-07).** A compromised device — stolen phone,
+rooted OS, app-storage extraction — leaks the member private key of every closed
+strand that party belongs to, giving the attacker that member's read access. The
+team explicitly accepts this for now rather than hardening, because:
+
+- the key sits behind the same app-storage boundary (mobile LevelDB) as the rest of
+  the control DB's strand data, so encrypting only this column is partial hardening;
+- the keys that are hard to rotate and single-point-of-compromise — the node's
+  libp2p peer identity and the owner key derived from it — are **already** in the
+  platform enclave via the `KeyStore` seam;
+- member keys are per-strand, intentionally replicated, and rotatable by re-forming
+  the strand;
+- every fungibility-preserving fix (envelope-encrypting the column under a
+  per-cadre key in each node's enclave) requires **cadre-wide secret distribution**
+  — one shared key provisioned into every node's enclave, late joiners included —
+  which does not exist and currently has no second consumer to justify building it.
+
+Options that bind a strand's key to a single device's enclave (or to a chosen
+quorum of nodes) were considered and rejected: they trade away node fungibility and
+re-open the "how does a late-joining node serve this strand" question that
+plaintext replication answers for free.
+
+**Revisit when** a second consumer for cadre-wide secrets appears (making the
+distribution build worth its cost), or the deployment threat model changes such
+that app-storage compromise must be survived. At that point the open questions are:
+late-joiner provisioning, envelope-key rotation across the replicated DB,
+fail-closed behavior when a node's enclave slot is wiped (biometric invalidation /
+Android reinstall), mixed-platform cadres (Node `FileKeyStore` + RN secure store),
+and migrating existing plaintext rows.
+
+Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Seam](architecture.md#node-key-material--the-keystore-seam).

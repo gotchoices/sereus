@@ -1,4 +1,4 @@
-priority: 4
+----
 description: Optional local-UI / HTTP entry path for cadre-host push (FCM/APNs) credentials. The CLI (`cadre-host push {fcm,apns,options,status,clear}`) already provisions credentials directly on disk; this is a convenience surface so an operator can configure push from the running manager's local UI instead of the shell. Future concern — not blocking; the CLI fully satisfies the entry-path requirement today.
 files: packages/cadre-host/src/bin/host.ts, packages/cadre-host/src/push/index.ts, packages/cadre-host/src/server/server.ts, packages/cadre-host/src/server/settings-store.ts, packages/cadre-host/src/installer/config.ts
 ----

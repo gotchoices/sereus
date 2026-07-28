@@ -101,6 +101,12 @@ export const ENV_MAPPINGS = {
  */
 export interface ResolvedConfig {
   privateKey?: PrivateKey;
+  /**
+   * The `identity.protobufKeyFile` path the private key was loaded from, when
+   * that source won. Surfaced so node-local persistent state (the trusted-owner
+   * anchor) can live in the same directory as the identity key.
+   */
+  identityProtobufKeyFile?: string;
   controlNetwork: {
     partyId: string;
     bootstrapNodes: string[];

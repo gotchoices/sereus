@@ -286,6 +286,12 @@ export function useCadreInternal(): UseCadreResult {
     const trustPolicy = pinnedOwnerKeys?.length
       ? pinnedKeyTrustPolicy(pinnedOwnerKeys)
       : undefined;
+    if (pinnedOwnerKeys?.length) {
+      // Enrollment seam: the invite's owner keys are out-of-band trust — anchor
+      // them in the node-local trusted-owner store BEFORE the seed is applied,
+      // so the anchor already holds them when membership/seed trust consults it.
+      await current.trustOwnerKeys(pinnedOwnerKeys, 'invite');
+    }
     const result = await current.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
     if (!result.success) {
       throw new Error(result.error ?? 'Seed application failed');

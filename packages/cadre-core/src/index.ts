@@ -26,6 +26,18 @@ export {
   type KeyId
 } from './key-store.js';
 
+// Node-local trusted-owner anchor: the NON-replicated, per-party record of
+// out-of-band-established owner keys (the trust anchor the replicated OwnerKey
+// table cannot be). Cross-platform: interface + in-memory store only — the
+// file-backed store is the Node-only subpath
+// '@serfab/cadre-core/trusted-owner-store-file' (same isolation as
+// key-store-file) so node:fs never lands in this graph.
+export {
+  MemoryTrustedOwnerStore,
+  type TrustedOwnerStore,
+  type TrustSource
+} from './trusted-owner-store.js';
+
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
 

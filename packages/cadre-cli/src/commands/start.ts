@@ -1,4 +1,5 @@
 import { writeFileSync } from 'node:fs';
+import { dirname } from 'node:path';
 import { Command } from 'commander';
 import debug from 'debug';
 import {
@@ -11,6 +12,7 @@ import {
   type StorageConfig,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
+import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { fromString } from 'uint8arrays';
@@ -137,8 +139,24 @@ export const startCommand = new Command('start')
         console.log(`✓ Pinned ${pinnedKeys.length} owner key(s) for cold-start seed trust`);
       }
 
+      // Node-local trusted-owner anchor: file-backed next to the protobuf
+      // identity key when one is configured (so anchored trust survives
+      // restarts), else CadreNode falls back to an in-memory store. The
+      // operator pins above seed it either way (source 'operator').
+      const trustedOwnerStore = config.identityProtobufKeyFile
+        ? await FileTrustedOwnerStore.open(
+            dirname(config.identityProtobufKeyFile),
+            config.controlNetwork.partyId,
+          )
+        : undefined;
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
+        trustedOwners: {
+          ...(trustedOwnerStore ? { store: trustedOwnerStore } : {}),
+          pinnedKeys,
+          pinnedSource: 'operator',
+        },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         strandFilter: config.strandFilter,

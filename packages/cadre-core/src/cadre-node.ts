@@ -34,8 +34,9 @@ import type {
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
-import { ed25519KeyPairFromLibp2p, type Ed25519KeyPair } from './ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
+import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
   signPeerRecord,
@@ -114,6 +115,15 @@ export class CadreNode implements SAppIdLookup {
    * launch) reads this resolved field, never `config.privateKey` directly.
    */
   private identityKey: PrivateKey | undefined;
+  /**
+   * Node-local, NON-replicated trusted-owner anchor (see
+   * `trusted-owner-store.ts`). Constructed (or adopted from
+   * `config.trustedOwners.store`) by {@link initializeTrustedOwnerStore} during
+   * {@link start}; deliberately NOT cleared by {@link cleanup}, so an in-memory
+   * anchor survives a stop()→start() cycle of the same node instance. Never
+   * sourced from replicated control state.
+   */
+  private trustedOwnerStore: TrustedOwnerStore | null = null;
   private controlNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
   private strandWatcher: StrandWatcher | null = null;
@@ -393,6 +403,12 @@ export class CadreNode implements SAppIdLookup {
       // store fails closed before a node is created.
       await this.resolveIdentityKey();
 
+      // Bring up the node-local trusted-owner anchor (and seed config pins)
+      // before any network bring-up: a mis-scoped injected store fails closed
+      // here, and out-of-band pins are anchored before the first seed/peer
+      // interaction could consult them.
+      await this.initializeTrustedOwnerStore();
+
       // Create the control network libp2p node
       let t0 = performance.now();
       this.controlNode = await this.createControlNode();
@@ -615,6 +631,62 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     // Neither configured: libp2p generates an ephemeral key internally.
+  }
+
+  /**
+   * Construct (or adopt) the node-local trusted-owner anchor and seed the
+   * out-of-band pinned keys from `config.trustedOwners`. The store is NEVER
+   * sourced from the replicated control DB — its entries come only from
+   * genesis self-trust ({@link initializeSeedBootstrap}), config pins (here),
+   * or runtime enrollment pins ({@link trustOwnerKeys}).
+   *
+   * Idempotent across stop()→start(): the store instance is kept, and
+   * re-seeding config pins is a no-op ({@link TrustedOwnerStore.trust} is
+   * idempotent). An injected store scoped to a different party is a
+   * configuration error (fail closed before any network bring-up).
+   */
+  private async initializeTrustedOwnerStore(): Promise<void> {
+    const { trustedOwners } = this.config;
+    const partyId = this.config.controlNetwork.partyId;
+    if (!this.trustedOwnerStore) {
+      const store = trustedOwners?.store ?? new MemoryTrustedOwnerStore(partyId);
+      if (store.partyId !== partyId) {
+        throw new Error(
+          `CadreNodeConfig: trustedOwners.store is scoped to party ${store.partyId}, ` +
+          `but this node serves party ${partyId} — refusing to mix trust anchors`
+        );
+      }
+      this.trustedOwnerStore = store;
+    }
+    for (const key of trustedOwners?.pinnedKeys ?? []) {
+      await this.trustedOwnerStore.trust(key, trustedOwners?.pinnedSource ?? 'operator');
+    }
+  }
+
+  /**
+   * The node-local trusted-owner anchor (null before {@link start}). This is
+   * the set the authorized-membership predicate and seed-trust anchor consult —
+   * never the replicated `OwnerKey` table, which any stranger can pollute.
+   */
+  getTrustedOwnerStore(): TrustedOwnerStore | null {
+    return this.trustedOwnerStore;
+  }
+
+  /**
+   * Persist out-of-band-established owner keys into the node-local anchor —
+   * the runtime enrollment seam: call with `CadreInvite.ownerKeys` when
+   * redeeming an invite (BEFORE the first `applySeed`, so the anchor already
+   * holds the pins when seed trust consults it), or with an operator-supplied
+   * pin. Idempotent. ('genesis' provenance is reserved for the node's own
+   * founding key, seeded internally by {@link initializeSeedBootstrap}.)
+   */
+  async trustOwnerKeys(keys: Iterable<string>, source: Exclude<TrustSource, 'genesis'>): Promise<void> {
+    if (!this.trustedOwnerStore) {
+      throw new Error('CadreNode must be started before trusting owner keys');
+    }
+    for (const key of keys) {
+      await this.trustedOwnerStore.trust(key, source);
+    }
   }
 
   private async createControlNode(): Promise<Libp2p> {
@@ -2494,6 +2566,24 @@ export class CadreNode implements SAppIdLookup {
   initializeSeedBootstrap(ownerPrivateKey: string): void {
     if (!this.controlNode || !this.controlDatabase) {
       throw new Error('CadreNode must be started before initializing seed bootstrap');
+    }
+
+    // A node wiring seed-bootstrap with an owner PRIVATE key is declaring that
+    // key an authority of its own party (founder genesis / self-signing owner)
+    // — anchor it in the node-local store. The in-memory set updates
+    // synchronously (see TrustedOwnerStore.trust); only the file persist is
+    // fire-and-forget, logged on failure.
+    // NOTE: non-founder members that also wire seed-bootstrap with their own
+    // derived key (e.g. the phone joiner path in runOwnerGenesis, which needs
+    // it to self-publish its CadrePeer row) self-anchor a key that is not a
+    // party authority. Harmless today — the store never replicates and a node
+    // trusting itself grants nothing to others — but if 'genesis' entries ever
+    // feed cross-node decisions, gate this on the actual OwnerKey genesis
+    // insert instead.
+    if (this.trustedOwnerStore) {
+      void this.trustedOwnerStore
+        .trust(ed25519PublicKeyFromPrivate(ownerPrivateKey), 'genesis')
+        .catch((error) => log('Trusted-owner genesis anchor persist failed: %o', error));
     }
 
     this.seedBootstrapService = new SeedBootstrapService({

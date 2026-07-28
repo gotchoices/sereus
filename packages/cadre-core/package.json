@@ -24,6 +24,10 @@
       "types": "./dist/key-store-file.d.ts",
       "import": "./dist/key-store-file.js"
     },
+    "./trusted-owner-store-file": {
+      "types": "./dist/trusted-owner-store-file.d.ts",
+      "import": "./dist/trusted-owner-store-file.js"
+    },
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"
