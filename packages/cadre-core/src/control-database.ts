@@ -914,6 +914,61 @@ export class ControlDatabase {
     return 0;
   }
 
+  /**
+   * Is any `FormationInvite` row still redeemable — unexpired AND with usage
+   * below its `TotalUses`? A null `ExpiresAt` never expires and a null
+   * `TotalUses` is unlimited, matching {@link ControlFormationUsageRecorder}'s
+   * per-token semantics (`isTokenValid` / `isTokenUsed`).
+   *
+   * Answers the control-network connection gate's coarse "does this node expect
+   * a stranger?" question, which has no token to ask about. The expiry
+   * comparison is `expiresAtMs <= now` — identical to `isTokenValid`'s — so an
+   * invite the formation handler would reject can never hold the gate open.
+   *
+   * The scan is deliberately not pushed into SQL: nothing else here compares a
+   * stored `datetime` with an inequality, so the parse stays in JS via
+   * {@link parseStoredDatetimeMs} (same NaN→null guard as
+   * {@link queryFormationInvite}). Only invites that are unexpired AND
+   * use-metered cost a {@link countFormationUsage} read.
+   */
+  async hasOutstandingFormationInvite(nowMs: number = Date.now()): Promise<boolean> {
+    this.ensureInitialized();
+    // NOTE: scans every FormationInvite row (expired ones included) on the
+    // stranger path of an inbound connection. Cadre-scale invite counts make
+    // that free today; if a long-lived cadre accumulates thousands of expired
+    // invites and inbound upgrades slow down, add an expiry-ordered index or
+    // prune redeemed/expired rows.
+    const metered: Array<{ token: string; totalUses: number }> = [];
+    let unlimitedOutstanding = false;
+    for await (const row of this.db!.eval(
+      'select Token, ExpiresAt, TotalUses from CadreControl.FormationInvite'
+    )) {
+      const expiresAt = row.ExpiresAt as string | number | null;
+      const parsed = expiresAt === null || expiresAt === undefined
+        ? null
+        : parseStoredDatetimeMs(expiresAt);
+      const expiresAtMs = parsed !== null && Number.isNaN(parsed) ? null : parsed;
+      if (expiresAtMs !== null && expiresAtMs <= nowMs) {
+        continue;
+      }
+      const totalUses = (row.TotalUses as number | null) ?? null;
+      if (totalUses === null) {
+        unlimitedOutstanding = true;
+      } else {
+        metered.push({ token: row.Token as string, totalUses });
+      }
+    }
+    if (unlimitedOutstanding) {
+      return true;
+    }
+    for (const invite of metered) {
+      if (await this.countFormationUsage(invite.token) < invite.totalUses) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   /** Next `UseNumber` for a token = max(existing)+1, per the `Monotonic` constraint. */
   private async nextUseNumber(token: string): Promise<number> {
     for await (const row of this.db!.eval(

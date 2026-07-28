@@ -704,8 +704,8 @@ node is fully established (non-empty node-local anchor AND ≥1 authorized membe
 longer even in the conversation. It admits (fail-open, deferring to the fail-closed stream gates)
 during every legitimate stranger path: an un-enrolled node (empty anchor / empty authorized set —
 the seed-delivery and replication cold starts), an open enrollment window (`createInvite` opens it
-for the invite's validity, `openEnrollmentWindow` for out-of-band flows), a registered
-strand-formation responder (stranger-serving by design), and the configured bootstrap/relay
+for the invite's validity, `openEnrollmentWindow` for out-of-band flows), an outstanding open
+invitation (cross-party formation is stranger-serving by design), and the configured bootstrap/relay
 infrastructure peers. The stranger-open protocol allowlist (seed + formation, each with its own
 in-protocol trust check) is documented in one place in that module. Outbound dials are never gated
 (`resolvePeerAddrs`' trust policy already gates what gets dialed). Strand cohort nodes do NOT get
@@ -722,9 +722,24 @@ strand-formation responder is registered" is a process-lifetime condition — on
 service, `formStrand` opens it on the initiator side that never needs inbound strangers, and
 `reference-app-rn` registers the responder during node bring-up. So on the phone reference app the
 connection gate denies nobody, and the web app's gate opens permanently after the first formation
-action. Nothing is unsafe (steps 4–5 still hold), but the defense-in-depth layer buys nothing on the
-primary client until the exemption tracks *an unexpired open invitation outstanding* rather than
-*capability to serve one* — `plan/narrow-formation-stranger-carveout`. The review also bounded the
+action. Nothing is unsafe (steps 4–5 still hold), but the defense-in-depth layer bought nothing on
+the primary client. **Narrowed (2026-07-28, `narrow-formation-stranger-carveout`):** the exemption
+now tracks *an unexpired, not-fully-consumed open invitation outstanding* rather than *capability to
+serve one*. `StrandSolicitationService.hasOutstandingInvitation` answers from an in-memory registry
+of tokens this process minted/published (pruned on expiry and on observed consumption) and, when the
+registry is dry, from the usage recorder's optional durable scan
+(`ControlDatabase.hasOutstandingFormationInvite` — unexpired AND usage below `TotalUses`, matching
+`isTokenValid`/`isTokenUsed` semantics exactly, so a token the handler would reject cannot hold the
+gate open). The check moved to the END of the admission chain, after the authorized-member reads, so
+only a peer already on the deny path pays for it, and it catches its own errors (fail-open). Eager
+`initializeFormationResponder` on the phone and `formStrand`'s lazy service on an initiator now both
+leave the gate armed. Two accepted caveats, both self-healing: the registry dies with the process
+(after a restart only persisted `FormationInvite` rows hold the exemption — re-mint otherwise, same
+story as the enrollment window), and a peer whose invite row has not replicated to this node yet is
+denied even though the handler would have accepted it. A never-expiring invite (`ExpiresAt` null)
+holds the exemption open indefinitely by design — unlike "a responder object exists", that is an
+explicit, owner-signed, single-purpose statement, and both reference apps pass an expiry. The review
+also bounded the
 admission decision (`ADMISSION_DECISION_TIMEOUT_MS`, 2s → admit): libp2p awaits
 `denyInboundEncryptedConnection` **without** racing its inbound-upgrade timeout, so an unbounded
 control-DB read there could wedge an inbound upgrade permanently and hold its connection-manager

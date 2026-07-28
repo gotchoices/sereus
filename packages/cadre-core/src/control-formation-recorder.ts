@@ -71,6 +71,16 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }
 
   /**
+   * Any `FormationInvite` row still unexpired and not fully consumed — the
+   * durable half of the control-network connection gate's "does this node
+   * expect a stranger?" question. Survives a restart and sees invites
+   * replicated in from sibling nodes of the same cadre.
+   */
+  async hasOutstandingInvitation(): Promise<boolean> {
+    return await this.controlDatabase.hasOutstandingFormationInvite();
+  }
+
+  /**
    * Record consent against an **already-existing** host strand (record-only): the
    * single `FormationUsage` insert auto-commits and the deferred `StrandExists`
    * CHECK is satisfied by the pre-existing strand. This is the provision-then-record

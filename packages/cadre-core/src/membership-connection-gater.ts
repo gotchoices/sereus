@@ -25,14 +25,18 @@
  *    opens). The handler's own trust decision is the anchored seed-trust policy.
  *  - `/sereus/formation/1.0.0` ({@link FORMATION_PROTOCOL}) — cross-party
  *    strand formation via open invitations. Stranger-facing BY DESIGN: the
- *    initiator is another party. Registering the formation responder
- *    (`CadreNode.initializeStrandSolicitation`) therefore marks the node
- *    stranger-serving and suspends stranger denial; the handler's own trust
- *    decision is the invitation token check. That suspension is currently
- *    process-lifetime and unconditional — `reference-app-rn` registers the
- *    responder at node bring-up, so the connection gate is inert there.
- *    Narrowing it to "an unexpired open invitation is outstanding" is
- *    `tickets/plan/narrow-formation-stranger-carveout`.
+ *    initiator is another party, and its token is only checkable inside the
+ *    protocol. The exemption is therefore keyed on EXPECTATION of a stranger,
+ *    not capability to serve one: stranger denial is suspended only while this
+ *    node has at least one UNEXPIRED, NOT-FULLY-CONSUMED open invitation
+ *    outstanding (`StrandSolicitationService.hasOutstandingInvitation` — the
+ *    tokens this process minted or published, plus any still-redeemable
+ *    `FormationInvite` row the usage recorder can see). Merely registering the
+ *    responder (`CadreNode.initializeStrandSolicitation`) does NOT suspend it,
+ *    so an app that registers eagerly at node bring-up keeps a live gate. The
+ *    handler's own trust decision remains the per-token check, which is
+ *    strictly finer than this one: a peer admitted here can still be rejected
+ *    in-protocol for a bogus or spent token.
  *
  * Everything else a control node handles — the Optimystic control-DB protocols
  * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), wake

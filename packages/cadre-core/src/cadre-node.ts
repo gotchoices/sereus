@@ -772,23 +772,35 @@ export class CadreNode implements SAppIdLookup {
    *     no basis to judge anyone and MUST accept its enrollment seed;
    *  3. an enrollment window is open ({@link openEnrollmentWindow}, opened by
    *     {@link createInvite}) — the invitee dials in before it is authorized;
-   *  4. the strand-formation responder is registered
-   *     ({@link initializeStrandSolicitation}) — a formation initiator is
-   *     another party's peer by design, and open invitations are validated by
-   *     token inside the protocol, not knowable here. **This exemption is far
-   *     wider than it should be**: it holds for the rest of the process (only
-   *     `stop()` clears the service), `formStrand` opens it on the initiator
-   *     side that needs no inbound stranger at all, and `reference-app-rn`
-   *     registers the responder during node bring-up — so on that client the
-   *     gate never denies anyone. Narrowing it to "an unexpired open invitation
-   *     is outstanding" is `tickets/plan/narrow-formation-stranger-carveout`;
-   *  5. the peer is one of the configured control bootstrap/relay nodes —
+   *  4. the peer is one of the configured control bootstrap/relay nodes —
    *     infrastructure, not cadre members;
-   *  6. the authorized-member set is empty — cold start: the rows that would
-   *     authorize anyone arrive by replication over these very connections; or
-   *  7. the peer IS an authorized member.
+   *  5. the authorized-member set is empty — cold start: the rows that would
+   *     authorize anyone arrive by replication over these very connections;
+   *  6. the peer IS an authorized member; or
+   *  7. an open invitation is OUTSTANDING — at least one unexpired,
+   *     not-fully-consumed invitation this node minted or persisted (see
+   *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
+   *     initiator is another party's peer by design and its token is only
+   *     checkable inside the protocol, so the gate asks the coarser question
+   *     "does this node expect a stranger at all?". Merely REGISTERING the
+   *     responder ({@link initializeStrandSolicitation}) no longer suspends
+   *     stranger denial — eager registration (as `reference-app-rn` does at
+   *     bring-up) and `formStrand`'s lazy initialization both leave the gate
+   *     armed, because neither mints an invitation.
    *
-   * NOTE: check 6/7 runs a control-DB read per inbound connection
+   * Ordering is semantically free (the checks are OR'd) but decides who pays:
+   * checks 1-4 are in-memory, 5/6 share one control-DB read, and only a peer
+   * already on the deny path reaches check 7's invitation lookup.
+   *
+   * Caveats of check 7, both self-healing:
+   *  - the in-memory mint registry dies with the process, so after a restart
+   *    only invitations persisted as `FormationInvite` rows still hold the
+   *    exemption open (re-mint otherwise — same story as the enrollment window);
+   *  - a peer holding a token whose `FormationInvite` row has not replicated to
+   *    this node yet is denied even though the formation handler would have
+   *    accepted it, exactly like the unreplicated-membership-row case below.
+   *
+   * NOTE: check 5/6 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, but if
    * inbound upgrade latency ever shows up here, memoize the authorized set
    * briefly. NOTE: a sibling whose membership row has not yet replicated to
@@ -806,9 +818,6 @@ export class CadreNode implements SAppIdLookup {
     if (Date.now() < this.enrollmentWindowUntil) {
       return true;
     }
-    if (this.strandSolicitationService) {
-      return true;
-    }
     if (this.getBootstrapPeerIds().has(remotePeerId)) {
       return true;
     }
@@ -817,6 +826,14 @@ export class CadreNode implements SAppIdLookup {
       return true;
     }
     if (authorized.some((m) => m.peerId === remotePeerId)) {
+      return true;
+    }
+    try {
+      if (await this.strandSolicitationService?.hasOutstandingInvitation()) {
+        return true;
+      }
+    } catch (error) {
+      log('admitInboundControlConnection: outstanding-invitation check threw for %s — admitting (fail-open): %o', remotePeerId, error);
       return true;
     }
     log('admitInboundControlConnection: DENYING inbound from %s — not an authorized member and no enrollment path open', remotePeerId);
@@ -2385,6 +2402,13 @@ export class CadreNode implements SAppIdLookup {
     const signMessage = (message: Uint8Array): string =>
       sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
     await this.controlDatabase.insertFormationInvite(token, sAppId, signingKey.publicKeyB64, signMessage, options);
+    // A host may publish an invite whose token was minted elsewhere; registering
+    // it locally opens the connection gate's formation exemption immediately
+    // rather than waiting for the durable row to become readable.
+    this.strandSolicitationService?.registerMintedInvitation(
+      token,
+      options.expiresAtMs ?? Number.POSITIVE_INFINITY
+    );
     log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signingKey.publicKeyB64);
   }
 

@@ -94,6 +94,15 @@ export interface FormationUsageRecorder {
     initiatorKey: string,
     sAppId: string
   ): Promise<{ strandId: string; memberPrivateKey: string | null }>;
+
+  /**
+   * Is ANY invitation this recorder knows about unexpired and not fully
+   * consumed? Optional: a recorder that cannot enumerate invitations omits it,
+   * and only locally-minted invitations hold the connection gate's formation
+   * exemption open. Distinct from the per-token {@link isTokenValid} /
+   * {@link isTokenUsed} pair — the connection gate has no token to ask about.
+   */
+  hasOutstandingInvitation?(): Promise<boolean>;
 }
 
 /**
@@ -192,6 +201,13 @@ export class StrandSolicitationService {
   private readonly cadrePeerAddrs: string[];
   private formationManager?: StrandFormationManager;
   private readonly formationConfig?: StrandFormationManagerConfig;
+  /**
+   * Tokens this process has minted (or published), mapped to their expiry
+   * epoch-ms — the in-memory half of {@link hasOutstandingInvitation}. Dies with
+   * the process, exactly like `CadreNode`'s enrollment window; a token that also
+   * reached the durable `FormationInvite` table survives via the recorder.
+   */
+  private readonly mintedInvitations = new Map<string, number>();
 
   constructor(options?: StrandSolicitationServiceOptions) {
     this.disclosureValidator = options?.disclosureValidator;
@@ -378,6 +394,7 @@ export class StrandSolicitationService {
     // Generate a unique token
     const token = `invite-${Date.now()}-${Math.random().toString(36).slice(2, 11)}`;
     const expiration = new Date(Date.now() + expirationMs);
+    this.registerMintedInvitation(token, expiration.getTime());
 
     log('Created open invitation: %s (expires %s)', token, expiration.toISOString());
 
@@ -387,6 +404,55 @@ export class StrandSolicitationService {
       expiration,
       bootstrap
     };
+  }
+
+  /**
+   * Remember a token this node minted (or published) so
+   * {@link hasOutstandingInvitation} can answer "yes" before the durable
+   * `FormationInvite` row is readable — or when there is no durable store at
+   * all. `expiresAtMs` may be `Number.POSITIVE_INFINITY` for an invitation that
+   * never expires.
+   */
+  registerMintedInvitation(token: string, expiresAtMs: number): void {
+    this.mintedInvitations.set(token, expiresAtMs);
+    log('Registered minted invitation %s (expires %d)', token, expiresAtMs);
+  }
+
+  /**
+   * Does this node currently expect a stranger — i.e. is at least one open
+   * invitation unexpired and not yet fully consumed? Sole input to the
+   * control-network connection gate's formation exemption.
+   *
+   * Two sources, in order:
+   *
+   *  1. The local mint registry ({@link registerMintedInvitation}), which is
+   *     in-memory and dies with the process. Expired entries are dropped. With
+   *     no {@link FormationUsageRecorder} configured there is no consumption
+   *     oracle, so an unexpired minted token counts as outstanding by
+   *     construction; with one, a token it reports used is deleted (consumption
+   *     is permanent, so the registry never reconsiders it).
+   *  2. The recorder's optional {@link FormationUsageRecorder.hasOutstandingInvitation},
+   *     which survives restarts and sees invitations replicated in from siblings.
+   *
+   * Re-entrant: concurrent inbound connections each call this independently and
+   * the only mutation is deleting expired/consumed entries, which is monotonic.
+   */
+  async hasOutstandingInvitation(): Promise<boolean> {
+    const now = Date.now();
+    for (const [token, expiresAtMs] of this.mintedInvitations) {
+      if (expiresAtMs <= now) {
+        this.mintedInvitations.delete(token);
+        continue;
+      }
+      if (!this.formationUsageRecorder) {
+        return true;
+      }
+      if (!(await this.formationUsageRecorder.isTokenUsed(token))) {
+        return true;
+      }
+      this.mintedInvitations.delete(token);
+    }
+    return (await this.formationUsageRecorder?.hasOutstandingInvitation?.()) ?? false;
   }
 
   /**

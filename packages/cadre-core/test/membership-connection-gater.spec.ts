@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
@@ -13,6 +13,7 @@ import {
   STRANGER_OPEN_PROTOCOLS,
   type InboundAdmissionPolicy
 } from '../src/membership-connection-gater.js';
+import { StrandSolicitationService } from '../src/strand-solicitation.js';
 import { SEED_PROTOCOL } from '../src/seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
 
@@ -150,13 +151,20 @@ function bareRow(peerId: string): PeerRow {
   return { peerId, multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null };
 }
 
+/**
+ * How the injected solicitation service answers `hasOutstandingInvitation` —
+ * the SOLE input to the formation exemption. `undefined` leaves the node with no
+ * service at all (the initiator/never-registered case).
+ */
+type Outstanding = boolean | 'throws' | 'hangs';
+
 /** Wire the minimal node internals the admission policy touches. */
 function inject(node: CadreNode, opts: {
   running?: boolean;
   selfPeerId?: string;
   members?: PeerRow[];
   anchor?: TrustedOwnerStore;
-  solicitation?: boolean;
+  solicitation?: Outstanding;
 }): void {
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
   (node as unknown as { controlNode: unknown }).controlNode = {
@@ -170,8 +178,18 @@ function inject(node: CadreNode, opts: {
   if (opts.anchor) {
     (node as unknown as { trustedOwnerStore: TrustedOwnerStore }).trustedOwnerStore = opts.anchor;
   }
-  if (opts.solicitation) {
-    (node as unknown as { strandSolicitationService: unknown }).strandSolicitationService = {};
+  if (opts.solicitation !== undefined) {
+    (node as unknown as { strandSolicitationService: unknown }).strandSolicitationService = {
+      hasOutstandingInvitation: async (): Promise<boolean> => {
+        if (opts.solicitation === 'throws') {
+          throw new Error('control DB torn down mid-invitation-check');
+        }
+        if (opts.solicitation === 'hangs') {
+          return await new Promise<boolean>(() => { /* never settles */ });
+        }
+        return opts.solicitation === true;
+      }
+    };
   }
 }
 
@@ -257,7 +275,7 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(fresh, STRANGER)).toBe(false);
   });
 
-  it('admits everyone while the strand-formation responder is registered (stranger-serving by design)', async () => {
+  it('admits a stranger while an open invitation is outstanding (expectation of a stranger)', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     inject(node, {
@@ -267,6 +285,92 @@ describe('CadreNode.admitInboundControlConnection', () => {
     });
 
     expect(await admit(node, STRANGER)).toBe(true);
+  });
+
+  it('denies a stranger when the responder is registered but NO invitation is outstanding', async () => {
+    // The whole point of the narrowed carve-out: registering the formation
+    // responder (as reference-app-rn does at bring-up) must NOT disarm the gate.
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      solicitation: false
+    });
+
+    expect(await admit(node, STRANGER)).toBe(false);
+  });
+
+  it('admits an authorized member without consulting the invitation check (member check precedes it)', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      // Would throw if reached — proves the member path never pays for it.
+      solicitation: 'throws'
+    });
+
+    expect(await admit(node, MEMBER)).toBe(true);
+  });
+
+  it('fails open when the invitation check throws', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      solicitation: 'throws'
+    });
+
+    expect(await admit(node, STRANGER)).toBe(true);
+  });
+
+  it('fails open via the gater deadline when the invitation check never settles', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      solicitation: 'hangs'
+    });
+
+    // The decision itself never resolves; the gater's deadline is what admits.
+    const gater = createMembershipConnectionGater(
+      { admitInbound: (id) => admit(node, id) },
+      undefined,
+      20
+    );
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId(STRANGER), MA_CONN)).toBe(false);
+  });
+
+  it('mint → admit → lapse → deny, driven through a REAL solicitation service', async () => {
+    // Acceptance shape of the narrowed carve-out, end to end through the actual
+    // predicate rather than a stub: the node denies until it mints an invitation,
+    // admits while that invitation lives, and denies again once it expires.
+    vi.useFakeTimers();
+    try {
+      const node = new CadreNode(createConfig());
+      const owner = makeOwner();
+      inject(node, {
+        members: [vouchedRow(MEMBER, owner)],
+        anchor: await anchorWith('p', owner.publicKey)
+      });
+      const service = new StrandSolicitationService();
+      (node as unknown as { strandSolicitationService: unknown }).strandSolicitationService = service;
+
+      expect(await admit(node, STRANGER)).toBe(false);
+
+      await service.createOpenInvitation('sapp-acceptance', 60_000, []);
+      expect(await admit(node, STRANGER)).toBe(true);
+
+      vi.advanceTimersByTime(60_000);
+      expect(await admit(node, STRANGER)).toBe(false);
+      // The member is unaffected by the invitation lifecycle.
+      expect(await admit(node, MEMBER)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('always admits the configured bootstrap/relay infrastructure peers', async () => {

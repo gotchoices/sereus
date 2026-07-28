@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createLibp2p, type Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
@@ -154,6 +154,97 @@ describe('StrandSolicitationService', () => {
       expect(invitation.bootstrap).toEqual(bootstrap);
       expect(invitation.expiration).toBeInstanceOf(Date);
       expect(invitation.expiration.getTime()).toBeGreaterThan(Date.now());
+    });
+  });
+
+  // ── hasOutstandingInvitation: the connection gate's formation exemption ────
+  //
+  // "Does this node EXPECT a stranger?" — the sole input to
+  // `CadreNode.admitInboundControlConnection`'s formation check. Two sources:
+  // the in-memory mint registry, then the recorder's optional durable answer.
+  describe('hasOutstandingInvitation', () => {
+    /** A recorder with only the required members; usage/validity are inert. */
+    function inertRecorder(overrides: Partial<FormationUsageRecorder> = {}): FormationUsageRecorder {
+      return {
+        recordUsage: async () => {},
+        isTokenUsed: async () => false,
+        isTokenValid: async () => ({ valid: true }),
+        ...overrides
+      };
+    }
+
+    it('is false for a fresh service that has minted nothing (eager registration stays gated)', async () => {
+      const service = new StrandSolicitationService();
+      expect(await service.hasOutstandingInvitation()).toBe(false);
+    });
+
+    it('is true after minting, and false again once that mint expires', async () => {
+      vi.useFakeTimers();
+      try {
+        const service = new StrandSolicitationService();
+        await service.createOpenInvitation('sapp-1', 60_000, []);
+        expect(await service.hasOutstandingInvitation()).toBe(true);
+
+        // Exactly at expiry the invitation is already gone (`expiresAtMs <= now`),
+        // matching the recorder's strict-freshness comparison.
+        vi.advanceTimersByTime(60_000);
+        expect(await service.hasOutstandingInvitation()).toBe(false);
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('with no recorder, an unexpired mint is outstanding by construction (no consumption oracle)', async () => {
+      const service = new StrandSolicitationService();
+      await service.createOpenInvitation('sapp-1', 60_000, []);
+      expect(await service.hasOutstandingInvitation()).toBe(true);
+    });
+
+    it('drops a mint the recorder reports consumed, and never re-asks about it', async () => {
+      let usedChecks = 0;
+      const service = new StrandSolicitationService({
+        formationUsageRecorder: inertRecorder({
+          isTokenUsed: async () => { usedChecks++; return true; }
+        })
+      });
+      await service.createOpenInvitation('sapp-1', 60_000, []);
+
+      expect(await service.hasOutstandingInvitation()).toBe(false);
+      expect(usedChecks).toBe(1);
+      // Consumption is permanent: the registry entry is gone, so no second read.
+      expect(await service.hasOutstandingInvitation()).toBe(false);
+      expect(usedChecks).toBe(1);
+    });
+
+    it('keeps a minted-but-unconsumed token outstanding', async () => {
+      const service = new StrandSolicitationService({
+        formationUsageRecorder: inertRecorder({ isTokenUsed: async () => false })
+      });
+      await service.createOpenInvitation('sapp-1', 60_000, []);
+      expect(await service.hasOutstandingInvitation()).toBe(true);
+    });
+
+    it('delegates to the recorder when the registry is empty', async () => {
+      const durable = new StrandSolicitationService({
+        formationUsageRecorder: inertRecorder({ hasOutstandingInvitation: async () => true })
+      });
+      expect(await durable.hasOutstandingInvitation()).toBe(true);
+
+      const drained = new StrandSolicitationService({
+        formationUsageRecorder: inertRecorder({ hasOutstandingInvitation: async () => false })
+      });
+      expect(await drained.hasOutstandingInvitation()).toBe(false);
+    });
+
+    it('is false when the recorder omits the optional durable method', async () => {
+      const service = new StrandSolicitationService({ formationUsageRecorder: inertRecorder() });
+      expect(await service.hasOutstandingInvitation()).toBe(false);
+    });
+
+    it('registerMintedInvitation covers a token minted elsewhere (publishFormationInvite path)', async () => {
+      const service = new StrandSolicitationService();
+      service.registerMintedInvitation('invite-from-elsewhere', Number.POSITIVE_INFINITY);
+      expect(await service.hasOutstandingInvitation()).toBe(true);
     });
   });
 

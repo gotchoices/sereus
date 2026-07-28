@@ -355,6 +355,13 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       });
     });
 
+    it('hasOutstandingInvitation: delegates to the DB-wide redeemable scan', async () => {
+      const recorder = new ControlFormationUsageRecorder(db);
+      // This shared DB has carried unexpired, unlimited-use invites since the
+      // first test, so the delegate must report the node as stranger-expecting.
+      expect(await recorder.hasOutstandingInvitation()).toBe(true);
+    });
+
     it('provisionAndRecord: mints an open strand + records one usage atomically (single-use)', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
 
@@ -378,5 +385,112 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await db.countFormationUsage(token)).toBe(1);
       expect(await recorder.isTokenUsed(token)).toBe(true);
     });
+  });
+});
+
+/**
+ * `ControlDatabase.hasOutstandingFormationInvite` — the durable half of the
+ * control-network connection gate's "does this node expect a stranger?"
+ * question. Boots its OWN node because the answer is DB-WIDE: the suite above
+ * leaves unexpired unlimited-use invites behind, which would make every
+ * negative case unprovable on a shared database.
+ */
+describe('ControlDatabase.hasOutstandingFormationInvite (DB-wide redeemable scan)', () => {
+  let node: CadreNode;
+  let db: ControlDatabase;
+  let ownerPrivateKey: string;
+  let ownerPublicKey: string;
+
+  const signMessage = (message: Uint8Array): string =>
+    cryptoSign(message, ownerPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+
+  const rand = (): string => Math.random().toString(36).slice(2);
+
+  beforeAll(async () => {
+    ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+
+    node = new CadreNode({
+      controlNetwork: { partyId: 'formation-outstanding-' + rand(), bootstrapNodes: [] },
+      profile: 'transaction',
+    });
+    await node.start();
+
+    const controlDb = node.getControlDatabase();
+    expect(controlDb).not.toBeNull();
+    db = controlDb!;
+    expect(await db.ensureOwnerKey(ownerPublicKey)).toBe(true);
+  }, 60_000);
+
+  afterAll(async () => {
+    await node?.stop();
+  });
+
+  // The predicate is DB-wide, so every invite inserted here stays visible to the
+  // later tests. Anchoring every expiry to a FIXED future instant and passing an
+  // explicit `nowMs` keeps each case decidable regardless of the real clock (which
+  // still has to be before T0 for `recordFormationUsage`'s deferred expiry CHECK).
+  const T0 = Date.UTC(2031, 0, 1);
+  const MINUTE = 60_000;
+  const HOUR = 3600_000;
+
+  it('is false with no invites at all', async () => {
+    expect(await db.hasOutstandingFormationInvite(T0)).toBe(false);
+  });
+
+  it('is true for an unexpired, unconsumed invite and false from its expiry instant on', async () => {
+    const token = 'invite-out-' + rand();
+    await db.insertFormationInvite(token, 'sapp-out', ownerPublicKey, signMessage, {
+      expiresAtMs: T0 + MINUTE,
+    });
+
+    expect(await db.hasOutstandingFormationInvite(T0)).toBe(true);
+    // Same `expiresAtMs <= now` boundary the recorder's isTokenValid applies: at
+    // the exact expiry instant the invite no longer holds the gate open, so a
+    // token the formation handler rejects can never keep the gate disarmed.
+    expect(await db.hasOutstandingFormationInvite(T0 + MINUTE)).toBe(false);
+    expect(await db.hasOutstandingFormationInvite(T0 + MINUTE + 1)).toBe(false);
+  });
+
+  it('is false once a single-use invite has recorded its one usage', async () => {
+    const token = 'invite-out-single-' + rand();
+    const strandId = 'strand-out-single-' + rand();
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    await db.insertFormationInvite(token, 'sapp-out-single', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      expiresAtMs: T0 + HOUR,
+    });
+
+    // At T0 + 2min the previous test's invite is expired, so this one decides.
+    expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(true);
+    await db.recordFormationUsage({ token, strandId });
+    expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(false);
+  });
+
+  it('finds a live invite past the expired and consumed ones in the scan', async () => {
+    const stale = 'invite-out-stale-' + rand();
+    await db.insertFormationInvite(stale, 'sapp-out-stale', ownerPublicKey, signMessage, {
+      expiresAtMs: Date.parse('2000-01-01T00:00:00Z'),
+    });
+    const live = 'invite-out-live-' + rand();
+    await db.insertFormationInvite(live, 'sapp-out-live', ownerPublicKey, signMessage, {
+      expiresAtMs: T0 + 2 * HOUR,
+      totalUses: 2,
+    });
+
+    // Live one wins over one expired-long-ago, one expired-recently, one consumed.
+    expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(true);
+    // …and once IT expires too, the whole set is dead again.
+    expect(await db.hasOutstandingFormationInvite(T0 + 2 * HOUR)).toBe(false);
+  });
+
+  it('is true for a never-expiring, unlimited-use invite (null ExpiresAt + null TotalUses)', async () => {
+    const token = 'invite-out-forever-' + rand();
+    await db.insertFormationInvite(token, 'sapp-out-forever', ownerPublicKey, signMessage);
+
+    // Every other invite in this DB is expired or consumed by T0 + 2h; only the
+    // unbounded one is left, and it has no wall clock of its own to lapse against.
+    expect(await db.hasOutstandingFormationInvite(T0 + 2 * HOUR)).toBe(true);
+    expect(await db.hasOutstandingFormationInvite(T0 + 365 * 24 * HOUR)).toBe(true);
   });
 });
