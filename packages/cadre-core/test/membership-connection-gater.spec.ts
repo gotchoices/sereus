@@ -21,10 +21,15 @@ import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
  * (`membership-connection-gater`): the gater composition/fail-open contract,
  * and the `CadreNode.admitInboundControlConnection` decision matrix (enrollment
  * windows, anchor state, bootstrap infra, formation-responder mode, the
- * authorized-member set). The wire-level effect (an outsider's dial actually
- * failing) is proven in the integration scenario
- * `membership-connection-gater.integration.ts`.
+ * authorized-member set), and the `createInvite` → enrollment-window wiring.
+ * The wire-level effect (an outsider's dial actually failing) is proven in the
+ * integration scenario `membership-connection-gater.integration.ts`.
  */
+
+/** A peer with a real anchored voucher in the receiver's rows. */
+const MEMBER = 'peer-member';
+/** A peer with no row at all — the outsider the gate exists to refuse. */
+const STRANGER = 'peer-stranger';
 
 function fakePeerId(id: string): PeerId {
   return { toString: () => id } as unknown as PeerId;
@@ -78,7 +83,22 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
     expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
   });
 
+  it('fails open (admits) when the decision outstays its deadline — never wedges the inbound upgrade', async () => {
+    let settle: (() => void) | undefined;
+    const policy: InboundAdmissionPolicy = {
+      // A control-DB read that pulls over the network and never comes back.
+      admitInbound: () => new Promise<boolean>((resolve) => { settle = () => resolve(false); })
+    };
+    const gater = createMembershipConnectionGater(policy, undefined, 20);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
+    settle?.(); // release the pending policy promise so the test leaves nothing dangling
+  });
+
   it('documents exactly the seed + formation protocols as stranger-open', () => {
+    // Literal wire ids, not the imported constants — this locks the allowlist's
+    // CONTENT, so widening it (or renaming a protocol) cannot pass silently.
+    expect(STRANGER_OPEN_PROTOCOLS).toEqual(['/sereus/seed/1.0.0', '/sereus/formation/1.0.0']);
     expect(STRANGER_OPEN_PROTOCOLS).toEqual([SEED_PROTOCOL, FORMATION_PROTOCOL]);
   });
 });
@@ -170,9 +190,6 @@ function admit(node: CadreNode, remotePeerId: string): Promise<boolean> {
 }
 
 describe('CadreNode.admitInboundControlConnection', () => {
-  const MEMBER = 'peer-member';
-  const STRANGER = 'peer-stranger';
-
   it('denies a stranger only in the fully-established steady state; admits the authorized member', async () => {
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
@@ -266,7 +283,95 @@ describe('CadreNode.admitInboundControlConnection', () => {
     expect(await admit(node, STRANGER)).toBe(false);
   });
 
-  it('exposes the default window used when an invite has no expiry', () => {
-    expect(DEFAULT_ENROLLMENT_WINDOW_MS).toBeGreaterThan(0);
+  it('denies a peer whose row is addressable but unvouched, alongside a real member', async () => {
+    // The step-4 distinction at the connection layer: having a `CadrePeer` row
+    // (so `isMember` is true) is NOT membership — only an anchored voucher is.
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    const IMPOSTOR = 'peer-impostor';
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner), bareRow(IMPOSTOR)],
+      anchor: await anchorWith('p', owner.publicKey)
+    });
+
+    expect(await admit(node, MEMBER)).toBe(true);
+    expect(await admit(node, IMPOSTOR)).toBe(false);
+  });
+
+  it('denies a peer vouched by a key that is NOT in this node\'s anchor', async () => {
+    const node = new CadreNode(createConfig());
+    const anchored = makeOwner();
+    const selfMinted = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, anchored), vouchedRow('peer-self-minted', selfMinted)],
+      anchor: await anchorWith('p', anchored.publicKey)
+    });
+
+    expect(await admit(node, MEMBER)).toBe(true);
+    expect(await admit(node, 'peer-self-minted')).toBe(false);
+  });
+});
+
+// ── createInvite → enrollment window wiring ─────────────────────────────────
+
+/** Stub the seed-bootstrap service so `createInvite` runs without a real node. */
+function injectInviteIssuer(node: CadreNode, expiresAt: number | undefined): void {
+  (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+    createInvite: async (token?: string) => ({
+      invite: { token: token ?? 'tok', ...(expiresAt === undefined ? {} : { expiresAt }) },
+      encodedInvite: 'encoded'
+    })
+  };
+}
+
+function windowUntil(node: CadreNode): number {
+  return (node as unknown as { enrollmentWindowUntil: number }).enrollmentWindowUntil;
+}
+
+describe('CadreNode.createInvite enrollment window', () => {
+  async function establishedNode(): Promise<CadreNode> {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    inject(node, {
+      members: [vouchedRow(MEMBER, owner)],
+      anchor: await anchorWith('p', owner.publicKey)
+    });
+    return node;
+  }
+
+  it('opens the window to the invite\'s own expiry, admitting the invitee that dials in', async () => {
+    const node = await establishedNode();
+    const expiresAt = Date.now() + 120_000;
+    injectInviteIssuer(node, expiresAt);
+
+    expect(await admit(node, STRANGER)).toBe(false);
+    await node.createInvite('tok', 120_000);
+    expect(windowUntil(node)).toBe(expiresAt);
+    expect(await admit(node, STRANGER)).toBe(true);
+  });
+
+  it('falls back to DEFAULT_ENROLLMENT_WINDOW_MS for an invite with no expiry', async () => {
+    const node = await establishedNode();
+    injectInviteIssuer(node, undefined);
+
+    const before = Date.now();
+    await node.createInvite('tok');
+    expect(windowUntil(node)).toBeGreaterThanOrEqual(before + DEFAULT_ENROLLMENT_WINDOW_MS);
+    expect(windowUntil(node)).toBeLessThanOrEqual(Date.now() + DEFAULT_ENROLLMENT_WINDOW_MS);
+    expect(await admit(node, STRANGER)).toBe(true);
+  });
+
+  it('opens nothing for an already-expired invite, and never shrinks an open window', async () => {
+    const expired = await establishedNode();
+    injectInviteIssuer(expired, Date.now() - 1);
+    await expired.createInvite('stale');
+    expect(await admit(expired, STRANGER)).toBe(false);
+
+    const node = await establishedNode();
+    const far = Date.now() + 600_000;
+    node.openEnrollmentWindow(far);
+    injectInviteIssuer(node, Date.now() + 1_000);
+    await node.createInvite('shorter');
+    expect(windowUntil(node)).toBe(far);
   });
 });

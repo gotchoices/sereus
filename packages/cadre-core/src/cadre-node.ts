@@ -184,6 +184,12 @@ export class CadreNode implements SAppIdLookup {
    * {@link openEnrollmentWindow}). 0 = no window open. Opened automatically by
    * {@link createInvite}; deliberately NOT reset on stop() — a stop/start cycle
    * inside an outstanding invite's validity must not strand the invitee.
+   *
+   * NOTE: in-memory only, so a PROCESS restart mid-invite closes the door until
+   * the owner re-mints or the invitee is authorized. Fine while invites are
+   * short-lived and redeemed promptly; if long-lived invites or restart-prone
+   * hosts become normal, persist the window (or derive it from the issued-invite
+   * records `SeedBootstrapService` already keeps).
    */
   private enrollmentWindowUntil = 0;
 
@@ -769,7 +775,13 @@ export class CadreNode implements SAppIdLookup {
    *  4. the strand-formation responder is registered
    *     ({@link initializeStrandSolicitation}) — a formation initiator is
    *     another party's peer by design, and open invitations are validated by
-   *     token inside the protocol, not knowable here;
+   *     token inside the protocol, not knowable here. **This exemption is far
+   *     wider than it should be**: it holds for the rest of the process (only
+   *     `stop()` clears the service), `formStrand` opens it on the initiator
+   *     side that needs no inbound stranger at all, and `reference-app-rn`
+   *     registers the responder during node bring-up — so on that client the
+   *     gate never denies anyone. Narrowing it to "an unexpired open invitation
+   *     is outstanding" is `tickets/plan/narrow-formation-stranger-carveout`;
    *  5. the peer is one of the configured control bootstrap/relay nodes —
    *     infrastructure, not cadre members;
    *  6. the authorized-member set is empty — cold start: the rows that would

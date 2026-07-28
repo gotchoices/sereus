@@ -638,6 +638,19 @@ expose no inbound-stream authz seam, so that half is filed as
 `blocked/control-repo-protocol-stream-authz-optimystic` (upstream repo). Until it lands, the
 connection gate is the outermost defense for those protocols and the read-time voucher predicate
 (step 4) remains the real fix.
+
+**Step-6 review (2026-07-28) found the formation exemption too wide to be worth much yet.** "A
+strand-formation responder is registered" is a process-lifetime condition — only `stop()` clears the
+service, `formStrand` opens it on the initiator side that never needs inbound strangers, and
+`reference-app-rn` registers the responder during node bring-up. So on the phone reference app the
+connection gate denies nobody, and the web app's gate opens permanently after the first formation
+action. Nothing is unsafe (steps 4–5 still hold), but the defense-in-depth layer buys nothing on the
+primary client until the exemption tracks *an unexpired open invitation outstanding* rather than
+*capability to serve one* — `plan/narrow-formation-stranger-carveout`. The review also bounded the
+admission decision (`ADMISSION_DECISION_TIMEOUT_MS`, 2s → admit): libp2p awaits
+`denyInboundEncryptedConnection` **without** racing its inbound-upgrade timeout, so an unbounded
+control-DB read there could wedge an inbound upgrade permanently and hold its connection-manager
+slot — the opposite of the layer's fail-open contract.
 - **Not** a super-majority-threshold rounding bug: `Math.ceil(2 * 0.75)` and the
   "fix" `Math.floor(2/2)+1` both yield 2 — 2-of-2 is correct for a 2-node quorum. The
   defect is upstream of the count (peer selection / protocol negotiation), and is

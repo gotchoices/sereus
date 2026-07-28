@@ -278,6 +278,7 @@ export {
   createMembershipConnectionGater,
   STRANGER_OPEN_PROTOCOLS,
   DEFAULT_ENROLLMENT_WINDOW_MS,
+  ADMISSION_DECISION_TIMEOUT_MS,
   type InboundAdmissionPolicy
 } from './membership-connection-gater.js';
 

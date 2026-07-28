@@ -28,7 +28,11 @@
  *    initiator is another party. Registering the formation responder
  *    (`CadreNode.initializeStrandSolicitation`) therefore marks the node
  *    stranger-serving and suspends stranger denial; the handler's own trust
- *    decision is the invitation token check.
+ *    decision is the invitation token check. That suspension is currently
+ *    process-lifetime and unconditional — `reference-app-rn` registers the
+ *    responder at node bring-up, so the connection gate is inert there.
+ *    Narrowing it to "an unexpired open invitation is outstanding" is
+ *    `tickets/plan/narrow-formation-stranger-carveout`.
  *
  * Everything else a control node handles — the Optimystic control-DB protocols
  * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), wake
@@ -71,6 +75,21 @@ export const STRANGER_OPEN_PROTOCOLS: readonly string[] = [SEED_PROTOCOL, FORMAT
 export const DEFAULT_ENROLLMENT_WINDOW_MS = 30 * 60 * 1000;
 
 /**
+ * Deadline for one admission decision, after which the connection is ADMITTED.
+ *
+ * libp2p awaits `denyInboundEncryptedConnection` inside the inbound upgrade
+ * WITHOUT racing its inbound-upgrade timeout signal (unlike the pre-encryption
+ * `denyInboundConnection` hook), so a decision that never settles wedges that
+ * upgrade forever — the connection-manager's inbound-upgrade slot is taken by
+ * `acceptIncomingConnection` and released in the `finally` that never runs. The
+ * real policy reads the control DB (`listAuthorizedMembers`), which can pull
+ * over the network, so "never settles" is reachable. Bounding it here keeps the
+ * fail-open contract honest: a slow decision admits rather than silently
+ * failing closed (or not at all).
+ */
+export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
+
+/**
  * The admission decision the gate defers to — implemented by
  * `CadreNode.admitInboundControlConnection` (enrollment windows, anchor state,
  * bootstrap infra, the authorized-member set). Kept injectable so the gater's
@@ -88,8 +107,14 @@ export interface InboundAdmissionPolicy {
  *
  * Composition semantics: every hook of `base` is preserved as-is; on the
  * inbound-encrypted hook a deny from EITHER the base gater or the admission
- * policy denies. A policy error admits (fail-open, see module doc) — the base
- * gater's verdict is still honored first.
+ * policy denies. A policy error — or a decision slower than
+ * `decisionTimeoutMs` — admits (fail-open, see module doc); the base gater's
+ * verdict is still honored first.
+ *
+ * NOTE: `base` is spread, so a gater passed as a CLASS INSTANCE would lose its
+ * prototype methods; every caller in this repo (and libp2p's own default)
+ * supplies a plain object. If a class-based gater ever shows up, delegate
+ * per-hook instead of spreading.
  *
  * Deny timing, as observed by the denied dialer: noise negotiates the muxer in
  * the security handshake's early data, so the DIALER's upgrade may complete
@@ -103,7 +128,8 @@ export interface InboundAdmissionPolicy {
  */
 export function createMembershipConnectionGater(
   policy: InboundAdmissionPolicy,
-  base?: ConnectionGater
+  base?: ConnectionGater,
+  decisionTimeoutMs: number = ADMISSION_DECISION_TIMEOUT_MS
 ): ConnectionGater {
   return {
     ...base,
@@ -113,11 +139,38 @@ export function createMembershipConnectionGater(
       }
       const remotePeerId = peerId.toString();
       try {
-        return !(await policy.admitInbound(remotePeerId));
+        return !(await admitWithinDeadline(policy, remotePeerId, decisionTimeoutMs));
       } catch (error) {
         log('admitInbound threw for %s — admitting (fail-open; stream gates decide): %o', remotePeerId, error);
         return false;
       }
     }
   };
+}
+
+/**
+ * Run the admission decision under {@link ADMISSION_DECISION_TIMEOUT_MS},
+ * resolving to "admit" if it has not settled in time (see that constant for why
+ * an unbounded await is not safe here). The timer is always cleared so a decided
+ * connection never holds the event loop open.
+ */
+async function admitWithinDeadline(
+  policy: InboundAdmissionPolicy,
+  remotePeerId: string,
+  timeoutMs: number
+): Promise<boolean> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      Promise.resolve(policy.admitInbound(remotePeerId)),
+      new Promise<boolean>((resolve) => {
+        timer = setTimeout(() => {
+          log('admitInbound exceeded %dms for %s — admitting (fail-open; stream gates decide)', timeoutMs, remotePeerId);
+          resolve(true);
+        }, timeoutMs);
+      })
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
 }
