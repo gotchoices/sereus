@@ -2,7 +2,7 @@
  * E2E for the control-network inbound connection gate
  * (`membership-connection-gater`, chain step 6 — defense-in-depth).
  *
- * Proves, over real WebSocket libp2p nodes, the three states of
+ * Proves, over real WebSocket libp2p nodes, the states of
  * `CadreNode.admitInboundControlConnection`:
  *
  *   1. Fully-established receiver (non-empty node-local trusted-owner anchor
@@ -19,7 +19,9 @@
  *   2. The enrollment carve-out: `createInvite` opens the window and the same
  *      outsider's dial then succeeds (the invitee must dial in before it is
  *      authorized).
- *   3. An un-enrolled node (empty anchor, no members) admits strangers — the
+ *   3. The strand-formation carve-out: a REGISTERED responder alone does not
+ *      admit anyone; a minted, unexpired open invitation does.
+ *   4. An un-enrolled node (empty anchor, no members) admits strangers — the
  *      precondition of seed delivery to a brand-new node.
  *
  * No cross-node replication is required anywhere here (all membership rows are
@@ -137,6 +139,53 @@ describe('E2E control-network membership connection gater', () => {
 			await waitForConnection(Rx, outsiderPeerId, 'receiver admits a stranger during the invite window');
 		} finally {
 			await Promise.allSettled([outsider?.stop(), member?.stop(), Rx?.stop()]);
+		}
+	}, 120_000);
+
+	it('the formation carve-out follows the OUTSTANDING INVITATION, not the responder registration', async () => {
+		// Wire-level counterpart to the unit coverage in
+		// `cadre-core/test/membership-connection-gater.spec.ts`: registering the
+		// strand-formation responder (what reference-app-rn does at node bring-up)
+		// must NOT disarm the gate, and minting an invitation must re-arm the
+		// carve-out over a real dial.
+		let Rx: CadreNode | undefined;
+		let outsider: CadreNode | undefined;
+		try {
+			const rxKey = await generateKeyPair('Ed25519');
+			Rx = new CadreNode(nodeConfig('formation-gater-party', rxKey));
+			await Rx.start();
+			await makeOwnOwner(Rx, rxKey);
+			await Rx.authorizePeer(peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString());
+
+			// Responder registered, nothing minted — the old carve-out would have
+			// admitted everyone from here on.
+			Rx.initializeStrandSolicitation();
+
+			const rxAddr = Rx.getControlNode()!.getMultiaddrs()[0]!;
+			const rxPeerId = Rx.peerId!.toString();
+
+			outsider = new CadreNode(nodeConfig('formation-outsider-party'));
+			await outsider.start();
+			const outsiderPeerId = outsider.peerId!.toString();
+			const outsiderNode = outsider.getControlNode()!;
+
+			await outsiderNode.dial(rxAddr).catch(() => undefined);
+			await waitUntil(
+				() => !outsiderNode.getConnections().some(
+					(c) => c.remotePeer.toString() === rxPeerId && c.status === 'open'
+				),
+				{ timeoutMs: 15_000, intervalMs: 100, description: 'responder registered but no invitation: dial refused' }
+			);
+			expect(
+				Rx.getControlNode()!.getConnections().some((c) => c.remotePeer.toString() === outsiderPeerId)
+			).toBe(false);
+
+			// Minting an open invitation is what says "I expect a stranger".
+			await Rx.createOpenInvitation('gater-formation-sapp', 60_000);
+			await outsiderNode.dial(rxAddr);
+			await waitForConnection(Rx, outsiderPeerId, 'receiver admits a stranger while an invitation is outstanding');
+		} finally {
+			await Promise.allSettled([outsider?.stop(), Rx?.stop()]);
 		}
 	}, 120_000);
 

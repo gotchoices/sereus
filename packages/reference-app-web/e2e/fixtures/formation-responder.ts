@@ -227,6 +227,13 @@ export async function startFormationResponder(opts?: {
 		// Second, already-EXPIRED invitation: well-formed (real FormationInvite row,
 		// decodes cleanly) but past expiry, so redemption exercises the expiry branch —
 		// NOT a decode error (that case is covered by the solo formation-rbac spec).
+		//
+		// NOTE: this reaches the protocol-level expiry rejection only because the VALID
+		// invitation above holds the responder's inbound connection gate open (the gate
+		// admits a stranger only while some invitation is outstanding). A future fixture
+		// that publishes ONLY an expired invitation would be denied at the connection
+		// layer first, and the failure would look like a transport error — mint a live
+		// invitation alongside it, or assert the transport error deliberately.
 		const expiredInvitation = await node.createOpenInvitation(CHAT_SAPP_ID, -EXPIRED_OFFSET_MS);
 		await node.publishFormationInvite(expiredInvitation.token, CHAT_SAPP_ID, {
 			strandId,

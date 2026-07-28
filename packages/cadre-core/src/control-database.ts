@@ -54,6 +54,17 @@ function parseStoredDatetimeMs(value: string | number): number {
 }
 
 /**
+ * Parse a nullable stored `datetime` column into epoch ms, mapping both "absent"
+ * and "unparseable" to null — i.e. "no expiry". Shared by every `ExpiresAt`
+ * reader so the NaN guard cannot drift between them.
+ */
+function parseNullableStoredDatetimeMs(value: string | number | null | undefined): number | null {
+  if (value === null || value === undefined) return null;
+  const parsed = parseStoredDatetimeMs(value);
+  return Number.isNaN(parsed) ? null : parsed;
+}
+
+/**
  * Build the canonical authorization message that owner signatures are bound to.
  *
  * The message is a SINGLE framed SHA-256 digest over the ordered tuple of fields (the
@@ -884,14 +895,10 @@ export class ControlDatabase {
       'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?',
       [token]
     )) {
-      const expiresAt = row.ExpiresAt as string | number | null;
-      const expiresAtMs = expiresAt === null || expiresAt === undefined
-        ? null
-        : parseStoredDatetimeMs(expiresAt);
       return {
         token: row.Token as string,
         sAppId: row.sAppId as string,
-        expiresAtMs: expiresAtMs !== null && Number.isNaN(expiresAtMs) ? null : expiresAtMs,
+        expiresAtMs: parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null),
         totalUses: (row.TotalUses as number | null) ?? null,
         validationUrl: (row.ValidationUrl as string | null) ?? null,
         strandId: (row.StrandId as string | null) ?? null,
@@ -926,10 +933,10 @@ export class ControlDatabase {
    * invite the formation handler would reject can never hold the gate open.
    *
    * The scan is deliberately not pushed into SQL: nothing else here compares a
-   * stored `datetime` with an inequality, so the parse stays in JS via
-   * {@link parseStoredDatetimeMs} (same NaN→null guard as
-   * {@link queryFormationInvite}). Only invites that are unexpired AND
-   * use-metered cost a {@link countFormationUsage} read.
+   * stored `datetime` with an inequality, so the parse stays in JS via the
+   * shared {@link parseNullableStoredDatetimeMs}. Only invites that are
+   * unexpired AND use-metered cost a {@link countFormationUsage} read, and an
+   * unlimited-use invite anywhere in the scan short-circuits all of them.
    */
   async hasOutstandingFormationInvite(nowMs: number = Date.now()): Promise<boolean> {
     this.ensureInitialized();
@@ -943,11 +950,7 @@ export class ControlDatabase {
     for await (const row of this.db!.eval(
       'select Token, ExpiresAt, TotalUses from CadreControl.FormationInvite'
     )) {
-      const expiresAt = row.ExpiresAt as string | number | null;
-      const parsed = expiresAt === null || expiresAt === undefined
-        ? null
-        : parseStoredDatetimeMs(expiresAt);
-      const expiresAtMs = parsed !== null && Number.isNaN(parsed) ? null : parsed;
+      const expiresAtMs = parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null);
       if (expiresAtMs !== null && expiresAtMs <= nowMs) {
         continue;
       }

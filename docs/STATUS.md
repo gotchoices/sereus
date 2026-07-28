@@ -732,7 +732,7 @@ registry is dry, from the usage recorder's optional durable scan
 `isTokenValid`/`isTokenUsed` semantics exactly, so a token the handler would reject cannot hold the
 gate open). The check moved to the END of the admission chain, after the authorized-member reads, so
 only a peer already on the deny path pays for it, and it catches its own errors (fail-open). Eager
-`initializeFormationResponder` on the phone and `formStrand`'s lazy service on an initiator now both
+`initializeStrandSolicitation` on the phone and `formStrand`'s lazy service on an initiator now both
 leave the gate armed. Two accepted caveats, both self-healing: the registry dies with the process
 (after a restart only persisted `FormationInvite` rows hold the exemption — re-mint otherwise, same
 story as the enrollment window), and a peer whose invite row has not replicated to this node yet is

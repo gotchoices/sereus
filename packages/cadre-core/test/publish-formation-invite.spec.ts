@@ -74,6 +74,36 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     expect(check.invitation?.sAppId).toBe('sapp-publish');
   }, 60_000);
 
+  it('registers the published token with the solicitation service (opens the connection gate)', async () => {
+    // The gate's formation carve-out reads
+    // `StrandSolicitationService.hasOutstandingInvitation`. Publishing a token
+    // minted elsewhere must open it WITHOUT waiting for the durable row to be
+    // readable, so the service is wired with no recorder here: a `true` answer
+    // can only have come from the in-memory mint registry.
+    node = await startSelfOwnerNode(true);
+    node.initializeStrandSolicitation();
+    const service = node.getStrandSolicitationService()!;
+    expect(await service.hasOutstandingInvitation()).toBe(false);
+
+    await node.publishFormationInvite('invite-' + rand(), 'sapp-publish-gate', {
+      expiresAtMs: Date.now() + 60_000,
+    });
+
+    expect(await service.hasOutstandingInvitation()).toBe(true);
+  }, 60_000);
+
+  it('does not open the gate for an invite published already expired', async () => {
+    node = await startSelfOwnerNode(true);
+    node.initializeStrandSolicitation();
+    const service = node.getStrandSolicitationService()!;
+
+    await node.publishFormationInvite('invite-' + rand(), 'sapp-publish-stale', {
+      expiresAtMs: Date.now() - 1,
+    });
+
+    expect(await service.hasOutstandingInvitation()).toBe(false);
+  }, 60_000);
+
   it('rejects when the node is not an enrolled owner (constraint propagates)', async () => {
     // Self-signing key is present (so it gets past the "no signing key" guard),
     // but it is not enrolled in OwnerKey, so the

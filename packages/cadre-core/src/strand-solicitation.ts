@@ -206,6 +206,11 @@ export class StrandSolicitationService {
    * epoch-ms — the in-memory half of {@link hasOutstandingInvitation}. Dies with
    * the process, exactly like `CadreNode`'s enrollment window; a token that also
    * reached the durable `FormationInvite` table survives via the recorder.
+   *
+   * NOTE: pruned only while {@link hasOutstandingInvitation} runs, so a node that
+   * mints steadily and never receives an inbound stranger retains every entry for
+   * the process's life. Bounded by mint rate today; if a host ever mints at scale,
+   * prune on a timer (or cap the map) instead of only on read.
    */
   private readonly mintedInvitations = new Map<string, number>();
 
