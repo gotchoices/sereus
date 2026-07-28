@@ -166,9 +166,8 @@ describe('registerMemberPeer', () => {
 
     await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-stable' });
     // A second call (e.g. on founder restart) must not throw and must not duplicate
-    // the row — the writer's existence guard skips the redundant insert (so it never
-    // depends on the platform's PK-uniqueness rejection, which is not enforced in
-    // bootstrap mode — see optimystic-insert-pk-uniqueness-not-enforced).
+    // the row — the writer's existence guard skips the redundant insert, so the
+    // restart path never has to catch the platform's duplicate-PK rejection.
     await expect(
       registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-stable' }),
     ).resolves.toBeUndefined();

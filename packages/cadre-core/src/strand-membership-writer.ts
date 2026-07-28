@@ -479,9 +479,9 @@ export interface RegisterMemberPeerParams {
  * `Member` row to already exist, so a peer for a non-member is rejected at commit.
  *
  * Insert-if-absent on the composite PK `(MemberKey, PeerId)`: a re-register on
- * restart (or a redundant call) is a no-op rather than relying on the platform's
- * PK-uniqueness rejection (not enforced in bootstrap mode — see
- * `optimystic-insert-pk-uniqueness-not-enforced`). A member may register multiple
+ * restart (or a redundant call) is a no-op. The platform DOES reject a duplicate-PK
+ * insert, but a restart-safe re-register should succeed quietly rather than throw, so
+ * the writer guards on existence instead of catching. A member may register multiple
  * DISTINCT `PeerId`s (multi-device); each is its own row under the same `MemberKey`.
  *
  * Out of scope: peer DELETION. The schema's `MemberExists` reads `new.MemberKey`,

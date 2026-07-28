@@ -365,9 +365,11 @@ describe('consumeInvite', () => {
     expect(await tableCount(db, 'Member')).toBe(2);
 
     // The second consume of the already-consumed invite is rejected by PK uniqueness.
+    // Matched on the message so the test cannot pass for an unrelated rejection (the
+    // Invite row is NOT deleted on consume, so `no matching invite` would be wrong).
     await expect(
       consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: memberC.publicKeyB64 }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/UNIQUE constraint failed: ConsumedInvite\.InviteKey/i);
 
     // The first consume stands; the replay admitted no second member.
     expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
