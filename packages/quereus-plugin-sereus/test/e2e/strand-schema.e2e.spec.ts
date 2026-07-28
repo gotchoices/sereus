@@ -176,9 +176,9 @@ describe('Strand membership schema (apply e2e)', () => {
 
 		// First Manager: the `count(Manager) <= 1` bootstrap branch — no manager needed.
 		await db.exec(
-			`insert into Strand.Manager (MemberKey)
+			`insert into Strand.Manager (MemberKey, Generation)
 				with context ManagerKey = null, Signature = null
-				values (?)`,
+				values (?, 0)`,
 			['m1'],
 		);
 		expect(await selectCount(db, 'select count(*) as c from Strand.Manager')).toBe(1);
@@ -199,9 +199,9 @@ describe('Strand membership schema (apply e2e)', () => {
 			['m1'],
 		);
 		await db.exec(
-			`insert into Strand.Manager (MemberKey)
+			`insert into Strand.Manager (MemberKey, Generation)
 				with context ManagerKey = null, Signature = null
-				values (?)`,
+				values (?, 0)`,
 			['m1'],
 		);
 
@@ -264,9 +264,9 @@ describe('Strand membership schema (apply e2e)', () => {
 
 				await expect(
 					dbOpen.exec(
-						`insert into Strand.Manager (MemberKey)
+						`insert into Strand.Manager (MemberKey, Generation)
 							with context ManagerKey = null, Signature = null
-							values (?)`,
+							values (?, 0)`,
 						['m1'],
 					),
 				).rejects.toThrow();

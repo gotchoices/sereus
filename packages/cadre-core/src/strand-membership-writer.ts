@@ -161,7 +161,10 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
  * Insert the founding `Strand.Manager` if no manager exists yet.
  *
  * The empty-table state satisfies the bootstrap branch of `Manager.Authorized`, so
- * no signature is needed. Idempotent via the same count guard.
+ * no signature is needed. The founder is seated at `Generation = 0` — the root of
+ * the manager lineage; the bootstrap branch requires exactly that value, and every
+ * later manager is seated at a strictly greater generation (see {@link addManager}).
+ * Idempotent via the same count guard.
  *
  * ORDERING IS LOAD-BEARING, not merely convenient. The bootstrap branch is gated to
  * the founding state and now reads `exists (select 1 from Member M where M.Key =
@@ -178,9 +181,9 @@ async function insertFounderManagerIfAbsent(db: Database, memberKey: string, str
     return;
   }
   await db.exec(
-    `insert into Strand.Manager (MemberKey)
+    `insert into Strand.Manager (MemberKey, Generation)
        with context ManagerKey = null, Signature = null
-       values (?)`,
+       values (?, 0)`,
     [memberKey],
   );
   log('Inserted founding Manager for strand %s', strandId);
@@ -585,24 +588,31 @@ export interface AddManagerParams {
 /**
  * Promote a member to `Manager` on the signature of an existing manager.
  *
- * The existing-manager branch of `Manager.Authorized` verifies
- * `digest(coalesce(new.MemberKey, old.MemberKey))` — `new.MemberKey` =
- * `newManagerKey` on insert — against a `Manager` row matching
- * `context.ManagerKey`. So the signer signs the new manager key directly (no
- * `'|'` join) and binds itself as `context.ManagerKey`.
+ * The promotion branch of `Manager.Authorized` requires the authorizer to be a
+ * `Manager` row of STRICTLY SMALLER `Generation` than the new row, verifying
+ * `digest(new.MemberKey || '|' || new.Generation)` against `context.ManagerKey`.
+ * So this writer reads the authorizer's generation, seats the new manager at that
+ * value + 1 (the natural successor; the schema enforces only the strict ordering),
+ * and signs `` `${newManagerKey}|${generation}` `` — the generation is inside the
+ * signed payload, so a captured promotion cannot be replayed at a different
+ * generation, and the insert payload differs from the delete payload (which stays
+ * the bare target key — see {@link removeManager}).
  *
- * The schema's bootstrap shortcut is gated to INSERTs in the founding state
- * (`old.MemberKey is null` and at most one `Manager`/`Member`, that member being
- * this manager), so it never applies to a promotion on an already-bootstrapped
- * strand — this genuinely exercises signature verification: a non-manager signer,
- * or a signature over the wrong key, is rejected.
+ * WHY THE GENERATION ORDERING IS THE WHOLE ANTI-TAKEOVER STORY. The branch is a
+ * deferred, subquery-bearing check that runs at commit against the POST-insert row
+ * set, so sibling rows inserted in the same transaction are visible as "existing"
+ * managers. The strict `A.Generation < new.Generation` closes that: the
+ * minimum-generation row of any inserted set cannot find its authorizer among its
+ * siblings, so that authorizer must be a genuinely pre-existing manager. This
+ * subsumes self-promotion (a row's generation is never below its own — the
+ * branch's `A.MemberKey <> new.MemberKey` restates that intent locally) and kills
+ * mutual pairs and rings of any length, in one transaction or otherwise.
  *
- * SELF-PROMOTION IS REJECTED. The existing-manager branch runs at commit against
- * the POST-insert row set (it is a deferred, subquery-bearing check), so the row
- * being inserted is itself visible in `Manager`. The branch's `A.MemberKey <>
- * coalesce(new.MemberKey, old.MemberKey)` guard excludes that row, so an arbitrary
- * key cannot authorize its own promotion by signing its own key — the authorizer
- * must be a DIFFERENT, pre-existing manager.
+ * When the authorizer has NO `Manager` row (a non-manager signer, or an open
+ * strand with no managers at all), the lookup finds nothing and the writer falls
+ * back to generation 1 and issues the insert anyway — deliberately letting the
+ * SCHEMA be the rejector (`Manager.Authorized` / `OnlyClosed`), not a
+ * writer-thrown error, so enforcement is pinned where it actually lives.
  *
  * @param db - The closed strand's database (founder manager already seated).
  * @param params - The authorizing manager's keypair and the new manager key.
@@ -610,14 +620,24 @@ export interface AddManagerParams {
  */
 export async function addManager(db: Database, params: AddManagerParams): Promise<void> {
   const { byManagerKeyPair, newManagerKey } = params;
-  const signature = signStrandPayload(newManagerKey, byManagerKeyPair.privateKeyB64);
-  await db.exec(
-    `insert into Strand.Manager (MemberKey)
-       with context ManagerKey = ?, Signature = ?
-       values (?)`,
-    [byManagerKeyPair.publicKeyB64, signature, newManagerKey],
+  // NOTE: a single-key point lookup. On a NETWORKED strand, key seeks have missed
+  // for rows that exist (the memberPeerExists guard scans for exactly that reason);
+  // a miss here falls back to generation 1 and the schema then spuriously rejects a
+  // legitimate promotion by a generation >= 1 authorizer — an availability failure,
+  // never a security one. If that ever bites, re-shape this to a scan-and-filter.
+  const authorizerRow = await db.get(
+    'select Generation from Strand.Manager where MemberKey = ?',
+    [byManagerKeyPair.publicKeyB64],
   );
-  log('Added manager %s by %s', newManagerKey, byManagerKeyPair.publicKeyB64);
+  const generation = authorizerRow == null ? 1 : Number(authorizerRow.Generation) + 1;
+  const signature = signStrandPayload(`${newManagerKey}|${generation}`, byManagerKeyPair.privateKeyB64);
+  await db.exec(
+    `insert into Strand.Manager (MemberKey, Generation)
+       with context ManagerKey = ?, Signature = ?
+       values (?, ?)`,
+    [byManagerKeyPair.publicKeyB64, signature, newManagerKey, generation],
+  );
+  log('Added manager %s (generation %d) by %s', newManagerKey, generation, byManagerKeyPair.publicKeyB64);
 }
 
 /** Parameters for {@link removeManager}. */
@@ -640,13 +660,20 @@ export interface RemoveManagerParams {
  * Remove a `Manager` row — either an admin removing a different manager or a
  * manager resigning itself.
  *
- * On a DELETE, `coalesce(new.MemberKey, old.MemberKey)` binds `old.MemberKey =
- * targetManagerKey` (there is no `new` row), so the signed payload is the target
- * key for BOTH accepting branches of `Manager.Authorized`, and a single context
- * construction serves both:
+ * Both delete-side branches of `Manager.Authorized` sign the same payload — the
+ * bare target key, `digest(old.MemberKey = targetManagerKey)` — so a single
+ * context construction serves both:
  * - **Admin removal**: `byManagerKeyPair` is a different existing manager; the
- *   existing-manager branch verifies the signature against `A.MemberKey =
- *   context.ManagerKey`.
+ *   removal branch verifies the signature against `A.MemberKey =
+ *   context.ManagerKey`. Deliberately NO generation condition: a later-generation
+ *   manager may remove an earlier-generation one (generation is lineage, not
+ *   privilege), and deletes are safe once inserts are — every accepting branch
+ *   requires a `Manager` row in the post-image, and the promotion branch's
+ *   generation ordering keeps attacker rows out of it. Note the delete payload
+ *   differs from the insert payload (which also carries the generation), so an
+ *   "add X" signature no longer doubles as a "remove X" signature — a partial
+ *   narrowing of `bug-strand-manager-authority-antireplay`, not its closure
+ *   (a captured REMOVAL signature is still replayable as a removal).
  * - **Self-resignation**: `byManagerKeyPair` IS the target (its `publicKeyB64`
  *   equals `targetManagerKey`); the former-manager self branch verifies
  *   `old.MemberKey = context.ManagerKey` and the self-signature over `old.MemberKey`.

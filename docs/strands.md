@@ -148,11 +148,17 @@ another manager all require the writer to prove it already holds a manager row. 
 contents of that table are the strand's entire access-control story, and the schema
 enforces these invariants:
 
-- **Only an existing manager can create a manager.** A promotion must be signed by a
-  *different* manager that already exists. A key cannot promote itself — this matters
-  because the check runs at commit time, when the row being added is already present and
-  would otherwise vouch for itself. (This holds for a *single* promotion; see the
-  same-transaction gap below.)
+- **Every appointment comes from someone strictly closer to the founder.** Each manager
+  row records a *generation* — how many appointment steps separate it from the founder,
+  who sits at generation 0 — and every manager is seated strictly further from the founder
+  than the manager who appointed it. A promotion is only valid when signed by an existing
+  manager whose generation is strictly smaller than the new manager's. So two strangers
+  cannot appoint each other, in one transaction or otherwise: among any batch of
+  appointments, the one closest to the founder still needs a sponsor closer than itself,
+  and that can only be someone who was already a manager before the batch. A key cannot
+  promote itself for the same reason. Generation is a lineage marker, **not** a privilege
+  level — a generation-5 manager has exactly the same powers as a generation-1 manager,
+  including removing it.
 - **A manager can be removed by another manager, or resign itself.** Either way the
   removal carries a signature from the party authorizing it; an unrelated key cannot
   remove anyone.
@@ -175,17 +181,13 @@ promoted. Whether it should be is tracked separately as `debt-strand-manager-mus
 
 Known gaps remain, all out of scope of the rules above:
 
-- **Two keys can promote each other in one transaction and take the strand over.** The
-  "must be a *different* manager" rule is checked at commit against the rows as they
-  will stand *after* the transaction, so two keys inserted together each count as the
-  other's pre-existing manager. The pair can then remove every real manager in that same
-  transaction, because by then they are managers. This is measured, not theoretical, and
-  it defeats the whole administration model — tracked as
-  `strand-manager-same-txn-mutual-promotion`, the highest-priority gap here.
 - **Concurrent removals on different nodes can still empty the table.** The last-manager
   floor counts the rows one node can see, so two nodes each removing a different manager
   can both believe a manager survives. A cross-node guard is not attempted; tracked in
   the schema's own note next to the check.
-- **A manager's authorization signature does not distinguish adding a key from removing
-  it** — both sign the same payload with no nonce, so a captured "add X" approval can be
-  replayed as "remove X". Tracked as `bug-strand-manager-authority-antireplay`.
+- **A manager's authorization signature carries no nonce, so it can be replayed.** An
+  appointment now signs the new key *together with its generation* while a removal signs
+  the bare key, so a captured "add X" approval can no longer double as "remove X" — but a
+  captured removal approval can still be replayed as a later removal, and a captured
+  appointment can be re-used if the same generation becomes seatable again. Tracked as
+  `bug-strand-manager-authority-antireplay`.

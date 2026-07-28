@@ -134,6 +134,15 @@ declare schema Strand {
     -- A manager is a member that can issue invites, authorize members, and rotate managers
     table Manager (
         MemberKey text primary key,
+        -- Lineage ordering. The founding manager is generation 0; every later manager is
+        -- seated strictly after (greater than) the manager that appointed it. This is what
+        -- makes same-transaction mutual promotion impossible: a deferred CHECK sees only
+        -- the post-image, so "did my authorizer exist before this transaction?" is not
+        -- directly askable — but the minimum-generation row of any inserted set must find
+        -- its authorizer among rows of strictly smaller generation, which can only be a
+        -- pre-existing one. Generation is NOT a privilege level: a generation-5 manager
+        -- has exactly the same powers as a generation-1 manager.
+        Generation integer not null,
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
@@ -153,13 +162,14 @@ declare schema Strand {
             (select count(1) from Manager) >= 1
         ),
         constraint Authorized check on insert, delete (
-            -- Bootstrap: the founding manager is seated with no prior signer. Gated to
-            -- INSERT (old.MemberKey is null) AND to the founding state — at most one
-            -- Member, and this manager IS that member. Deferred checks see post-image
-            -- state, so an ungated count test is also true for a DELETE that drops the
-            -- count to <= 1, and for the INSERT half of a same-transaction swap of the
-            -- sole manager.
+            -- Bootstrap: the founding manager is seated with no prior signer, at
+            -- generation 0. Gated to INSERT (old.MemberKey is null) AND to the founding
+            -- state — at most one Member, and this manager IS that member. Deferred
+            -- checks see post-image state, so an ungated count test is also true for a
+            -- DELETE that drops the count to <= 1, and for the INSERT half of a
+            -- same-transaction swap of the sole manager.
             (old.MemberKey is null
+                and new.Generation = 0
                 and (select count(1) from Manager) <= 1
                 and (select count(1) from Member) <= 1
                 and exists (select 1 from Member M where M.Key = new.MemberKey))
@@ -171,22 +181,37 @@ declare schema Strand {
                         and verify(digest(old.MemberKey), context.Signature, old.MemberKey, 'ed25519')
                 )
 
-                -- or authorized by ANOTHER existing manager. The `<>` is load-bearing:
-                -- this subquery runs at commit against the post-insert row set, so
-                -- without it the row being inserted is its own authorizer and any key
-                -- could self-promote by signing its own key.
-                -- OPEN HOLE: `<>` excludes only the row's OWN key, not sibling rows
-                -- inserted in the SAME transaction. Two attacker keys that each sign the
-                -- other's promotion in one transaction are both accepted (each is the
-                -- other's "existing" manager in the post-image), and the pair can evict
-                -- every real manager in that same transaction. Measured, not theoretical.
-                -- Tracked as strand-manager-same-txn-mutual-promotion.
-                or exists (
+                -- or a promotion signed by an EARLIER-generation manager. The strict
+                -- A.Generation < new.Generation is what closes same-transaction mutual
+                -- promotion: this subquery runs at commit against the post-insert row
+                -- set, so sibling rows inserted in the same transaction are visible —
+                -- but the minimum-generation row of any inserted set cannot find its
+                -- authorizer among its siblings (that would contradict minimality), so
+                -- that authorizer must be a pre-existing manager who really signed.
+                -- A mutual pair or ring needs each generation strictly below another's
+                -- in a cycle; impossible. Nothing sits below the founder's 0, so a
+                -- chain cannot duck underneath either. The <> is subsumed by the
+                -- ordering (a row's generation is never below its own) but kept to
+                -- state the no-self-promotion intent locally.
+                or (old.MemberKey is null and exists (
                     select 1 from Manager A
                         where A.MemberKey = context.ManagerKey
-                            and A.MemberKey <> coalesce(new.MemberKey, old.MemberKey)
-                            and verify(digest(coalesce(new.MemberKey, old.MemberKey)), context.Signature, A.MemberKey, 'ed25519')
-                )
+                            and A.MemberKey <> new.MemberKey
+                            and A.Generation < new.Generation
+                            and verify(digest(new.MemberKey || '|' || new.Generation), context.Signature, A.MemberKey, 'ed25519')))
+
+                -- or a removal authorized by ANOTHER existing manager. Deliberately no
+                -- generation condition here: deletes are safe once inserts are (every
+                -- accepting branch requires a Manager row in the post-image, and no
+                -- attacker row can get there), and a generation gate would break a
+                -- later-generation manager removing an earlier-generation one. The
+                -- payload stays digest(old.MemberKey) — distinct from the insert
+                -- payload, which also carries the generation.
+                or (new.MemberKey is null and exists (
+                    select 1 from Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and A.MemberKey <> old.MemberKey
+                            and verify(digest(old.MemberKey), context.Signature, A.MemberKey, 'ed25519')))
         )
     ) with context (ManagerKey text null, Signature text null);
 }

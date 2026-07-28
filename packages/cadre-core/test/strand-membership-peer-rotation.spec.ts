@@ -260,6 +260,47 @@ async function addExtraManagers(db: Database, founder: Ed25519KeyPair, count: nu
   return extras;
 }
 
+/** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
+async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
+  await db.beginTransaction();
+  try {
+    await statements();
+    await db.commit();
+  } catch (error) {
+    // A failed commit() already tore the transaction down, so rollback() throws
+    // "no transaction active" — log it rather than masking the real cause.
+    try {
+      await db.rollback();
+    } catch (rollbackError) {
+      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
+    }
+    throw error;
+  }
+}
+
+/**
+ * Raw generation-carrying `Manager` insert: `by` signs the promotion payload
+ * `` `${key}|${generation}` `` and binds itself as `context.ManagerKey`. Unlike
+ * `addManager` (which derives the generation from its own row), the generation is
+ * caller-chosen — exactly what an attacker controls, and what the accepted
+ * non-successor case needs.
+ */
+async function insertManagerRow(db: Database, by: Ed25519KeyPair, key: string, generation: number): Promise<void> {
+  const signature = signStrandPayload(`${key}|${generation}`, by.privateKeyB64);
+  await db.exec(
+    `insert into Strand.Manager (MemberKey, Generation)
+       with context ManagerKey = ?, Signature = ?
+       values (?, ?)`,
+    [by.publicKeyB64, signature, key, generation],
+  );
+}
+
+/** The `Generation` of one manager row, or undefined when the key holds no row. */
+async function managerGeneration(db: Database, key: string): Promise<number | undefined> {
+  const row = await db.get('select Generation from Strand.Manager where MemberKey = ?', [key]);
+  return row == null ? undefined : Number(row.Generation);
+}
+
 describe('addManager', () => {
   it('an existing manager promotes a second manager (non-bootstrap signature branch)', async () => {
     const { db, founder } = await openStrand('c');
@@ -290,16 +331,17 @@ describe('addManager', () => {
     const target = freshKeyPair();
     const someOtherKey = freshKeyPair().publicKeyB64;
 
-    // A real manager (founder) signs, but over a DIFFERENT key than the one being
-    // inserted, so verify(digest(new.MemberKey=target), sig, founder) fails.
-    const wrongSignature = signStrandPayload(someOtherKey, founder.privateKeyB64);
+    // A real manager (founder) signs a correctly-shaped promotion payload, but over
+    // a DIFFERENT key than the one being inserted, so
+    // verify(digest(new.MemberKey=target || '|' || 1), sig, founder) fails.
+    const wrongSignature = signStrandPayload(`${someOtherKey}|1`, founder.privateKeyB64);
 
     await expect(
       db.exec(
-        `insert into Strand.Manager (MemberKey)
+        `insert into Strand.Manager (MemberKey, Generation)
            with context ManagerKey = ?, Signature = ?
-           values (?)`,
-        [founder.publicKeyB64, wrongSignature, target.publicKeyB64],
+           values (?, ?)`,
+        [founder.publicKeyB64, wrongSignature, target.publicKeyB64, 1],
       ),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Manager')).toBe(1);
@@ -523,33 +565,22 @@ describe('removeManager', () => {
     // Delete-then-insert in ONE transaction: the deferred checks see the post-image
     // (one manager: the successor), which is exactly the state the old schema's
     // ungated bootstrap branch would have waved through.
-    const swap = async (): Promise<void> => {
-      await db.beginTransaction();
-      try {
-        await db.exec(
-          `delete from Strand.Manager
-             with context ManagerKey = ?, Signature = ?
-             where MemberKey = ?`,
-          [founder.publicKeyB64, resignSignature, founder.publicKeyB64],
-        );
-        await db.exec(
-          `insert into Strand.Manager (MemberKey)
-             with context ManagerKey = null, Signature = null
-             values (?)`,
-          [successor.publicKeyB64],
-        );
-        await db.commit();
-      } catch (error) {
-        // A failed commit() already tore the transaction down, so rollback() throws
-        // "no transaction active" — log it rather than masking the real cause.
-        try {
-          await db.rollback();
-        } catch (rollbackError) {
-          log('Rollback after the swap attempt was a no-op: %s', rollbackError);
-        }
-        throw error;
-      }
-    };
+    const swap = (): Promise<void> => inTransaction(db, async () => {
+      await db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, resignSignature, founder.publicKeyB64],
+      );
+      // Generation 0 is the successor's best shot — the bootstrap branch demands
+      // exactly 0, and no smaller generation can have an authorizer beneath it.
+      await db.exec(
+        `insert into Strand.Manager (MemberKey, Generation)
+           with context ManagerKey = null, Signature = null
+           values (?, 0)`,
+        [successor.publicKeyB64],
+      );
+    });
 
     // The successor's INSERT has no other manager to authorize it (the founder's row
     // is gone in the post-image) and the bootstrap branch is gated off, so Authorized
@@ -559,5 +590,204 @@ describe('removeManager', () => {
     expect(await tableCount(db, 'Manager')).toBe(1);
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [successor.publicKeyB64])).toBeUndefined();
+  }, 30_000);
+});
+
+// ── Phase 3: the generation ordering (same-transaction takeover is closed) ────
+//
+// `Manager.Generation` orders every manager strictly after the manager that
+// appointed it, and the promotion branch of `Manager.Authorized` accepts only an
+// authorizer of STRICTLY SMALLER generation. The deferred check still sees
+// same-transaction sibling rows as "existing" managers — but the
+// minimum-generation row of any inserted set cannot find an authorizer among its
+// siblings, so that authorizer must pre-exist the transaction. These tests replay
+// the measured takeover shapes (mutual pair, founder eviction, rings, equal and
+// below-founder generations) against the closed schema, and pin that what is
+// enforced is the ORDERING — not an exact successor value, and not a privilege.
+
+describe('Manager.Generation ordering', () => {
+  it('rejects two keys signing each other\'s promotion in one transaction', async () => {
+    const { db, founder } = await openStrand('c');
+    const x = freshKeyPair();
+    const y = freshKeyPair();
+
+    // The exact measured takeover: each key binds the OTHER as its authorizer.
+    // Whatever generations the attacker picks, the smaller one has no authorizer
+    // beneath it — here Y (gen 3) is "authorized" by X (gen 5), so Y's row fails.
+    await expect(inTransaction(db, async () => {
+      await insertManagerRow(db, y, x.publicKeyB64, 5); // Y vouches for X
+      await insertManagerRow(db, x, y.publicKeyB64, 3); // X vouches for Y
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1); // only the founder
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('rejects the full takeover: mutual promotion plus evicting the founder, one transaction', async () => {
+    const { db, founder } = await openStrand('c');
+    const x = freshKeyPair();
+    const y = freshKeyPair();
+
+    // The pre-fix schema COMMITTED exactly this: X and Y seat each other, then X
+    // (a "manager" in the post-image) deletes the founder. The delete's own branch
+    // is even satisfiable here — the rejection comes from the promotion ordering.
+    await expect(inTransaction(db, async () => {
+      await insertManagerRow(db, y, x.publicKeyB64, 5);
+      await insertManagerRow(db, x, y.publicKeyB64, 3);
+      await db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [x.publicKeyB64, signStrandPayload(founder.publicKeyB64, x.privateKeyB64), founder.publicKeyB64],
+      );
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [x.publicKeyB64])).toBeUndefined();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [y.publicKeyB64])).toBeUndefined();
+  }, 30_000);
+
+  it('rejects a three-key mutual-vouching ring in one transaction', async () => {
+    const { db } = await openStrand('c');
+    const x = freshKeyPair();
+    const y = freshKeyPair();
+    const z = freshKeyPair();
+
+    // A ring's minimum-generation row (X at 1) is authorized by Z at 3 — not
+    // strictly smaller, so the ring has no root and the transaction fails.
+    await expect(inTransaction(db, async () => {
+      await insertManagerRow(db, z, x.publicKeyB64, 1); // Z vouches for X
+      await insertManagerRow(db, x, y.publicKeyB64, 2); // X vouches for Y
+      await insertManagerRow(db, y, z.publicKeyB64, 3); // Y vouches for Z
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+  }, 30_000);
+
+  it('rejects a mutual pair at EQUAL generations (the ordering is strict)', async () => {
+    const { db } = await openStrand('c');
+    const x = freshKeyPair();
+    const y = freshKeyPair();
+
+    await expect(inTransaction(db, async () => {
+      await insertManagerRow(db, y, x.publicKeyB64, 1);
+      await insertManagerRow(db, x, y.publicKeyB64, 1);
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+  }, 30_000);
+
+  it('rejects a mutual pair using generations BELOW the founder\'s 0 (no ducking underneath)', async () => {
+    const { db } = await openStrand('c');
+    const x = freshKeyPair();
+    const y = freshKeyPair();
+
+    // Negative generations do sort below the founder, but the pair still needs
+    // each generation strictly below the other's — the minimum (-2) has no
+    // authorizer beneath it, so going negative buys the attacker nothing.
+    await expect(inTransaction(db, async () => {
+      await insertManagerRow(db, y, x.publicKeyB64, -1); // Y (-2) < X (-1): satisfiable
+      await insertManagerRow(db, x, y.publicKeyB64, -2); // X (-1) < Y (-2): impossible
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+  }, 30_000);
+
+  it('rejects a stranger claiming generation 0 once the strand is bootstrapped', async () => {
+    const { db, founder } = await openStrand('c');
+    const attacker = freshKeyPair();
+
+    // Generation 0 only helps in the FOUNDING state — the bootstrap branch also
+    // demands count(Manager) <= 1, and the post-image count here is 2.
+    await expect(
+      db.exec(
+        `insert into Strand.Manager (MemberKey, Generation)
+           with context ManagerKey = null, Signature = null
+           values (?, 0)`,
+        [attacker.publicKeyB64],
+      ),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('enforces the ORDERING, not an exact successor value (+5 accepted, <= rejected)', async () => {
+    const { db, founder } = await openStrand('c');
+    const skipAhead = freshKeyPair();
+    const tooLow = freshKeyPair();
+
+    // The founder (gen 0) seats a manager at gen 5 — a gap, not 0+1 — accepted:
+    // only strict "authorizer below new" is enforced, never adjacency.
+    await insertManagerRow(db, founder, skipAhead.publicKeyB64, 5);
+    expect(await managerGeneration(db, skipAhead.publicKeyB64)).toBe(5);
+
+    // The same founder signing a generation EQUAL to its own (0 < 0 fails; the
+    // bootstrap branch is also off — the manager count is already 2).
+    await expect(insertManagerRow(db, founder, tooLow.publicKeyB64, 0)).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Manager')).toBe(2);
+  }, 30_000);
+
+  it('binds the generation into the signed payload (a promotion cannot be replayed at another generation)', async () => {
+    const { db, founder } = await openStrand('c');
+    const target = freshKeyPair();
+
+    // A genuine founder signature over `target|1`, replayed for an insert at
+    // generation 2 — the payload mismatch fails verify(), so a captured promotion
+    // is pinned to the generation it was issued for.
+    const signatureForGen1 = signStrandPayload(`${target.publicKeyB64}|1`, founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `insert into Strand.Manager (MemberKey, Generation)
+           with context ManagerKey = ?, Signature = ?
+           values (?, ?)`,
+        [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 2],
+      ),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // The same signature used at ITS OWN generation is accepted — proving the
+    // rejection above was the payload binding, not anything else.
+    await db.exec(
+      `insert into Strand.Manager (MemberKey, Generation)
+         with context ManagerKey = ?, Signature = ?
+         values (?, ?)`,
+      [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 1],
+    );
+    expect(await managerGeneration(db, target.publicKeyB64)).toBe(1);
+  }, 30_000);
+
+  it('a promoted manager can itself promote: founder→A→B chains generations 0→1→2', async () => {
+    const { db, founder } = await openStrand('c');
+    const a = freshKeyPair();
+    const b = freshKeyPair();
+
+    // Exercises addManager's generation LOOKUP with a non-founder authorizer:
+    // A's own row (gen 1) is read back and B is seated at 2.
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: a.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: a, newManagerKey: b.publicKeyB64 });
+
+    expect(await tableCount(db, 'Manager')).toBe(3);
+    expect(await managerGeneration(db, founder.publicKeyB64)).toBe(0);
+    expect(await managerGeneration(db, a.publicKeyB64)).toBe(1);
+    expect(await managerGeneration(db, b.publicKeyB64)).toBe(2);
+  }, 30_000);
+
+  it('a later-generation manager may remove an earlier-generation one (generation is not privilege)', async () => {
+    const { db, founder } = await openStrand('c');
+    const a = freshKeyPair();
+    const b = freshKeyPair();
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: a.publicKeyB64 }); // gen 1
+    await addManager(db, { byManagerKeyPair: a, newManagerKey: b.publicKeyB64 });       // gen 2
+    expect(await tableCount(db, 'Manager')).toBe(3);
+
+    // B (gen 2) removes A (gen 1): the removal branch carries no generation
+    // condition, so seniority grants no protection — only the floor does.
+    await removeManager(db, { byManagerKeyPair: b, targetManagerKey: a.publicKeyB64 });
+
+    expect(await tableCount(db, 'Manager')).toBe(2);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a.publicKeyB64])).toBeUndefined();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 });

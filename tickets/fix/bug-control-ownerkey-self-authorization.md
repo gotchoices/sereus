@@ -65,3 +65,16 @@ being written from its own authorizer set (`and A.Key <> coalesce(new.Key, old.K
 bootstrap branch to inserts (`old.Key is null and ...`). `schemas/control.qsql` and
 `CONTROL_SCHEMA` in `packages/cadre-core/src/control-schema.ts` must stay byte-equivalent —
 `control-schema-drift.spec.ts` enforces that.
+
+**Also probe same-transaction MUTUAL authorization** (two keys inserted in one transaction, each
+signing the other's row): the `<>` exclusion alone does not stop it, because the deferred check
+sees sibling rows from the same transaction as "existing" owners. `Strand.Manager` measured
+exactly that takeover and closed it (`strand-manager-same-txn-mutual-promotion`, complete) with a
+`Generation integer not null` column: the founder sits at generation 0, every later row must be
+signed by an authorizer of *strictly smaller* generation, and the generation is part of the signed
+payload. The minimum-generation row of any inserted set then cannot be vouched for by a sibling,
+which kills mutual pairs and rings of any length — see the `Manager` table in
+`schemas/strand.qsql` and the `Manager.Generation ordering` suite in
+`packages/cadre-core/test/strand-membership-peer-rotation.spec.ts` for the validated constraint
+shape and attack-shape tests. If `OwnerKey` admits the mutual variant, port that mechanism rather
+than inventing a new one.
