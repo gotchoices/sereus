@@ -1,6 +1,13 @@
 const path = require('path');
 const fs = require('fs');
 const webpack = require('@nativescript/webpack');
+// NOTE: `webpack` is not a declared dependency of this package (scripts/bundle-check.js
+// requires it too). It resolves only because @nativescript/webpack lists it under
+// `dependencies`, and `yarn dep-check` can't catch the omission — knip's webpack plugin
+// treats `webpack` as its own enabler, so it is never reported as unlisted. Fine while
+// that dependency holds; if @nativescript/webpack ever demotes webpack to a peer or drops
+// it, declare it here explicitly and reuse its exact range string so yarn dedupes onto the
+// existing lock entry rather than installing a second webpack.
 const webpackCore = require('webpack');
 
 /**

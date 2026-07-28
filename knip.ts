@@ -67,11 +67,11 @@ const config: KnipConfig = {
 
 		'packages/reference-app-ns': {
 			// NativeScript resolves page modules by string, not by import: app-root.xml
-			// names `chat/chat-page` and Settings is reached via a runtime
-			// `Frame.navigate({ moduleName })` — no static import exists for knip to
-			// follow, so each page (and the whole `src/` graph behind it) needs to be an
-			// entry. The polyfill/shim files are reached only through webpack
-			// (`resolve.fallback` for the node-* polyfills,
+			// names `chat/chat-page` in `defaultPage` and Settings is reached via a
+			// runtime `Frame.topmost()?.navigate('settings/settings-page')` — no static
+			// import exists for knip to follow, so each page (and the whole `src/` graph
+			// behind it) needs to be an entry. The polyfill/shim files are reached only
+			// through webpack (`resolve.fallback` for the node-* polyfills,
 			// `NormalModuleReplacementPlugin` for the shims — see webpack.config.js),
 			// `nativescript.config.ts` is read by the `ns` CLI, and `solo-smoke.ts` is a
 			// manual on-device helper with no importer (cf. strand-proto's test/manual).
