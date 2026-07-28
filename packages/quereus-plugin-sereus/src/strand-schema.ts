@@ -186,6 +186,12 @@ export const STRAND_SCHEMA = `    table Header (
                 -- this subquery runs at commit against the post-insert row set, so
                 -- without it the row being inserted is its own authorizer and any key
                 -- could self-promote by signing its own key.
+                -- OPEN HOLE: \`<>\` excludes only the row's OWN key, not sibling rows
+                -- inserted in the SAME transaction. Two attacker keys that each sign the
+                -- other's promotion in one transaction are both accepted (each is the
+                -- other's "existing" manager in the post-image), and the pair can evict
+                -- every real manager in that same transaction. Measured, not theoretical.
+                -- Tracked as strand-manager-same-txn-mutual-promotion.
                 or exists (
                     select 1 from Manager A
                         where A.MemberKey = context.ManagerKey

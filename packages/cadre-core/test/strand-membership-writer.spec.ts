@@ -8,6 +8,8 @@ import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-memb
 import {
   signStrandPayload,
   bootstrapFounderMembership,
+  addMemberByManager,
+  addManager,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
 } from '../src/strand-membership-writer.js';
@@ -219,6 +221,43 @@ describe('bootstrapFounderMembership', () => {
     expect(await count(db, 'Header')).toBe(1);
     expect(await count(db, 'Member')).toBe(1);
     expect(await count(db, 'Manager')).toBe(1);
+  }, 30_000);
+
+  // The nearest in-process stand-in for a node that acquires an already-populated
+  // strand: hydrate a strand that has GROWN past the founding state (3 members, 2
+  // managers) into a brand-new `Database`. `Manager.Authorized`'s bootstrap branch is
+  // gated on `count(Member) <= 1`, so if hydration replayed the membership rows as SQL
+  // DML the founding `Manager` row would be re-checked against a 3-member strand and
+  // rejected. It is not — rows arrive as committed blocks and the CHECKs do not re-run.
+  it('hydrates a grown strand (3 members, 2 managers) into a fresh Database without re-running membership CHECKs', async () => {
+    const founderKeyPair = strandMemberKeyPair(await generateStrandMemberKey());
+    const secondManager = strandMemberKeyPair(await generateStrandMemberKey());
+    const plainMember = strandMemberKeyPair(await generateStrandMemberKey());
+
+    const cold = await openStrandDb();
+    const { strandId, storage } = cold;
+    const params = { strandId, type: 'c' as const, sApp: makeSAppConfig(), founderKeyPair };
+    await bootstrapFounderMembership(cold.db, params);
+    await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: secondManager.publicKeyB64 });
+    await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: plainMember.publicKeyB64 });
+    await addManager(cold.db, { byManagerKeyPair: founderKeyPair, newManagerKey: secondManager.publicKeyB64 });
+    expect(await count(cold.db, 'Member')).toBe(3);
+    expect(await count(cold.db, 'Manager')).toBe(2);
+    await cold.shutdown();
+
+    open = await openStrandDb(strandId, storage);
+    const { db } = open;
+    expect(await count(db, 'Member')).toBe(3);
+    expect(await count(db, 'Manager')).toBe(2);
+
+    // The hydrated strand is still writable, and the hydrated rows really back the
+    // constraints: the manager appointed in the COLD session authorizes a promotion in
+    // the WARM one, so hydration seats rows the CHECKs can verify against — not an
+    // inert snapshot.
+    await expect(
+      addManager(db, { byManagerKeyPair: secondManager, newManagerKey: plainMember.publicKeyB64 }),
+    ).resolves.toBeUndefined();
+    expect(await count(db, 'Manager')).toBe(3);
   }, 30_000);
 
   it('coalesces a missing sApp signature to empty string (NOT NULL Header column)', async () => {

@@ -26,9 +26,9 @@ import type { SAppConfig } from '../src/types.js';
  * via `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *
- * The founder is bootstrapped first (Member #1 + the sole founding Manager), so a
- * manager add genuinely runs past the `count(Manager) <= 1` bootstrap branch
- * (at commit the new row makes the count ≥ 2), exercising signature verification.
+ * The founder is bootstrapped first (Member #1 + the sole founding Manager), so every
+ * later rotation runs past `Manager.Authorized`'s bootstrap branch — which is gated to
+ * INSERTs in the founding state — and genuinely exercises signature verification.
  */
 
 const log = debug('sereus:cadre:test:strand-rotation');

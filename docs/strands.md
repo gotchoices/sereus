@@ -151,7 +151,8 @@ enforces these invariants:
 - **Only an existing manager can create a manager.** A promotion must be signed by a
   *different* manager that already exists. A key cannot promote itself — this matters
   because the check runs at commit time, when the row being added is already present and
-  would otherwise vouch for itself.
+  would otherwise vouch for itself. (This holds for a *single* promotion; see the
+  same-transaction gap below.)
 - **A manager can be removed by another manager, or resign itself.** Either way the
   removal carries a signature from the party authorizing it; an unrelated key cannot
   remove anyone.
@@ -172,8 +173,15 @@ enforces these invariants:
 Being a manager does not require being a member: a key with no `Member` row can still be
 promoted. Whether it should be is tracked separately as `debt-strand-manager-must-be-member`.
 
-Two known gaps remain, both deliberately out of scope of the rules above:
+Known gaps remain, all out of scope of the rules above:
 
+- **Two keys can promote each other in one transaction and take the strand over.** The
+  "must be a *different* manager" rule is checked at commit against the rows as they
+  will stand *after* the transaction, so two keys inserted together each count as the
+  other's pre-existing manager. The pair can then remove every real manager in that same
+  transaction, because by then they are managers. This is measured, not theoretical, and
+  it defeats the whole administration model — tracked as
+  `strand-manager-same-txn-mutual-promotion`, the highest-priority gap here.
 - **Concurrent removals on different nodes can still empty the table.** The last-manager
   floor counts the rows one node can see, so two nodes each removing a different manager
   can both believe a manager survives. A cross-node guard is not attempted; tracked in
