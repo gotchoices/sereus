@@ -4,6 +4,13 @@ files:
   - packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts
   - packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts
   - packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts
+  - packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts
+  - packages/integration-tests/src/scenarios/control-cohort-auto-convergence.integration.ts
+  - packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts
+  - packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts
+  - packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts
+  - packages/integration-tests/src/scenarios/websocket-chat.integration.ts
+  - packages/integration-tests/src/scenarios/convergence-stress.integration.ts
   - packages/integration-tests/src/harness/test-party.ts (clusterSize: 3, line 48)
   - packages/cadre-core/src/cadre-node.ts (clusterSize: 3, line 643)
   - packages/cadre-core/src/strand-instance-manager.ts (clusterSize: 3, line 260)
@@ -160,6 +167,55 @@ so they attach here rather than getting fresh tickets:
   a second member, and gates writes by membership
 - `packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts` > `connectToStrand (networked e2e)`
   (4 cases: late-joining peer catch-up, peer A keeps serving reads after B shuts down, plus 2 more)
+
+### Second attachment wave (2026-07-27, HEAD `157c684`) — 15 more cases
+
+Triage of a later pre-existing-failure report reproduced the identical
+`membership-not-admitted:low-confidence-downsize` (2/2 rejected, from
+`ClusterCoordinator.executeTransaction`, often paired with the concurrent
+`StreamResetError` on the other peer) across six more suites. Deps verified freshly built
+(every `../optimystic` and `../quereus` package's `dist/` mtime newer than its `src/`), so
+this is not build drift. All are two-node cohort commits; the 3-party and single-node cases
+in the same files pass, which is the fingerprint of the `clusterSize: 3` mismatch above.
+
+`packages/integration-tests/src/scenarios/` unless noted:
+
+- `push-wake-e2e.integration.ts` > E2E push-wake over the control network >
+  - `wakes a hibernating member over a real direct control dial`
+  - `delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial`
+  - (scenarios 3 and 4 in the same file pass — neither commits a 2-node cohort)
+- `control-cohort-auto-convergence.integration.ts` > Control-cohort auto-convergence (no manual dial) >
+  - `B converges on an owner-written CadrePeer row via in-node reconcile (production cold-start only)`
+    — surfaces as `Timeout waiting for B observes the X CadrePeer row … after 45000ms`
+- `control-write-while-alone-convergence.integration.ts` > Control-DB write-while-alone re-replication >
+  - `re-replicates an owner CadrePeer row written while alone, once the cohort forms` (30s timeout)
+  - `converges a DeviceToken self-registered while alone, once the cohort forms` (30s timeout)
+- `strand-formation-e2e.integration.ts` > E2E Strand Formation > Phase 2: Strand instance lifecycle >
+  - `should form strand, start instances, and replicate data`
+  - `should support multiple independent strands between same parties`
+  - (`should form a strand with three parties` passes — 3-node cohort meets `clusterSize: 3`)
+- `multi-party-workflows.integration.ts` > Multi-Party Strand Workflows >
+  - Phase 1 > `should form a closed strand and exchange messages bidirectionally`
+  - Phase 1 > `should allow two parties to join an open strand and exchange data`
+  - Phase 2 > `should converge after interleaved writes from both parties`
+  - Phase 2 > `should converge across multiple rounds of bidirectional writes`
+- `websocket-chat.integration.ts` > WebSocket Chat (server-to-server) >
+  - `should replicate a chat message over WebSocket`
+- `convergence-stress.integration.ts` > Convergence Stress Tests >
+  - `should converge after rapid burst inserts from both nodes`
+  - `should converge with interleaved inserts and random delays`
+  - `should retain converged data after disconnect and reconnect`
+
+Repro (from `packages/integration-tests`):
+```
+yarn vitest run --reporter=verbose src/scenarios/push-wake-e2e.integration.ts
+yarn vitest run --reporter=verbose src/scenarios/control-cohort-auto-convergence.integration.ts src/scenarios/control-write-while-alone-convergence.integration.ts
+yarn vitest run src/scenarios/strand-creation.integration.ts src/scenarios/strand-formation-e2e.integration.ts src/scenarios/multi-party-sync.integration.ts src/scenarios/multi-party-workflows.integration.ts src/scenarios/websocket-chat.integration.ts src/scenarios/convergence-stress.integration.ts
+```
+Last of those: `Test Files 4 failed | 2 passed (6)`, `Tests 10 failed | 19 passed (29)`.
+
+The blast radius is now 21 test cases across 9 files, all one decision away from green —
+which raises the stakes on the (A)/(B) call above rather than changing its terms.
 
 The `networked.e2e.spec.ts` cases do **not** exercise the strand Authority/Manager RBAC role at
 all yet fail with the same cluster-admission rejection — confirming a systemic two-node p2p
