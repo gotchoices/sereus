@@ -1,5 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile, readFile, readdir } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
@@ -163,6 +163,45 @@ describe('FileTrustedOwnerStore specifics', () => {
 
 		const reloaded = await FileTrustedOwnerStore.open(dir, 'party-alpha');
 		expect(reloaded.all().size).toBe(0);
+	});
+
+	it('a present-but-unreadable anchor throws rather than cold-starting empty', async () => {
+		const dir = await makeTmpDir();
+		const seeded = await FileTrustedOwnerStore.open(dir, PARTY);
+		await seeded.trust(KEY_A, 'operator');
+		// Replace the anchor with a directory: present, but every read fails with
+		// something other than ENOENT. Loading empty here would let the next
+		// trust() snapshot-write destroy a still-intact anchor, so open() must throw.
+		const file = await anchorFile(dir);
+		await rm(file);
+		await mkdir(file);
+
+		await expect(FileTrustedOwnerStore.open(dir, PARTY)).rejects.toThrow(/failed to read the trusted-owner anchor/i);
+	});
+
+	it('persists each key\'s provenance, write-once across re-trust and reload', async () => {
+		const dir = await makeTmpDir();
+		const first = await FileTrustedOwnerStore.open(dir, PARTY);
+		await first.trust(KEY_A, 'genesis');
+		await first.trust(KEY_B, 'invite');
+		// Re-trusting with a different source must not rewrite the original.
+		await first.trust(KEY_A, 'operator');
+
+		const body = JSON.parse((await readFile(await anchorFile(dir))).toString('utf8')) as {
+			version: number;
+			partyId: string;
+			owners: Record<string, { source: string; trustedAt: number }>;
+		};
+		expect(body.version).toBe(1);
+		expect(body.partyId).toBe(PARTY);
+		expect(body.owners[KEY_A]?.source).toBe('genesis');
+		expect(body.owners[KEY_B]?.source).toBe('invite');
+		expect(typeof body.owners[KEY_A]?.trustedAt).toBe('number');
+
+		// A reload sees the same provenance (it is what a later source-aware
+		// consumer would read back).
+		const reloaded = await FileTrustedOwnerStore.open(dir, PARTY);
+		expect(reloaded.all()).toEqual(new Set([KEY_A, KEY_B]));
 	});
 
 	it('concurrent trust() calls all land durably (serialised snapshot writes)', async () => {

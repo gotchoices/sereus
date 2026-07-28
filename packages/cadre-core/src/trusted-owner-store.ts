@@ -35,7 +35,14 @@ export interface TrustedOwnerStore {
 	/** Is this ed25519 (base64url) key one of my party's out-of-band-trusted owners? */
 	has(ownerKey: string): boolean;
 
-	/** All anchored owner keys (e.g. for seed-trust `knownOwnerKeys`). */
+	/**
+	 * All anchored owner keys (e.g. for seed-trust `knownOwnerKeys`).
+	 *
+	 * NOTE: both backends copy into a fresh Set per call (so the result is a
+	 * snapshot decoupled from later `trust()` calls). Anchors hold a handful of
+	 * keys and callers are per-seed, so the copy is free today; if a hot path
+	 * ever calls this per message, prefer `has()` or cache the snapshot.
+	 */
 	all(): ReadonlySet<string>;
 
 	/**

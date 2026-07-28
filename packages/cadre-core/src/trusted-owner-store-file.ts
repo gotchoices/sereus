@@ -56,8 +56,8 @@ function parsePersisted(value: unknown): PersistedTrustedOwners | undefined {
  * `<dir>/trusted-owners.<encoded partyId>.json` (0600, atomically replaced on
  * every {@link trust}), so one directory can hold anchors for several parties
  * without cross-party leakage. Construct via {@link open}, which loads the
- * existing file; an absent, unreadable, corrupt, or wrong-party file is a cold
- * start (empty anchor) — logged loudly, never a crash.
+ * existing file; an absent, corrupt, or wrong-party file is a cold start (empty
+ * anchor), while a present-but-unreadable file throws (see {@link open}).
  */
 export class FileTrustedOwnerStore implements TrustedOwnerStore {
 	/**
@@ -66,20 +66,30 @@ export class FileTrustedOwnerStore implements TrustedOwnerStore {
 	 */
 	private writeChain: Promise<void> = Promise.resolve();
 
+	/** Filename-safe form of {@link partyId}, shared by the anchor and temp paths. */
+	private readonly encodedParty: string;
+
 	private constructor(
 		private readonly dir: string,
 		readonly partyId: string,
 		private readonly owners: Map<string, { source: TrustSource; trustedAt: number }>
-	) {}
+	) {
+		this.encodedParty = encodeFileSafeComponent(partyId);
+	}
 
 	/**
 	 * Load (or cold-start) the party's anchor from `dir`. Failure policy per the
-	 * trust model: only a real, well-formed, matching-party file yields keys;
-	 * anything else — missing file, unparsable JSON, unknown shape, partyId
-	 * mismatch (a directory reused for a different party must not leak trust) —
-	 * yields an EMPTY anchor. Empty is the safe direction: it makes the node
-	 * trust no one until re-seeded out of band, rather than trusting stale or
-	 * foreign keys.
+	 * trust model: only a real, well-formed, matching-party file yields keys.
+	 * A *decidable* non-anchor — missing file, unparsable JSON, unknown shape,
+	 * partyId mismatch (a directory reused for a different party must not leak
+	 * trust) — yields an EMPTY anchor, the safe direction: the node trusts no
+	 * one until re-seeded out of band, rather than trusting stale or foreign
+	 * keys.
+	 *
+	 * A file that is *present but unreadable* (EACCES, EISDIR, EIO, …) is NOT
+	 * decidable and **throws** instead — mirroring `FileKeyStore.get`. Loading
+	 * empty there would both hide a real misconfiguration and let the next
+	 * {@link trust} snapshot-write silently destroy a still-intact anchor.
 	 */
 	static async open(dir: string, partyId: string): Promise<FileTrustedOwnerStore> {
 		const store = new FileTrustedOwnerStore(dir, partyId, new Map());
@@ -87,10 +97,11 @@ export class FileTrustedOwnerStore implements TrustedOwnerStore {
 		try {
 			raw = await readFile(store.filePath());
 		} catch (error) {
-			if (!isNotFound(error)) {
-				log('FileTrustedOwnerStore: read failed for party %s (cold start): %o', partyId, error);
-			}
-			return store;
+			if (isNotFound(error)) return store;
+			throw new Error(
+				`FileTrustedOwnerStore: failed to read the trusted-owner anchor for party ${partyId} at ${store.filePath()}`,
+				{ cause: error }
+			);
 		}
 		let parsed: unknown;
 		try {
@@ -112,13 +123,13 @@ export class FileTrustedOwnerStore implements TrustedOwnerStore {
 	}
 
 	private filePath(): string {
-		return join(this.dir, `trusted-owners.${encodeFileSafeComponent(this.partyId)}.json`);
+		return join(this.dir, `trusted-owners.${this.encodedParty}.json`);
 	}
 
 	/** Sibling temp path for the atomic replace (random component: collide-free). */
 	private tempPath(): string {
 		const unique = randomBytes(6).toString('hex');
-		return join(this.dir, `trusted-owners.${encodeFileSafeComponent(this.partyId)}.${unique}.tmp`);
+		return join(this.dir, `trusted-owners.${this.encodedParty}.${unique}.tmp`);
 	}
 
 	has(ownerKey: string): boolean {
@@ -140,6 +151,11 @@ export class FileTrustedOwnerStore implements TrustedOwnerStore {
 		if (this.owners.has(ownerKey)) {
 			// Idempotent: re-enrollment / restart re-seeding keeps the original
 			// provenance and skips the disk write entirely.
+			// NOTE: this resolves immediately rather than joining the write chain, so
+			// re-trusting a key whose first persist is still in flight does not await
+			// that persist. Harmless for the seeding callers (they re-trust only after
+			// the original settled, or do not await at all); chain it if a caller ever
+			// needs "durable by the time trust() resolves" for a repeat key.
 			return Promise.resolve();
 		}
 		this.owners.set(ownerKey, { source, trustedAt: Date.now() });

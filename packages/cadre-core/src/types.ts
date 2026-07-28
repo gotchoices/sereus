@@ -4,7 +4,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
-import type { TrustedOwnerStore } from './trusted-owner-store.js';
+import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { PushNotifier } from './push-notifier.js';
 
 /**
@@ -338,7 +338,7 @@ export interface CadreNodeConfig {
      * ('genesis' is reserved for the node's own founding key, seeded
      * internally by `initializeSeedBootstrap`.)
      */
-    pinnedSource?: 'invite' | 'operator';
+    pinnedSource?: Exclude<TrustSource, 'genesis'>;
   };
 
   /**
