@@ -452,7 +452,7 @@ If the nodes can't discover each other automatically (e.g., after a restart with
 2. Paste the encoded seed into the **Seed** field on the phone's Settings screen and tap **Apply Seed**
 3. Or apply via the drone's CLI: `--seed <base64url-encoded-seed>`
 
-> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`dbAnchoredTrustPolicy`) trusts only owner keys already in the phone's `OwnerKey` table. A cold-start phone that has not yet synced the issuing cadre's owner will therefore **reject** a seed signed by that cadre. To anchor trust out-of-band, paste the issuer's `CadreInvite` (which carries `ownerKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that one apply via `pinnedKeyTrustPolicy`. Leave it blank when the phone already trusts the signer.
+> **Cold-start trust.** A seed is signature-verified and its signer key must clear a trust anchor (`SeedTrustPolicy`) before it is accepted — the secure default (`anchoredTrustPolicy`) trusts only owner keys in the phone's node-local trusted-owner anchor, which is seeded out of band and never from replicated control state. A phone that has not been given the issuing cadre's owner key will therefore **reject** a seed signed by that cadre, no matter what its `OwnerKey` table has synced. To anchor trust, paste the issuer's `CadreInvite` (which carries `ownerKeys`) into the optional **Paste enrollment invite (for trust)** field in the Seed Bootstrap section before tapping **Apply Seed**; its keys are pinned for that apply via `pinnedKeyTrustPolicy` and persisted into the anchor, so later seeds from the same owner need no invite. Leave it blank when the phone already trusts the signer.
 
 ### Step 5: Create a Strand
 
@@ -542,10 +542,10 @@ Local runnable via `yarn workspace @serfab/reference-app-rn test:e2e`. The
 
 All three flows share `_setup.yaml` for the connect/seed/strand bootstrap.
 
-Under the secure-default seed-trust policy (`dbAnchoredTrustPolicy`), the cold
-phone would reject the drone's seed because the drone's owner key is not yet
-in its `OwnerKey` table — a race against control-sync. To make the apply step
-deterministic, the drone fixture enrolls its own owner key
+Under the secure-default seed-trust policy (`anchoredTrustPolicy`), the cold
+phone would reject the drone's seed because the drone's owner key is not in its
+node-local trusted-owner anchor — and control-sync can never put it there. To
+make the apply step work at all, the drone fixture enrolls its own owner key
 (`ensureOwnerKey`) and mints a `CadreInvite` carrying it; `start.mjs` writes
 this as `enrollInvite`, the orchestrator threads it in as `ENROLL_INVITE`, and
 `_setup.yaml` pastes it into `input-enroll-invite` before tapping **Apply Seed**

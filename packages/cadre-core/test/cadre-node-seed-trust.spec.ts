@@ -24,13 +24,13 @@ import type {
  * `SeedBootstrapService` construction sites — the owner service
  * (`initializeSeedBootstrap`), the receive-only listener (`enableSeedListener`),
  * and the temp service `applySeed` builds when no service exists. A missed site
- * silently reverts that path to the db-anchored default and the cold-start
+ * silently reverts that path to the anchored default and the cold-start
  * network case fails only in production, so each path is exercised explicitly.
  *
  * Precedence under test:
  *   applySeed(seed, { trustPolicy })   ← per-call override (highest)
  *     └─ CadreNode.config.seedTrustPolicy  ← service default (this seam)
- *          └─ dbAnchoredTrustPolicy()       ← secure fallback (unset → cold reject)
+ *          └─ anchoredTrustPolicy()        ← secure fallback (unset → cold reject)
  */
 describe('CadreNode seedTrustPolicy wiring', () => {
   let ownerPrivateKey: string;
@@ -57,7 +57,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     return { ...seedData, signature, signerKey: publicKey };
   }
 
-  /** A cold (empty OwnerKey table, no bootstrap peers) CadreNode. */
+  /** A cold (empty trusted-owner anchor, no bootstrap peers) CadreNode. */
   function makeColdNode(seedTrustPolicy?: SeedTrustPolicy): CadreNode {
     return new CadreNode({
       controlNetwork: {
@@ -76,15 +76,15 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     (node as unknown as { selfRegistrationTimer: null }).selfRegistrationTimer = null;
   }
 
-  it('cold node with no configured policy rejects a seed (secure db-anchored default, temp-service path)', async () => {
+  it('cold node with no configured policy rejects a seed (secure anchored default, temp-service path)', async () => {
     const node = makeColdNode(); // seedTrustPolicy unset
     try {
       await startClean(node);
       // No initializeSeedBootstrap / enableSeedListener → applySeed builds a temp
-      // service. Unset policy must fall through to dbAnchoredTrustPolicy().
+      // service. Unset policy must fall through to anchoredTrustPolicy().
       const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/DB-anchored trust policy/i);
+      expect(result.error).toMatch(/anchored trust policy/i);
     } finally {
       await node.stop();
     }
@@ -215,7 +215,7 @@ describe('CadreNode seedTrustPolicy wiring', () => {
       const svc = noPolicy.getSeedBootstrapService();
       const result = await svc!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(false);
-      expect(result.error).toMatch(/DB-anchored trust policy/i);
+      expect(result.error).toMatch(/anchored trust policy/i);
     } finally {
       await noPolicy.stop();
     }
@@ -238,23 +238,71 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     }
   }, 60_000);
 
-  it('owner path forwards the policy and a pinned default never narrows DB-anchored trust', async () => {
-    // Pin a DIFFERENT key as the configured default, then enroll the real owner
-    // in the OwnerKey table. pinnedKeyTrustPolicy unions DB-anchored ∪ pinned,
-    // so the DB-anchored signer must still apply (the default does not narrow trust).
+  it('owner path forwards the policy and a pinned default never narrows anchored trust', async () => {
+    // Pin a DIFFERENT key as the configured default; the real owner's key reaches
+    // the node's anchor via genesis (initializeSeedBootstrap). pinnedKeyTrustPolicy
+    // unions anchored ∪ pinned, so the anchored signer must still apply (the
+    // configured default does not narrow trust).
     const node = makeColdNode(pinnedKeyTrustPolicy([attackerPublicKey]));
     try {
       await startClean(node);
-      const db = node.getControlDatabase();
-      expect(db).not.toBeNull();
-      await db!.insertOwnerKey(ownerPublicKey);
 
       // initializeSeedBootstrap is the owner construction site — exercise that it
-      // forwards the configured policy.
+      // forwards the configured policy AND genesis-anchors this node's own key.
       node.initializeSeedBootstrap(ownerPrivateKey);
+      expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
 
       const result = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
       expect(result.success).toBe(true);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
+
+  it('a key present only in the replicated OwnerKey table does not authorize a seed', async () => {
+    // The ticket-5 regression: an attacker that can write control state
+    // genesis-inserts its own key, which replicates into every peer's OwnerKey
+    // table. Seed trust reads the node-local anchor, so that write buys nothing.
+    const node = makeColdNode(); // secure default, no pins
+    try {
+      await startClean(node);
+      node.initializeSeedBootstrap(ownerPrivateKey); // anchors the real owner
+
+      const db = node.getControlDatabase();
+      expect(db).not.toBeNull();
+      await db!.insertOwnerKey(attackerPublicKey);
+      expect(await db!.getOwnerKeys()).toContain(attackerPublicKey);
+
+      const rejected = await node.applySeed(signSeed(attackerPrivateKey, attackerPublicKey));
+      expect(rejected.success).toBe(false);
+      expect(rejected.error).toMatch(/anchored trust policy/i);
+
+      // ...while the anchored owner is unaffected.
+      const accepted = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
+      expect(accepted.success).toBe(true);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
+
+  it('a pin-accepted signer is anchored on the node, so a later seed needs no pin', async () => {
+    // Enrollment: the invite's owner key arrives as a per-call pin. After the
+    // first seed the node-local anchor holds it, so the secure default (no pin,
+    // no configured policy) accepts the next seed from the same owner.
+    const node = makeColdNode();
+    try {
+      await startClean(node);
+      const seed = signSeed(ownerPrivateKey, ownerPublicKey);
+
+      expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(false);
+      const first = await node.applySeed(seed, {
+        trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
+      });
+      expect(first.success).toBe(true);
+      expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
+
+      const second = await node.applySeed(seed);
+      expect(second.success).toBe(true);
     } finally {
       await node.stop();
     }

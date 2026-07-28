@@ -2593,6 +2593,9 @@ export class CadreNode implements SAppIdLookup {
       ownerPrivateKey,
       inviteAddressResolver: () => this.resolveInviteAddresses(),
       trustPolicy: this.config.seedTrustPolicy,
+      // Seed trust anchors on the node-local store (seeded just above with this
+      // node's own genesis key), never on the replicated OwnerKey table.
+      ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -2781,6 +2784,10 @@ export class CadreNode implements SAppIdLookup {
       // No owner key - this node only receives seeds
       inviteAddressResolver: () => this.resolveInviteAddresses(),
       trustPolicy: this.config.seedTrustPolicy,
+      // A listener-only node accepts a wire-delivered seed solely against this
+      // anchor (there is no per-call override on the inbound handler): with no
+      // genesis/invite/operator pin it authorizes nobody, which is the point.
+      ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     });
 
     this.seedBootstrapService.setEventCallbacks({
@@ -2870,6 +2877,11 @@ export class CadreNode implements SAppIdLookup {
       const tempService = new SeedBootstrapService({
         partyId: seed.partyId,
         trustPolicy: this.config.seedTrustPolicy,
+        // The anchor is node-scoped, not service-scoped: a throwaway service
+        // must consult (and persist an accepted signer into) the SAME store the
+        // persistent one would, or a cold-start enrollment via this path would
+        // anchor nothing and re-prompt for the pin on every later seed.
+        ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
       });
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });

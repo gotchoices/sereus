@@ -372,9 +372,9 @@ describe('deliverSeed cross-network stream negotiation', () => {
 		await registerOwnerPeer(senderService, senderParty);
 
 		// Receiver party (has its own SeedBootstrapService with registered handler).
-		// The receiver is cold-start with respect to the *sender's* owner key,
-		// so it must pin that key out-of-band (as a CadreInvite would) for the
-		// DB-anchored default policy not to reject the delivered seed.
+		// The receiver's trusted-owner anchor holds nothing for the *sender's* owner
+		// key, so it must pin that key out-of-band (as a CadreInvite would) for the
+		// default anchored policy not to reject the delivered seed.
 		const receiverParty = await network.createParty({ name: 'auth-e2e-receiver' });
 		const receiverService = new SeedBootstrapService({
 			partyId: receiverParty.partyId,

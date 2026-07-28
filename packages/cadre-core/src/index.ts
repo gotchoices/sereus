@@ -232,7 +232,7 @@ export {
 
 // Seed trust policy (trust anchor for incoming seeds)
 export {
-  dbAnchoredTrustPolicy,
+  anchoredTrustPolicy,
   pinnedKeyTrustPolicy,
   tofuTrustPolicy,
   type SeedTrustPolicy,

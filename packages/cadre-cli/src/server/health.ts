@@ -310,9 +310,9 @@ export class HealthServer {
     // Authenticate the *delivery path* before touching the body. This gate only
     // stops anonymous peers from driving applySeed / peer-store mutation; it does
     // NOT imply the seed contents are trusted. Trust is anchored separately by
-    // the node's `seedTrustPolicy` (operator-pinned owner keys unioned with
-    // DB-known keys), evaluated inside the applySeed call below — so a cold node
-    // with no pin rejects the seed even with a valid bearer.
+    // the node's `seedTrustPolicy` (operator-pinned owner keys unioned with the
+    // node-local trusted-owner anchor), evaluated inside the applySeed call
+    // below — so a node with no pin rejects the seed even with a valid bearer.
     if (!checkBearer(req, this.options.seedToken)) {
       res.writeHead(401, { 'Content-Type': 'application/json' });
       res.end(JSON.stringify({ success: false, error: 'unauthorized' }));

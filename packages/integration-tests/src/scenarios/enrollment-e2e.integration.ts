@@ -122,9 +122,9 @@ describe('E2E Enrollment', () => {
 		// Validate seed signature before applying
 		expect(authService.validateSeedSignature(seed)).toBe(true);
 
-		// Drone applies the seed. It is cold-start (empty OwnerKey table), so it
+		// Drone applies the seed. Its node-local trusted-owner anchor is empty, so it
 		// pins the owner key out-of-band (as a CadreInvite would carry it);
-		// otherwise the DB-anchored default policy would reject the seed.
+		// otherwise the default anchored policy would reject the seed.
 		const result = await droneService.applySeed(seed, {
 			trustPolicy: pinnedKeyTrustPolicy([owner.ownerPublicKey]),
 		});
@@ -334,9 +334,9 @@ describe('E2E Enrollment', () => {
 
 		it('should reject a valid self-asserting seed at a cold-start node with no trust anchor', async () => {
 			// Regression: a signature-valid seed signed by the owner must NOT be
-			// accepted by a cold-start node (empty OwnerKey table, no pinned keys
-			// and the default DB-anchored policy). A seed can no longer vouch for its
-			// own signer.
+			// accepted by a node with an empty trusted-owner anchor and no pinned keys
+			// (the default anchored policy). A seed can no longer vouch for its own
+			// signer.
 			const owner = await network.createParty({ name: 'auth-noauth' });
 			const drone = await network.createParty({ name: 'drone-noauth' });
 

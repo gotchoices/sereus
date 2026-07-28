@@ -560,8 +560,8 @@ self-appointed-owner outsider's self-minted key replicates into a legitimate pee
 `OwnerKey` table the instant they connect (Rx's table went 0 → 1 == O's key). So checking a
 recorded voucher against the *replicated* `OwnerKey` table (Option A) is **unsound** — a correct
 fix needs a **node-local, non-replicated trusted-owner anchor** (Option B). The spike also exposed
-a second victim of the same false anchor: `dbAnchoredTrustPolicy` (the "secure default" for accepting
-seeds) sources its trust set from the same pollutable replicated table.
+a second victim of the same false anchor: the "secure default" seed-trust policy sourced its trust
+set from the same pollutable replicated table.
 
 Human approved **Option B** with a connection-gater hardening layer folded in. Filed as a 6-ticket,
 `prereq`-chained `implement/` set:
@@ -586,7 +586,7 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
    through it and reworks the cross-node convergence/push-wake tests to model real enrollment. **Closes
    the non-member wake hole.**
 5. `seed-trust-anchor-from-local-store` — repoint seed-trust's `knownOwnerKeys` from the replicated
-   table to the node-local anchor (closes the `dbAnchoredTrustPolicy` variant of the same hole).
+   table to the node-local anchor (closes the seed-acceptance variant of the same hole).
 6. `membership-connection-gater` — defense-in-depth: reject the sensitive control protocols
    (control-DB repo / wake / strand-addr) from unauthorized peers at stream/connection time, with an
    enrollment carve-out (seed/accept-phone stay open to strangers).
@@ -599,9 +599,18 @@ owner key plus self-vouched `CadrePeer` row are written into the receiver's repl
 `isMember` is TRUE — and the wake is still refused and the strand-addr RPC returns empty, until one
 `trustOwnerKeys` pin flips the identical state to authorized. Enrollment supplies that pin in
 production (`CadreInvite.ownerKeys` on the phone, `CADRE_OWNER_KEYS` / `--pin-owner-key` on a
-CLI/donated node); a node with an empty anchor authorizes no one, by design. Still open: **step 5**
-(seed trust still sources `knownOwnerKeys` from the replicated table) and **step 6** (no
-connection-time gater, so an outsider can still *write* rows — they are simply no longer believed).
+CLI/donated node); a node with an empty anchor authorizes no one, by design.
+
+**Step 5 has LANDED too.** Seed trust now reads the same node-local anchor: `SeedTrustContext.knownOwnerKeys`
+comes from `TrustedOwnerStore.all()`, the default policy is `anchoredTrustPolicy` (renamed from
+`dbAnchoredTrustPolicy` — the name asserted the wrong anchor), and a key sitting only in the replicated
+`OwnerKey` table authorizes no seed. Two follow-ons rode along: a key accepted via a pin or a TOFU
+confirmation is now **persisted** into the anchor (`SeedTrustDecision.anchorAs`), so enrollment supplies
+the invite once rather than on every seed; and `createInvite` hands out the anchor's keys rather than the
+replicated table's, since the invitee anchors whatever arrives and a poisoned invite would defeat the whole
+chain. The replicated table survives only as the replication mechanism and as the `isOwner` dial hint in
+seeds — never as a trust anchor. Still open: **step 6** (no connection-time gater, so an outsider can
+still *write* rows — they are simply no longer believed).
 Address resolution, push fan-out and the host trust-circle listing stay on the addressable surface
 (`isMember`) deliberately — dialability is not trust — with the listing consequence tracked in
 backlog `bug-host-trust-circle-lists-unauthorized-peers`.

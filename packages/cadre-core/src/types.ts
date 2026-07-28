@@ -301,11 +301,11 @@ export interface CadreNodeConfig {
    * into every SeedBootstrapService this node constructs (owner, receive-only
    * listener, and the temp service used by applySeed when no service exists), and
    * used as the service-level default the libp2p seed-protocol handler relies on
-   * (that path has no per-call override seam). Defaults to dbAnchoredTrustPolicy()
-   * inside SeedBootstrapService when unset — a cold-start node then rejects every
-   * seed. A per-call `applySeed(seed, { trustPolicy })` override still wins over
-   * this default for callers that hold out-of-band material (e.g. a pinned key
-   * from a CadreInvite).
+   * (that path has no per-call override seam). Defaults to anchoredTrustPolicy()
+   * inside SeedBootstrapService when unset — a node whose node-local trusted-owner
+   * anchor was never seeded then rejects every seed. A per-call
+   * `applySeed(seed, { trustPolicy })` override still wins over this default for
+   * callers that hold out-of-band material (e.g. a pinned key from a CadreInvite).
    */
   seedTrustPolicy?: SeedTrustPolicy;
 
@@ -1039,7 +1039,10 @@ export interface CadreInvite {
    * Owner ed25519 public keys (base64url) of the cadre, carried out-of-band
    * so a cold-start invitee can pin the trusted owner set before applying
    * any seed (the seed itself cannot vouch for its own signer). Populated by
-   * `createInvite` from the issuer's `OwnerKey` table.
+   * `createInvite` from the issuer's OWN node-local trusted-owner anchor —
+   * not its replicated `OwnerKey` table, because the invitee anchors whatever
+   * arrives here and a stranger's genesis-inserted key must not ride an
+   * otherwise-legitimate invite into a fresh node's anchor.
    */
   ownerKeys?: string[];
   /** Optional invite token for validation */

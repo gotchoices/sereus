@@ -43,7 +43,7 @@ describe('collectPinnedOwnerKeys', () => {
 
   it('collapses an all-whitespace / empty env to no pins', () => {
     // `CADRE_OWNER_KEYS=",, "` must yield [] → caller leaves the policy
-    // undefined, preserving the secure DB-anchored default.
+    // undefined, preserving the secure anchored default.
     expect(collectPinnedOwnerKeys(undefined, ',, ')).toEqual([]);
     expect(collectPinnedOwnerKeys([], '')).toEqual([]);
     expect(collectPinnedOwnerKeys(undefined, undefined)).toEqual([]);

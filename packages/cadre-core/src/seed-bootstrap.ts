@@ -26,8 +26,10 @@ import { canonicalJson } from './canonical-json.js';
 import { peerAuthorizationDigest, cadrePeerVoucherDigest, cadrePeerRemoveDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
-  dbAnchoredTrustPolicy,
+  type SeedTrustDecision,
+  anchoredTrustPolicy,
 } from './seed-trust-policy.js';
+import type { TrustedOwnerStore } from './trusted-owner-store.js';
 
 const log = debug('sereus:cadre:seed-bootstrap');
 
@@ -125,9 +127,9 @@ export interface SeedBootstrapConfig {
   inviteAddressResolver?: () => Promise<string[]>;
   /**
    * Trust anchor for incoming seeds. Decides whether a signature-verified
-   * `signerKey` should be trusted, against the receiver's known owner
-   * keys (NOT the seed body). Defaults to `dbAnchoredTrustPolicy()`, which
-   * rejects any signer not already in the `OwnerKey` table. An enrollment
+   * `signerKey` should be trusted, against the receiver's anchored owner
+   * keys (NOT the seed body). Defaults to `anchoredTrustPolicy()`, which
+   * rejects any signer not already in {@link trustedOwners}. An enrollment
    * caller can pass a per-seed override to `applySeed` instead.
    *
    * A `CadreNode` forwards its node-wide `CadreNodeConfig.seedTrustPolicy` here
@@ -135,6 +137,19 @@ export interface SeedBootstrapConfig {
    * since a network-delivered seed has no per-call override.
    */
   trustPolicy?: SeedTrustPolicy;
+  /**
+   * The node-local, NON-replicated trusted-owner anchor. Supplies
+   * `SeedTrustContext.knownOwnerKeys` for every {@link applySeed}, and receives
+   * a key accepted via a pin/TOFU (see `SeedTrustDecision.anchorAs`).
+   *
+   * Deliberately NOT `ControlDatabase.getOwnerKeys()`: the replicated
+   * `OwnerKey` table is pollutable — any connecting node can genesis-insert its
+   * own key and let it replicate — so a seed signed by a stranger's self-issued
+   * owner key would pass a table-anchored check. A `CadreNode` passes its
+   * `getTrustedOwnerStore()` here. Unset (e.g. a directly-constructed service in
+   * a test) means an EMPTY anchor: only a pinned/TOFU policy can accept a seed.
+   */
+  trustedOwners?: TrustedOwnerStore;
   /**
    * Time the inbound seed handler waits for the seed frame before aborting the
    * read (ms). Defaults to {@link DEFAULT_SEED_READ_TIMEOUT_MS}. Bounds a
@@ -182,7 +197,7 @@ export class SeedBootstrapService {
 
   constructor(config: SeedBootstrapConfig) {
     this.config = config;
-    this.trustPolicy = config.trustPolicy ?? dbAnchoredTrustPolicy();
+    this.trustPolicy = config.trustPolicy ?? anchoredTrustPolicy();
     this.seedReadTimeoutMs = config.seedReadTimeoutMs ?? DEFAULT_SEED_READ_TIMEOUT_MS;
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
 
@@ -570,10 +585,15 @@ export class SeedBootstrapService {
    *
    * Validates the seed signature, then evaluates a trust anchor for the
    * `signerKey` that does NOT come from the seed body: the receiver's
-   * `OwnerKey` table (DB-anchored), optionally augmented by pinned keys or
-   * TOFU via the configured/overriding `SeedTrustPolicy`. A forged
-   * self-asserting seed — one that merely lists its own signer as an owner
-   * peer — no longer passes.
+   * node-local {@link SeedBootstrapConfig.trustedOwners} anchor, optionally
+   * augmented by pinned keys or TOFU via the configured/overriding
+   * `SeedTrustPolicy`. A forged self-asserting seed — one that merely lists its
+   * own signer as an owner peer — no longer passes, and neither does one signed
+   * by a key a stranger genesis-inserted into the replicated `OwnerKey` table.
+   *
+   * A key accepted via a pin/TOFU is persisted into the anchor (the policy says
+   * so via `SeedTrustDecision.anchorAs`), so the next seed from that owner is
+   * anchored without re-supplying the invite.
    *
    * @param seed - The seed to apply (already transport-decoded).
    * @param options.trustPolicy - Per-call policy override (e.g. a
@@ -595,12 +615,13 @@ export class SeedBootstrapService {
       return { success: false, peersAdded: 0, error: 'Invalid seed signature' };
     }
 
-    // Evaluate the trust anchor for the signer key. The known-owner set is
-    // sourced from the receiver's control DB, never from the seed itself; a
-    // cold-start node with no DB and no override therefore sees an empty set.
-    const knownOwnerKeys = this.controlDatabase
-      ? await this.controlDatabase.getOwnerKeys()
-      : new Set<string>();
+    // Evaluate the trust anchor for the signer key. The known-owner set comes
+    // from the receiver's NODE-LOCAL anchor — never from the seed itself, and
+    // never from the replicated OwnerKey table (a stranger can genesis-insert
+    // its own key there and let it replicate into every peer's copy). A node
+    // whose anchor was never seeded, with no policy override, sees an empty set
+    // and rejects.
+    const knownOwnerKeys = this.config.trustedOwners?.all() ?? new Set<string>();
     const policy = options?.trustPolicy ?? this.trustPolicy;
     const decision = await policy.evaluate({
       partyId: seed.partyId,
@@ -614,6 +635,7 @@ export class SeedBootstrapService {
         error: decision.reason ?? 'Signer key not trusted by trust policy',
       };
     }
+    await this.anchorAcceptedSigner(seed.signerKey, decision);
 
     let peersAdded = 0;
 
@@ -654,6 +676,29 @@ export class SeedBootstrapService {
 
     log('Applied seed: %d peers added', peersAdded);
     return { success: true, peersAdded };
+  }
+
+  /**
+   * Persist a signer that a pin/TOFU accepted into the node-local anchor, so a
+   * later seed from the same owner is anchored without re-supplying the invite
+   * or re-prompting. Only the policy decides this happens (`anchorAs` is unset
+   * when the key was already anchored, so a plain re-apply writes nothing) and
+   * `trust()` is idempotent, keeping the original provenance for a known key.
+   *
+   * Failure to PERSIST does not fail the seed: `trust()` reflects the key in the
+   * in-memory anchor synchronously, so this seed and the rest of the session are
+   * unaffected — only durability across a restart is lost, and that is logged.
+   */
+  private async anchorAcceptedSigner(signerKey: string, decision: SeedTrustDecision): Promise<void> {
+    if (!decision.anchorAs || !this.config.trustedOwners) {
+      return;
+    }
+    try {
+      await this.config.trustedOwners.trust(signerKey, decision.anchorAs);
+      log('Anchored seed signer %s as %s', signerKey, decision.anchorAs);
+    } catch (error) {
+      log('Failed to persist accepted seed signer into the trusted-owner anchor: %o', error);
+    }
   }
 
   /**
@@ -784,6 +829,14 @@ export class SeedBootstrapService {
    * peer is an owner iff that derived key is in the `OwnerKey` set.
    * This makes any owner node markable — not just the local one — and ties
    * `isOwner` to the control table rather than to `peerId === self`.
+   *
+   * NOTE: this is the one owner lookup deliberately left on the REPLICATED
+   * table rather than the node-local anchor. `SeedPeer.isOwner` is a dial hint
+   * — the receiver dials owner-flagged peers first — not a trust decision, and
+   * the receiver re-derives real trust from its own anchor. So a polluted table
+   * costs at most a wasted dial, while anchoring here would silently drop
+   * legitimate co-owners this node never pinned. If `isOwner` ever gates
+   * anything the receiver TRUSTS, move it to the anchor.
    */
   private async queryPeers(): Promise<SeedPeer[]> {
     if (!this.controlDatabase) {
@@ -1000,11 +1053,18 @@ export class SeedBootstrapService {
       ownerAddrs = this.libp2pNode.getMultiaddrs().map(a => a.toString());
     }
 
-    // Carry the cadre's owner keys out-of-band so a cold-start invitee can
-    // pin the trusted owner set before applying any seed.
-    const ownerKeys = this.controlDatabase
-      ? Array.from(await this.controlDatabase.getOwnerKeys())
-      : [];
+    // Carry the cadre's owner keys out-of-band so a cold-start invitee can pin
+    // the trusted owner set before applying any seed.
+    //
+    // Sourced from THIS node's own anchor, not from the replicated OwnerKey
+    // table: the invitee anchors whatever arrives here (CadreNode.trustOwnerKeys
+    // with source 'invite'), so handing over the pollutable table would let a
+    // stranger's genesis-inserted key ride an otherwise-legitimate invite
+    // straight into the new node's anchor — poisoning the very store this whole
+    // trust chain rests on. Falls back to the table only when no anchor is
+    // wired (a directly-constructed service); an owner node always has one,
+    // holding at least its own genesis key.
+    const ownerKeys = await this.invitableOwnerKeys();
 
     const now = Date.now();
     const invite: CadreInvite = {
@@ -1021,6 +1081,21 @@ export class SeedBootstrapService {
     log('Invite created with %d owner addresses, %d owner keys', ownerAddrs.length, ownerKeys.length);
 
     return { invite, encodedInvite };
+  }
+
+  /**
+   * The owner keys an invite may hand out for the invitee to anchor: this
+   * node's node-local anchor when one is wired, else the replicated `OwnerKey`
+   * table (a directly-constructed service with no anchor at all).
+   */
+  private async invitableOwnerKeys(): Promise<string[]> {
+    const anchor = this.config.trustedOwners;
+    if (anchor) {
+      return Array.from(anchor.all());
+    }
+    return this.controlDatabase
+      ? Array.from(await this.controlDatabase.getOwnerKeys())
+      : [];
   }
 
   /**

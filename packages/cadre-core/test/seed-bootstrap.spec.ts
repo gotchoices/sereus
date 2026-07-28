@@ -10,10 +10,11 @@ import {
   ed25519PublicKeyB64FromPeerId
 } from '../src/seed-bootstrap.js';
 import {
-  dbAnchoredTrustPolicy,
+  anchoredTrustPolicy,
   pinnedKeyTrustPolicy,
   tofuTrustPolicy
 } from '../src/seed-trust-policy.js';
+import { MemoryTrustedOwnerStore } from '../src/trusted-owner-store.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type {
@@ -489,19 +490,32 @@ describe('Seed trust policy', () => {
 		};
 	}
 
-	/** Inject a fake control DB exposing only the owner-key set used by applySeed. */
-	function withKnownOwnerKeys(service: SeedBootstrapService, keys: string[]) {
+	/**
+	 * A node-local anchor pre-loaded with out-of-band-trusted owner keys — the
+	 * ONLY source `applySeed` consults for `knownOwnerKeys`. `trust()` reflects
+	 * synchronously (durability is the returned promise), so `void` is correct here.
+	 */
+	function anchorWith(keys: string[]): MemoryTrustedOwnerStore {
+		const store = new MemoryTrustedOwnerStore(partyId);
+		for (const key of keys) {
+			void store.trust(key, 'operator');
+		}
+		return store;
+	}
+
+	/** Inject a fake control DB exposing only the replicated owner-key set. */
+	function withReplicatedOwnerKeys(service: SeedBootstrapService, keys: string[]) {
 		serviceInternals(service).controlDatabase = {
 			getOwnerKeys: async () => new Set(keys),
 		};
 	}
 
-	it('rejects a forged self-asserting seed against an empty OwnerKey table (default policy)', async () => {
+	it('rejects a forged self-asserting seed against an empty anchor (default policy)', async () => {
 		// The regression: attacker signs a seed that names its own key as an
 		// owner peer. Signature is valid, but the receiver has no anchor.
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		// No control DB → empty known-owner set, default dbAnchoredTrustPolicy.
+		// No anchor → empty known-owner set, default anchoredTrustPolicy.
 
 		const peers: SeedPeer[] = [
 			{
@@ -519,10 +533,12 @@ describe('Seed trust policy', () => {
 		expect(result.error).toMatch(/trust policy/i);
 	});
 
-	it('DB-anchored accept: signer key present in the OwnerKey table is trusted', async () => {
-		const service = new SeedBootstrapService({ partyId });
+	it('anchored accept: signer key present in the node-local anchor is trusted', async () => {
+		const service = new SeedBootstrapService({
+			partyId,
+			trustedOwners: anchorWith([ownerPublicKey]),
+		});
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownOwnerKeys(service, [ownerPublicKey]);
 
 		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
 		const result = await service.applySeed(seed);
@@ -530,7 +546,45 @@ describe('Seed trust policy', () => {
 		expect(result.success).toBe(true);
 	});
 
-	it('pinned-key accept: signer supplied via pinnedKeyTrustPolicy is trusted with an empty DB', async () => {
+	it('a key present ONLY via replication does not authorize a seed', async () => {
+		// The hole this closes: an attacker that reaches the control network can
+		// genesis-insert its own key into the REPLICATED OwnerKey table, which then
+		// syncs into every peer's copy. Seed trust must not consult that table — the
+		// same self-authority trick that beat the membership predicate.
+		const service = new SeedBootstrapService({
+			partyId,
+			// Anchor holds the real owner; the replicated table also holds the attacker.
+			trustedOwners: anchorWith([ownerPublicKey]),
+		});
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+		withReplicatedOwnerKeys(service, [ownerPublicKey, attackerPublicKey]);
+
+		const forged = createSignedSeed(attackerPrivateKey, attackerPublicKey, []);
+		const rejected = await service.applySeed(forged);
+		expect(rejected.success).toBe(false);
+		expect(rejected.error).toMatch(/trust policy/i);
+
+		// Same service, same table: the ANCHORED owner is still accepted, so the
+		// rejection above is the anchor at work, not a blanket failure.
+		const legit = await service.applySeed(createSignedSeed(ownerPrivateKey, ownerPublicKey, []));
+		expect(legit.success).toBe(true);
+	});
+
+	it('an anchored key is trusted even when the replicated table is empty', async () => {
+		// The converse: replication has not delivered anything (or was wiped), but
+		// the out-of-band anchor still authorizes its owner.
+		const service = new SeedBootstrapService({
+			partyId,
+			trustedOwners: anchorWith([ownerPublicKey]),
+		});
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+		withReplicatedOwnerKeys(service, []);
+
+		const result = await service.applySeed(createSignedSeed(ownerPrivateKey, ownerPublicKey, []));
+		expect(result.success).toBe(true);
+	});
+
+	it('pinned-key accept: signer supplied via pinnedKeyTrustPolicy is trusted with an empty anchor', async () => {
 		const service = new SeedBootstrapService({ partyId });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
 		// Empty DB; pin the owner key as if carried by a CadreInvite.
@@ -586,10 +640,12 @@ describe('Seed trust policy', () => {
 		expect(acceptCalls).toEqual([ownerPublicKey]);
 	});
 
-	it('TOFU does not consult confirm when the key is already DB-anchored', async () => {
-		const service = new SeedBootstrapService({ partyId });
+	it('TOFU does not consult confirm when the key is already anchored', async () => {
+		const service = new SeedBootstrapService({
+			partyId,
+			trustedOwners: anchorWith([ownerPublicKey]),
+		});
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownOwnerKeys(service, [ownerPublicKey]);
 
 		let confirmCalls = 0;
 		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
@@ -604,10 +660,85 @@ describe('Seed trust policy', () => {
 		expect(confirmCalls).toBe(0);
 	});
 
-	it('signature is still required even with a valid trust anchor', async () => {
-		const service = new SeedBootstrapService({ partyId });
+	it('a pin-accepted signer is persisted into the anchor, so the next seed needs no pin', async () => {
+		// Half of `seed-accepted-authority-persistence`: enrollment supplies the pin
+		// once (CadreInvite.ownerKeys), and the key sticks in the node-local anchor.
+		const anchor = anchorWith([]);
+		const service = new SeedBootstrapService({ partyId, trustedOwners: anchor });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
-		withKnownOwnerKeys(service, [ownerPublicKey]);
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
+
+		expect(anchor.has(ownerPublicKey)).toBe(false);
+		const first = await service.applySeed(seed, {
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
+		});
+		expect(first.success).toBe(true);
+		expect(anchor.has(ownerPublicKey)).toBe(true);
+
+		// Same seed, no pin: the default anchored policy now accepts it.
+		const second = await service.applySeed(seed);
+		expect(second.success).toBe(true);
+	});
+
+	it('a TOFU-confirmed signer is persisted into the anchor, so confirm is not re-prompted', async () => {
+		const anchor = anchorWith([]);
+		const service = new SeedBootstrapService({ partyId, trustedOwners: anchor });
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
+
+		let confirmCalls = 0;
+		const policy = tofuTrustPolicy(async () => { confirmCalls++; return true; });
+
+		expect((await service.applySeed(seed, { trustPolicy: policy })).success).toBe(true);
+		expect(confirmCalls).toBe(1);
+		expect(anchor.has(ownerPublicKey)).toBe(true);
+
+		// Anchored now: the TOFU policy short-circuits before confirm.
+		expect((await service.applySeed(seed, { trustPolicy: policy })).success).toBe(true);
+		expect(confirmCalls).toBe(1);
+	});
+
+	it('a REJECTED signer is never persisted into the anchor', async () => {
+		const anchor = anchorWith([]);
+		const service = new SeedBootstrapService({ partyId, trustedOwners: anchor });
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+		const forged = createSignedSeed(attackerPrivateKey, attackerPublicKey, []);
+
+		// Default anchored policy rejects; a declined TOFU rejects.
+		expect((await service.applySeed(forged)).success).toBe(false);
+		expect((await service.applySeed(forged, {
+			trustPolicy: tofuTrustPolicy(async () => false),
+		})).success).toBe(false);
+
+		expect(anchor.has(attackerPublicKey)).toBe(false);
+		expect(anchor.all().size).toBe(0);
+	});
+
+	it('an anchor persist failure does not fail the seed (the key is trusted for the session)', async () => {
+		// trust() reflects synchronously; only durability is deferred. A file-backed
+		// anchor whose write fails must not turn a legitimate seed into an error.
+		const anchor = anchorWith([]);
+		const failing = {
+			partyId,
+			has: (k: string) => anchor.has(k),
+			all: () => anchor.all(),
+			trust: async () => { throw new Error('disk full'); },
+		};
+		const service = new SeedBootstrapService({ partyId, trustedOwners: failing });
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+
+		const result = await service.applySeed(createSignedSeed(ownerPrivateKey, ownerPublicKey, []), {
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
+		});
+		expect(result.success).toBe(true);
+	});
+
+	it('signature is still required even with a valid trust anchor', async () => {
+		const service = new SeedBootstrapService({
+			partyId,
+			trustedOwners: anchorWith([ownerPublicKey]),
+		});
+		serviceInternals(service).libp2pNode = createMockLibp2p();
 
 		// Valid signer key, but a corrupted signature.
 		const seed = createSignedSeed(ownerPrivateKey, ownerPublicKey, []);
@@ -619,7 +750,7 @@ describe('Seed trust policy', () => {
 	});
 
 	it('the configured default policy is used when no per-call override is given', async () => {
-		// dbAnchoredTrustPolicy is the documented default; assert behaviourally
+		// anchoredTrustPolicy is the documented default; assert behaviourally
 		// by configuring an explicit pinned default and omitting the override.
 		const service = new SeedBootstrapService({
 			partyId,
@@ -632,7 +763,7 @@ describe('Seed trust policy', () => {
 
 		expect(result.success).toBe(true);
 		// Sanity: the same default rejects a different signer.
-		expect(dbAnchoredTrustPolicy().evaluate({
+		expect(anchoredTrustPolicy().evaluate({
 			partyId,
 			signerKey: attackerPublicKey,
 			knownOwnerKeys: new Set(),
@@ -916,13 +1047,14 @@ describe('SeedBootstrapService Helper Methods', () => {
     }, 60_000);
   });
 
-  describe('applySeed — DB-anchored trust against a real control DB', () => {
+  describe('applySeed — anchored trust against a real control DB', () => {
     /**
      * End-to-end coverage the mocked unit tests can't give: a live Quereus
-     * control DB feeds `getOwnerKeys()`, which the default
-     * `dbAnchoredTrustPolicy` consults. Proves the real `select Key from
-     * OwnerKey` round-trips into the security gate — an anchored signer is
-     * accepted and an unanchored one rejected — with no per-call override.
+     * control DB holds a real `OwnerKey` table, and the default trust policy
+     * must IGNORE it in favour of the node-local anchor. Proves the fix on the
+     * real stack — a key written into the live table (what a stranger's
+     * replicated genesis insert looks like from here) authorizes nothing, while
+     * the genesis-anchored owner still applies its own seed.
      */
     function signSeed(privateKey: string, publicKey: string): ControlNetworkSeed {
       const seedData = { partyId, peers: [] as SeedPeer[] };
@@ -934,7 +1066,7 @@ describe('SeedBootstrapService Helper Methods', () => {
       return { ...seedData, signature, signerKey: publicKey };
     }
 
-    it('accepts an anchored signer and rejects an unanchored one via the live OwnerKey table', async () => {
+    it('accepts the anchored owner and rejects a signer present only in the live OwnerKey table', async () => {
       const node = new CadreNode({
         controlNetwork: {
           partyId: 'test-party-' + Math.random().toString(36).slice(2),
@@ -948,20 +1080,24 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         const db = node.getControlDatabase();
         expect(db).not.toBeNull();
-        await db!.insertOwnerKey(ownerPublicKey);
 
+        // Owner path: initializeSeedBootstrap genesis-anchors this node's own key.
         node.initializeSeedBootstrap(ownerPrivateKey);
+        expect(node.getTrustedOwnerStore()!.has(ownerPublicKey)).toBe(true);
 
-        // The live table returns exactly the inserted key.
-        expect(await db!.getOwnerKeys()).toEqual(new Set([ownerPublicKey]));
+        // The attacker's key reaches the REPLICATED table (a genesis insert that
+        // synced in) but never the anchor.
+        const attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+        const attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+        await db!.insertOwnerKey(attackerPublicKey);
+        expect(await db!.getOwnerKeys()).toEqual(new Set([attackerPublicKey]));
+        expect(node.getTrustedOwnerStore()!.has(attackerPublicKey)).toBe(false);
 
-        // Anchored signer → accepted by the default DB-anchored policy, no override.
+        // Anchored signer → accepted by the default anchored policy, no override.
         const accepted = await node.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
         expect(accepted.success).toBe(true);
 
-        // Unanchored signer → rejected by the same default against the live table.
-        const attackerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-        const attackerPublicKey = getPublicKey(attackerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+        // Replicated-only signer → rejected, despite sitting in the live table.
         const rejected = await node.applySeed(signSeed(attackerPrivateKey, attackerPublicKey));
         expect(rejected.success).toBe(false);
         expect(rejected.error).toMatch(/trust policy/i);
@@ -1004,12 +1140,21 @@ describe('SeedBootstrapService Helper Methods', () => {
       expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
     });
 
-    it('carries the OwnerKey table as invite.ownerKeys', async () => {
-      const service = new SeedBootstrapService({ partyId });
+    /** A node-local anchor holding out-of-band-trusted owner keys. */
+    function anchor(keys: string[]): MemoryTrustedOwnerStore {
+      const store = new MemoryTrustedOwnerStore(partyId);
+      for (const key of keys) {
+        void store.trust(key, 'operator');
+      }
+      return store;
+    }
+
+    it('carries the node-local anchor as invite.ownerKeys', async () => {
+      const service = new SeedBootstrapService({
+        partyId,
+        trustedOwners: anchor([ownerPublicKey, 'second-owner-key']),
+      });
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
-      serviceInternals(service).controlDatabase = {
-        getOwnerKeys: async () => new Set([ownerPublicKey, 'second-owner-key']),
-      };
 
       const { invite } = await service.createInvite();
       expect(invite.ownerKeys).toBeDefined();
@@ -1018,15 +1163,42 @@ describe('SeedBootstrapService Helper Methods', () => {
       );
     });
 
-    it('omits ownerKeys when the OwnerKey table is empty', async () => {
-      const service = new SeedBootstrapService({ partyId });
+    it('does NOT hand out a replicated-only owner key as an invite pin', async () => {
+      // The invitee anchors whatever arrives in invite.ownerKeys, so a key that
+      // only reached the replicated OwnerKey table (a stranger's genesis insert)
+      // must not ride an otherwise-legitimate invite into the new node's anchor.
+      const service = new SeedBootstrapService({
+        partyId,
+        trustedOwners: anchor([ownerPublicKey]),
+      });
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
       serviceInternals(service).controlDatabase = {
-        getOwnerKeys: async () => new Set<string>(),
+        getOwnerKeys: async () => new Set([ownerPublicKey, 'attacker-genesis-key']),
       };
 
       const { invite } = await service.createInvite();
+      expect(new Set(invite.ownerKeys)).toEqual(new Set([ownerPublicKey]));
+    });
+
+    it('omits ownerKeys when the anchor is empty', async () => {
+      const service = new SeedBootstrapService({ partyId, trustedOwners: anchor([]) });
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+
+      const { invite } = await service.createInvite();
       expect(invite.ownerKeys).toBeUndefined();
+    });
+
+    it('falls back to the OwnerKey table when no anchor is wired at all', async () => {
+      // A directly-constructed service (no CadreNode) has no anchor; degrading to
+      // the table keeps that construction usable rather than silently pin-less.
+      const service = new SeedBootstrapService({ partyId });
+      serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
+      serviceInternals(service).controlDatabase = {
+        getOwnerKeys: async () => new Set([ownerPublicKey]),
+      };
+
+      const { invite } = await service.createInvite();
+      expect(new Set(invite.ownerKeys)).toEqual(new Set([ownerPublicKey]));
     });
   });
 });

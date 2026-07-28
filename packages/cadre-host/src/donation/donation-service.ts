@@ -39,8 +39,9 @@ export interface DonationProvisionRequest {
   /**
    * The requester's owner public key(s), base64url. Pinned as cold-start
    * seed-trust anchors on the donated node so it accepts the requester-signed
-   * seed presented in {@link DonationService.applySeed}. Without these the node
-   * defaults to a db-anchored policy that rejects every seed.
+   * seed presented in {@link DonationService.applySeed}. Without these the node's
+   * node-local trusted-owner anchor holds no key for the requester's party, and
+   * the default anchored policy rejects every seed.
    */
   ownerKeys: string[];
   /** Node profile; defaults to `storage` so the node participates and is dialable. */

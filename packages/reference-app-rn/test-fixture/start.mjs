@@ -96,9 +96,10 @@ async function main() {
 	// Seed bootstrap — allows creating + delivering seeds
 	node.initializeSeedBootstrap(ownerPrivateKey);
 
-	// Enroll the drone's own owner key so a cold-start invitee can pin it
-	// out-of-band. Without this, getOwnerKeys() is empty and the minted
-	// invite carries no ownerKeys (undefined) — useless for trust anchoring.
+	// Enroll the drone's own owner key into the replicated OwnerKey table, which
+	// is what marks the drone as an owner peer in the seeds it mints (the dial
+	// hint). The invite's pinned `ownerKeys` come from the node-local anchor,
+	// which `initializeSeedBootstrap` above already seeded with this same key.
 	const ownerPublicKey = ed25519PublicKeyFromPrivate(ownerPrivateKey);
 	const controlDb = node.getControlDatabase();
 	if (!controlDb) throw new Error('Control database unavailable; cannot enroll drone owner');
