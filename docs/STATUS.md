@@ -388,8 +388,14 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
 
 `yarn dep-check` (root) is now a **real** gate. It was previously a no-op (`workspaces foreach -A run dep-check`
 with no package defining the script, exiting 0 in ~0s). It now runs [knip](https://knip.dev) from the repo
-root against a single config (`knip.ts`, Option A) covering all nine workspaces.
+root against a single config (`knip.ts`, Option A) covering the workspaces listed in it.
 
+- [ ] **The gate currently exits 1 and has since `reference-app-ns` landed** (v0.9.0 release commit, after
+  `knip.ts` was last touched): `knip.ts` has no `packages/reference-app-ns` entry, so all 13 of that
+  package's real dependencies report as unused and most of its source reports as unused files. Two other
+  pre-existing unused-dependency hits ride along: root `svelte-eslint-parser` and `cadre-core`
+  `@libp2p/peer-id-factory`. Tracked by `fix/knip-missing-reference-app-ns-workspace`; until it lands,
+  `dep-check` is **not** a trustworthy signal for new work.
 - [x] `dep-check` detects unused, missing (phantom/unlisted), and unresolved deps/binaries across all workspaces.
 - Gate semantics (`knip.ts` `rules`): dependency-class issues are `error` (fail the gate); dead-code classes
   (unused **files / exports / types**) are `warn` (surfaced but non-blocking). Cleaning the existing dead-code
@@ -481,8 +487,16 @@ without consulting a network it knows is empty.
   the spec above, not a duplicate: a node with no listen address cannot be dialed back, which is where
   a cluster/cohort round-trip would hang rather than fail.
 - Every control operation in the solo spec runs under an explicit per-operation deadline that **fails
-  the test naming the operation**. A bare `await` on a hung control call would instead blow vitest's
-  own timeout and report nothing diagnosable. Keep that pattern when extending the spec.
+  the test naming the operation** (`solo control op <operation> timed out after <ms>ms`). A bare `await`
+  on a hung control call would instead blow vitest's own timeout and report nothing diagnosable. Keep
+  that pattern when extending the spec. The deadline is `control-stream.ts`'s `withTimeout` — the same
+  primitive the formation / wake / strand-addr protocols use — now covered directly by
+  `packages/cadre-core/test/control-stream-timeout.spec.ts` (previously it had no direct tests at all,
+  so a regression in it would have silently downgraded every caller from "fails with a label" to
+  "hangs until some outer timeout").
+- Gap: a cadre of **more than one** whose peers are offline is not covered. That shape must also fail
+  fast or serve a clearly local read rather than hang, and nothing asserts it — see backlog
+  `debt-control-db-offline-peer-no-hang-coverage`.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.
@@ -568,7 +582,7 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   `super-majority: 1/2` signature is gone. The FRET root cure (`network-scoped-ring-admission`)
   remains wanted as substrate-level defense-in-depth but is not required for this.
 
-### Optimystic blocker (root cause — sibling repo `../optimystic`, HEAD past v0.14.1)
+### Optimystic blocker (root cause — sibling repo `../optimystic`; fixed at the HEAD linked here)
 Multi-coordinator control-network **writes** can't reach a super-majority. The original
 ticket (`multi-coordinator-write-stream-reset-supermajority`) was split into two distinct
 root causes:

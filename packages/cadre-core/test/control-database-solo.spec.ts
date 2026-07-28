@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
+import { withTimeout } from '../src/control-stream.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import type { CadreNodeConfig, NodeProfile } from '../src/types.js';
 
@@ -21,6 +22,10 @@ import type { CadreNodeConfig, NodeProfile } from '../src/types.js';
  * Every control operation here is wrapped in {@link within}, so a regression
  * surfaces as a *failing assertion naming the operation* rather than a silent
  * vitest timeout with nothing to diagnose.
+ *
+ * Not covered here, deliberately: a cadre of *more than one* whose peers are
+ * offline. That shape must also fail fast or serve a local read rather than hang,
+ * and nothing asserts it yet — see backlog `debt-control-db-offline-peer-no-hang-coverage`.
  */
 
 /** Per-operation budget. Solo ops complete in milliseconds; this only catches hangs. */
@@ -29,23 +34,28 @@ const OP_TIMEOUT_MS = 15_000;
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 
 /**
- * Run `op` with a hard deadline that *fails the test* naming the operation.
- * A bare `await` on a hung control call would instead blow vitest's own test
- * timeout, which reports no operation and no stack worth reading.
+ * Run `op` with a hard deadline that *fails the test* naming the operation:
+ * `solo control op <label> timed out after <ms>ms`. A bare `await` on a hung
+ * control call would instead blow vitest's own test timeout, which reports no
+ * operation and no stack worth reading.
+ *
+ * Delegates to cadre-core's own {@link withTimeout} rather than re-deriving the
+ * race — that helper is covered by `control-stream-timeout.spec.ts`, so this
+ * spec's diagnostics rest on tested code.
  */
-async function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> {
-	let timer: ReturnType<typeof setTimeout> | undefined;
-	const deadline = new Promise<never>((_resolve, reject) => {
-		timer = setTimeout(
-			() => reject(new Error(`solo control operation did not complete within ${ms}ms: ${label}`)),
-			ms
-		);
-	});
-	try {
-		return await Promise.race([op(), deadline]);
-	} finally {
-		clearTimeout(timer);
-	}
+function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> {
+	return withTimeout(ms, `solo control op ${label}`, op);
+}
+
+/**
+ * Assert the node really came up non-listening. `soloConfig` asks for
+ * `listenAddrs: []`, but `CadreNode` forwards it through a truthiness spread
+ * (`cadre-node.ts` → `...(network?.listenAddrs && { listenAddrs })`); a refactor
+ * to a length check would silently drop the empty array and this spec would
+ * quietly revert to testing the *listening* shape its companion already covers.
+ */
+function expectNotListening(node: CadreNode): void {
+	expect(node.getMultiaddrs()).toEqual([]);
 }
 
 /** Collect a column from the control DB's inner Quereus database. */
@@ -102,6 +112,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 
 				try {
 					await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
+					expectNotListening(node);
 
 					// Mirrors the reference apps' `runOwnerGenesis`: the node's own libp2p
 					// identity, bridged to a base64url owner pair, is the founding owner.
@@ -158,6 +169,10 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		// Shared across both runs: same identity slot, same block storage — a warm
 		// restart, which enters ControlDatabase.initialize's catalog-hydrate path
 		// rather than the fresh-schema path.
+		// NOTE: `MemoryRawStorage` proves the hydrate-before-apply path but not the
+		// storage backends embedders actually restart on (IndexedDB, RN, filesystem).
+		// If a hydrate bug ever turns out to be backend-specific, add a
+		// `FileRawStorage` variant of this test rather than widening the memory one.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
 		const config = () => soloConfig({ partyId, profile: 'transaction', keyStore, storage });
@@ -168,6 +183,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		let peerId: string;
 		try {
 			await within('first.start()', LIFECYCLE_TIMEOUT_MS, () => first.start());
+			expectNotListening(first);
 			const owner = first.getIdentityOwnerKey();
 			ownerPublicKey = owner.publicKeyB64;
 			ownerPrivateKey = owner.privateKeyB64;
@@ -187,6 +203,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		const second = new CadreNode(config());
 		try {
 			await within('second.start()', LIFECYCLE_TIMEOUT_MS, () => second.start());
+			expectNotListening(second);
 			// Same key store ⇒ same libp2p identity ⇒ same PeerId across the restart.
 			expect(second.peerId!.toString()).toBe(peerId);
 
