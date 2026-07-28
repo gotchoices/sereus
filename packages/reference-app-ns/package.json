@@ -24,6 +24,8 @@
     "@multiformats/multiaddr": "^12.5.1",
     "@nativescript-community/sqlite": "^3.5.0",
     "@nativescript/core": "~8.9.0",
+    "@noble/ciphers": "^2.0.1",
+    "@noble/curves": "^2.0.1",
     "@noble/hashes": "^2.0.0",
     "@optimystic/db-core": "^0.16.3",
     "@optimystic/db-p2p": "^0.16.3",

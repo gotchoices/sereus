@@ -50,9 +50,8 @@ const config: KnipConfig = {
 				// to spawn the CLI as a child process; never statically imported.
 				'@serfab/cadre-cli',
 				// Svelte toolchain for the embedded host UI: `@tsconfig/svelte` is
-				// referenced from tsconfig `extends`, `svelte-check` is run ad hoc.
+				// referenced from tsconfig `extends`, never imported.
 				'@tsconfig/svelte',
-				'svelte-check',
 			],
 		},
 
@@ -66,6 +65,46 @@ const config: KnipConfig = {
 
 		'packages/quereus-plugin-sereus': {},
 
+		'packages/reference-app-ns': {
+			// NativeScript resolves page modules by string, not by import: app-root.xml
+			// names `chat/chat-page` and Settings is reached via a runtime
+			// `Frame.navigate({ moduleName })` — no static import exists for knip to
+			// follow, so each page (and the whole `src/` graph behind it) needs to be an
+			// entry. The polyfill/shim files are reached only through webpack
+			// (`resolve.fallback` for the node-* polyfills,
+			// `NormalModuleReplacementPlugin` for the shims — see webpack.config.js),
+			// `nativescript.config.ts` is read by the `ns` CLI, and `solo-smoke.ts` is a
+			// manual on-device helper with no importer (cf. strand-proto's test/manual).
+			// NOTE: `app/**/*-page.ts` is load-bearing — a page added under another
+			// name falls outside it, and knip then silently under-analyses the `src/`
+			// graph behind that page without turning the gate red. If page naming ever
+			// diverges from the `*-page.ts` convention, list the pages explicitly.
+			entry: [
+				'app/**/*-page.ts',
+				'nativescript.config.ts',
+				'src/polyfills/node-*.ts',
+				'src/shims/*.js',
+				'src/solo-smoke.ts',
+			],
+			// The NativeScript CLI is a globally-installed tool, like `ncu` / `eas`.
+			ignoreBinaries: ['ns'],
+			ignoreDependencies: [
+				// NativeScript toolchain: `@nativescript/android` is the native platform
+				// runtime consumed by `ns prepare android`, never imported.
+				'@nativescript/android',
+				// webpack-config-implicit: `esbuild-loader` is named by string in a
+				// webpack-chain `.loader()` call, which knip's webpack plugin can't read;
+				// `util` resolves straight to the npm package for transitive deps that
+				// import it (externalsPresets.node:false).
+				'esbuild-loader',
+				'util',
+				// Node built-in name, so knip won't treat the bare `buffer` import in
+				// src/polyfills/buffer-global.ts as a package — same ignore as the rn and
+				// web apps carry.
+				'buffer',
+			],
+		},
+
 		'packages/reference-app-rn': {
 			// Expo / React Native framework-implicit deps: the Metro bundler and
 			// Babel toolchain consume these without an explicit import, and the
@@ -74,7 +113,6 @@ const config: KnipConfig = {
 			ignoreDependencies: [
 				'@babel/core',
 				'@babel/runtime',
-				'@optimystic/db-p2p',
 				'buffer',
 				'@expo/vector-icons',
 				'expo-updates',
@@ -83,20 +121,15 @@ const config: KnipConfig = {
 		},
 
 		'packages/reference-app-web': {
-			// Vite-config-implicit deps: `@multiformats/multiaddr` (dedupe),
-			// `readable-stream` / `buffer` (resolve aliases + optimizeDeps), plus
-			// `@optimystic/db-core` / `@quereus/quereus` / `idb` which are pulled
-			// transitively through `@optimystic/db-p2p` / `@serfab/cadre-core` in
-			// the browser bundle. Svelte tooling (`@tsconfig/svelte`,
-			// `svelte-check`, `@types/readable-stream`) is config/CLI-driven.
+			// Vite-config-implicit deps: `readable-stream` / `buffer` (resolve
+			// aliases + optimizeDeps), plus `@optimystic/db-core` / `idb` which are
+			// pulled transitively through `@optimystic/db-p2p` / `@serfab/cadre-core`
+			// in the browser bundle. `@types/readable-stream` is types-only.
 			ignoreDependencies: [
-				'@multiformats/multiaddr',
 				'@optimystic/db-core',
-				'@quereus/quereus',
 				'buffer',
 				'idb',
 				'readable-stream',
-				'svelte-check',
 				'@types/readable-stream',
 			],
 		},

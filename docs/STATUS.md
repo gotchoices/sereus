@@ -390,12 +390,12 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
 with no package defining the script, exiting 0 in ~0s). It now runs [knip](https://knip.dev) from the repo
 root against a single config (`knip.ts`, Option A) covering the workspaces listed in it.
 
-- [ ] **The gate currently exits 1 and has since `reference-app-ns` landed** (v0.9.0 release commit, after
-  `knip.ts` was last touched): `knip.ts` has no `packages/reference-app-ns` entry, so all 13 of that
-  package's real dependencies report as unused and most of its source reports as unused files. Two other
-  pre-existing unused-dependency hits ride along: root `svelte-eslint-parser` and `cadre-core`
-  `@libp2p/peer-id-factory`. Tracked by `fix/knip-missing-reference-app-ns-workspace`; until it lands,
-  `dep-check` is **not** a trustworthy signal for new work.
+- [x] **The gate exits 0 with no knip configuration hints.** It had exited 1 since `reference-app-ns` landed:
+  NativeScript resolves page modules by string (`app-root.xml` `defaultPage`, runtime `Frame.navigate`), so
+  knip's only auto-detected entry (`app/app.ts`, from `main`) reached almost nothing and 13 real deps looked
+  unused. `knip.ts` now declares that package's real entry points — the `*-page.ts` pages, the webpack-only
+  polyfills/shims, `nativescript.config.ts`, and the manual `solo-smoke.ts` helper — so the whole `src/` graph
+  is genuinely analysed rather than excluded.
 - [x] `dep-check` detects unused, missing (phantom/unlisted), and unresolved deps/binaries across all workspaces.
 - Gate semantics (`knip.ts` `rules`): dependency-class issues are `error` (fail the gate); dead-code classes
   (unused **files / exports / types**) are `warn` (surfaced but non-blocking). Cleaning the existing dead-code
@@ -403,14 +403,25 @@ root against a single config (`knip.ts`, Option A) covering the workspaces liste
   out of scope for the dep-check ticket.
 - Phantom deps fixed (added as direct deps where production/test code imports them transitively):
   `@multiformats/multiaddr` (cadre-core, integration-tests, reference-app-rn), `@libp2p/crypto` + `@libp2p/interface`
-  (cadre-cli, cadre-host), `@libp2p/peer-id` (cadre-cli, cadre-host), and `@vitest/coverage-v8` (cadre-core,
-  integration-tests, quereus-plugin-sereus, strand-proto — coverage is configured in their vitest configs).
-- Truly-unused deps removed: root `esbuild`, `aegir` (cadre-cli/core/provider — no longer used now that build/test
-  run `tsc`/`vitest` directly), and `@serfab/cadre-core` from cadre-provider (never imported).
+  (cadre-cli, cadre-host), `@libp2p/peer-id` (cadre-cli, cadre-host), `@vitest/coverage-v8` (cadre-core,
+  integration-tests, quereus-plugin-sereus, strand-proto — coverage is configured in their vitest configs), and
+  `@noble/ciphers` + `@noble/curves` (reference-app-ns — `src/shims/noise-crypto.js` imports both directly and
+  only built because `@chainsafe/libp2p-noise` happened to install them; that package sets
+  `installConfig.hoistingLimits: "workspaces"`, so it must not lean on root hoisting).
+- Truly-unused deps removed: root `esbuild` + `svelte-eslint-parser` (the latter arrives as a real dependency of
+  `eslint-plugin-svelte`), `aegir` (cadre-cli/core/provider — no longer used now that build/test run
+  `tsc`/`vitest` directly), `@serfab/cadre-core` from cadre-provider (never imported),
+  `@libp2p/peer-id-factory` from cadre-core (only strand-proto uses it, and declares it itself), and
+  `@noble/hashes` from integration-tests.
 - Documented framework/dynamic false-positive ignores live in `knip.ts` with rationale: Expo/Metro-implicit
-  (reference-app-rn), Vite-config-implicit (reference-app-web), dynamic-`import()`/runtime-`resolve` deps
+  (reference-app-rn), Vite-config-implicit (reference-app-web), webpack-config-implicit plus the NativeScript
+  platform runtime and the global `ns` CLI binary (reference-app-ns), dynamic-`import()`/runtime-`resolve` deps
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
   (integration-tests). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
+- Only `warn`-class output remains on a green run: the dead-code backlog above, plus one `Duplicate exports` hit
+  on `reference-app-ns/src/shims/noise-crypto.js` — intentional, since that shim binds all four of upstream's
+  export names (`pureJsCrypto`/`nodeCrypto`/`asCrypto`/`defaultCrypto`) to the same pure-JS object so it can
+  stand in for `@chainsafe/libp2p-noise`'s node-crypto module.
 
 ### Lint coverage
 
