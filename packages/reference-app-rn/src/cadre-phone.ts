@@ -216,6 +216,14 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 
   node = new CadreNode(config);
   await node.start();
+  // NOTE: this await is unbounded — runOwnerGenesis is fail-SOFT (it catches
+  // errors) but a control call that never settles would wedge startPhoneNode
+  // forever, with no error to report. The solo (cadre-of-one) control path this
+  // config uses — WebSockets-only, `listenAddrs: []`, empty bootstrap — is
+  // covered by `cadre-core/test/control-database-solo.spec.ts` and completes in
+  // milliseconds, so there is nothing to time-box today. If a control operation
+  // ever hangs again, bound it in cadre-core (so every embedder benefits), not
+  // with a per-app deadline here.
   await runOwnerGenesis(node);
   initializeFormationResponder(node);
   return node;

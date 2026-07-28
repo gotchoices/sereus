@@ -379,6 +379,12 @@ function detectCryptoSanity(): CryptoSanityInfo {
  * status / peers / latency / error. The CadrePeer count is a best-effort
  * control-DB read (local on a solo node) guarded so a transactor hiccup never
  * sinks the tick.
+ *
+ * NOTE: the try/catch guards a *rejection*, not a call that never settles — a
+ * hung `queryCadrePeers` would stall this tick indefinitely and freeze the whole
+ * diagnostics panel, not just the peer count. Solo control reads are local and
+ * fast (see `cadre-core/test/control-database-solo.spec.ts`), so there is nothing
+ * to bound today; if a control read can hang, bound it in cadre-core.
  */
 async function collectCadre(): Promise<CadreInfo> {
 	const node = getCadreNode();

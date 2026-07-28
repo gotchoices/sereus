@@ -6,6 +6,14 @@ import { CadreNode } from '../src/cadre-node.js';
  * Exercises the idempotent genesis path used by `cadre-cli start --owner`.
  * Boots a real CadreNode (empty bootstrap, transaction profile — no network
  * peers required) and drives `ControlDatabase.ensureOwnerKey` directly.
+ *
+ * Scope: this is the **listening** cadre-of-one — default transports (TCP) and
+ * the default `listenAddrs`, i.e. the server/CLI shape. Its companion
+ * `control-database-solo.spec.ts` covers the **non-listening** cadre-of-one that
+ * mobile and browser embedders actually configure (WebSockets-only,
+ * `listenAddrs: []`), and adds the post-genesis write, the read-back, and the
+ * warm-restart read. The two are a matched pair: keep both, and put new
+ * no-listen-address coverage in the solo spec.
  */
 describe('ControlDatabase genesis (ensureOwnerKey)', () => {
   it('inserts exactly one OwnerKey on a fresh party and is idempotent on re-run', async () => {

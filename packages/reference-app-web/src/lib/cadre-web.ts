@@ -341,6 +341,14 @@ export async function startCadre(): Promise<CadreNode> {
  * Fail-soft: the Phase-1 chat round-trip runs in `bootstrap` mode and does not
  * depend on owner, so a genesis failure is captured for diagnostics rather
  * than aborting node startup.
+ *
+ * NOTE: fail-soft covers thrown errors, not a call that never settles — a hung
+ * `ensureOwnerKey` would leave `startCadre` awaiting forever with `ownerState`
+ * stuck at its initial value. Nothing hangs today: `e2e/solo/diagnostics.spec.ts`
+ * asserts `diag-owner` reaches `genesis|existing` on a solo boot, and
+ * `cadre-core/test/control-database-solo.spec.ts` covers the no-listen-address
+ * control path under explicit deadlines. If that changes, bound the operation in
+ * cadre-core rather than wrapping each call site here.
  */
 async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promise<void> {
 	try {

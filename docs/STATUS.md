@@ -441,6 +441,59 @@ auto-fixable subset.
   `maestro/` (Maestro JS engine), `strand-proto` (deprecated), and non-package trees (`tess/`, `ops/`,
   `scripts/`) are ignored.
 
+### Declared dependency range vs linked workspace (a real coverage gap — keep them equal)
+
+Root `package.json` `resolutions` maps every `@optimystic/*` and `@quereus/quereus` import to the
+**linked sibling workspace** (`link:../optimystic/...`, `link:../quereus/...`). So *nothing in this
+repo ever exercises the version a consumer installs* — that comes from each package's declared
+`dependencies` range. When the two drift, a regression on the published floor is invisible here.
+
+That drift caused a real report: `@serfab/cadre-core` 0.9.0 declared `@optimystic/*: ^0.14.1` while
+the workspace linked 0.16.x, so an embedding app installed a substrate two minors behind everything
+this repo tests against, and hit a solo control-DB hang we could not reproduce.
+
+- [x] **Rule: bump the declared range in lockstep with the linked workspace version.** As of
+  2026-07-28 all seven optimystic-consuming packages (`cadre-core`, `cadre-cli`,
+  `quereus-plugin-sereus`, `integration-tests`, `reference-app-{rn,web,ns}`) declare
+  `@optimystic/*: ^0.16.3`, matching the linked workspace and the newest npm release.
+  `@quereus/quereus` declares `^4.4.0` against linked 4.4.1 — in-range, no drift.
+- `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
+  run them when the sibling workspace is bumped, not only at release time.
+- Note `@optimystic/db-p2p-storage-fs` has **no** `resolutions` entry, so it always resolves from the
+  registry. Before this bump it was the one substrate package the repo genuinely ran at 0.14.1 while
+  everything around it ran 0.16.x.
+
+### Solo (cadre-of-one) control DB — supported and covered
+
+A **cadre of one** — a node whose only member is itself, the normal first-run state of every
+embedding app — is a supported configuration. Its single node is the whole membership and the sole
+authority over its own control data, so control reads and writes must complete from local state
+without consulting a network it knows is empty.
+
+- [x] `packages/cadre-core/test/control-database-solo.spec.ts` — the **non-listening** solo shape that
+  mobile and browser embedders actually configure: WebSockets-only transports, `listenAddrs: []`,
+  `bootstrapNodes: []`. Covers genesis → read-back (typed API *and* raw `select`) → a post-genesis
+  solo write (`registerSelf`) → read-back, for **both** the `transaction` and `storage` profiles, plus
+  a warm restart on the same identity + block storage (the catalog-hydrate path) that re-reads its
+  rows and writes again.
+- [x] `packages/cadre-core/test/control-database-genesis.spec.ts` — the **listening** solo shape
+  (default TCP `listenAddrs`, default transports), i.e. the server/CLI posture. A matched pair with
+  the spec above, not a duplicate: a node with no listen address cannot be dialed back, which is where
+  a cluster/cohort round-trip would hang rather than fail.
+- Every control operation in the solo spec runs under an explicit per-operation deadline that **fails
+  the test naming the operation**. A bare `await` on a hung control call would instead blow vitest's
+  own timeout and report nothing diagnosable. Keep that pattern when extending the spec.
+- [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
+  `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
+  `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.
+  `reference-app-rn` cannot be booted headlessly; its network config is byte-for-byte the shape the
+  cadre-core solo spec covers.
+- Open shape: the reference apps `await` control operations with **no deadline** (RN `startPhoneNode` →
+  `runOwnerGenesis`; web `runOwnerGenesis`; web diagnostics `queryCadrePeers`). Their `try`/`catch`
+  guards catch rejections, not a call that never settles. Nothing hangs today, so no per-app deadline
+  was added — see the `NOTE:` comments at those three sites. If a control operation can hang again,
+  bound it inside cadre-core so every embedder benefits, rather than time-boxing each call site.
+
 ## Multi-node use-case validation (2026-06-26)
 
 Hands-on debugging of two flows (real cadre-cli processes on localhost + integration
