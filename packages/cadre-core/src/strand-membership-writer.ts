@@ -598,15 +598,10 @@ export interface AddManagerParams {
  * generation, and the insert payload differs from the delete payload (which stays
  * the bare target key — see {@link removeManager}).
  *
- * WHY THE GENERATION ORDERING IS THE WHOLE ANTI-TAKEOVER STORY. The branch is a
- * deferred, subquery-bearing check that runs at commit against the POST-insert row
- * set, so sibling rows inserted in the same transaction are visible as "existing"
- * managers. The strict `A.Generation < new.Generation` closes that: the
- * minimum-generation row of any inserted set cannot find its authorizer among its
- * siblings, so that authorizer must be a genuinely pre-existing manager. This
- * subsumes self-promotion (a row's generation is never below its own — the
- * branch's `A.MemberKey <> new.MemberKey` restates that intent locally) and kills
- * mutual pairs and rings of any length, in one transaction or otherwise.
+ * The strict ordering — not this writer — is what makes a same-transaction takeover
+ * impossible; the `Manager.Generation` column comment in `schemas/strand.qsql` carries
+ * that argument. All this writer owes it is a generation strictly above the
+ * authorizer's, inside the signed payload.
  *
  * When the authorizer has NO `Manager` row (a non-manager signer, or an open
  * strand with no managers at all), the lookup finds nothing and the writer falls
@@ -629,6 +624,11 @@ export async function addManager(db: Database, params: AddManagerParams): Promis
     'select Generation from Strand.Manager where MemberKey = ?',
     [byManagerKeyPair.publicKeyB64],
   );
+  // NOTE: +1 saturates at Number.MAX_SAFE_INTEGER, where the successor compares equal
+  // to its authorizer and the schema rejects. Unreachable while generations only ever
+  // grow by 1 from 0, but the schema enforces ordering, not adjacency, so a manager may
+  // seat a successor at any larger value; if arbitrary generations ever become writable
+  // from outside this function, clamp or reject here rather than emitting a dead row.
   const generation = authorizerRow == null ? 1 : Number(authorizerRow.Generation) + 1;
   const signature = signStrandPayload(`${newManagerKey}|${generation}`, byManagerKeyPair.privateKeyB64);
   await db.exec(

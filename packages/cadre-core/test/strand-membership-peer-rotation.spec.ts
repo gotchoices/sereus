@@ -774,6 +774,61 @@ describe('Manager.Generation ordering', () => {
     expect(await managerGeneration(db, b.publicKeyB64)).toBe(2);
   }, 30_000);
 
+  it('accepts a same-transaction chain rooted at a pre-existing manager (no over-rejection)', async () => {
+    const { db, founder } = await openStrand('c');
+    const a = freshKeyPair();
+    const b = freshKeyPair();
+
+    // The mirror image of the rejected shapes: batching promotions in ONE
+    // transaction is legitimate as long as the batch has a root outside it. The
+    // founder (gen 0) seats A at 1 and A seats B at 2, both rows landing at the
+    // same commit — the deferred check resolves A as B's authorizer from the
+    // post-insert row set, which is exactly what makes the attack shapes
+    // tempting and must NOT be broken by the ordering guard.
+    await inTransaction(db, async () => {
+      await insertManagerRow(db, founder, a.publicKeyB64, 1);
+      await insertManagerRow(db, a, b.publicKeyB64, 2);
+    });
+
+    expect(await tableCount(db, 'Manager')).toBe(3);
+    expect(await managerGeneration(db, a.publicKeyB64)).toBe(1);
+    expect(await managerGeneration(db, b.publicKeyB64)).toBe(2);
+  }, 30_000);
+
+  it('an "add X" signature cannot be replayed as "remove X" (the payloads differ)', async () => {
+    const { db, founder } = await openStrand('c');
+    const target = freshKeyPair();
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: target.publicKeyB64 }); // gen 1
+
+    // The promotion payload carries the generation (`key|1`); the removal payload
+    // is the bare key. So a captured approval to ADD a manager does not double as
+    // an approval to REMOVE it — the narrowing claimed in docs/strands.md.
+    const addSignature = signStrandPayload(`${target.publicKeyB64}|1`, founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, addSignature, target.publicKeyB64],
+      ),
+    ).rejects.toThrow(/Authorized/);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [target.publicKeyB64])).toBeTruthy();
+
+    // And the converse: a removal-shaped signature over a key (bare, no generation)
+    // cannot promote that same key.
+    const other = freshKeyPair();
+    const removeShapedSignature = signStrandPayload(other.publicKeyB64, founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `insert into Strand.Manager (MemberKey, Generation)
+           with context ManagerKey = ?, Signature = ?
+           values (?, ?)`,
+        [founder.publicKeyB64, removeShapedSignature, other.publicKeyB64, 1],
+      ),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Manager')).toBe(2);
+  }, 30_000);
+
   it('a later-generation manager may remove an earlier-generation one (generation is not privilege)', async () => {
     const { db, founder } = await openStrand('c');
     const a = freshKeyPair();
