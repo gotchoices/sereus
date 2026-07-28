@@ -148,21 +148,48 @@ export const STRAND_SCHEMA = `    table Header (
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
-        constraint Authorized check on insert, update, delete (
-            -- There are no existing records - first manager needs no authorization
-            (select count(1) from Manager) <= 1
+        -- Rotation is insert + delete only. An update would let a resignation signature
+        -- (which proves only that old.MemberKey consented) double as a hand-off: the
+        -- former-manager branch would accept re-pointing the row at any new key.
+        constraint NoUpdate check on update (false),
+        -- A closed strand must never lose its last manager. Every admit path (Invite,
+        -- addMemberByManager, addManager) requires an existing Manager row, so an
+        -- admin-less strand can never admit anyone again. Deferred (subquery), so the
+        -- count it sees is the POST-delete count.
+        -- NOTE: this is a per-transaction check against locally visible rows. Two nodes
+        -- that concurrently remove different managers can each see a surviving one and
+        -- still converge to zero; if partitioned rotation ever becomes a real workflow,
+        -- the floor needs a cross-node guard, not a local count.
+        constraint MinOneManager check on delete (
+            (select count(1) from Manager) >= 1
+        ),
+        constraint Authorized check on insert, delete (
+            -- Bootstrap: the founding manager is seated with no prior signer. Gated to
+            -- INSERT (old.MemberKey is null) AND to the founding state — at most one
+            -- Member, and this manager IS that member. Deferred checks see post-image
+            -- state, so an ungated count test is also true for a DELETE that drops the
+            -- count to <= 1, and for the INSERT half of a same-transaction swap of the
+            -- sole manager.
+            (old.MemberKey is null
+                and (select count(1) from Manager) <= 1
+                and (select count(1) from Member) <= 1
+                and exists (select 1 from Member M where M.Key = new.MemberKey))
 
-                -- or authorized by this former manager
+                -- or authorized by this former manager (self-resignation)
                 or (
                     old.MemberKey is not null
                         and old.MemberKey = context.ManagerKey
                         and verify(digest(old.MemberKey), context.Signature, old.MemberKey, 'ed25519')
                 )
 
-                -- or authorized by another existing manager
+                -- or authorized by ANOTHER existing manager. The \`<>\` is load-bearing:
+                -- this subquery runs at commit against the post-insert row set, so
+                -- without it the row being inserted is its own authorizer and any key
+                -- could self-promote by signing its own key.
                 or exists (
                     select 1 from Manager A
                         where A.MemberKey = context.ManagerKey
+                            and A.MemberKey <> coalesce(new.MemberKey, old.MemberKey)
                             and verify(digest(coalesce(new.MemberKey, old.MemberKey)), context.Signature, A.MemberKey, 'ed25519')
                 )
         )

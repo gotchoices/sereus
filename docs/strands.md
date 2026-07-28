@@ -138,3 +138,46 @@ Android reinstall), mixed-platform cadres (Node `FileKeyStore` + RN secure store
 and migrating existing plaintext rows.
 
 Cross-reference: [`docs/architecture.md` → Node Key Material & the KeyStore Seam](architecture.md#node-key-material--the-keystore-seam).
+
+## Who May Administer a Closed Strand
+
+A closed strand's administrators are its **managers** — the rows of the `Strand.Manager`
+table (see [`schemas/strand.qsql`](../schemas/strand.qsql)). Managers are the only parties
+that can admit anyone: issuing an invitation, adding a member directly, and promoting
+another manager all require the writer to prove it already holds a manager row. So the
+contents of that table are the strand's entire access-control story, and the schema
+enforces these invariants:
+
+- **Only an existing manager can create a manager.** A promotion must be signed by a
+  *different* manager that already exists. A key cannot promote itself — this matters
+  because the check runs at commit time, when the row being added is already present and
+  would otherwise vouch for itself.
+- **A manager can be removed by another manager, or resign itself.** Either way the
+  removal carries a signature from the party authorizing it; an unrelated key cannot
+  remove anyone.
+- **The last manager can never be removed.** A strand with no managers can never admit
+  another member or appoint another manager, so it would be frozen permanently. Any
+  removal that would empty the table is rejected.
+- **The founding manager is the only unsigned seat**, and only in the founding state: at
+  most one member exists, the founder's member row is already present, and no manager
+  exists yet. Every later manager needs a signature. (This is why a strand is bootstrapped
+  in `Header` → `Member` → `Manager` order — seating the manager first is rejected.)
+- **A manager row can be added or deleted, never edited.** Editing would let a
+  resignation — which only proves the *outgoing* key consented — be reused to point the
+  row at a key of the attacker's choosing.
+- **Handing off sole control is add-then-resign, in that order.** A single transaction
+  that removes the only manager and inserts a replacement is rejected; the successor must
+  be appointed while the outgoing manager still holds authority.
+
+Being a manager does not require being a member: a key with no `Member` row can still be
+promoted. Whether it should be is tracked separately as `debt-strand-manager-must-be-member`.
+
+Two known gaps remain, both deliberately out of scope of the rules above:
+
+- **Concurrent removals on different nodes can still empty the table.** The last-manager
+  floor counts the rows one node can see, so two nodes each removing a different manager
+  can both believe a manager survives. A cross-node guard is not attempted; tracked in
+  the schema's own note next to the check.
+- **A manager's authorization signature does not distinguish adding a key from removing
+  it** — both sign the same payload with no nonce, so a captured "add X" approval can be
+  replayed as "remove X". Tracked as `bug-strand-manager-authority-antireplay`.

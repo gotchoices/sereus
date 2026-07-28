@@ -160,11 +160,17 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
 /**
  * Insert the founding `Strand.Manager` if no manager exists yet.
  *
- * The empty-table state satisfies the `count(1) from Manager <= 1` bootstrap
- * branch of `Manager.Authorized`, so no signature is needed. Idempotent via the
- * same count guard. Must run AFTER the Header insert: `Manager.OnlyClosed` is a
- * deferred (subquery) check evaluated at commit, and the sequential auto-commit
- * Header→Member→Manager order ensures the closed `Header` is committed first.
+ * The empty-table state satisfies the bootstrap branch of `Manager.Authorized`, so
+ * no signature is needed. Idempotent via the same count guard.
+ *
+ * ORDERING IS LOAD-BEARING, not merely convenient. The bootstrap branch is gated to
+ * the founding state and now reads `exists (select 1 from Member M where M.Key =
+ * new.MemberKey)` alongside `count(Manager) <= 1` and `count(Member) <= 1`, so the
+ * founding `Member` row MUST already exist when this commits — a Manager-first
+ * seeding path is rejected. It must also run AFTER the Header insert:
+ * `Manager.OnlyClosed` is a deferred (subquery) check evaluated at commit. The
+ * sequential auto-commit Header→Member→Manager order in
+ * {@link bootstrapFounderMembership} satisfies both.
  */
 async function insertFounderManagerIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
   if (await strandTableCount(db, 'Manager') > 0) {
@@ -585,11 +591,18 @@ export interface AddManagerParams {
  * `context.ManagerKey`. So the signer signs the new manager key directly (no
  * `'|'` join) and binds itself as `context.ManagerKey`.
  *
- * Once the founder manager exists, the schema's `(select count(1) from Manager)
- * <= 1` bootstrap shortcut no longer applies to a second add (at commit the count
- * includes the new row, so it is ≥ 2), so this genuinely exercises signature
- * verification — a non-manager signer, or a signature over the wrong key, is
- * rejected.
+ * The schema's bootstrap shortcut is gated to INSERTs in the founding state
+ * (`old.MemberKey is null` and at most one `Manager`/`Member`, that member being
+ * this manager), so it never applies to a promotion on an already-bootstrapped
+ * strand — this genuinely exercises signature verification: a non-manager signer,
+ * or a signature over the wrong key, is rejected.
+ *
+ * SELF-PROMOTION IS REJECTED. The existing-manager branch runs at commit against
+ * the POST-insert row set (it is a deferred, subquery-bearing check), so the row
+ * being inserted is itself visible in `Manager`. The branch's `A.MemberKey <>
+ * coalesce(new.MemberKey, old.MemberKey)` guard excludes that row, so an arbitrary
+ * key cannot authorize its own promotion by signing its own key — the authorizer
+ * must be a DIFFERENT, pre-existing manager.
  *
  * @param db - The closed strand's database (founder manager already seated).
  * @param params - The authorizing manager's keypair and the new manager key.
@@ -645,18 +658,30 @@ export interface RemoveManagerParams {
  * IS enforced here: a signer that is neither an existing manager nor the target
  * itself is rejected at commit.
  *
- * KNOWN SCHEMA HAZARD (not guarded here): even with enforcement, `Manager.
- * Authorized`'s `(select count(1) from Manager) <= 1` bootstrap branch is true at
- * commit whenever a delete drops the count to ≤ 1, so removing the strand's LAST (or
- * second-to-last) manager would be accepted regardless of signature — and removing
- * the last one orphans the strand (no one can ever add another). The schema does not
- * prevent this; a "min-one-manager" invariant is deferred to a future schema change
- * rather than grown into this writer.
+ * THE LAST MANAGER CANNOT BE REMOVED. `Manager.MinOneManager` (`check on delete`,
+ * deferred, so it sees the POST-delete count) rejects any delete that would leave the
+ * strand with zero managers — an admin-less closed strand could never admit anyone
+ * again, since `Invite`, `addMemberByManager`, and `addManager` all require a
+ * `Manager` row. The bootstrap branch of `Manager.Authorized` is now gated to INSERTs
+ * (`old.MemberKey is null`), so it no longer waives the signature check on a delete
+ * that drops the count toward the floor: a second-to-last removal is authorized
+ * exactly like any other.
+ *
+ * HAND-OFF ORDER: a sole manager transferring control must ADD the successor FIRST
+ * and resign SECOND. A same-transaction delete-then-insert swap is rejected — the
+ * bootstrap branch is gated to the founding state (at most one `Member`), and the
+ * successor's insert has no other manager to authorize it once the sole manager's
+ * row is gone.
+ *
+ * Cross-node caveat: `MinOneManager` counts rows visible to THIS transaction, so two
+ * nodes concurrently removing different managers can each see a survivor and still
+ * converge to zero. Noted in the schema; a cross-node floor is not attempted here.
  *
  * @param db - The closed strand's database.
  * @param params - The authorizing keypair and the target manager key.
- * @throws If `Manager.Authorized` rejects (e.g. a non-manager admin removal
- *   while > 2 managers remain); the delete rolls back.
+ * @throws If `Manager.Authorized` rejects (a signer that is neither another existing
+ *   manager nor the target itself) or `Manager.MinOneManager` rejects (the removal
+ *   would leave no managers); the delete rolls back.
  */
 export async function removeManager(db: Database, params: RemoveManagerParams): Promise<void> {
   const { byManagerKeyPair, targetManagerKey } = params;

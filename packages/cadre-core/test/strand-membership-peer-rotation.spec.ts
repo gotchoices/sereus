@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import debug from 'debug';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
@@ -29,6 +30,8 @@ import type { SAppConfig } from '../src/types.js';
  * manager add genuinely runs past the `count(Manager) <= 1` bootstrap branch
  * (at commit the new row makes the count ≥ 2), exercising signature verification.
  */
+
+const log = debug('sereus:cadre:test:strand-rotation');
 
 function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
   return {
@@ -302,6 +305,26 @@ describe('addManager', () => {
     expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
+  // Self-promotion guard: the existing-manager branch of `Manager.Authorized` is a
+  // deferred (subquery-bearing) CHECK, so at commit it runs against the POST-insert
+  // row set — the row being inserted is already in `Manager` and would otherwise
+  // match itself. The branch's `A.MemberKey <> coalesce(new.MemberKey, old.MemberKey)`
+  // excludes that row, so a key cannot authorize its own promotion.
+  it('rejects a key promoting ITSELF (the row being inserted is not its own authorizer)', async () => {
+    const { db, founder } = await openStrand('c');
+    const attacker = freshKeyPair();
+
+    // A perfectly-formed self-authorization: the attacker signs its own key and binds
+    // itself as context.ManagerKey. Only the `<>` guard stands between this and admin.
+    await expect(
+      addManager(db, { byManagerKeyPair: attacker, newManagerKey: attacker.publicKeyB64 }),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1); // only the founder
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [attacker.publicKeyB64])).toBeUndefined();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
   it('rejects a manager add on an open strand (Manager is OnlyClosed)', async () => {
     const { db } = await openStrand('o');
     const target = freshKeyPair();
@@ -398,5 +421,143 @@ describe('removeManager', () => {
     ).rejects.toThrow();
     expect(await tableCount(db, 'Manager')).toBe(3);
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  // ── The min-one-manager floor + the no-bootstrap-bypass pin ─────────────────
+  //
+  // `Manager.MinOneManager` (`check on delete`, deferred → sees the POST-delete
+  // count) keeps a closed strand from ever reaching zero managers: every admit path
+  // (Invite, addMemberByManager, addManager) needs a Manager row, so an admin-less
+  // strand is frozen forever. And `Manager.Authorized`'s bootstrap branch is gated to
+  // INSERTs (`old.MemberKey is null`), so a delete that drops the count toward the
+  // floor no longer waives the signature check.
+
+  it('rejects the SOLE manager resigning (min-one-manager floor)', async () => {
+    const { db, founder } = await openStrand('c');
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // A valid self-resignation signature — rejected purely because it would empty
+    // the Manager table.
+    // Authorized passes (the self-resignation branch is satisfied), so MinOneManager
+    // is the ONLY constraint that can reject — pinning the name proves the floor fired.
+    await expect(
+      removeManager(db, { byManagerKeyPair: founder, targetManagerKey: founder.publicKeyB64 }),
+    ).rejects.toThrow(/MinOneManager/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('rejects a stranger removing the last manager (no unsigned drop to zero)', async () => {
+    const { db, founder } = await openStrand('c');
+    const stranger = freshKeyPair();
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // Both MinOneManager (post-delete count 0) and Authorized (stranger signature)
+    // reject this; which one reports first is engine evaluation order, so only the
+    // fact of a CHECK rejection is pinned.
+    await expect(
+      removeManager(db, { byManagerKeyPair: stranger, targetManagerKey: founder.publicKeyB64 }),
+    ).rejects.toThrow(/CHECK constraint failed/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('still requires a valid signature for the SECOND-TO-LAST removal (bootstrap branch is insert-only)', async () => {
+    const { db, founder } = await openStrand('c');
+    const [a2] = await addExtraManagers(db, founder, 1);
+    const stranger = freshKeyPair();
+    expect(await tableCount(db, 'Manager')).toBe(2);
+
+    // Post-delete count would be 1 — the old, ungated `count(Manager) <= 1` branch
+    // accepted exactly this. Now it must fail on the signature.
+    // MinOneManager is satisfied (1 would remain), so Authorized is the only rejector.
+    await expect(
+      removeManager(db, { byManagerKeyPair: stranger, targetManagerKey: a2.publicKeyB64 }),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Manager')).toBe(2);
+
+    // The same removal, properly authorized by the OTHER manager, succeeds — proving
+    // the rejection above was the signature, not the floor (1 manager still remains).
+    await removeManager(db, { byManagerKeyPair: founder, targetManagerKey: a2.publicKeyB64 });
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('rejects any UPDATE of a Manager row (NoUpdate — a resignation signature is not a hand-off)', async () => {
+    const { db, founder } = await openStrand('c');
+    const attacker = freshKeyPair();
+
+    // The strongest context an attacker could present: a genuine founder-signed
+    // payload over the founder's OWN key (i.e. a captured self-resignation proof).
+    // The former-manager branch verifies only `old.MemberKey`, so without NoUpdate
+    // this would re-point the sole Manager row at an attacker-chosen key.
+    const founderSelfSignature = signStrandPayload(founder.publicKeyB64, founder.privateKeyB64);
+
+    await expect(
+      db.exec(
+        `update Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           set MemberKey = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, founderSelfSignature, attacker.publicKeyB64, founder.publicKeyB64],
+      ),
+    ).rejects.toThrow(/NoUpdate/); // not a parse error and not "updates unsupported"
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [attacker.publicKeyB64])).toBeUndefined();
+  }, 30_000);
+
+  it('rejects a same-transaction swap of the sole manager (hand-off must be add-then-resign)', async () => {
+    const { db, founder } = await openStrand('c');
+    // A second Member exists, so the bootstrap branch's `count(Member) <= 1` gate is
+    // false — the successor cannot slip in as a "founding" manager.
+    const successor = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: successor.publicKeyB64 });
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    const resignSignature = signStrandPayload(founder.publicKeyB64, founder.privateKeyB64);
+
+    // Delete-then-insert in ONE transaction: the deferred checks see the post-image
+    // (one manager: the successor), which is exactly the state the old schema's
+    // ungated bootstrap branch would have waved through.
+    const swap = async (): Promise<void> => {
+      await db.beginTransaction();
+      try {
+        await db.exec(
+          `delete from Strand.Manager
+             with context ManagerKey = ?, Signature = ?
+             where MemberKey = ?`,
+          [founder.publicKeyB64, resignSignature, founder.publicKeyB64],
+        );
+        await db.exec(
+          `insert into Strand.Manager (MemberKey)
+             with context ManagerKey = null, Signature = null
+             values (?)`,
+          [successor.publicKeyB64],
+        );
+        await db.commit();
+      } catch (error) {
+        // A failed commit() already tore the transaction down, so rollback() throws
+        // "no transaction active" — log it rather than masking the real cause.
+        try {
+          await db.rollback();
+        } catch (rollbackError) {
+          log('Rollback after the swap attempt was a no-op: %s', rollbackError);
+        }
+        throw error;
+      }
+    };
+
+    // The successor's INSERT has no other manager to authorize it (the founder's row
+    // is gone in the post-image) and the bootstrap branch is gated off, so Authorized
+    // rejects — not MinOneManager, which the successor row satisfies.
+    await expect(swap()).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [successor.publicKeyB64])).toBeUndefined();
   }, 30_000);
 });
