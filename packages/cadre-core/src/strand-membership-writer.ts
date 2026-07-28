@@ -534,14 +534,16 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
  * applies `MemberKey = ?` itself. No seek is involved, so no seek can miss. Both columns
  * are then re-compared here in JavaScript, so correctness depends only on the scan
  * returning a SUPERSET of the matching rows — the weakest possible assumption about the
- * storage layer. The `where` clause is a size optimization, not a correctness dependency:
- * a dropped or mis-applied predicate cannot produce a false positive (e.g. a different
- * member that happens to have registered the same `PeerId`).
+ * storage layer. The `where` clause only trims what crosses into JS — it is NOT pushed
+ * down (see the cost note below) — so it is not a correctness dependency: a dropped or
+ * mis-applied predicate cannot produce a false positive (e.g. a different member that
+ * happens to have registered the same `PeerId`).
  */
 async function memberPeerExists(db: Database, memberKey: string, peerId: string): Promise<boolean> {
-  // NOTE: this scans one member's peers per registerMemberPeer call. Fine at
-  // member × devices scale; if MemberPeer ever grows large per member, the fix is a
-  // reliable composite-key seek, not a bigger scan.
+  // NOTE: because the predicate is not pushed down, the storage layer walks the WHOLE
+  // MemberPeer table (every member's rows) per registerMemberPeer call and the SQL engine
+  // filters. Fine at strand scale; if MemberPeer ever grows large, the fix is a reliable
+  // composite-key seek, not a bigger scan.
   // NOTE: if a secondary index on MemberPeer.MemberKey is ever added, this query stops
   // being a scan and becomes an index seek — re-introducing the seek dependency this
   // shape exists to remove.
