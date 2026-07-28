@@ -4,15 +4,43 @@ declare schema CadreControl {
     table OwnerKey (
         Key text primary key,
         StampId text not null unique,   -- single-use authorization nonce (anti-replay)
-        constraint Authorized check (
-            -- Bootstrap: first owner key needs no existing authorization
-            (select count(1) from OwnerKey) <= 1
+        -- A party must never lose its last owner key: every other CadreControl table's
+        -- CHECK requires an OwnerKey row, so an owner-less control database can never
+        -- authorize anything again — emptying this table is a permanent denial of the
+        -- party's control plane. Deferred (subquery), so the count is the POST-delete count.
+        -- NOTE: this is a per-transaction check against locally visible rows. Two
+        -- partitioned nodes that concurrently remove different owners can each see a
+        -- survivor and still converge to zero; if partitioned rotation ever becomes a real
+        -- workflow, the floor needs a cross-node guard, not a local count.
+        constraint MinOneOwner check on delete (
+            (select count(1) from OwnerKey) >= 1
+        ),
+        -- Enrollment is insert + delete only; rotation is add-then-remove. No writer
+        -- updates an OwnerKey row, and a self-rotation branch would double as a sole-owner
+        -- takeover: a deferred post-image count is also true of an update that re-points
+        -- the only row at an attacker key. Mirrors Strand.Manager.NoUpdate.
+        constraint NoUpdate check on update (false),
+        constraint Authorized check on insert, delete (
+            -- Every authorizer is read from the PRE-transaction snapshot (committed.*):
+            -- this CHECK auto-defers to commit (it has a subquery), by which point the row
+            -- being inserted — and any sibling inserted alongside it — is live, so a plain
+            -- from-OwnerKey would let a row authorize itself, or two strangers seat each
+            -- other. committed.* excludes both, stating the rule directly: the authorizer
+            -- must have existed BEFORE this transaction.
 
-                -- Old owner authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
-                or (old.Key is not null and old.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, old.Key, 'ed25519'))
+            -- Bootstrap: first owner key needs no existing authorization. Gated on the
+            -- PRE-transaction count, so a same-transaction swap of the sole owner (delete
+            -- the founder, insert the attacker — post-image count still 1) cannot ride it.
+            (old.Key is null and (select count(1) from committed.OwnerKey) = 0)
 
-                -- or other owners authorize by signing over THIS row (Key, StampId); single-use via unique StampId
-                or exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+                -- or a pre-existing owner authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
+                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
+
+                -- or a removal authorized by ANOTHER pre-existing owner over a DISTINCT
+                -- 'remove'-scoped digest bound to the stored row's StampId, so an enrollment
+                -- signature can never be replayed as a removal (cf. CadrePeer.AuthorizedDelete).
+                -- A.Key <> old.Key: an owner cannot sign its own removal (no self-resignation).
+                or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and verify(digest(old.Key, old.StampId, 'remove'), context.Signature, A.Key, 'ed25519')))
         )
     ) with context (OwnerKey text null, Signature text null);
 
