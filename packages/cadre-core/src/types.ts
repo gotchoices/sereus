@@ -180,6 +180,12 @@ export interface NetworkConfig {
    * Playwright e2e, RN simulators) supply a permissive gater here — e.g.
    * `{ denyDialMultiaddr: () => false }`. See `@optimystic/db-p2p`'s
    * `libp2p-node-base` for the underlying option.
+   *
+   * On the CONTROL node this gater is composed with the built-in membership
+   * admission gate (`membership-connection-gater.ts`): every hook supplied here
+   * is honored unchanged, and on inbound encrypted connections a deny from
+   * either this gater or the membership policy denies. Strand cohort nodes
+   * receive this gater as-is (their peers are legitimately cross-party).
    */
   connectionGater?: ConnectionGater;
   /**

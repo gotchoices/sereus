@@ -73,6 +73,7 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+import { createMembershipConnectionGater, DEFAULT_ENROLLMENT_WINDOW_MS } from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
 import { StrandAddrService, collectStrandAddrs } from './strand-addr-protocol.js';
 import { PushFanoutService } from './push-fanout.js';
@@ -176,6 +177,21 @@ export class CadreNode implements SAppIdLookup {
    * control-network node never needs to dial back to the manager.
    */
   private latestInviteAddresses: string[] | null = null;
+
+  /**
+   * Epoch ms until which the control-network inbound gate admits
+   * not-yet-authorized peers (see {@link admitInboundControlConnection} /
+   * {@link openEnrollmentWindow}). 0 = no window open. Opened automatically by
+   * {@link createInvite}; deliberately NOT reset on stop() — a stop/start cycle
+   * inside an outstanding invite's validity must not strand the invitee.
+   */
+  private enrollmentWindowUntil = 0;
+
+  /**
+   * Lazily-parsed PeerIds of `controlNetwork.bootstrapNodes` (see
+   * {@link getBootstrapPeerIds}) — infrastructure the inbound gate always admits.
+   */
+  private bootstrapPeerIds: Set<string> | null = null;
 
   /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
   private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -720,10 +736,121 @@ export class CadreNode implements SAppIdLookup {
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
       ...(network?.listenAddrs && { listenAddrs: network.listenAddrs }),
-      ...(network?.connectionGater && { connectionGater: network.connectionGater })
+      // The CONTROL node composes the membership admission gate onto any
+      // caller-supplied gater (deny from either wins on inbound; all other
+      // hooks pass through). Strand cohort nodes keep the raw configured gater
+      // (see strand-instance-manager.ts) — their peers are legitimately
+      // cross-party, so cadre membership must not gate them.
+      connectionGater: createMembershipConnectionGater(
+        { admitInbound: (remotePeerId) => this.admitInboundControlConnection(remotePeerId) },
+        network?.connectionGater
+      )
     };
 
     return await createLibp2pNode(nodeOptions);
+  }
+
+  /**
+   * Decide whether an inbound CONTROL-network connection from `remotePeerId`
+   * should be admitted — the policy behind the connection gater wired in
+   * {@link createControlNode}. Deny only on a positive "unauthorized outsider
+   * while no stranger path is open" determination; everything ambiguous admits
+   * and defers to the fail-closed per-stream gates (see
+   * `membership-connection-gater.ts` for the layer's rationale and the
+   * stranger-open protocol allowlist).
+   *
+   * Admits when ANY of:
+   *  1. the node is not fully up (`start()` in progress / DB torn down) — the
+   *     gater exists from libp2p bring-up, before the control DB does;
+   *  2. the trusted-owner anchor is absent or empty — an un-enrolled node has
+   *     no basis to judge anyone and MUST accept its enrollment seed;
+   *  3. an enrollment window is open ({@link openEnrollmentWindow}, opened by
+   *     {@link createInvite}) — the invitee dials in before it is authorized;
+   *  4. the strand-formation responder is registered
+   *     ({@link initializeStrandSolicitation}) — a formation initiator is
+   *     another party's peer by design, and open invitations are validated by
+   *     token inside the protocol, not knowable here;
+   *  5. the peer is one of the configured control bootstrap/relay nodes —
+   *     infrastructure, not cadre members;
+   *  6. the authorized-member set is empty — cold start: the rows that would
+   *     authorize anyone arrive by replication over these very connections; or
+   *  7. the peer IS an authorized member.
+   *
+   * NOTE: check 6/7 runs a control-DB read per inbound connection
+   * (`listAuthorizedMembers`); connections are rare and cadres small, but if
+   * inbound upgrade latency ever shows up here, memoize the authorized set
+   * briefly. NOTE: a sibling whose membership row has not yet replicated to
+   * this node is denied until the row converges (typically via the owner);
+   * either side's next outbound reconcile dial (outbound is never gated)
+   * re-establishes the link — self-healing, but visible as a transient deny.
+   */
+  private async admitInboundControlConnection(remotePeerId: string): Promise<boolean> {
+    if (!this._running || !this.controlDatabase) {
+      return true;
+    }
+    if (!this.trustedOwnerStore || this.trustedOwnerStore.all().size === 0) {
+      return true;
+    }
+    if (Date.now() < this.enrollmentWindowUntil) {
+      return true;
+    }
+    if (this.strandSolicitationService) {
+      return true;
+    }
+    if (this.getBootstrapPeerIds().has(remotePeerId)) {
+      return true;
+    }
+    const authorized = await this.listAuthorizedMembers();
+    if (authorized.length === 0) {
+      return true;
+    }
+    if (authorized.some((m) => m.peerId === remotePeerId)) {
+      return true;
+    }
+    log('admitInboundControlConnection: DENYING inbound from %s — not an authorized member and no enrollment path open', remotePeerId);
+    return false;
+  }
+
+  /**
+   * Hold the control-network inbound gate open for not-yet-authorized peers
+   * until `untilEpochMs` (extends, never shrinks, an already-open window).
+   * {@link createInvite} calls this automatically; a host running an
+   * out-of-band enrollment flow (e.g. accepting a phone whose invite this node
+   * never minted) can open it explicitly before the stranger dials in.
+   */
+  openEnrollmentWindow(untilEpochMs: number): void {
+    this.enrollmentWindowUntil = Math.max(this.enrollmentWindowUntil, untilEpochMs);
+    log('Enrollment window open until %d', this.enrollmentWindowUntil);
+  }
+
+  /**
+   * PeerIds of the configured control bootstrap nodes (relay/bootstrap
+   * infrastructure — always admitted inbound). Parsed once, lazily; an
+   * address without a `/p2p/<id>` component contributes nothing.
+   */
+  private getBootstrapPeerIds(): Set<string> {
+    if (!this.bootstrapPeerIds) {
+      const ids = new Set<string>();
+      for (const addr of this.config.controlNetwork.bootstrapNodes) {
+        try {
+          // Last `/p2p/<id>` component: on a plain bootstrap addr the node's own
+          // id; on a circuit addr the dial target (which is what gets admitted).
+          let id: string | undefined;
+          for (const component of multiaddr(addr).getComponents()) {
+            if (component.name === 'p2p' && component.value) {
+              id = component.value;
+            }
+          }
+          if (id) {
+            ids.add(id);
+          }
+        } catch (error) {
+          log('getBootstrapPeerIds: skipping unparsable bootstrap addr %s: %o', addr, error);
+        }
+      }
+      this.bootstrapPeerIds = ids;
+    }
+    return this.bootstrapPeerIds;
   }
 
   private createStrandQueryable(): StrandQueryable {
@@ -2965,7 +3092,12 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    return await this.seedBootstrapService.createInvite(token, expiresIn);
+    const result = await this.seedBootstrapService.createInvite(token, expiresIn);
+    // The invitee dials this node BEFORE it is authorized (dialInvite →
+    // acceptPhone), so hold the inbound connection gate open for strangers for
+    // the invite's validity (or a bounded default when it never expires).
+    this.openEnrollmentWindow(result.invite.expiresAt ?? Date.now() + DEFAULT_ENROLLMENT_WINDOW_MS);
+    return result;
   }
 
   /**

@@ -613,11 +613,31 @@ an invite with no `ownerKeys`, which costs an extra out-of-band step rather than
 unvouched key. The replicated table survives only as the replication mechanism and as the `isOwner` dial
 hint in seeds (and the matching owner-preference in `reconcileControlCohort`) — never as a trust anchor.
 Backlog `seed-accepted-authority-persistence` was retired here: its persistence half landed, and its
-`seed.transactions[]` half is `backlog/later/seed-warm-cache-prepopulation`. Still open: **step 6**
-(no connection-time gater, so an outsider can still *write* rows — they are simply no longer believed).
+`seed.transactions[]` half is `backlog/later/seed-warm-cache-prepopulation`.
 Address resolution, push fan-out and the host trust-circle listing stay on the addressable surface
 (`isMember`) deliberately — dialability is not trust — with the listing consequence tracked in
 backlog `bug-host-trust-circle-lists-unauthorized-peers`.
+
+**Step 6 has LANDED (2026-07-28) — connection-layer gate + stranger allowlist; the per-stream gate on
+the Optimystic DB protocols is blocked upstream.** The control node now composes a membership
+connection gater (`membership-connection-gater.ts`) onto any caller-supplied gater:
+`denyInboundEncryptedConnection` refuses a peer that is positively NOT an authorized member once the
+node is fully established (non-empty node-local anchor AND ≥1 authorized member) — an outsider is no
+longer even in the conversation. It admits (fail-open, deferring to the fail-closed stream gates)
+during every legitimate stranger path: an un-enrolled node (empty anchor / empty authorized set —
+the seed-delivery and replication cold starts), an open enrollment window (`createInvite` opens it
+for the invite's validity, `openEnrollmentWindow` for out-of-band flows), a registered
+strand-formation responder (stranger-serving by design), and the configured bootstrap/relay
+infrastructure peers. The stranger-open protocol allowlist (seed + formation, each with its own
+in-protocol trust check) is documented in one place in that module. Outbound dials are never gated
+(`resolvePeerAddrs`' trust policy already gates what gets dialed). Strand cohort nodes do NOT get
+the membership gater — their peers are legitimately cross-party. What step 6 wanted but cannot have
+yet: a per-stream `isAuthorizedMember` check inside the Optimystic control-DB protocols
+(`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}`) — `@optimystic/db-p2p`'s services
+expose no inbound-stream authz seam, so that half is filed as
+`blocked/control-repo-protocol-stream-authz-optimystic` (upstream repo). Until it lands, the
+connection gate is the outermost defense for those protocols and the read-time voucher predicate
+(step 4) remains the real fix.
 - **Not** a super-majority-threshold rounding bug: `Math.ceil(2 * 0.75)` and the
   "fix" `Math.floor(2/2)+1` both yield 2 — 2-of-2 is correct for a 2-node quorum. The
   defect is upstream of the count (peer selection / protocol negotiation), and is

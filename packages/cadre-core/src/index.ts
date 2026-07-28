@@ -273,6 +273,14 @@ export {
   type StrandFormationManagerOptions
 } from './strand-formation-manager.js';
 
+// Control-network inbound connection gate (membership defense-in-depth)
+export {
+  createMembershipConnectionGater,
+  STRANGER_OPEN_PROTOCOLS,
+  DEFAULT_ENROLLMENT_WINDOW_MS,
+  type InboundAdmissionPolicy
+} from './membership-connection-gater.js';
+
 // Connection-path diagnostics (relayed vs direct classification + summary)
 export {
   classifyTransport,
