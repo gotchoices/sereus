@@ -221,6 +221,32 @@ describe('CadreNode seedTrustPolicy wiring', () => {
     }
   }, 60_000);
 
+  it('enableSeedListener anchors on the node-local store, not the replicated table', async () => {
+    // The inbound network path has no per-call policy override, so the listener
+    // service must see the node's anchor. An invite pin (trustOwnerKeys) is
+    // therefore enough for the secure default to accept, while a key that only
+    // reached the replicated OwnerKey table is not.
+    const node = makeColdNode(); // secure default, no configured pins
+    try {
+      await startClean(node);
+      node.enableSeedListener();
+      const svc = node.getSeedBootstrapService();
+      expect(svc).not.toBeNull();
+
+      const db = node.getControlDatabase();
+      await db!.insertOwnerKey(attackerPublicKey);
+      const forged = await svc!.applySeed(signSeed(attackerPrivateKey, attackerPublicKey));
+      expect(forged.success).toBe(false);
+
+      // Anchoring the real owner out-of-band flips the identical service to accept.
+      await node.trustOwnerKeys([ownerPublicKey], 'invite');
+      const accepted = await svc!.applySeed(signSeed(ownerPrivateKey, ownerPublicKey));
+      expect(accepted.success).toBe(true);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
+
   it('enableSeedListener is idempotent and retains the policy captured on first construction', async () => {
     const node = makeColdNode(pinnedKeyTrustPolicy([ownerPublicKey]));
     try {

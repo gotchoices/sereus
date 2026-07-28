@@ -580,7 +580,7 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
      self-update. (Insert-replay after a delete frees the nonce; that residual is subsumed by #6's gater.)
 3. `membership-node-local-authority-anchor` — build the node-local, non-replicated
    `TrustedAuthorityStore`, seeded out-of-band (genesis self-trust / invite-pinned keys); pulls the
-   interim store from `seed-accepted-authority-persistence` forward.
+   long-parked interim pinned-trust store forward.
 4. `membership-authorized-predicate-and-gates` — `isAuthorizedMember` = voucher recorded ∧ its
    owner ∈ node-local anchor ∧ signature verifies ∧ not-self; routes the wake/strand-addr gates
    through it and reworks the cross-node convergence/push-wake tests to model real enrollment. **Closes
@@ -606,11 +606,15 @@ comes from `TrustedOwnerStore.all()`, the default policy is `anchoredTrustPolicy
 `dbAnchoredTrustPolicy` — the name asserted the wrong anchor), and a key sitting only in the replicated
 `OwnerKey` table authorizes no seed. Two follow-ons rode along: a key accepted via a pin or a TOFU
 confirmation is now **persisted** into the anchor (`SeedTrustDecision.anchorAs`), so enrollment supplies
-the invite once rather than on every seed; and `createInvite` hands out the anchor's keys rather than the
-replicated table's, since the invitee anchors whatever arrives and a poisoned invite would defeat the whole
-chain. The replicated table survives only as the replication mechanism and as the `isOwner` dial hint in
-seeds — never as a trust anchor. Still open: **step 6** (no connection-time gater, so an outsider can
-still *write* rows — they are simply no longer believed).
+the invite once rather than on every seed; and `createInvite` hands out the anchor's keys *and only* the
+anchor's keys — never the replicated table's, not even as a fallback — since the invitee anchors whatever
+arrives and a poisoned invite would defeat the whole chain. A service with no anchor wired therefore mints
+an invite with no `ownerKeys`, which costs an extra out-of-band step rather than silently anchoring an
+unvouched key. The replicated table survives only as the replication mechanism and as the `isOwner` dial
+hint in seeds (and the matching owner-preference in `reconcileControlCohort`) — never as a trust anchor.
+Backlog `seed-accepted-authority-persistence` was retired here: its persistence half landed, and its
+`seed.transactions[]` half is `backlog/later/seed-warm-cache-prepopulation`. Still open: **step 6**
+(no connection-time gater, so an outsider can still *write* rows — they are simply no longer believed).
 Address resolution, push fan-out and the host trust-circle listing stay on the addressable surface
 (`isMember`) deliberately — dialability is not trust — with the listing consequence tracked in
 backlog `bug-host-trust-circle-lists-unauthorized-peers`.

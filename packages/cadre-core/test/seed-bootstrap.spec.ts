@@ -14,7 +14,7 @@ import {
   pinnedKeyTrustPolicy,
   tofuTrustPolicy
 } from '../src/seed-trust-policy.js';
-import { MemoryTrustedOwnerStore } from '../src/trusted-owner-store.js';
+import { MemoryTrustedOwnerStore, type TrustSource } from '../src/trusted-owner-store.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import type {
@@ -661,8 +661,8 @@ describe('Seed trust policy', () => {
 	});
 
 	it('a pin-accepted signer is persisted into the anchor, so the next seed needs no pin', async () => {
-		// Half of `seed-accepted-authority-persistence`: enrollment supplies the pin
-		// once (CadreInvite.ownerKeys), and the key sticks in the node-local anchor.
+		// Enrollment supplies the pin once (CadreInvite.ownerKeys) and the key
+		// sticks in the node-local anchor, rather than being re-supplied per seed.
 		const anchor = anchorWith([]);
 		const service = new SeedBootstrapService({ partyId, trustedOwners: anchor });
 		serviceInternals(service).libp2pNode = createMockLibp2p();
@@ -678,6 +678,32 @@ describe('Seed trust policy', () => {
 		// Same seed, no pin: the default anchored policy now accepts it.
 		const second = await service.applySeed(seed);
 		expect(second.success).toBe(true);
+	});
+
+	it('an operator-sourced pin is persisted under operator provenance, not invite', async () => {
+		// `pinnedKeyTrustPolicy`'s second argument is the seam an operator pin uses
+		// so the anchor does not record it as having arrived via an invite.
+		const anchor = anchorWith([]);
+		const recorded: Array<[string, TrustSource]> = [];
+		const service = new SeedBootstrapService({
+			partyId,
+			trustedOwners: {
+				partyId,
+				has: (key: string) => anchor.has(key),
+				all: () => anchor.all(),
+				trust: async (key: string, source: TrustSource) => {
+					recorded.push([key, source]);
+					await anchor.trust(key, source);
+				},
+			},
+		});
+		serviceInternals(service).libp2pNode = createMockLibp2p();
+
+		const result = await service.applySeed(createSignedSeed(ownerPrivateKey, ownerPublicKey, []), {
+			trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey], 'operator'),
+		});
+		expect(result.success).toBe(true);
+		expect(recorded).toEqual([[ownerPublicKey, 'operator']]);
 	});
 
 	it('a TOFU-confirmed signer is persisted into the anchor, so confirm is not re-prompted', async () => {
@@ -1188,9 +1214,11 @@ describe('SeedBootstrapService Helper Methods', () => {
       expect(invite.ownerKeys).toBeUndefined();
     });
 
-    it('falls back to the OwnerKey table when no anchor is wired at all', async () => {
-      // A directly-constructed service (no CadreNode) has no anchor; degrading to
-      // the table keeps that construction usable rather than silently pin-less.
+    it('hands out NO pins when no anchor is wired, even with a populated OwnerKey table', async () => {
+      // A directly-constructed service (no CadreNode) has no anchor. It must not
+      // degrade to the replicated table: an invite with no `ownerKeys` costs the
+      // invitee an extra out-of-band step, a table-sourced one silently anchors a
+      // key nobody vouched for out of band.
       const service = new SeedBootstrapService({ partyId });
       serviceInternals(service).libp2pNode = makeMockLibp2p(['/ip4/192.168.1.10/tcp/4001']);
       serviceInternals(service).controlDatabase = {
@@ -1198,7 +1226,7 @@ describe('SeedBootstrapService Helper Methods', () => {
       };
 
       const { invite } = await service.createInvite();
-      expect(new Set(invite.ownerKeys)).toEqual(new Set([ownerPublicKey]));
+      expect(invite.ownerKeys).toBeUndefined();
     });
   });
 });

@@ -5,6 +5,7 @@ import { getPublicKey, generatePrivateKey, digest, sign, verify } from '@optimys
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
 
 describe('ed25519KeyPairFromLibp2p', () => {
   it('derives a base64url keypair whose public key matches getPublicKey(priv)', async () => {
@@ -59,19 +60,22 @@ describe('ed25519PublicKeyFromPrivate', () => {
 });
 
 /**
- * Locks the drone-fixture invariant (reference-app-rn e2e): an invite carries
- * `ownerKeys` only after the owner key is enrolled via
- * `ensureOwnerKey`. Without enrollment, `getOwnerKeys()` is empty and
- * `createInvite` serializes `ownerKeys` as `undefined` — pinning nothing.
+ * Locks the drone-fixture invariant (reference-app-rn e2e): the `ownerKeys` an
+ * invite hands out come from the issuer's node-local trusted-owner anchor —
+ * seeded by `initializeSeedBootstrap` (genesis self-trust) — and NEVER from the
+ * replicated `OwnerKey` table, which any connecting node can pollute. The
+ * invitee anchors whatever arrives, so a table-sourced pin would poison it.
  *
- * Drives a real CadreNode with its libp2p node + control database stubbed so
- * `initializeSeedBootstrap` / `createInvite` run without a live network
- * (mirrors invite-address-push.spec.ts).
+ * Drives a real CadreNode with its libp2p node, control database and anchor
+ * stubbed so `initializeSeedBootstrap` / `createInvite` run without a live
+ * network (mirrors invite-address-push.spec.ts).
  */
-describe('createInvite carries the enrolled drone owner key', () => {
-  function makeNode(ownerKeys: Set<string>): CadreNode {
+describe('createInvite hands out the anchored owner keys', () => {
+  const partyId = 'enroll-test';
+
+  function makeNode(replicatedOwnerKeys: Set<string>, anchor: TrustedOwnerStore | null) {
     const node = new CadreNode({
-      controlNetwork: { partyId: 'enroll-test', bootstrapNodes: [] },
+      controlNetwork: { partyId, bootstrapNodes: [] },
       profile: 'transaction',
     });
 
@@ -84,30 +88,40 @@ describe('createInvite carries the enrolled drone owner key', () => {
 
     (node as unknown as { controlNode: unknown }).controlNode = mockLibp2p;
     (node as unknown as { controlDatabase: ControlDatabase }).controlDatabase = {
-      ensureOwnerKey: async (key: string) => { ownerKeys.add(key); return true; },
-      getOwnerKeys: async () => ownerKeys,
+      ensureOwnerKey: async (key: string) => { replicatedOwnerKeys.add(key); return true; },
+      getOwnerKeys: async () => replicatedOwnerKeys,
     } as unknown as ControlDatabase;
+    (node as unknown as { trustedOwnerStore: TrustedOwnerStore | null }).trustedOwnerStore = anchor;
 
     return node;
   }
 
-  it('includes the enrolled key in invite.ownerKeys', async () => {
-    const enrolled = new Set<string>();
-    const node = makeNode(enrolled);
+  it('carries the key initializeSeedBootstrap genesis-anchored, with an empty replicated table', async () => {
+    const node = makeNode(new Set<string>(), new MemoryTrustedOwnerStore(partyId));
     const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
     node.initializeSeedBootstrap(privateKeyB64);
-
-    const publicKeyB64 = ed25519PublicKeyFromPrivate(privateKeyB64);
-    await node.getControlDatabase()!.ensureOwnerKey(publicKeyB64);
 
     const { invite } = await node.createInvite();
-    expect(invite.ownerKeys).toContain(publicKeyB64);
+    expect(invite.ownerKeys).toEqual([ed25519PublicKeyFromPrivate(privateKeyB64)]);
   });
 
-  it('leaves ownerKeys undefined when nothing is enrolled', async () => {
-    const node = makeNode(new Set<string>());
+  it('never hands out a key that only reached the replicated OwnerKey table', async () => {
+    // What a stranger's genesis insert looks like once it has replicated in.
+    const replicated = new Set<string>(['attacker-genesis-key']);
+    const node = makeNode(replicated, new MemoryTrustedOwnerStore(partyId));
     const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
     node.initializeSeedBootstrap(privateKeyB64);
+    await node.getControlDatabase()!.ensureOwnerKey(ed25519PublicKeyFromPrivate(privateKeyB64));
+
+    const { invite } = await node.createInvite();
+    expect(invite.ownerKeys).toEqual([ed25519PublicKeyFromPrivate(privateKeyB64)]);
+  });
+
+  it('leaves ownerKeys undefined when the anchor is empty', async () => {
+    // A receive-only node: enableSeedListener builds a service without the
+    // genesis self-anchor initializeSeedBootstrap performs.
+    const node = makeNode(new Set<string>(['some-replicated-key']), new MemoryTrustedOwnerStore(partyId));
+    node.enableSeedListener();
 
     const { invite } = await node.createInvite();
     expect(invite.ownerKeys).toBeUndefined();

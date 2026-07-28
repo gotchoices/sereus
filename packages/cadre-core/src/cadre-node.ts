@@ -1148,6 +1148,11 @@ export class CadreNode implements SAppIdLookup {
     }
 
     // 2. Classify backbone (owner) members and select a bounded dial set.
+    // NOTE: deliberately the REPLICATED table, not the node-local anchor — this
+    // only *prefers* owner peers as dial targets, so pollution costs a wasted
+    // dial while anchoring would drop legitimate co-owners this node never
+    // pinned. Same call as `SeedPeer.isOwner` in seed-bootstrap.ts. Move it to
+    // the anchor if owner status here ever gates something trusted.
     const ownerKeys = await this.controlDatabase.getOwnerKeys();
     if (!this._running || !this.controlNode) {
       return;
@@ -2578,10 +2583,13 @@ export class CadreNode implements SAppIdLookup {
     // NOTE: non-founder members that also wire seed-bootstrap with their own
     // derived key (e.g. the phone joiner path in runOwnerGenesis, which needs
     // it to self-publish its CadrePeer row) self-anchor a key that is not a
-    // party authority. Harmless today — the store never replicates and a node
-    // trusting itself grants nothing to others — but if 'genesis' entries ever
-    // feed cross-node decisions, gate this on the actual OwnerKey genesis
-    // insert instead.
+    // party authority. Harmless while such a node never mints an invite: the
+    // store does not replicate, so a node trusting itself grants nothing to
+    // others. But `createInvite` now hands out the anchor's contents as the
+    // invitee's pins, so the moment a non-founder member mints an invite it
+    // exports its own non-authority key as a cadre owner key. If that becomes
+    // reachable (today only cadre-cli/cadre-host owners mint invites), gate this
+    // self-anchor on the actual OwnerKey genesis insert instead.
     if (this.trustedOwnerStore) {
       void this.trustedOwnerStore
         .trust(ed25519PublicKeyFromPrivate(ownerPrivateKey), 'genesis')

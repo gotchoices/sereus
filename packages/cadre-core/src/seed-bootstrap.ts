@@ -608,6 +608,12 @@ export class SeedBootstrapService {
       return { success: false, peersAdded: 0, error: 'Service not initialized' };
     }
 
+    // NOTE: `seed.partyId` is never checked against `config.partyId`. Nothing
+    // downstream reads it — trust is keyed on `signerKey` vs the anchor, and the
+    // anchor a stray-party seed could write into belongs to THIS party, which
+    // only a caller-supplied pin for that signer can reach. If applying a seed
+    // ever branches on its partyId (or the anchor becomes multi-party), reject a
+    // mismatch here instead.
     log('Applying seed for party: %s', seed.partyId);
 
     // Validate the seed signature
@@ -1056,15 +1062,16 @@ export class SeedBootstrapService {
     // Carry the cadre's owner keys out-of-band so a cold-start invitee can pin
     // the trusted owner set before applying any seed.
     //
-    // Sourced from THIS node's own anchor, not from the replicated OwnerKey
-    // table: the invitee anchors whatever arrives here (CadreNode.trustOwnerKeys
-    // with source 'invite'), so handing over the pollutable table would let a
-    // stranger's genesis-inserted key ride an otherwise-legitimate invite
-    // straight into the new node's anchor — poisoning the very store this whole
-    // trust chain rests on. Falls back to the table only when no anchor is
-    // wired (a directly-constructed service); an owner node always has one,
-    // holding at least its own genesis key.
-    const ownerKeys = await this.invitableOwnerKeys();
+    // Sourced ONLY from this node's own anchor, never from the replicated
+    // OwnerKey table: the invitee anchors whatever arrives here
+    // (CadreNode.trustOwnerKeys with source 'invite'), so handing over the
+    // pollutable table would let a stranger's genesis-inserted key ride an
+    // otherwise-legitimate invite straight into the new node's anchor —
+    // poisoning the very store this whole trust chain rests on. No anchor wired
+    // (a directly-constructed service) means no pins to hand out: an invite
+    // without `ownerKeys` costs the invitee an extra out-of-band step, whereas a
+    // table-sourced one silently hands it an unanchored key.
+    const ownerKeys = Array.from(this.config.trustedOwners?.all() ?? []);
 
     const now = Date.now();
     const invite: CadreInvite = {
@@ -1081,21 +1088,6 @@ export class SeedBootstrapService {
     log('Invite created with %d owner addresses, %d owner keys', ownerAddrs.length, ownerKeys.length);
 
     return { invite, encodedInvite };
-  }
-
-  /**
-   * The owner keys an invite may hand out for the invitee to anchor: this
-   * node's node-local anchor when one is wired, else the replicated `OwnerKey`
-   * table (a directly-constructed service with no anchor at all).
-   */
-  private async invitableOwnerKeys(): Promise<string[]> {
-    const anchor = this.config.trustedOwners;
-    if (anchor) {
-      return Array.from(anchor.all());
-    }
-    return this.controlDatabase
-      ? Array.from(await this.controlDatabase.getOwnerKeys())
-      : [];
   }
 
   /**
