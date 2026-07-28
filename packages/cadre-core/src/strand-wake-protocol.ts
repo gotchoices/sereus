@@ -14,13 +14,15 @@
  * stream (like seed delivery), so each side reads to EOF (under a read timeout)
  * and decodes one frame via the shared {@link decodeLengthPrefixedFrame} guard.
  *
- * **Authorization (v1):** the control network already restricts membership —
- * only this party's cadre peers connect (schema-gated `CadrePeer`). A wake is
- * low-risk: it only causes the receiver to spend resources coming online for a
- * strand it already participates in. So the receiver verifies the remote peer is
- * a `CadrePeer` member (via the injected `isMember` gate) and requires no
- * signature beyond control-network membership. A richer per-request signature is
- * deliberately out of scope for v1.
+ * **Authorization (v1):** a wake is low-risk — it only causes the receiver to
+ * spend resources coming online for a strand it already participates in — so the
+ * receiver carries no per-request signature and instead defers entirely to the
+ * injected `isMember` predicate. `CadreNode` injects its AUTHORIZED-membership
+ * predicate there (`isAuthorizedMember`: the sender's `CadrePeer` row must carry
+ * a voucher that verifies against an owner key in the receiver's node-local
+ * trusted-owner anchor), so a peer that merely published rows into the replicated
+ * control DB is refused. This module stays agnostic: it enforces whatever
+ * predicate it is given.
  */
 
 import debug from 'debug';
@@ -205,8 +207,8 @@ export class StrandWakeService {
    * - Already-live strand → no-op, `accepted` with current status.
    */
   async processWakeRequest(request: WakeRequest, remotePeerId: string): Promise<WakeAck> {
-    // Control-network membership is the v1 authorization: only this party's
-    // cadre peers may ask us to wake.
+    // The injected membership predicate is the whole v1 authorization (CadreNode
+    // supplies the voucher-anchored one); only a peer it admits may ask us to wake.
     if (!(await this.options.isMember(remotePeerId))) {
       log('Rejecting wake from non-member %s', remotePeerId);
       return { accepted: false, reason: 'Sender is not a cadre member' };

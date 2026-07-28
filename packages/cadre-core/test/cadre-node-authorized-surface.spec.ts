@@ -92,6 +92,7 @@ describe('CadreNode addressable-vs-authorized surface', () => {
   const SELF = 'self-peer';
   const A = 'peer-A';
   const B = 'peer-B';
+  const C = 'peer-C';
 
   it('authorizes a peer whose voucher verifies against an anchored owner; addressable surface unchanged', async () => {
     const node = new CadreNode(createConfig());
@@ -146,13 +147,15 @@ describe('CadreNode addressable-vs-authorized surface', () => {
       selfPeerId: SELF,
       members: [
         vouchedRow(A, owner, { stampId: null }),
-        vouchedRow(B, owner, { vouchSig: null })
+        vouchedRow(B, owner, { vouchSig: null }),
+        vouchedRow(C, owner, { vouchOwner: null })
       ],
       anchor: await anchorWith('p', owner.publicKey)
     });
 
     expect(await node.isAuthorizedMember(A)).toBe(false);
     expect(await node.isAuthorizedMember(B)).toBe(false);
+    expect(await node.isAuthorizedMember(C)).toBe(false);
   });
 
   it('rejects a valid voucher whose owner key is NOT in the node-local anchor (the self-minted-owner attack)', async () => {
@@ -188,6 +191,26 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     });
 
     expect(await node.isAuthorizedMember(A)).toBe(false);
+    expect(await node.isAuthorizedMember(B)).toBe(false);
+  });
+
+  it('rejects a voucher transplanted from another peer\'s row (the digest binds the PeerId)', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    // A is a genuine member. B lifts A's whole voucher triple onto its own row —
+    // the anchored owner really did sign it, just not for B.
+    const genuine = vouchedRow(A, owner);
+    const transplanted = bareRow(B, '/ip4/6.6.6.6/tcp/6');
+    inject(node, {
+      selfPeerId: SELF,
+      members: [
+        genuine,
+        { ...transplanted, stampId: genuine.stampId, vouchOwner: genuine.vouchOwner, vouchSig: genuine.vouchSig }
+      ],
+      anchor: await anchorWith('p', owner.publicKey)
+    });
+
+    expect(await node.isAuthorizedMember(A)).toBe(true);
     expect(await node.isAuthorizedMember(B)).toBe(false);
   });
 

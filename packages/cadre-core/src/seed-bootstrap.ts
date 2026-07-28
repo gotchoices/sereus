@@ -494,12 +494,15 @@ export class SeedBootstrapService {
     // The owner branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
     // StampId) and re-binds VouchOwner/VouchSig. Sign over the row's CURRENT StampId
     // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
-    // NOTE: this rebinds VouchOwner to THIS node's owner key. Benign today — the
-    // write-while-alone drain only re-touches rows this node itself authored. If a future
-    // path lets one owner re-touch a row a DIFFERENT owner vouched, the voucher
-    // silently flips to this owner; that only matters once ticket-4's predicate checks
-    // VouchOwner against a node-local anchor, and only if the two owners differ in
-    // anchor membership.
+    // NOTE: this rebinds VouchOwner to THIS node's owner key, and the authorized-membership
+    // predicate (`CadreNode.listAuthorizedMembers`) now judges rows by that column against
+    // each reader's node-local anchor. Benign today because the only caller — the
+    // write-while-alone drain — re-touches solely rows this node itself authored
+    // (`pendingPeerWrites`), so the voucher is rewritten to the key that already signed it.
+    // If a future path ever lets one owner re-touch a row a DIFFERENT owner vouched, the
+    // voucher silently flips: readers that anchor the original owner but not this one would
+    // drop a legitimate member. Such a path must re-vouch deliberately (or preserve the
+    // existing VouchOwner/VouchSig) rather than inherit this rebinding.
     const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
       log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);

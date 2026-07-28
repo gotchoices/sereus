@@ -690,6 +690,33 @@ export interface PeerAddressRecord {
 }
 
 /**
+ * One `CadreControl.CadrePeer` row as read by `ControlDatabase.queryCadrePeers`:
+ * the addressing columns plus the persisted membership voucher.
+ *
+ * The voucher triple (`stampId`, `vouchOwner`, `vouchSig`) is what
+ * {@link CadreNode.listAuthorizedMembers} re-checks against the node-local
+ * trusted-owner anchor — it is null on a row written before the voucher columns
+ * existed, and all three must be present for the row to be authorizable. Named
+ * (rather than restated inline at each read site) so a future column addition
+ * cannot reach the query without the predicate seeing it.
+ */
+export interface CadrePeerRow {
+  /** libp2p peer ID (base58btc) — the row key. */
+  peerId: string;
+  /** Comma-joined dialable multiaddrs as stored, or null when unpublished. */
+  multiaddr: string | null;
+  /** Single-use anti-replay nonce the voucher signature is bound to. */
+  stampId: string | null;
+  /** ed25519 public key (base64url) of the owner that vouched this row. */
+  vouchOwner: string | null;
+  /** That owner's signature over `digest(peerId, stampId)`, base64url. */
+  vouchSig: string | null;
+}
+
+/** The voucher-bearing subset of a {@link CadrePeerRow} — what the authorized-membership predicate reads. */
+export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | 'vouchOwner' | 'vouchSig'>;
+
+/**
  * Outcome of {@link CadreNode.registerSelf}, surfaced so callers (e.g. the CLI
  * `--owner` branch) can log what happened:
  * - `inserted` — the first owner-signed INSERT of this node's `CadrePeer` row.

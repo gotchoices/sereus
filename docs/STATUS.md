@@ -542,7 +542,7 @@ root causes:
   (`network-scoped-ring-admission`) remains wanted as substrate defense-in-depth. Intersects
   optimystic backlog `cohort-topic-participant-coord-routing-key-mismatch` (FRET routing-key scoping).
 
-### Membership gate (cadre-level `isMember`) — 2 integration failures, pre-existing
+### Membership gate (cadre-level `isMember`) — hole CLOSED (2026-07-27); chain steps 5–6 remain
 With the cross-network blocker cleared, the full integration suite is **98 passed / 2 failed**. Both
 residual failures share one root cause and are **not** related to the optimystic work: `isMember()`
 is `listMembers().some(...)`, and `listMembers()` returns raw `CadrePeer` **address records**, so
@@ -590,6 +590,21 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
 6. `membership-connection-gater` — defense-in-depth: reject the sensitive control protocols
    (control-DB repo / wake / strand-addr) from unauthorized peers at stream/connection time, with an
    enrollment carve-out (seed/accept-phone stay open to strangers).
+
+**Update (2026-07-27): steps 1–4 have LANDED — the wake hole is closed.** `isAuthorizedMember`
+is now the real predicate (not-self ∧ complete voucher ∧ `VouchOwner` in the node-local anchor ∧
+signature verifies over `digest(PeerId, StampId)`), and both the push-wake and strand-addr
+receivers consult it. Proven end-to-end in `push-wake-e2e` scenario 3: an outsider's self-minted
+owner key plus self-vouched `CadrePeer` row are written into the receiver's replicated tables — so
+`isMember` is TRUE — and the wake is still refused and the strand-addr RPC returns empty, until one
+`trustOwnerKeys` pin flips the identical state to authorized. Enrollment supplies that pin in
+production (`CadreInvite.ownerKeys` on the phone, `CADRE_OWNER_KEYS` / `--pin-owner-key` on a
+CLI/donated node); a node with an empty anchor authorizes no one, by design. Still open: **step 5**
+(seed trust still sources `knownOwnerKeys` from the replicated table) and **step 6** (no
+connection-time gater, so an outsider can still *write* rows — they are simply no longer believed).
+Address resolution, push fan-out and the host trust-circle listing stay on the addressable surface
+(`isMember`) deliberately — dialability is not trust — with the listing consequence tracked in
+backlog `bug-host-trust-circle-lists-unauthorized-peers`.
 - **Not** a super-majority-threshold rounding bug: `Math.ceil(2 * 0.75)` and the
   "fix" `Math.floor(2/2)+1` both yield 2 — 2-of-2 is correct for a 2-node quorum. The
   defect is upstream of the count (peer selection / protocol negotiation), and is

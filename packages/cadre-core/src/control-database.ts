@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord, DeviceTokenRecord, PushPlatform } from './types.js';
+import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 
@@ -398,10 +398,12 @@ export class ControlDatabase {
 
   /**
    * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
+   * Includes the persisted voucher columns, which
+   * {@link CadreNode.listAuthorizedMembers} re-checks against its node-local anchor.
    */
-  async queryCadrePeers(): Promise<Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }>> {
+  async queryCadrePeers(): Promise<CadrePeerRow[]> {
     this.ensureInitialized();
-    const rows: Array<{ peerId: string; multiaddr: string | null; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }> = [];
+    const rows: CadrePeerRow[] = [];
     for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
       rows.push({
         peerId: row.PeerId as string,

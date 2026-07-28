@@ -30,6 +30,7 @@ import type {
   Libp2pNodeWithRepo,
   PushPlatform,
   DeviceTokenRecord,
+  CadrePeerVoucherFields,
   ResolveDeviceTokenOpts
 } from './types.js';
 import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
@@ -2684,9 +2685,17 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.peerId?.toString();
     const rows = await this.controlDatabase.queryCadrePeers();
-    return rows
+    const authorized = rows
       .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
+    // A node whose anchor was never seeded (no invite pin, no operator pin, not a
+    // founder) refuses every wake and strand-addr request, which from the outside
+    // looks like an unexplained "non-member" rejection. Say so once per call rather
+    // than leaving the operator to infer it from silence.
+    if (authorized.length === 0 && rows.length > 0 && (this.trustedOwnerStore?.all().size ?? 0) === 0) {
+      log('listAuthorizedMembers: %d CadrePeer row(s) but the node-local trusted-owner anchor is EMPTY — authorizing no one (this node has no invite/operator owner-key pin)', rows.length);
+    }
+    return authorized;
   }
 
   /**
@@ -2701,7 +2710,7 @@ export class CadreNode implements SAppIdLookup {
    * membership or gate traffic ever grows, cache verified triples keyed on the
    * row's `StampId` (which rotates with every re-vouch).
    */
-  private hasAnchoredVoucher(row: { peerId: string; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }): boolean {
+  private hasAnchoredVoucher(row: CadrePeerVoucherFields): boolean {
     if (row.stampId === null || row.vouchOwner === null || row.vouchSig === null) {
       return false;
     }

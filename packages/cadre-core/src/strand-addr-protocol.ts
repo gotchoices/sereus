@@ -16,13 +16,14 @@
  * one stream, so each side reads to EOF (under a read timeout) and decodes one
  * frame via the shared {@link decodeLengthPrefixedFrame} guard.
  *
- * **Authorization (v1):** the control network is single-party — only this party's
- * cadre peers connect (schema-gated `CadrePeer`). Like wake, the receiver gates
- * on cadre membership (via the injected `isMember`) and requires no further
- * signature; a non-member is refused with an empty address list. This is
- * defense-in-depth (the control mesh already restricts membership) kept for
- * parity with wake. Cross-party strand bootstrap is a different mechanism
- * (strand formation / `MemberPeer`) and is out of scope here.
+ * **Authorization (v1):** like wake, the receiver defers entirely to the injected
+ * `isMember` predicate and requires no further signature; a peer it rejects gets
+ * an empty address list. `CadreNode` injects its AUTHORIZED-membership predicate
+ * (`isAuthorizedMember`: voucher on the requester's `CadrePeer` row verified
+ * against the node-local trusted-owner anchor), so an outsider that published its
+ * own rows into the replicated control DB cannot harvest live strand addresses.
+ * Cross-party strand bootstrap is a different mechanism (strand formation /
+ * `MemberPeer`) and is out of scope here.
  */
 
 import debug from 'debug';
