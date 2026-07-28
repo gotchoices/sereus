@@ -546,10 +546,14 @@ export class ControlDatabase {
     this.ensureInitialized();
     log('Inserting owner key: %s', key);
 
-    // Bootstrap is authorized by the schema's `(select count(1) from OwnerKey) <= 1`
-    // branch, so no signature is needed. We still persist a fresh, unique StampId in the
-    // row's own column to satisfy the not-null/unique anti-replay constraint — the StampId
-    // is now a real column value, not the optimystic `StampId()` SQL function.
+    // Bootstrap is authorized by the schema's genesis branch — `(select count(1) from
+    // committed.OwnerKey) = 0`, i.e. the party had no owner before this transaction — so no
+    // signature is needed. Every other branch of `OwnerKey.Authorized` requires a signature
+    // from a PRE-EXISTING owner, so this method only ever succeeds on a fresh party; seating
+    // a second owner (or removing one) has no writer here and must sign the digests
+    // documented on the schema's `Authorized` constraint. We still persist a fresh, unique
+    // StampId in the row's own column to satisfy the not-null/unique anti-replay constraint —
+    // the StampId is a real column value, not the optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
     await this.db!.exec(`
       insert into CadreControl.OwnerKey (Key, StampId)

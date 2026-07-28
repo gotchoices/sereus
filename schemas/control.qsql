@@ -3,7 +3,10 @@ declare schema CadreControl {
     -- A key that can authorize various control changes
     table OwnerKey (
         Key text primary key,
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
+        StampId text not null unique,   -- per-row authorization nonce, bound into the signed digests below.
+                                        -- Unique across LIVE rows only: once a row is deleted its stamp frees
+                                        -- up, so the enrollment signature still verifies and can resurrect a
+                                        -- removed owner (bug-control-remove-then-replay-resurrection).
         -- A party must never lose its last owner key: every other CadreControl table's
         -- CHECK requires an OwnerKey row, so an owner-less control database can never
         -- authorize anything again — emptying this table is a permanent denial of the
@@ -28,12 +31,15 @@ declare schema CadreControl {
             -- other. committed.* excludes both, stating the rule directly: the authorizer
             -- must have existed BEFORE this transaction.
 
-            -- Bootstrap: first owner key needs no existing authorization. Gated on the
-            -- PRE-transaction count, so a same-transaction swap of the sole owner (delete
-            -- the founder, insert the attacker — post-image count still 1) cannot ride it.
+            -- Bootstrap: the FOUNDING transaction — one whose pre-transaction owner set is
+            -- empty — needs no authorization, and every row it inserts rides this branch
+            -- (whoever writes it already owns the party outright, so a co-founder row grants
+            -- nothing a single row would not). Gated on the PRE-transaction count, so a
+            -- same-transaction swap of the sole owner (delete the founder, insert the
+            -- attacker — post-image count still 1) cannot ride it.
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0)
 
-                -- or a pre-existing owner authorizes by signing over THIS row (Key, StampId); single-use via unique StampId
+                -- or a pre-existing owner authorizes by signing over THIS row (Key, StampId)
                 or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
 
                 -- or a removal authorized by ANOTHER pre-existing owner over a DISTINCT

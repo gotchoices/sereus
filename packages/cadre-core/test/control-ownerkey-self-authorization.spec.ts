@@ -140,6 +140,17 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     }
   }
 
+  /**
+   * Assert the write was rejected by one of the NAMED CHECK constraints, not by an
+   * incidental SQL, binding, or transaction error. A bare `rejects.toThrow()` goes green on
+   * a mistyped statement, which would silently retire the attack it claims to pin.
+   */
+  function expectConstraintFailure(write: Promise<unknown>, ...constraints: string[]) {
+    return expect(write).rejects.toThrow(
+      new RegExp(`CHECK constraint failed: (${constraints.join('|')})\\b`),
+    );
+  }
+
   /** Seat a second owner the legitimate way: the founder signs the new row. */
   async function enrollByFounder(newOwner: KeyPair): Promise<void> {
     const stamp = freshStamp();
@@ -151,9 +162,8 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     );
   }
 
-  beforeEach(async () => {
-    founder = freshKeyPair();
-
+  /** Boot a brand-new node onto a unique party, leaving its OwnerKey table empty. */
+  async function bootFreshParty(): Promise<void> {
     node = new CadreNode({
       controlNetwork: {
         partyId: 'ownerkey-authz-' + Math.random().toString(36).slice(2),
@@ -167,7 +177,11 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     expect(controlDb).not.toBeNull();
     db = controlDb!;
     rawDb = db.getDatabase();
+  }
 
+  beforeEach(async () => {
+    founder = freshKeyPair();
+    await bootFreshParty();
     expect(await db.ensureOwnerKey(founder.publicKey)).toBe(true);
   }, 60_000);
 
@@ -184,11 +198,47 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     expect((await stampIdOf(founder.publicKey)).length).toBeGreaterThan(0);
   }, 60_000);
 
+  it('genesis: the founding transaction may seat more than one unsigned key', async () => {
+    // Pins the semantics of the tightened bootstrap branch, which now tests the
+    // PRE-transaction count rather than the post-image: on a party that had no owner, EVERY
+    // row inserted in that one transaction rides the branch. Not an escalation — whoever
+    // writes the founding transaction already owns the party outright, so a co-founder row
+    // grants nothing a single row would not. Every LATER enrollment needs a signature.
+    await node.stop();
+    await bootFreshParty();   // discard the beforeEach party: this one must start ownerless
+
+    const coFounder = freshKeyPair();
+    await inTransaction(async () => {
+      await rawInsertOwnerKey(null, null, founder.publicKey, freshStamp());
+      await rawInsertOwnerKey(null, null, coFounder.publicKey, freshStamp());
+    });
+
+    expect(await ownerKeys()).toEqual([founder.publicKey, coFounder.publicKey].sort());
+  }, 60_000);
+
   it('accepts: a pre-existing owner enrolls a second owner with a row-bound signature', async () => {
     const second = freshKeyPair();
     await enrollByFounder(second);
 
     expect(await ownerKeys()).toEqual([founder.publicKey, second.publicKey].sort());
+  }, 60_000);
+
+  it('accepts: an owner enrolled by the founder can itself enroll a third owner', async () => {
+    // The rule is "any owner that existed before this transaction", not "the founder" —
+    // authority is transitive across transactions even though it never is within one.
+    const second = freshKeyPair();
+    await enrollByFounder(second);
+
+    const third = freshKeyPair();
+    const stamp = freshStamp();
+    await rawInsertOwnerKey(
+      second.publicKey,
+      signAs(second, enrollMessage(third.publicKey, stamp)),
+      third.publicKey,
+      stamp,
+    );
+
+    expect(await ownerKeys()).toEqual([founder.publicKey, second.publicKey, third.publicKey].sort());
   }, 60_000);
 
   it('accepts: a pre-existing owner removes ANOTHER owner with a remove-scoped signature', async () => {
@@ -214,9 +264,10 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const before = await ownerKeys();
     const target = freshKeyPair();
 
-    await expect(
+    await expectConstraintFailure(
       rawInsertOwnerKey(founder.publicKey, randomBytes(64, 'base64url') as string, target.publicKey, freshStamp()),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -230,14 +281,15 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const attacker = freshKeyPair();
     const stamp = freshStamp();
 
-    await expect(
+    await expectConstraintFailure(
       rawInsertOwnerKey(
         attacker.publicKey,
         signAs(attacker, enrollMessage(attacker.publicKey, stamp)),
         attacker.publicKey,
         stamp,
       ),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -248,14 +300,15 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const stampA = freshStamp();
     const stampB = freshStamp();
 
-    await expect(
+    await expectConstraintFailure(
       inTransaction(async () => {
         // B "authorizes" A ...
         await rawInsertOwnerKey(b.publicKey, signAs(b, enrollMessage(a.publicKey, stampA)), a.publicKey, stampA);
         // ... and A "authorizes" B, in the same transaction.
         await rawInsertOwnerKey(a.publicKey, signAs(a, enrollMessage(b.publicKey, stampB)), b.publicKey, stampB);
       }),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -266,14 +319,20 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await enrollByFounder(second);
     const before = await ownerKeys();
 
-    await expect(rawDeleteOwnerKey(null, null, second.publicKey)).rejects.toThrow();
+    await expectConstraintFailure(rawDeleteOwnerKey(null, null, second.publicKey), 'Authorized');
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
   it('rejects: an unsigned delete of the LAST owner (would brick the control plane)', async () => {
     const before = await ownerKeys();
 
-    await expect(rawDeleteOwnerKey(null, null, founder.publicKey)).rejects.toThrow();
+    // Two constraints are violated at once here (unsigned AND last-row), and the deferred
+    // queue does not promise which reports first — either name proves the intended block.
+    await expectConstraintFailure(
+      rawDeleteOwnerKey(null, null, founder.publicKey),
+      'MinOneOwner',
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -287,7 +346,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const founderStamp = await stampIdOf(founder.publicKey);
     const secondStamp = await stampIdOf(second.publicKey);
 
-    await expect(
+    await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(
           founder.publicKey,
@@ -300,7 +359,8 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
           founder.publicKey,
         );
       }),
-    ).rejects.toThrow();
+      'MinOneOwner',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -310,9 +370,10 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const before = await ownerKeys();
     const stamp = await stampIdOf(second.publicKey);
 
-    await expect(
+    await expectConstraintFailure(
       rawDeleteOwnerKey(second.publicKey, signAs(second, removeMessage(second.publicKey, stamp)), second.publicKey),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -323,19 +384,20 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     // row, so `count(1) <= 1` was true. OwnerKey rows are now insert/delete only.
     const attacker = freshKeyPair();
 
-    await expect(rawUpdateOwnerKey(founder.publicKey, attacker.publicKey)).rejects.toThrow();
+    await expectConstraintFailure(rawUpdateOwnerKey(founder.publicKey, attacker.publicKey), 'NoUpdate');
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
 
   it('rejects: an unsigned delete-of-founder + insert-of-attacker in ONE transaction (sole-owner swap)', async () => {
     const attacker = freshKeyPair();
 
-    await expect(
+    await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(null, null, founder.publicKey);
         await rawInsertOwnerKey(null, null, attacker.publicKey, freshStamp());
       }),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
 
@@ -350,7 +412,10 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await rawInsertOwnerKey(founder.publicKey, enrollSig, second.publicKey, stamp);
     const before = await ownerKeys();
 
-    await expect(rawDeleteOwnerKey(founder.publicKey, enrollSig, second.publicKey)).rejects.toThrow();
+    await expectConstraintFailure(
+      rawDeleteOwnerKey(founder.publicKey, enrollSig, second.publicKey),
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
@@ -360,9 +425,10 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const stamp = freshStamp();
     const removeSig = signAs(founder, removeMessage(target.publicKey, stamp));
 
-    await expect(
+    await expectConstraintFailure(
       rawInsertOwnerKey(founder.publicKey, removeSig, target.publicKey, stamp),
-    ).rejects.toThrow();
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 });

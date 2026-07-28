@@ -31,7 +31,7 @@ The control network is a private Optimystic network involving only the party's o
 
 | Table | Purpose |
 |-------|---------|
-| `OwnerKey` | Keys authorized to make control changes. Enrollment and removal are authorized against the **pre-transaction** owner set (`committed.OwnerKey`), so no key can seat itself and two keys cannot seat each other in one transaction; removal needs a `'remove'`-scoped signature from a *different* pre-existing owner; rows are never updated in place (rotation is add-then-remove); and the table can never be emptied (`MinOneOwner`) — an owner-less control DB could authorize nothing again |
+| `OwnerKey` | Keys authorized to make control changes. Add/remove only (rotation is add-then-remove), each authorized by a signature from an owner that existed **before** the transaction — so no key can seat itself and no pair can seat each other — and the table can never be emptied. Details in the constraint comments in `schemas/control.qsql` |
 | `ValidationKey` | Keys that can validate strand formation disclosures |
 | `Strand` | List of strands the party participates in |
 | `CadrePeer` | Registry of nodes in the cadre |
