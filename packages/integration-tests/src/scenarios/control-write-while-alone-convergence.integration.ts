@@ -145,6 +145,10 @@ describe('Control-DB write-while-alone re-replication', () => {
 				timeoutMs: 30_000,
 				description: 'B observes the X CadrePeer row written on A while alone',
 			});
+			// ADDRESSABLE surface on purpose (`isMember` — row presence): the subject is
+			// the write-while-alone re-replication drain, not trust. B pins no owner key,
+			// so the trust-facing `isAuthorizedMember` would be false here by design —
+			// the authorized surface is proven in push-wake-e2e scenario 4.
 			expect(await B.isMember(xPeerId)).toBe(true);
 		} finally {
 			await B?.stop();

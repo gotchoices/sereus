@@ -18,16 +18,29 @@
  * Four scenarios, each booting fresh nodes in a try/finally:
  *   1. Happy path — direct dial of a hibernating member, wake accepted.
  *   2. NAT'd receiver reachable only via a circuit relay, wake accepted.
- *   3. Non-member sender — receiver rejects, strand stays hibernating.
+ *   3. Unanchored sender — receiver rejects the wake AND the strand-addr RPC even
+ *      though the sender HAS a CadrePeer row (the self-minted-owner attack).
  *   4. Replication-backed authorization — membership written ONLY on an owner
  *      node converges to the sender and receiver over the live control network, so
- *      the wake passes the `isMember` / `resolvePeerAddrs` gates via REPLICATION,
- *      with no local seeding on the node that consults them.
+ *      the wake passes the `isAuthorizedMember` / `resolvePeerAddrs` gates via
+ *      REPLICATION, with no local seeding on the node that consults them.
+ *
+ * ── Authorized membership: rows replicate, TRUST does not ──
+ *
+ * The wake and strand-addr gates consult `isAuthorizedMember`: the sender's
+ * `CadrePeer` row must carry a voucher (`VouchOwner`/`VouchSig`) that verifies
+ * against an owner key in the receiver's NODE-LOCAL trusted-owner anchor
+ * (`trustOwnerKeys` — established out of band by enrollment, never from the
+ * replicated `OwnerKey` table, which any stranger can genesis-pollute). So every
+ * accepted-wake scenario pins the vouching owner's key on the receiver as part of
+ * its enrollment setup; scenario 3 proves the rejection when that pin is absent.
+ * Address resolution (`resolvePeerAddrs`) and push fan-out stay on the ADDRESSABLE
+ * surface (`isMember` — row presence) by design: dialability is not trust.
  *
  * ── Control-DB replication & the single shared owner (READ THIS) ──
  *
- * The wake gate (`isMember`, read on the RECEIVER) and the sender's address resolve
- * (`resolvePeerAddrs`, read on the SENDER) both consult a node's LOCAL control DB.
+ * The wake gate (`isAuthorizedMember`, read on the RECEIVER) and the sender's address
+ * resolve (`resolvePeerAddrs`, read on the SENDER) both consult a node's LOCAL control DB.
  * Network-backing the control DB has LANDED (`control-db-network-backed`): the
  * `CadreControl` tables are a party-shared, replicated Optimystic store, so a fact
  * written on one cadre node converges to a connected peer by pull-on-read (proven by
@@ -49,9 +62,10 @@
  *     deepest replication proof (full mesh, A the only writer).
  *
  * Scenario 3 is the lone exception: its outsider O is its own owner but never
- * forms a cohort (genesis local-only), so the non-member rejection stays a pure local
- * gate (`isMember(O) === false`; Rx authorized no one). Every byte of the real
- * dial/handle/framing/resolve path is exercised in all four.
+ * forms a cohort (genesis local-only; the attack state is written directly into
+ * Rx's DB — see the scenario comment), so the rejection stays a pure local gate:
+ * O's row is PRESENT on Rx, but its voucher's owner key is not in Rx's anchor.
+ * Every byte of the real dial/handle/framing/resolve path is exercised in all four.
  *
  * Scenario 2 — NAT receiver listen address: with
  * `@libp2p/circuit-relay-v2@4.x`, a *discovered* relay reservation is skipped
@@ -84,10 +98,13 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
+import { multiaddr } from '@multiformats/multiaddr';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import {
 	CadreNode,
+	SeedBootstrapService,
+	collectStrandAddrs,
 	signSchema,
 	ed25519KeyPairFromLibp2p,
 	signPeerRecord,
@@ -159,14 +176,17 @@ function controlAddrs(node: CadreNode): string[] {
  * Make a freshly-started node its own control owner (genesis): enroll its
  * derived public key in `OwnerKey` and wire the seed-bootstrap service with
  * the matching private key, so it can owner-sign `CadrePeer` inserts into its
- * own local control DB.
+ * own local control DB. Returns the owner PUBLIC key (base64url) — the key an
+ * enrollee pins into its node-local trusted-owner anchor (`trustOwnerKeys`) so
+ * this owner's membership vouchers pass its authorized-membership predicate.
  */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
+async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string> {
 	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
 	const db = node.getControlDatabase();
 	if (!db) throw new Error('control database missing after start');
 	await db.insertOwnerKey(publicKeyB64);
 	node.initializeSeedBootstrap(privateKeyB64);
+	return publicKeyB64;
 }
 
 /**
@@ -265,7 +285,7 @@ describe('E2E push-wake over the control network', () => {
 			const sKey = await generateKeyPair('Ed25519');
 			S = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
 			await S.start();
-			await makeOwnOwner(S, sKey);
+			const sOwnerPub = await makeOwnOwner(S, sKey);
 			const sPeerId = S.peerId!.toString();
 
 			// Receiver Rx: hibernating plain member — NOT its own owner, so every
@@ -275,12 +295,18 @@ describe('E2E push-wake over the control network', () => {
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
+			// ENROLLMENT: Rx was enrolled by S's owner, so it pins that owner key into
+			// its node-local trusted-owner anchor (as redeeming a real CadreInvite does).
+			// The wake gate is `isAuthorizedMember`: a replicated row alone is NOT
+			// membership — its voucher must verify against this anchor.
+			await Rx.trustOwnerKeys([sOwnerPub], 'invite');
+
 			// CONNECT BEFORE WRITE: a direct 2-node cohort {S, Rx} (both-sides confirmed),
 			// neither NAT'd, so S's writes below commit cohort-wide rather than local-only.
 			await connectControlNodes(Rx, S);
 
 			// S — and ONLY S — writes both membership facts as clean {S, Rx} 2-node commits:
-			//   • S's own membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
+			//   • S's own membership row (`authorizePeer`), so Rx's wake gate `isAuthorizedMember(S)` passes.
 			//   • Rx's self-signed address record (`seedReceiverRecord`, real direct addr), so
 			//     S's `resolvePeerAddrs(Rx)` passes. S reads its OWN write locally; Rx pulls.
 			const rxAddrs = controlAddrs(Rx);
@@ -290,11 +316,14 @@ describe('E2E push-wake over the control network', () => {
 			expect((await S.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
 
 			// Rx's wake gate recognizes S as a member via REPLICATION — no local seeding.
+			// The row converges (addressable), and its voucher — S's owner key, pinned in
+			// Rx's anchor above — passes the trust-facing gate the wake actually consults.
 			await waitForCadrePeerConverged(Rx.getControlDatabase()!, sPeerId, {
 				timeoutMs: 30_000,
 				description: "Rx observes S's CadrePeer membership row written on S",
 			});
 			expect(await Rx.isMember(sPeerId)).toBe(true);
+			expect(await Rx.isAuthorizedMember(sPeerId)).toBe(true);
 
 			await bringUpHibernatingStrand(Rx, strandId);
 
@@ -341,7 +370,7 @@ describe('E2E push-wake over the control network', () => {
 			const lKey = await generateKeyPair('Ed25519');
 			L = new CadreNode(nodeConfig({ partyId, profile: 'storage', enableRelay: true }));
 			await L.start();
-			await makeOwnOwner(L, lKey);
+			const lOwnerPub = await makeOwnOwner(L, lKey);
 			const lAddrs = controlAddrs(L);
 			expect(lAddrs.length).toBeGreaterThan(0);
 			const lAddr = lAddrs[0]!; // /ip4/127.0.0.1/tcp/<port>/ws/p2p/<L>
@@ -364,7 +393,7 @@ describe('E2E push-wake over the control network', () => {
 			const rxCircuitAddr = `${lAddr}/p2p-circuit/p2p/${rxPeerId}`;
 
 			// L — and ONLY L — writes both membership facts, each a clean {L, S} 2-node commit:
-			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
+			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isAuthorizedMember(S)` passes.
 			//   • Rx's self-signed address record (`seedReceiverRecord` — one owner insert
 			//     carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes. The synthetic
 			//     direct addr is kept so signaling-first ordering (circuit sorts ahead of
@@ -398,6 +427,11 @@ describe('E2E push-wake over the control network', () => {
 			await Rx.start();
 			expect(Rx.peerId!.toString()).toBe(rxPeerId);
 
+			// ENROLLMENT: Rx was enrolled by L's owner — pin the owner key into Rx's
+			// node-local anchor so S's replicated row (vouched by L) passes Rx's
+			// `isAuthorizedMember` wake gate.
+			await Rx.trustOwnerKeys([lOwnerPub], 'invite');
+
 			await waitUntil(() => Rx!.getControlNode()!.getConnections().length > 0, {
 				...RESERVATION_WAIT,
 				description: 'Rx connects to the relay',
@@ -414,12 +448,14 @@ describe('E2E push-wake over the control network', () => {
 			expect(circuitAddr).toBe(rxCircuitAddr);
 
 			// Converge Rx on S's membership via replication through L — with NO local
-			// `Rx.authorizePeer(...)`. The production wake gate passes on a SIBLING-written row.
+			// `Rx.authorizePeer(...)`. The production wake gate passes on a SIBLING-written
+			// row because its voucher (L's owner key) is pinned in Rx's anchor.
 			await waitForCadrePeerConverged(Rx.getControlDatabase()!, sPeerId, {
 				timeoutMs: 30_000,
 				description: "Rx observes S's CadrePeer membership row written on L",
 			});
 			expect(await Rx.isMember(sPeerId)).toBe(true);
+			expect(await Rx.isAuthorizedMember(sPeerId)).toBe(true);
 
 			// Active strand: the wake is the "already live → accepted" branch, so the
 			// assertion is about the relayed delivery (dial over the limited circuit
@@ -445,26 +481,42 @@ describe('E2E push-wake over the control network', () => {
 		}
 	}, 90_000);
 
-	// ── 3. Non-member sender is rejected (no side effect) ─────────────────────
-
-	it('rejects a wake from a non-member and leaves the strand hibernating', async () => {
+	// ── 3. Unanchored sender is rejected — even WITH a CadrePeer address row ──
+	//
+	// THE hole this predicate closes: before it, "is this peer a member?" meant
+	// "does a CadrePeer row exist" — and any outsider can make that true, because
+	// the replicated `OwnerKey` table admits any FIRST key (genesis bootstrap) and
+	// a self-minted owner can then self-vouch its own membership row. This scenario
+	// reproduces exactly that post-attack state in Rx's control DB, then proves the
+	// wake AND strand-addr gates both reject O because O's self-minted owner key is
+	// not in Rx's NODE-LOCAL trusted-owner anchor.
+	//
+	// The polluted state is written directly into Rx's DB (a throwaway
+	// SeedBootstrapService holding O's owner key — byte-identical rows to what live
+	// replication of O's genesis writes would converge). Local writes rather than a
+	// live {O, Rx} commit because two-node cohort commits are currently rejected
+	// upstream (`membership-not-admitted:low-confidence-downsize`, tracked in
+	// blocked/control-db-convergence-optimystic-p2p); scenario 4's 3-node cohort
+	// proves the wire path. Rx stays connection-free while polluted, so the writes
+	// commit local-only.
+	it('rejects a wake and strand-addr from a peer whose membership row exists but whose voucher owner is unanchored', async () => {
 		let Rx: CadreNode | undefined;
 		let O: CadreNode | undefined;
 		try {
 			const partyId = `pushwake-nonmember-${Date.now()}`;
 			const strandId = `strand-nonmember-${Date.now()}`;
 
-			// Receiver Rx: hibernating. Its control DB recognizes NO members, so any
-			// sender is a non-member. (No owner needed — it authorizes no one.)
+			// Receiver Rx: hibernating, empty node-local anchor — it was never enrolled
+			// by anyone, so NO owner key is trusted and nobody can be authorized.
 			const rxKey = await generateKeyPair('Ed25519');
 			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
 			// Outsider O: its own owner so it can seed Rx's record and thus RESOLVE
-			// + dial Rx (the default trust policy trusts any peer with a row) — but Rx
-			// never authorized O, so the receiver rejects on `isMember(O) === false`.
+			// + dial Rx (the default trust policy trusts any peer with a row).
 			const oKey = await generateKeyPair('Ed25519');
+			const { privateKeyB64: oOwnerPriv, publicKeyB64: oOwnerPub } = ed25519KeyPairFromLibp2p(oKey);
 			O = new CadreNode(nodeConfig({ partyId, privateKey: oKey }));
 			await O.start();
 			await makeOwnOwner(O, oKey);
@@ -473,14 +525,49 @@ describe('E2E push-wake over the control network', () => {
 			const rxAddrs = controlAddrs(Rx);
 			await seedReceiverRecord(O, rxPeerId, rxKey, rxAddrs);
 			expect((await O.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
-			expect(await Rx.isMember(oPeerId)).toBe(false);
+
+			// THE ATTACK, as it would land in Rx's REPLICATED control state: O's
+			// self-minted owner key enters Rx's `OwnerKey` table (the genesis bootstrap
+			// CHECK admits any first key — that is why the replicated table cannot anchor
+			// trust), and O's self-vouched CadrePeer row follows, satisfying every
+			// replicated-schema constraint. Nothing here touches Rx's node-local anchor.
+			await Rx.getControlDatabase()!.insertOwnerKey(oOwnerPub);
+			const pollution = new SeedBootstrapService({ partyId, ownerPrivateKey: oOwnerPriv, ownerPublicKey: oOwnerPub });
+			pollution.initialize(Rx.getControlNode()!, Rx.getControlDatabase()!, { registerHandler: false });
+			await pollution.authorizePeer({ peerId: oPeerId, multiaddrs: controlAddrs(O) });
+
+			// The hole, made visible: O IS addressable on Rx (row present) — and still
+			// NOT authorized, because its voucher's owner key is not in Rx's anchor.
+			expect(await Rx.isMember(oPeerId)).toBe(true);
+			expect(await Rx.isAuthorizedMember(oPeerId)).toBe(false);
 
 			await bringUpHibernatingStrand(Rx, strandId);
 
+			// Wake gate: rejected despite the membership row; the sleeping node cannot
+			// be woken by an outsider that merely published rows.
 			const ack: WakeAck = await O.pushWake(rxPeerId, strandId, 'unauthorized wake');
 			expect(ack.accepted).toBe(false);
 			// No side effect: the strand is still hibernating (receiver rejected before wake).
 			expect(Rx.getStrand(strandId)?.status).toBe('hibernating');
+
+			// Strand-addr gate mirrors the wake gate. Wake the strand LOCALLY so Rx has
+			// live strand multiaddrs to protect, then let O ask for them over the real
+			// STRAND_ADDR_PROTOCOL dial: refused (empty) while unanchored.
+			await Rx.wakeStrand(strandId);
+			expect(Rx.getStrand(strandId)?.status).toBe('active');
+			const rxDialTargets = [{ peerId: rxPeerId, addrs: rxAddrs.map((a) => multiaddr(a)) }];
+			const refused = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
+			expect(refused).toEqual([]);
+
+			// POSITIVE CONTROL — same replicated state, one anchor pin: once Rx's
+			// operator pins O's owner key, the identical rows flip to authorized and the
+			// same strand-addr dial returns live addrs. Proves the empty response above
+			// was the membership refusal (not a transport failure or a strand with no
+			// addrs), and that the predicate is driven by the anchor alone.
+			await Rx.trustOwnerKeys([oOwnerPub], 'operator');
+			expect(await Rx.isAuthorizedMember(oPeerId)).toBe(true);
+			const granted = await collectStrandAddrs(O.getControlNode()!, rxDialTargets, strandId);
+			expect(granted.length).toBeGreaterThan(0);
 		} finally {
 			await O?.stop();
 			await Rx?.stop();
@@ -545,7 +632,7 @@ describe('E2E push-wake over the control network', () => {
 			const aKey = await generateKeyPair('Ed25519');
 			A = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
 			await A.start();
-			await makeOwnOwner(A, aKey);
+			const aOwnerPub = await makeOwnOwner(A, aKey);
 
 			// Sender S and receiver Rx are plain members — NEITHER is its own owner, so
 			// neither can self-insert any control row. Every membership fact they consult must
@@ -559,6 +646,16 @@ describe('E2E push-wake over the control network', () => {
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
+			// ENROLLMENT: S and Rx were enrolled by A's owner — each pins A's owner key
+			// into its NODE-LOCAL trusted-owner anchor, exactly as redeeming a real
+			// CadreInvite does (the invite carries `ownerKeys`; the enrollee pins them
+			// before trusting any replicated fact). Replication delivers the ROWS below;
+			// this pin is what lets their vouchers pass the trust-facing predicate —
+			// without it, Rx's wake gate `isAuthorizedMember(S)` stays false no matter
+			// what converges.
+			await S.trustOwnerKeys([aOwnerPub], 'invite');
+			await Rx.trustOwnerKeys([aOwnerPub], 'invite');
+
 			// CONNECT BEFORE WRITE, FULL MESH: seat A, S and Rx in one control cohort (each
 			// link both-sides confirmed) so A's writes commit cohort-wide, not local-only — the
 			// convergence precondition. The mesh is deliberate: the control collection's cluster
@@ -570,7 +667,7 @@ describe('E2E push-wake over the control network', () => {
 			await connectControlNodes(Rx, S);
 
 			// A — and ONLY A — writes the membership facts the assertions hinge on:
-			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isMember(S)` passes.
+			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isAuthorizedMember(S)` passes.
 			//   • Rx's full self-signed address record (`seedReceiverRecord` — one owner
 			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
 			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
@@ -584,13 +681,21 @@ describe('E2E push-wake over the control network', () => {
 				timeoutMs: 30_000,
 				description: "Rx observes S's CadrePeer membership row written on A",
 			});
-			expect((await Rx.getControlDatabase()!.queryCadrePeers()).some((p) => p.peerId === sPeerId)).toBe(true);
+			// The converged row carries A's voucher intact (owner + signature replicate
+			// with the row — a legit member's row is never voucher-less), so the
+			// trust-facing gate the wake consults passes off the SIBLING-written row.
+			const sRow = (await Rx.getControlDatabase()!.queryCadrePeers()).find((p) => p.peerId === sPeerId);
+			expect(sRow).toBeDefined();
+			expect(sRow!.vouchOwner).toBe(aOwnerPub);
+			expect(sRow!.vouchSig).not.toBeNull();
 			expect(await Rx.isMember(sPeerId)).toBe(true);
+			expect(await Rx.isAuthorizedMember(sPeerId)).toBe(true);
 
 			// Negative, preserved in the replicated topology: a peer A never authorized never
 			// converges anywhere — replication is selective, not "trust everyone once connected".
 			const strangerPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 			expect(await Rx.isMember(strangerPeerId)).toBe(false);
+			expect(await Rx.isAuthorizedMember(strangerPeerId)).toBe(false);
 
 			// Converge the SENDER on Rx's sibling-written, resolvable record. Poll the real
 			// resolve path (binding + self-sig + freshness + trust gates), not just row presence.

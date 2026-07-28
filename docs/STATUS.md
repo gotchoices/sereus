@@ -211,9 +211,10 @@ Strand lifecycle resource management in `@serfab/cadre-core`
   - `strand-wake-protocol.ts` adds `WAKE_PROTOCOL` (`/sereus/strand-wake/1.0.0`), modeled on seed-bootstrap:
     length-prefixed JSON `WakeRequest`/`WakeAck` frames, one request → one ack per stream.
   - `StrandWakeService` (receiver, registered in `CadreNode.start`/`cleanup`) gates inbound wakes on
-    the authorized-member surface (`CadreNode.isAuthorizedMember`, the addressable set minus self;
-    interim until the ticket-4 voucher predicate lands) — v1 authorization is control-network membership,
-    no extra signature — then routes a hibernating/idle strand through the same wake path as a local wake
+    the authorized-member surface (`CadreNode.isAuthorizedMember`: the row's persisted voucher must
+    verify against an owner key in the node-local trusted-owner anchor, not-self, fail-closed —
+    the ticket-4 predicate) — no extra signature on the wake itself — then routes a
+    hibernating/idle strand through the same wake path as a local wake
     (`wakeStrand → resumeStrand`), so resume coalescing prevents a push racing a concurrent check-in.
   - `CadreNode.pushWake(targetPeerId, strandId, reason?)` (sender) resolves the target's signed
     control-network address via `resolvePeerAddrs` (signaling/relay first for NAT'd peers) and dials.

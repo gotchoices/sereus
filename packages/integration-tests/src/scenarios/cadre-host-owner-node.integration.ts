@@ -186,12 +186,18 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     await client.acceptPhone({ phonePeerId, token }, invite);
 
     expect(await client.isMember(phonePeerId)).toBe(true);
+    // Trust-facing surface too: the host's own owner key is genesis-anchored in
+    // its node-local trusted-owner store, so the voucher it wrote on the phone's
+    // row verifies — a sibling vouched by an anchored party owner is a full
+    // AUTHORIZED member, not just an addressable one.
+    expect(await client.isAuthorizedMember(phonePeerId)).toBe(true);
     const members = await client.listMembers();
     expect(members.map((m) => m.peerId)).toContain(phonePeerId);
 
     await client.removePeer(phonePeerId);
 
     expect(await client.isMember(phonePeerId)).toBe(false);
+    expect(await client.isAuthorizedMember(phonePeerId)).toBe(false);
     expect((await client.listMembers()).map((m) => m.peerId)).not.toContain(phonePeerId);
   }, OP_MS);
 

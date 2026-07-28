@@ -37,6 +37,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
+import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
   signPeerRecord,
@@ -2651,27 +2652,72 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Enumerate the party's AUTHORIZED members — the trust-facing set, distinct from
-   * the addressable set ({@link listMembers}). Excludes this node itself: a node
-   * publishes its own `CadrePeer` address row so its dialable address rides in seeds,
-   * but "self" is not a peer this node authorized. The control-network wake and
+   * the addressable set ({@link listMembers}). A peer is authorized iff ALL hold:
+   *
+   *  1. it is not this node itself — a node publishes its own `CadrePeer` address
+   *     row so its dialable address rides in seeds, but "self" is not a peer this
+   *     node authorized;
+   *  2. its `CadrePeer` row carries a complete voucher (`StampId`, `VouchOwner`,
+   *     `VouchSig` all non-null);
+   *  3. `VouchOwner` is in the NODE-LOCAL trusted-owner anchor
+   *     ({@link getTrustedOwnerStore}) — never the replicated `OwnerKey` table,
+   *     which any stranger can genesis-pollute; and
+   *  4. `VouchSig` verifies as that owner's signature over the row's voucher
+   *     digest ({@link verifyCadrePeerVoucher}), so the anchored owner really
+   *     vouched THIS peer id under THIS row's nonce.
+   *
+   * Fail-closed at every step: a missing anchor (pre-start), an empty anchor (a
+   * not-yet-enrolled node authorizes no one), a null/partial voucher, an
+   * unanchored `VouchOwner`, or a bad signature all yield "not authorized" —
+   * having an address row is NOT membership. The control-network wake and
    * strand-address gates consult this set, NOT the addressable one.
    *
-   * NOTE: this is the addressable set minus self for now. The real trust predicate
-   * (voucher recorded on the row ∈ node-local trusted-owner anchor, signature
-   * verified) lands with the `membership-node-local-owner-anchor` /
-   * `membership-authorized-predicate-and-gates` tickets; keeping the filter in this one
-   * method means that change touches a single place.
+   * NOTE (rotation): if a party owner rotates keys and only the NEW key is pinned
+   * in the anchor, rows the OLD key vouched fail check 3 until re-vouched — a
+   * legit member goes un-authorized on readers that only pin the new key. Full
+   * rotation handling (re-vouch on rotate) is the
+   * `flip-strand-membership-rotation-known-gap` work, not this predicate's.
    */
   async listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    if (!this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing members');
+    }
     const selfPeerId = this.peerId?.toString();
-    const members = await this.listMembers();
-    return members.filter(m => m.peerId !== selfPeerId);
+    const rows = await this.controlDatabase.queryCadrePeers();
+    return rows
+      .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
+      .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
+  }
+
+  /**
+   * Checks 2–4 of the authorized-membership predicate (see
+   * {@link listAuthorizedMembers}) for one `CadrePeer` row: complete voucher,
+   * `VouchOwner` in the node-local anchor, signature valid over the row's
+   * (PeerId, StampId) voucher digest.
+   *
+   * NOTE: verifies the ed25519 signature on every call (no memo of already-
+   * verified (peerId, stampId, vouchSig) triples). Cadres are a handful of
+   * devices and the gates run per inbound request, so this is cheap today; if
+   * membership or gate traffic ever grows, cache verified triples keyed on the
+   * row's `StampId` (which rotates with every re-vouch).
+   */
+  private hasAnchoredVoucher(row: { peerId: string; stampId: string | null; vouchOwner: string | null; vouchSig: string | null }): boolean {
+    if (row.stampId === null || row.vouchOwner === null || row.vouchSig === null) {
+      return false;
+    }
+    if (!this.trustedOwnerStore?.has(row.vouchOwner)) {
+      return false;
+    }
+    return verifyCadrePeerVoucher(row.peerId, row.stampId, row.vouchOwner, row.vouchSig);
   }
 
   /**
    * Probe whether a given peer is an AUTHORIZED party member (see
    * {@link listAuthorizedMembers}) — the gate the control-network wake and
-   * strand-address responders consult, NOT {@link isMember} (the addressable surface).
+   * strand-address responders consult, NOT {@link isMember} (the addressable
+   * surface). Deliberately scans the full membership (one `CadrePeer` query)
+   * rather than adding a single-row read path: cadres are small, and one code
+   * path keeps the predicate impossible to drift from the list.
    */
   async isAuthorizedMember(peerId: string): Promise<boolean> {
     const members = await this.listAuthorizedMembers();

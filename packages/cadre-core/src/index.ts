@@ -148,7 +148,8 @@ export {
   peerAuthorizationDigest,
   cadrePeerVoucherDigest,
   cadrePeerRemoveDigest,
-  verifyPeerAuthorization
+  verifyPeerAuthorization,
+  verifyCadrePeerVoucher
 } from './peer-authorization.js';
 
 // Strand Wake (control-network push-wake protocol)

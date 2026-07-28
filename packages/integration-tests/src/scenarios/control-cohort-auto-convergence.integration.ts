@@ -141,6 +141,11 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 				description: 'B observes the X CadrePeer row with no manual control dial'
 			});
 
+			// ADDRESSABLE surface on purpose (`isMember` — row presence): the subject is
+			// cohort auto-convergence, not trust. (B's `applySeed` trust-policy pin above
+			// is seed trust only; nothing pins A's owner key into B's node-local anchor,
+			// so `isAuthorizedMember(X)` would be false here by design — the authorized
+			// surface is proven in push-wake-e2e scenario 4.)
 			expect(await B.isMember(xPeerId)).toBe(true);
 		} finally {
 			await B?.stop();

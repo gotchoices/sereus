@@ -174,7 +174,11 @@ describe('Two-node control-DB convergence', () => {
 				description: 'B observes the X CadrePeer row written on A',
 			});
 
-			// The production authorization gate now passes on B via convergence, not seeding.
+			// Deliberately the ADDRESSABLE surface (`isMember` — row presence): this
+			// scenario proves replication mechanics, not trust. The trust-facing gate
+			// (`isAuthorizedMember`) additionally requires A's owner key pinned in B's
+			// node-local anchor — that enrollment story is proven in push-wake-e2e
+			// scenario 4; B here never pins anyone.
 			expect(await B.isMember(xPeerId)).toBe(true);
 		} finally {
 			await B?.stop();

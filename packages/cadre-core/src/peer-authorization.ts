@@ -79,3 +79,41 @@ export function verifyPeerAuthorization(
     return false;
   }
 }
+
+/**
+ * Verify that `signature` is a valid owner ed25519 signature over the
+ * `CadrePeer` voucher digest for (`peerId`, `stampId`) — the read-side mirror
+ * of the voucher {@link SeedBootstrapService.insertCadrePeerRow} signs and
+ * persists into `VouchOwner`/`VouchSig` (see {@link cadrePeerVoucherDigest}).
+ *
+ * A `true` result means the holder of `ownerPublicKey` vouched THIS membership
+ * row (the peer id bound to the row's single-use `StampId` nonce). It says
+ * nothing about whether that owner key is itself trustworthy — the caller must
+ * separately check the key against the node-local trusted-owner anchor
+ * (`TrustedOwnerStore`), never the replicated `OwnerKey` table.
+ *
+ * Returns a boolean and never throws (same contract as
+ * {@link verifyPeerAuthorization}): malformed input or any crypto failure
+ * resolves to `false`, logged at debug.
+ */
+export function verifyCadrePeerVoucher(
+  peerId: string,
+  stampId: string,
+  ownerPublicKey: string,
+  signature: string
+): boolean {
+  try {
+    return verify(
+      cadrePeerVoucherDigest(peerId, stampId),
+      signature,
+      ownerPublicKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    );
+  } catch (error) {
+    log('verifyCadrePeerVoucher failed: %o', error);
+    return false;
+  }
+}
