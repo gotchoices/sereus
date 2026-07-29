@@ -12,6 +12,13 @@
  * Without the fix these tests HANG (the reader never observes the row) — they are
  * the regression guard for the write-while-alone durability gap.
  *
+ * `bootPair` still boots A and B DISCONNECTED (no dial yet), but A vouches B
+ * (`authorizePeer`) right after B starts — a control-DB write, not a dial — so that
+ * A's inbound connection gate (`admitInboundControlConnection`) will later admit B's
+ * connect attempt. Without the vouch, A's cold-start carve-out (which admits any
+ * peer while A has zero authorized members) closes the moment this scenario's own
+ * `authorizePeer(xPeerId)` write lands, and B's connect would be refused.
+ *
  * The connection itself is still formed with a test-only manual `dial()` over the
  * public `getControlNode()` seam (as the sibling convergence scenario does) — that
  * only forms the cohort; the RE-REPLICATION of the pre-connection write is the
@@ -116,6 +123,10 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 	const bKey = await generateKeyPair('Ed25519');
 	const B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
 	await B.start();
+
+	// A vouches B so A's inbound connection gate admits B's dial once A's authorized
+	// set is non-empty (mirrors `bootPair` in control-db-two-node-convergence).
+	await A.authorizePeer(B.peerId!.toString());
 
 	return { A, B };
 }

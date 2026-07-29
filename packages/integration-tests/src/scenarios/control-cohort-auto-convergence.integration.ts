@@ -12,7 +12,12 @@
  * cadence configured below) keeps the control cohort connected. B then observes
  * an owner-written `CadrePeer` row with ZERO manual control dials.
  *
- * Honesty note (for reviewers): in a 2-node party the FIRST connection is
+ * Honesty note (for reviewers): A vouches B (`authorizePeer`) before minting the
+ * seed, mirroring production onboarding (`addDrone` / `acceptPhone` /
+ * `addPhoneWithRelay` in seed-bootstrap.ts) — without it A's inbound connection
+ * gate refuses B's cold-start dial once A holds any authorized member. The vouch
+ * is a control-DB write, not a dial, so it does not touch the "zero manual
+ * control dials" claim below. In a 2-node party the FIRST connection is
  * necessarily established by the cold-start path (`applySeed`'s owner dial) —
  * `reconcileControlCohort` cannot bootstrap from nothing, because it dials only
  * siblings already in the converged `CadrePeer` table (see the ticket's "address
@@ -124,6 +129,13 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 			// CadreInvite.ownerKeys cold-start path). This populates B's peerStore
 			// and best-effort dials A — NOT a raw test-side getControlNode().dial().
 			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
+
+			// Production onboarding vouches the new node BEFORE handing it a seed
+			// (addDrone / acceptPhone / addPhoneWithRelay in seed-bootstrap.ts, and the
+			// enrollment sequences in docs/architecture.md). Without it A's inbound gate
+			// refuses B's cold-start seed dial.
+			await A.authorizePeer(B.peerId!.toString());
+
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
