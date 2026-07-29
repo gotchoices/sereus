@@ -7,11 +7,130 @@ difficulty: hard
 # Authorize `Strand.Member` removal, and stop revoked members re-admitting themselves
 
 <!-- resume-note -->
-## Resume note (second run hit soft token budget right after Phase 1 — NO code changes made)
+## Resume note (THIRD run hit soft token budget — still NO code changes made)
 
-Two prior runs. Run 1 did discovery only (findings kept below). Run 2 ran the Phase 1
-spike and stopped. The working tree has zero modifications. Everything below the note is
-the original ticket, still fully valid.
+Three prior runs, all discovery/spike only; working tree has zero modifications.
+Run 1: discovery. Run 2: Phase 1 spike (passed). Run 3: re-read every touch-point,
+resolved two design ambiguities, drafted the exact schema (below), found one more file
+needing edits. Next run: START WRITING CODE IMMEDIATELY — no further investigation is
+needed; every question below is answered.
+
+### Run 3 additions — design decisions (binding, do not re-derive)
+
+- **INVITE-BRANCH AS LITERALLY WRITTEN IN THE DESIGN SECTION IS WRONG — use this
+  corrected clause.** The design says "no `committed.ConsumedInvite` row names
+  `new.Key`", but a revoked member's stale committed row names the SAME MemberKey, so
+  that clause would also reject a legitimate **fresh** invite for a returning member —
+  contradicting the design's own "a fresh invite … passes" and the Phase 4 test. The
+  correct rule is "the ConsumedInvite that admits this member must be same-transaction
+  fresh", keyed on InviteKey (the PK):
+
+  ```sql
+  or (old.Key is null and exists (
+      select 1 from ConsumedInvite CI
+          where CI.MemberKey = new.Key
+              and not exists (select 1 from committed.ConsumedInvite CC where CC.InviteKey = CI.InviteKey)
+  ))
+  ```
+
+  Stale row: its InviteKey IS committed → excluded. Fresh invite: new (InviteKey,
+  MemberKey) row is same-txn, not committed → passes. Single-use is untouched
+  (ConsumedInvite PK on InviteKey blocks re-consuming). An attacker cannot mint a
+  passing row: `InviteExists` + `ValidUsage` require a real manager-issued Invite and
+  its private key.
+- **Self-departure branch: one new context field only (`MemberSignature`), no
+  `context.MemberKey`.** The design bullet's `old.Key = context.MemberKey` is redundant
+  — verify against `old.Key` already pins the signer:
+
+  ```sql
+  or (new.Key is null
+      and verify(digest('Strand.Member', 'remove', old.Key), context.MemberSignature, old.Key, 'ed25519'))
+  ```
+
+  Context list becomes `with context (ManagerKey text null, ManagerSignature text null,
+  MemberSignature text null)`. Matches the Phase 2 TODO ("add MemberSignature to the
+  with context list" — singular).
+- **Bind ALL context fields at every Strand.Member write site** (every existing write in
+  the repo binds the full declared list; do not rely on partial binding being allowed).
+  Sites needing `MemberSignature = null` added: `strand-membership-writer.ts` lines ~152
+  (`insertFounderMemberIfAbsent`), ~396 (`consumeInvite`'s Member insert), ~455
+  (`addMemberByManager`); plus the raw inserts in the e2e spec below.
+- **EXTRA FILE FOUND — `packages/quereus-plugin-sereus/test/e2e/strand-schema.e2e.spec.ts`**
+  does raw `insert into Strand.Member … with context ManagerKey = null, ManagerSignature
+  = null` at lines ~134, ~170, ~196, ~219, ~257, ~302. Add `MemberSignature = null` to
+  each. Its assertions survive the semantics change unmodified: first-member inserts are
+  auto-commit with committed count 0 (bootstrap branch passes), the unauthorized second
+  member at ~219 still rejects (committed count 1, no signature), the open-strand
+  rejections are OnlyClosed. Also refresh its two comments citing the old
+  `count(Member) <= 1` branch (~line 168, ~194).
+- **`strand-member-registry.ts` needs NO changes** — it writes only through
+  `consumeInvite`/`addMemberByManager` and reads via `select count(1)`.
+- **Manager table is untouched.** Its own bootstrap branch reads live
+  `count(1) from Member) <= 1` — leave as is; only the Member table changes.
+
+### Run 3 additions — the target Member table (drop-in, both schema copies)
+
+```sql
+    -- A party in the closed strand network
+    table Member (
+        Key text primary key,
+        constraint NoUpdate check on update (false),
+        constraint OnlyClosed check on insert, update, delete (
+            exists (select 1 from Header H where H.Type = 'c')
+        ),
+        constraint MinOneMember check on delete (
+            (select count(1) from Member) >= 1
+        ),
+        constraint NotAManager check on delete (
+            not exists (select 1 from Manager A where A.MemberKey = old.Key)
+        ),
+        constraint Authorized check on insert, delete (
+            (old.Key is null and (select count(1) from committed.Member) = 0)
+
+                or (old.Key is null and exists (
+                    select 1 from committed.Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and verify(digest('Strand.Member', 'add', new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                ))
+
+                or (old.Key is null and exists (
+                    select 1 from ConsumedInvite CI
+                        where CI.MemberKey = new.Key
+                            and not exists (select 1 from committed.ConsumedInvite CC where CC.InviteKey = CI.InviteKey)
+                ))
+
+                or (new.Key is null and exists (
+                    select 1 from committed.Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and verify(digest('Strand.Member', 'remove', old.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                ))
+
+                or (new.Key is null
+                    and verify(digest('Strand.Member', 'remove', old.Key), context.MemberSignature, old.Key, 'ed25519'))
+        ),
+    ) with context (ManagerKey text null, ManagerSignature text null, MemberSignature text null);
+```
+
+Add explanatory comments per branch when landing (mirror the tone of
+`control.qsql`'s `OwnerKey.Authorized`), carry the `MinOneManager` cross-node NOTE onto
+`MinOneMember`, and note on `NotAManager` that it is deferred (post-image), so a single
+transaction deleting both the Manager and Member rows passes. Keep both schema copies
+byte-identical.
+
+TS signer to add beside `signStrandPayload` (same raw-digest-bytes signing path):
+
+```ts
+export type StrandMemberAction = 'add' | 'remove';
+export function signStrandMemberAction(action: StrandMemberAction, memberKey: string, privateKeyB64: string): string {
+  const hashBytes = digest(['Strand.Member', action, memberKey], 'sha256', 'bytes') as Uint8Array;
+  return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+}
+```
+
+Parity with SQL literal tags is already pinned generically by
+`digest-variadic-parity.spec.ts` case (d); an extra case there is optional.
+
+### Prior-run findings (still valid)
 
 - **PHASE 1 SPIKE DONE — PASSED. Skip Phase 1 entirely; build on `committed.*` as designed.**
   A throwaway spec (`packages/cadre-core/test/zz-spike-committed.spec.ts`, since deleted)
