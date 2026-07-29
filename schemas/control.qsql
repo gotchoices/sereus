@@ -178,8 +178,14 @@ declare schema CadreControl {
             )
                 -- or an owner re-authorizes (rotation / correction): re-vouches the row over
                 -- its current StampId, so the stored voucher is re-bound to the re-authorizing owner.
+                -- StampId is immutable here too: an update that rotated it would leave the OLD
+                -- stamp live-free and untombstoned (RevocationRecorded only retires the stamp a
+                -- delete carries), so the original admission approval — which is stored on the
+                -- replicated row as VouchSig — would resurrect the peer after a later removal.
+                -- Retiring a stamp is delete + Revocation row, never an update.
                 or (
-                    exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                    new.StampId = old.StampId
+                    and exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
                     and new.VouchOwner = context.OwnerKey
                     and new.VouchSig = context.Signature
                 )
@@ -324,8 +330,9 @@ declare schema CadreControl {
         constraint Immutable check on update, delete (false),
         -- A stamp may only be retired once its row is actually gone. Deferred (subquery), so a
         -- delete in the same transaction has already landed. Retiring a stamp that never
-        -- existed is permitted and harmless: stamps are 32 bytes of CSPRNG output
-        -- (control-database.ts:generateStampId), so a future legitimate one cannot be guessed.
+        -- existed is permitted and harmless: a stamp carries 128 bits of CSPRNG output
+        -- (control-database.ts:generateStampId — 16 bytes of sha256(PeerId) followed by 16
+        -- random bytes), so a future legitimate one cannot be guessed and pre-planted.
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))

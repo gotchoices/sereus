@@ -138,6 +138,29 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
   }
 
+  /**
+   * The owner re-vouch branch of `AuthorizedUpdate` (the shape
+   * `SeedBootstrapService.reauthorizePeer` writes). `newStampId` null keeps the row's
+   * stamp — the only shape the branch allows; passing a value exercises the rotation
+   * attempt the branch must refuse.
+   */
+  function rawRevouchCadrePeer(
+    contextOwner: string,
+    signature: string,
+    peerId: string,
+    newStampId: string | null,
+  ): Promise<void> {
+    const stampAssignment = newStampId === null ? '' : 'StampId = ?, ';
+    const stampParam = newStampId === null ? [] : [newStampId];
+    return rawDb.exec(
+      `update CadreControl.CadrePeer
+         with context OwnerKey = ?, Signature = ?
+         set ${stampAssignment}VouchOwner = ?, VouchSig = ?
+         where PeerId = ?`,
+      [contextOwner, signature, ...stampParam, contextOwner, signature, peerId],
+    );
+  }
+
   function rawDeleteCadrePeer(
     contextOwner: string,
     signature: string,
@@ -320,6 +343,61 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await cadrePeerRow(peerId)).toBeDefined();
   }, 60_000);
 
+  it('CadrePeer: a tombstone filed under the WRONG TableName does not satisfy RevocationRecorded', async () => {
+    const peerId = '12D3KooWWrongTableTombstone';
+    const { stamp } = await admitPeer(peerId);
+
+    // `RowIsGone` accepts ('OwnerKey', stamp) — no OwnerKey row carries a CadrePeer's
+    // stamp — so the tombstone itself is fine; what must fail is the DELETE, whose
+    // RevocationRecorded subquery is scoped to TableName = 'CadrePeer'. Without that
+    // scoping a stamp retired under any table name would unlock every guarded delete.
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteCadrePeer(
+          founder.publicKey,
+          signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
+          peerId,
+        );
+        await tombstoneStamp('OwnerKey', stamp);
+      }),
+      'RevocationRecorded',
+    );
+    expect(await cadrePeerRow(peerId)).toBeDefined();
+  }, 60_000);
+
+  // ── The stamp cannot be rotated out from under the tombstone ───────────────
+
+  it('CadrePeer: an owner re-vouch may re-bind the voucher but NOT rotate the StampId', async () => {
+    const peerId = '12D3KooWStampRotationTarget';
+    const { stamp } = await admitPeer(peerId);
+
+    // A rotation would strand the OLD stamp: never tombstoned (a delete only retires
+    // the stamp it carries), no longer on a live row, so the original admission
+    // approval — replicated to everyone as VouchSig — would resurrect the peer after
+    // the next removal. The delete+tombstone transaction is the only retirement path.
+    const rotated = freshStamp();
+    await expectConstraintFailure(
+      rawRevouchCadrePeer(
+        founder.publicKey,
+        signB64(founder, cadrePeerVoucherDigest(peerId, rotated)),
+        peerId,
+        rotated,
+      ),
+      'AuthorizedUpdate',
+    );
+    expect(await db.queryCadrePeerStampId(peerId)).toBe(stamp);
+
+    // The legitimate re-touch (reauthorizePeer's shape) still passes: same stamp,
+    // freshly signed voucher.
+    await rawRevouchCadrePeer(
+      founder.publicKey,
+      signB64(founder, cadrePeerVoucherDigest(peerId, stamp)),
+      peerId,
+      null,
+    );
+    expect(await db.queryCadrePeerStampId(peerId)).toBe(stamp);
+  }, 60_000);
+
   // ── Removal is stamp-retirement, not an identity ban ───────────────────────
 
   it('OwnerKey: after removal, a re-add with a FRESH stamp and fresh signature succeeds', async () => {
@@ -373,8 +451,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   }, 60_000);
 
   it('Revocation: a tombstone is permanent — delete and update are both refused (Immutable)', async () => {
-    // Retiring a never-existing stamp is allowed and harmless: stamps are 32-byte CSPRNG
-    // output, so a future legitimate stamp cannot collide with a pre-planted tombstone.
+    // Retiring a never-existing stamp is allowed and harmless: a stamp carries 128 bits of
+    // CSPRNG output, so a future legitimate stamp cannot collide with a pre-planted tombstone.
     const orphan = freshStamp();
     await tombstoneStamp('CadrePeer', orphan);
 

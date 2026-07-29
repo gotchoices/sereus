@@ -165,6 +165,7 @@ function inject(node: CadreNode, opts: {
   members?: PeerRow[];
   anchor?: TrustedOwnerStore;
   solicitation?: Outstanding;
+  revoked?: Set<string>;
 }): void {
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
   (node as unknown as { controlNode: unknown }).controlNode = {
@@ -173,7 +174,7 @@ function inject(node: CadreNode, opts: {
   if (opts.members) {
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
       queryCadrePeers: async () => opts.members,
-      queryRevokedStamps: async () => new Set<string>()
+      queryRevokedStamps: async () => opts.revoked ?? new Set<string>()
     };
   }
   if (opts.anchor) {
@@ -219,6 +220,25 @@ describe('CadreNode.admitInboundControlConnection', () => {
 
     expect(await admit(node, MEMBER)).toBe(true);
     expect(await admit(node, STRANGER)).toBe(false);
+  });
+
+  it('denies a member whose StampId is retired in Revocation, still admitting its live sibling', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    const revoked = vouchedRow(MEMBER, owner);
+    const survivor = vouchedRow('peer-member-2', owner);
+    // The gate delegates to the same authorized-membership predicate the
+    // authorized-surface spec pins, so a removed peer that dials in must be refused
+    // even while its (still valid, still anchored) voucher row is locally visible —
+    // the cross-node convergence state the read-side revocation filter exists for.
+    inject(node, {
+      members: [revoked, survivor],
+      anchor: await anchorWith('p', owner.publicKey),
+      revoked: new Set([revoked.stampId!])
+    });
+
+    expect(await admit(node, MEMBER)).toBe(false);
+    expect(await admit(node, 'peer-member-2')).toBe(true);
   });
 
   it('admits everyone before start / after teardown (not running, or no control DB)', async () => {

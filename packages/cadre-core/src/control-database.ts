@@ -438,6 +438,10 @@ export class ControlDatabase {
    * schema's `NotRevoked` CHECK only sees locally visible tombstones, so a node that
    * converged on a resurrected row before its tombstone can hold both; readers
    * ({@link CadreNode.listAuthorizedMembers}) drop any row whose stamp appears here.
+   *
+   * NOTE: re-reads the whole retired set on every call, and the caller runs per inbound
+   * gate request while the table only ever grows. Cheap today (a cadre removes peers
+   * rarely); if removals ever become routine, cache the set and invalidate it on write.
    */
   async queryRevokedStamps(tableName: 'OwnerKey' | 'CadrePeer'): Promise<Set<string>> {
     this.ensureInitialized();
