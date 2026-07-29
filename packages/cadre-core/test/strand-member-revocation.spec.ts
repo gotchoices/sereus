@@ -210,6 +210,76 @@ describe('Member removal authorization', () => {
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
   }, 30_000);
 
+  it('rejects a removal that names a REAL manager but carries a stranger\'s signature', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    const stranger = freshKeyPair();
+
+    // The near-miss of the stranger-as-ManagerKey case below: context.ManagerKey
+    // IS a committed manager, so the subquery finds its row — but verify runs
+    // against A.MemberKey (the founder's key), not against whoever produced the
+    // signature, so a stranger-minted approval cannot ride a borrowed identity.
+    await expect(
+      rawDeleteMember(db, member.publicKeyB64, {
+        managerKey: founder.publicKeyB64,
+        managerSignature: signStrandMemberAction('remove', member.publicKeyB64, stranger.privateKeyB64),
+      }),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('rejects a manager removal approval minted for a DIFFERENT member key', async () => {
+    const { db, founder } = await openStrand('c');
+    const approved = freshKeyPair();
+    const victim = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: approved.publicKeyB64 });
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: victim.publicKeyB64 });
+
+    // A genuine founder approval — but minted over `approved`, presented on the
+    // delete of `victim`. The digest binds old.Key, so an approval is per-target:
+    // holding one member's eviction approval never evicts another.
+    await expect(
+      rawDeleteMember(db, victim.publicKeyB64, {
+        managerKey: founder.publicKeyB64,
+        managerSignature: signStrandMemberAction('remove', approved.publicKeyB64, founder.privateKeyB64),
+      }),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await isMemberRow(db, victim.publicKeyB64)).toBe(true);
+    expect(await isMemberRow(db, approved.publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('rejects a multi-row delete carrying an approval for only ONE of the targets', async () => {
+    const { db, founder } = await openStrand('c');
+    const approved = freshKeyPair();
+    const collateral = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: approved.publicKeyB64 });
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: collateral.publicKeyB64 });
+
+    // Authorized is evaluated per ROW, so one valid approval cannot carry a batch:
+    // `collateral`'s row finds no branch and the whole statement rolls back —
+    // including the row the approval WAS minted for.
+    await expect(
+      db.exec(
+        `delete from Strand.Member
+           with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
+           where Key in (?, ?)`,
+        [
+          founder.publicKeyB64,
+          signStrandMemberAction('remove', approved.publicKeyB64, founder.privateKeyB64),
+          approved.publicKeyB64,
+          collateral.publicKeyB64,
+        ],
+      ),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Member')).toBe(3);
+    expect(await isMemberRow(db, approved.publicKeyB64)).toBe(true);
+    expect(await isMemberRow(db, collateral.publicKeyB64)).toBe(true);
+  }, 30_000);
+
   it('rejects a removal signed by a stranger binding itself as ManagerKey', async () => {
     const { db, founder } = await openStrand('c');
     const member = freshKeyPair();
@@ -274,6 +344,37 @@ describe('Member removal authorization', () => {
     expect(await isMemberRow(db, founder.publicKeyB64)).toBe(true);
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
     expect(await isMemberRow(db, attacker.publicKeyB64)).toBe(false);
+  }, 30_000);
+});
+
+// ── The unauthenticated bootstrap branch seats exactly ONE member ─────────────
+
+describe('founding bootstrap branch', () => {
+  it('seats the founding member with no signature', async () => {
+    const { db } = await openRawStrand();
+    await insertHeader(db, 'c');
+    const founding = freshKeyPair();
+
+    await rawInsertMember(db, founding.publicKeyB64);
+
+    expect(await tableCount(db, 'Member')).toBe(1);
+  }, 30_000);
+
+  it('rejects a founding transaction that seats MORE than one member unauthenticated', async () => {
+    const { db } = await openRawStrand();
+    await insertHeader(db, 'c');
+    const first = freshKeyPair();
+    const second = freshKeyPair();
+
+    // The committed member set is empty for BOTH inserts, so the pre-image gate
+    // alone would waive authorization for an unbounded batch. The branch's
+    // post-image cap is what holds the waiver to a single seat.
+    await expect(inTransaction(db, async () => {
+      await rawInsertMember(db, first.publicKeyB64);
+      await rawInsertMember(db, second.publicKeyB64);
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Member')).toBe(0);
   }, 30_000);
 });
 
@@ -387,6 +488,34 @@ describe('re-admission after revocation', () => {
 
     // Re-admission takes a fresh MANAGER action — the direct-admit path works.
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: joiner.publicKeyB64 });
+    expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('a revoked member re-admits ITSELF off an invite it held but never consumed', async () => {
+    const { db, founder } = await openStrand('c');
+    const joiner = freshKeyPair();
+
+    // Two invites issued; the joiner consumes one and pockets the other. Invites
+    // are bearer tokens with no deactivation path (`Strand.Invite`'s own TODO), so
+    // the spare survives the revocation and re-admits its holder with no further
+    // manager action. Revocation is NOT a re-entry gate while a member holds any
+    // unconsumed invite — tracked as `feat-strand-invite-revocation`.
+    const spent = await issueInvite(db, { managerKeyPair: founder });
+    const spare = await issueInvite(db, { managerKeyPair: founder });
+    await consumeInvite(db, {
+      inviteKey: spent.inviteKey,
+      invitePrivateKey: spent.invitePrivateKey,
+      memberKey: joiner.publicKeyB64,
+    });
+
+    await revokeMember(db, { managerKeyPair: founder, memberKey: joiner.publicKeyB64 });
+    expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(false);
+
+    await consumeInvite(db, {
+      inviteKey: spare.inviteKey,
+      invitePrivateKey: spare.invitePrivateKey,
+      memberKey: joiner.publicKeyB64,
+    });
     expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(true);
   }, 30_000);
 

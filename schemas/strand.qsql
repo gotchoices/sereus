@@ -130,11 +130,17 @@ declare schema Strand {
             -- of CadreControl's control-authorization.ts).
 
             -- Bootstrap: the FOUNDING transaction — one whose pre-transaction member
-            -- set is empty — seats the first member with no authorization. Gated on
-            -- the PRE-transaction count, so it is never true of a DELETE, nor of the
-            -- insert half of a same-transaction wipe-then-seat (the wiped rows were
-            -- committed).
-            (old.Key is null and (select count(1) from committed.Member) = 0)
+            -- set is empty — seats the first member, AND ONLY THAT ONE, with no
+            -- authorization. Both counts are load-bearing. The committed (PRE-image)
+            -- count keeps the branch off for a DELETE and for the insert half of a
+            -- same-transaction wipe-then-seat (the wiped rows were committed). The
+            -- live (POST-image) count keeps a single founding transaction from
+            -- seating an unbounded unauthenticated member set — which would also
+            -- brick the strand, since Manager's own bootstrap branch requires at
+            -- most one Member.
+            (old.Key is null
+                and (select count(1) from committed.Member) = 0
+                and (select count(1) from Member) <= 1)
 
                 -- or added directly by a pre-existing manager signing the add-tagged digest
                 or (old.Key is null and exists (

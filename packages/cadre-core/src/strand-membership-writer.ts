@@ -167,9 +167,10 @@ async function insertHeaderIfAbsent(db: Database, params: FounderBootstrapParams
  *
  * The empty PRE-transaction member set (`count(1) from committed.Member = 0`)
  * satisfies the bootstrap branch of `Member.Authorized`, so no signature is
- * needed — the context fields are explicit nulls. Guarding on the count makes
- * this idempotent: a re-run (the founder re-`addStrand`/`resumeStrand`) finds
- * the member present and skips.
+ * needed — the context fields are explicit nulls. The branch also caps the
+ * POST-image at one member, so it waives authorization for exactly this single
+ * seat, never for a batch. Guarding on the count makes this idempotent: a re-run
+ * (the founder re-`addStrand`/`resumeStrand`) finds the member present and skips.
  */
 async function insertFounderMemberIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
   if (await strandTableCount(db, 'Member') > 0) {
@@ -513,10 +514,17 @@ export interface RevokeMemberParams {
  * add-tagged admission payload, so a captured admission cannot be replayed as an
  * eviction (or vice versa).
  *
- * A revoked member cannot re-admit itself: its `ConsumedInvite` row (if it
- * joined by invite) is stale — the invite branch requires a same-transaction
- * FRESH consumption — so re-admission takes a fresh manager action
- * ({@link addMemberByManager} or a new invite).
+ * A revoked member cannot re-admit itself off the invite it ALREADY SPENT: that
+ * `ConsumedInvite` row is stale, and the invite branch requires a
+ * same-transaction FRESH consumption. Re-admission normally takes a fresh
+ * manager action ({@link addMemberByManager} or a new invite).
+ *
+ * It does NOT, however, neutralize an UNSPENT invite the revoked party holds:
+ * `Strand.Invite` has no deactivation path (only an optional `Expiration`), so
+ * any unexpired invite whose private key it kept still consumes into a fresh
+ * `ConsumedInvite` and re-seats it. Revocation is therefore not a re-entry gate
+ * on its own — tracked as `bug-strand-invite-no-revocation`, pinned by
+ * `test/strand-member-revocation.spec.ts`.
  *
  * A manager must resign its `Manager` row before (or in the same transaction
  * as) losing membership — `Member.NotAManager` rejects un-membering a key that

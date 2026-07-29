@@ -209,11 +209,12 @@ describe('Strand membership schema (apply e2e)', () => {
 
 		// A second Member that is neither manager-signed nor invite-backed: rejected
 		// by Member.Authorized (the committed member set is non-empty, no matching
-		// Manager for a null key, no ConsumedInvite). The reject IS the proof the constraint is active — it
-		// fires the same SQL shape the accepted bootstrap case above used, so this is
-		// a genuine constraint failure, not a parse/no-op artifact. The deferred
-		// (subquery-bearing) CHECK rejection is also atomic: the optimystic transactor
-		// rolls the violating row back, so the Member count is unchanged afterward
+		// Manager for a null key, no ConsumedInvite). The reject IS the proof the
+		// constraint is active — it fires the same SQL shape the accepted bootstrap
+		// case above used, so this is a genuine constraint failure, not a parse/no-op
+		// artifact. The deferred (subquery-bearing) CHECK rejection is also atomic:
+		// the optimystic transactor rolls the violating row back, so the Member
+		// count is unchanged afterward
 		// (regression guard for optimystic-deferred-constraint-rejection-not-rolled-back).
 		const memberCountBefore = await selectCount(db, 'select count(*) as c from Strand.Member');
 		await expect(

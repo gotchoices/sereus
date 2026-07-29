@@ -191,10 +191,11 @@ Membership removal is governed by the same signed-approval discipline as admissi
 - **A member can leave on its own.** A removal self-signed by the departing key deletes
   that member's own row — no manager involved. Because the signature is checked against
   the key being removed, one member's signature can never remove a *different* member.
-- **A removed member cannot walk back in.** If it joined by invitation, that invitation
-  was spent at join time; the leftover record of its consumption does not re-admit
-  anyone on its own. Re-admission requires a fresh manager action — a direct manager
-  admission or a newly issued invitation.
+- **A removed member cannot walk back in on the invitation it already used.** That
+  invitation was spent at join time; the leftover record of its consumption does not
+  re-admit anyone on its own. Re-admission takes a fresh manager action — a direct
+  manager admission or a newly issued invitation. It does *not*, however, neutralize an
+  invitation the removed party holds but has never spent (see known gaps below).
 - **A manager must resign before losing membership.** Deleting the member row of a key
   that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
   manager seat.
@@ -217,3 +218,8 @@ Known gaps remain, all out of scope of the rules above:
   but a captured removal approval can still be replayed as a later removal (of a manager
   or of a re-admitted member), and a captured appointment can be re-used if the same
   generation becomes seatable again. Tracked as `bug-strand-manager-authority-antireplay`.
+- **An invitation cannot be cancelled, so removal is not a re-entry gate.** Invitations are
+  bearer credentials with no deactivation path — only an optional expiry. A removed party
+  holding an unspent, unexpired invitation re-admits itself with no further manager action,
+  and a manager can mint spare invitations before being removed. Tracked as
+  `bug-strand-invite-no-revocation`.
