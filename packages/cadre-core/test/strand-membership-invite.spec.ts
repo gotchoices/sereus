@@ -507,6 +507,19 @@ describe('cancelInvite', () => {
     // The whole transaction rolled back: no tombstone, and M2 is not a manager.
     expect(await tableCount(db, 'CancelledInvite')).toBe(0);
     expect(await tableCount(db, 'Manager')).toBe(1); // the founder
+
+    // Positive control, because the constraint-violation message carries only the bare
+    // name ("CHECK constraint failed: Authorized") and `Manager` has an `Authorized`
+    // check of its own: without this, a regression that made the promotion ITSELF
+    // illegal would keep the rejection above green for the wrong reason. The promotion
+    // alone commits, so the rejection is attributable to CancelledInvite.Authorized.
+    await inTransaction(db, async () => {
+      await addManager(db, { byManagerKeyPair: founder, newManagerKey: m2.publicKeyB64 });
+    });
+    expect(await tableCount(db, 'Manager')).toBe(2);
+    // And now that M2 is a COMMITTED manager, the same cancellation succeeds.
+    await cancelInvite(db, { managerKeyPair: m2, inviteKey });
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
   }, 30_000);
 
   it('rejects a cancel approval minted for a DIFFERENT invite key (Authorized)', async () => {
