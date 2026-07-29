@@ -73,6 +73,33 @@ export function verifyStrandPayload(payload: string, signatureB64: string, publi
   return verify(payloadDigest, signatureB64, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url');
 }
 
+/** The two `Strand.Member` actions a signed approval can be minted for. */
+export type StrandMemberAction = 'add' | 'remove';
+
+/**
+ * Sign a domain/action-tagged `Strand.Member` approval.
+ *
+ * `Member.Authorized` verifies `digest('Strand.Member', <action>, <key>)` — the
+ * domain and action tags are literal SQL arguments, and this signer passes them
+ * as the leading array elements of the variadic digest. The two spellings hash
+ * identical bytes; that parity is generically pinned by
+ * `test/digest-variadic-parity.spec.ts` case (d). The tagging is what keeps an
+ * 'add' approval from ever verifying as a 'remove' (or vice versa) — the idiom
+ * of the control layer's `buildAuthorizationMessage`.
+ *
+ * Like {@link signStrandPayload}, the raw digest BYTES are ed25519-signed
+ * directly, matching SQL `verify(...)`'s default base64url input decoding.
+ *
+ * @param action - Which `Member` rule the approval is minted for.
+ * @param memberKey - The member public key the approval is bound to.
+ * @param privateKeyB64 - The signer's base64url ed25519 private seed.
+ * @returns The base64url ed25519 signature over the tagged digest.
+ */
+export function signStrandMemberAction(action: StrandMemberAction, memberKey: string, privateKeyB64: string): string {
+  const hashBytes = digest(['Strand.Member', action, memberKey], 'sha256', 'bytes') as Uint8Array;
+  return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+}
+
 /** Parameters for {@link bootstrapFounderMembership}. */
 export interface FounderBootstrapParams {
   /** The strand id — written to `Header.Id`. */
@@ -138,10 +165,11 @@ async function insertHeaderIfAbsent(db: Database, params: FounderBootstrapParams
 /**
  * Insert the founding `Strand.Member` if no member exists yet.
  *
- * The empty-table state satisfies the `count(1) from Member <= 1` bootstrap branch
- * of `Member.Authorized`, so no manager signature is needed — the context fields
- * are explicit nulls. Guarding on the count makes this idempotent: a re-run (the
- * founder re-`addStrand`/`resumeStrand`) finds the member present and skips.
+ * The empty PRE-transaction member set (`count(1) from committed.Member = 0`)
+ * satisfies the bootstrap branch of `Member.Authorized`, so no signature is
+ * needed — the context fields are explicit nulls. Guarding on the count makes
+ * this idempotent: a re-run (the founder re-`addStrand`/`resumeStrand`) finds
+ * the member present and skips.
  */
 async function insertFounderMemberIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
   if (await strandTableCount(db, 'Member') > 0) {
@@ -150,7 +178,7 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
   }
   await db.exec(
     `insert into Strand.Member (Key)
-       with context ManagerKey = null, ManagerSignature = null
+       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
        values (?)`,
     [memberKey],
   );
@@ -394,7 +422,7 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
     //    ConsumedInvite below), so no manager signature is supplied.
     await db.exec(
       `insert into Strand.Member (Key)
-         with context ManagerKey = null, ManagerSignature = null
+         with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
          values (?)`,
       [memberKey],
     );
@@ -437,11 +465,13 @@ export interface AddMemberByManagerParams {
  * Admit a `Member` directly by manager signature — the sibling of the invite
  * path on `Member.Authorized`'s direct-manager branch.
  *
- * The constraint verifies `digest(new.Key)` against a `Manager` row matching
- * `context.ManagerKey`, so the payload is just the member key (no `'|'` join).
- * No `ConsumedInvite` is involved: this is the path a manager uses to seat a
- * member it already trusts (e.g. a manager-side enrollment that admits a
- * party already authorised out-of-band).
+ * The constraint verifies the add-tagged digest `digest('Strand.Member', 'add',
+ * new.Key)` against a pre-existing (`committed.Manager`) row matching
+ * `context.ManagerKey`, so the signature comes from
+ * {@link signStrandMemberAction} with the `'add'` action. No `ConsumedInvite`
+ * is involved: this is the path a manager uses to seat a member it already
+ * trusts (e.g. a manager-side enrollment that admits a party already authorised
+ * out-of-band).
  *
  * @param db - The closed strand's database.
  * @param params - The admitting manager keypair and the new member key.
@@ -450,14 +480,107 @@ export interface AddMemberByManagerParams {
  */
 export async function addMemberByManager(db: Database, params: AddMemberByManagerParams): Promise<void> {
   const { managerKeyPair, memberKey } = params;
-  const signature = signStrandPayload(memberKey, managerKeyPair.privateKeyB64);
+  const signature = signStrandMemberAction('add', memberKey, managerKeyPair.privateKeyB64);
   await db.exec(
     `insert into Strand.Member (Key)
-       with context ManagerKey = ?, ManagerSignature = ?
+       with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
        values (?)`,
     [managerKeyPair.publicKeyB64, signature, memberKey],
   );
   log('Admitted member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
+}
+
+/** Parameters for {@link revokeMember}. */
+export interface RevokeMemberParams {
+  /**
+   * The revoking manager's strand keypair. Its `publicKeyB64` must be a
+   * PRE-EXISTING `Strand.Manager` row (the manager-removal branch of
+   * `Member.Authorized` reads `committed.Manager` — a manager seated in the same
+   * transaction cannot authorize); it signs the remove-tagged digest over the
+   * target key.
+   */
+  managerKeyPair: Ed25519KeyPair;
+  /** The `Member.Key` row to delete. */
+  memberKey: string;
+}
+
+/**
+ * Revoke a `Member` on the signature of an existing manager.
+ *
+ * The manager-removal branch of `Member.Authorized` verifies the remove-tagged
+ * digest `digest('Strand.Member', 'remove', old.Key)` against a
+ * `committed.Manager` row matching `context.ManagerKey` — distinct from the
+ * add-tagged admission payload, so a captured admission cannot be replayed as an
+ * eviction (or vice versa).
+ *
+ * A revoked member cannot re-admit itself: its `ConsumedInvite` row (if it
+ * joined by invite) is stale — the invite branch requires a same-transaction
+ * FRESH consumption — so re-admission takes a fresh manager action
+ * ({@link addMemberByManager} or a new invite).
+ *
+ * A manager must resign its `Manager` row before (or in the same transaction
+ * as) losing membership — `Member.NotAManager` rejects un-membering a key that
+ * still holds a Manager row. And the strand never drops to zero members
+ * (`Member.MinOneMember`, a local-count floor with the same cross-node caveat
+ * as `MinOneManager`).
+ *
+ * @param db - The closed strand's database.
+ * @param params - The revoking manager keypair and the target member key.
+ * @throws If `Member.Authorized` rejects (a non-manager or same-transaction
+ *   signer), `Member.NotAManager` rejects (the target still holds a Manager
+ *   row), or `Member.MinOneMember` rejects (the removal would empty the member
+ *   set); the delete rolls back.
+ */
+export async function revokeMember(db: Database, params: RevokeMemberParams): Promise<void> {
+  const { managerKeyPair, memberKey } = params;
+  const signature = signStrandMemberAction('remove', memberKey, managerKeyPair.privateKeyB64);
+  await db.exec(
+    `delete from Strand.Member
+       with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
+       where Key = ?`,
+    [managerKeyPair.publicKeyB64, signature, memberKey],
+  );
+  log('Revoked member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
+}
+
+/** Parameters for {@link leaveStrand}. */
+export interface LeaveStrandParams {
+  /**
+   * The departing member's OWN strand keypair. Its `publicKeyB64` is the
+   * `Member.Key` row being deleted; it self-signs the remove-tagged digest —
+   * the self-departure branch verifies the signature against `old.Key` itself,
+   * so only the departing key's holder can produce it. No manager is involved.
+   */
+  memberKeyPair: Ed25519KeyPair;
+}
+
+/**
+ * A member leaves the strand by deleting its own `Member` row.
+ *
+ * The self-departure branch of `Member.Authorized` verifies
+ * `digest('Strand.Member', 'remove', old.Key)` against `old.Key` itself via
+ * `context.MemberSignature` — the same remove-tagged payload a manager
+ * revocation signs, but bound to the departing key, so member C's signature can
+ * never remove member B.
+ *
+ * The same floors as {@link revokeMember} apply: a manager must resign first
+ * (`NotAManager`) and the last member cannot leave (`MinOneMember`).
+ *
+ * @param db - The closed strand's database.
+ * @param params - The departing member's own keypair.
+ * @throws If `Member.Authorized`, `Member.NotAManager`, or `Member.MinOneMember`
+ *   rejects; the delete rolls back.
+ */
+export async function leaveStrand(db: Database, params: LeaveStrandParams): Promise<void> {
+  const { memberKeyPair } = params;
+  const signature = signStrandMemberAction('remove', memberKeyPair.publicKeyB64, memberKeyPair.privateKeyB64);
+  await db.exec(
+    `delete from Strand.Member
+       with context ManagerKey = null, ManagerSignature = null, MemberSignature = ?
+       where Key = ?`,
+    [signature, memberKeyPair.publicKeyB64],
+  );
+  log('Member %s left the strand', memberKeyPair.publicKeyB64);
 }
 
 // ── MemberPeer registration (a member binds its own network nodes) ─────────────

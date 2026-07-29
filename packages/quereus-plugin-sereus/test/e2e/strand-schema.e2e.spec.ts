@@ -132,7 +132,7 @@ describe('Strand membership schema (apply e2e)', () => {
 				await insertHeader(db1, 'c');
 				await db1.exec(
 					`insert into Strand.Member (Key)
-						with context ManagerKey = null, ManagerSignature = null
+						with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 						values (?)`,
 					['m1'],
 				);
@@ -165,10 +165,11 @@ describe('Strand membership schema (apply e2e)', () => {
 
 		await insertHeader(db, 'c');
 
-		// First Member: the `count(Member) <= 1` bootstrap branch — no manager needed.
+		// First Member: the bootstrap branch (empty PRE-transaction committed member
+		// set) — no manager needed. This auto-commit insert sees zero committed rows.
 		await db.exec(
 			`insert into Strand.Member (Key)
-				with context ManagerKey = null, ManagerSignature = null
+				with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 				values (?)`,
 			['m1'],
 		);
@@ -191,10 +192,11 @@ describe('Strand membership schema (apply e2e)', () => {
 		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
 
 		await insertHeader(db, 'c');
-		// Bootstrap the founder so the strand is past the `count <= 1` branch.
+		// Bootstrap the founder so the committed member set is non-empty — the
+		// bootstrap branch (empty pre-transaction member set) is off from here on.
 		await db.exec(
 			`insert into Strand.Member (Key)
-				with context ManagerKey = null, ManagerSignature = null
+				with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 				values (?)`,
 			['m1'],
 		);
@@ -206,8 +208,8 @@ describe('Strand membership schema (apply e2e)', () => {
 		);
 
 		// A second Member that is neither manager-signed nor invite-backed: rejected
-		// by Member.Authorized (count is now 2, no matching Manager for a null key,
-		// no ConsumedInvite). The reject IS the proof the constraint is active — it
+		// by Member.Authorized (the committed member set is non-empty, no matching
+		// Manager for a null key, no ConsumedInvite). The reject IS the proof the constraint is active — it
 		// fires the same SQL shape the accepted bootstrap case above used, so this is
 		// a genuine constraint failure, not a parse/no-op artifact. The deferred
 		// (subquery-bearing) CHECK rejection is also atomic: the optimystic transactor
@@ -217,7 +219,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		await expect(
 			db.exec(
 				`insert into Strand.Member (Key)
-					with context ManagerKey = null, ManagerSignature = null
+					with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 					values (?)`,
 				['m2'],
 			),
@@ -255,7 +257,7 @@ describe('Strand membership schema (apply e2e)', () => {
 				await expect(
 					dbOpen.exec(
 						`insert into Strand.Member (Key)
-							with context ManagerKey = null, ManagerSignature = null
+							with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 							values (?)`,
 						['m1'],
 					),
@@ -300,7 +302,7 @@ describe('Strand membership schema (apply e2e)', () => {
 			await insertHeader(db, 'c');
 			await db.exec(
 				`insert into Strand.Member (Key)
-					with context ManagerKey = null, ManagerSignature = null
+					with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
 					values (?)`,
 				['m1'],
 			);
