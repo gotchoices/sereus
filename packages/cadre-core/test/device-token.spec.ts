@@ -25,13 +25,17 @@ async function makeRecord(
 }
 
 describe('device-token signed payload', () => {
-  it('is the base64url sha256 of the pipe-delimited fields (mirrors the SQL constraint)', () => {
+  it('is the base64url sha256 of the domain-tagged field vector (mirrors the SQL constraint)', () => {
     const peerId = '12D3KooWExamplePeer';
     const platform: PushPlatform = 'fcm';
     const token = 'fcm-device-token-abc123';
     const updatedAt = 1700000000000;
 
-    const expected = digest([`${peerId}|${platform}|${token}|${updatedAt}`], 'sha256', 'base64url') as string;
+    const expected = digest(
+      ['CadreControl.DeviceToken', 'publish', peerId, platform, token, String(updatedAt)],
+      'sha256',
+      'base64url'
+    ) as string;
     expect(deviceTokenSignedPayload({ peerId, platform, token, updatedAt })).toBe(expected);
   });
 

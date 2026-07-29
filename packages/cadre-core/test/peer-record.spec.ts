@@ -35,17 +35,21 @@ async function makeRecord(addrs: string[], updatedAt: number): Promise<{
 }
 
 describe('peer-record signed payload', () => {
-  it('is the base64url sha256 of the pipe-delimited fields (mirrors the SQL constraint)', () => {
+  it('is the base64url sha256 of the domain-tagged field vector (mirrors the SQL constraint)', () => {
     const peerId = '12D3KooWExamplePeer';
     const multiaddr = '/dns4/relay/tcp/4001/p2p/12D3KooWRelay/p2p-circuit/p2p/12D3KooWExamplePeer';
     const updatedAt = 1700000000000;
 
-    const expected = digest([`${peerId}|${multiaddr}|${updatedAt}`], 'sha256', 'base64url') as string;
+    const expected = digest(
+      ['CadreControl.CadrePeer', 'publish', peerId, multiaddr, String(updatedAt)],
+      'sha256',
+      'base64url'
+    ) as string;
     expect(peerRecordSignedPayload(peerId, multiaddr, updatedAt)).toBe(expected);
   });
 
   it('is deterministic and order/whitespace independent of any JSON canonicalizer', () => {
-    // Pure string-concat + sha256 → identical bytes in node/browser/RN. Two calls
+    // Pure multi-field sha256 → identical bytes in node/browser/RN. Two calls
     // with the same inputs must yield the same digest.
     const a = peerRecordSignedPayload('peerA', '/a,/b', 5);
     const b = peerRecordSignedPayload('peerA', '/a,/b', 5);

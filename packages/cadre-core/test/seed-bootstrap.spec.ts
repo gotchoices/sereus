@@ -1042,8 +1042,8 @@ describe('SeedBootstrapService Helper Methods', () => {
         node.initializeSeedBootstrap(ownerPrivateKey);
 
         // Use a real Ed25519-derived peerId so the value is shape-valid,
-        // though the constraint actually only cares about the signature
-        // over digest(PeerId).
+        // though the constraint actually only cares about the owner voucher
+        // signature over the tagged (PeerId, StampId) digest.
         const droneKey = await generateKeyPair('Ed25519');
         const dronePeerId = peerIdFromPrivateKey(droneKey).toString();
         const multiaddrs = ['/ip4/192.168.1.100/tcp/4001'];

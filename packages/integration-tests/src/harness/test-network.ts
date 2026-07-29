@@ -23,10 +23,12 @@ import type {
 /**
  * Ed25519-sign the canonical authorization message bytes and return a base64url signature.
  *
- * The control schema's `Authorized` constraints now bind the signature to the row's
- * contents (see `buildAuthorizationMessage` in cadre-core): the signer receives the raw
- * message bytes and signs them DIRECTLY — no SHA-256 pre-hash and no re-encode, since
- * ed25519 hashes internally and the bytes are already canonical.
+ * The control schema's `Authorized` constraints bind the signature to a domain-tagged
+ * field vector — ('CadreControl.<Table>', <action>, row fields...) built by
+ * `buildAuthorizationMessage` in cadre-core — so an approval verifies only against the
+ * one rule it was minted for. The signer receives the raw message bytes and signs them
+ * DIRECTLY — no SHA-256 pre-hash and no re-encode, since ed25519 hashes internally and
+ * the bytes are already canonical.
  *
  * Exported so scenarios that insert their own owner-signed control rows
  * (e.g. bespoke `FormationInvite`s) sign through the SAME proven path the harness
@@ -145,9 +147,10 @@ export class TestCadreNetwork {
     // Persist an owner-signed FormationInvite into the INVITING party's control
     // network (the consent tables are intra-cadre). TotalUses is left null
     // (unlimited) so multi-party join scenarios can redeem the same invite more
-    // than once. The signer mirrors createStrand: ed25519 over the raw row-bound
-    // authorization message insertFormationInvite builds (Token, sAppId, ExpiresAt,
-    // TotalUses, ValidationUrl, StampId), verified by FormationInvite.AuthorizedAddOrRemove.
+    // than once. The signer mirrors createStrand: ed25519 over the raw domain-tagged
+    // authorization message insertFormationInvite builds ('CadreControl.FormationInvite',
+    // 'add', Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId),
+    // verified by FormationInvite.AuthorizedInsert.
     await party.controlDatabase.insertFormationInvite(
       token,
       strand.sAppId,

@@ -45,7 +45,7 @@ function makeOwner(): Owner {
   return { privateKey, publicKey };
 }
 
-/** A row carrying a REAL voucher: `owner` signs digest(peerId, stampId), as insertCadrePeerRow does. */
+/** A row carrying a REAL voucher: `owner` signs the tagged voucher digest, as insertCadrePeerRow does. */
 function vouchedRow(peerId: string, owner: Owner, overrides: Partial<PeerRow> = {}): PeerRow {
   const stampId = `stamp-${peerId}`;
   const vouchSig = sign(

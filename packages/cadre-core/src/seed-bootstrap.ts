@@ -266,7 +266,7 @@ export class SeedBootstrapService {
 
   /**
    * Authorize a new peer to join the cadre.
-   * Signs the peer ID with the owner key and inserts into CadrePeer table.
+   * Signs a membership voucher with the owner key and inserts into CadrePeer table.
    *
    * The owner vouches the `PublicKey <-> PeerId` binding: rather than trust a
    * caller-supplied key, the binding is enforced by construction — `PublicKey` is

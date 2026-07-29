@@ -509,3 +509,66 @@ Learnings this run:
   `verifyPeerAuthorization` + cadre-cli enroll + its spec).
 - `control-database.ts` already re-exports `ControlTable`/`ControlDomain`/`ControlAction`
   from `control-authorization.js` (line 16), so existing importers keep working.
+
+## Resume note 5 (2026-07-29, fifth run hit budget — ALL CODE + TESTS WRITTEN, only docs + validation left)
+
+`yarn typecheck` in `packages/cadre-core` PASSED at the start of this run (confirming resume
+note 4's call-site fixes). Everything on note 4's "Remaining" list is now done EXCEPT the two
+docs files and the validation commands. All edits this run were test files + harness prose +
+one doc comment in `src/seed-bootstrap.ts`.
+
+Done this run:
+
+- **Domain-separation spec COMPLETE** — all 6 pairs from "Test requirements" now in
+  `test/control-authorization-domain-separation.spec.ts`: (1) ValidationKey-add→OwnerKey-add
+  (pre-existing, reproduced live pre-fix), (2) OwnerKey-add→ValidationKey-add,
+  (3) stored `CadrePeer.VouchSig`→OwnerKey-add (reads VouchSig back off the replicated row),
+  (4) OwnerKey-remove→CadrePeer-delete (expects `AuthorizedDelete`; then proves the sig
+  genuine by running the real OwnerKey delete with it), (5) DeviceToken-add→DeviceToken-delete
+  (then deletes with the proper 'remove'-tagged sig), (6) FormationInvite-add→
+  FormationInvite-delete (captures the shipped `insertFormationInvite` signature).
+  New helpers in the spec: `signB64` (signs base64url digest strings, for the
+  peer-authorization helper digests) and `freshStamp`. NONE of the 5 new tests have been
+  RUN yet — first validation task.
+- `peer-authorization.spec.ts`: canonical-digest test now asserts the
+  `('Cadre.Enrollment', 'vouch', peerId)` tagged digest; the inline-construction regression
+  test rewritten — tagged inline construction verifies true AND the legacy untagged
+  `digest([peerId])` construction verifies FALSE; `ownerSign` doc comment fixed (enrollment
+  vouch is signed out-of-band, only verified in-repo).
+- `device-token.spec.ts` + `peer-record.spec.ts`: payload tests assert the tagged multi-field
+  vectors (`('CadreControl.DeviceToken', 'publish', peerId, platform, token, String(updatedAt))`
+  / `('CadreControl.CadrePeer', 'publish', peerId, multiaddr, String(updatedAt))`) instead of
+  the old pipe-joined single-field digests; titles/comments updated.
+- Stale comment fixes: `control-ownerkey-self-authorization.spec.ts` (~407, tagged wording),
+  `membership-connection-gater.spec.ts` (~135), `cadre-node-authorized-surface.spec.ts` (~48),
+  `seed-bootstrap.spec.ts` (~1044, "signature over the tagged (PeerId, StampId) digest"),
+  `src/seed-bootstrap.ts` `authorizePeer` doc ("Signs a membership voucher").
+- `test-network.ts` (integration harness): both prose blocks updated — header now describes
+  the domain-tagged vector; `createInvitation` comment lists the tagged FormationInvite
+  fields (incl. StrandId) and cites `AuthorizedInsert` (constraint was renamed).
+- Audited and found clean (no changes needed): `device-token-registry.spec.ts` (no digest
+  builds), `control-authorization-binding.spec.ts` + `digest-variadic-parity.spec.ts`
+  (note-4 edits confirmed in place).
+
+Remaining (short — docs, then validation, then handoff):
+
+- `docs/STATUS.md`: lines ~677-680 describe the CadrePeer voucher/remove digests UNTAGGED
+  (`digest(peerId, stampId)` / `digest(peerId, stampId, 'remove')` — the 'remove' tail is
+  now the action tag instead) and line ~697 cites `digest(PeerId, StampId)`. Update to the
+  tagged forms; grep STATUS.md for other `digest(` prose while there.
+- `docs/architecture.md`: line ~535 contrasts the strand `'|'`-join idiom with "the control
+  layer's multi-field `buildAuthorizationMessage` digest" — still true, add "domain-tagged";
+  line ~1147 (`cadre enroll register`) says "signature ... over the peer ID" — now the
+  `('Cadre.Enrollment', 'vouch', peerId)` tagged digest; line ~502 also matched
+  `buildAuthorizationMessage` and was NOT read this run — check it.
+- Validate (nothing run since this run's edits): in `packages/cadre-core` run `yarn lint`,
+  `yarn typecheck`, `yarn test 2>&1 | tee` (stream — full suite boots many CadreNodes);
+  then build/typecheck `packages/integration-tests` for the harness file.
+  Watch specifically: the 5 NEW domain-separation tests (raw SQL insert shapes for
+  CadrePeer/DeviceToken were written from the schema, never executed) and the rewritten
+  `peer-authorization.spec.ts` regression case.
+- Then write the review/ handoff (distilled summary + "Handoff honesty" gaps: no backwards
+  compat — old signatures stop verifying by design; party binding deliberately out of scope
+  with the NOTE comment in both schema copies; nonce gaps stay with the sibling
+  `bug-devicetoken-authority-antireplay` / `bug-strand-manager-authority-antireplay` /
+  `bug-control-remove-then-replay-resurrection` tickets) and delete this ticket per stage rules.

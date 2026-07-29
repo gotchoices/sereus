@@ -7,7 +7,10 @@ import {
   verifyPeerAuthorization
 } from '../src/peer-authorization.js';
 
-/** Sign a peer authorization the way SeedBootstrapService.authorizePeer does. */
+/**
+ * Sign an enrollment vouch the way an owner tool does out-of-band (in-repo the
+ * digest is only VERIFIED, by `cadre enroll register` → verifyPeerAuthorization).
+ */
 function ownerSign(peerId: string, ownerPrivateKey: string): string {
   return sign(
     peerAuthorizationDigest(peerId),
@@ -20,10 +23,13 @@ function ownerSign(peerId: string, ownerPrivateKey: string): string {
 }
 
 describe('peerAuthorizationDigest', () => {
-  it('is the canonical single-field sha256/base64url digest of the peer ID', () => {
+  it('is the domain-tagged sha256/base64url digest of the peer ID', () => {
+    // Leads with the ('Cadre.Enrollment', 'vouch') tags so an enrollment vouch can
+    // never satisfy any CadreControl table rule (pre-tag it collided with the
+    // DeviceToken owner digests).
     const peerId = '12D3KooWTestPeer';
     expect(peerAuthorizationDigest(peerId)).toBe(
-      digest([peerId], 'sha256', 'base64url') as string
+      digest(['Cadre.Enrollment', 'vouch', peerId], 'sha256', 'base64url') as string
     );
   });
 
@@ -88,11 +94,11 @@ describe('verifyPeerAuthorization', () => {
     expect(verifyPeerAuthorization(peerId, ownerPublicKey, '')).toBe(false);
   });
 
-  it('regression: a signature produced via the inline authorizePeer construction still verifies', () => {
-    // Reproduce the exact pre-helper construction that SeedBootstrapService used
-    // (digest then sign) WITHOUT going through peerAuthorizationDigest. If the
-    // shared digest ever drifts from this construction, this fails.
-    const inlineDigest = digest([peerId], 'sha256', 'base64url') as string;
+  it('regression: an inline tagged construction verifies; the legacy untagged one does not', () => {
+    // Reproduce the canonical construction (tagged digest then sign) WITHOUT going
+    // through peerAuthorizationDigest. If the shared digest ever drifts from this
+    // construction, this fails.
+    const inlineDigest = digest(['Cadre.Enrollment', 'vouch', peerId], 'sha256', 'base64url') as string;
     const signature = sign(
       inlineDigest,
       ownerPrivateKey,
@@ -102,5 +108,18 @@ describe('verifyPeerAuthorization', () => {
       'base64url'
     ) as string;
     expect(verifyPeerAuthorization(peerId, ownerPublicKey, signature)).toBe(true);
+
+    // The pre-domain-separation construction — a bare digest(peerId) — must no
+    // longer verify: that shape collided with the DeviceToken owner digests.
+    const legacyDigest = digest([peerId], 'sha256', 'base64url') as string;
+    const legacySig = sign(
+      legacyDigest,
+      ownerPrivateKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    ) as string;
+    expect(verifyPeerAuthorization(peerId, ownerPublicKey, legacySig)).toBe(false);
   });
 });

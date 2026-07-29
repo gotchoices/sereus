@@ -404,8 +404,8 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
   // ── Cross-direction signature replay ──────────────────────────────────────
 
   it('rejects: an ENROLLMENT signature replayed as a removal', async () => {
-    // The stored enrollment signature covers digest(Key, StampId); the delete branch binds
-    // digest(Key, StampId, 'remove'), so the two can never substitute for each other.
+    // The enrollment signature covers digest('CadreControl.OwnerKey', 'add', Key, StampId);
+    // the delete branch binds the 'remove' action tag, so the two can never substitute.
     const second = freshKeyPair();
     const stamp = freshStamp();
     const enrollSig = signAs(founder, enrollMessage(second.publicKey, stamp));
