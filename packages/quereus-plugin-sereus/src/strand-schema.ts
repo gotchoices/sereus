@@ -148,8 +148,10 @@ export const STRAND_SCHEMA = `    table Header (
         constraint Immutable check on update, delete (false),
         -- committed.Manager, not Manager: this check has a subquery so it defers to
         -- commit, by which point a manager seated in the SAME transaction would otherwise
-        -- be able to authorize its own cancellation. Every sibling Authorized in this
-        -- schema reads committed.* for the same reason.
+        -- be able to authorize its own cancellation. Member, MemberPeer and Revocation
+        -- read committed.* for the same reason. (Manager.Authorized reads the LIVE table
+        -- instead — there it is the strict Generation ordering, not a snapshot, that
+        -- excludes an authorizer seated in the same transaction.)
         constraint Authorized check on insert (
             exists (select 1 from committed.Manager A
                 where A.MemberKey = context.ManagerKey

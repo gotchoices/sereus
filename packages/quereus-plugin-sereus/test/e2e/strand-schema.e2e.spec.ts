@@ -25,8 +25,16 @@ import type { SereusPluginResult } from '../../src/types.js';
  * signatures.
  */
 
-/** The six membership tables the Strand schema must expose on every strand. */
-const STRAND_TABLES = ['Header', 'Invite', 'ConsumedInvite', 'Member', 'MemberPeer', 'Manager'] as const;
+/**
+ * Every table the Strand schema must expose on every strand — the six membership
+ * tables plus the two tombstone tables (`Revocation` for retired per-row stamps,
+ * `CancelledInvite` for dead invitations). Keep in sync with `schemas/strand.qsql`:
+ * a table missing here is a table whose declaration nothing proves actually applies.
+ */
+const STRAND_TABLES = [
+	'Header', 'Invite', 'ConsumedInvite', 'Member', 'MemberPeer', 'Manager',
+	'Revocation', 'CancelledInvite',
+] as const;
 
 async function selectCount(db: Database, sql: string): Promise<number> {
 	for await (const row of db.eval(sql)) {
@@ -92,7 +100,7 @@ describe('Strand membership schema (apply e2e)', () => {
 			schema: 'table Note (Id integer primary key, Body text not null)',
 		});
 
-		// All six membership tables are queryable (empty, but no error).
+		// Every Strand table is queryable (empty, but no error).
 		for (const table of STRAND_TABLES) {
 			expect(await selectCount(db, `select count(*) as c from Strand.${table}`)).toBe(0);
 		}
