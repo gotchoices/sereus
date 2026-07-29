@@ -15,7 +15,8 @@ import {
   leaveStrand,
   addManager,
   removeManager,
-  signStrandMemberAction,
+  signStrandApproval,
+  generateStrandStampId,
 } from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { SAppConfig } from '../src/types.js';
@@ -150,27 +151,69 @@ async function insertHeader(db: Database, type: 'o' | 'c'): Promise<void> {
   );
 }
 
-/** Raw `Member` delete with caller-chosen context — what an attacker controls. */
+/** The live StampId of one Member row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
+async function memberStampId(db: Database, key: string): Promise<string> {
+  for await (const row of db.eval('select Key, StampId from Strand.Member')) {
+    if (row.Key === key) return row.StampId as string;
+  }
+  throw new Error(`no Member row for ${key}`);
+}
+
+/**
+ * File the `Strand.Revocation` tombstone retiring `stampId`, signed by `retiree`.
+ * Raw deletes that pin `/Authorized/` pair with one of these in the same
+ * transaction — otherwise `RevocationRecorded` fires too and the reported
+ * constraint becomes engine evaluation order. (The writer's own tombstone helper
+ * is module-private, so the idiom is duplicated here.)
+ */
+async function fileTombstone(db: Database, stampId: string, retiree: Ed25519KeyPair): Promise<void> {
+  const signature = signStrandApproval(['Strand.Revocation', 'retire', 'Member', stampId], retiree.privateKeyB64);
+  await db.exec(
+    `insert into Strand.Revocation (TableName, StampId)
+       with context MemberKey = ?, Signature = ?
+       values ('Member', ?)`,
+    [retiree.publicKeyB64, signature, stampId],
+  );
+}
+
+/**
+ * Raw `Member` delete with caller-chosen context — what an attacker controls.
+ * When `retiree` is given, the delete and a retiree-signed tombstone over the
+ * target's live stamp ride ONE transaction, so RevocationRecorded is satisfied
+ * and an /Authorized/ pin names the authorization gate alone.
+ */
 async function rawDeleteMember(
   db: Database,
   key: string,
   context: { managerKey?: string; managerSignature?: string; memberSignature?: string } = {},
+  retiree?: Ed25519KeyPair,
 ): Promise<void> {
-  await db.exec(
-    `delete from Strand.Member
-       with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = ?
-       where Key = ?`,
-    [context.managerKey ?? null, context.managerSignature ?? null, context.memberSignature ?? null, key],
-  );
+  const doDelete = async (): Promise<void> => {
+    await db.exec(
+      `delete from Strand.Member
+         with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = ?
+         where Key = ?`,
+      [context.managerKey ?? null, context.managerSignature ?? null, context.memberSignature ?? null, key],
+    );
+  };
+  if (retiree == null) {
+    await doDelete();
+    return;
+  }
+  const stampId = await memberStampId(db, key);
+  await inTransaction(db, async () => {
+    await doDelete();
+    await fileTombstone(db, stampId, retiree);
+  });
 }
 
-/** Raw all-null-context `Member` insert — the bootstrap-branch shape. */
+/** Raw `Member` insert with all-null context (the bootstrap-branch shape) and a freshly minted stamp. */
 async function rawInsertMember(db: Database, key: string): Promise<void> {
   await db.exec(
-    `insert into Strand.Member (Key)
+    `insert into Strand.Member (Key, StampId)
        with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-       values (?)`,
-    [key],
+       values (?, ?)`,
+    [key, generateStrandStampId()],
   );
 }
 

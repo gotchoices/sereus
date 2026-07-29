@@ -165,19 +165,22 @@ describe('registerMemberPeer', () => {
     const impostor = freshKeyPair();
 
     // The MemberKey is the real founder member (so the deferred MemberExists passes),
-    // but the Signature is made by an unrelated key over the same payload — so the
-    // Authorized check (verify against MemberKey itself) fails. Authorized now carries
-    // a subquery (the manager-cleanup branch), so Quereus auto-defers it: the rejection
-    // lands at commit, not at statement time.
-    const payload = `${founder.publicKeyB64}|${peerId}`;
-    const wrongSignature = signStrandPayload(payload, impostor.privateKeyB64);
+    // but the Signature is made by an unrelated key over the exact add-tagged digest —
+    // so the Authorized check (verify against MemberKey itself) fails. Authorized
+    // carries a subquery (the manager-cleanup branch), so Quereus auto-defers it: the
+    // rejection lands at commit, not at statement time.
+    const stampId = generateStrandStampId();
+    const wrongSignature = signStrandApproval(
+      ['Strand.MemberPeer', 'add', founder.publicKeyB64, peerId, stampId],
+      impostor.privateKeyB64,
+    );
 
     await expect(
       db.exec(
-        `insert into Strand.MemberPeer (MemberKey, PeerId)
+        `insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
            with context Signature = ?, ManagerKey = null, ManagerSignature = null
-           values (?, ?)`,
-        [wrongSignature, founder.publicKeyB64, peerId],
+           values (?, ?, ?)`,
+        [wrongSignature, founder.publicKeyB64, peerId, stampId],
       ),
     ).rejects.toThrow();
     expect(await tableCount(db, 'MemberPeer')).toBe(0);
@@ -326,18 +329,25 @@ describe('removeMemberPeer', () => {
     ).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
 
-    // Route 2 — raw, aiming at the SELF branch: a correctly-shaped self-signature, but
-    // minted by the wrong key. The branch verifies against `old.MemberKey` (the victim),
-    // so the stranger's signature cannot stand in for the member's own.
-    const wrongSignature = signStrandPayload(`${member.publicKeyB64}|peer-victim`, stranger.privateKeyB64);
-    await expect(
-      db.exec(
+    // Route 2 — raw, aiming at the SELF branch: a correctly-shaped remove-tagged
+    // signature over the row's LIVE stamp, but minted by the wrong key. The branch
+    // verifies against `old.MemberKey` (the victim), so the stranger's signature
+    // cannot stand in for the member's own. A founder-filed tombstone rides the same
+    // transaction so RevocationRecorded is satisfied and Authorized is the one rejector.
+    const victimStamp = await memberPeerStamp(db, member.publicKeyB64, 'peer-victim');
+    const wrongSignature = signStrandApproval(
+      ['Strand.MemberPeer', 'remove', member.publicKeyB64, 'peer-victim', victimStamp],
+      stranger.privateKeyB64,
+    );
+    await expect(inTransaction(db, async () => {
+      await db.exec(
         `delete from Strand.MemberPeer
            with context Signature = ?, ManagerKey = null, ManagerSignature = null
            where MemberKey = ? and PeerId = ?`,
         [wrongSignature, member.publicKeyB64, 'peer-victim'],
-      ),
-    ).rejects.toThrow(/Authorized/);
+      );
+      await fileTombstone(db, 'MemberPeer', victimStamp, founder);
+    })).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
@@ -383,34 +393,45 @@ describe('removeMemberPeer', () => {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
     await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-replay' });
 
-    // A REAL manager signs the untagged registration payload (`MemberKey|PeerId`) over
-    // another member's row and presents it as the removal approval. The manager branch
-    // verifies the remove-TAGGED digest instead, so the payloads differ and it fails.
-    //
-    // Note this narrowing applies to the manager branch only: on the self branch the
-    // registration and removal payloads are still identical, so a captured registration
-    // approval also authorizes that same row's delete — availability only, since no other
-    // member's row is reachable. Tracked by `bug-strand-approval-domain-separation`.
-    const registrationShaped = signStrandPayload(`${member.publicKeyB64}|peer-replay`, founder.privateKeyB64);
-    await expect(
-      db.exec(
+    // A REAL manager signs the add-tagged registration digest over another member's
+    // LIVE row (same stamp) and presents it as the removal approval. The manager
+    // branch verifies the manager-remove-tagged digest instead, so the two approvals
+    // can never stand in for one another — every branch (self add, self remove,
+    // manager remove) now carries a distinct action tag, so this holds for the self
+    // branch too. A founder tombstone rides the transaction to keep Authorized the
+    // one rejector.
+    const liveStamp = await memberPeerStamp(db, member.publicKeyB64, 'peer-replay');
+    const registrationShaped = signStrandApproval(
+      ['Strand.MemberPeer', 'add', member.publicKeyB64, 'peer-replay', liveStamp],
+      founder.privateKeyB64,
+    );
+    await expect(inTransaction(db, async () => {
+      await db.exec(
         `delete from Strand.MemberPeer
            with context Signature = null, ManagerKey = ?, ManagerSignature = ?
            where MemberKey = ? and PeerId = ?`,
         [founder.publicKeyB64, registrationShaped, member.publicKeyB64, 'peer-replay'],
-      ),
-    ).rejects.toThrow(/Authorized/);
+      );
+      await fileTombstone(db, 'MemberPeer', liveStamp, founder);
+    })).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'MemberPeer')).toBe(1);
 
-    // The properly remove-tagged signature from the SAME manager over the SAME row is
-    // accepted — proving the rejection above was the payload tagging, nothing else.
-    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-replay', founder.privateKeyB64);
-    await db.exec(
-      `delete from Strand.MemberPeer
-         with context Signature = null, ManagerKey = ?, ManagerSignature = ?
-         where MemberKey = ? and PeerId = ?`,
-      [founder.publicKeyB64, removeTagged, member.publicKeyB64, 'peer-replay'],
+    // The properly manager-remove-tagged signature from the SAME manager over the SAME
+    // row + stamp is accepted — proving the rejection above was the action tagging,
+    // nothing else.
+    const removeTagged = signStrandApproval(
+      ['Strand.MemberPeer', 'manager-remove', member.publicKeyB64, 'peer-replay', liveStamp],
+      founder.privateKeyB64,
     );
+    await inTransaction(db, async () => {
+      await db.exec(
+        `delete from Strand.MemberPeer
+           with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+           where MemberKey = ? and PeerId = ?`,
+        [founder.publicKeyB64, removeTagged, member.publicKeyB64, 'peer-replay'],
+      );
+      await fileTombstone(db, 'MemberPeer', liveStamp, founder);
+    });
     expect(await tableCount(db, 'MemberPeer')).toBe(0);
   }, 30_000);
 
@@ -457,7 +478,12 @@ describe('removeMemberPeer', () => {
     // Without NoUpdate this SUCCEEDED: Authorized reads the NEW image, so an attacker
     // re-points the victim's row at its OWN key and signs only over its own new values —
     // clearing a binding it holds no signature to delete. The victim never consented.
-    const stolen = signStrandPayload(`${founder.publicKeyB64}|peer-target`, founder.privateKeyB64);
+    // The digest shape is irrelevant here (NoUpdate fires before any signature check),
+    // so a well-formed add-tagged approval over a fresh stamp is the strongest attempt.
+    const stolen = signStrandApproval(
+      ['Strand.MemberPeer', 'add', founder.publicKeyB64, 'peer-target', generateStrandStampId()],
+      founder.privateKeyB64,
+    );
     await expect(
       db.exec(
         `update Strand.MemberPeer
@@ -480,7 +506,11 @@ describe('removeMemberPeer', () => {
 
     // The manager branch is gated `new.MemberKey is null`, which an update never satisfies —
     // but NoUpdate is what makes that unreachable rather than merely unsatisfied.
-    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-upd', founder.privateKeyB64);
+    const removeTagged = signStrandApproval(
+      ['Strand.MemberPeer', 'manager-remove', member.publicKeyB64, 'peer-upd',
+        await memberPeerStamp(db, member.publicKeyB64, 'peer-upd')],
+      founder.privateKeyB64,
+    );
     await expect(
       db.exec(
         `update Strand.MemberPeer
@@ -505,15 +535,25 @@ describe('removeMemberPeer', () => {
     // The manager branch reads `committed.Manager` — the PRE-transaction snapshot. Seating
     // the climber and spending its authority in ONE transaction must not pass, or the
     // deferred check (it carries a subquery) would see its own freshly inserted seat.
-    const seatSignature = signStrandPayload(`${climber.publicKeyB64}|1`, founder.privateKeyB64);
-    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-samet', climber.privateKeyB64);
+    // The climber IS a committed member, so its tombstone passes Revocation.Authorized
+    // and only the MemberPeer gate fails — the /Authorized/ pin names the right check.
+    const seatStamp = generateStrandStampId();
+    const seatSignature = signStrandApproval(
+      ['Strand.Manager', 'add', climber.publicKeyB64, 1, seatStamp],
+      founder.privateKeyB64,
+    );
+    const peerStamp = await memberPeerStamp(db, member.publicKeyB64, 'peer-samet');
+    const removeTagged = signStrandApproval(
+      ['Strand.MemberPeer', 'manager-remove', member.publicKeyB64, 'peer-samet', peerStamp],
+      climber.privateKeyB64,
+    );
     await db.exec('begin');
     try {
       await db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = ?, Signature = ?
-           values (?, 1)`,
-        [founder.publicKeyB64, seatSignature, climber.publicKeyB64],
+           values (?, 1, ?)`,
+        [founder.publicKeyB64, seatSignature, climber.publicKeyB64, seatStamp],
       );
       await db.exec(
         `delete from Strand.MemberPeer
@@ -521,6 +561,7 @@ describe('removeMemberPeer', () => {
            where MemberKey = ? and PeerId = ?`,
         [climber.publicKeyB64, removeTagged, member.publicKeyB64, 'peer-samet'],
       );
+      await fileTombstone(db, 'MemberPeer', peerStamp, climber);
       await expect(db.exec('commit')).rejects.toThrow(/Authorized/);
     } finally {
       await db.exec('rollback').catch(() => undefined);
@@ -588,19 +629,21 @@ async function inTransaction(db: Database, statements: () => Promise<void>): Pro
 }
 
 /**
- * Raw generation-carrying `Manager` insert: `by` signs the promotion payload
- * `` `${key}|${generation}` `` and binds itself as `context.ManagerKey`. Unlike
- * `addManager` (which derives the generation from its own row), the generation is
- * caller-chosen — exactly what an attacker controls, and what the accepted
+ * Raw generation-carrying `Manager` insert: `by` signs the add-tagged promotion
+ * digest over `(key, generation, freshly-minted StampId)` — generation as a NUMBER,
+ * matching the type-tagged digest framing — and binds itself as `context.ManagerKey`.
+ * Unlike `addManager` (which derives the generation from its own row), the generation
+ * is caller-chosen — exactly what an attacker controls, and what the accepted
  * non-successor case needs.
  */
 async function insertManagerRow(db: Database, by: Ed25519KeyPair, key: string, generation: number): Promise<void> {
-  const signature = signStrandPayload(`${key}|${generation}`, by.privateKeyB64);
+  const stampId = generateStrandStampId();
+  const signature = signStrandApproval(['Strand.Manager', 'add', key, generation, stampId], by.privateKeyB64);
   await db.exec(
-    `insert into Strand.Manager (MemberKey, Generation)
+    `insert into Strand.Manager (MemberKey, Generation, StampId)
        with context ManagerKey = ?, Signature = ?
-       values (?, ?)`,
-    [by.publicKeyB64, signature, key, generation],
+       values (?, ?, ?)`,
+    [by.publicKeyB64, signature, key, generation, stampId],
   );
 }
 
@@ -640,17 +683,21 @@ describe('addManager', () => {
     const target = freshKeyPair();
     const someOtherKey = freshKeyPair().publicKeyB64;
 
-    // A real manager (founder) signs a correctly-shaped promotion payload, but over
-    // a DIFFERENT key than the one being inserted, so
-    // verify(digest(new.MemberKey=target || '|' || 1), sig, founder) fails.
-    const wrongSignature = signStrandPayload(`${someOtherKey}|1`, founder.privateKeyB64);
+    // A real manager (founder) signs a correctly-shaped add-tagged promotion digest,
+    // but over a DIFFERENT key than the one being inserted, so the verify against
+    // digest('Strand.Manager','add', new.MemberKey=target, 1, stamp) fails.
+    const stampId = generateStrandStampId();
+    const wrongSignature = signStrandApproval(
+      ['Strand.Manager', 'add', someOtherKey, 1, stampId],
+      founder.privateKeyB64,
+    );
 
     await expect(
       db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = ?, Signature = ?
-           values (?, ?)`,
-        [founder.publicKeyB64, wrongSignature, target.publicKeyB64, 1],
+           values (?, ?, ?)`,
+        [founder.publicKeyB64, wrongSignature, target.publicKeyB64, 1, stampId],
       ),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Manager')).toBe(1);
@@ -757,10 +804,15 @@ describe('removeManager', () => {
     const someOtherKey = freshKeyPair().publicKeyB64;
     expect(await tableCount(db, 'Manager')).toBe(3);
 
-    // A real manager (founder) signs, but over a DIFFERENT key than the row being
-    // deleted, so verify(digest(old.MemberKey=a2), sig, founder) fails — the delete
-    // analog of the addManager signature-binding test.
-    const wrongSignature = signStrandPayload(someOtherKey, founder.privateKeyB64);
+    // A real manager (founder) signs the remove-tagged digest, but over a DIFFERENT
+    // key than the row being deleted (the stamp is the row's live one), so the verify
+    // against digest('Strand.Manager','remove', old.MemberKey=a2, old.StampId) fails —
+    // the delete analog of the addManager signature-binding test. No tombstone rides
+    // this delete, so RevocationRecorded also rejects; the pin stays loose.
+    const wrongSignature = signStrandApproval(
+      ['Strand.Manager', 'remove', someOtherKey, await managerStamp(db, a2.publicKeyB64)],
+      founder.privateKeyB64,
+    );
 
     await expect(
       db.exec(
@@ -841,10 +893,14 @@ describe('removeManager', () => {
     const attacker = freshKeyPair();
 
     // The strongest context an attacker could present: a genuine founder-signed
-    // payload over the founder's OWN key (i.e. a captured self-resignation proof).
-    // The former-manager branch verifies only `old.MemberKey`, so without NoUpdate
-    // this would re-point the sole Manager row at an attacker-chosen key.
-    const founderSelfSignature = signStrandPayload(founder.publicKeyB64, founder.privateKeyB64);
+    // resign-tagged digest over the founder's OWN key and live stamp (i.e. a captured
+    // self-resignation proof). The former-manager branch verifies only against the
+    // old image, so without NoUpdate this would re-point the sole Manager row at an
+    // attacker-chosen key.
+    const founderSelfSignature = signStrandApproval(
+      ['Strand.Manager', 'resign', founder.publicKeyB64, await managerStamp(db, founder.publicKeyB64)],
+      founder.privateKeyB64,
+    );
 
     await expect(
       db.exec(
@@ -869,11 +925,17 @@ describe('removeManager', () => {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: successor.publicKeyB64 });
     expect(await tableCount(db, 'Manager')).toBe(1);
 
-    const resignSignature = signStrandPayload(founder.publicKeyB64, founder.privateKeyB64);
+    const founderStamp = await managerStamp(db, founder.publicKeyB64);
+    const resignSignature = signStrandApproval(
+      ['Strand.Manager', 'resign', founder.publicKeyB64, founderStamp],
+      founder.privateKeyB64,
+    );
 
     // Delete-then-insert in ONE transaction: the deferred checks see the post-image
     // (one manager: the successor), which is exactly the state the old schema's
-    // ungated bootstrap branch would have waved through.
+    // ungated bootstrap branch would have waved through. The founder's tombstone
+    // rides the transaction (a valid resignation would carry one), so the delete
+    // side is fully satisfied and the successor's INSERT is the one rejector.
     const swap = (): Promise<void> => inTransaction(db, async () => {
       await db.exec(
         `delete from Strand.Manager
@@ -881,13 +943,14 @@ describe('removeManager', () => {
            where MemberKey = ?`,
         [founder.publicKeyB64, resignSignature, founder.publicKeyB64],
       );
+      await fileTombstone(db, 'Manager', founderStamp, founder);
       // Generation 0 is the successor's best shot — the bootstrap branch demands
       // exactly 0, and no smaller generation can have an authorizer beneath it.
       await db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = null, Signature = null
-           values (?, 0)`,
-        [successor.publicKeyB64],
+           values (?, 0, ?)`,
+        [successor.publicKeyB64, generateStrandStampId()],
       );
     });
 
@@ -940,6 +1003,10 @@ describe('Manager.Generation ordering', () => {
     // The pre-fix schema COMMITTED exactly this: X and Y seat each other, then X
     // (a "manager" in the post-image) deletes the founder. The delete's own branch
     // is even satisfiable here — the rejection comes from the promotion ordering.
+    // X files the founder-stamp tombstone itself so RevocationRecorded cannot report
+    // first; X is no committed member, so Revocation.Authorized fails too — but that
+    // check shares the `Authorized` name, so the pin holds either way.
+    const founderStamp = await managerStamp(db, founder.publicKeyB64);
     await expect(inTransaction(db, async () => {
       await insertManagerRow(db, y, x.publicKeyB64, 5);
       await insertManagerRow(db, x, y.publicKeyB64, 3);
@@ -947,8 +1014,13 @@ describe('Manager.Generation ordering', () => {
         `delete from Strand.Manager
            with context ManagerKey = ?, Signature = ?
            where MemberKey = ?`,
-        [x.publicKeyB64, signStrandPayload(founder.publicKeyB64, x.privateKeyB64), founder.publicKeyB64],
+        [
+          x.publicKeyB64,
+          signStrandApproval(['Strand.Manager', 'remove', founder.publicKeyB64, founderStamp], x.privateKeyB64),
+          founder.publicKeyB64,
+        ],
       );
+      await fileTombstone(db, 'Manager', founderStamp, x);
     })).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Manager')).toBe(1);
@@ -1011,10 +1083,10 @@ describe('Manager.Generation ordering', () => {
     // demands count(Manager) <= 1, and the post-image count here is 2.
     await expect(
       db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = null, Signature = null
-           values (?, 0)`,
-        [attacker.publicKeyB64],
+           values (?, 0, ?)`,
+        [attacker.publicKeyB64, generateStrandStampId()],
       ),
     ).rejects.toThrow(/Authorized/);
 
@@ -1042,27 +1114,34 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const target = freshKeyPair();
 
-    // A genuine founder signature over `target|1`, replayed for an insert at
-    // generation 2 — the payload mismatch fails verify(), so a captured promotion
-    // is pinned to the generation it was issued for.
-    const signatureForGen1 = signStrandPayload(`${target.publicKeyB64}|1`, founder.privateKeyB64);
+    // A genuine founder signature over the add-tagged digest for generation 1
+    // (a NUMBER — the digest is type-tagged) and ONE minted stamp, replayed for an
+    // insert at generation 2 carrying the same stamp — the digest mismatch fails
+    // verify(), so a captured promotion is pinned to the generation it was issued for.
+    const stampId = generateStrandStampId();
+    const signatureForGen1 = signStrandApproval(
+      ['Strand.Manager', 'add', target.publicKeyB64, 1, stampId],
+      founder.privateKeyB64,
+    );
     await expect(
       db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = ?, Signature = ?
-           values (?, ?)`,
-        [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 2],
+           values (?, ?, ?)`,
+        [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 2, stampId],
       ),
     ).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'Manager')).toBe(1);
 
     // The same signature used at ITS OWN generation is accepted — proving the
-    // rejection above was the payload binding, not anything else.
+    // rejection above was the digest binding, not anything else. The stamp is still
+    // free (the rejected insert rolled back, retiring nothing), so reusing it here
+    // is legitimate first use.
     await db.exec(
-      `insert into Strand.Manager (MemberKey, Generation)
+      `insert into Strand.Manager (MemberKey, Generation, StampId)
          with context ManagerKey = ?, Signature = ?
-         values (?, ?)`,
-      [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 1],
+         values (?, ?, ?)`,
+      [founder.publicKeyB64, signatureForGen1, target.publicKeyB64, 1, stampId],
     );
     expect(await managerGeneration(db, target.publicKeyB64)).toBe(1);
   }, 30_000);
@@ -1109,30 +1188,41 @@ describe('Manager.Generation ordering', () => {
     const target = freshKeyPair();
     await addManager(db, { byManagerKeyPair: founder, newManagerKey: target.publicKeyB64 }); // gen 1
 
-    // The promotion payload carries the generation (`key|1`); the removal payload
-    // is the bare key. So a captured approval to ADD a manager does not double as
-    // an approval to REMOVE it — the narrowing claimed in docs/strands.md.
-    const addSignature = signStrandPayload(`${target.publicKeyB64}|1`, founder.privateKeyB64);
-    await expect(
-      db.exec(
+    // The promotion approval is 'add'-tagged and carries the generation; the removal
+    // approval is 'remove'-tagged over just (key, stamp). So a captured approval to
+    // ADD a manager — even one re-minted over the row's LIVE stamp — does not double
+    // as an approval to REMOVE it: the action tags differ. A founder tombstone rides
+    // the transaction so Authorized is the one rejector.
+    const targetStamp = await managerStamp(db, target.publicKeyB64);
+    const addSignature = signStrandApproval(
+      ['Strand.Manager', 'add', target.publicKeyB64, 1, targetStamp],
+      founder.privateKeyB64,
+    );
+    await expect(inTransaction(db, async () => {
+      await db.exec(
         `delete from Strand.Manager
            with context ManagerKey = ?, Signature = ?
            where MemberKey = ?`,
         [founder.publicKeyB64, addSignature, target.publicKeyB64],
-      ),
-    ).rejects.toThrow(/Authorized/);
+      );
+      await fileTombstone(db, 'Manager', targetStamp, founder);
+    })).rejects.toThrow(/Authorized/);
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [target.publicKeyB64])).toBeTruthy();
 
-    // And the converse: a removal-shaped signature over a key (bare, no generation)
-    // cannot promote that same key.
+    // And the converse: a removal-shaped ('remove'-tagged, generation-less) signature
+    // over a fresh stamp cannot promote the key that insert carries the same stamp.
     const other = freshKeyPair();
-    const removeShapedSignature = signStrandPayload(other.publicKeyB64, founder.privateKeyB64);
+    const freshStamp = generateStrandStampId();
+    const removeShapedSignature = signStrandApproval(
+      ['Strand.Manager', 'remove', other.publicKeyB64, freshStamp],
+      founder.privateKeyB64,
+    );
     await expect(
       db.exec(
-        `insert into Strand.Manager (MemberKey, Generation)
+        `insert into Strand.Manager (MemberKey, Generation, StampId)
            with context ManagerKey = ?, Signature = ?
-           values (?, ?)`,
-        [founder.publicKeyB64, removeShapedSignature, other.publicKeyB64, 1],
+           values (?, ?, ?)`,
+        [founder.publicKeyB64, removeShapedSignature, other.publicKeyB64, 1, freshStamp],
       ),
     ).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'Manager')).toBe(2);
