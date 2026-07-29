@@ -234,6 +234,48 @@ describe('device-token registry (real control DB)', () => {
 
     // Clearing again is a no-op (no row).
     await node.clearDeviceToken();
+
+    // Re-registering (logout → login) must mint a FRESH stamp on the re-insert — the
+    // cleared stamp is retired permanently, so a writer that reused it would trip
+    // `DeviceToken.NotRevoked`. The shipped writer path
+    // (`SeedBootstrapService.insertSelfDeviceToken`) is what `registerDeviceToken` rides.
+    await node.registerDeviceToken('fcm', 'after-re-register');
+    const resolved = await node.resolveDeviceToken(peerId);
+    expect(resolved).not.toBeNull();
+    expect(resolved!.token).toBe('after-re-register');
+  }, 60_000);
+
+  it('resolves to null for a live row whose stamp is retired (simulated convergence race)', async () => {
+    // `resolveDeviceToken`'s retired-stamp gate exists for a race that SQL alone cannot
+    // build in a test: a node that converged on a replayed insert before the clearing
+    // node's tombstone arrived would hold BOTH the live row and its retired stamp. Every
+    // route to that state through the schema is closed by design — re-inserting the
+    // retired stamp trips `NotRevoked`, tombstoning a live row's stamp trips `RowIsGone`,
+    // and delete + tombstone + re-insert in one transaction trips both, so a rejection
+    // could not be pinned to either. So the row's stamp is retired at the READER instead,
+    // by wrapping `queryRevokedStamps` to report it while the row itself still lives.
+    const { node, peerId } = booted;
+    await node.registerDeviceToken('fcm', 'converged-token');
+    const db = node.getControlDatabase()!;
+    const stored = await db.queryDeviceToken(peerId);
+    expect(stored).not.toBeNull();
+
+    const original = db.queryRevokedStamps.bind(db);
+    db.queryRevokedStamps = async (tableName) => {
+      const stamps = await original(tableName);
+      if (tableName === 'DeviceToken') {
+        stamps.add(stored!.stampId);
+      }
+      return stamps;
+    };
+    try {
+      expect(await node.resolveDeviceToken(peerId)).toBeNull();
+    } finally {
+      db.queryRevokedStamps = original;
+    }
+
+    // The row itself is untouched — only the read-side gate reacted.
+    expect(await db.queryDeviceToken(peerId)).toEqual(stored);
   }, 60_000);
 
   it('throws when a non-owner node tries to self-insert its first token (no row, no owner)', async () => {

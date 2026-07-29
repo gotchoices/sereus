@@ -12,7 +12,8 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import { cadrePeerVoucherDigest, cadrePeerRemoveDigest } from '../src/peer-authorization.js';
+import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest } from '../src/peer-authorization.js';
+import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
 import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
@@ -385,6 +386,27 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const addSig = signAs(founder, strandAddMessage(id, type, memberPrivateKey, stamp));
     await rawInsertStrand(founder.publicKey, addSig, id, type, memberPrivateKey, stamp);
     return { stamp, addSig };
+  }
+
+  /** Seat a DeviceToken row the legitimate (owner-signed) way — no CadrePeer row needed
+   * (DeviceToken carries no foreign key to it). */
+  async function seatDeviceToken(peerId: string): Promise<{ stamp: string }> {
+    const row: DeviceTokenAuthorizedRow = {
+      peerId,
+      platform: 'fcm',
+      token: 'tok-' + Math.random().toString(36).slice(2),
+      updatedAt: null,
+      sig: null,
+      stampId: freshStamp(),
+    };
+    const addSig = signB64(founder, deviceTokenAddDigest(row));
+    await rawDb.exec(
+      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?, ?, ?, ?, ?)`,
+      [founder.publicKey, addSig, row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
+    );
+    return { stamp: row.stampId };
   }
 
   /** The legitimate ValidationKey removal shape: signed delete + tombstone in ONE transaction. */
@@ -935,6 +957,10 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const strandId = 'strand-live-stamp-' + Math.random().toString(36).slice(2);
     const { stamp: strandStamp } = await seatStrand(strandId);
     await expectConstraintFailure(tombstoneStamp('Strand', strandStamp), 'RowIsGone');
+
+    const deviceTokenPeerId = '12D3KooWLiveStampTargetDeviceToken';
+    const { stamp: deviceTokenStamp } = await seatDeviceToken(deviceTokenPeerId);
+    await expectConstraintFailure(tombstoneStamp('DeviceToken', deviceTokenStamp), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a TableName outside the guarded set is refused (every RowIsGone branch false)', async () => {
