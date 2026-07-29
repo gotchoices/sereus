@@ -304,3 +304,50 @@ Verified facts, so the next run can skip re-discovery:
 - `verifyPeerAuthorization` (peer-authorization.ts:62) is the offline `cadre enroll register`
   verifier — it must move to the `'Cadre.Enrollment'`/`'vouch'` tagged digest together with
   `signPeerAuthorization`, or enrollment breaks silently (verify returns false, no throw).
+
+## Resume note 2 (2026-07-29, second run also hit budget before any code change)
+
+This run re-read every source file listed above and confirmed the first resume note is
+accurate in full. **Still no code, schema, or test changes — start at Phase 1.** Two runs have
+now burned their whole budget on reading; the next run should START WRITING immediately (Phase 1
+test first) and treat both resume notes as sufficient discovery — do not re-read the sources
+up front, open them only when an edit needs exact surrounding text. Additional verified facts
+beyond resume note 1:
+
+- **`test-network.ts` likely needs NO code change.** Its two signers (`createStrand` ~line 111,
+  `createInvitation` ~line 151) pass `signMessageEd25519` callbacks that sign whatever bytes
+  `insertStrand` / `insertFormationInvite` build internally — the new domain/action tags ride
+  through automatically. Only its doc comments (lines 26-33, 148-150) describe the untagged
+  field vector and need prose updates. Same holds for any caller passing a sign-callback into
+  `ControlDatabase` methods; the tag lands in exactly one place per table (the writer).
+- Full referencer inventory (grep for the six digest-helper names), beyond files already in the
+  `files:` header: `packages/cadre-core/src/cadre-node.ts`, `packages/cadre-core/src/types.ts`,
+  `packages/cadre-core/src/strand-membership-writer.ts` (strand-side `signStrandPayload` —
+  OUT of scope, different subsystem), and test suites
+  `control-authorization-binding.spec.ts`, `peer-authorization.spec.ts`, `peer-record.spec.ts`,
+  `device-token.spec.ts`, `membership-connection-gater.spec.ts`,
+  `cadre-node-authorized-surface.spec.ts`, `control-ownerkey-self-authorization.spec.ts`
+  (its local `enrollMessage`/`removeMessage` builders at lines 62-67 must gain the
+  `'CadreControl.OwnerKey'`/`'add'|'remove'` tags and drop the trailing `'remove'`),
+  `digest-variadic-parity.spec.ts` (helper `sqlVerify` confirmed at line 48; case (a) at
+  line 57 signs the Strand shape and must gain the tags too, since
+  `buildAuthorizationMessage`'s signature changes).
+- `seed-bootstrap.ts` exact confirmed lines: `insertCadrePeerRow` private helper 322-352 (signs
+  `cadrePeerVoucherDigest` at 342, single `db.exec` at 347 persists VouchOwner/VouchSig),
+  `insertSelfDeviceToken` 366, `deleteDeviceToken` 386, `signPeerAuthorization` 406,
+  `signDigest` 431, `removePeer` 450 (signs at 466), `reauthorizePeer` 502 (signs at 526).
+  All owner signing funnels through `signDigest(digestB64url)` — signs the base64url digest
+  STRING (input 'base64url'), while `control-database.ts` writers sign raw bytes from
+  `buildAuthorizationMessage`; both decode to the same digest bytes, keep each side's encoding.
+- Schema digest sites, `schemas/control.qsql` line numbers (control-schema.ts = same content
+  offset +11 lines, wrapped in the `CONTROL_SCHEMA` template literal): OwnerKey insert 43,
+  OwnerKey delete 49, ValidationKey 59, Strand 72, CadrePeer insert 104, delete 117,
+  self-update 133, owner-update 139, DeviceToken insert/delete 161, self-update 173,
+  owner-update 177, FormationInvite 196-204, FormationUsage validation branch 238
+  (`digest(new.Token || new.Disclosure)`).
+- **Unresolved discovery (only one left):** who produces the `ValidationSignature` context
+  value for `FormationUsage` (the validation-key holder's signature over
+  `Token || Disclosure`). `redeemInvitation` / `recordFormationUsage`
+  (control-database.ts:756/823) just pass it through from params. Grep for
+  `validationSignature` / `ValidationSignature` producers (likely strand-formation responder
+  and/or a test) before retagging that digest in Phase 3.
