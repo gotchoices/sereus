@@ -199,6 +199,25 @@ export class CadreNode implements SAppIdLookup {
    */
   private bootstrapPeerIds: Set<string> | null = null;
 
+  /**
+   * Materialized in-memory snapshot of the AUTHORIZED member peer ids (the
+   * {@link listAuthorizedMembers} result), consulted by the per-stream
+   * control-DB gate ({@link authorizeInboundControlStream}). That predicate
+   * runs on EVERY inbound Optimystic control-DB stream and must never await a
+   * control-DB read: those reads pull blocks over the very protocols the
+   * predicate gates, which closes a circular wait that ends in mutual denial
+   * (the upstream gate is fail-closed on timeout, unlike the fail-open
+   * connection gater). So the set is refreshed OUT OF BAND instead — after
+   * start, on every {@link reconcileControlCohort} pass (15s cadence), and
+   * immediately after every LOCAL membership mutation so a just-vouched peer
+   * is admitted without waiting for the timer. A change that arrives by
+   * REPLICATION is picked up on the next timed refresh — bounded staleness,
+   * acceptable because this gate is defense in depth: rows an unadmitted peer
+   * manages to write are still disbelieved at read time by the
+   * voucher-anchored predicate.
+   */
+  private authorizedControlPeers: Set<string> = new Set();
+
   /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
   private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
   /** TTL heartbeat that re-publishes the self record before it goes stale. */
@@ -516,6 +535,12 @@ export class CadreNode implements SAppIdLookup {
       // write-while-alone re-replication drain must fire on the first 0→≥1 edge.
       this.wireControlConnectionListeners();
 
+      // Seed the per-stream gate's materialized authorized set now that the
+      // control DB is up (non-blocking; the helper never rejects). Until it
+      // lands the snapshot is empty, which the stream gate treats as cold
+      // start and admits.
+      void this.refreshAuthorizedControlPeers('start');
+
       // Schedule self-registration in background
       this.scheduleSelfRegistration();
 
@@ -750,7 +775,13 @@ export class CadreNode implements SAppIdLookup {
       connectionGater: createMembershipConnectionGater(
         { admitInbound: (remotePeerId) => this.admitInboundControlConnection(remotePeerId) },
         network?.connectionGater
-      )
+      ),
+      // Fail-closed per-stream authorization for the four Optimystic control-DB
+      // protocols — the members-only layer the connection gater's stranger
+      // carve-outs cannot express (see authorizeInboundControlStream). Control
+      // node only: strand cohort nodes serve cross-party peers.
+      authorizeInboundStream: (remotePeerId, protocol) =>
+        this.authorizeInboundControlStream(remotePeerId, protocol)
     };
 
     return await createLibp2pNode(nodeOptions);
@@ -766,18 +797,15 @@ export class CadreNode implements SAppIdLookup {
    * stranger-open protocol allowlist).
    *
    * Admits when ANY of:
-   *  1. the node is not fully up (`start()` in progress / DB torn down) — the
-   *     gater exists from libp2p bring-up, before the control DB does;
-   *  2. the trusted-owner anchor is absent or empty — an un-enrolled node has
-   *     no basis to judge anyone and MUST accept its enrollment seed;
-   *  3. an enrollment window is open ({@link openEnrollmentWindow}, opened by
+   *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
+   *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
+   *     configured bootstrap/relay infrastructure);
+   *  2. an enrollment window is open ({@link openEnrollmentWindow}, opened by
    *     {@link createInvite}) — the invitee dials in before it is authorized;
-   *  4. the peer is one of the configured control bootstrap/relay nodes —
-   *     infrastructure, not cadre members;
-   *  5. the authorized-member set is empty — cold start: the rows that would
+   *  3. the authorized-member set is empty — cold start: the rows that would
    *     authorize anyone arrive by replication over these very connections;
-   *  6. the peer IS an authorized member; or
-   *  7. an open invitation is OUTSTANDING — at least one unexpired,
+   *  4. the peer IS an authorized member; or
+   *  5. an open invitation is OUTSTANDING — at least one unexpired,
    *     not-fully-consumed invitation this node minted or persisted (see
    *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
    *     initiator is another party's peer by design and its token is only
@@ -789,10 +817,10 @@ export class CadreNode implements SAppIdLookup {
    *     armed, because neither mints an invitation.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
-   * checks 1-4 are in-memory, 5/6 share one control-DB read, and only a peer
-   * already on the deny path reaches check 7's invitation lookup.
+   * checks 1-2 are in-memory, 3/4 share one control-DB read, and only a peer
+   * already on the deny path reaches check 5's invitation lookup.
    *
-   * Caveats of check 7, both self-healing:
+   * Caveats of check 5, both self-healing:
    *  - the in-memory mint registry dies with the process, so after a restart
    *    only invitations persisted as `FormationInvite` rows still hold the
    *    exemption open (re-mint otherwise — same story as the enrollment window);
@@ -800,25 +828,21 @@ export class CadreNode implements SAppIdLookup {
    *    this node yet is denied even though the formation handler would have
    *    accepted it, exactly like the unreplicated-membership-row case below.
    *
-   * NOTE: check 5/6 runs a control-DB read per inbound connection
-   * (`listAuthorizedMembers`); connections are rare and cadres small, but if
-   * inbound upgrade latency ever shows up here, memoize the authorized set
-   * briefly. NOTE: a sibling whose membership row has not yet replicated to
+   * NOTE: check 3/4 runs a control-DB read per inbound connection
+   * (`listAuthorizedMembers`); connections are rare and cadres small, and this
+   * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
+   * read is safe here — unlike the per-stream gate, which must consult the
+   * materialized {@link authorizedControlPeers} snapshot instead.
+   * NOTE: a sibling whose membership row has not yet replicated to
    * this node is denied until the row converges (typically via the owner);
    * either side's next outbound reconcile dial (outbound is never gated)
    * re-establishes the link — self-healing, but visible as a transient deny.
    */
   private async admitInboundControlConnection(remotePeerId: string): Promise<boolean> {
-    if (!this._running || !this.controlDatabase) {
-      return true;
-    }
-    if (!this.trustedOwnerStore || this.trustedOwnerStore.all().size === 0) {
+    if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return true;
     }
     if (Date.now() < this.enrollmentWindowUntil) {
-      return true;
-    }
-    if (this.getBootstrapPeerIds().has(remotePeerId)) {
       return true;
     }
     const authorized = await this.listAuthorizedMembers();
@@ -850,6 +874,96 @@ export class CadreNode implements SAppIdLookup {
   openEnrollmentWindow(untilEpochMs: number): void {
     this.enrollmentWindowUntil = Math.max(this.enrollmentWindowUntil, untilEpochMs);
     log('Enrollment window open until %d', this.enrollmentWindowUntil);
+  }
+
+  /**
+   * The admission checks SHARED by the connection gate
+   * ({@link admitInboundControlConnection}) and the per-stream control-DB gate
+   * ({@link authorizeInboundControlStream}) — factored so the two layers cannot
+   * drift. All in-memory and cheap (the stream gate runs this per inbound
+   * stream). Returns true when the peer must be admitted BEFORE any membership
+   * source is consulted:
+   *  - the node is not fully up (`start()` in progress / DB torn down) — both
+   *    gates exist from libp2p bring-up, before the control DB does;
+   *  - the trusted-owner anchor is absent or empty — an un-enrolled node has
+   *    no basis to judge anyone and MUST accept its enrollment seed;
+   *  - the peer is one of the configured control bootstrap/relay nodes —
+   *    operator-configured infrastructure, not cadre members.
+   * False only means "no unconditional admit": the caller then judges the peer
+   * against its own membership source (a live DB read for the fail-open
+   * connection gate; the materialized snapshot for the fail-closed stream gate).
+   */
+  private admitControlPeerUnconditionally(remotePeerId: string): boolean {
+    if (!this._running || !this.controlDatabase) {
+      return true;
+    }
+    if (!this.trustedOwnerStore || this.trustedOwnerStore.all().size === 0) {
+      return true;
+    }
+    return this.getBootstrapPeerIds().has(remotePeerId);
+  }
+
+  /**
+   * Per-stream authorization for the four Optimystic control-DB protocols
+   * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`),
+   * wired as `authorizeInboundStream` in {@link createControlNode} — the
+   * fail-closed layer behind the fail-open connection gater. Control node
+   * ONLY: strand cohort nodes legitimately serve cross-party peers.
+   *
+   * The STRICT SUBSET of {@link admitInboundControlConnection}: the same
+   * "no basis to judge" admissions (shared via
+   * {@link admitControlPeerUnconditionally}), minus the two stranger
+   * carve-outs (enrollment window, outstanding open invitation). Those exist
+   * so a stranger can reach `/sereus/seed/1.0.0` and `/sereus/formation/1.0.0`
+   * — neither is gated here, and admitting a stranger to `repo` during an
+   * enrollment window is exactly the hole this gate closes.
+   *
+   * Admits when ANY of:
+   *  1. a shared-baseline check admits (not running / no DB, empty anchor,
+   *     configured bootstrap infra);
+   *  2. the materialized authorized set is empty — cold start, before the
+   *     rows that would authorize anyone have replicated in;
+   *  3. the peer IS in the materialized authorized set.
+   *
+   * Deliberately SYNCHRONOUS and pure in-memory — see
+   * {@link authorizedControlPeers} for why a control-DB read here would
+   * deadlock into mutual denial. With a sync predicate the upstream deadline
+   * (`authorizeInboundStreamTimeoutMs`) never trips, so it stays at its
+   * default.
+   */
+  private authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean {
+    if (this.admitControlPeerUnconditionally(remotePeerId)) {
+      return true;
+    }
+    if (this.authorizedControlPeers.size === 0) {
+      return true;
+    }
+    if (this.authorizedControlPeers.has(remotePeerId)) {
+      return true;
+    }
+    // Upstream logs its own denial line; this one carries the WHY.
+    log('authorizeInboundControlStream: DENYING %s on %s — not in the materialized authorized set (%d member(s))',
+      remotePeerId, protocol, this.authorizedControlPeers.size);
+    return false;
+  }
+
+  /**
+   * Refresh {@link authorizedControlPeers} from the control DB, best-effort: a
+   * failed read keeps the previous snapshot (never clears it), so a transient
+   * DB error can neither flip the stream gate's cold-start carve-out back open
+   * nor drop a legitimate member mid-flight. Never rejects.
+   */
+  private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
+    if (!this._running || !this.controlDatabase) {
+      return;
+    }
+    try {
+      const members = await this.listAuthorizedMembers();
+      this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
+      log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
+    } catch (error) {
+      log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
+    }
   }
 
   /**
@@ -994,6 +1108,7 @@ export class CadreNode implements SAppIdLookup {
       // owner). insertSelfPeerRecord throws if no owner key is present.
       await this.seedBootstrapService.insertSelfPeerRecord(record);
       if (this.committedAlone()) this.pendingSelfPeerWrite = true;
+      await this.refreshAuthorizedControlPeers('self-insert');
       log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
       return 'inserted';
     }
@@ -1283,6 +1398,14 @@ export class CadreNode implements SAppIdLookup {
   private async runReconcileControlCohort(): Promise<void> {
     // Shutdown / not-yet-started guard (mirrors publishSelfRecord). A pass that
     // fires after stop() began must early-return rather than touch a torn-down node.
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+    // Ride this pass's cadence to refresh the per-stream gate's materialized
+    // authorized set — membership changes that ARRIVED BY REPLICATION (rather
+    // than a local write) are picked up here, bounding the snapshot's staleness
+    // to the reconcile interval.
+    await this.refreshAuthorizedControlPeers('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
     }
@@ -1643,6 +1766,7 @@ export class CadreNode implements SAppIdLookup {
           // is somehow still present locally.
           await this.seedBootstrapService.removePeer(peerId);
         }
+        await this.refreshAuthorizedControlPeers('drain-reissue');
         this.pendingPeerWrites.delete(peerId);
       } catch (error) {
         log('drain: re-issue of %s (%s) failed; leaving queued for next growth: %o', peerId, kind, error);
@@ -3001,6 +3125,9 @@ export class CadreNode implements SAppIdLookup {
     await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs });
     // Queue for re-replication if this committed local-only (no connected cohort).
     this.noteControlWrite(peerId, 'authorize');
+    // The per-stream gate must admit the just-vouched peer immediately, not on
+    // the next timed refresh.
+    await this.refreshAuthorizedControlPeers('authorizePeer');
   }
 
   /**
@@ -3016,6 +3143,8 @@ export class CadreNode implements SAppIdLookup {
     await this.seedBootstrapService.removePeer(peerId);
     // Track + loudly flag a delete that committed local-only (security-relevant).
     this.noteControlWrite(peerId, 'remove');
+    // Drop the removed peer from the per-stream gate right away.
+    await this.refreshAuthorizedControlPeers('removePeer');
   }
 
   /**
@@ -3066,9 +3195,13 @@ export class CadreNode implements SAppIdLookup {
       if (this.controlNode && this.controlDatabase) {
         tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
-      return await tempService.applySeed(seed, options);
+      const tempResult = await tempService.applySeed(seed, options);
+      await this.refreshAuthorizedControlPeers('applySeed');
+      return tempResult;
     }
-    return await this.seedBootstrapService.applySeed(seed, options);
+    const result = await this.seedBootstrapService.applySeed(seed, options);
+    await this.refreshAuthorizedControlPeers('applySeed');
+    return result;
   }
 
   /**
@@ -3126,7 +3259,9 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    return await this.seedBootstrapService.addDrone(options);
+    const result = await this.seedBootstrapService.addDrone(options);
+    await this.refreshAuthorizedControlPeers('addDrone');
+    return result;
   }
 
   /**
@@ -3154,6 +3289,8 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
     await this.seedBootstrapService.acceptPhone(options, issuedInvite);
+    // The just-accepted phone opens control-DB streams next; admit it now.
+    await this.refreshAuthorizedControlPeers('acceptPhone');
   }
 
   /**
