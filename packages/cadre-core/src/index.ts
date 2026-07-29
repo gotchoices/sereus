@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable } from './control-database.js';
 
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';

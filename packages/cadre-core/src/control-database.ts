@@ -44,6 +44,25 @@ export function generateStampId(peerId: string): string {
 }
 
 /**
+ * A `FormationUsage` was to be recorded against a host `Strand` row that is not
+ * present locally.
+ *
+ * Consent is bound to the strand's one-off `StampId` (see the consent branch of
+ * `Strand.AuthorizedInsert`), so the writer must read the live row before inserting.
+ * The ordinary "host strand has not converged on this responder yet" case is caught
+ * earlier and reported as `missing` by `ControlFormationUsageRecorder.resolveStrand`;
+ * reaching here means the row vanished between that check and the write, which is a
+ * genuine race and is surfaced rather than left to fail the deferred `StrandExists`
+ * CHECK at commit (which would drop the write with a far less legible error).
+ */
+export class MissingHostStrandError extends Error {
+  constructor(readonly strandId: string, readonly token: string) {
+    super(`Cannot record formation usage for token ${token}: host strand ${strandId} is not present`);
+    this.name = 'MissingHostStrandError';
+  }
+}
+
+/**
  * Parse a stored Quereus `datetime` value into epoch milliseconds.
  *
  * Quereus canonicalises a `datetime` column to a bare UTC `PlainDateTime` string
@@ -913,8 +932,12 @@ export class ControlDatabase {
    * `FormationUsage` row **atomically, in one transaction**.
    *
    * The two CHECK constraints are mutually circular under immediate evaluation:
-   * `Strand.AuthorizedInsert`'s consent branch requires the `FormationUsage` row, while
-   * `FormationUsage.StrandExists` requires the `Strand` row. Both CHECKs contain
+   * `Strand.AuthorizedInsert`'s consent branch requires a `FormationUsage` row naming
+   * this strand's `(Id, StampId)`, while `FormationUsage.StrandExists` requires a
+   * `Strand` row matching that same pair — the ONE freshly-minted `strandStampId` below
+   * satisfies both, which is what binds the consent record to this specific strand ROW
+   * (so a later owner-signed, tombstoned removal cannot be undone by re-inserting the
+   * id with a fresh stamp). Both CHECKs contain
    * subqueries, so Quereus auto-defers them to transaction commit — wrapping both
    * inserts in a single explicit `begin … commit` lets both deferred CHECKs see
    * both rows at commit. The strand is authorised WITHOUT an owner signature
@@ -959,9 +982,10 @@ export class ControlDatabase {
           values (?, ?, ?, ?)
       `, [strandId, type, memberPrivateKey ?? null, strandStampId]);
 
-      // 2. FormationUsage row — authorised by the matching FormationInvite.
+      // 2. FormationUsage row — authorised by the matching FormationInvite, and
+      //    carrying the strand's stamp so it authorizes THIS row and no other.
       await this.execFormationUsageInsert({
-        token, useNumber, disclosure, strandId,
+        token, useNumber, disclosure, strandId, strandStampId,
         peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
@@ -980,6 +1004,15 @@ export class ControlDatabase {
    *
    * Use {@link redeemInvitation} instead when the strand must be created by
    * consent atomically with the usage.
+   *
+   * The strand's live `StampId` is read first and written onto the usage row:
+   * `FormationUsage.StrandExists` matches the (id, stamp) PAIR, and
+   * `Strand.AuthorizedInsert`'s consent branch reads the same pair back, so a consent
+   * record authorizes exactly the strand ROW it was recorded against. A missing strand
+   * THROWS here rather than being left to the deferred `StrandExists` CHECK — the
+   * ordinary "host strand has not converged yet" case is already reported as `missing`
+   * by {@link ControlFormationUsageRecorder.resolveStrand}, so an absent row at this
+   * point is a genuine race and deserves a named error, not a silent rollback.
    */
   async recordFormationUsage(params: {
     token: string;
@@ -998,10 +1031,14 @@ export class ControlDatabase {
     } = params;
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
+    const strandStampId = await this.queryStrandStampId(strandId);
+    if (strandStampId === null) {
+      throw new MissingHostStrandError(strandId, token);
+    }
     const useNumber = await this.nextUseNumber(token);
 
     await this.execFormationUsageInsert({
-      token, useNumber, disclosure, strandId,
+      token, useNumber, disclosure, strandId, strandStampId,
       peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
       validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
     });
@@ -1016,6 +1053,8 @@ export class ControlDatabase {
     useNumber: number;
     disclosure: string;
     strandId: string;
+    /** The live `Strand.StampId` this consent record authorizes (`StrandExists` matches the pair). */
+    strandStampId: string;
     peerId: string;
     peerSignature: string | null;
     nowMs: number;
@@ -1032,13 +1071,13 @@ export class ControlDatabase {
     // not a fix for an observable mis-ordering.
     const nowCanonical = await canonicalDatetime(this.db!, opts.nowMs);
     await this.db!.exec(`
-      insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId)
+      insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId, StrandStampId)
         with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
-        values (?, ?, ?, ?)
+        values (?, ?, ?, ?, ?)
     `, [
       opts.peerId, opts.peerSignature, nowCanonical,
       opts.validationKey, opts.validationSignature,
-      opts.token, opts.useNumber, opts.disclosure, opts.strandId,
+      opts.token, opts.useNumber, opts.disclosure, opts.strandId, opts.strandStampId,
     ]);
   }
 

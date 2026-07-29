@@ -136,20 +136,37 @@ declare schema CadreControl {
             exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = old.StampId)
         ),
         -- Strand rows are insert + delete only. Required: the consent branch of AuthorizedInsert
-        -- below authorizes by the EXISTENCE of a FormationUsage row for new.Id and carries no
-        -- signature, so while this rule was a bare `check` (insert+update) it also said "anyone may
-        -- REWRITE any consent-formed strand, unsigned" — flipping Type to 'o' and nulling
-        -- MemberPrivateKey destroys the party's own membership key for that network in place.
+        -- below authorizes by the EXISTENCE of a FormationUsage row naming (new.Id, new.StampId)
+        -- and carries no signature, so while this rule was a bare `check` (insert+update) it also
+        -- said "anyone may REWRITE any consent-formed strand, unsigned" — flipping Type to 'o' and
+        -- nulling MemberPrivateKey destroys the party's own membership key for that network in place.
         -- Mirrors OwnerKey.NoUpdate / FormationInvite.Immutable.
         constraint NoUpdate check on update (false),
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
 
-                -- or authorized by a cadre peer who has received a valid formation invitation.
-                -- That path has no signed writer yet; when one is built it must still supply a
-                -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
-                or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
+                -- or authorized WITHOUT a signature by a redemption record naming THIS EXACT ROW: a
+                -- FormationUsage row carrying both this strand's Id and its one-off StampId
+                -- (control-database.ts:redeemInvitation writes the pair in one transaction; both
+                -- CHECKs defer, so each sees the other's row at commit).
+                --
+                -- Matching the STAMP, not the id alone, is what makes a removal stick. FormationUsage
+                -- is append-only, so a redemption record outlives the strand it formed forever; keyed
+                -- on the id alone it re-authorized ANY later insert of that id, so after a legitimate
+                -- owner-signed, tombstoned removal any writer could re-seat the strand unsigned with a
+                -- fresh StampId (sidestepping NotRevoked, which retires only the removed row's stamp)
+                -- and an ATTACKER-CHOSEN MemberPrivateKey — the party's own secret for that network.
+                -- Bound to the stamp, the removal retires that stamp into Revocation and NotRevoked
+                -- closes this consent record's branch permanently.
+                --
+                -- Residual, by design: this retires ONE authorization, not the strand id. An invitation
+                -- with uses left over (or unlimited TotalUses) can be redeemed again, minting a NEW
+                -- FormationUsage row with a NEW StrandStampId beside a new Strand row — that is the
+                -- legitimate re-join path. So removing a strand does NOT revoke the invitations that
+                -- could re-form it: an operator who wants a removal to be final must delete the
+                -- FormationInvite too (FormationInvite.AuthorizedDelete exists for that).
+                or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id and FU.StrandStampId = new.StampId)
         ),
         constraint AuthorizedDelete check on delete (
             -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
@@ -344,6 +361,12 @@ declare schema CadreControl {
         UseNumber int,
         Disclosure text,
         StrandId text,
+        StrandStampId text not null,   -- the Strand.StampId this consent record authorizes. Consent is
+                                       -- bound to ONE strand ROW, not to a strand id forever — see
+                                       -- Strand.AuthorizedInsert's consent branch for why. NOT unique:
+                                       -- in the bound (provision-then-record) path several invitees
+                                       -- each write a usage row against the SAME host strand, so many
+                                       -- usage rows legitimately share one stamp.
         primary key (Token, UseNumber),
         constraint InsertOnly check on update, delete (false),
         constraint Monotonic check (
@@ -365,7 +388,11 @@ declare schema CadreControl {
                         and (FI.ValidationUrl is null or verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey, 'ed25519'))
             )
         ),
-        constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),
+        -- Matched on the (id, stamp) PAIR, the same key Strand.AuthorizedInsert's consent branch
+        -- reads back: a usage row may only ever name a strand ROW that exists, so a consent record
+        -- can never be filed against a stamp of the writer's choosing and held in reserve to
+        -- re-seat the id after a removal.
+        constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId and S.StampId = new.StrandStampId)),
     ) with context (PeerId text, PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
