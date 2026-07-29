@@ -18,14 +18,17 @@ import { signStrandPayload } from '../src/strand-membership-writer.js';
  * signs in TS, and asserts the SQL `verify(digest(...))` the schema constraints run
  * accepts the signature and rejects a one-field tamper. One representative of each
  * call shape the migration touches:
- *   (a) a control MULTI-field message (`buildAuthorizationMessage`) ⇔ `digest(f1,…,fN)`
- *   (b) a peer-record SINGLE-string payload                          ⇔ `digest(joined)`
- *   (c) a strand SINGLE-string payload (`signStrandPayload`)          ⇔ `digest(payload)`
+ *   (a) a control MULTI-field message (`buildAuthorizationMessage`) ⇔ `digest(tags…,f1,…,fN)`
+ *   (b) a peer-record tagged multi-field payload                    ⇔ `digest(tags…,f1,…,fN)`
+ *   (c) a strand SINGLE-string payload (`signStrandPayload`)         ⇔ `digest(payload)`
+ *   (d) the leading LITERAL domain/action tags: TS passes them as the first two
+ *       array elements, the schema writes them as literal SQL arguments — this is
+ *       the parity the whole domain-separation scheme rests on
  *
- * In all three the SQL side is `verify(digest(<fields>), <sig>, <pubkey>, 'ed25519')`:
+ * In all four the SQL side is `verify(digest(<fields>), <sig>, <pubkey>, 'ed25519')`:
  * SQL `digest(...)` returns a base64url string that `verify`'s default base64url input
  * encoding decodes back to the raw digest bytes the TS side signed (over `'bytes'` for
- * (a)/(c), or the base64url digest string for (b) — same raw bytes either way).
+ * (a)/(c)/(d), or the base64url digest string for (b) — same raw bytes either way).
  */
 describe('digest-variadic TS↔SQL byte parity', () => {
   let db: Database;
@@ -54,32 +57,35 @@ describe('digest-variadic TS↔SQL byte parity', () => {
     return Boolean(row?.ok);
   }
 
-  it('(a) control multi-field: buildAuthorizationMessage ⇔ verify(digest(f1,…,fN))', async () => {
+  it('(a) control multi-field: buildAuthorizationMessage ⇔ verify(digest(tags…,f1,…,fN))', async () => {
     // Field order/shape mirrors a closed Strand: Id, Type, MemberPrivateKey (''), StampId.
-    const fields = ['strand-id-xyz', 'c', '', 'stamp-abc'];
-    const message = buildAuthorizationMessage(fields);
+    const rowFields = ['strand-id-xyz', 'c', '', 'stamp-abc'];
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', rowFields);
     // ed25519 signs the raw digest bytes directly (no second hash), exactly as the writers do.
     const sig = sign(message, priv, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 
-    expect(await sqlVerify(fields, sig, pub)).toBe(true);
+    expect(await sqlVerify(['CadreControl.Strand', 'add', ...rowFields], sig, pub)).toBe(true);
     // Tamper one field (Type 'c' -> 'o'): the rebound digest differs, verify rejects.
-    expect(await sqlVerify(['strand-id-xyz', 'o', '', 'stamp-abc'], sig, pub)).toBe(false);
+    expect(await sqlVerify(['CadreControl.Strand', 'add', 'strand-id-xyz', 'o', '', 'stamp-abc'], sig, pub)).toBe(false);
+    // Swap the action tag: same row fields, different rule — verify rejects.
+    expect(await sqlVerify(['CadreControl.Strand', 'remove', ...rowFields], sig, pub)).toBe(false);
   });
 
-  it('(b) peer-record single-string: peerRecordSignedPayload ⇔ verify(digest(joined))', async () => {
+  it('(b) peer-record tagged multi-field: peerRecordSignedPayload ⇔ verify(digest(tags…,fields))', async () => {
     const peerId = '12D3KooWExamplePeer';
     const multiaddr = '/ip4/1.2.3.4/tcp/4001';
     const updatedAt = 1700000000000;
-    const joined = `${peerId}|${multiaddr}|${updatedAt}`;
+    const fields = ['CadreControl.CadrePeer', 'publish', peerId, multiaddr, String(updatedAt)];
 
-    // The helper digests `joined` to a base64url string; sign over that (input base64url
-    // -> raw digest bytes), matching what the CadrePeer.AuthorizedUpdate self-branch checks.
+    // The helper digests the tagged vector to a base64url string; sign over that (input
+    // base64url -> raw digest bytes), matching what CadrePeer.AuthorizedUpdate's
+    // self-branch checks.
     const payloadDigest = peerRecordSignedPayload(peerId, multiaddr, updatedAt);
     const sig = sign(payloadDigest, priv, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
-    expect(await sqlVerify([joined], sig, pub)).toBe(true);
-    // Tamper the multiaddr inside the joined payload.
-    expect(await sqlVerify([`${peerId}|/ip4/9.9.9.9/tcp/4001|${updatedAt}`], sig, pub)).toBe(false);
+    expect(await sqlVerify(fields, sig, pub)).toBe(true);
+    // Tamper the multiaddr field.
+    expect(await sqlVerify(['CadreControl.CadrePeer', 'publish', peerId, '/ip4/9.9.9.9/tcp/4001', String(updatedAt)], sig, pub)).toBe(false);
   });
 
   it('(c) strand single-string: signStrandPayload ⇔ verify(digest(payload))', async () => {
@@ -89,5 +95,29 @@ describe('digest-variadic TS↔SQL byte parity', () => {
     expect(await sqlVerify([payload], sig, pub)).toBe(true);
     // Tamper the member-key half of the joined payload.
     expect(await sqlVerify(['invite-key-xyz|member-key-different'], sig, pub)).toBe(false);
+  });
+
+  it('(d) leading literal tags: TS array elements ⇔ SQL literal arguments', async () => {
+    // The schema writes the domain/action tags as SQL string LITERALS
+    // (digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId)), while every TS
+    // signer passes them as the first two ARRAY ELEMENTS. This case pins that the two
+    // spellings hash identical bytes — the parity the domain-separation scheme rests on.
+    const key = 'owner-key-b64url';
+    const stampId = 'stamp-xyz';
+    const message = buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
+    const sig = sign(message, priv, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+
+    const row = await db.get(
+      `select verify(digest('CadreControl.OwnerKey', 'add', ?, ?), ?, ?, 'ed25519') as ok`,
+      [key, stampId, sig, pub],
+    );
+    expect(Boolean(row?.ok)).toBe(true);
+
+    // The identical row fields under a DIFFERENT literal domain tag must not verify.
+    const other = await db.get(
+      `select verify(digest('CadreControl.ValidationKey', 'add', ?, ?), ?, ?, 'ed25519') as ok`,
+      [key, stampId, sig, pub],
+    );
+    expect(Boolean(other?.ok)).toBe(false);
   });
 });

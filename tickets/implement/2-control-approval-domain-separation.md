@@ -437,3 +437,75 @@ Learnings (settled questions — do not re-research):
 - No writer deletes a `FormationInvite` (grep confirmed) — the AuthorizedDelete split
   orphans no caller.
 - Phase 1 harness boots a `CadreNode` per test exactly like the ownerkey spec (~20 s a run).
+
+## Resume note 4 (2026-07-29, fourth run hit budget MID-IMPLEMENTATION)
+
+Phase 4 is now COMPLETE (all writers + all previously-broken test files migrated). Tree is
+believed to typecheck — the last edits fixed every known `buildAuthorizationMessage` /
+`inviteMessage` call-site mismatch, and a final grep confirmed no un-migrated
+`inviteMessage({...})` calls remain — but NO validation command has been run this run
+(budget). Pick up at "Remaining" below; run `yarn typecheck` in `packages/cadre-core` FIRST.
+
+Done this run (in addition to resume note 3's list):
+
+- `seed-bootstrap.ts` DONE: `insertSelfDeviceToken` now signs
+  `signDigest(deviceTokenAddDigest(peerId))`, `deleteDeviceToken` signs
+  `signDigest(deviceTokenRemoveDigest(peerId))`; `signPeerAuthorization` DELETED (its only
+  callers were the two device-token methods; the genuine enrollment vouch is signed
+  out-of-band and only VERIFIED in-repo, by `cadre-cli` enroll via `verifyPeerAuthorization`).
+  Stale doc comments fixed: `insertCadrePeerRow`, `deleteDeviceToken` (no longer claims
+  AuthorizedInsert gates delete), `removePeer` (tagged remove digest), `reauthorizePeer`
+  (no longer cites `digest(peerId)`), `signDigest` helper list.
+- `peer-record.ts` DONE: `peerRecordSignedPayload` digests
+  `controlAuthorizationFields('CadreControl.CadrePeer', 'publish', [peerId, multiaddr, String(updatedAt)])`;
+  module header rewritten (no more `'|'`-concat prose).
+- `device-token.ts` DONE: `deviceTokenSignedPayload` →
+  `('CadreControl.DeviceToken', 'publish', [peerId, platform, token, String(updatedAt)])`;
+  header rewritten.
+- `src/index.ts` DONE: exports `controlAuthorizationFields` + `ControlDomain`/`ControlAction`
+  from `control-authorization.js`, and `deviceTokenAddDigest`/`deviceTokenRemoveDigest` from
+  `peer-authorization.js`.
+- `control-ownerkey-self-authorization.spec.ts` DONE: `enrollMessage`/`removeMessage` retagged
+  (`'CadreControl.OwnerKey'` + `'add'`/`'remove'`, trailing `'remove'` field dropped).
+- `digest-variadic-parity.spec.ts` DONE: case (a) retagged (Strand 'add' + action-swap
+  negative), case (b) rewritten for the tagged multi-field peer-record payload, NEW case (d)
+  pins TS-array-elements ⇔ SQL-literal-tag parity (`digest('CadreControl.OwnerKey', 'add', ?, ?)`
+  with a wrong-domain negative). Header doc updated.
+- `control-authorization-binding.spec.ts` DONE: every `buildAuthorizationMessage` call tagged
+  (Strand/ValidationKey/OwnerKey); `inviteMessage` helper gained a leading
+  `action: 'add' | 'remove'` param; all call sites pass `'add'` except the delete-branch test,
+  whose forged + legitimate delete sigs now use `'remove'` (comment updated — the insert sig
+  no longer satisfies the delete, by design).
+
+Remaining (in order):
+
+- Run `yarn typecheck` in `packages/cadre-core`; fix any leftover call-site drift (mid-run
+  IDE diagnostics raced the edits, so trust the compiler, not the stale diagnostics).
+- Extend `test/control-authorization-domain-separation.spec.ts` with the 5 remaining pairs
+  from "Test requirements" (only ValidationKey→OwnerKey exists so far):
+  OwnerKey-add→ValidationKey-add; stored `CadrePeer.VouchSig`→OwnerKey-add;
+  OwnerKey-remove→CadrePeer-delete; DeviceToken-add→DeviceToken-delete
+  (helpers `deviceTokenAddDigest`/`deviceTokenRemoveDigest` exist now);
+  FormationInvite-add→FormationInvite-delete (capture the shipped `insertFormationInvite`
+  signature, then present it to a raw delete — pre-split it WOULD have passed).
+- Audit + fix the remaining suites that build payloads inline (likely assert old shapes):
+  `peer-authorization.spec.ts` (line ~13 builds the enrollment digest inline — must gain the
+  `'Cadre.Enrollment'`/`'vouch'` tags; line ~91 "inline authorizePeer construction" regression
+  case likewise), `peer-record.spec.ts`, `device-token.spec.ts`, `device-token-registry.spec.ts`,
+  `membership-connection-gater.spec.ts`, `cadre-node-authorized-surface.spec.ts`,
+  `seed-bootstrap.spec.ts` — anywhere they hand-build digests instead of calling the helpers.
+- `test-network.ts` (integration harness): prose-only comment updates (lines 26-33, 148-150
+  describe the untagged vector); its sign-callbacks need no code change.
+- `docs/architecture.md` + `docs/STATUS.md`: update authorization-digest prose.
+- Validate: `yarn lint`, `yarn typecheck`, `yarn test` in `packages/cadre-core` (all suites in
+  "Test requirements"), then `yarn build` in `packages/integration-tests`. Stream long
+  commands through `tee`.
+- Then write the review/ handoff and delete this ticket per stage rules.
+
+Learnings this run:
+
+- `signPeerAuthorization` removal is safe: grep showed its only callers were the two
+  device-token writers; `peerAuthorizationDigest` itself stays (exported, used by
+  `verifyPeerAuthorization` + cadre-cli enroll + its spec).
+- `control-database.ts` already re-exports `ControlTable`/`ControlDomain`/`ControlAction`
+  from `control-authorization.js` (line 16), so existing importers keep working.

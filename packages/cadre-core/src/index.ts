@@ -10,6 +10,9 @@ export { CadreNode } from './cadre-node.js';
 // Control database
 export { ControlDatabase, buildAuthorizationMessage, type ControlDatabaseConfig, type ControlTable } from './control-database.js';
 
+// Control-plane authorization field vector (the domain/action tagging every signer shares)
+export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';
+
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
 export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 
@@ -148,6 +151,8 @@ export {
   peerAuthorizationDigest,
   cadrePeerVoucherDigest,
   cadrePeerRemoveDigest,
+  deviceTokenAddDigest,
+  deviceTokenRemoveDigest,
   verifyPeerAuthorization,
   verifyCadrePeerVoucher
 } from './peer-authorization.js';

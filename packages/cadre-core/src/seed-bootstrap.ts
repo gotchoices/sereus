@@ -23,7 +23,7 @@ import type {
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
-import { peerAuthorizationDigest, cadrePeerVoucherDigest, cadrePeerRemoveDigest } from './peer-authorization.js';
+import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest, deviceTokenRemoveDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -312,7 +312,8 @@ export class SeedBootstrapService {
 
   /**
    * Shared owner-signed `CadrePeer` INSERT. Mints a fresh single-use `StampId`
-   * and signs the voucher digest `digest(peerId, stampId)` ({@link cadrePeerVoucherDigest})
+   * and signs the voucher digest `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`
+   * ({@link cadrePeerVoucherDigest})
    * with the owner key (satisfying `AuthorizedInsert`), then writes the full record
    * row with the vouching (owner, signature) persisted into VouchOwner/VouchSig.
    * The owner signature does NOT cover the address columns — those are vouched only
@@ -329,9 +330,9 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // Fresh single-use nonce; the voucher signs digest(peerId, stampId) so a captured
-    // insert can't be replayed (StampId is unique) and can't be repurposed as a delete
-    // (which signs a distinct 'remove'-scoped digest).
+    // Fresh single-use nonce; the voucher signs the 'vouch'-tagged digest over
+    // (peerId, stampId) so a captured insert can't be replayed (StampId is unique) and
+    // can't be repurposed as a delete (which signs a distinct 'remove'-tagged digest).
     // NOTE: StampId uniqueness only blocks insert-replay while the row (or its StampId)
     // is still present — a delete frees the StampId, so a captured authorized insert could
     // be replayed to re-add a peer the owner had removed (a revocation bypass). Fully
@@ -355,8 +356,8 @@ export class SeedBootstrapService {
    * Owner-signed INSERT of a peer's OWN self-signed `DeviceToken` row.
    *
    * Counterpart to {@link insertSelfPeerRecord} for the device-token registry: the
-   * row is owner-signed (satisfying `DeviceToken.AuthorizedInsert`, which vouches
-   * membership exactly as `CadrePeer.AuthorizedInsert` does) AND carries the peer's
+   * row is owner-signed (satisfying `DeviceToken.AuthorizedInsert` via the
+   * 'add'-tagged digest, {@link deviceTokenAddDigest}) AND carries the peer's
    * own self-`Sig` over the token payload. The owner signature covers only the
    * PeerId — it does NOT vouch the token contents; the peer's `Sig` (verified at
    * resolve time against the bound `CadrePeer.PublicKey`) is what makes the row
@@ -364,7 +365,7 @@ export class SeedBootstrapService {
    * when the node is its own owner.
    */
   async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
-    const signature = this.signPeerAuthorization(record.peerId);
+    const signature = this.signDigest(deviceTokenAddDigest(record.peerId));
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -379,12 +380,14 @@ export class SeedBootstrapService {
 
   /**
    * Owner-signed DELETE of a peer's `DeviceToken` row (logout / token
-   * invalidation). The `DeviceToken.AuthorizedInsert` constraint gates both insert
-   * AND delete on an owner signature over `digest(old.PeerId)`, so — like
-   * {@link removePeer} for `CadrePeer` — clearing a token requires the owner key.
+   * invalidation). The `DeviceToken.AuthorizedDelete` constraint validates an owner
+   * signature over the 'remove'-tagged digest ({@link deviceTokenRemoveDigest}) —
+   * deliberately distinct from the insert digest, so a captured insert approval can
+   * never be replayed to clear a token. Like {@link removePeer} for `CadrePeer`,
+   * clearing a token requires the owner key.
    */
   async deleteDeviceToken(peerId: string): Promise<void> {
-    const signature = this.signPeerAuthorization(peerId);
+    const signature = this.signDigest(deviceTokenRemoveDigest(peerId));
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -395,16 +398,6 @@ export class SeedBootstrapService {
         where PeerId = ?
     `, [this.ownerPublicKey, signature, peerId]);
     log('Device token removed (owner-signed): %s', peerId);
-  }
-
-  /**
-   * Sign a peer ID with the owner key for a `CadrePeer` / `DeviceToken`
-   * insert-or-delete. The signed bytes come from the shared
-   * {@link peerAuthorizationDigest} helper so the offline `cadre enroll register`
-   * verifier checks the exact same construction. Throws if no owner key is set.
-   */
-  private signPeerAuthorization(peerId: string): string {
-    return this.signDigest(peerAuthorizationDigest(peerId));
   }
 
   /**
@@ -424,9 +417,10 @@ export class SeedBootstrapService {
 
   /**
    * Sign a base64url digest with the owner key (ed25519). The single place the
-   * owner private key is applied; callers pass the canonical digest for the specific
-   * action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
-   * {@link peerAuthorizationDigest}). Throws if no owner key is set.
+   * owner private key is applied; callers pass the canonical domain-tagged digest for
+   * the specific action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
+   * {@link deviceTokenAddDigest} / {@link deviceTokenRemoveDigest}). Throws if no
+   * owner key is set.
    */
   private signDigest(digestB64url: string): string {
     return sign(
@@ -443,8 +437,9 @@ export class SeedBootstrapService {
    * Remove a peer from the cadre by owner signature.
    *
    * The `CadrePeer.AuthorizedDelete` (`check on delete`) constraint validates a
-   * signature over the DISTINCT 'remove'-scoped digest `digest(old.PeerId, old.StampId,
-   * 'remove')` ({@link cadrePeerRemoveDigest}) by an owner key — deliberately NOT the
+   * signature over the DISTINCT 'remove'-tagged digest
+   * `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`
+   * ({@link cadrePeerRemoveDigest}) by an owner key — deliberately NOT the
    * insert voucher digest, so the row's stored `VouchSig` can never be replayed to delete.
    */
   async removePeer(peerId: string): Promise<void> {
@@ -480,8 +475,9 @@ export class SeedBootstrapService {
   /**
    * Owner "re-touch" of an existing `CadrePeer` membership row: bump
    * `UpdatedAt` under the owner branch of `CadrePeer.AuthorizedUpdate` (a
-   * signature over `digest(peerId)` — the same construction {@link authorizePeer}
-   * uses) so the row is re-emitted as a fresh, broadcasting transaction.
+   * signature over the voucher digest {@link cadrePeerVoucherDigest} — the same
+   * construction the insert uses) so the row is re-emitted as a fresh,
+   * broadcasting transaction.
    *
    * This is the write-while-alone re-replication primitive
    * (`control-write-ensure-replicated`): a membership row that committed

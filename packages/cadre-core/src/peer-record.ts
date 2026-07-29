@@ -3,17 +3,20 @@
  * signs when publishing its own `CadrePeer` row and re-verifies when resolving
  * another peer's row.
  *
- * The signed payload is a single SHA-256 digest of a delimited string of the
- * authenticated fields. It is intentionally NOT JSON-canonicalized: a delimited
- * digest is trivially deterministic across node/browser/RN (plain string concat
- * + sha256, no key ordering) and — crucially — is reconstructable inside the
- * `CadrePeer.AuthorizedUpdate` SQL constraint from the row's own columns:
+ * The signed payload is a single SHA-256 digest over the shared domain-tagged
+ * field vector (see control-authorization.ts) — the crypto plugin's injective
+ * multi-field encoding, so no field split is ambiguous. It is intentionally NOT
+ * JSON-canonicalized (deterministic across node/browser/RN, no key ordering)
+ * and — crucially — is reconstructable inside the `CadrePeer.AuthorizedUpdate`
+ * SQL constraint from the row's own columns:
  *
- *   digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text))
+ *   digest('CadreControl.CadrePeer', 'publish',
+ *          new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text))
  *
  * Keep {@link peerRecordSignedPayload} and that constraint byte-for-byte in
- * sync. The `'|'` delimiter is safe: a base58btc PeerId, a multiaddr (which uses
- * `/`), and a base-10 integer never contain it.
+ * sync. The `'publish'` action tag marks this as a peer's SELF-signed record
+ * (signed with the peer's own key, not an owner key) and keeps it disjoint from
+ * every owner-signed digest.
  *
  * `publicKey` is deliberately excluded from the payload — it is the key the
  * signature is verified *with* (so a signature already commits to exactly one
@@ -21,6 +24,7 @@
  */
 
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
+import { controlAuthorizationFields } from './control-authorization.js';
 import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
 
 /**
@@ -51,8 +55,8 @@ const SIGNALING_PREFIX = '/p2p-circuit';
  * @param updatedAt - epoch-ms freshness stamp
  */
 export function peerRecordSignedPayload(peerId: string, multiaddr: string, updatedAt: number): string {
-  const joined = `${peerId}|${multiaddr}|${updatedAt}`;
-  return digest([joined], 'sha256', 'base64url') as string;
+  const fields = controlAuthorizationFields('CadreControl.CadrePeer', 'publish', [peerId, multiaddr, String(updatedAt)]);
+  return digest(fields, 'sha256', 'base64url') as string;
 }
 
 /**

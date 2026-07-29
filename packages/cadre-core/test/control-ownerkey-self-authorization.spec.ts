@@ -58,13 +58,13 @@ function signAs(kp: KeyPair, message: Uint8Array): string {
   return cryptoSign(message, kp.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
-/** The enrollment message the insert branch binds: digest(new.Key, new.StampId). */
+/** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId). */
 const enrollMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage([key, stampId]);
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [key, stampId]);
 
-/** The removal message the delete branch binds: digest(old.Key, old.StampId, 'remove'). */
+/** The removal message the delete branch binds: digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId). */
 const removeMessage = (key: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage([key, stampId, 'remove']);
+  buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [key, stampId]);
 
 describe('OwnerKey self-authorization and unauthorized deletion', () => {
   let node: CadreNode;

@@ -88,8 +88,10 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   }
 
   /**
-   * Build the FormationInvite row-bound authorization message in the schema's field
-   * order: Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId.
+   * Build the FormationInvite row-bound authorization message: the domain/action tags
+   * ('add' for AuthorizedInsert over new.*, 'remove' for AuthorizedDelete over old.*)
+   * followed by the schema's field order: Token, sAppId, ExpiresAt, TotalUses,
+   * ValidationUrl, StrandId, StampId.
    * Null/absent ExpiresAt/TotalUses/ValidationUrl/StrandId sign as '' (matching the
    * schema's coalesce(...,'')), and TotalUses is the decimal string (matching
    * cast(new.TotalUses as text)). Tests pass an already-canonical datetime literal for
@@ -97,7 +99,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
    * canonicalisation is needed. The raw inserts below omit the StrandId column (defaults
    * null → signs as ''), so these tests exercise the unbound/legacy path.
    */
-  function inviteMessage(fields: {
+  function inviteMessage(action: 'add' | 'remove', fields: {
     token: string;
     sAppId: string;
     expiresAt?: string;
@@ -106,7 +108,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     strandId?: string;
     stampId: string;
   }): Uint8Array {
-    return buildAuthorizationMessage([
+    return buildAuthorizationMessage('CadreControl.FormationInvite', action, [
       fields.token,
       fields.sAppId,
       fields.expiresAt ?? '',
@@ -223,7 +225,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const s2 = 'strand-attacker-' + Math.random().toString(36).slice(2);
 
     // Owner signs a valid authorization for s1 (Id, Type, '', stamp).
-    const sig = signMessage(buildAuthorizationMessage([s1, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [s1, 'o', '', stamp]));
 
     const before = await strandCount();
     // Attacker transplants the (stamp, sig) pair onto a DIFFERENT strand id.
@@ -235,8 +237,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('cross-table transplant rejected: a Strand signature cannot authorize an OwnerKey insert', async () => {
     const stamp = freshStamp();
     const sId = 'strand-xtab-' + Math.random().toString(36).slice(2);
-    // A valid Strand authorization (4-field message).
-    const strandSig = signMessage(buildAuthorizationMessage([sId, 'o', '', stamp]));
+    // A valid Strand authorization (tagged 4-field message).
+    const strandSig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [sId, 'o', '', stamp]));
 
     const attackerKey = generatePrivateKey('ed25519', 'base64url') as string;
     const attackerPub = getPublicKey(attackerKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -251,7 +253,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('replay rejected: re-using the exact (Id, StampId, Signature) is blocked by the unique StampId', async () => {
     const stamp = freshStamp();
     const id = 'strand-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage([id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'o', '', stamp]));
 
     // First insert is valid and succeeds.
     await rawInsertStrand(sig, id, 'o', null, stamp);
@@ -266,7 +268,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-' + Math.random().toString(36).slice(2);
     // Sign for Type 'o' ...
-    const sig = signMessage(buildAuthorizationMessage([id, 'o', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'o', '', stamp]));
 
     const before = await strandCount();
     // ... but insert the row with Type 'c'. The verify rebinds to 'c' and fails.
@@ -279,7 +281,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const id = 'strand-tamper-mpk-' + Math.random().toString(36).slice(2);
     // Sign for an empty (null) MemberPrivateKey ...
-    const sig = signMessage(buildAuthorizationMessage([id, 'c', '', stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.Strand', 'add', [id, 'c', '', stamp]));
 
     const before = await strandCount();
     // ... but insert a row carrying an actual MemberPrivateKey.
@@ -303,7 +305,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const k1 = 'val-src-' + Math.random().toString(36).slice(2);
     const k2 = 'val-attacker-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage([k1, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [k1, stamp]));
 
     const before = await validationKeyCount();
     await expect(rawInsertValidationKey(sig, k2, stamp)).rejects.toThrow();
@@ -314,7 +316,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('ValidationKey replay rejected: re-using the exact (Key, StampId, Signature) is blocked', async () => {
     const stamp = freshStamp();
     const key = 'val-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(buildAuthorizationMessage([key, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stamp]));
 
     await rawInsertValidationKey(sig, key, stamp);
     const after = await validationKeyCount();
@@ -327,7 +329,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const stamp = freshStamp();
     const newAuthKey = generatePrivateKey('ed25519', 'base64url') as string;
     const newAuthPub = getPublicKey(newAuthKey, 'ed25519', 'base64url', 'base64url') as string;
-    const sig = signMessage(buildAuthorizationMessage([newAuthPub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [newAuthPub, stamp]));
 
     const before = await ownerKeyCount();
     await rawInsertOwnerKey(sig, newAuthPub, stamp);
@@ -346,7 +348,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     ) as string;
 
     // Valid authorization built for k1Pub ...
-    const sig = signMessage(buildAuthorizationMessage([k1Pub, stamp]));
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.OwnerKey', 'add', [k1Pub, stamp]));
 
     const before = await ownerKeyCount();
     // ... transplanted onto an attacker-chosen key. Rebound verify fails.
@@ -396,7 +398,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const t2 = 'fi-attacker-' + Math.random().toString(36).slice(2);
 
     // Owner signs a valid authorization for invite t1 (single-use, no expiry/url).
-    const sig = signMessage(inviteMessage({ token: t1, sAppId: 'sapp-a', totalUses: 1, stampId: stamp }));
+    const sig = signMessage(inviteMessage('add', { token: t1, sAppId: 'sapp-a', totalUses: 1, stampId: stamp }));
 
     const before = await inviteCount();
     // Attacker transplants the captured (stamp, sig) onto a DIFFERENT token with escalated uses.
@@ -427,7 +429,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
       const tampered = c.mutate(signed);
 
       // Sign over `signed`, then insert the `tampered` row reusing the same (stamp, sig).
-      const sig = signMessage(inviteMessage({
+      const sig = signMessage(inviteMessage('add', {
         token, sAppId: signed.sAppId, expiresAt: signed.expiresAt,
         totalUses: signed.totalUses, validationUrl: signed.validationUrl, stampId: stamp,
       }));
@@ -446,7 +448,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('FormationInvite replay rejected: re-inserting the exact (row, StampId, Signature) is blocked', async () => {
     const stamp = freshStamp();
     const token = 'fi-replay-' + Math.random().toString(36).slice(2);
-    const sig = signMessage(inviteMessage({ token, sAppId: 'sapp-replay', totalUses: 1, stampId: stamp }));
+    const sig = signMessage(inviteMessage('add', { token, sAppId: 'sapp-replay', totalUses: 1, stampId: stamp }));
 
     await rawInsertFormationInvite(sig, token, 'sapp-replay', null, 1, null, stamp);
     const after = await inviteCount();
@@ -465,11 +467,11 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const tokenA = 'fi-su-a-' + Math.random().toString(36).slice(2);
     const tokenB = 'fi-su-b-' + Math.random().toString(36).slice(2);
 
-    const sigA = signMessage(inviteMessage({ token: tokenA, sAppId: 'sapp-su', totalUses: 1, stampId: stamp }));
+    const sigA = signMessage(inviteMessage('add', { token: tokenA, sAppId: 'sapp-su', totalUses: 1, stampId: stamp }));
     await rawInsertFormationInvite(sigA, tokenA, 'sapp-su', null, 1, null, stamp);
     const after = await inviteCount();
 
-    const sigB = signMessage(inviteMessage({ token: tokenB, sAppId: 'sapp-su', totalUses: 1, stampId: stamp }));
+    const sigB = signMessage(inviteMessage('add', { token: tokenB, sAppId: 'sapp-su', totalUses: 1, stampId: stamp }));
     await expect(
       rawInsertFormationInvite(sigB, tokenB, 'sapp-su', null, 1, null, stamp),
     ).rejects.toThrow();
@@ -486,19 +488,20 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const validationUrl = 'https://del.example';
 
     // Insert a valid invite carrying the full field set.
-    const insertSig = signMessage(inviteMessage({ token, sAppId, expiresAt, totalUses, validationUrl, stampId: stamp }));
+    const insertSig = signMessage(inviteMessage('add', { token, sAppId, expiresAt, totalUses, validationUrl, stampId: stamp }));
     await rawInsertFormationInvite(insertSig, token, sAppId, expiresAt, totalUses, validationUrl, stamp);
     const present = await inviteCount();
 
     // A forged delete signature (over a different stamp) is rejected; the row remains.
-    const forgedSig = signMessage(inviteMessage({ token, sAppId, expiresAt, totalUses, validationUrl, stampId: freshStamp() }));
+    const forgedSig = signMessage(inviteMessage('remove', { token, sAppId, expiresAt, totalUses, validationUrl, stampId: freshStamp() }));
     await expect(rawDeleteFormationInvite(forgedSig, token)).rejects.toThrow();
     expect(await inviteCount()).toBe(present);
 
-    // A delete signature bound to the OLD row (stored columns incl. StampId) succeeds. The
-    // delete branch's coalesce(new, old) reads the OLD row, whose bound message equals the
-    // insert message (same field values).
-    const deleteSig = signMessage(inviteMessage({ token, sAppId, expiresAt, totalUses, validationUrl, stampId: stamp }));
+    // A 'remove'-tagged delete signature bound to the OLD row (stored columns incl.
+    // StampId) succeeds. AuthorizedDelete reads old.* — the same field values the insert
+    // signed, but under the distinct 'remove' action tag, so the insert signature itself
+    // would NOT satisfy it.
+    const deleteSig = signMessage(inviteMessage('remove', { token, sAppId, expiresAt, totalUses, validationUrl, stampId: stamp }));
     await rawDeleteFormationInvite(deleteSig, token);
     expect(await inviteCount()).toBe(present - 1);
     expect(await rawDb.get('select Token from CadreControl.FormationInvite where Token = ?', [token])).toBeUndefined();
@@ -507,8 +510,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
   it('FormationInvite cross-table transplant rejected: an invite signature cannot authorize a Strand insert', async () => {
     const stamp = freshStamp();
     const token = 'fi-xtab-' + Math.random().toString(36).slice(2);
-    // A valid FormationInvite authorization (6-field message).
-    const inviteSig = signMessage(inviteMessage({ token, sAppId: 'sapp-xtab', totalUses: 1, stampId: stamp }));
+    // A valid FormationInvite authorization (tagged row-field message).
+    const inviteSig = signMessage(inviteMessage('add', { token, sAppId: 'sapp-xtab', totalUses: 1, stampId: stamp }));
 
     const attackerStrand = 'strand-from-invite-' + Math.random().toString(36).slice(2);
     const before = await strandCount();

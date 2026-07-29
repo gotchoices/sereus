@@ -4,20 +4,20 @@
  * another peer's row.
  *
  * Modeled directly on {@link peerRecordSignedPayload} (peer-record.ts): the signed
- * payload is a single SHA-256 digest of a delimited string of the authenticated
- * fields. It is intentionally NOT JSON-canonicalized — a delimited digest is
- * trivially deterministic across node/browser/RN (plain string concat + sha256, no
- * key ordering) and is reconstructable inside the `DeviceToken.AuthorizedUpdate` SQL
- * constraint from the row's own columns:
+ * payload is a single SHA-256 digest over the shared domain-tagged field vector
+ * (see control-authorization.ts) — the crypto plugin's injective multi-field
+ * encoding, so no field split is ambiguous even with an opaque platform token. It
+ * is intentionally NOT JSON-canonicalized (deterministic across node/browser/RN,
+ * no key ordering) and is reconstructable inside the `DeviceToken.AuthorizedUpdate`
+ * SQL constraint from the row's own columns:
  *
- *   digest(new.PeerId || '|' || new.Platform || '|' || new.Token || '|'
- *          || cast(new.UpdatedAt as text))
+ *   digest('CadreControl.DeviceToken', 'publish',
+ *          new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text))
  *
  * Keep {@link deviceTokenSignedPayload} and that constraint byte-for-byte in sync.
- * The `'|'` delimiter is safe: a base58btc PeerId, a fixed `'fcm'`/`'apns'` platform
- * string, and a base-10 integer never contain it. The opaque platform token is the
- * last variable-length field before the integer stamp, so even a token containing a
- * `'|'` cannot create a collision with a different field split.
+ * The `'publish'` action tag marks this as a peer's SELF-signed record (signed with
+ * the peer's own key, not an owner key) and keeps it disjoint from every
+ * owner-signed digest.
  *
  * Unlike a peer-address record, a device-token record carries NO public key: the
  * signature is verified against the `CadrePeer.PublicKey` bound to the same PeerId
@@ -26,6 +26,7 @@
  */
 
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
+import { controlAuthorizationFields } from './control-authorization.js';
 import type { DeviceTokenRecord, PushPlatform } from './types.js';
 
 /**
@@ -34,8 +35,12 @@ import type { DeviceTokenRecord, PushPlatform } from './types.js';
  * base64url output of a single `digest(...)`, which round-trips cleanly.
  */
 export function deviceTokenSignedPayload(record: Omit<DeviceTokenRecord, 'sig'>): string {
-  const joined = `${record.peerId}|${record.platform}|${record.token}|${record.updatedAt}`;
-  return digest([joined], 'sha256', 'base64url') as string;
+  const fields = controlAuthorizationFields(
+    'CadreControl.DeviceToken',
+    'publish',
+    [record.peerId, record.platform, record.token, String(record.updatedAt)]
+  );
+  return digest(fields, 'sha256', 'base64url') as string;
 }
 
 /**
