@@ -7,26 +7,31 @@ difficulty: hard
 # Authorize `Strand.Member` removal, and stop revoked members re-admitting themselves
 
 <!-- resume-note -->
-## Resume note (prior run hit soft token budget during Phase 1 — NO code changes were made)
+## Resume note (second run hit soft token budget right after Phase 1 — NO code changes made)
 
-A previous agent run spent its budget on discovery and stopped before editing anything.
-The working tree has zero modifications from that run. Everything below the note is the
-original ticket, still fully valid. Findings to save the next agent re-discovery:
+Two prior runs. Run 1 did discovery only (findings kept below). Run 2 ran the Phase 1
+spike and stopped. The working tree has zero modifications. Everything below the note is
+the original ticket, still fully valid.
 
+- **PHASE 1 SPIKE DONE — PASSED. Skip Phase 1 entirely; build on `committed.*` as designed.**
+  A throwaway spec (`packages/cadre-core/test/zz-spike-committed.spec.ts`, since deleted)
+  opened a real strand via `connectToStrand({mode:'bootstrap'})` (local transactor,
+  MemoryRawStorage) and applied a spike schema table with
+  `check on insert, delete ((old.Id is null and (select count(1) from committed.T) = 0) or ...)`.
+  All three behaviors confirmed under the LOCAL transactor:
+  1. bootstrap insert into empty committed set → accepted;
+  2. second insert (committed count 1) → rejected, error message names the constraint
+     (`/Boot/` matched, so `rejects.toThrow(/ConstraintName/)` pinning works);
+  3. same-transaction wipe-then-seat (delete sole row + insert new row in one explicit
+     txn) → rejected at commit, pre-existing row survives rollback.
+  Note the spike table was declared via plain `db.exec('declare schema Spike {...} apply
+  schema Spike;')` AFTER connectToStrand — same engine, default vtab optimystic/local —
+  the same path `composeStrand` step 6 uses for `Strand`. No fallback needed; delete the
+  ticket's fallback paragraph consideration when writing the schema.
 - **All named files were read; line refs confirmed.** `Member` table: `schemas/strand.qsql`
   lines 93–116; mirrored byte-identically in
   `packages/quereus-plugin-sereus/src/strand-schema.ts` lines 104–127. The two copies are
   currently in sync — keep them so.
-- **Phase 1 spike (`committed.*` inside `declare schema Strand`) was NOT yet run.** One
-  refinement to the spike question: `composeStrand`
-  (`packages/quereus-plugin-sereus/src/compose-strand.ts` step 6) applies the schema on the
-  same Quereus engine `CadreControl` uses, so the parser side is not in doubt — the open
-  variable is the optimystic transactor. `ControlDatabase` (where `committed.*` is proven)
-  runs `default_transactor: 'network'` (`control-database.ts:208`), while the strand tests
-  run bootstrap mode → `'local'` transactor. So spike specifically: does `committed.<Table>`
-  evaluate correctly under the optimystic **local** transactor, in a
-  `connectToStrand({mode:'bootstrap'})` strand? Reuse the `openStrand('c')` helper from
-  `packages/cadre-core/test/strand-membership-peer-rotation.spec.ts` for the spike.
 - **Payload-collision check done:** `Manager.Authorized`'s delete branch signs bare
   `digest(old.MemberKey)`; the planned `digest('Strand.Member', 'add'|'remove', key)`
   variadic form is disjoint from every existing strand payload (all current ones are
@@ -206,9 +211,8 @@ says so and `control-schema-drift.spec.ts` shows the drift-test pattern. Edit bo
 
 ### Phase 1 — de-risk
 
-- Spike whether `committed.<Table>` resolves inside `declare schema Strand { ... }` as applied by
-  `composeStrand`. If not, adopt the `old.Key is null` / post-image fallback and say so in the
-  review handoff.
+- ~~Spike whether `committed.<Table>` resolves inside `declare schema Strand { ... }` as applied by
+  `composeStrand`.~~ **DONE — passed (see resume note). No fallback needed; use `committed.*`.**
 
 ### Phase 2 — schema
 
