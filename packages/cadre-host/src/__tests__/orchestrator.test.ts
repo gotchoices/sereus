@@ -253,6 +253,16 @@ describe('HostProcessOrchestrator.removeContainer', () => {
   });
 });
 
+/**
+ * `getStats` goes through `pidusage`, which on Windows shells out: modern
+ * builds no longer ship `wmic`, so it falls back to spawning `powershell.exe`
+ * to run `gwmi win32_process` — and the first sample for a fresh pid costs
+ * *two* such spawns, because CPU percent needs a prior baseline. Measured
+ * ~2.8 s idle and ~4.9 s on a loaded machine, so the 5 s default test timeout
+ * is not a real budget for this one. Give it explicit headroom.
+ */
+const STATS_TIMEOUT_MS = 30_000;
+
 describe('HostProcessOrchestrator.getStats', () => {
   it('returns plausible numbers with zero network counters', async () => {
     const orch = makeOrchestrator();
@@ -266,7 +276,7 @@ describe('HostProcessOrchestrator.getStats', () => {
     expect(stats.memoryBytes).toBeGreaterThan(0);
     expect(stats.networkRxBytes).toBe(0);
     expect(stats.networkTxBytes).toBe(0);
-  });
+  }, STATS_TIMEOUT_MS);
 });
 
 describe('HostProcessOrchestrator log rotation at spawn', () => {
@@ -517,6 +527,9 @@ describe('child survives orchestrator exit', () => {
         try { rmSync(handle.workdir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 }); } catch { /* ignore */ }
       }
     },
+    // The helper spawn alone budgets 15 s; the surrounding waits add ~0.8 s
+    // more. Under the 5 s default the test could never reach its own timeout.
+    30_000,
   );
 });
 
