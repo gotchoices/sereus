@@ -23,6 +23,9 @@ function readJson(path) {
 	return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+// NOTE: coverage is exactly the set of `link:` resolutions. A dependency on a sibling package
+// that has no `link:` resolution installs from the registry, so there is no local version to
+// drift from and nothing to check — but it also means the gate is silent about it.
 function linkedVersions(resolutions) {
 	const versions = {};
 	const skipped = [];
@@ -41,15 +44,29 @@ function linkedVersions(resolutions) {
 	return { versions, skipped };
 }
 
+// NOTE: only scans `packages/*`, which is exactly the root `workspaces` globs today. If a
+// second workspace glob is ever added, teach this to read `workspaces` instead.
 function workspacePackages(root) {
 	const packagesDir = join(root, 'packages');
+	if (!existsSync(packagesDir)) {
+		return [];
+	}
 	return readdirSync(packagesDir, { withFileTypes: true })
 		.filter((entry) => entry.isDirectory())
 		.map((entry) => join(packagesDir, entry.name, 'package.json'))
 		.filter((path) => existsSync(path));
 }
 
+// `semver.gtr`/`ltr` throw on an unparseable range or version (e.g. a `workspace:^` or
+// `catalog:` protocol range, or a sibling manifest with a malformed version), so the
+// unparseable cases are reported as their own failure rather than crashing the gate.
 function direction(linkedVersion, range) {
+	if (!semver.validRange(range)) {
+		return `declared range "${range}" is not a semver range, so it cannot be checked against the linked workspace`;
+	}
+	if (!semver.valid(linkedVersion)) {
+		return `linked workspace version "${linkedVersion}" is not a valid semver version`;
+	}
 	if (semver.gtr(linkedVersion, range)) {
 		return 'declared range is too old — it excludes the linked workspace version already built and tested here';
 	}
@@ -97,7 +114,7 @@ function main() {
 					range,
 					linkedVersion,
 					reason: direction(linkedVersion, range),
-					suggestion: `^${linkedVersion}`,
+					suggestion: semver.valid(linkedVersion) ? `^${linkedVersion}` : null,
 				});
 			}
 		}
@@ -113,7 +130,10 @@ function main() {
 		console.error(`  ${failure.packageName} (${failure.manifestPath})`);
 		console.error(`    ${failure.field}["${failure.depName}"] = "${failure.range}" — linked workspace is ${failure.linkedVersion}`);
 		console.error(`    ${failure.reason}`);
-		console.error(`    suggested edit: "${failure.depName}": "${failure.suggestion}"\n`);
+		if (failure.suggestion) {
+			console.error(`    suggested edit: "${failure.depName}": "${failure.suggestion}"`);
+		}
+		console.error('');
 	}
 	console.error(`${failures.length} declared range(s) do not admit their linked workspace version.`);
 	return 1;

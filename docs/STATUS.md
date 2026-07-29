@@ -527,7 +527,10 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   excludes 0.17.0; `^4.4.0` admits 4.5.0) since it defers to `semver` rather than a naive floor
   comparison. `scripts/check-dep-ranges.test.mjs` (`yarn test:dep-ranges`, chained into root
   `yarn test`) covers both caret-boundary directions, the "declared newer than linked" direction,
-  the absent-sibling skip, and a clean pass, each against a throwaway fixture workspace (not this
+  the absent-sibling skip, a clean pass, multiple drifted ranges reported in one run across all three
+  dependency fields, a non-`link:` resolution being ignored, and the two unparseable-input cases (a
+  non-semver declared range such as `workspace:^`, and a malformed sibling version) reported as
+  readable failures rather than a crash — each against a throwaway fixture workspace (not this
   repo's own packages) via `DEP_RANGE_CHECK_ROOT`.
 - `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
   run them when the sibling workspace is bumped, not only at release time.

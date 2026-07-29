@@ -37,14 +37,16 @@ function makeLinkedSibling(fixture, relativeLinkPath, version) {
 }
 
 function run(fixture) {
-	const result = spawnSync(process.execPath, [scriptPath], {
-		env: { ...process.env, DEP_RANGE_CHECK_ROOT: fixture.root },
-		encoding: 'utf8',
-	});
-	for (const path of fixture.cleanupPaths) {
-		rmSync(path, { recursive: true, force: true });
+	try {
+		return spawnSync(process.execPath, [scriptPath], {
+			env: { ...process.env, DEP_RANGE_CHECK_ROOT: fixture.root },
+			encoding: 'utf8',
+		});
+	} finally {
+		for (const path of fixture.cleanupPaths) {
+			rmSync(path, { recursive: true, force: true });
+		}
 	}
-	return result;
 }
 
 test('0.x caret excludes a newer linked version (real 2026-07-29 recurrence shape)', () => {
@@ -89,6 +91,60 @@ test('absent sibling workspace is skipped, not failed', () => {
 	const result = run(fixture);
 	assert.equal(result.status, 0);
 	assert.match(result.stdout, /skip:.*linked workspace not found/);
+});
+
+test('every drifted range in the run is reported, not only the first', () => {
+	const fixture = makeFixture({
+		resolutions: {
+			'@optimystic/db-core': 'link:../optimystic/packages/db-core',
+			'@quereus/quereus': 'link:../quereus/packages/quereus',
+		},
+		packages: {
+			'pkg-a': { dependencies: { '@optimystic/db-core': '^0.16.3' }, peerDependencies: { '@quereus/quereus': '~4.4.0' } },
+			'pkg-b': { optionalDependencies: { '@optimystic/db-core': '^0.15.0' } },
+		},
+	});
+	makeLinkedSibling(fixture, '../optimystic/packages/db-core', '0.17.0');
+	makeLinkedSibling(fixture, '../quereus/packages/quereus', '4.5.1');
+	const result = run(fixture);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /3 declared range\(s\) do not admit/);
+	assert.match(result.stderr, /dependencies\["@optimystic\/db-core"\] = "\^0\.16\.3"/);
+	assert.match(result.stderr, /peerDependencies\["@quereus\/quereus"\] = "~4\.4\.0"/);
+	assert.match(result.stderr, /optionalDependencies\["@optimystic\/db-core"\] = "\^0\.15\.0"/);
+});
+
+test('a resolution that is not a link: target is ignored', () => {
+	const fixture = makeFixture({
+		resolutions: { '@optimystic/db-core': '0.17.0' },
+		packages: { 'pkg-a': { dependencies: { '@optimystic/db-core': '^0.14.1' } } },
+	});
+	const result = run(fixture);
+	assert.equal(result.status, 0);
+	assert.match(result.stdout, /nothing to check/);
+});
+
+test('an unparseable declared range fails with a readable reason, not a crash', () => {
+	const fixture = makeFixture({
+		resolutions: { '@optimystic/db-core': 'link:../optimystic/packages/db-core' },
+		packages: { 'pkg-a': { dependencies: { '@optimystic/db-core': 'workspace:^' } } },
+	});
+	makeLinkedSibling(fixture, '../optimystic/packages/db-core', '0.17.0');
+	const result = run(fixture);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /is not a semver range/);
+});
+
+test('an unparseable linked workspace version fails with a readable reason', () => {
+	const fixture = makeFixture({
+		resolutions: { '@optimystic/db-core': 'link:../optimystic/packages/db-core' },
+		packages: { 'pkg-a': { dependencies: { '@optimystic/db-core': '^0.17.0' } } },
+	});
+	makeLinkedSibling(fixture, '../optimystic/packages/db-core', 'not-a-version');
+	const result = run(fixture);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /is not a valid semver version/);
+	assert.doesNotMatch(result.stderr, /suggested edit/);
 });
 
 test('a satisfied range passes cleanly', () => {
