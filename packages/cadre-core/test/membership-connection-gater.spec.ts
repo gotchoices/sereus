@@ -2,11 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { ConnectionGater, PeerId, MultiaddrConnection } from '@libp2p/interface';
-import { generatePrivateKey, getPublicKey, sign } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
-import type { CadreNodeConfig } from '../src/types.js';
-import { cadrePeerVoucherDigest } from '../src/peer-authorization.js';
-import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
 import {
   createMembershipConnectionGater,
   DEFAULT_ENROLLMENT_WINDOW_MS,
@@ -16,6 +12,7 @@ import {
 import { StrandSolicitationService } from '../src/strand-solicitation.js';
 import { SEED_PROTOCOL } from '../src/seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
+import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith } from './membership-gate-helpers.js';
 
 /**
  * Unit coverage for the control-network inbound connection gate
@@ -24,13 +21,11 @@ import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
  * windows, anchor state, bootstrap infra, formation-responder mode, the
  * authorized-member set), and the `createInvite` → enrollment-window wiring.
  * The wire-level effect (an outsider's dial actually failing) is proven in the
- * integration scenario `membership-connection-gater.integration.ts`.
+ * integration scenario `membership-connection-gater.integration.ts`. The
+ * fail-closed per-stream sibling gate is covered by
+ * `control-stream-authorization.spec.ts`; the row builders and node injector
+ * both suites share live in `membership-gate-helpers.ts`.
  */
-
-/** A peer with a real anchored voucher in the receiver's rows. */
-const MEMBER = 'peer-member';
-/** A peer with no row at all — the outsider the gate exists to refuse. */
-const STRANGER = 'peer-stranger';
 
 function fakePeerId(id: string): PeerId {
   return { toString: () => id } as unknown as PeerId;
@@ -105,103 +100,6 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
 });
 
 // ── CadreNode.admitInboundControlConnection decision matrix ─────────────────
-
-function createConfig(bootstrapNodes: string[] = []): CadreNodeConfig {
-  return {
-    controlNetwork: {
-      partyId: 'connection-gater-test-' + Math.random().toString(36).slice(2),
-      bootstrapNodes
-    },
-    profile: 'transaction'
-  };
-}
-
-type PeerRow = {
-  peerId: string;
-  multiaddr: string | null;
-  stampId: string | null;
-  vouchOwner: string | null;
-  vouchSig: string | null;
-};
-
-interface Owner { privateKey: string; publicKey: string }
-
-function makeOwner(): Owner {
-  const privateKey = generatePrivateKey('ed25519', 'base64url') as string;
-  const publicKey = getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string;
-  return { privateKey, publicKey };
-}
-
-/** A row carrying a REAL voucher: `owner` signs the tagged voucher digest, as insertCadrePeerRow does. */
-function vouchedRow(peerId: string, owner: Owner): PeerRow {
-  const stampId = `stamp-${peerId}`;
-  const vouchSig = sign(
-    cadrePeerVoucherDigest(peerId, stampId),
-    owner.privateKey,
-    'ed25519',
-    'base64url',
-    'base64url',
-    'base64url'
-  ) as string;
-  return { peerId, multiaddr: null, stampId, vouchOwner: owner.publicKey, vouchSig };
-}
-
-/** A row with no voucher (addressable but never authorizable). */
-function bareRow(peerId: string): PeerRow {
-  return { peerId, multiaddr: null, stampId: null, vouchOwner: null, vouchSig: null };
-}
-
-/**
- * How the injected solicitation service answers `hasOutstandingInvitation` —
- * the SOLE input to the formation exemption. `undefined` leaves the node with no
- * service at all (the initiator/never-registered case).
- */
-type Outstanding = boolean | 'throws' | 'hangs';
-
-/** Wire the minimal node internals the admission policy touches. */
-function inject(node: CadreNode, opts: {
-  running?: boolean;
-  selfPeerId?: string;
-  members?: PeerRow[];
-  anchor?: TrustedOwnerStore;
-  solicitation?: Outstanding;
-  revoked?: Set<string>;
-}): void {
-  (node as unknown as { _running: boolean })._running = opts.running ?? true;
-  (node as unknown as { controlNode: unknown }).controlNode = {
-    peerId: { toString: () => opts.selfPeerId ?? 'self-peer' }
-  };
-  if (opts.members) {
-    (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-      queryCadrePeers: async () => opts.members,
-      queryRevokedStamps: async () => opts.revoked ?? new Set<string>()
-    };
-  }
-  if (opts.anchor) {
-    (node as unknown as { trustedOwnerStore: TrustedOwnerStore }).trustedOwnerStore = opts.anchor;
-  }
-  if (opts.solicitation !== undefined) {
-    (node as unknown as { strandSolicitationService: unknown }).strandSolicitationService = {
-      hasOutstandingInvitation: async (): Promise<boolean> => {
-        if (opts.solicitation === 'throws') {
-          throw new Error('control DB torn down mid-invitation-check');
-        }
-        if (opts.solicitation === 'hangs') {
-          return await new Promise<boolean>(() => { /* never settles */ });
-        }
-        return opts.solicitation === true;
-      }
-    };
-  }
-}
-
-async function anchorWith(partyId: string, ...keys: string[]): Promise<TrustedOwnerStore> {
-  const store = new MemoryTrustedOwnerStore(partyId);
-  for (const key of keys) {
-    await store.trust(key, 'operator');
-  }
-  return store;
-}
 
 function admit(node: CadreNode, remotePeerId: string): Promise<boolean> {
   return (node as unknown as {
