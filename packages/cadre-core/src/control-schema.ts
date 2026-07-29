@@ -15,9 +15,23 @@ declare schema CadreControl {
     table OwnerKey (
         Key text primary key,
         StampId text not null unique,   -- per-row authorization nonce, bound into the signed digests below.
-                                        -- Unique across LIVE rows only: once a row is deleted its stamp frees
-                                        -- up, so the enrollment signature still verifies and can resurrect a
-                                        -- removed owner (bug-control-remove-then-replay-resurrection).
+                                        -- \`unique\` holds over LIVE rows only; a removed row's stamp is retired
+                                        -- permanently into Revocation (NotRevoked below), so the never-expiring
+                                        -- enrollment signature cannot resurrect a removed owner.
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert
+        -- naming a retired stamp: the approval that seated this row can never re-seat it after
+        -- removal. \`unique\` alone did not do this — it only holds over LIVE rows, so a delete
+        -- freed the stamp and the original never-expiring signature verified again. A
+        -- legitimate re-add mints a FRESH StampId and a fresh signature, so it is unaffected.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = old.StampId)
+        ),
         -- A party must never lose its last owner key: every other CadreControl table's
         -- CHECK requires an OwnerKey row, so an owner-less control database can never
         -- authorize anything again — emptying this table is a permanent denial of the
@@ -115,9 +129,25 @@ declare schema CadreControl {
         Multiaddr text,                 -- comma-joined current addrs (signaling / p2p-circuit first)
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay/rollback guard)
         Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
-        StampId text not null unique,    -- single-use authorization nonce (anti-replay), bound into the voucher/remove digests; rotates on (re)insert
+        StampId text not null unique,    -- per-row authorization nonce, bound into the voucher/remove digests; rotates on
+                                         -- (re)insert. A removed row's stamp is retired permanently into Revocation
+                                         -- (NotRevoked below), so a captured admission approval cannot re-seat a removed peer.
         VouchOwner text null,        -- ed25519 (base64url) owner key that vouched this membership (== insert context.OwnerKey)
         VouchSig text null,              -- that owner's signature over the 'vouch'-tagged digest below (== insert context.Signature). A reader checks VouchOwner against its NODE-LOCAL trusted-owner anchor (not this replicated table, which a self-owner can pollute) to decide authorized membership. The domain/action tags keep this STORED, REPLICATED signature useless against every other rule (pre-tag it satisfied OwnerKey/ValidationKey inserts for Key = PeerId).
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert
+        -- naming a retired stamp: the approval that seated this row can never re-seat it after
+        -- removal. \`unique\` alone did not do this — it only holds over LIVE rows, so a delete
+        -- freed the stamp and the original never-expiring signature verified again. A
+        -- legitimate re-add mints a FRESH StampId and a fresh signature, so it is unaffected.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = old.StampId)
+        ),
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key, which vouches both membership and the
             -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
@@ -285,6 +315,33 @@ declare schema CadreControl {
         ),
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),
     ) with context (PeerId text, PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
+
+    -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
+    -- CadrePeer rows. Without it a removal was undoable: the add approval is a signature over
+    -- (row key, stamp) that never expires, and deleting the row freed the stamp, so anyone who
+    -- kept a copy of the approval could resurrect the row.
+    -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so a node
+    -- that has not yet converged on a Revocation row can still accept the replayed add, and the
+    -- resurrected row coexists with the tombstone after merge — same class as the MinOneOwner
+    -- note on OwnerKey. The read-side mitigation is CadreNode.listAuthorizedMembers, which
+    -- drops any CadrePeer row whose StampId appears here.
+    -- NOTE: append-only, so this table only ever grows. Cadres are a handful of peers and
+    -- owner rotation is rare, so unbounded growth is fine today; revisit if either changes.
+    table Revocation (
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' (confined by RowIsGone below)
+        StampId text,               -- the retired nonce
+        primary key (TableName, StampId),
+        -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
+        constraint Immutable check on update, delete (false),
+        -- A stamp may only be retired once its row is actually gone. Deferred (subquery), so a
+        -- delete in the same transaction has already landed. Retiring a stamp that never
+        -- existed is permitted and harmless: stamps are 32 bytes of CSPRNG output
+        -- (control-database.ts:generateStampId), so a future legitimate one cannot be guessed.
+        constraint RowIsGone check on insert (
+            (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
+                or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
+        )
+    );
 }
 
 apply schema CadreControl;`;

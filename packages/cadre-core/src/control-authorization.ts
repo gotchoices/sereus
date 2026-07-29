@@ -26,6 +26,10 @@
  * guards its dynamic `from` clause against it (keeping the table name off the
  * SQL-injection surface), so a new table cannot be added to one and missed in
  * the other.
+ *
+ * `Revocation` derives a `'CadreControl.Revocation'` domain tag like every
+ * other entry, but no signature is ever minted for it — the table's CHECKs
+ * carry no `verify(...)`; it is listed so `countRows` can count it.
  */
 export const CONTROL_TABLES = [
   'OwnerKey',
@@ -35,6 +39,7 @@ export const CONTROL_TABLES = [
   'DeviceToken',
   'FormationInvite',
   'FormationUsage',
+  'Revocation',
 ] as const;
 
 /**
