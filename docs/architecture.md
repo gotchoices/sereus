@@ -565,7 +565,9 @@ The signed digest per rule, one variadic digest arg per element:
 | Manager removal-by-another | `'Strand.Manager','remove',old.MemberKey,old.StampId` |
 | Revocation tombstone | `'Strand.Revocation','retire',new.TableName,new.StampId` |
 
-`Generation` is signed as a **number**, not a string: the crypto plugin's digest framing is type-tagged, so integer `1` and text `'1'` produce different digests.
+`Generation` is signed as a **number**, not a string: the crypto plugin's digest framing is type-tagged, so integer `1` and text `'1'` produce different digests — pinned end-to-end (TS signer ⇔ SQL `digest` over the INTEGER column, plus both mismatch directions) by case (e) of `cadre-core/test/digest-variadic-parity.spec.ts`.
+
+Every capture-and-replay this closes is pinned as rejected in `cadre-core/test/strand-approval-replay.spec.ts` — promotion, manager removal, resignation, admission, revocation, self-departure, and peer registration, each replayed against a re-seated row and each paired with the legitimate operation it was derived from. Coverage is single-node only: the convergence hazard noted on `Strand.Revocation` in the schema — a node that has not yet seen a tombstone still accepts the replayed add, and the resurrected row coexists with the tombstone after merge — has no test.
 
 This closes `bug-strand-manager-authority-antireplay`: an approval is bound to one table, one action, and one row incarnation, and cannot be replayed once that incarnation is gone. Two consequences worth knowing: filing a tombstone is a *member* action, so a manager holding no `Member` row can add members and promote managers but cannot revoke, clear a peer binding, or resign (all of those file tombstones — see `debt-strand-manager-must-be-member`); and `Revocation` is append-only and never pruned, so it grows with membership churn.
 

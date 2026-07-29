@@ -14,6 +14,7 @@ import {
   removeManager,
   registerMemberPeer,
   removeMemberPeer,
+  leaveStrand,
   signStrandApproval,
 } from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
@@ -37,12 +38,15 @@ import type { SAppConfig } from '../src/types.js';
  * | R4 | addMemberByManager admission of X      | re-insert Member(X) after revocation | NotRevoked     |
  * | R5 | revokeMember removal of X              | delete Member(X) after re-admission  | Authorized     |
  * | R6 | registerMemberPeer binding (M, P)      | re-insert (M, P) after removal       | NotRevoked     |
+ * | R7 | X's own departure (leaveStrand)        | delete Member(X) after re-admission  | Authorized     |
  *
  * "Capturing" an approval means re-minting the signature the writer itself
  * produced: the same signer over the same digest element vector, read off the LIVE
  * row before the legitimate removal. Ed25519 is deterministic (RFC 8032), so the
  * bytes are identical to the ones that authorized the real operation — an attacker
- * who observed that write holds exactly this.
+ * who observed that write holds exactly this. That determinism is the load-bearing
+ * assumption of every capture here, so it is pinned rather than asserted in prose —
+ * see 'a re-minted approval IS the captured one' below.
  *
  * PIN DISCIPLINE. Replays that re-INSERT a retired stamp pin `/NotRevoked/`: every
  * other constraint on those inserts genuinely passes (the captured signature still
@@ -50,7 +54,12 @@ import type { SAppConfig } from '../src/types.js';
  * fired. Replays that DELETE pin `/Authorized/`, but only because each supplies a
  * valid same-transaction tombstone over the row's CURRENT stamp; without one,
  * `RevocationRecorded` fires alongside and the reported constraint would be engine
- * evaluation order rather than the gate under test.
+ * evaluation order rather than the gate under test. `Strand.Revocation` carries an
+ * `Authorized` constraint of its OWN, and the engine's message names the constraint
+ * without its table (`CHECK constraint failed: Authorized`), so `/Authorized/` alone
+ * cannot tell the two apart — the control test below commits the identical
+ * delete+tombstone shape with a VALID approval, proving the tombstone leg is never
+ * the constraint the replays trip.
  *
  * Every test runs against a REAL closed strand DB in bootstrap mode (libp2p node +
  * MemoryRawStorage + the optimystic local transactor) via `connectToStrand` — the
@@ -205,6 +214,85 @@ async function seatMember(db: Database, founder: Ed25519KeyPair): Promise<Ed2551
   await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
   return member;
 }
+
+// ── Controls: the two premises every pin below rests on ──────────────────────
+
+describe('replay-pin premises', () => {
+  it('a re-minted approval IS the captured one (ed25519 signing is deterministic)', () => {
+    // Nothing here can intercept the bytes the writers actually emit, so every
+    // capture below re-mints them. That is only an attacker's real capability if
+    // signing the same digest with the same key always yields the same signature —
+    // true for ed25519 (RFC 8032 derives the nonce from the key and message), and
+    // pinned here so a future signer swap that introduced randomness would fail
+    // loudly instead of quietly turning R1-R7 into strawmen.
+    const signer = freshKeyPair();
+    const vector = ['Strand.Manager', 'add', 'member-key-b64url', 3, 'stamp-abc'];
+    expect(signStrandApproval(vector, signer.privateKeyB64))
+      .toBe(signStrandApproval(vector, signer.privateKeyB64));
+  });
+
+  it('the delete+tombstone shape the DELETE replays ride is itself accepted', async () => {
+    // R2/R3/R5/R6/R7 assert `/Authorized/` on a transaction pairing a raw delete
+    // with `fileTombstone`. `Strand.Revocation.Authorized` shares that name, so the
+    // regex alone cannot prove which constraint refused. This runs the SAME shape —
+    // raw delete + the same helper — against all three guarded tables with a VALID
+    // approval, and it commits: the tombstone leg passes on its own, so the only
+    // input that differs in a replay is the delete's captured signature.
+    const { db, founder } = await openStrand();
+    const x = await seatMember(db, founder);
+
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: x.publicKeyB64 });
+    const managerStamp = (await managerRow(db, x.publicKeyB64)).stampId;
+    await inTransaction(db, async () => {
+      const removal = signStrandApproval(
+        ['Strand.Manager', 'remove', x.publicKeyB64, managerStamp],
+        founder.privateKeyB64,
+      );
+      await db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, removal, x.publicKeyB64],
+      );
+      await fileTombstone(db, 'Manager', managerStamp, founder);
+    });
+    expect(await isManager(db, x.publicKeyB64)).toBe(false);
+
+    const peerId = 'peer-control';
+    await registerMemberPeer(db, { memberKeyPair: x, peerId });
+    const peerStamp = await memberPeerStamp(db, x.publicKeyB64, peerId);
+    await inTransaction(db, async () => {
+      const unbind = signStrandApproval(
+        ['Strand.MemberPeer', 'remove', x.publicKeyB64, peerId, peerStamp],
+        x.privateKeyB64,
+      );
+      await db.exec(
+        `delete from Strand.MemberPeer
+           with context Signature = ?, ManagerKey = null, ManagerSignature = null
+           where MemberKey = ? and PeerId = ?`,
+        [unbind, x.publicKeyB64, peerId],
+      );
+      await fileTombstone(db, 'MemberPeer', peerStamp, x);
+    });
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+
+    const stamp = await memberStamp(db, x.publicKeyB64);
+    await inTransaction(db, async () => {
+      const eviction = signStrandApproval(
+        ['Strand.Member', 'remove', x.publicKeyB64, stamp],
+        founder.privateKeyB64,
+      );
+      await db.exec(
+        `delete from Strand.Member
+           with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
+           where Key = ?`,
+        [founder.publicKeyB64, eviction, x.publicKeyB64],
+      );
+      await fileTombstone(db, 'Member', stamp, founder);
+    });
+    expect(await isMember(db, x.publicKeyB64)).toBe(false);
+  }, 30_000);
+});
 
 // ── R1 / R2 / R3: Manager promotion, removal, and resignation approvals ───────
 
@@ -400,6 +488,46 @@ describe('Strand.Member approval replay', () => {
 
     // POSITIVE PATH: the writer's revocation, signing over the current stamp, works.
     await revokeMember(db, { managerKeyPair: founder, memberKey: x.publicKeyB64 });
+    expect(await isMember(db, x.publicKeyB64)).toBe(false);
+  }, 30_000);
+
+  it('R7: a captured departure cannot evict its re-admitted signer (Authorized)', async () => {
+    // The self-departure branch is the one Member delete path R5 does not reach: it
+    // verifies against old.Key itself via context.MemberSignature, with no manager
+    // involved. A member that legitimately left and was later re-admitted must not
+    // be evictable by anyone replaying the leave proof it published on the way out.
+    const { db, founder } = await openStrand();
+    const x = await seatMember(db, founder);
+    const firstStamp = await memberStamp(db, x.publicKeyB64);
+
+    const capturedDeparture = signStrandApproval(
+      ['Strand.Member', 'leave', x.publicKeyB64, firstStamp],
+      x.privateKeyB64,
+    );
+    await leaveStrand(db, { memberKeyPair: x });
+    expect(await isMember(db, x.publicKeyB64)).toBe(false);
+
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: x.publicKeyB64 });
+    const secondStamp = await memberStamp(db, x.publicKeyB64);
+    expect(secondStamp).not.toBe(firstStamp);
+
+    // THE REPLAY, mounted by a party that never held X's key. The manager branch is
+    // unreachable (context.ManagerKey is null), so the leave branch is the only one
+    // left, and it hashes the SECOND stamp — the captured proof does not verify. The
+    // founder's tombstone over that stamp rides along, so Authorized alone rejects.
+    await expect(inTransaction(db, async () => {
+      await db.exec(
+        `delete from Strand.Member
+           with context ManagerKey = null, ManagerSignature = null, MemberSignature = ?
+           where Key = ?`,
+        [capturedDeparture, x.publicKeyB64],
+      );
+      await fileTombstone(db, 'Member', secondStamp, founder);
+    })).rejects.toThrow(/Authorized/);
+    expect(await isMember(db, x.publicKeyB64)).toBe(true);
+
+    // POSITIVE PATH: X leaving again for real, over the current stamp, still works.
+    await leaveStrand(db, { memberKeyPair: x });
     expect(await isMember(db, x.publicKeyB64)).toBe(false);
   }, 30_000);
 });
