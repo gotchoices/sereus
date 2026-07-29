@@ -51,6 +51,11 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * Every test boots its OWN `CadreNode` (empty bootstrap, transaction profile) seeded with
  * one founding owner: these probes mutate the owner set and peer table, so a shared
  * database would leak state between them.
+ *
+ * NOTE: this file covers four constraints and is past 1200 lines. It stays whole because
+ * every section shares the same fixture and signing helpers; if the `Authorized` section
+ * keeps growing, split it into its own spec and lift the shared helpers into
+ * `control-constraint-helpers.ts` rather than duplicating them.
  */
 
 const log = debug('sereus:cadre:test:revocation-replay');
@@ -968,8 +973,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   // `RowIsGone` and `Immutable` above only constrain WHEN a stamp may be retired and that
   // retirement sticks — neither asks WHO is retiring it. Without `Authorized` any writer
   // reaching the replicated control database could append here, and the two concrete
-  // consequences (measured before the constraint landed) are inverted in the last two
-  // tests of this section.
+  // consequences (measured before the constraint landed) are inverted in the FLOOD and
+  // PRE-BLOCK tests below.
 
   it('Revocation: an UNSIGNED tombstone is refused (Authorized)', async () => {
     await expectConstraintFailure(
@@ -1115,6 +1120,56 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       stamp,
     );
     expect(await cadrePeerRow(peerId)).toBeDefined();
+  }, 60_000);
+
+  it('Revocation: ANY live owner may file a tombstone, not only the founder', async () => {
+    // The CHECK matches `context.OwnerKey` against the OwnerKey SET, so authority is
+    // "an owner", not "the founding key" — the same rule every sibling table uses.
+    // Pinned in the accept direction so a future narrowing to the founder is a failure
+    // here rather than a silently broken second owner device.
+    const second = freshKeyPair();
+    await enrollByFounder(second);
+
+    const peerId = '12D3KooWSecondOwnerRetires';
+    const { stamp } = await admitPeer(peerId);
+
+    await inTransaction(async () => {
+      await rawDeleteCadrePeer(
+        second.publicKey,
+        signB64(second, cadrePeerRemoveDigest(peerId, stamp)),
+        peerId,
+      );
+      await rawTombstone(
+        second.publicKey,
+        signAs(second, revocationMessage('CadrePeer', stamp)),
+        'CadrePeer',
+        stamp,
+      );
+    });
+
+    expect(await cadrePeerRow(peerId)).toBeUndefined();
+    expect((await db.queryRevokedStamps('CadrePeer')).has(stamp)).toBe(true);
+  }, 60_000);
+
+  it('Revocation: a tombstone signed by an owner REMOVED since is refused (Authorized reads live OwnerKey)', async () => {
+    // `Authorized` reads the LIVE OwnerKey table, not `committed.OwnerKey` (see the
+    // constraint comment) — so a signature minted while its key was an owner dies the
+    // moment that key leaves the set, exactly like every sibling rule. Probed against an
+    // orphan stamp so `RowIsGone` passes and only `Authorized` can reject.
+    const second = freshKeyPair();
+    const { stamp: secondStamp } = await enrollByFounder(second);
+
+    const orphan = freshStamp();
+    const signedWhileOwner = signAs(second, revocationMessage('CadrePeer', orphan));
+
+    await removeOwnerKey(second, secondStamp);
+    expect(await ownerKeys()).toEqual([founder.publicKey]);
+
+    await expectConstraintFailure(
+      rawTombstone(second.publicKey, signedWhileOwner, 'CadrePeer', orphan),
+      'Authorized',
+    );
+    expect((await db.queryRevokedStamps('CadrePeer')).size).toBe(0);
   }, 60_000);
 
   // ── The PRODUCTION removal paths still satisfy Authorized ──────────────────
