@@ -87,11 +87,13 @@ export function verifyStrandPayload(payload: string, signatureB64: string, publi
  * that row's stamp is retired into `Strand.Revocation`.
  *
  * The caller passes the digest elements exactly as the matching SQL constraint
- * lists them (each SQL argument = one array element). TS/SQL byte parity for the
- * variadic spelling is pinned by `test/digest-variadic-parity.spec.ts`. Note
- * `Manager.Authorized`'s promotion branch passes the INTEGER `new.Generation` as
- * a digest arg — the TS side passes `String(generation)` and relies on the
- * crypto plugin coercing the SQL integer to the same decimal string.
+ * lists them (each SQL argument = one array element), PRESERVING TYPE: the
+ * crypto plugin's digest framing is type-tagged (INTEGER 1 and TEXT '1' encode
+ * differently, deliberately), so `Manager.Authorized`'s promotion branch —
+ * whose digest includes the INTEGER `new.Generation` — must be signed over the
+ * NUMBER, not its string form. Integer `number` and `bigint` encode
+ * identically in that framing, so JS-side numbers match however the engine
+ * represents the SQL integer.
  *
  * Like {@link signStrandPayload}, the raw digest BYTES are ed25519-signed
  * directly, matching SQL `verify(...)`'s default base64url input decoding.
@@ -100,7 +102,7 @@ export function verifyStrandPayload(payload: string, signatureB64: string, publi
  * @param privateKeyB64 - The signer's base64url ed25519 private seed.
  * @returns The base64url ed25519 signature over the tagged digest.
  */
-export function signStrandApproval(fields: string[], privateKeyB64: string): string {
+export function signStrandApproval(fields: ReadonlyArray<string | number>, privateKeyB64: string): string {
   const hashBytes = digest(fields, 'sha256', 'bytes') as Uint8Array;
   return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
@@ -1075,9 +1077,9 @@ export interface AddManagerParams {
  * add-tagged digest over all three: the generation inside the signed digest keeps
  * a captured promotion from replaying at a different generation, and the stamp
  * keeps it from re-seating a second incarnation once this one is removed.
- * `new.Generation` is an SQL INTEGER digest arg — the TS side passes
- * `String(generation)` and relies on the plugin's integer→decimal-string
- * coercion (see {@link signStrandApproval}).
+ * `new.Generation` is an SQL INTEGER digest arg — the digest framing is
+ * type-tagged, so the TS side signs over the NUMBER itself
+ * (see {@link signStrandApproval}).
  *
  * The strict ordering — not this writer — is what makes a same-transaction takeover
  * impossible; the `Manager.Generation` column comment in `schemas/strand.qsql` carries
@@ -1105,7 +1107,7 @@ export async function addManager(db: Database, params: AddManagerParams): Promis
   const generation = authorizer == null ? 1 : authorizer.generation + 1;
   const stampId = generateStrandStampId();
   const signature = signStrandApproval(
-    ['Strand.Manager', 'add', newManagerKey, String(generation), stampId],
+    ['Strand.Manager', 'add', newManagerKey, generation, stampId],
     byManagerKeyPair.privateKeyB64,
   );
   await db.exec(
