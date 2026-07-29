@@ -642,6 +642,68 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await strandRow(id)).toBeUndefined();
   }, 60_000);
 
+  it('Strand: a redemption record cannot re-seat the strand it formed after a tombstoned removal', async () => {
+    // `FormationUsage` is append-only, so the redemption record outlives the strand it
+    // formed forever. While the consent branch keyed on the strand ID ALONE, that record
+    // re-authorized ANY later insert of that id: after a fully legitimate owner-signed,
+    // tombstoned removal, any writer on the replicated control database could re-seat the
+    // strand with NO owner key, NO signature, a FRESH StampId (sidestepping `NotRevoked`,
+    // which retires only the removed row's stamp) and an ATTACKER-CHOSEN
+    // `MemberPrivateKey` — the party's own secret for that network.
+    const token = 'fi-consent-replay-' + Math.random().toString(36).slice(2);
+    const id = 'strand-consent-replay-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(token, 'sapp-consent-replay', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1 });
+    await db.redeemInvitation({ token, strandId: id, type: 'c', memberPrivateKey: 'member-key-' + id });
+
+    const stamp = String((await strandRow(id))?.StampId);
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
+
+    // Door 1 — a FRESH stamp. `NotRevoked` passes (that stamp was never retired) and the
+    // owner branch is false (no context key/signature), so `AuthorizedInsert` can only
+    // reject via the consent branch: no usage row names this (id, stamp) pair.
+    await expectConstraintFailure(
+      rawInsertStrand(null, null, id, 'c', 'ATTACKER-KEY-' + id, freshStamp()),
+      'AuthorizedInsert',
+    );
+    expect(await strandRow(id)).toBeUndefined();
+
+    // Door 2 — the ORIGINAL stamp. Here the consent branch DOES match (the surviving usage
+    // row names exactly this pair), so `AuthorizedInsert` passes and only `NotRevoked`
+    // stands — and the removal retired that stamp permanently. Both doors pinned.
+    await expectConstraintFailure(
+      rawInsertStrand(null, null, id, 'c', 'ATTACKER-KEY-replay-' + id, stamp),
+      'NotRevoked',
+    );
+    expect(await strandRow(id)).toBeUndefined();
+  }, 60_000);
+
+  it('Strand: after a tombstoned removal a fresh redemption still re-forms the SAME strand id', async () => {
+    // Binding consent to the stamp must retire ONE authorization, not blacklist the strand
+    // id: a party that leaves a network and is re-invited has to be able to re-join. A new
+    // redemption writes a new usage row carrying a new `StrandStampId` beside a `Strand`
+    // row with that fresh stamp, and both deferred CHECKs see both rows at commit.
+    const id = 'strand-rejoin-' + Math.random().toString(36).slice(2);
+    const first = 'fi-rejoin-a-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(first, 'sapp-rejoin', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1 });
+    await db.redeemInvitation({ token: first, strandId: id, type: 'c', memberPrivateKey: 'member-key-a-' + id });
+
+    const firstStamp = String((await strandRow(id))?.StampId);
+    await removeStrand(id, firstStamp);
+    expect(await strandRow(id)).toBeUndefined();
+
+    const second = 'fi-rejoin-b-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(second, 'sapp-rejoin', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1 });
+    await db.redeemInvitation({ token: second, strandId: id, type: 'c', memberPrivateKey: 'member-key-b-' + id });
+
+    const reseated = await strandRow(id);
+    expect(reseated).toBeDefined();
+    expect(reseated?.StampId).not.toBe(firstStamp);
+  }, 60_000);
+
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
     const key = 'val-tomb-' + Math.random().toString(36).slice(2);
     const { stamp } = await enrollValidationKey(key);

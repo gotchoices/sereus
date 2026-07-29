@@ -8,6 +8,8 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import { canonicalDatetime } from '../src/canonical-datetime.js';
+import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
  * Exercises the FormationInvite / FormationUsage consent path:
@@ -53,6 +55,26 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   async function usageCount(): Promise<number> {
     const row = await rawDb.get('select count(1) as c from CadreControl.FormationUsage');
     return Number(row?.c ?? 0);
+  }
+
+  /**
+   * The bare `FormationUsage` insert `ControlDatabase.execFormationUsageInsert` writes,
+   * with `StrandStampId` under the caller's control so a wrong-stamp consent record can be
+   * attempted. `Now` goes through the same `canonicalDatetime` transform the writer uses.
+   */
+  async function rawInsertFormationUsage(
+    token: string,
+    useNumber: number,
+    strandId: string,
+    strandStampId: string,
+  ): Promise<void> {
+    const now = await canonicalDatetime(rawDb, Date.now());
+    await rawDb.exec(
+      `insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId, StrandStampId)
+         with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
+         values (?, ?, ?, ?, ?)`,
+      ['peer-raw', null, now, null, null, token, useNumber, '', strandId, strandStampId],
+    );
   }
 
   beforeAll(async () => {
@@ -129,17 +151,20 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
     // The strand exists purely via the FormationUsage branch — no owner sig
     // was supplied on its insert.
-    const strand = await rawDb.get('select Id, Type from CadreControl.Strand where Id = ?', [strandId]);
+    const strand = await rawDb.get('select Id, Type, StampId from CadreControl.Strand where Id = ?', [strandId]);
     expect(strand?.Id).toBe(strandId);
     expect(strand?.Type).toBe('o');
 
     const usage = await rawDb.get(
-      'select Token, UseNumber, StrandId from CadreControl.FormationUsage where StrandId = ?',
+      'select Token, UseNumber, StrandId, StrandStampId from CadreControl.FormationUsage where StrandId = ?',
       [strandId],
     );
     expect(usage?.Token).toBe(token);
     expect(usage?.UseNumber).toBe(1);
     expect(usage?.StrandId).toBe(strandId);
+    // Consent is bound to the strand ROW, not the strand id: the usage row carries the
+    // seated row's one-off stamp, which is what makes a later removal permanent.
+    expect(usage?.StrandStampId).toBe(strand?.StampId);
   });
 
   it('rejects redemption against a non-existent token (nothing lands)', async () => {
@@ -243,6 +268,41 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       [token],
     );
     expect(Number(row?.c)).toBe(2);
+
+    // Both consent records are bound to the HOST strand's live stamp — `recordFormationUsage`
+    // reads it off the row rather than leaving the pair to the deferred `StrandExists` CHECK.
+    const liveStamp = await db.queryStrandStampId(strandId);
+    expect(liveStamp).not.toBeNull();
+    for await (const usage of rawDb.eval(
+      'select StrandStampId from CadreControl.FormationUsage where Token = ?',
+      [token],
+    )) {
+      expect(usage.StrandStampId).toBe(liveStamp);
+    }
+  });
+
+  it('rejects a FormationUsage naming a live strand with the WRONG StrandStampId (StrandExists)', async () => {
+    const token = 'invite-wrongstamp-' + rand();
+    const strandId = 'strand-wrongstamp-' + rand();
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    await db.insertFormationInvite(token, 'sapp-wrongstamp', ownerPublicKey, signMessage);
+
+    const before = await usageCount();
+    // `StrandExists` matches the (id, stamp) PAIR — the same key `Strand.AuthorizedInsert`'s
+    // consent branch reads back — so a consent record can never be filed against a stamp of
+    // the writer's choosing and held in reserve to re-seat the id after a removal.
+    await expectConstraintFailure(
+      rawInsertFormationUsage(token, 1, strandId, 'not-the-live-stamp-' + rand()),
+      'StrandExists',
+    );
+    expect(await usageCount()).toBe(before);
+
+    // The identical insert carrying the strand's LIVE stamp lands, so the rejection above
+    // is about the stamp and nothing else.
+    const liveStamp = await db.queryStrandStampId(strandId);
+    expect(liveStamp).not.toBeNull();
+    await rawInsertFormationUsage(token, 1, strandId, liveStamp!);
+    expect(await usageCount()).toBe(before + 1);
   });
 
   describe('MemberKeyClosedOnly constraint', () => {
