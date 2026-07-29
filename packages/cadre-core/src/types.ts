@@ -838,6 +838,21 @@ export interface DeviceTokenRecord {
 }
 
 /**
+ * A stored `CadreControl.DeviceToken` row: the self-signed
+ * {@link DeviceTokenRecord} plus the row's single-use `StampId` nonce.
+ *
+ * The stamp is deliberately OUTSIDE `DeviceTokenRecord`: the peer's own `Sig`
+ * covers only (peerId, platform, token, updatedAt), while the stamp is bound by
+ * the OWNER's insert/delete approvals. Readers need it to drop a row whose stamp
+ * has been retired into `CadreControl.Revocation` (a token resurrected by an
+ * approval replay on a node that had not yet converged on the tombstone).
+ */
+export interface DeviceTokenRow extends DeviceTokenRecord {
+  /** Single-use authorization nonce; rotates on every (re)insert. */
+  stampId: string;
+}
+
+/**
  * Options for {@link CadreNode.resolveDeviceToken}.
  */
 export interface ResolveDeviceTokenOpts {

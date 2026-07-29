@@ -2146,8 +2146,10 @@ export class CadreNode implements SAppIdLookup {
    *   2. `publicKey <-> peerId` binding — the stored key's libp2p identity is the
    *      requested peerId,
    *   3. a `DeviceToken` row exists with a known {@link PushPlatform},
-   *   4. self-signature verifies against the bound `CadrePeer.PublicKey`,
-   *   5. freshness — `updatedAt` is positive and within `opts.maxAgeMs` (default:
+   *   4. the row's `StampId` is NOT retired in `CadreControl.Revocation` — the
+   *      read-side half of the clear (see below),
+   *   5. self-signature verifies against the bound `CadrePeer.PublicKey`,
+   *   6. freshness — `updatedAt` is positive and within `opts.maxAgeMs` (default:
    *      no ceiling, since a push token is valid until it rotates).
    *
    * A peer that is not a current member, or whose token has no backing `CadrePeer`
@@ -2178,6 +2180,23 @@ export class CadreNode implements SAppIdLookup {
     }
     if (!isPushPlatform(record.platform)) {
       log('resolveDeviceToken: unknown platform %s for %s', record.platform, peerId);
+      return null;
+    }
+
+    // Retired stamp: the read-side mitigation for the write-time race, mirroring what
+    // listAuthorizedMembers does for CadrePeer. Clearing a token retires its StampId
+    // into Revocation, but the schema's NotRevoked CHECK only sees LOCALLY visible
+    // tombstones — a node that converged on a replayed insert before the tombstone can
+    // hold both rows, so the reader must drop the resurrected one.
+    //
+    // NOTE: the freshness ceiling below defaults to INFINITE by design (a suspended
+    // phone must stay push-reachable long after it published), so unlike a peer address
+    // record a stale token never ages out. Stamp retirement is the ONLY thing that
+    // retires a cleared token — do not weaken this check on the assumption that
+    // staleness will eventually cover it.
+    const revokedStamps = await this.controlDatabase.queryRevokedStamps('DeviceToken');
+    if (revokedStamps.has(record.stampId)) {
+      log('resolveDeviceToken: StampId for %s is retired (cleared token, resurrected row)', peerId);
       return null;
     }
 

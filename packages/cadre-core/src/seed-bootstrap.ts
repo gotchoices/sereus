@@ -368,46 +368,91 @@ export class SeedBootstrapService {
    * Counterpart to {@link insertSelfPeerRecord} for the device-token registry: the
    * row is owner-signed (satisfying `DeviceToken.AuthorizedInsert` via the
    * 'add'-tagged digest, {@link deviceTokenAddDigest}) AND carries the peer's
-   * own self-`Sig` over the token payload. The owner signature covers only the
-   * PeerId — it does NOT vouch the token contents; the peer's `Sig` (verified at
+   * own self-`Sig` over the token payload. The owner signature covers the WHOLE row
+   * (every column, ending in a freshly minted single-use `StampId`) — but covering the
+   * token contents is not the same as vouching them: the peer's `Sig` (verified at
    * resolve time against the bound `CadrePeer.PublicKey`) is what makes the row
    * resolvable. Used by {@link CadreNode.registerDeviceToken} for the first publish
    * when the node is its own owner.
+   *
+   * The stamp is per-INSERT, so a re-register after a clear mints a fresh one and a
+   * fresh signature — unaffected by the cleared row's retired stamp
+   * (`DeviceToken.NotRevoked`).
    */
   async insertSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
-    const signature = this.signDigest(deviceTokenAddDigest(record.peerId));
+    const stampId = generateStampId(record.peerId);
+    const signature = this.signDigest(deviceTokenAddDigest({ ...record, stampId }));
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
     const db = this.controlDatabase.getDatabase();
     await db.exec(`
-      insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig)
+      insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
         with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig]);
+        values (?, ?, ?, ?, ?, ?)
+    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]);
     log('Device token inserted (owner-signed): %s', record.peerId);
   }
 
   /**
    * Owner-signed DELETE of a peer's `DeviceToken` row (logout / token
    * invalidation). The `DeviceToken.AuthorizedDelete` constraint validates an owner
-   * signature over the 'remove'-tagged digest ({@link deviceTokenRemoveDigest}) —
-   * deliberately distinct from the insert digest, so a captured insert approval can
-   * never be replayed to clear a token. Like {@link removePeer} for `CadrePeer`,
-   * clearing a token requires the owner key.
+   * signature over the 'remove'-tagged digest bound to the STORED row's
+   * (PeerId, StampId) ({@link deviceTokenRemoveDigest}) — deliberately distinct from
+   * the insert digest, so a captured insert approval can never be replayed to clear a
+   * token. Like {@link removePeer} for `CadrePeer`, clearing a token requires the
+   * owner key.
+   *
+   * The delete and the `Revocation` tombstone retiring the row's `StampId` commit in
+   * ONE transaction — `DeviceToken.RevocationRecorded` refuses a bare delete, and
+   * without the tombstone the stamp would free up and the never-expiring insert
+   * approval (which the cleared device holds a copy of) would re-seat the token. The
+   * tombstone carries its OWN owner signature ({@link revocationDigest}): retiring a
+   * stamp permanently forecloses that row, so it is an owner action in its own right.
+   *
+   * A no-op when the row is already absent (mirrors {@link removePeer}).
    */
   async deleteDeviceToken(peerId: string): Promise<void> {
-    const signature = this.signDigest(deviceTokenRemoveDigest(peerId));
+    // Fail fast on a keyless service BEFORE the DB read, so a non-owner gets the
+    // owner-key error rather than a silent no-op on an absent row.
+    this.requireOwnerPrivateKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
+    const stampId = await this.controlDatabase.queryDeviceTokenStampId(peerId);
+    if (stampId === null) {
+      log('deleteDeviceToken: no DeviceToken row for %s (already absent)', peerId);
+      return;
+    }
+    const signature = this.signDigest(deviceTokenRemoveDigest(peerId, stampId));
+    const revocationSignature = this.signDigest(revocationDigest('DeviceToken', stampId));
+
     const db = this.controlDatabase.getDatabase();
-    await db.exec(`
-      delete from CadreControl.DeviceToken
-        with context OwnerKey = ?, Signature = ?
-        where PeerId = ?
-    `, [this.ownerPublicKey, signature, peerId]);
-    log('Device token removed (owner-signed): %s', peerId);
+    await db.beginTransaction();
+    try {
+      await db.exec(`
+        delete from CadreControl.DeviceToken
+          with context OwnerKey = ?, Signature = ?
+          where PeerId = ?
+      `, [this.ownerPublicKey, signature, peerId]);
+      await db.exec(`
+        insert into CadreControl.Revocation (TableName, StampId)
+          with context OwnerKey = ?, Signature = ?
+          values ('DeviceToken', ?)
+      `, [this.ownerPublicKey, revocationSignature, stampId]);
+      await db.commit();
+    } catch (error) {
+      // A failed commit() already tears down the transaction, so rollback() would
+      // throw "No transaction active" and mask the real cause — swallow only that.
+      try {
+        await db.rollback();
+      } catch (rollbackError) {
+        log('Rollback after deleteDeviceToken failure was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
+
+    log('Device token removed (owner-signed, stamp retired): %s', peerId);
   }
 
   /**

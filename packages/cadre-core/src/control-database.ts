@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, PushPlatform } from './types.js';
+import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
@@ -468,6 +468,14 @@ export class ControlDatabase {
     return this.queryStampId('CadrePeer', 'PeerId', peerId);
   }
 
+  /**
+   * `DeviceToken` stamp nonce — bound into {@link deviceTokenRemoveDigest} by
+   * {@link SeedBootstrapService.deleteDeviceToken}.
+   */
+  queryDeviceTokenStampId(peerId: string): Promise<string | null> {
+    return this.queryStampId('DeviceToken', 'PeerId', peerId);
+  }
+
   /** `Strand` stamp nonce — bound into {@link deleteStrand}'s remove digest. */
   queryStrandStampId(strandId: string): Promise<string | null> {
     return this.queryStampId('Strand', 'Id', strandId);
@@ -559,11 +567,15 @@ export class ControlDatabase {
    * gates uniformly reject an unpublished or malformed row. `platform` is returned
    * verbatim (the resolver validates it against {@link PushPlatform} and re-verifies
    * the self-signature, which covers the platform field).
+   *
+   * `stampId` rides along ({@link DeviceTokenRow}) because the resolver must drop a
+   * row whose stamp is retired in `CadreControl.Revocation`; it is NOT part of
+   * {@link DeviceTokenRecord}, which is the self-signed shape the peer's `Sig` covers.
    */
-  async queryDeviceToken(peerId: string): Promise<DeviceTokenRecord | null> {
+  async queryDeviceToken(peerId: string): Promise<DeviceTokenRow | null> {
     this.ensureInitialized();
     for await (const row of this.db!.eval(
-      'select PeerId, Platform, Token, UpdatedAt, Sig from CadreControl.DeviceToken where PeerId = ?',
+      'select PeerId, Platform, Token, UpdatedAt, Sig, StampId from CadreControl.DeviceToken where PeerId = ?',
       [peerId]
     )) {
       return {
@@ -572,6 +584,7 @@ export class ControlDatabase {
         token: (row.Token as string | null) ?? '',
         updatedAt: (row.UpdatedAt as number | null) ?? 0,
         sig: (row.Sig as string | null) ?? '',
+        stampId: (row.StampId as string | null) ?? '',
       };
     }
     return null;

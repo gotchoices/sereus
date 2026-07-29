@@ -937,8 +937,11 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(tombstoneStamp('Strand', strandStamp), 'RowIsGone');
   }, 60_000);
 
-  it('Revocation: a TableName outside the guarded set is refused (both RowIsGone branches false)', async () => {
-    await expectConstraintFailure(tombstoneStamp('DeviceToken', freshStamp()), 'RowIsGone');
+  it('Revocation: a TableName outside the guarded set is refused (every RowIsGone branch false)', async () => {
+    // `FormationInvite` carries a unique StampId but is NOT revocable — invites are
+    // insert/delete only and their stamps are never retired — so no RowIsGone branch
+    // names it and a tombstone against it is refused.
+    await expectConstraintFailure(tombstoneStamp('FormationInvite', freshStamp()), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a tombstone is permanent — delete and update are both refused (Immutable)', async () => {

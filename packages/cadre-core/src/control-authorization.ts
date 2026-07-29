@@ -61,7 +61,7 @@ export type ControlTable = typeof CONTROL_TABLES[number];
  * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
  * `revocationDigest` — can type against it without pulling in the runtime.
  */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'>;
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for
@@ -77,8 +77,10 @@ export type ControlDomain = `CadreControl.${ControlTable}` | 'Cadre.Enrollment';
  *  - `'vouch'` — an owner (or validation key) vouches the row's semantics
  *    without adding or removing it: the `CadrePeer` membership vouch (shared,
  *    deliberately, by its insert and its owner-update branch), the
- *    `DeviceToken` owner re-touch, the `FormationUsage` disclosure validation,
- *    and the offline enrollment vouch.
+ *    `FormationUsage` disclosure validation, and the offline enrollment vouch.
+ *    `DeviceToken` has no `'vouch'` digest — its owner re-touch branch was
+ *    removed (it rewrote the row outside the monotonicity guard), so an owner
+ *    correcting a token deletes and re-inserts it.
  *  - `'publish'` — a peer self-signs its OWN record (the `CadrePeer` /
  *    `DeviceToken` self-update branches), with its own key rather than an
  *    owner key.

@@ -31,21 +31,69 @@ export function peerAuthorizationDigest(peerId: string): string {
 }
 
 /**
- * Canonical digest an owner signs to authorize a `DeviceToken` INSERT. SQL mirror:
- * `digest('CadreControl.DeviceToken', 'add', new.PeerId)` in `DeviceToken.AuthorizedInsert`.
- * Distinct from {@link deviceTokenRemoveDigest} so a captured insert approval can never
- * be replayed to delete the token, and vice versa.
+ * The `CadreControl.DeviceToken` columns {@link deviceTokenAddDigest} binds, in the
+ * schema's order. A whole-row struct rather than six positional strings, so a caller
+ * cannot silently transpose `platform` and `token` (both opaque strings) and mint a
+ * signature over a row it did not mean to approve.
+ *
+ * Structurally satisfied by a `DeviceTokenRecord` spread with the row's `stampId`;
+ * `types.ts:DeviceTokenRecord` deliberately does NOT carry the stamp — it is the
+ * SELF-signed record shape, and the peer's own `Sig` does not cover `StampId`.
+ * `updatedAt` / `sig` are nullable because the columns are: both sign as `''` when
+ * absent, mirroring the schema's `coalesce(...)`.
  */
-export function deviceTokenAddDigest(peerId: string): string {
-  return taggedDigest('CadreControl.DeviceToken', 'add', [peerId]);
+export interface DeviceTokenAuthorizedRow {
+  peerId: string;
+  platform: string;
+  token: string;
+  updatedAt: number | null;
+  sig: string | null;
+  stampId: string;
 }
 
 /**
- * Canonical digest an owner signs to authorize a `DeviceToken` DELETE. SQL mirror:
- * `digest('CadreControl.DeviceToken', 'remove', old.PeerId)` in `DeviceToken.AuthorizedDelete`.
+ * Canonical digest an owner signs to authorize a `DeviceToken` INSERT — the WHOLE row,
+ * ending in its single-use `StampId` nonce. SQL mirror:
+ * `digest('CadreControl.DeviceToken', 'add', new.PeerId, new.Platform, new.Token,
+ * coalesce(cast(new.UpdatedAt as text), ''), coalesce(new.Sig, ''), new.StampId)` in
+ * `DeviceToken.AuthorizedInsert`.
+ *
+ * Binding every column means a captured approval can only ever reproduce the exact row
+ * it approved — never one carrying attacker-chosen `Platform`/`Token`/`UpdatedAt` — and
+ * binding the stamp makes it single-use: while the row lives the `unique` column blocks
+ * a replay, and after a clear the stamp is retired permanently into
+ * `CadreControl.Revocation` (`DeviceToken.NotRevoked`). This matters more here than for
+ * `CadrePeer`: a resurrected push token has NO freshness ceiling to retire it
+ * (`CadreNode.resolveDeviceToken` defaults `maxAgeMs` to infinity by design), so stamp
+ * retirement is the only thing that sticks.
+ *
+ * Distinct from {@link deviceTokenRemoveDigest} so a captured insert approval can never
+ * be replayed to delete the token, and vice versa.
  */
-export function deviceTokenRemoveDigest(peerId: string): string {
-  return taggedDigest('CadreControl.DeviceToken', 'remove', [peerId]);
+export function deviceTokenAddDigest(row: DeviceTokenAuthorizedRow): string {
+  return taggedDigest('CadreControl.DeviceToken', 'add', [
+    row.peerId,
+    row.platform,
+    row.token,
+    row.updatedAt === null ? '' : String(row.updatedAt),
+    row.sig ?? '',
+    row.stampId,
+  ]);
+}
+
+/**
+ * Canonical digest an owner signs to authorize a `DeviceToken` DELETE, bound to the
+ * STORED row's (PeerId, StampId). SQL mirror:
+ * `digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId)` in
+ * `DeviceToken.AuthorizedDelete`.
+ *
+ * A narrower vector than {@link deviceTokenAddDigest} on purpose (the same split
+ * `CadrePeer` makes): the clear approval names only which row is being retired, so it
+ * cannot be re-cut into an insert approval, and it is dead the moment the stamp it
+ * names is tombstoned.
+ */
+export function deviceTokenRemoveDigest(peerId: string, stampId: string): string {
+  return taggedDigest('CadreControl.DeviceToken', 'remove', [peerId, stampId]);
 }
 
 /**

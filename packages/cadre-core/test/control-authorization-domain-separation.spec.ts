@@ -96,7 +96,7 @@ describe('CadreControl approval domain separation', () => {
    * guarded delete must carry (`RevocationRecorded`), so rejection assertions stay
    * pinned to the constraint under test. Owner-signed over its OWN domain-tagged digest
    * (`Revocation.Authorized`); the delete's `'remove'` signature does not satisfy it. */
-  function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer', stampId: string): Promise<void> {
+  function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer' | 'DeviceToken', stampId: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, StampId)
          with context OwnerKey = ?, Signature = ?
@@ -298,34 +298,46 @@ describe('CadreControl approval domain separation', () => {
 
   it('rejects: a DeviceToken insert approval replayed as a DeviceToken delete', async () => {
     const peerId = '12D3KooWDeviceTokenTarget';
-    const addSig = signB64(founder, deviceTokenAddDigest(peerId));
+    const stamp = freshStamp();
+    const addSig = signB64(founder, deviceTokenAddDigest({
+      peerId, platform: 'fcm', token: 'tok-domain-sep', updatedAt: null, sig: null, stampId: stamp,
+    }));
     await rawDb.exec(
-      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig)
+      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?)`,
-      [founder.publicKey, addSig, peerId, 'fcm', 'tok-domain-sep', null, null],
+         values (?, ?, ?, ?, ?, ?)`,
+      [founder.publicKey, addSig, peerId, 'fcm', 'tok-domain-sep', null, null, stamp],
     );
 
+    // The tombstone rides along so `RevocationRecorded` is satisfied and the rejection
+    // stays pinned to the insert-approval-replayed-as-delete constraint alone.
     await expectConstraintFailure(
-      rawDb.exec(
-        `delete from CadreControl.DeviceToken
-           with context OwnerKey = ?, Signature = ?
-           where PeerId = ?`,
-        [founder.publicKey, addSig, peerId],
-      ),
+      inTransaction(async () => {
+        await rawDb.exec(
+          `delete from CadreControl.DeviceToken
+             with context OwnerKey = ?, Signature = ?
+             where PeerId = ?`,
+          [founder.publicKey, addSig, peerId],
+        );
+        await tombstoneStamp('DeviceToken', stamp);
+      }),
       'AuthorizedDelete',
     );
     expect(
       await rawDb.get('select PeerId from CadreControl.DeviceToken where PeerId = ?', [peerId]),
     ).toBeDefined();
 
-    // The properly 'remove'-tagged approval is what deletes it.
-    await rawDb.exec(
-      `delete from CadreControl.DeviceToken
-         with context OwnerKey = ?, Signature = ?
-         where PeerId = ?`,
-      [founder.publicKey, signB64(founder, deviceTokenRemoveDigest(peerId)), peerId],
-    );
+    // The properly 'remove'-tagged approval over the stored (PeerId, StampId) is what
+    // deletes it — with the mandatory stamp retirement alongside.
+    await inTransaction(async () => {
+      await rawDb.exec(
+        `delete from CadreControl.DeviceToken
+           with context OwnerKey = ?, Signature = ?
+           where PeerId = ?`,
+        [founder.publicKey, signB64(founder, deviceTokenRemoveDigest(peerId, stamp)), peerId],
+      );
+      await tombstoneStamp('DeviceToken', stamp);
+    });
     expect(
       await rawDb.get('select PeerId from CadreControl.DeviceToken where PeerId = ?', [peerId]),
     ).toBeUndefined();

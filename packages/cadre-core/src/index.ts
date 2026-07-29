@@ -169,7 +169,8 @@ export {
   deviceTokenAddDigest,
   deviceTokenRemoveDigest,
   verifyPeerAuthorization,
-  verifyCadrePeerVoucher
+  verifyCadrePeerVoucher,
+  type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';
 
 // Strand Wake (control-network push-wake protocol)
