@@ -11,9 +11,12 @@ export default defineConfig({
     // Integration tests can be slow - give them time
     testTimeout: 60_000,
     hookTimeout: 30_000,
-    // Run sequentially by default - parallel can cause port conflicts.
-    // Vitest 4 removed `test.poolOptions`; singleFork's replacement is
-    // top-level fileParallelism: false (one fork, files run one at a time).
+    // Run sequentially - parallel can cause port conflicts.
+    // Vitest 4 removed `test.poolOptions`; the top-level replacement for
+    // `forks.singleFork` is fileParallelism: false — one test file at a time.
+    // (Each file still gets its own fork; `isolate` stays default-true.)
+    // vitest.config.ts is in tsconfig.typecheck.json, so a future option
+    // removal fails `yarn typecheck` instead of being silently ignored.
     pool: 'forks',
     fileParallelism: false,
     // Increase reporter verbosity

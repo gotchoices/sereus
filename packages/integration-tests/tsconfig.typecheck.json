@@ -1,7 +1,11 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": true
+    "noEmit": true,
+    // Widen rootDir past src/ so vitest.config.ts is type-checked too — a
+    // removed/renamed vitest option (e.g. the Vitest 4 poolOptions removal)
+    // should fail `yarn typecheck`, not sit silently in an editor-only error.
+    "rootDir": "."
   },
-  "include": ["src/**/*.ts"]
+  "include": ["src/**/*.ts", "vitest.config.ts"]
 }

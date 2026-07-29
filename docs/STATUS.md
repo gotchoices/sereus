@@ -380,9 +380,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   fails the run up front naming every stale package plus its `yarn workspace <name> build` remedy.
   Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded — they aren't build
   inputs. The guard itself is unit-covered by `src/harness/build-freshness.spec.ts`.
-- [ ] `packages/integration-tests/vitest.config.ts` still sets `test.poolOptions`, which **Vitest 4
-  removed** — the intended `singleFork: true` (added to avoid port conflicts) is silently ignored
-  and scenario files run in parallel. See `tickets/backlog/debt-vitest4-pooloptions-ignored.md`.
+- [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
+  `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
+  and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
+  `pool: 'forks'` + `fileParallelism: false` (66s parallel → ~370s sequential confirms it takes
+  effect). `vitest.config.ts` was also added to that package's `tsconfig.typecheck.json` so a future
+  option removal fails `yarn typecheck` rather than degrading silently.
 
 ### Type-check coverage
 
