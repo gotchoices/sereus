@@ -112,6 +112,39 @@ describe('checkBuildFreshness', () => {
 
 		expect(checkBuildFreshness(root, DIST_ENTRY)).toBeUndefined();
 	});
+
+	/**
+	 * The incremental-emit case, and the reason freshness is judged by the whole
+	 * output tree rather than by the entry point: `tsc --incremental` rewrites
+	 * only the outputs a change affects, so editing one module leaves
+	 * `dist/index.js` at the mtime of some earlier build. Judged by the entry
+	 * point alone the package stays stale however often it is rebuilt.
+	 */
+	it('reports fresh when a rebuild touched other outputs but not the entry point', () => {
+		writeAt('src/index.ts', OLD);
+		writeAt('src/feature.ts', NEW);
+		buildDist();
+		writeAt('dist/feature.js', NEW + 1);
+		writeAt('dist/tsconfig.tsbuildinfo', NEW + 1);
+
+		expect(checkBuildFreshness(root, DIST_ENTRY)).toBeUndefined();
+	});
+
+	it('reports stale when a source postdates every output, not only the entry point', () => {
+		writeAt('src/index.ts', NEW);
+		buildDist();
+		writeAt('dist/feature.js', BUILT);
+		writeAt('dist/nested/deep.js', BUILT);
+
+		expect(checkBuildFreshness(root, DIST_ENTRY)).toBe('stale');
+	});
+
+	it('falls back to the entry point when it has no output directory above it', () => {
+		writeAt('src/index.ts', NEW);
+		writeAt('index.js', BUILT);
+
+		expect(checkBuildFreshness(root, 'index.js')).toBe('stale');
+	});
 });
 
 /**

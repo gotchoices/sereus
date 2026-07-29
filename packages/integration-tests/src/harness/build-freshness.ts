@@ -13,7 +13,7 @@
  *
  * `assertCadreBuildFresh()` fails the run up front, before any child is
  * spawned, when a package's `src` has been touched more recently than its
- * compiled entry point (or that entry point is missing outright). It runs
+ * compiled output (or its entry point is missing outright). It runs
  * once per suite from `src/global-setup.ts`.
  *
  * Two kinds of package are checked. A `workspace` target lives under this
@@ -86,7 +86,7 @@ export type LinkedPackage =
 	| { readonly status: 'unresolved'; readonly detail: string };
 
 /**
- * Throws with a clear build remedy if any package's `dist` predates its `src`.
+ * Throws with a clear build remedy if any package's build output predates its `src`.
  */
 export function assertCadreBuildFresh(): void {
 	const problems = TARGETS.flatMap((target) => {
@@ -203,9 +203,21 @@ function linkedRemedy(packageName: string, packageRoot: string): string {
 }
 
 /**
- * Compares the newest source mtime under `packageRoot/src` against
- * `distEntry`'s mtime. Exported for unit tests — `assertCadreBuildFresh()` is
- * the caller everything else should use.
+ * Compares the newest source mtime under `packageRoot/src` against the newest
+ * mtime anywhere in the build output. Exported for unit tests —
+ * `assertCadreBuildFresh()` is the caller everything else should use.
+ *
+ * The comparison deliberately spans the whole output tree rather than
+ * `distEntry` alone. Every target here is compiled by `tsc`, and the sibling
+ * repositories build with `incremental`/`composite`, so a rebuild rewrites only
+ * the outputs a change actually affects: edit `src/core/database-events.ts` and
+ * `dist/src/core/database-events.js` is rewritten while `dist/src/index.js`
+ * keeps the mtime it had two builds ago. Judged by the entry point alone such a
+ * package is stale forever — `yarn build` succeeds and changes nothing the check
+ * can see — which is exactly the unfixable, ignore-me failure the guard's whole
+ * value depends on not producing. The newest file under the output root is when
+ * the package was last built: some emitted artifact always moves, and for `tsc
+ * --incremental` the `.tsbuildinfo` moves on every single run.
  *
  * NOTE: an absent or unreadable `src` reports fresh. A package consumed
  * without its sources can't be shown stale, and a hard failure there would
@@ -215,8 +227,19 @@ export function checkBuildFreshness(packageRoot: string, distEntry: string): Sta
 	const entryMtime = mtimeMs(join(packageRoot, distEntry));
 	if (entryMtime === undefined) return 'missing';
 
-	const newestSrc = newestMtime(join(packageRoot, 'src'));
-	return newestSrc !== undefined && newestSrc > entryMtime ? 'stale' : undefined;
+	const newestSrc = newestMtime(join(packageRoot, 'src'), isBuildInput);
+	if (newestSrc === undefined) return undefined;
+
+	// The entry point is the fallback for an unreadable output root, and for a
+	// `distEntry` that sits at the package root with no directory above it.
+	const newestBuild = newestMtime(join(packageRoot, outputRoot(distEntry)), isBuildOutput) ?? entryMtime;
+	return newestSrc > newestBuild ? 'stale' : undefined;
+}
+
+/** The build output directory: the leading segment of `dist/src/index.js` is `dist`. */
+function outputRoot(distEntry: string): string {
+	const [first] = distEntry.split(/[\\/]/);
+	return first === undefined || first === '' ? distEntry : first;
 }
 
 function problemMessage(target: BuildTarget, reason: StaleReason, remedy: string): string {
@@ -303,8 +326,18 @@ function readPackageJson(path: string): PackageManifest | undefined {
 	}
 }
 
-/** Newest mtime (ms) among source files under `dir`, recursively. */
-function newestMtime(dir: string): number | undefined {
+/** Whether a directory entry counts towards the newest mtime of a tree. */
+type EntryFilter = (entry: Dirent) => boolean;
+
+/** Sources the build reads: test files and their directories are not among them. */
+const isBuildInput: EntryFilter = (entry) =>
+	entry.isDirectory() ? !SOURCE_EXCLUDE_DIRS.has(entry.name) : !SOURCE_EXCLUDE.test(entry.name);
+
+/** Everything the compiler writes counts, `.tsbuildinfo` and compiled tests included. */
+const isBuildOutput: EntryFilter = () => true;
+
+/** Newest mtime (ms) under `dir`, recursively, over the entries `accept` keeps. */
+function newestMtime(dir: string, accept: EntryFilter): number | undefined {
 	let entries: Dirent[];
 	try {
 		entries = readdirSync(dir, { withFileTypes: true });
@@ -314,9 +347,10 @@ function newestMtime(dir: string): number | undefined {
 
 	let newest: number | undefined;
 	for (const entry of entries) {
+		if (!accept(entry)) continue;
 		const candidate = entry.isDirectory()
-			? (SOURCE_EXCLUDE_DIRS.has(entry.name) ? undefined : newestMtime(join(dir, entry.name)))
-			: (entry.isFile() && !SOURCE_EXCLUDE.test(entry.name) ? mtimeMs(join(dir, entry.name)) : undefined);
+			? newestMtime(join(dir, entry.name), accept)
+			: (entry.isFile() ? mtimeMs(join(dir, entry.name)) : undefined);
 		if (candidate !== undefined && (newest === undefined || candidate > newest)) newest = candidate;
 	}
 	return newest;
