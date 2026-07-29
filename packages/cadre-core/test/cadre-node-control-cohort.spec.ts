@@ -64,6 +64,8 @@ function injectCohort(
   });
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     queryCadrePeers: async () => { queries++; return opts.members; },
+    // Consulted by the per-stream authz snapshot refresh that rides each pass.
+    queryRevokedStamps: async () => new Set<string>(),
     getOwnerKeys: async () => opts.ownerKeys ?? new Set<string>()
   };
   (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
@@ -223,8 +225,10 @@ describe('CadreNode.reconcileControlCohort', () => {
 
     await Promise.all([node.reconcileControlCohort(), node.reconcileControlCohort()]);
 
-    // One coalesced pass: membership read + dial happen once, not twice.
-    expect(queryCalls()).toBe(1);
+    // One coalesced pass. A single pass reads membership twice (the per-stream
+    // authz snapshot refresh, then sibling enumeration) — so 2 here, not 4,
+    // proves the second reconcile call rode the first's in-flight run.
+    expect(queryCalls()).toBe(2);
     expect(dialCalls).toHaveLength(1);
   });
 

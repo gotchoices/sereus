@@ -1405,6 +1405,9 @@ export class CadreNode implements SAppIdLookup {
     // authorized set — membership changes that ARRIVED BY REPLICATION (rather
     // than a local write) are picked up here, bounding the snapshot's staleness
     // to the reconcile interval.
+    // NOTE: this refresh and the sibling enumeration below each run their own
+    // CadrePeer query (two reads per pass); if those reads ever get costly,
+    // share one row-set across both.
     await this.refreshAuthorizedControlPeers('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
