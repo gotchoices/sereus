@@ -53,7 +53,8 @@ declare schema Strand {
     table Invite (
         Key text primary key,
         Expiration datetime null,
-        -- TODO: ability to deactivate?
+        -- Deactivation is a CancelledInvite tombstone (below), not a delete of this row
+        -- or a state column on it — rationale on that table.
         constraint InsertOnly check on update, delete (false),
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
@@ -91,8 +92,63 @@ declare schema Strand {
         constraint NotExpired check on insert (
             exists (select 1 from Invite I where I.Key = new.InviteKey and (I.Expiration is null or I.Expiration > context.Now))
         ),
+        -- A cancelled invitation may never be consumed. Blocking the ConsumedInvite
+        -- insert is sufficient to block the JOIN: Member.Authorized's invite branch
+        -- requires a same-transaction FRESH ConsumedInvite row, and consumeInvite writes
+        -- both rows in one transaction, so the whole join rolls back. The rule lives here
+        -- alone rather than being duplicated into Member.Authorized. Reads only stored
+        -- rows — no caller-supplied context decides admission (unlike NotExpired's Now).
+        constraint NotCancelled check on insert (
+            not exists (select 1 from CancelledInvite C where C.InviteKey = new.InviteKey)
+        ),
         constraint MemberValid check (exists (select 1 from Member M where M.Key = new.MemberKey))
     ) with context (InviteSignature text null, Now datetime null);
+
+    -- A manager has cancelled invitation [InviteKey]: it may never be consumed.
+    --
+    -- A monotone TOMBSTONE, not a delete of the Invite row and not a state column on it:
+    --   1. Deleting the Invite row would re-open a replay surface. InviteValid signs only
+    --      (Key, Expiration) — there is no per-row StampId on Invite — so a deleted Invite
+    --      row can be re-created by replaying the captured issue signatures. Closing that
+    --      would mean adding Invite.StampId and widening Revocation.RowIsGone to a fourth
+    --      table. (CadreControl.FormationInvite IS deletable — it carries a StampId for
+    --      exactly this reason.)
+    --   2. A state column needs an UPDATE, and Invite is insert-only on purpose.
+    --   3. Insert-only converges: a growing set of dead markers merges cleanly across
+    --      nodes, a delete/re-insert pair does not. Same rationale as Strand.Revocation.
+    -- No StampId here: the table is insert-only and its primary key IS the invite key, so
+    -- a replayed insert collides on the PK — the argument the comment above ConsumedInvite
+    -- makes for Invite/ConsumedInvite.
+    -- Deliberately NO InviteExists gate: a node that has not yet converged on the Invite
+    -- row must still be able to record the cancellation. Refusing it would fail OPEN on a
+    -- security control, which is strictly worse than accepting a junk row.
+    -- NOTE: this table only grows — one row per cancellation, plus any junk a manager
+    -- chooses to file, and Immutable means rows never go away (the tradeoff
+    -- Revocation.RowIsGone already documents for junk stamps). Fine at strand scale; if
+    -- invite churn ever gets large it needs pruning bounded by something other than
+    -- "forever".
+    -- NOTE: a cancellation must PROPAGATE before the holder redeems — a holder consuming
+    -- on a node that has not yet seen this row still gets in. Same convergence class as
+    -- the NotRevoked / MinOneMember / MinOneManager local-visibility notes; not solved here.
+    table CancelledInvite (
+        InviteKey text primary key,
+        constraint OnlyClosed check (
+            exists (select 1 from Header H where H.Type = 'c')
+        ),
+        -- Cancellation is permanent: un-cancelling would restore the re-entry it closed.
+        -- To re-invite a party, issue a fresh invitation.
+        constraint Immutable check on update, delete (false),
+        -- committed.Manager, not Manager: this check has a subquery so it defers to
+        -- commit, by which point a manager seated in the SAME transaction would otherwise
+        -- be able to authorize its own cancellation. Every sibling Authorized in this
+        -- schema reads committed.* for the same reason.
+        constraint Authorized check on insert (
+            exists (select 1 from committed.Manager A
+                where A.MemberKey = context.ManagerKey
+                    and verify(digest('Strand.CancelledInvite', 'cancel', new.InviteKey),
+                               context.ManagerSignature, A.MemberKey, 'ed25519'))
+        )
+    ) with context (ManagerKey text, ManagerSignature text);
 
     -- A party in the closed strand network
     table Member (
