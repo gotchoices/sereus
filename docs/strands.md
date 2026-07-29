@@ -179,15 +179,41 @@ enforces these invariants:
 Being a manager does not require being a member: a key with no `Member` row can still be
 promoted. Whether it should be is tracked separately as `debt-strand-manager-must-be-member`.
 
+### Removing Members
+
+Membership removal is governed by the same signed-approval discipline as admission
+(the `Strand.Member` table's constraints in [`schemas/strand.qsql`](../schemas/strand.qsql)):
+
+- **Any manager can remove any member.** The removal carries an existing manager's
+  signature over the *removal of that specific key*. Every membership approval is tagged
+  with its action, so a captured admission approval cannot be replayed as an eviction,
+  nor an eviction as an admission.
+- **A member can leave on its own.** A removal self-signed by the departing key deletes
+  that member's own row — no manager involved. Because the signature is checked against
+  the key being removed, one member's signature can never remove a *different* member.
+- **A removed member cannot walk back in.** If it joined by invitation, that invitation
+  was spent at join time; the leftover record of its consumption does not re-admit
+  anyone on its own. Re-admission requires a fresh manager action — a direct manager
+  admission or a newly issued invitation.
+- **A manager must resign before losing membership.** Deleting the member row of a key
+  that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
+  manager seat.
+- **The last member can never be removed.** A member-count floor mirrors the last-manager
+  floor above, with the same local-count caveat (see known gaps below).
+- **Revocation is forward-looking only.** A revoked member keeps whatever strand data its
+  nodes already replicated, and it still holds the strand's member private key. Cutting
+  off its *future* reads means rotating the read gate, which currently means re-forming
+  the strand — see [Closed-Strand Member Key Handling](#closed-strand-member-key-handling).
+
 Known gaps remain, all out of scope of the rules above:
 
-- **Concurrent removals on different nodes can still empty the table.** The last-manager
-  floor counts the rows one node can see, so two nodes each removing a different manager
-  can both believe a manager survives. A cross-node guard is not attempted; tracked in
-  the schema's own note next to the check.
-- **A manager's authorization signature carries no nonce, so it can be replayed.** An
-  appointment now signs the new key *together with its generation* while a removal signs
-  the bare key, so a captured "add X" approval can no longer double as "remove X" — but a
-  captured removal approval can still be replayed as a later removal, and a captured
-  appointment can be re-used if the same generation becomes seatable again. Tracked as
-  `bug-strand-manager-authority-antireplay`.
+- **Concurrent removals on different nodes can still empty a table.** The last-manager
+  and last-member floors each count the rows one node can see, so two nodes each removing
+  a different manager (or member) can both believe a survivor remains. A cross-node guard
+  is not attempted; tracked in the schema's own notes next to the checks.
+- **An authorization signature carries no nonce, so it can be replayed.** A manager
+  appointment now signs the new key *together with its generation* while removals sign
+  the action-tagged key, so an approval for one action can no longer double as another —
+  but a captured removal approval can still be replayed as a later removal (of a manager
+  or of a re-admitted member), and a captured appointment can be re-used if the same
+  generation becomes seatable again. Tracked as `bug-strand-manager-authority-antireplay`.
