@@ -103,28 +103,86 @@ export const STRAND_SCHEMA = `    table Header (
     -- A party in the closed strand network
     table Member (
         Key text primary key,
+        -- Membership is insert + delete only; a re-keyed member is a remove + fresh add.
         constraint NoUpdate check on update (false),
-        constraint OnlyClosed check (
+        -- Mask is explicit on all three operations: a bare check defaults to
+        -- insert|update and silently never runs on DELETE.
+        constraint OnlyClosed check on insert, update, delete (
             exists (select 1 from Header H where H.Type = 'c')
         ),
-        constraint Authorized check on insert (
-            -- There are no other records - first member needs no authorization
-            (select count(1) from Member) <= 1
-
-                -- or added directly by manager
-                or exists (
-                    select 1 from Manager A
-                        where A.MemberKey = context.ManagerKey
-                            and verify(digest(new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
-                )
-
-                -- or added by invite
-                or exists (
-                    select 1 from ConsumedInvite CI where CI.MemberKey = new.Key
-                )
+        -- A closed strand must never lose its last member: Member is the strand's read
+        -- gate, and the founding Manager is only seatable beside an existing Member, so
+        -- an empty member set is a permanent denial of the whole strand. Deferred
+        -- (subquery), so the count it sees is the POST-delete count.
+        -- NOTE: this is a per-transaction check against locally visible rows. Two nodes
+        -- that concurrently remove different members can each see a surviving one and
+        -- still converge to zero; if partitioned removal ever becomes a real workflow,
+        -- the floor needs a cross-node guard, not a local count.
+        constraint MinOneMember check on delete (
+            (select count(1) from Member) >= 1
         ),
-        -- TODO: handle member revocation constraint
-    ) with context (ManagerKey text null, ManagerSignature text null);
+        -- A member still holding a Manager row cannot be un-membered — it must resign
+        -- its Manager row first. Deferred (subquery), so it reads the POST-image: a
+        -- single transaction deleting BOTH the Manager and the Member row passes.
+        constraint NotAManager check on delete (
+            not exists (select 1 from Manager A where A.MemberKey = old.Key)
+        ),
+        constraint Authorized check on insert, delete (
+            -- Every authorizer is read from the PRE-transaction snapshot (committed.*):
+            -- this CHECK auto-defers to commit (it has a subquery), by which point rows
+            -- inserted alongside are live, so a plain from-Manager would let a manager
+            -- seated in this same transaction authorize a removal. committed.* states
+            -- the rule directly: the authorizer existed BEFORE this transaction.
+
+            -- Every signed digest below leads with two fixed literals — the
+            -- 'Strand.Member' domain tag and an 'add'/'remove' action tag — so an
+            -- approval verifies ONLY against the one rule it was minted for; an admit
+            -- approval can never be replayed as an eviction or vice versa (the idiom
+            -- of CadreControl's control-authorization.ts).
+
+            -- Bootstrap: the FOUNDING transaction — one whose pre-transaction member
+            -- set is empty — seats the first member with no authorization. Gated on
+            -- the PRE-transaction count, so it is never true of a DELETE, nor of the
+            -- insert half of a same-transaction wipe-then-seat (the wiped rows were
+            -- committed).
+            (old.Key is null and (select count(1) from committed.Member) = 0)
+
+                -- or added directly by a pre-existing manager signing the add-tagged digest
+                or (old.Key is null and exists (
+                    select 1 from committed.Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and verify(digest('Strand.Member', 'add', new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                ))
+
+                -- or added by consuming an invite. The ConsumedInvite admitting this
+                -- member must be same-transaction FRESH — its InviteKey absent from the
+                -- committed snapshot. consumeInvite inserts Member + ConsumedInvite in
+                -- one transaction, so a genuine join passes; a revoked member's STALE
+                -- committed row no longer re-admits it, while a fresh manager-issued
+                -- invite still does (new InviteKey → uncommitted row). InviteExists +
+                -- ValidUsage on ConsumedInvite keep this branch mintable only via a
+                -- real invite and possession of its private key.
+                or (old.Key is null and exists (
+                    select 1 from ConsumedInvite CI
+                        where CI.MemberKey = new.Key
+                            and not exists (select 1 from committed.ConsumedInvite CC where CC.InviteKey = CI.InviteKey)
+                ))
+
+                -- or a removal authorized by a pre-existing manager over the DISTINCT
+                -- remove-tagged digest bound to the departing key.
+                or (new.Key is null and exists (
+                    select 1 from committed.Manager A
+                        where A.MemberKey = context.ManagerKey
+                            and verify(digest('Strand.Member', 'remove', old.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                ))
+
+                -- or the member removes ITSELF (leaving): the remove-tagged signature
+                -- verifies against old.Key itself, so only the departing key's holder
+                -- can produce it — no manager involved.
+                or (new.Key is null
+                    and verify(digest('Strand.Member', 'remove', old.Key), context.MemberSignature, old.Key, 'ed25519'))
+        ),
+    ) with context (ManagerKey text null, ManagerSignature text null, MemberSignature text null);
 
     -- A member-associated peer (node)
     table MemberPeer (
