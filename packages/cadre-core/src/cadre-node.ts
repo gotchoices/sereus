@@ -3115,6 +3115,26 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Re-materialize the authorized-peer snapshot that the fail-closed per-stream
+   * control-DB gate ({@link authorizeInboundControlStream}) judges against.
+   *
+   * Every membership wrapper on this class (`authorizePeer`, `removePeer`,
+   * `addDrone`, `acceptPhone`, `applySeed`, `registerSelf`) already does this
+   * for itself, so ordinary callers never need it. It exists for a caller that
+   * wrote a `CadrePeer` row through a LOWER layer — reaching
+   * {@link getSeedBootstrapService} directly — whose snapshot would otherwise
+   * stay stale until the next timed cohort reconcile. That window is not
+   * cosmetic: while it lasts this node DENIES the just-written peer's own
+   * control-DB streams, which can kill that peer's schema load outright.
+   *
+   * Idempotent and best-effort (a failed read keeps the previous snapshot);
+   * never rejects.
+   */
+  async refreshMembershipGate(): Promise<void> {
+    await this.refreshAuthorizedControlPeers('external-write');
+  }
+
+  /**
    * Authorize a new peer to join the cadre.
    * Signs the peer ID with the owner key and inserts into CadrePeer table.
    *

@@ -194,6 +194,17 @@ async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string> {
  * into `ownerNode`'s control DB, exactly as the receiver would self-publish —
  * so `ownerNode.resolvePeerAddrs(rxPeerId)` passes its binding + self-sig +
  * freshness gates and dials the supplied addrs (signaling/relay first).
+ *
+ * This reaches `SeedBootstrapService` DIRECTLY, below every `CadreNode`
+ * membership wrapper, so it is also the one write path that does not
+ * re-materialize the owner's per-stream control-DB gate snapshot on its own —
+ * hence the explicit `refreshMembershipGate()` below. Without it the owner
+ * keeps judging inbound control-DB streams against a snapshot that predates
+ * this row and DENIES the very receiver it just vouched for, until the next
+ * timed cohort reconcile ~15s later. That is not cosmetic: it kills the
+ * receiver's own control-DB schema load when the receiver starts inside the
+ * window (scenario 2), and costs scenario 4 a burst of denied `db-p2p/sync`
+ * pulls that stretch a ~3s run to ~17s.
  */
 async function seedReceiverRecord(
 	ownerNode: CadreNode,
@@ -210,6 +221,7 @@ async function seedReceiverRecord(
 		privateKeyB64,
 	);
 	await ownerNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);
+	await ownerNode.refreshMembershipGate();
 	return record;
 }
 
@@ -694,18 +706,16 @@ describe('E2E push-wake over the control network', () => {
 			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
 			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
 			// `seedReceiverRecord(S, ...)`): each consulting node reads a SIBLING-written row.
-			// NOTE: `seedReceiverRecord` reaches A's SeedBootstrapService DIRECTLY, so unlike
-			// every `CadreNode` membership wrapper it does not re-materialize A's per-stream
-			// control-DB gate snapshot. A's snapshot therefore stays {S} (set by the
+			// NOTE: `seedReceiverRecord` reaches A's SeedBootstrapService DIRECTLY, below every
+			// `CadreNode` membership wrapper, so it calls `A.refreshMembershipGate()` itself —
+			// otherwise A's per-stream control-DB gate snapshot stays {S} (set by the
 			// `authorizePeer` above) until the 15s cohort-reconcile refresh, and for that
-			// window A denies Rx's own `…/db-p2p/sync/1.0.0` pulls — visible as bursts of
-			// `authorizeInboundControlStream: DENYING` under `DEBUG='sereus:cadre:*'` and as
-			// runs that take ~17s instead of ~3s. Harmless (the pulls retry and the run still
-			// passes); if it ever becomes a hard failure, give CadreNode a public
-			// "re-materialize the membership gate" call and use it here. Swapping the two
-			// writes so `authorizePeer` runs last DOES clear the denials, but measured
-			// WORSE overall (2/6 vs 4/5 passes) — it perturbs the commit ordering into the
-			// separate control-DB stale-revision race, so leave the order as is.
+			// window A denies Rx's own `…/db-p2p/sync/1.0.0` pulls (bursts of
+			// `authorizeInboundControlStream: DENYING` under `DEBUG='sereus:cadre:*'`, and
+			// runs stretched from ~3s to ~17s). Do NOT instead swap the two writes so
+			// `authorizePeer` runs last: that also clears the denials but measured WORSE
+			// overall (2/6 vs 4/5 passes), because it perturbs commit ordering into the
+			// separate control-DB stale-revision race. Leave the order as is.
 			await A.authorizePeer(sPeerId);
 			await seedReceiverRecord(A, rxPeerId, rxKey, controlAddrs(Rx));
 
