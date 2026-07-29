@@ -14,6 +14,8 @@ import {
   deviceTokenAddDigest,
   deviceTokenRemoveDigest,
 } from '../src/peer-authorization.js';
+import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
+import { signDeviceTokenRecord } from '../src/device-token.js';
 import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
@@ -130,6 +132,72 @@ describe('CadreControl approval domain separation', () => {
       keys.push(String(row.Key));
     }
     return keys.sort();
+  }
+
+  /** Vouch a `CadrePeer` membership row the legitimate way, so `DeviceToken`'s
+   * self-update branch has a `PublicKey` to verify against. */
+  async function seatCadrePeer(peerId: string, publicKey: string | null): Promise<string> {
+    const stamp = freshStamp();
+    const vouchSig = signB64(founder, cadrePeerVoucherDigest(peerId, stamp));
+    await rawDb.exec(
+      `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?, ?, ?, ?, ?, ?, ?)`,
+      [founder.publicKey, vouchSig, peerId, publicKey, '', null, null, stamp, founder.publicKey, vouchSig],
+    );
+    return stamp;
+  }
+
+  /** The owner approval `DeviceToken.AuthorizedInsert` verifies: the WHOLE row, ending in
+   * its single-use stamp. Taking the same struct the write does means a test cannot
+   * approve one row and present another by accident — only on purpose. */
+  function approveDeviceTokenAdd(row: DeviceTokenAuthorizedRow): string {
+    return signB64(founder, deviceTokenAddDigest(row));
+  }
+
+  function rawInsertDeviceToken(
+    contextOwner: string | null,
+    signature: string | null,
+    row: DeviceTokenAuthorizedRow,
+  ): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?, ?, ?, ?, ?)`,
+      [contextOwner, signature, row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
+    );
+  }
+
+  function rawDeleteDeviceToken(
+    contextOwner: string | null,
+    signature: string | null,
+    peerId: string,
+  ): Promise<void> {
+    return rawDb.exec(
+      `delete from CadreControl.DeviceToken
+         with context OwnerKey = ?, Signature = ?
+         where PeerId = ?`,
+      [contextOwner, signature, peerId],
+    );
+  }
+
+  /** The legitimate clear shape: owner-signed delete + the stamp's tombstone, one transaction. */
+  function clearDeviceToken(peerId: string, stampId: string): Promise<void> {
+    return inTransaction(async () => {
+      await rawDeleteDeviceToken(
+        founder.publicKey,
+        signB64(founder, deviceTokenRemoveDigest(peerId, stampId)),
+        peerId,
+      );
+      await tombstoneStamp('DeviceToken', stampId);
+    });
+  }
+
+  function deviceTokenRow(peerId: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get(
+      'select PeerId, Platform, Token, UpdatedAt, StampId from CadreControl.DeviceToken where PeerId = ?',
+      [peerId],
+    );
   }
 
   beforeEach(async () => {
@@ -298,49 +366,138 @@ describe('CadreControl approval domain separation', () => {
 
   it('rejects: a DeviceToken insert approval replayed as a DeviceToken delete', async () => {
     const peerId = '12D3KooWDeviceTokenTarget';
-    const stamp = freshStamp();
-    const addSig = signB64(founder, deviceTokenAddDigest({
-      peerId, platform: 'fcm', token: 'tok-domain-sep', updatedAt: null, sig: null, stampId: stamp,
-    }));
-    await rawDb.exec(
-      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
-         with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?, ?)`,
-      [founder.publicKey, addSig, peerId, 'fcm', 'tok-domain-sep', null, null, stamp],
-    );
+    const row: DeviceTokenAuthorizedRow = {
+      peerId, platform: 'fcm', token: 'tok-domain-sep', updatedAt: null, sig: null, stampId: freshStamp(),
+    };
+    const addSig = approveDeviceTokenAdd(row);
+    await rawInsertDeviceToken(founder.publicKey, addSig, row);
 
     // The tombstone rides along so `RevocationRecorded` is satisfied and the rejection
     // stays pinned to the insert-approval-replayed-as-delete constraint alone.
     await expectConstraintFailure(
       inTransaction(async () => {
-        await rawDb.exec(
-          `delete from CadreControl.DeviceToken
-             with context OwnerKey = ?, Signature = ?
-             where PeerId = ?`,
-          [founder.publicKey, addSig, peerId],
-        );
-        await tombstoneStamp('DeviceToken', stamp);
+        await rawDeleteDeviceToken(founder.publicKey, addSig, peerId);
+        await tombstoneStamp('DeviceToken', row.stampId);
       }),
       'AuthorizedDelete',
     );
-    expect(
-      await rawDb.get('select PeerId from CadreControl.DeviceToken where PeerId = ?', [peerId]),
-    ).toBeDefined();
+    expect(await deviceTokenRow(peerId)).toBeDefined();
 
     // The properly 'remove'-tagged approval over the stored (PeerId, StampId) is what
     // deletes it — with the mandatory stamp retirement alongside.
-    await inTransaction(async () => {
-      await rawDb.exec(
-        `delete from CadreControl.DeviceToken
+    await clearDeviceToken(peerId, row.stampId);
+    expect(await deviceTokenRow(peerId)).toBeUndefined();
+  }, 60_000);
+
+  // ── DeviceToken: the three attacks the single-use stamp closes ──────────────
+
+  it('rejects: a DeviceToken approval presenting a row OTHER than the one approved', async () => {
+    // Pre-fix the approval covered the PeerId alone, so one captured owner signature
+    // authorized ANY (Platform, Token) for that peer: an attacker who held it could point
+    // the party's push-wakes at a device it controlled. The digest now binds every column.
+    const peerId = '12D3KooWDeviceTokenRowBinding';
+    const stamp = freshStamp();
+    const approved: DeviceTokenAuthorizedRow = {
+      peerId, platform: 'fcm', token: 'tok-good', updatedAt: null, sig: null, stampId: stamp,
+    };
+    const addSig = approveDeviceTokenAdd(approved);
+
+    // A FIRST insert with a fresh stamp, deliberately: after a clear, `NotRevoked` would
+    // also be violated and which constraint Quereus names becomes ambiguous.
+    await expectConstraintFailure(
+      rawInsertDeviceToken(founder.publicKey, addSig, { ...approved, platform: 'apns', token: 'tok-evil' }),
+      'AuthorizedInsert',
+    );
+    expect(await deviceTokenRow(peerId)).toBeUndefined();
+
+    // Same approval, the row it actually approved: admitted. So the rejection above was
+    // the row substitution, not a bad signature.
+    await rawInsertDeviceToken(founder.publicKey, addSig, approved);
+    expect((await deviceTokenRow(peerId))?.Token).toBe('tok-good');
+  }, 60_000);
+
+  it('rejects: a DeviceToken approval replayed after the token was cleared (retired stamp)', async () => {
+    // The clear (logout) is the whole point of the retirement: the cleared device still
+    // holds the never-expiring approval that seated its row, and a push token has NO
+    // freshness ceiling to age out, so `unique` alone — which only holds over LIVE rows —
+    // let the exact row come back the moment the delete freed the stamp.
+    const peerId = '12D3KooWDeviceTokenCleared';
+    const row: DeviceTokenAuthorizedRow = {
+      peerId, platform: 'fcm', token: 'tok-cleared', updatedAt: null, sig: null, stampId: freshStamp(),
+    };
+    const addSig = approveDeviceTokenAdd(row);
+    await rawInsertDeviceToken(founder.publicKey, addSig, row);
+    await clearDeviceToken(peerId, row.stampId);
+    expect(await deviceTokenRow(peerId)).toBeUndefined();
+
+    // Replay the captured approval VERBATIM against the EXACT row it approved:
+    // `AuthorizedInsert` still passes (the signature is genuine and the founder is still
+    // an owner), so `NotRevoked` is the only thing standing.
+    await expectConstraintFailure(
+      rawInsertDeviceToken(founder.publicKey, addSig, row),
+      'NotRevoked',
+    );
+    expect(await deviceTokenRow(peerId)).toBeUndefined();
+
+    // Retirement is per-STAMP, not a ban on the peer: a fresh stamp + fresh approval
+    // re-registers (the logout → login path).
+    const reRegistered: DeviceTokenAuthorizedRow = { ...row, token: 'tok-again', stampId: freshStamp() };
+    await rawInsertDeviceToken(founder.publicKey, approveDeviceTokenAdd(reRegistered), reRegistered);
+    expect((await deviceTokenRow(peerId))?.Token).toBe('tok-again');
+  }, 60_000);
+
+  it('rejects: an owner-signed DeviceToken update — the owner re-touch branch is gone', async () => {
+    // The removed branch verified an owner signature over `digest('CadreControl.DeviceToken',
+    // 'vouch', new.PeerId)` and sat OUTSIDE the monotonicity requirement, so ONE captured
+    // owner approval rewrote Platform/Token at will and could roll UpdatedAt backwards (or
+    // park it in the far future, wedging the peer's own self-updates forever). No writer
+    // used it; an owner correcting a row now deletes it (retiring the stamp) and re-inserts.
+    const peer = freshKeyPair();
+    const peerId = '12D3KooWDeviceTokenOwnerUpdate';
+    // A real CadrePeer row with the peer's PublicKey, so the surviving self-update branch
+    // has something to verify against — the rejection below is the ABSENT owner branch,
+    // not a missing peer row.
+    await seatCadrePeer(peerId, peer.publicKey);
+    const first = signDeviceTokenRecord(
+      { peerId, platform: 'fcm', token: 'tok-self-1', updatedAt: 1_000 },
+      peer.privateKey,
+    );
+    const seated: DeviceTokenAuthorizedRow = { ...first, stampId: freshStamp() };
+    await rawInsertDeviceToken(founder.publicKey, approveDeviceTokenAdd(seated), seated);
+
+    // Owner context, a genuine owner signature over the digest that branch checked, and a
+    // monotonically HIGHER UpdatedAt — nothing stale about it, and still refused.
+    const ownerVouch = signAs(
+      founder,
+      buildAuthorizationMessage('CadreControl.DeviceToken', 'vouch', [peerId]),
+    );
+    await expectConstraintFailure(
+      rawDb.exec(
+        `update CadreControl.DeviceToken
            with context OwnerKey = ?, Signature = ?
+           set Platform = ?, Token = ?, UpdatedAt = ?
            where PeerId = ?`,
-        [founder.publicKey, signB64(founder, deviceTokenRemoveDigest(peerId, stamp)), peerId],
-      );
-      await tombstoneStamp('DeviceToken', stamp);
-    });
-    expect(
-      await rawDb.get('select PeerId from CadreControl.DeviceToken where PeerId = ?', [peerId]),
-    ).toBeUndefined();
+        [founder.publicKey, ownerVouch, 'apns', 'tok-owner-rewrite', 2_000, peerId],
+      ),
+      'AuthorizedUpdate',
+    );
+    const unchanged = await deviceTokenRow(peerId);
+    expect(unchanged?.Token).toBe('tok-self-1');
+    expect(Number(unchanged?.UpdatedAt)).toBe(1_000);
+
+    // The peer's OWN monotonic, self-signed update is what rotates the row.
+    const second = signDeviceTokenRecord(
+      { peerId, platform: 'apns', token: 'tok-self-2', updatedAt: 2_000 },
+      peer.privateKey,
+    );
+    await rawDb.exec(
+      `update CadreControl.DeviceToken
+         with context OwnerKey = null, Signature = ?
+         set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
+         where PeerId = ?`,
+      [second.sig, second.platform, second.token, second.updatedAt, second.sig, peerId],
+    );
+    expect((await deviceTokenRow(peerId))?.Token).toBe('tok-self-2');
   }, 60_000);
 
   // ── FormationInvite: one constraint used to gate insert AND delete ─────────
