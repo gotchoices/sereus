@@ -733,13 +733,23 @@ invitation (cross-party formation is stranger-serving by design), and the config
 infrastructure peers. The stranger-open protocol allowlist (seed + formation, each with its own
 in-protocol trust check) is documented in one place in that module. Outbound dials are never gated
 (`resolvePeerAddrs`' trust policy already gates what gets dialed). Strand cohort nodes do NOT get
-the membership gater — their peers are legitimately cross-party. What step 6 wanted but cannot have
-yet: a per-stream `isAuthorizedMember` check inside the Optimystic control-DB protocols
-(`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}`) — `@optimystic/db-p2p`'s services
-expose no inbound-stream authz seam, so that half is filed as
-`blocked/control-repo-protocol-stream-authz-optimystic` (upstream repo). Until it lands, the
-connection gate is the outermost defense for those protocols and the read-time voucher predicate
-(step 4) remains the real fix.
+the membership gater — their peers are legitimately cross-party.
+
+**The per-stream half of step 6 has LANDED too (2026-07-29, `control-repo-protocol-stream-authz`):**
+`@optimystic/db-p2p` grew an inbound-stream authorization seam (`inbound-authorization.ts` — the
+service runs the predicate before decoding any frame and on deny aborts the stream, so the remote
+sees only a reset and the connection survives), and the control node wires it to
+`CadreNode.authorizeInboundControlStream`: a fail-closed, synchronous, in-memory check of the
+**materialized** authorized-peer snapshot (`authorizedControlPeers`, refreshed on membership writes
+and each `reconcileControlCohort` pass — a live DB read inside the gate would deadlock into mutual
+denial). It shares the connection gate's unconditional admissions (not fully up, absent/empty
+anchor, bootstrap infra, empty-snapshot cold start) but has NO stranger carve-outs — an enrollment
+window admits a stranger's connection for seed delivery while its repo/cluster/sync/block-transfer
+streams stay refused. Unit matrix in `cadre-core/test/control-stream-authorization.spec.ts`;
+end-to-end proof in integration scenario `control-stream-authz` (raw `RepoClient` pend/commit: the
+member succeeds, the enrollment-window outsider is refused with connection intact and nothing
+written). Known bounded staleness: a member added while a sibling was down is admitted by that
+sibling only after its next reconcile refresh.
 
 **Step-6 review (2026-07-28) found the formation exemption too wide to be worth much yet.** "A
 strand-formation responder is registered" is a process-lifetime condition — only `stop()` clears the

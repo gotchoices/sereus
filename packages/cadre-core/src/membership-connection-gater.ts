@@ -3,8 +3,10 @@
  *
  * Layer 2 of the membership enforcement chain: the PRIMARY gates are per-stream
  * — every sensitive sereus control protocol rejects a peer that fails the
- * voucher-anchored `CadreNode.isAuthorizedMember` predicate (wake, strand-addr),
- * and the replicated rows an outsider *can* still write are disbelieved at read
+ * voucher-anchored membership check (wake and strand-addr via
+ * `CadreNode.isAuthorizedMember`; the Optimystic control-DB protocols via the
+ * materialized-snapshot gate `CadreNode.authorizeInboundControlStream`), and
+ * the replicated rows an outsider *can* still write are disbelieved at read
  * time. This module adds the opportunistic connection-level layer on top: a
  * peer this node can positively determine is NOT authorized is refused at the
  * encrypted-connection checkpoint, before any protocol negotiation, so a
@@ -41,10 +43,18 @@
  * Everything else a control node handles — the Optimystic control-DB protocols
  * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), wake
  * (`/sereus/strand-wake/1.0.0`), and strand-addr (`/sereus/strand-addr/1.0.0`)
- * — is members-only. Wake and strand-addr enforce that per-stream today; the
- * Optimystic protocols expose no per-stream authz hook yet (see
- * `tickets/blocked/control-repo-protocol-stream-authz-optimystic`), which makes
- * this connection gate the current outermost defense for them.
+ * — is members-only, and every one of them enforces that per-stream. Wake and
+ * strand-addr check `isAuthorizedMember` inside their handlers; the four
+ * control-DB protocols are gated by the fail-closed
+ * `CadreNode.authorizeInboundControlStream` (wired as libp2p's
+ * `authorizeInboundStream` upstream hook), which judges each inbound stream
+ * against the MATERIALIZED authorized-peer snapshot — synchronous and
+ * in-memory, because a live DB read from inside the gate would deadlock into
+ * mutual denial. The two layers complement, not duplicate: this connection
+ * gate is fail-open over a live DB read (deny only on positive proof of an
+ * outsider), the stream gate is fail-closed over the snapshot and has NO
+ * stranger carve-outs — an enrollment window admits a stranger's connection
+ * for seed delivery, yet its repo streams are still refused.
  *
  * ## Fail-open, deliberately
  *

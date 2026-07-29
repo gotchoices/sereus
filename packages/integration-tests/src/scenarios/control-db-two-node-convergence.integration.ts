@@ -30,7 +30,11 @@
  * This scenario isolates the *replication-given-a-connected-cohort* behavior, so it
  * still forms the cohort with a test-only manual `dial()` over the public
  * `getControlNode()` seam — exactly as the strand scenarios manually dial strand
- * nodes. Production auto-connect (nodes forming the control cohort with no manual
+ * nodes. A must vouch B (`authorizePeer` in `bootPair`) for B's pull-on-read
+ * streams to pass A's fail-closed per-stream control-DB gate
+ * (`authorizeInboundControlStream` — once A holds an anchor and ≥1 member row,
+ * un-vouched peers are refused on the repo protocol); B still pins nobody, so
+ * the row-presence-vs-trust distinction the closing comment describes is intact. Production auto-connect (nodes forming the control cohort with no manual
  * dial) now lands via `CadreNode.reconcileControlCohort` and is proven end-to-end,
  * with zero manual control dials, by `control-cohort-auto-convergence.integration.ts`.
  */
@@ -140,6 +144,12 @@ async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
 	const bKey = await generateKeyPair('Ed25519');
 	const B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
 	await B.start();
+
+	// A vouches B so B's inbound pull streams pass A's per-stream control-DB
+	// gate (A's snapshot is non-empty once it has an anchor + any member row).
+	// B still pins nobody — see the closing comment of the test: row presence
+	// (`isMember`) is what this scenario asserts, not trust.
+	await A.authorizePeer(B.peerId!.toString());
 
 	return { A, B };
 }
