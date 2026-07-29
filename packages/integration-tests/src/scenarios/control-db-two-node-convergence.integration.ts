@@ -34,7 +34,8 @@
  * streams to pass A's fail-closed per-stream control-DB gate
  * (`authorizeInboundControlStream` — once A holds an anchor and ≥1 member row,
  * un-vouched peers are refused on the repo protocol); B still pins nobody, so
- * the row-presence-vs-trust distinction the closing comment describes is intact. Production auto-connect (nodes forming the control cohort with no manual
+ * the row-presence-vs-trust distinction the closing comment describes is intact.
+ * Production auto-connect (nodes forming the control cohort with no manual
  * dial) now lands via `CadreNode.reconcileControlCohort` and is proven end-to-end,
  * with zero manual control dials, by `control-cohort-auto-convergence.integration.ts`.
  */

@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
@@ -248,6 +248,22 @@ describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', (
     db.queryCadrePeers = async () => { throw new Error('control DB read failed'); };
     await expect(node.refreshMembershipGate()).resolves.toBeUndefined();
     expect(authorize(node, 'peer-late')).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
+  });
+
+  it('an inbound seed application refreshes the gate for the peers it just wrote', async () => {
+    // The seed protocol handler applies rows inside SeedBootstrapService, below
+    // every wrapper; the shared `onSeedApplied` callback owes the refresh.
+    const { node, owner, members } = await nodeWithMutableRows();
+    const SEEDED = 'peer-seeded';
+    members.push(vouchedRow(SEEDED, owner));
+    expect(authorize(node, SEEDED)).toBe(false);
+
+    (node as unknown as {
+      seedEventCallbacks(): { onSeedApplied?: (partyId: string, peersAdded: number) => void };
+    }).seedEventCallbacks().onSeedApplied?.('p', 1);
+
+    await vi.waitFor(() => expect(authorize(node, SEEDED)).toBe(true));
     expect(authorize(node, STRANGER)).toBe(false);
   });
 

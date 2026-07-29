@@ -67,7 +67,7 @@ import {
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase } from './control-database.js';
-import { SeedBootstrapService } from './seed-bootstrap.js';
+import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
   StrandSolicitationService,
@@ -961,6 +961,12 @@ export class CadreNode implements SAppIdLookup {
    * failed read keeps the previous snapshot (never clears it), so a transient
    * DB error can neither flip the stream gate's cold-start carve-out back open
    * nor drop a legitimate member mid-flight. Never rejects.
+   *
+   * NOTE: two refreshes in flight at once (say a `removePeer` racing the timed
+   * reconcile) resolve last-writer-wins on completion order, not on read order,
+   * so the snapshot can briefly settle on the older read — self-corrected by the
+   * next refresh (≤ the reconcile interval). If that window ever needs closing,
+   * serialize with a single-flight guard like {@link registerSelfInFlight}.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
@@ -1760,6 +1766,7 @@ export class CadreNode implements SAppIdLookup {
       this.pendingPeerWrites.clear();
       return;
     }
+    let reissued = false;
     for (const [peerId, kind] of [...this.pendingPeerWrites]) {
       if (!this._running || !this.controlNode || !this.controlDatabase) {
         return;
@@ -1778,11 +1785,17 @@ export class CadreNode implements SAppIdLookup {
           // is somehow still present locally.
           await this.seedBootstrapService.removePeer(peerId);
         }
-        await this.refreshAuthorizedControlPeers('drain-reissue');
+        reissued = true;
         this.pendingPeerWrites.delete(peerId);
       } catch (error) {
         log('drain: re-issue of %s (%s) failed; leaving queued for next growth: %o', peerId, kind, error);
       }
+    }
+    if (reissued) {
+      // One refresh for the whole drain, not one per entry: these re-issues
+      // replay writes this node already applied locally (and already refreshed
+      // for), so the snapshot only has to be correct once the drain settles.
+      await this.refreshAuthorizedControlPeers('drain-reissue');
     }
   }
 
@@ -2906,11 +2919,7 @@ export class CadreNode implements SAppIdLookup {
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     });
 
-    this.seedBootstrapService.setEventCallbacks({
-      onSeedReceived: (partyId, peerId) => this.emit('seed:received', { partyId, peerId }),
-      onSeedApplied: (partyId, peersAdded) => this.emit('seed:applied', { partyId, peersAdded }),
-      onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
-    });
+    this.seedBootstrapService.setEventCallbacks(this.seedEventCallbacks());
 
     this.seedBootstrapService.initialize(this.controlNode, this.controlDatabase);
     log('Seed bootstrap service initialized');
@@ -3106,11 +3115,7 @@ export class CadreNode implements SAppIdLookup {
       ...(this.trustedOwnerStore ? { trustedOwners: this.trustedOwnerStore } : {}),
     });
 
-    this.seedBootstrapService.setEventCallbacks({
-      onSeedReceived: (partyId, peerId) => this.emit('seed:received', { partyId, peerId }),
-      onSeedApplied: (partyId, peersAdded) => this.emit('seed:applied', { partyId, peersAdded }),
-      onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
-    });
+    this.seedBootstrapService.setEventCallbacks(this.seedEventCallbacks());
 
     this.seedBootstrapService.initialize(this.controlNode, this.controlDatabase);
     log('Seed listener enabled');
@@ -3121,6 +3126,28 @@ export class CadreNode implements SAppIdLookup {
    */
   getSeedBootstrapService(): SeedBootstrapService | null {
     return this.seedBootstrapService;
+  }
+
+  /**
+   * The event callbacks every {@link SeedBootstrapService} this node owns is
+   * wired with — shared by the owner-capable service ({@link initializeSeedBootstrap})
+   * and the listener-only one ({@link enableSeedListener}) so the two cannot drift.
+   *
+   * A seed applied by the INBOUND protocol handler writes its `CadrePeer` rows
+   * inside the service, below every membership wrapper, so this is the site that
+   * owes the per-stream gate its refresh (same obligation as
+   * {@link refreshMembershipGate}); without it a just-seeded peer is denied until
+   * the next timed cohort reconcile.
+   */
+  private seedEventCallbacks(): SeedEventCallbacks {
+    return {
+      onSeedReceived: (partyId, peerId) => this.emit('seed:received', { partyId, peerId }),
+      onSeedApplied: (partyId, peersAdded) => {
+        this.emit('seed:applied', { partyId, peersAdded });
+        void this.refreshAuthorizedControlPeers('seed-applied');
+      },
+      onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
+    };
   }
 
   /**

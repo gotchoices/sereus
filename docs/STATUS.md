@@ -740,8 +740,8 @@ the membership gater — their peers are legitimately cross-party.
 service runs the predicate before decoding any frame and on deny aborts the stream, so the remote
 sees only a reset and the connection survives), and the control node wires it to
 `CadreNode.authorizeInboundControlStream`: a fail-closed, synchronous, in-memory check of the
-**materialized** authorized-peer snapshot (`authorizedControlPeers`, refreshed on membership writes
-and each `reconcileControlCohort` pass — a live DB read inside the gate would deadlock into mutual
+**materialized** authorized-peer snapshot (`authorizedControlPeers`, refreshed on membership writes,
+on an applied inbound seed, and each `reconcileControlCohort` pass — a live DB read inside the gate would deadlock into mutual
 denial). It shares the connection gate's unconditional admissions (not fully up, absent/empty
 anchor, bootstrap infra, empty-snapshot cold start) but has NO stranger carve-outs — an enrollment
 window admits a stranger's connection for seed delivery while its repo/cluster/sync/block-transfer
