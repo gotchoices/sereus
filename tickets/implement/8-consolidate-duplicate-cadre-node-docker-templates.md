@@ -1,3 +1,4 @@
+----
 description: Eliminate the duplicate cadre-node Docker deployment templates (ops/docker/sereus-node vs packages/cadre-cli/docker) so hardening/feature changes need only be applied once
 prereq:
 files: ops/docker/sereus-node/docker-compose.yml, ops/docker/sereus-node/env.example, ops/docker/sereus-node/README.md, packages/cadre-cli/docker/docker-compose.yml, packages/cadre-cli/docker/env.example, packages/cadre-cli/docker/Dockerfile, packages/cadre-cli/README.md

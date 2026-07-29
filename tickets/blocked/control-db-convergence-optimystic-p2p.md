@@ -270,3 +270,84 @@ optimystic work referenced in `docs/STATUS.md` (multi-coordinator write super-ma
 cross-network coordinator selection). Once landed and the built `dist/` is linked here,
 re-run the command above to confirm green, then remove this ticket's entry from
 `tickets/.pre-existing-known.md`.
+
+## Update 2026-07-28 — `clusterSize: 2` diagnostic run (mechanism confirmed, but not sufficient)
+
+Ran the experiment the 2026-07-27 update recommended but did not perform. Method: temporarily
+set `packages/cadre-core/src/cadre-node.ts` `clusterSize: 3` → `2` (the scenario boots
+`CadreNode`s, so `harness/test-party.ts` is NOT the site this test uses), **rebuilt
+`packages/cadre-core`**, ran `yarn vitest run control-db-two-node-convergence` from
+`packages/integration-tests` three times, then reverted the edit and rebuilt again. Tree is
+back to `clusterSize: 3` in both `src/` and `dist/`.
+
+### Result
+
+| config | runs | write phase | outcome |
+|---|---|---|---|
+| `clusterSize: 3` (baseline) | 1 | **rejected** — `2/2 rejected: membership-not-admitted:low-confidence-downsize` at `ClusterCoordinator.executeTransaction` | fail |
+| `clusterSize: 2` (rebuilt) | 3 | **commits** — zero occurrences of `membership-not-admitted` across all three logs | fail, but later: `Timeout waiting for B observes the X CadrePeer row written on A after 30000ms` |
+
+**The admission-gate mechanism is confirmed.** `declared.length < configuredClusterSize` is
+what rejects the write; matching the configured size to the real cohort clears it completely
+and deterministically.
+
+**Lowering `clusterSize` is not by itself a fix.** With the write committing, the test still
+fails one step later: node B never observes A's row within 30s. That is a *second*, distinct
+problem (convergence/pull-on-read on a 2-node cohort where B is `transaction`-profile),
+previously masked by the write rejection. Whoever takes the A/B decision should assume
+option (A) alone does not turn this suite green — it exchanges one red for another, further
+along.
+
+### Methodology warning for the next investigator
+
+`packages/integration-tests` imports `@serfab/cadre-core` through its **`dist/`** exports, not
+`src/`. My first two "diagnostic" runs edited `src/` only and reproduced the baseline failure
+exactly — they were silently still running `clusterSize: 3`. Rebuild the edited package before
+believing any integration-test result. This is a live instance of
+`backlog/debt-integration-tests-detect-stale-build`, which is worth doing before the next
+person burns runs on it.
+
+## Update 2026-07-29 — read-side failure isolated; two distinct upstream regressions
+
+Attempt to get the suite green before an overnight run. Did not succeed. What the attempt
+established (all diagnostics reverted; `packages/` is clean, `dist/` rebuilt to match `src/`):
+
+### There are TWO regressions here, not one
+
+1. **Write side — the admission gate** (already documented above). `clusterSize: 2` clears it
+   completely: no `membership-not-admitted` in any run.
+2. **Read side — B never converges**, and this is *not* a Sereus configuration issue. With the
+   write committing, the reader still fails `Timeout waiting for B observes the X CadrePeer row
+   after 30000ms`.
+
+### Read-side evidence (`DEBUG='optimystic:*,cadre:*'`, full log analysed)
+
+- B repeatedly runs `cluster-fetch:synced { blockId: 'default/CadrePeer', rev: 1 }` — **235
+  times**, always `rev: 1`. It is syncing the right block and never sees a newer revision.
+- Exactly **one** `rev: 2` appears in the entire 16k-line log, and it is a *data* block
+  (`7f0hiXoMe4nekMhimS5R9y15OMoshpPWaAhfZssEK2M`), not the `default/CadrePeer` collection block.
+- The 26 `cluster-fetch:no-quorum` entries are a red herring: all are `{ blockId:
+  'default/Strand', responders: 0 }` — a table neither node has written.
+- **Not a node-profile issue.** Re-ran with B as `storage` instead of `transaction` (both nodes
+  storage): identical failure. The edge/transaction profile is not what breaks it.
+
+### Prime suspects (dated, not yet proven)
+
+The failures start ~2026-07-15; two upstream commits land just before, both touching exactly
+these paths:
+
+- `cluster-membership-admission-gate` — `e285cdb` (implement) / `f568454` (review), 2026-07-07.
+  Confirmed cause of the write-side rejection.
+- `txn-perf-authoritative-notfound` — `1de2e3a`, 2026-07-07. Suspected cause of the read side.
+  Its own NOTE in `coordinator-repo.ts` says `NetworkTransactor.get` now treats an authoritative
+  "absent" (`{ state: {} }`) as **final and no longer retries it**, "relying on this cluster
+  reconciliation to have already run." A reader that gets an authoritative-absent for a row that
+  exists on the writer, and never retries, matches the observed symptom exactly. **Verify before
+  acting** — this is a reasoned suspect from log shape + timing, not a proven root cause.
+
+### What this means for the decision above
+
+Option (A) — lowering `clusterSize` — is now clearly **not sufficient**: it buys the write and
+stops at the read. Whoever takes this should expect upstream work in `../optimystic` regardless,
+and should probably start by testing the `txn-perf-authoritative-notfound` hypothesis (revert it
+locally in the linked workspace and re-run this scenario) before designing anything.

@@ -1,4 +1,6 @@
+----
 description: The integration-tests package tries to force its slow tests to run one-at-a-time to avoid two tests grabbing the same network port, but a Vitest upgrade silently turned that setting off — so the safety net is gone even though tests happen to pass today.
+prereq: debt-integration-tests-detect-stale-build
 files: packages/integration-tests/vitest.config.ts
 difficulty: easy
 ----
