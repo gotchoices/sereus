@@ -105,8 +105,8 @@ export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-ke
 export {
   signStrandPayload,
   verifyStrandPayload,
-  signStrandMemberAction,
-  signStrandMemberPeerRemoval,
+  signStrandApproval,
+  generateStrandStampId,
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
@@ -120,7 +120,6 @@ export {
   removeManager,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
-  type StrandMemberAction,
   type FounderBootstrapParams,
   type IssueInviteParams,
   type IssuedInvite,

@@ -1,6 +1,7 @@
 import debug from 'debug';
+import { toString as uint8ArrayToString } from 'uint8arrays';
 import type { Database } from '@quereus/quereus';
-import { digest, sign, verify, generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { digest, sign, verify, generatePrivateKey, getPublicKey, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { SAppConfig } from './types.js';
 import type { Ed25519KeyPair } from './ed25519-key.js';
 import { canonicalDatetime } from './canonical-datetime.js';
@@ -26,18 +27,17 @@ export const STRAND_ENGINE = 'quereus';
 export const STRAND_ENGINE_VERSION = '0.1.0';
 
 /**
- * The single-digest ed25519 signer the `Strand.*` membership/RBAC constraints
- * verify against.
+ * The single-payload ed25519 signer the `Strand.Invite`/`Strand.ConsumedInvite`
+ * handshake constraints verify against.
  *
- * `schemas/strand.qsql` signs a single SHA-256 digest over a `'|'`-joined payload
- * (e.g. `Member.Authorized` verifies
- * `verify(digest(new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')`).
+ * Those constraints sign a single SHA-256 digest over a `'|'`-joined payload
+ * (e.g. `InviteValid` verifies
+ * `verify(digest(new.Key || '|' || coalesce(new.Expiration, '')), ...)`).
  * So the signer hashes the payload to raw bytes and ed25519-signs *those bytes*:
  * SQL `digest(...)`'s default output is base64url and `verify(...)`'s default
  * `inputEncoding` is base64url, so signer and verifier operate on identical bytes.
- * This differs from the control-layer's multi-field `buildAuthorizationMessage`
- * (a single digest over MANY fields) — the strand layer is a single digest over ONE
- * joined payload field.
+ * The membership/RBAC tables (Member/Manager/MemberPeer/Revocation) instead use
+ * domain/action-tagged VARIADIC digests — see {@link signStrandApproval}.
  *
  * All strand keys are ed25519, so the explicit `'ed25519'` curve arg is mandatory
  * (the crypto plugin otherwise defaults to secp256k1). Mirrors the proven
@@ -55,7 +55,7 @@ export function signStrandPayload(payload: string, privateKeyB64: string): strin
 /**
  * The verifier counterpart to {@link signStrandPayload}.
  *
- * Mirrors what every `Strand.*` constraint computes:
+ * Mirrors what the single-payload `Strand.*` constraints compute:
  * `verify(digest(payload), signature, publicKey, 'ed25519')`.
  * SQL `digest`'s default output and `verify`'s default `inputEncoding`/`sigEncoding`/
  * `keyEncoding` are all base64url, so the off-engine check operates on the exact
@@ -73,57 +73,116 @@ export function verifyStrandPayload(payload: string, signatureB64: string, publi
   return verify(payloadDigest, signatureB64, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url');
 }
 
-/** The two `Strand.Member` actions a signed approval can be minted for. */
-export type StrandMemberAction = 'add' | 'remove';
-
 /**
- * Sign a domain/action-tagged `Strand.Member` approval.
+ * Sign a domain/action-tagged `Strand.*` membership/RBAC approval.
  *
- * `Member.Authorized` verifies `digest('Strand.Member', <action>, <key>)` — the
- * domain and action tags are literal SQL arguments, and this signer passes them
- * as the leading array elements of the variadic digest. The two spellings hash
- * identical bytes; that parity is generically pinned by
- * `test/digest-variadic-parity.spec.ts` case (d). The tagging is what keeps an
- * 'add' approval from ever verifying as a 'remove' (or vice versa) — the idiom
- * of the control layer's `buildAuthorizationMessage`.
+ * Every `Authorized` branch on `Member`/`Manager`/`MemberPeer`/`Revocation`
+ * verifies a VARIADIC digest — `digest('<domain>', '<action>', <field>, ...,
+ * <StampId>)` — whose leading two elements are fixed literals (the domain tag,
+ * e.g. `'Strand.Member'`, and an action tag, e.g. `'add'`) and whose trailing
+ * element is the row's per-incarnation StampId. The tags keep an approval from
+ * verifying against any rule but the one it was minted for (the idiom of the
+ * control layer's `buildAuthorizationMessage`); the StampId binding makes it
+ * single-use — it authorizes exactly one incarnation of one row, and dies when
+ * that row's stamp is retired into `Strand.Revocation`.
+ *
+ * The caller passes the digest elements exactly as the matching SQL constraint
+ * lists them (each SQL argument = one array element). TS/SQL byte parity for the
+ * variadic spelling is pinned by `test/digest-variadic-parity.spec.ts`. Note
+ * `Manager.Authorized`'s promotion branch passes the INTEGER `new.Generation` as
+ * a digest arg — the TS side passes `String(generation)` and relies on the
+ * crypto plugin coercing the SQL integer to the same decimal string.
  *
  * Like {@link signStrandPayload}, the raw digest BYTES are ed25519-signed
  * directly, matching SQL `verify(...)`'s default base64url input decoding.
  *
- * @param action - Which `Member` rule the approval is minted for.
- * @param memberKey - The member public key the approval is bound to.
+ * @param fields - The digest elements, in constraint order (tags first, StampId last).
  * @param privateKeyB64 - The signer's base64url ed25519 private seed.
  * @returns The base64url ed25519 signature over the tagged digest.
  */
-export function signStrandMemberAction(action: StrandMemberAction, memberKey: string, privateKeyB64: string): string {
-  const hashBytes = digest(['Strand.Member', action, memberKey], 'sha256', 'bytes') as Uint8Array;
+export function signStrandApproval(fields: string[], privateKeyB64: string): string {
+  const hashBytes = digest(fields, 'sha256', 'bytes') as Uint8Array;
   return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
 /**
- * Sign a domain/action-tagged `Strand.MemberPeer` removal approval — the payload a
- * MANAGER signs to clear another member's peer binding.
+ * Mint a fresh per-row authorization nonce (StampId) for a `Strand.Member`,
+ * `Strand.Manager`, or `Strand.MemberPeer` row.
  *
- * The manager branch of `MemberPeer.Authorized` verifies
- * `digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId)`, which is
- * deliberately DISTINCT from the untagged `MemberKey || '|' || PeerId` payload
- * {@link signStrandPayload} produces for registration. That separation is what stops
- * a captured registration signature from being replayed as a removal. Same tagged
- * variadic-digest idiom as {@link signStrandMemberAction}; the four-element spelling
- * is pinned against SQL by `test/digest-variadic-parity.spec.ts` case (d).
+ * 256 bits of CSPRNG output, base64url-encoded — enough entropy that a future
+ * legitimate stamp cannot be guessed and pre-planted into `Strand.Revocation`
+ * (the `RowIsGone` comment in `schemas/strand.qsql` leans on exactly this).
+ * Plain randomness, deliberately NOT the control layer's peer-derived
+ * `generateStampId`: strand rows are not per-peer, so entropy alone carries
+ * the uniqueness.
  *
- * The member's OWN removal of its own binding does NOT use this — the self branch
- * verifies the same untagged payload registration signs, so `signStrandPayload`
- * covers it.
- *
- * @param memberKey - The `MemberPeer.MemberKey` of the row being cleared.
- * @param peerId - The `MemberPeer.PeerId` of the row being cleared.
- * @param privateKeyB64 - The signing manager's base64url ed25519 private seed.
- * @returns The base64url ed25519 signature over the tagged digest.
+ * @returns A fresh base64url stamp (43 chars for 32 bytes).
  */
-export function signStrandMemberPeerRemoval(memberKey: string, peerId: string, privateKeyB64: string): string {
-  const hashBytes = digest(['Strand.MemberPeer', 'remove', memberKey, peerId], 'sha256', 'bytes') as Uint8Array;
-  return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+export function generateStrandStampId(): string {
+  // randomBytes' first arg is BITS, not bytes — 256 bits = 32 bytes.
+  const bytes = randomBytes(256, 'bytes') as Uint8Array;
+  return uint8ArrayToString(bytes, 'base64url');
+}
+
+/**
+ * Run `fn` inside one explicit strand transaction: begin, fn, commit — with the
+ * standard rollback-on-failure shape.
+ *
+ * Used wherever two `Strand.*` writes must land atomically: the invite-consume
+ * pair (Member + ConsumedInvite) and every delete-plus-tombstone pair (the
+ * `RevocationRecorded` constraints require the `Revocation` row in the SAME
+ * transaction as the delete it retires).
+ */
+async function inStrandTransaction(db: Database, fn: () => Promise<void>): Promise<void> {
+  await db.beginTransaction();
+  try {
+    await fn();
+    await db.commit();
+  } catch (error) {
+    // A failed commit() already tears down the transaction, so rollback() would
+    // throw "No transaction active" and mask the real cause — swallow only that.
+    try {
+      await db.rollback();
+    } catch (rollbackError) {
+      log('Rollback after strand transaction failure was a no-op: %s', rollbackError);
+    }
+    throw error;
+  }
+}
+
+/**
+ * File the `Strand.Revocation` tombstone that retires a deleted row's StampId.
+ *
+ * Runs inside the SAME transaction as the delete it accompanies — the guarded
+ * tables' `RevocationRecorded` (deferred) requires the tombstone at commit, and
+ * `Revocation.RowIsGone` (also deferred) requires the row to already be gone, so
+ * the pair only ever lands together.
+ *
+ * `Revocation.Authorized` verifies the retire-tagged digest against a
+ * PRE-transaction (`committed.Member`) row, so the retiree must have been a
+ * member BEFORE this transaction. Every writer flow satisfies this: managers are
+ * members, and a self-departing member is committed until this very transaction
+ * removes it. Unlike the sibling tables' nullable contexts, `Revocation`'s
+ * context is non-null — both fields are always supplied.
+ *
+ * @param db - The strand database, INSIDE an open transaction.
+ * @param tableName - Which guarded table the stamp belonged to.
+ * @param stampId - The retired stamp.
+ * @param retiree - The committed member filing the tombstone (the delete's own signer).
+ */
+async function insertRevocation(
+  db: Database,
+  tableName: 'Member' | 'Manager' | 'MemberPeer',
+  stampId: string,
+  retiree: Ed25519KeyPair,
+): Promise<void> {
+  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
+  await db.exec(
+    `insert into Strand.Revocation (TableName, StampId)
+       with context MemberKey = ?, Signature = ?
+       values (?, ?)`,
+    [retiree.publicKeyB64, signature, tableName, stampId],
+  );
 }
 
 /** Parameters for {@link bootstrapFounderMembership}. */
@@ -195,8 +254,10 @@ async function insertHeaderIfAbsent(db: Database, params: FounderBootstrapParams
  * satisfies the bootstrap branch of `Member.Authorized`, so no signature is
  * needed — the context fields are explicit nulls. The branch also caps the
  * POST-image at one member, so it waives authorization for exactly this single
- * seat, never for a batch. Guarding on the count makes this idempotent: a re-run
- * (the founder re-`addStrand`/`resumeStrand`) finds the member present and skips.
+ * seat, never for a batch. The row still mints a fresh StampId — the column is
+ * NOT NULL on every path; bootstrap only waives the SIGNATURE. Guarding on the
+ * count makes this idempotent: a re-run (the founder re-`addStrand`/
+ * `resumeStrand`) finds the member present and skips.
  */
 async function insertFounderMemberIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
   if (await strandTableCount(db, 'Member') > 0) {
@@ -204,10 +265,10 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
     return;
   }
   await db.exec(
-    `insert into Strand.Member (Key)
+    `insert into Strand.Member (Key, StampId)
        with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-       values (?)`,
-    [memberKey],
+       values (?, ?)`,
+    [memberKey, generateStrandStampId()],
   );
   log('Inserted founding Member for strand %s', strandId);
 }
@@ -216,7 +277,8 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
  * Insert the founding `Strand.Manager` if no manager exists yet.
  *
  * The empty-table state satisfies the bootstrap branch of `Manager.Authorized`, so
- * no signature is needed. The founder is seated at `Generation = 0` — the root of
+ * no signature is needed (a fresh StampId is still minted — the column is NOT
+ * NULL). The founder is seated at `Generation = 0` — the root of
  * the manager lineage; the bootstrap branch requires exactly that value, and every
  * later manager is seated at a strictly greater generation (see {@link addManager}).
  * Idempotent via the same count guard.
@@ -236,10 +298,10 @@ async function insertFounderManagerIfAbsent(db: Database, memberKey: string, str
     return;
   }
   await db.exec(
-    `insert into Strand.Manager (MemberKey, Generation)
+    `insert into Strand.Manager (MemberKey, Generation, StampId)
        with context ManagerKey = null, Signature = null
-       values (?, 0)`,
-    [memberKey],
+       values (?, 0, ?)`,
+    [memberKey, generateStrandStampId()],
   );
   log('Inserted founding Manager for strand %s', strandId);
 }
@@ -403,7 +465,9 @@ export interface ConsumeInviteParams {
  * The `ConsumedInvite` insert carries an `InviteSignature` over
  * `InviteKey || '|' || MemberKey`, proving the consumer holds the invite private
  * key (the on-engine `ValidUsage` gate). The `Member` insert needs no member
- * signature — its admission is the existence of the matching `ConsumedInvite`.
+ * signature — its admission is the existence of the matching `ConsumedInvite` —
+ * but still mints a fresh StampId (NOT NULL on every path; a revoked-then-
+ * re-invited member is a fresh incarnation under a fresh stamp).
  *
  * Single-use: `ConsumedInvite`'s primary key is `InviteKey`, so a second consume
  * of the same invite is rejected by the PK (a distinct layer from the control
@@ -443,15 +507,14 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
   // Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
   const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
 
-  await db.beginTransaction();
-  try {
+  await inStrandTransaction(db, async () => {
     // 1. Member — admitted by the deferred invite branch (the matching
     //    ConsumedInvite below), so no manager signature is supplied.
     await db.exec(
-      `insert into Strand.Member (Key)
+      `insert into Strand.Member (Key, StampId)
          with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-         values (?)`,
-      [memberKey],
+         values (?, ?)`,
+      [memberKey, generateStrandStampId()],
     );
 
     // 2. ConsumedInvite — proves possession of the invite private key and that the
@@ -462,26 +525,39 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
          values (?, ?)`,
       [inviteSignature, nowCanonical, inviteKey, memberKey],
     );
+  });
+  log('Consumed invite %s -> member %s', inviteKey, memberKey);
+}
 
-    await db.commit();
-    log('Consumed invite %s -> member %s', inviteKey, memberKey);
-  } catch (error) {
-    // A failed commit() already tears down the transaction, so rollback() would
-    // throw "No transaction active" and mask the real cause — swallow only that.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after consumeInvite failure was a no-op: %s', rollbackError);
+// ── Member admission + removal (manager-admit, revoke, leave) ─────────────────
+
+/**
+ * The live StampId of the `Strand.Member` row keyed by `memberKey`, or
+ * `undefined` if no such row is visible.
+ *
+ * `Member`'s primary key is the single `Key` column, so ANY where-equality on it
+ * is a full-PK predicate — which the optimystic virtual-table module serves via a
+ * single-key point lookup that can MISS on a networked strand (the same failure
+ * mode {@link scanMemberPeers} documents). So this reads via an UNFILTERED scan
+ * and compares the key in JavaScript: correctness depends only on the scan
+ * returning a superset of the live rows — the weakest possible assumption about
+ * the storage layer.
+ */
+async function memberStampId(db: Database, memberKey: string): Promise<string | undefined> {
+  for await (const row of db.eval('select Key, StampId from Strand.Member')) {
+    if (row.Key === memberKey) {
+      return row.StampId as string;
     }
-    throw error;
   }
+  return undefined;
 }
 
 /** Parameters for {@link addMemberByManager}. */
 export interface AddMemberByManagerParams {
   /**
    * The admitting manager's strand keypair. Its `publicKeyB64` must be a
-   * `Strand.Manager` row; it signs the new member key directly.
+   * `Strand.Manager` row; it signs the add-tagged digest over the new member key
+   * and its fresh stamp.
    */
   managerKeyPair: Ed25519KeyPair;
   /** The joining member's ed25519 PUBLIC key (base64url) — the new `Member.Key`. */
@@ -492,13 +568,14 @@ export interface AddMemberByManagerParams {
  * Admit a `Member` directly by manager signature — the sibling of the invite
  * path on `Member.Authorized`'s direct-manager branch.
  *
- * The constraint verifies the add-tagged digest `digest('Strand.Member', 'add',
- * new.Key)` against a pre-existing (`committed.Manager`) row matching
- * `context.ManagerKey`, so the signature comes from
- * {@link signStrandMemberAction} with the `'add'` action. No `ConsumedInvite`
- * is involved: this is the path a manager uses to seat a member it already
- * trusts (e.g. a manager-side enrollment that admits a party already authorised
- * out-of-band).
+ * The constraint verifies the add-tagged digest
+ * `digest('Strand.Member', 'add', new.Key, new.StampId)` against a pre-existing
+ * (`committed.Manager`) row matching `context.ManagerKey`. The stamp is minted
+ * fresh here and bound inside the signed digest, so the approval seats exactly
+ * this incarnation: once the member is removed (retiring the stamp), the captured
+ * approval can never re-seat it. No `ConsumedInvite` is involved: this is the
+ * path a manager uses to seat a member it already trusts (e.g. a manager-side
+ * enrollment that admits a party already authorised out-of-band).
  *
  * @param db - The closed strand's database.
  * @param params - The admitting manager keypair and the new member key.
@@ -507,12 +584,13 @@ export interface AddMemberByManagerParams {
  */
 export async function addMemberByManager(db: Database, params: AddMemberByManagerParams): Promise<void> {
   const { managerKeyPair, memberKey } = params;
-  const signature = signStrandMemberAction('add', memberKey, managerKeyPair.privateKeyB64);
+  const stampId = generateStrandStampId();
+  const signature = signStrandApproval(['Strand.Member', 'add', memberKey, stampId], managerKeyPair.privateKeyB64);
   await db.exec(
-    `insert into Strand.Member (Key)
+    `insert into Strand.Member (Key, StampId)
        with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
-       values (?)`,
-    [managerKeyPair.publicKeyB64, signature, memberKey],
+       values (?, ?)`,
+    [managerKeyPair.publicKeyB64, signature, memberKey, stampId],
   );
   log('Admitted member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
 }
@@ -524,7 +602,7 @@ export interface RevokeMemberParams {
    * PRE-EXISTING `Strand.Manager` row (the manager-removal branch of
    * `Member.Authorized` reads `committed.Manager` — a manager seated in the same
    * transaction cannot authorize); it signs the remove-tagged digest over the
-   * target key.
+   * target row's key and live stamp, and files the accompanying tombstone.
    */
   managerKeyPair: Ed25519KeyPair;
   /** The `Member.Key` row to delete. */
@@ -534,11 +612,18 @@ export interface RevokeMemberParams {
 /**
  * Revoke a `Member` on the signature of an existing manager.
  *
+ * Reads the target row's live StampId first (a quiet no-op if the row is already
+ * absent — a repeated or restarted revocation should not throw), then runs ONE
+ * transaction pairing the delete with its `Strand.Revocation` tombstone: the
+ * schema's `Member.RevocationRecorded` requires the tombstone in the same
+ * transaction, and the tombstone is what permanently retires the stamp so the
+ * captured admission approval can never re-seat this incarnation.
+ *
  * The manager-removal branch of `Member.Authorized` verifies the remove-tagged
- * digest `digest('Strand.Member', 'remove', old.Key)` against a
+ * digest `digest('Strand.Member', 'remove', old.Key, old.StampId)` against a
  * `committed.Manager` row matching `context.ManagerKey` — distinct from the
- * add-tagged admission payload, so a captured admission cannot be replayed as an
- * eviction (or vice versa).
+ * add-tagged admission payload, and bound to the live stamp, so neither a
+ * captured admission nor a captured PRIOR removal (whose stamp differs) replays.
  *
  * A revoked member cannot re-admit itself off the invite it ALREADY SPENT: that
  * `ConsumedInvite` row is stale, and the invite branch requires a
@@ -563,17 +648,25 @@ export interface RevokeMemberParams {
  * @throws If `Member.Authorized` rejects (a non-manager or same-transaction
  *   signer), `Member.NotAManager` rejects (the target still holds a Manager
  *   row), or `Member.MinOneMember` rejects (the removal would empty the member
- *   set); the delete rolls back.
+ *   set); the whole delete+tombstone transaction rolls back.
  */
 export async function revokeMember(db: Database, params: RevokeMemberParams): Promise<void> {
   const { managerKeyPair, memberKey } = params;
-  const signature = signStrandMemberAction('remove', memberKey, managerKeyPair.privateKeyB64);
-  await db.exec(
-    `delete from Strand.Member
-       with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
-       where Key = ?`,
-    [managerKeyPair.publicKeyB64, signature, memberKey],
-  );
+  const stampId = await memberStampId(db, memberKey);
+  if (stampId == null) {
+    log('Member %s already absent; skipping revoke', memberKey);
+    return;
+  }
+  const signature = signStrandApproval(['Strand.Member', 'remove', memberKey, stampId], managerKeyPair.privateKeyB64);
+  await inStrandTransaction(db, async () => {
+    await db.exec(
+      `delete from Strand.Member
+         with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
+         where Key = ?`,
+      [managerKeyPair.publicKeyB64, signature, memberKey],
+    );
+    await insertRevocation(db, 'Member', stampId, managerKeyPair);
+  });
   log('Revoked member %s by manager %s', memberKey, managerKeyPair.publicKeyB64);
 }
 
@@ -581,9 +674,12 @@ export async function revokeMember(db: Database, params: RevokeMemberParams): Pr
 export interface LeaveStrandParams {
   /**
    * The departing member's OWN strand keypair. Its `publicKeyB64` is the
-   * `Member.Key` row being deleted; it self-signs the remove-tagged digest —
+   * `Member.Key` row being deleted; it self-signs the leave-tagged digest —
    * the self-departure branch verifies the signature against `old.Key` itself,
-   * so only the departing key's holder can produce it. No manager is involved.
+   * so only the departing key's holder can produce it — and files the
+   * accompanying tombstone (it is still a committed member until this very
+   * transaction removes it, which is what `Revocation.Authorized` checks). No
+   * manager is involved.
    */
   memberKeyPair: Ed25519KeyPair;
 }
@@ -592,10 +688,12 @@ export interface LeaveStrandParams {
  * A member leaves the strand by deleting its own `Member` row.
  *
  * The self-departure branch of `Member.Authorized` verifies
- * `digest('Strand.Member', 'remove', old.Key)` against `old.Key` itself via
- * `context.MemberSignature` — the same remove-tagged payload a manager
- * revocation signs, but bound to the departing key, so member C's signature can
- * never remove member B.
+ * `digest('Strand.Member', 'leave', old.Key, old.StampId)` against `old.Key`
+ * itself via `context.MemberSignature`. The `'leave'` tag (vs the manager
+ * branch's `'remove'`) is belt-and-braces only — the two branches verify against
+ * different keys; the anti-replay fix is the stamp binding. Like
+ * {@link revokeMember}, the live stamp is read first (absent row → quiet no-op)
+ * and the delete pairs with its `Strand.Revocation` tombstone in one transaction.
  *
  * The same floors as {@link revokeMember} apply: a manager must resign first
  * (`NotAManager`) and the last member cannot leave (`MinOneMember`).
@@ -603,18 +701,27 @@ export interface LeaveStrandParams {
  * @param db - The closed strand's database.
  * @param params - The departing member's own keypair.
  * @throws If `Member.Authorized`, `Member.NotAManager`, or `Member.MinOneMember`
- *   rejects; the delete rolls back.
+ *   rejects; the whole delete+tombstone transaction rolls back.
  */
 export async function leaveStrand(db: Database, params: LeaveStrandParams): Promise<void> {
   const { memberKeyPair } = params;
-  const signature = signStrandMemberAction('remove', memberKeyPair.publicKeyB64, memberKeyPair.privateKeyB64);
-  await db.exec(
-    `delete from Strand.Member
-       with context ManagerKey = null, ManagerSignature = null, MemberSignature = ?
-       where Key = ?`,
-    [signature, memberKeyPair.publicKeyB64],
-  );
-  log('Member %s left the strand', memberKeyPair.publicKeyB64);
+  const memberKey = memberKeyPair.publicKeyB64;
+  const stampId = await memberStampId(db, memberKey);
+  if (stampId == null) {
+    log('Member %s already absent; skipping leave', memberKey);
+    return;
+  }
+  const signature = signStrandApproval(['Strand.Member', 'leave', memberKey, stampId], memberKeyPair.privateKeyB64);
+  await inStrandTransaction(db, async () => {
+    await db.exec(
+      `delete from Strand.Member
+         with context ManagerKey = null, ManagerSignature = null, MemberSignature = ?
+         where Key = ?`,
+      [signature, memberKey],
+    );
+    await insertRevocation(db, 'Member', stampId, memberKeyPair);
+  });
+  log('Member %s left the strand', memberKey);
 }
 
 // ── MemberPeer registration (a member binds its own network nodes) ─────────────
@@ -638,27 +745,30 @@ export interface RegisterMemberPeerParams {
 /**
  * Register a network node (`PeerId`) as acting on behalf of a member.
  *
- * The member self-signs `MemberKey || '|' || PeerId` with its OWN key; the schema's
- * `MemberPeer.Authorized` verifies that signature against `coalesce(new.MemberKey,
- * old.MemberKey)` — i.e. the member key itself — so only the member that owns the
- * key can register peers for it. A deferred `MemberExists` additionally requires the
- * `Member` row to already exist, so a peer for a non-member is rejected at commit.
+ * The member self-signs the add-tagged digest
+ * `digest('Strand.MemberPeer', 'add', new.MemberKey, new.PeerId, new.StampId)`
+ * with its OWN key; the schema's `MemberPeer.Authorized` verifies that signature
+ * against `new.MemberKey` — i.e. the member key itself — so only the member that
+ * owns the key can register peers for it. The stamp is minted fresh here and
+ * bound inside the digest, so a captured registration approval neither
+ * re-registers a cleared binding (its stamp is retired) nor authorizes a removal
+ * (wrong tag). A deferred `MemberExists` additionally requires the `Member` row
+ * to already exist, so a peer for a non-member is rejected at commit.
  *
  * Insert-if-absent: a re-register on restart (or a redundant call) is a no-op. The
  * platform DOES reject a duplicate-PK insert, but a restart-safe re-register should
  * succeed quietly rather than throw, so the writer guards on existence instead of
- * catching. The guard ({@link memberPeerExists}) scans the member's peers and compares
+ * catching. The guard ({@link memberPeerStampId}) scans the member's peers and compares
  * both key columns in JavaScript rather than seeking the composite primary key — see
- * its doc for why a full-PK point lookup is not reliable on a networked strand. A member
- * may register multiple DISTINCT `PeerId`s (multi-device); each is its own row under the
- * same `MemberKey`.
+ * {@link scanMemberPeers} for why a full-PK point lookup is not reliable on a networked
+ * strand. A member may register multiple DISTINCT `PeerId`s (multi-device); each is its
+ * own row (and its own stamp) under the same `MemberKey`.
  *
- * Peer DELETION is signature-checked too, not rejected outright: `Authorized` carries an
- * explicit `on insert, delete` mask and coalesces `new`/`old`, so a delete verifies against
- * the member key the row names. `MemberExists` is insert-only (a delete leaves no row image
- * to validate), so it neither blocks nor cascades. Both removal paths — the member clearing
- * its own binding and a manager clearing someone else's — live in {@link removeMemberPeer}.
- * UPDATE is refused outright by `NoUpdate`: a re-binding is a remove plus a fresh register.
+ * Peer DELETION is signature-checked too, not rejected outright: `Authorized` carries
+ * distinct delete branches (self + manager), each over its own action-tagged digest
+ * bound to the row's stamp. Both removal paths live in {@link removeMemberPeer}.
+ * UPDATE is refused outright by `NoUpdate`: a re-binding is a remove plus a fresh
+ * register (under a fresh stamp).
  *
  * @param db - The closed strand's database (the member already exists).
  * @param params - The member's own keypair and the peer id to bind.
@@ -669,24 +779,28 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
   const { memberKeyPair, peerId } = params;
   const memberKey = memberKeyPair.publicKeyB64;
 
-  if (await memberPeerExists(db, memberKey, peerId)) {
+  if (await memberPeerStampId(db, memberKey, peerId) != null) {
     log('MemberPeer (%s, %s) already present; skipping', memberKey, peerId);
     return;
   }
 
-  const payload = `${memberKey}|${peerId}`;
-  const signature = signStrandPayload(payload, memberKeyPair.privateKeyB64);
+  const stampId = generateStrandStampId();
+  const signature = signStrandApproval(
+    ['Strand.MemberPeer', 'add', memberKey, peerId, stampId],
+    memberKeyPair.privateKeyB64,
+  );
   await db.exec(
-    `insert into Strand.MemberPeer (MemberKey, PeerId)
+    `insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
        with context Signature = ?, ManagerKey = null, ManagerSignature = null
-       values (?, ?)`,
-    [signature, memberKey, peerId],
+       values (?, ?, ?)`,
+    [signature, memberKey, peerId, stampId],
   );
   log('Registered MemberPeer (%s, %s)', memberKey, peerId);
 }
 
 /**
- * Yield every `PeerId` bound to `memberKey`, re-comparing the member key in JavaScript.
+ * Yield every `(PeerId, StampId)` bound to `memberKey`, re-comparing the member key
+ * in JavaScript.
  *
  * Deliberately does NOT filter on the full composite primary key. `MemberPeer`'s PK
  * is `(MemberKey, PeerId)`, so a `where MemberKey = ? and PeerId = ?` predicate puts
@@ -704,7 +818,7 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
  * note below) — so it is not a correctness dependency: a dropped or mis-applied predicate
  * cannot produce a row attributed to the wrong member.
  */
-async function* scanMemberPeerIds(db: Database, memberKey: string): AsyncGenerator<string> {
+async function* scanMemberPeers(db: Database, memberKey: string): AsyncGenerator<{ peerId: string; stampId: string }> {
   // NOTE: because the predicate is not pushed down, the storage layer walks the WHOLE
   // MemberPeer table (every member's rows) per call and the SQL engine filters. Fine at
   // strand scale; if MemberPeer ever grows large, the fix is a reliable composite-key
@@ -713,11 +827,11 @@ async function* scanMemberPeerIds(db: Database, memberKey: string): AsyncGenerat
   // being a scan and becomes an index seek — re-introducing the seek dependency this
   // shape exists to remove.
   for await (const row of db.eval(
-    'select MemberKey, PeerId from Strand.MemberPeer where MemberKey = ?',
+    'select MemberKey, PeerId, StampId from Strand.MemberPeer where MemberKey = ?',
     [memberKey],
   )) {
     if (row.MemberKey === memberKey) {
-      yield row.PeerId as string;
+      yield { peerId: row.PeerId as string, stampId: row.StampId as string };
     }
   }
 }
@@ -737,42 +851,39 @@ async function* scanMemberPeerIds(db: Database, memberKey: string): AsyncGenerat
  */
 export async function listMemberPeers(db: Database, memberKey: string): Promise<string[]> {
   const peerIds: string[] = [];
-  for await (const peerId of scanMemberPeerIds(db, memberKey)) {
-    peerIds.push(peerId);
+  for await (const peer of scanMemberPeers(db, memberKey)) {
+    peerIds.push(peer.peerId);
   }
   return peerIds;
 }
 
 /**
- * True iff a `MemberPeer` row already exists for this `(MemberKey, PeerId)`.
+ * The live StampId of the `MemberPeer` row for this `(MemberKey, PeerId)`, or
+ * `undefined` if no such row is visible — doubling as the existence probe.
  *
  * NOTE: check-then-write is not atomic. Two nodes registering the same
  * (MemberKey, PeerId) concurrently can both observe "absent"; the primary key is the
- * real backstop. This guard is for the sequential restart / re-register path.
+ * real backstop. The existence half of this guard is for the sequential restart /
+ * re-register path.
  */
-async function memberPeerExists(db: Database, memberKey: string, peerId: string): Promise<boolean> {
-  for await (const found of scanMemberPeerIds(db, memberKey)) {
-    if (found === peerId) {
-      return true;
+async function memberPeerStampId(db: Database, memberKey: string, peerId: string): Promise<string | undefined> {
+  for await (const peer of scanMemberPeers(db, memberKey)) {
+    if (peer.peerId === peerId) {
+      return peer.stampId;
     }
   }
-  return false;
+  return undefined;
 }
 
 /** Parameters for the SELF branch of {@link removeMemberPeer}. */
 export interface RemoveOwnPeerParams {
   /**
    * The member's OWN strand keypair. Its `publicKeyB64` is the `MemberPeer.MemberKey`
-   * of the row being deleted, and it signs the same untagged `MemberKey || '|' || PeerId`
-   * payload registration signs — the self branch of `MemberPeer.Authorized` verifies
-   * against the row's own member key, so no OTHER member's row is reachable this way.
-   *
-   * Because insert and delete share that payload, a captured registration approval also
-   * authorizes the matching delete, and constraint context travels with the write out to
-   * the strand's peers. The exposure is availability only (the binding is re-registerable,
-   * and no other member's row is reachable); domain/action tagging for this branch is
-   * tracked by the `bug-strand-approval-domain-separation` ticket alongside the schema's
-   * other untagged approvals.
+   * of the row being deleted, and it signs the remove-tagged digest
+   * `digest('Strand.MemberPeer', 'remove', MemberKey, PeerId, StampId)` — the self
+   * branch of `MemberPeer.Authorized` verifies against the row's own member key, so
+   * no OTHER member's row is reachable this way, and the tag + stamp binding keep a
+   * captured registration approval from doubling as a removal (and vice versa).
    */
   memberKeyPair: Ed25519KeyPair;
   /** The `PeerId` of the binding to delete. */
@@ -784,8 +895,9 @@ export interface RemoveMemberPeerByManagerParams {
   /**
    * The clearing manager's strand keypair. Its `publicKeyB64` must be a PRE-EXISTING
    * `Strand.Manager` row (the manager branch reads `committed.Manager`, so a manager
-   * seated in the same transaction cannot authorize); it signs the remove-tagged
-   * digest over the exact row.
+   * seated in the same transaction cannot authorize); it signs the
+   * manager-remove-tagged digest over the exact row and its live stamp, and files
+   * the accompanying tombstone.
    */
   managerKeyPair: Ed25519KeyPair;
   /** The `MemberPeer.MemberKey` whose binding is being cleared. */
@@ -796,14 +908,21 @@ export interface RemoveMemberPeerByManagerParams {
 
 /**
  * Either shape accepted by {@link removeMemberPeer}. A discriminated union rather than
- * one opaque keypair: the two branches sign DIFFERENT payloads (untagged self vs
- * remove-tagged manager), so each case carries exactly the fields its payload needs.
+ * one opaque keypair: the two branches sign DIFFERENT action tags (`'remove'` self vs
+ * `'manager-remove'`), so each case carries exactly the fields its payload needs.
  */
 export type RemoveMemberPeerParams = RemoveOwnPeerParams | RemoveMemberPeerByManagerParams;
 
 /**
  * Delete a `MemberPeer` binding — either the member clearing its own, or a manager
  * clearing another member's.
+ *
+ * Reads the row's live StampId first (absent → quiet no-op, mirroring
+ * {@link registerMemberPeer}'s insert-if-absent, so a repeated or restarted cleanup
+ * is not a silent zero-row "success" the caller cannot distinguish from a real one),
+ * then runs ONE transaction pairing the delete with its `Strand.Revocation`
+ * tombstone — `MemberPeer.RevocationRecorded` requires it, and the retirement is
+ * what keeps the captured registration approval from re-binding the cleared row.
  *
  * `MemberPeer` rows do NOT cascade when the member is revoked (`MemberExists` runs on
  * insert only, and nothing deletes them), so a removed member's peer bindings survive
@@ -814,10 +933,10 @@ export type RemoveMemberPeerParams = RemoveOwnPeerParams | RemoveMemberPeerByMan
  *
  * The manager branch is deliberately NOT gated on the member already being gone: a
  * manager may clear a still-present member's binding too, matching "any manager can
- * remove any member". It verifies the remove-tagged
- * `digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId)` against a
- * `committed.Manager` row, so a captured registration signature (untagged payload) can
- * never be replayed as a removal.
+ * remove any member". It verifies the manager-remove-tagged
+ * `digest('Strand.MemberPeer', 'manager-remove', old.MemberKey, old.PeerId, old.StampId)`
+ * against a `committed.Manager` row; the self branch verifies the remove-tagged
+ * sibling against the row's own member key.
  *
  * Cleanup is an explicit follow-up call by the revoking manager, never a cascade inside
  * {@link revokeMember}: a revocation that also had to clear an unbounded number of peer
@@ -834,67 +953,99 @@ export async function removeMemberPeer(db: Database, params: RemoveMemberPeerPar
   const memberKey = 'memberKeyPair' in params ? params.memberKeyPair.publicKeyB64 : params.memberKey;
   const { peerId } = params;
 
-  // Delete-if-present mirrors registerMemberPeer's insert-if-absent, so a repeated or
-  // restarted cleanup is a quiet no-op rather than a silent zero-row "success" that the
-  // caller cannot distinguish from a real one.
-  if (!(await memberPeerExists(db, memberKey, peerId))) {
+  const stampId = await memberPeerStampId(db, memberKey, peerId);
+  if (stampId == null) {
     log('MemberPeer (%s, %s) already absent; skipping', memberKey, peerId);
     return;
   }
 
-  if ('memberKeyPair' in params) {
-    await deleteOwnMemberPeer(db, params);
-  } else {
-    await deleteMemberPeerByManager(db, params);
-  }
+  await inStrandTransaction(db, async () => {
+    if ('memberKeyPair' in params) {
+      await deleteOwnMemberPeer(db, params, stampId);
+    } else {
+      await deleteMemberPeerByManager(db, params, stampId);
+    }
+  });
 
   // NOTE: the delete's `where` puts an equality on BOTH composite-PK columns, which the
   // optimystic vtab module serves via a single-key seek that can MISS on a networked
-  // strand (see memberPeerExists' doc). A missed seek deletes zero rows and still
+  // strand (see scanMemberPeers' doc). A missed seek deletes zero rows and still
   // reports success — a silent no-op on the very cleanup path this writer exists to
   // provide. The re-check turns that into a loud failure. Tracked as
   // `debt-composite-pk-point-lookup-unreliable-untracked`; this is an availability
   // failure mode, never a security one (a miss removes nothing, it never over-removes).
-  if (await memberPeerExists(db, memberKey, peerId)) {
+  if (await memberPeerStampId(db, memberKey, peerId) != null) {
     throw new Error(`MemberPeer (${memberKey}, ${peerId}) still present after delete`);
   }
   log('Removed MemberPeer (%s, %s)', memberKey, peerId);
 }
 
-/** The self branch: the owning member signs the untagged registration payload. */
-async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams): Promise<void> {
+/** The self branch: the owning member signs the remove-tagged digest + tombstone. */
+async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams, stampId: string): Promise<void> {
   const { memberKeyPair, peerId } = params;
   const memberKey = memberKeyPair.publicKeyB64;
-  const signature = signStrandPayload(`${memberKey}|${peerId}`, memberKeyPair.privateKeyB64);
+  const signature = signStrandApproval(
+    ['Strand.MemberPeer', 'remove', memberKey, peerId, stampId],
+    memberKeyPair.privateKeyB64,
+  );
   await db.exec(
     `delete from Strand.MemberPeer
        with context Signature = ?, ManagerKey = null, ManagerSignature = null
        where MemberKey = ? and PeerId = ?`,
     [signature, memberKey, peerId],
   );
+  await insertRevocation(db, 'MemberPeer', stampId, memberKeyPair);
 }
 
-/** The manager branch: a manager signs the remove-tagged digest over the target row. */
-async function deleteMemberPeerByManager(db: Database, params: RemoveMemberPeerByManagerParams): Promise<void> {
+/** The manager branch: a manager signs the manager-remove-tagged digest + tombstone. */
+async function deleteMemberPeerByManager(
+  db: Database,
+  params: RemoveMemberPeerByManagerParams,
+  stampId: string,
+): Promise<void> {
   const { managerKeyPair, memberKey, peerId } = params;
-  const signature = signStrandMemberPeerRemoval(memberKey, peerId, managerKeyPair.privateKeyB64);
+  const signature = signStrandApproval(
+    ['Strand.MemberPeer', 'manager-remove', memberKey, peerId, stampId],
+    managerKeyPair.privateKeyB64,
+  );
   await db.exec(
     `delete from Strand.MemberPeer
        with context Signature = null, ManagerKey = ?, ManagerSignature = ?
        where MemberKey = ? and PeerId = ?`,
     [managerKeyPair.publicKeyB64, signature, memberKey, peerId],
   );
+  await insertRevocation(db, 'MemberPeer', stampId, managerKeyPair);
 }
 
 // ── Manager rotation (add / remove RBAC admins) ───────────────────────────────
+
+/**
+ * The live `(Generation, StampId)` of the `Strand.Manager` row keyed by
+ * `memberKey`, or `undefined` if no such row is visible.
+ *
+ * `Manager`'s primary key is the single `MemberKey` column, so any where-equality
+ * on it is a full-PK point lookup — unreliable on a networked strand (see
+ * {@link scanMemberPeers}). An unfiltered scan + JavaScript filter instead, same
+ * as {@link memberStampId}. Serves both {@link addManager} (the authorizer's
+ * generation) and {@link removeManager} (the target's stamp).
+ */
+async function managerRow(db: Database, memberKey: string): Promise<{ generation: number; stampId: string } | undefined> {
+  for await (const row of db.eval('select MemberKey, Generation, StampId from Strand.Manager')) {
+    if (row.MemberKey === memberKey) {
+      return { generation: Number(row.Generation), stampId: row.StampId as string };
+    }
+  }
+  return undefined;
+}
 
 /** Parameters for {@link addManager}. */
 export interface AddManagerParams {
   /**
    * An EXISTING manager's strand keypair. Its `publicKeyB64` must already be a
    * `Strand.Manager` row (the existing-manager branch of `Manager.Authorized`
-   * rejects a non-manager once the founder manager exists); it signs the new
-   * manager key and is bound as `context.ManagerKey`.
+   * rejects a non-manager once the founder manager exists); it signs the
+   * add-tagged digest over the new manager key, generation, and fresh stamp,
+   * and is bound as `context.ManagerKey`.
    */
   byManagerKeyPair: Ed25519KeyPair;
   /** The member key to promote — the new `Manager.MemberKey` row. */
@@ -906,13 +1057,16 @@ export interface AddManagerParams {
  *
  * The promotion branch of `Manager.Authorized` requires the authorizer to be a
  * `Manager` row of STRICTLY SMALLER `Generation` than the new row, verifying
- * `digest(new.MemberKey || '|' || new.Generation)` against `context.ManagerKey`.
- * So this writer reads the authorizer's generation, seats the new manager at that
- * value + 1 (the natural successor; the schema enforces only the strict ordering),
- * and signs `` `${newManagerKey}|${generation}` `` — the generation is inside the
- * signed payload, so a captured promotion cannot be replayed at a different
- * generation, and the insert payload differs from the delete payload (which stays
- * the bare target key — see {@link removeManager}).
+ * `digest('Strand.Manager', 'add', new.MemberKey, new.Generation, new.StampId)`
+ * against `context.ManagerKey`. So this writer reads the authorizer's generation,
+ * seats the new manager at that value + 1 (the natural successor; the schema
+ * enforces only the strict ordering), mints a fresh stamp, and signs the
+ * add-tagged digest over all three: the generation inside the signed digest keeps
+ * a captured promotion from replaying at a different generation, and the stamp
+ * keeps it from re-seating a second incarnation once this one is removed.
+ * `new.Generation` is an SQL INTEGER digest arg — the TS side passes
+ * `String(generation)` and relies on the plugin's integer→decimal-string
+ * coercion (see {@link signStrandApproval}).
  *
  * The strict ordering — not this writer — is what makes a same-transaction takeover
  * impossible; the `Manager.Generation` column comment in `schemas/strand.qsql` carries
@@ -920,7 +1074,7 @@ export interface AddManagerParams {
  * authorizer's, inside the signed payload.
  *
  * When the authorizer has NO `Manager` row (a non-manager signer, or an open
- * strand with no managers at all), the lookup finds nothing and the writer falls
+ * strand with no managers at all), the scan finds nothing and the writer falls
  * back to generation 1 and issues the insert anyway — deliberately letting the
  * SCHEMA be the rejector (`Manager.Authorized` / `OnlyClosed`), not a
  * writer-thrown error, so enforcement is pinned where it actually lives.
@@ -931,27 +1085,23 @@ export interface AddManagerParams {
  */
 export async function addManager(db: Database, params: AddManagerParams): Promise<void> {
   const { byManagerKeyPair, newManagerKey } = params;
-  // NOTE: a single-key point lookup. On a NETWORKED strand, key seeks have missed
-  // for rows that exist (the memberPeerExists guard scans for exactly that reason);
-  // a miss here falls back to generation 1 and the schema then spuriously rejects a
-  // legitimate promotion by a generation >= 1 authorizer — an availability failure,
-  // never a security one. If that ever bites, re-shape this to a scan-and-filter.
-  const authorizerRow = await db.get(
-    'select Generation from Strand.Manager where MemberKey = ?',
-    [byManagerKeyPair.publicKeyB64],
-  );
+  const authorizer = await managerRow(db, byManagerKeyPair.publicKeyB64);
   // NOTE: +1 saturates at Number.MAX_SAFE_INTEGER, where the successor compares equal
   // to its authorizer and the schema rejects. Unreachable while generations only ever
   // grow by 1 from 0, but the schema enforces ordering, not adjacency, so a manager may
   // seat a successor at any larger value; if arbitrary generations ever become writable
   // from outside this function, clamp or reject here rather than emitting a dead row.
-  const generation = authorizerRow == null ? 1 : Number(authorizerRow.Generation) + 1;
-  const signature = signStrandPayload(`${newManagerKey}|${generation}`, byManagerKeyPair.privateKeyB64);
+  const generation = authorizer == null ? 1 : authorizer.generation + 1;
+  const stampId = generateStrandStampId();
+  const signature = signStrandApproval(
+    ['Strand.Manager', 'add', newManagerKey, String(generation), stampId],
+    byManagerKeyPair.privateKeyB64,
+  );
   await db.exec(
-    `insert into Strand.Manager (MemberKey, Generation)
+    `insert into Strand.Manager (MemberKey, Generation, StampId)
        with context ManagerKey = ?, Signature = ?
-       values (?, ?)`,
-    [byManagerKeyPair.publicKeyB64, signature, newManagerKey, generation],
+       values (?, ?, ?)`,
+    [byManagerKeyPair.publicKeyB64, signature, newManagerKey, generation, stampId],
   );
   log('Added manager %s (generation %d) by %s', newManagerKey, generation, byManagerKeyPair.publicKeyB64);
 }
@@ -959,13 +1109,16 @@ export async function addManager(db: Database, params: AddManagerParams): Promis
 /** Parameters for {@link removeManager}. */
 export interface RemoveManagerParams {
   /**
-   * The keypair authorizing the removal, bound as `context.ManagerKey` and
-   * signing `digest(targetManagerKey)`. For an ADMIN removal this is a DIFFERENT
-   * existing manager (satisfying the existing-manager branch); for a
+   * The keypair authorizing the removal, bound as `context.ManagerKey`. For an
+   * ADMIN removal this is a DIFFERENT existing manager, signing the
+   * remove-tagged digest (satisfying the existing-manager branch); for a
    * SELF-resignation it is the target's OWN keypair (`publicKeyB64 ===
-   * targetManagerKey`, satisfying the former-manager self branch). The same
-   * context construction satisfies whichever branch applies — see
-   * {@link removeManager}.
+   * targetManagerKey`), signing the resign-tagged digest (satisfying the
+   * former-manager self branch). The writer picks the tag by comparing the keys —
+   * see {@link removeManager}. Either way this keypair also files the
+   * accompanying tombstone, which requires it to be a PRE-transaction MEMBER
+   * (`Revocation.Authorized` reads `committed.Member`) — true for every manager,
+   * since managers are members.
    */
   byManagerKeyPair: Ed25519KeyPair;
   /** The `Manager.MemberKey` row to delete. */
@@ -976,25 +1129,31 @@ export interface RemoveManagerParams {
  * Remove a `Manager` row — either an admin removing a different manager or a
  * manager resigning itself.
  *
- * Both delete-side branches of `Manager.Authorized` sign the same payload — the
- * bare target key, `digest(old.MemberKey = targetManagerKey)` — so a single
- * context construction serves both:
- * - **Admin removal**: `byManagerKeyPair` is a different existing manager; the
- *   removal branch verifies the signature against `A.MemberKey =
- *   context.ManagerKey`. Deliberately NO generation condition: a later-generation
- *   manager may remove an earlier-generation one (generation is lineage, not
- *   privilege), and deletes are safe once inserts are — every accepting branch
- *   requires a `Manager` row in the post-image, and the promotion branch's
- *   generation ordering keeps attacker rows out of it. Note the delete payload
- *   differs from the insert payload (which also carries the generation), so an
- *   "add X" signature no longer doubles as a "remove X" signature — a partial
- *   narrowing of `bug-strand-manager-authority-antireplay`, not its closure
- *   (a captured REMOVAL signature is still replayable as a removal).
- * - **Self-resignation**: `byManagerKeyPair` IS the target (its `publicKeyB64`
- *   equals `targetManagerKey`); the former-manager self branch verifies
- *   `old.MemberKey = context.ManagerKey` and the self-signature over `old.MemberKey`.
+ * Reads the target row's live `(Generation, StampId)` first (absent → quiet
+ * no-op, same restart-safe shape as {@link revokeMember}), then runs ONE
+ * transaction pairing the delete with its `Strand.Revocation` tombstone
+ * (`Manager.RevocationRecorded`). The two delete-side branches of
+ * `Manager.Authorized` verify DIFFERENT action-tagged digests, each bound to
+ * `(old.MemberKey, old.StampId)`:
+ * - **Admin removal** (`byManagerKeyPair` is a different existing manager): the
+ *   removal branch verifies `digest('Strand.Manager', 'remove', old.MemberKey,
+ *   old.StampId)` against `A.MemberKey = context.ManagerKey`. Deliberately NO
+ *   generation condition: a later-generation manager may remove an
+ *   earlier-generation one (generation is lineage, not privilege), and deletes
+ *   are safe once inserts are — every accepting branch requires a `Manager` row
+ *   in the post-image, and the promotion branch's generation ordering keeps
+ *   attacker rows out of it. The stamp binding is what makes a captured removal
+ *   single-use: a re-promoted manager carries a fresh stamp the old approval
+ *   does not match — closing the removal half of
+ *   `bug-strand-manager-authority-antireplay` (the insert half was already
+ *   closed by the generation-bearing promotion payload).
+ * - **Self-resignation** (`byManagerKeyPair` IS the target): the former-manager
+ *   self branch verifies `digest('Strand.Manager', 'resign', old.MemberKey,
+ *   old.StampId)` against `old.MemberKey` itself. The distinct `'resign'` tag is
+ *   belt-and-braces (different verifying keys); the anti-replay fix is the stamp.
  *
- * The caller selects the case purely by which keypair it passes — no branching here.
+ * The caller selects the case purely by which keypair it passes; the only
+ * branching here is the action tag, chosen by comparing the signer to the target.
  *
  * The optimystic bootstrap-mode transactor evaluates deferred (subquery-bearing)
  * CHECK constraints on DELETE as well as INSERT, so `Manager.Authorized` — deferred —
@@ -1005,8 +1164,8 @@ export interface RemoveManagerParams {
  * deferred, so it sees the POST-delete count) rejects any delete that would leave the
  * strand with zero managers — an admin-less closed strand could never admit anyone
  * again, since `Invite`, `addMemberByManager`, and `addManager` all require a
- * `Manager` row. The bootstrap branch of `Manager.Authorized` is now gated to INSERTs
- * (`old.MemberKey is null`), so it no longer waives the signature check on a delete
+ * `Manager` row. The bootstrap branch of `Manager.Authorized` is gated to INSERTs
+ * (`old.MemberKey is null`), so it does not waive the signature check on a delete
  * that drops the count toward the floor: a second-to-last removal is authorized
  * exactly like any other.
  *
@@ -1024,16 +1183,28 @@ export interface RemoveManagerParams {
  * @param params - The authorizing keypair and the target manager key.
  * @throws If `Manager.Authorized` rejects (a signer that is neither another existing
  *   manager nor the target itself) or `Manager.MinOneManager` rejects (the removal
- *   would leave no managers); the delete rolls back.
+ *   would leave no managers); the whole delete+tombstone transaction rolls back.
  */
 export async function removeManager(db: Database, params: RemoveManagerParams): Promise<void> {
   const { byManagerKeyPair, targetManagerKey } = params;
-  const signature = signStrandPayload(targetManagerKey, byManagerKeyPair.privateKeyB64);
-  await db.exec(
-    `delete from Strand.Manager
-       with context ManagerKey = ?, Signature = ?
-       where MemberKey = ?`,
-    [byManagerKeyPair.publicKeyB64, signature, targetManagerKey],
+  const target = await managerRow(db, targetManagerKey);
+  if (target == null) {
+    log('Manager %s already absent; skipping removal', targetManagerKey);
+    return;
+  }
+  const tag = byManagerKeyPair.publicKeyB64 === targetManagerKey ? 'resign' : 'remove';
+  const signature = signStrandApproval(
+    ['Strand.Manager', tag, targetManagerKey, target.stampId],
+    byManagerKeyPair.privateKeyB64,
   );
+  await inStrandTransaction(db, async () => {
+    await db.exec(
+      `delete from Strand.Manager
+         with context ManagerKey = ?, Signature = ?
+         where MemberKey = ?`,
+      [byManagerKeyPair.publicKeyB64, signature, targetManagerKey],
+    );
+    await insertRevocation(db, 'Manager', target.stampId, byManagerKeyPair);
+  });
   log('Removed manager %s by %s', targetManagerKey, byManagerKeyPair.publicKeyB64);
 }
