@@ -10,6 +10,7 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
  * Escalation and destruction coverage for `CadreControl.OwnerKey`.
@@ -152,17 +153,6 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
       }
       throw error;
     }
-  }
-
-  /**
-   * Assert the write was rejected by one of the NAMED CHECK constraints, not by an
-   * incidental SQL, binding, or transaction error. A bare `rejects.toThrow()` goes green on
-   * a mistyped statement, which would silently retire the attack it claims to pin.
-   */
-  function expectConstraintFailure(write: Promise<unknown>, ...constraints: string[]) {
-    return expect(write).rejects.toThrow(
-      new RegExp(`CHECK constraint failed: (${constraints.join('|')})\\b`),
-    );
   }
 
   /** Seat a second owner the legitimate way: the founder signs the new row. */

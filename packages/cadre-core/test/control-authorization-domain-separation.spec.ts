@@ -14,6 +14,7 @@ import {
   deviceTokenAddDigest,
   deviceTokenRemoveDigest,
 } from '../src/peer-authorization.js';
+import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
  * Domain separation across every signed `CadreControl` approval.
@@ -72,17 +73,6 @@ describe('CadreControl approval domain separation', () => {
   let db: ControlDatabase;
   let rawDb: Database;
   let founder: KeyPair;
-
-  /**
-   * Assert the write was rejected by one of the NAMED CHECK constraints, not by an
-   * incidental SQL, binding, or transaction error. A bare `rejects.toThrow()` goes green
-   * on a mistyped statement, which would silently retire the replay it claims to pin.
-   */
-  function expectConstraintFailure(write: Promise<unknown>, ...constraints: string[]) {
-    return expect(write).rejects.toThrow(
-      new RegExp(`CHECK constraint failed: (${constraints.join('|')})\\b`),
-    );
-  }
 
   /** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
   async function inTransaction(statements: () => Promise<void>): Promise<void> {
@@ -205,7 +195,7 @@ describe('CadreControl approval domain separation', () => {
            values (?, ?)`,
         [founder.publicKey, enrollSig, second.publicKey, stamp],
       ),
-      'Authorized',
+      'AuthorizedInsert',
     );
     expect(
       await rawDb.get('select Key from CadreControl.ValidationKey where Key = ?', [second.publicKey]),
