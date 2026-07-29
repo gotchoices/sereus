@@ -52,10 +52,12 @@ export function deviceTokenRemoveDigest(peerId: string): string {
  * Canonical digest an owner signs to VOUCH a `CadrePeer` membership row (insert
  * and the owner re-touch update — same semantics, deliberately the same digest).
  * Binds the peer id to the row's single-use `StampId` nonce, so a captured signed
- * insert cannot be replayed (the `StampId` is unique) and — because
- * {@link cadrePeerRemoveDigest} scopes a DIFFERENT payload — the stored voucher
- * (`VouchSig`) cannot be replayed to authorize a delete. The domain tag keeps the
- * stored, replicated `VouchSig` useless against every OTHER table's rules.
+ * insert cannot be replayed — while the row lives the `unique` column blocks it, and
+ * after a removal the stamp is retired permanently into `CadreControl.Revocation`
+ * (`CadrePeer.NotRevoked`) — and, because {@link cadrePeerRemoveDigest} scopes a
+ * DIFFERENT payload, the stored voucher (`VouchSig`) cannot be replayed to authorize
+ * a delete. The domain tag keeps the stored, replicated `VouchSig` useless against
+ * every OTHER table's rules.
  *
  * SQL mirror: `digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId)`.
  */
@@ -68,8 +70,9 @@ export function cadrePeerVoucherDigest(peerId: string, stampId: string): string 
  * distinct payload from {@link cadrePeerVoucherDigest} (the `'remove'` action tag)
  * so the row's stored voucher — a signature over the voucher digest — can never
  * satisfy this delete check. The signature is supplied in write context and never
- * stored, so no reader can replay it; binding the live row's `StampId` also invalidates
- * any captured remove after a delete+reinsert (the nonce rotates).
+ * stored, so no reader can replay it; a captured remove is also dead after the
+ * delete lands, because a re-added row carries a FRESH `StampId` (the removed row's
+ * stamp is retired into `CadreControl.Revocation` and never reused).
  *
  * SQL mirror: `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`.
  */

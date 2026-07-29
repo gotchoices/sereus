@@ -331,14 +331,9 @@ export class SeedBootstrapService {
       throw new Error('Control database not initialized');
     }
     // Fresh single-use nonce; the voucher signs the 'vouch'-tagged digest over
-    // (peerId, stampId) so a captured insert can't be replayed (StampId is unique) and
-    // can't be repurposed as a delete (which signs a distinct 'remove'-tagged digest).
-    // NOTE: StampId uniqueness only blocks insert-replay while the row (or its StampId)
-    // is still present — a delete frees the StampId, so a captured authorized insert could
-    // be replayed to re-add a peer the owner had removed (a revocation bypass). Fully
-    // subsumed by the connection gater (ticket 6): with no outsider write there is no
-    // replay at all. If that gate ever proves insufficient, bind inserts to a persistent
-    // per-peer sequence / tombstone instead of a row-scoped nonce.
+    // (peerId, stampId) so a captured insert can't be replayed — live rows via the
+    // unique column, removed rows via Revocation retirement (CadrePeer.NotRevoked) —
+    // and can't be repurposed as a delete (which signs a distinct 'remove'-tagged digest).
     const stampId = generateStampId(row.peerId);
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
@@ -441,6 +436,11 @@ export class SeedBootstrapService {
    * `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`
    * ({@link cadrePeerRemoveDigest}) by an owner key — deliberately NOT the
    * insert voucher digest, so the row's stored `VouchSig` can never be replayed to delete.
+   *
+   * The delete and the `Revocation` tombstone retiring the row's `StampId` commit in ONE
+   * transaction — `CadrePeer.RevocationRecorded` refuses a bare delete, and without the
+   * tombstone the stamp would free up and the original admission approval (which never
+   * expires, and which the removed peer holds a copy of) would re-seat the row.
    */
   async removePeer(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
@@ -463,13 +463,30 @@ export class SeedBootstrapService {
     log('Removing peer: %s', peerId);
 
     const db = this.controlDatabase.getDatabase();
-    await db.exec(`
-      delete from CadreControl.CadrePeer
-        with context OwnerKey = ?, Signature = ?
-        where PeerId = ?
-    `, [this.ownerPublicKey, signature, peerId]);
+    await db.beginTransaction();
+    try {
+      await db.exec(`
+        delete from CadreControl.CadrePeer
+          with context OwnerKey = ?, Signature = ?
+          where PeerId = ?
+      `, [this.ownerPublicKey, signature, peerId]);
+      await db.exec(`
+        insert into CadreControl.Revocation (TableName, StampId)
+          values ('CadrePeer', ?)
+      `, [stampId]);
+      await db.commit();
+    } catch (error) {
+      // A failed commit() already tears down the transaction, so rollback() would
+      // throw "No transaction active" and mask the real cause — swallow only that.
+      try {
+        await db.rollback();
+      } catch (rollbackError) {
+        log('Rollback after removePeer failure was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
 
-    log('Peer %s removed successfully', peerId);
+    log('Peer %s removed successfully (stamp retired)', peerId);
   }
 
   /**

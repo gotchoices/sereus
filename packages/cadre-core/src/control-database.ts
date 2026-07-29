@@ -431,6 +431,24 @@ export class ControlDatabase {
   }
 
   /**
+   * Collect the retired `StampId` nonces recorded in `CadreControl.Revocation` for one
+   * guarded table (`'OwnerKey'` | `'CadrePeer'`). A stamp lands here when its row is
+   * removed ({@link SeedBootstrapService.removePeer}), and retirement is permanent —
+   * the table is append-only. Read-side mitigation for the write-time race: the
+   * schema's `NotRevoked` CHECK only sees locally visible tombstones, so a node that
+   * converged on a resurrected row before its tombstone can hold both; readers
+   * ({@link CadreNode.listAuthorizedMembers}) drop any row whose stamp appears here.
+   */
+  async queryRevokedStamps(tableName: 'OwnerKey' | 'CadrePeer'): Promise<Set<string>> {
+    this.ensureInitialized();
+    const stamps = new Set<string>();
+    for await (const row of this.db!.eval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
+      stamps.add(row.StampId as string);
+    }
+    return stamps;
+  }
+
+  /**
    * Read a single peer's address record (the full `CadrePeer` row) by PeerId.
    *
    * Returns null when no row exists. Missing/legacy column values are coalesced

@@ -2840,7 +2840,12 @@ export class CadreNode implements SAppIdLookup {
    *     which any stranger can genesis-pollute; and
    *  4. `VouchSig` verifies as that owner's signature over the row's voucher
    *     digest ({@link verifyCadrePeerVoucher}), so the anchored owner really
-   *     vouched THIS peer id under THIS row's nonce.
+   *     vouched THIS peer id under THIS row's nonce; and
+   *  5. the row's `StampId` is NOT retired in `CadreControl.Revocation` — a removed
+   *     peer's stamp is tombstoned there permanently, so a row resurrected by
+   *     replaying the captured admission approval on a node that had not yet
+   *     converged on the tombstone (the write-time `NotRevoked` CHECK only sees
+   *     local rows) is still inert to every reader that has the tombstone.
    *
    * Fail-closed at every step: a missing anchor (pre-start), an empty anchor (a
    * not-yet-enrolled node authorizes no one), a null/partial voucher, an
@@ -2860,8 +2865,11 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.peerId?.toString();
     const rows = await this.controlDatabase.queryCadrePeers();
+    const revokedStamps = await this.controlDatabase.queryRevokedStamps('CadrePeer');
     const authorized = rows
-      .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
+      .filter(row => row.peerId !== selfPeerId
+        && (row.stampId === null || !revokedStamps.has(row.stampId))
+        && this.hasAnchoredVoucher(row))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
     // A node whose anchor was never seeded (no invite pin, no operator pin, not a
     // founder) refuses every wake and strand-addr request, which from the outside
