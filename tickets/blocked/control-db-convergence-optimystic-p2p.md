@@ -452,3 +452,72 @@ So every cluster write now commits and `membership-not-admitted` is gone everywh
 remaining failures are the read side described above — `Failed to find materialized block
 … for revision N`, then a `waitUntil` timeout. Nothing further can be done from this repo;
 the ticket stays blocked on `selectQuorumRev`.
+
+---
+
+## Update 2026-07-29 — root cause found; it is neither of the earlier suspects
+
+Traced end to end from a full `DEBUG='optimystic:*'` run with both earlier fixes active. The
+mechanism is now known, with log evidence rather than inference.
+
+### What was wrong with the earlier updates
+
+- The 2026-07-27 update blamed `txn-perf-authoritative-notfound`. Retracted 2026-07-28.
+- The 2026-07-28 update blamed read-repair revision selection. That defect was real and is now
+  fixed upstream (`50af693`), but it was **not** why convergence failed. Read-repair was never on
+  the critical path here.
+- `cluster-fetch:synced { rev: 1 }` × 222, which drove both wrong diagnoses, turns out to be a
+  **false positive**: `coordinator-repo.ts` logs that line unconditionally, whether or not
+  anything was restored. It is not evidence of a sync, and never was.
+- `default/CadrePeer` sitting at rev 1 is **correct**, not a symptom. It is the collection *header*
+  block; it is only rewritten when the tree's root node id changes. Rows live in separate
+  content-hashed tree blocks, and those did advance (rev 2–7).
+
+### The actual mechanism
+
+1. Node A creates the collection. `findCluster` reports `fretCohort=1 connected=1` — the peer
+   connection is already up, but FRET's cohort for that key has not caught up. **Revision 1
+   commits solo, on A only.** `block-storage commit blockId=default/CadrePeer` appears exactly
+   once in 16,336 lines.
+2. ~300 ms later FRET catches up (`fretCohort=2`).
+3. A writes the row. Revision 2 is consensus-committed on **both** nodes.
+4. B now holds revision 2 with **no revision 1 to apply it to**. `applyTransform(undefined, …)`
+   returns `undefined`, so nothing is materialized — but `setLatest({rev: 2})` runs anyway.
+
+B is now wedged on that block, three ways, all observed in the trace:
+
+- **Cannot read it** — `Failed to find materialized block … for revision 2`.
+- **Cannot serve it** — `buildArchive` returns undefined, so B contributes no claim. The
+  `responders: 0` entries are B answering in 5 ms to say it has nothing, not a timeout.
+- **Rejects later writes to it** — the throw happens inside `validatePendOperations`, producing
+  `supermajority-failed { approvals: 1, superMajority: 2 }`.
+
+And the reason this looked like "no rows" rather than an error: `Collection.createOrOpen` treats
+a header it cannot fetch as a collection that does not exist, and **silently constructs a fresh
+empty collection on every query**. The membership check returned "no members" indefinitely, with
+no error and no log line.
+
+### Where the work now sits
+
+All upstream, all filed in `../optimystic` with the sereus trace attached:
+
+- `bug-member-commits-unmaterializable-revision` (`implement/`) — the root cause. A member must
+  obtain the base revision before committing, or refuse; `setLatest` must never advance past what
+  the node can materialize. **In progress.**
+- `collection-open-silently-invents-empty-collection` (`plan/`) — the silent-empty-table
+  behavior that masked it.
+- `bug-read-repair-unrepairable-small-cluster` — **fixed**, `50af693`.
+- `clustersize-conflates-replication-factor-and-admission-yardstick` (`plan/`) — the dual-role
+  `clusterSize` and its default of 10, filed from `optimystic-cluster-size-gate-defaults`.
+
+The sereus-side half is done and shipped (`bug-cluster-size-exceeds-cadre-size`);
+`membership-not-admitted` no longer appears. Nothing further is actionable in this repo until the
+root-cause fix lands upstream.
+
+### Open question, not yet answered
+
+Why FRET reported `fretCohort=1` for the collection's key while `connected=1` and
+`network-hwm-updated mark=2` had already been logged ~100 ms earlier. That is the race that
+creates the solo revision 1 in the first place. Closing it would be defense in depth — the
+upstream fix makes the race harmless rather than preventing it — but it is worth understanding,
+since a solo creating-revision also means that revision briefly exists on exactly one node.
