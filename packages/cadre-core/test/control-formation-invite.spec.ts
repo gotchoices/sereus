@@ -6,6 +6,7 @@ import {
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
+import { MissingHostStrandError } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -303,6 +304,19 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(liveStamp).not.toBeNull();
     await rawInsertFormationUsage(token, 1, strandId, liveStamp!);
     expect(await usageCount()).toBe(before + 1);
+  });
+
+  it('recordFormationUsage throws MissingHostStrandError when the host strand is absent', async () => {
+    // The writer must read the live stamp before inserting, so an absent strand is caught
+    // here by name rather than silently rolled back by the deferred `StrandExists` CHECK.
+    const token = 'invite-nohost-' + rand();
+    const strandId = 'strand-nohost-' + rand();
+    await db.insertFormationInvite(token, 'sapp-nohost', ownerPublicKey, signMessage);
+
+    const before = await usageCount();
+    await expect(db.recordFormationUsage({ token, strandId }))
+      .rejects.toThrow(MissingHostStrandError);
+    expect(await usageCount()).toBe(before);
   });
 
   describe('MemberKeyClosedOnly constraint', () => {
