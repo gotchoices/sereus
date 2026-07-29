@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import debug from 'debug';
 import { randomUUID } from 'node:crypto';
 import { Database } from '@quereus/quereus';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
@@ -9,8 +10,12 @@ import {
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
+  cancelInvite,
+  listOutstandingInvites,
   addMemberByManager,
+  addManager,
   signStrandPayload,
+  signStrandApproval,
 } from '../src/strand-membership-writer.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
 import {
@@ -35,6 +40,8 @@ import type { SAppConfig, MemberRegistration } from '../src/types.js';
  * branch into the genuine signature-verifying branches of `Member.Authorized`.
  */
 
+const log = debug('sereus:cadre:test:strand-invite');
+
 function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
   return {
     id: 'sapp-author-pubkey',
@@ -52,11 +59,37 @@ function freshKeyPair(): Ed25519KeyPair {
   return { privateKeyB64, publicKeyB64 };
 }
 
-async function tableCount(db: Database, table: 'Header' | 'Invite' | 'ConsumedInvite' | 'Member' | 'Manager'): Promise<number> {
+type StrandTable = 'Header' | 'Invite' | 'ConsumedInvite' | 'CancelledInvite' | 'Member' | 'Manager';
+
+async function tableCount(db: Database, table: StrandTable): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
     return (row as { c: number }).c;
   }
   return 0;
+}
+
+/**
+ * Run `statements` in one explicit transaction: commit on success, rollback on failure.
+ *
+ * Needed by the same-transaction-manager tests, which must put an `addManager` and a
+ * dependent write in ONE transaction so the `committed.Manager` reads are exercised.
+ * (Duplicated from `strand-member-revocation.spec.ts`, which does not export it.)
+ */
+async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
+  await db.beginTransaction();
+  try {
+    await statements();
+    await db.commit();
+  } catch (error) {
+    // A failed commit() already tore the transaction down, so rollback() throws
+    // "no transaction active" — log it rather than masking the real cause.
+    try {
+      await db.rollback();
+    } catch (rollbackError) {
+      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
+    }
+    throw error;
+  }
 }
 
 interface Strand {
@@ -403,9 +436,214 @@ describe('addMemberByManager', () => {
   }, 30_000);
 });
 
-// ── StrandMemberVerifier.isAuthorizedToJoin expiry parity ────────────────────
+// ── Phase 2b: invite cancellation (the manager's kill switch) ────────────────
+//
+// `Strand.CancelledInvite` is a monotone tombstone: one row per killed invitation,
+// permanent (`Immutable`), manager-signed (`Authorized`), and it is what makes
+// `ConsumedInvite.NotCancelled` reject the redemption. Every rejection below is
+// name-pinned because on a closed strand exactly one constraint can fire —
+// `OnlyClosed` passes and `Immutable` only masks update/delete.
 
-describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
+describe('cancelInvite', () => {
+  it('a manager files one CancelledInvite row keyed by the cancelled invite', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+    const row = await db.get('select InviteKey from Strand.CancelledInvite');
+    expect(row?.InviteKey).toBe(inviteKey);
+    // The Invite row itself is untouched — cancellation is a tombstone, not a delete.
+    expect(await tableCount(db, 'Invite')).toBe(1);
+  }, 30_000);
+
+  it('rejects consuming a cancelled invite and rolls the whole join back (NotCancelled)', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
+    const member = freshKeyPair();
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+
+    // NotCancelled is the ONLY constraint that can fire on this otherwise-valid
+    // consume: InviteExists, ValidUsage, NotExpired (null expiry) and
+    // MemberExists/MemberValid all pass, and Member.Authorized's invite branch is
+    // satisfied because the ConsumedInvite row IS in the post-image at commit.
+    await expect(
+      consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64 }),
+    ).rejects.toThrow(/NotCancelled/);
+
+    // Deferred rejection at commit rolls the whole txn back — neither the Member nor
+    // the ConsumedInvite row survives (mirrors the wrong-key / expired cases above).
+    expect(await tableCount(db, 'Member')).toBe(1); // only the founder
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
+  }, 30_000);
+
+  it('rejects a cancellation signed by a non-manager key (Authorized)', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+    const notAManager = freshKeyPair();
+
+    await expect(
+      cancelInvite(db, { managerKeyPair: notAManager, inviteKey }),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'CancelledInvite')).toBe(0);
+  }, 30_000);
+
+  it('rejects a cancellation authorized by a manager seated in the SAME transaction', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+    const m2 = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: m2.publicKeyB64 });
+
+    // The Manager insert itself is valid (founder-signed promotion), but M2's row is
+    // NOT in the pre-transaction snapshot — CancelledInvite.Authorized reads
+    // committed.Manager, so M2 cannot authorize a cancellation in the transaction
+    // that seats it. A plain from-Manager read would have accepted this.
+    await expect(inTransaction(db, async () => {
+      await addManager(db, { byManagerKeyPair: founder, newManagerKey: m2.publicKeyB64 });
+      await cancelInvite(db, { managerKeyPair: m2, inviteKey });
+    })).rejects.toThrow(/Authorized/);
+
+    // The whole transaction rolled back: no tombstone, and M2 is not a manager.
+    expect(await tableCount(db, 'CancelledInvite')).toBe(0);
+    expect(await tableCount(db, 'Manager')).toBe(1); // the founder
+  }, 30_000);
+
+  it('rejects a cancel approval minted for a DIFFERENT invite key (Authorized)', async () => {
+    const { db, founder } = await openStrand('c');
+    const inviteA = (await issueInvite(db, { managerKeyPair: founder })).inviteKey;
+    const inviteB = (await issueInvite(db, { managerKeyPair: founder })).inviteKey;
+
+    // A genuine founder approval — but minted over invite A, presented on a
+    // cancellation of invite B. The digest binds new.InviteKey, so an approval is
+    // per-invite: holding one invitation's kill approval never kills another.
+    // Hand-rolled because cancelInvite always signs the key it inserts.
+    const signature = signStrandApproval(
+      ['Strand.CancelledInvite', 'cancel', inviteA],
+      founder.privateKeyB64,
+    );
+    await expect(db.exec(
+      `insert into Strand.CancelledInvite (InviteKey)
+         with context ManagerKey = ?, ManagerSignature = ?
+         values (?)`,
+      [founder.publicKeyB64, signature, inviteB],
+    )).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'CancelledInvite')).toBe(0);
+  }, 30_000);
+
+  it('rejects updating or deleting an existing CancelledInvite row (Immutable)', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+    const other = await issueInvite(db, { managerKeyPair: founder });
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+
+    // Cancellation is permanent: un-cancelling would restore the re-entry it closed.
+    // Immutable is `check on update, delete (false)` — unconditional, so no context
+    // the caller supplies changes the outcome (hence the placeholder signature).
+    await expect(
+      db.exec(
+        `update Strand.CancelledInvite
+           with context ManagerKey = ?, ManagerSignature = ?
+           set InviteKey = ?
+           where InviteKey = ?`,
+        [founder.publicKeyB64, 'ignored', other.inviteKey, inviteKey],
+      ),
+    ).rejects.toThrow(/Immutable/);
+
+    await expect(
+      db.exec(
+        `delete from Strand.CancelledInvite
+           with context ManagerKey = ?, ManagerSignature = ?
+           where InviteKey = ?`,
+        [founder.publicKeyB64, 'ignored', inviteKey],
+      ),
+    ).rejects.toThrow(/Immutable/);
+
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+  }, 30_000);
+
+  it('a second cancellation of the same invite is a quiet no-op (restart-safe)', async () => {
+    const { db, founder } = await openStrand('c');
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+    // Insert-if-absent: the repeat logs and returns rather than throwing on the PK.
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+  }, 30_000);
+});
+
+// ── Phase 2c: enumerating what is still redeemable ──────────────────────────
+//
+// "Outstanding" is not a column on `Strand.Invite` (the table is insert-only and
+// stateless) — it is the Invite set minus consumed keys, minus cancelled keys,
+// minus expired rows. `nowMs` is pinned throughout so the expiry arithmetic is
+// deterministic; `base` is a fixed UTC instant and one day is 86_400_000 ms.
+
+describe('listOutstandingInvites', () => {
+  it('omits consumed, cancelled and expired invitations, keeping the live one', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const live = await issueInvite(db, { managerKeyPair: founder });
+    const consumed = await issueInvite(db, { managerKeyPair: founder });
+    const cancelled = await issueInvite(db, { managerKeyPair: founder });
+    const expired = await issueInvite(db, { managerKeyPair: founder, expiration: base });
+
+    await consumeInvite(db, {
+      inviteKey: consumed.inviteKey,
+      invitePrivateKey: consumed.invitePrivateKey,
+      memberKey: freshKeyPair().publicKeyB64,
+    });
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey: cancelled.inviteKey });
+
+    // One day after `expired` died; all four Invite rows are still present.
+    expect(await tableCount(db, 'Invite')).toBe(4);
+    const outstanding = await listOutstandingInvites(db, base + 86_400_000);
+
+    expect(outstanding.map((i) => i.inviteKey)).toEqual([live.inviteKey]);
+    // Spelled out so a failure names which exclusion leaked.
+    const keys = new Set(outstanding.map((i) => i.inviteKey));
+    expect(keys.has(consumed.inviteKey)).toBe(false);
+    expect(keys.has(cancelled.inviteKey)).toBe(false);
+    expect(keys.has(expired.inviteKey)).toBe(false);
+  }, 30_000);
+
+  it('reports a never-expiring invite as null and a timed one as its canonical datetime', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const never = await issueInvite(db, { managerKeyPair: founder });
+    const timed = await issueInvite(db, { managerKeyPair: founder, expiration: base + 86_400_000 });
+
+    const outstanding = await listOutstandingInvites(db, base);
+
+    expect(outstanding).toHaveLength(2);
+    const expirationByKey = new Map(outstanding.map((i) => [i.inviteKey, i.expiration]));
+    expect(expirationByKey.get(never.inviteKey)).toBeNull();
+    // The reported string is the engine-canonical form issueInvite stored, not a
+    // hand-rolled ISO string (the two differ — see the issuance test above).
+    expect(expirationByKey.get(timed.inviteKey)).toBe(await canonicalDatetime(db, base + 86_400_000));
+  }, 30_000);
+
+  it('omits an invite whose expiration equals nowMs (expiry is exclusive)', async () => {
+    const { db, founder } = await openStrand('c');
+    const base = Date.UTC(2031, 2, 4, 12, 0, 0);
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder, expiration: base });
+
+    // `expiration > now` is strict, matching the on-engine NotExpired gate (and the
+    // consume-side boundary test above): the invitation is dead AT its expiry instant.
+    expect(await listOutstandingInvites(db, base)).toEqual([]);
+    // Positive control one day earlier — the row is otherwise perfectly redeemable.
+    expect((await listOutstandingInvites(db, base - 86_400_000)).map((i) => i.inviteKey))
+      .toEqual([inviteKey]);
+  }, 30_000);
+});
+
+// ── StrandMemberVerifier.isAuthorizedToJoin outstanding-invite parity ─────────
+
+describe('StrandMemberVerifier.isAuthorizedToJoin outstanding-invite filtering', () => {
   it('returns false when the only outstanding invite is already expired', async () => {
     const { db, strandId, founder } = await openStrand('c');
     // An invite whose expiry is far in the past relative to wall-clock now, so the
@@ -430,6 +668,33 @@ describe('StrandMemberVerifier.isAuthorizedToJoin expiry filtering', () => {
     const verifier = new StrandMemberVerifier(db);
 
     expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(true);
+  }, 30_000);
+
+  it('returns false when the only invite has been cancelled', async () => {
+    const { db, strandId, founder } = await openStrand('c');
+    // A never-expiring invite, so expiry cannot be what closes the door — the
+    // cancellation is. The pre-flight must not report a door NotCancelled will slam.
+    const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey });
+    const verifier = new StrandMemberVerifier(db);
+
+    expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(false);
+  }, 30_000);
+
+  it('returns false when the only invite has already been consumed by someone else', async () => {
+    const { db, strandId, founder } = await openStrand('c');
+    const { inviteKey, invitePrivateKey } = await issueInvite(db, { managerKeyPair: founder });
+    const joined = freshKeyPair();
+    await consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: joined.publicKeyB64 });
+    const verifier = new StrandMemberVerifier(db);
+
+    // Asked about a DIFFERENT key than the consumer's: a single-use invite already
+    // spent leaves nothing to redeem, and ConsumedInvite's primary key would reject
+    // a second consume anyway.
+    expect(await verifier.isAuthorizedToJoin(strandId, freshKeyPair().publicKeyB64)).toBe(false);
+    // The consumer itself still answers true off its own ConsumedInvite row — the
+    // short-circuit ahead of the outstanding-invite scan (see isAuthorizedToJoin).
+    expect(await verifier.isAuthorizedToJoin(strandId, joined.publicKeyB64)).toBe(true);
   }, 30_000);
 });
 

@@ -10,6 +10,7 @@ import {
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
+  cancelInvite,
   addMemberByManager,
   revokeMember,
   leaveStrand,
@@ -56,7 +57,7 @@ function freshKeyPair(): Ed25519KeyPair {
   return { privateKeyB64, publicKeyB64 };
 }
 
-type StrandTable = 'Header' | 'Member' | 'Manager' | 'ConsumedInvite' | 'Revocation';
+type StrandTable = 'Header' | 'Member' | 'Manager' | 'ConsumedInvite' | 'CancelledInvite' | 'Revocation';
 
 async function tableCount(db: Database, table: StrandTable): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
@@ -570,15 +571,53 @@ describe('re-admission after revocation', () => {
     expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(true);
   }, 30_000);
 
-  it('a revoked member re-admits ITSELF off an invite it held but never consumed', async () => {
+  it('a revoked member cannot re-admit itself off a spare invite the manager CANCELLED', async () => {
     const { db, founder } = await openStrand('c');
     const joiner = freshKeyPair();
 
-    // Two invites issued; the joiner consumes one and pockets the other. Invites
-    // are bearer tokens with no deactivation path (`Strand.Invite`'s own TODO), so
-    // the spare survives the revocation and re-admits its holder with no further
-    // manager action. Revocation is NOT a re-entry gate while a member holds any
-    // unconsumed invite — tracked as `bug-strand-invite-no-revocation`.
+    // Two invites issued; the joiner consumes one and pockets the other. Removing the
+    // member does NOT cascade into cancelling the spare (an invitation names no
+    // invitee), so making revocation a real re-entry gate takes a SECOND, explicit
+    // manager action: cancel the spare. Once cancelled, redeeming it is rejected by
+    // ConsumedInvite.NotCancelled and the whole join rolls back.
+    const spent = await issueInvite(db, { managerKeyPair: founder });
+    const spare = await issueInvite(db, { managerKeyPair: founder });
+    await consumeInvite(db, {
+      inviteKey: spent.inviteKey,
+      invitePrivateKey: spent.invitePrivateKey,
+      memberKey: joiner.publicKeyB64,
+    });
+
+    await revokeMember(db, { managerKeyPair: founder, memberKey: joiner.publicKeyB64 });
+    expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(false);
+
+    // The manager enumerates what is still redeemable and kills the spare. The spent
+    // invite is already excluded from that list, so the spare is the only candidate.
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey: spare.inviteKey });
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+
+    await expect(
+      consumeInvite(db, {
+        inviteKey: spare.inviteKey,
+        invitePrivateKey: spare.invitePrivateKey,
+        memberKey: joiner.publicKeyB64,
+      }),
+    ).rejects.toThrow(/NotCancelled/);
+
+    expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(false);
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1); // the spent one only
+  }, 30_000);
+
+  it('a revoked member re-admits ITSELF off an UN-cancelled spare invite (bearer semantics)', async () => {
+    const { db, founder } = await openStrand('c');
+    const joiner = freshKeyPair();
+
+    // The residual of the test above, pinned rather than dropped so a future reader
+    // can tell "still open by design" from "regressed". An invitation is a BEARER
+    // credential naming no invitee: it survives the holder's removal, and nothing
+    // cancels it automatically, so the manager must cancel it explicitly (above) to
+    // close re-entry. Binding an invitation to its intended invitee — which would
+    // let removal cascade — is tracked as `feat-strand-invitee-bound-invites`.
     const spent = await issueInvite(db, { managerKeyPair: founder });
     const spare = await issueInvite(db, { managerKeyPair: founder });
     await consumeInvite(db, {
@@ -596,6 +635,7 @@ describe('re-admission after revocation', () => {
       memberKey: joiner.publicKeyB64,
     });
     expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(true);
+    expect(await tableCount(db, 'CancelledInvite')).toBe(0);
   }, 30_000);
 
   it('a FRESH invite re-admits a revoked member (freshness clause spares legitimate joins)', async () => {
