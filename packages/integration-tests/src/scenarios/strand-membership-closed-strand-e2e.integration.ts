@@ -310,7 +310,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			await expect(
 				founderDb.exec(
 					`insert into Strand.MemberPeer (MemberKey, PeerId)
-					   with context Signature = ?
+					   with context Signature = ?, ManagerKey = null, ManagerSignature = null
 					   values (?, ?)`,
 					[impostorSignature, joinerMember.publicKeyB64, impostorPeerId],
 				),

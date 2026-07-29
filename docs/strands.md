@@ -199,6 +199,10 @@ Membership removal is governed by the same signed-approval discipline as admissi
 - **A manager must resign before losing membership.** Deleting the member row of a key
   that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
   manager seat.
+- **Clearing the removed member's device records is a separate step, not a cascade.**
+  Removing a member leaves behind the records binding its devices to the strand; a manager
+  clears each one with its own signed removal. Anything reading those device records must
+  check membership separately rather than treating a device record as proof of it.
 - **The last member can never be removed.** A member-count floor mirrors the last-manager
   floor above, with the same local-count caveat (see known gaps below).
 - **Revocation is forward-looking only.** A revoked member keeps whatever strand data its

@@ -106,6 +106,7 @@ export {
   signStrandPayload,
   verifyStrandPayload,
   signStrandMemberAction,
+  signStrandMemberPeerRemoval,
   bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
@@ -113,6 +114,7 @@ export {
   revokeMember,
   leaveStrand,
   registerMemberPeer,
+  removeMemberPeer,
   addManager,
   removeManager,
   STRAND_ENGINE,
@@ -126,6 +128,9 @@ export {
   type RevokeMemberParams,
   type LeaveStrandParams,
   type RegisterMemberPeerParams,
+  type RemoveOwnPeerParams,
+  type RemoveMemberPeerByManagerParams,
+  type RemoveMemberPeerParams,
   type AddManagerParams,
   type RemoveManagerParams
 } from './strand-membership-writer.js';

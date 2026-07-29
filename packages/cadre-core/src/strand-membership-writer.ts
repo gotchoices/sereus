@@ -100,6 +100,32 @@ export function signStrandMemberAction(action: StrandMemberAction, memberKey: st
   return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
 }
 
+/**
+ * Sign a domain/action-tagged `Strand.MemberPeer` removal approval — the payload a
+ * MANAGER signs to clear another member's peer binding.
+ *
+ * The manager branch of `MemberPeer.Authorized` verifies
+ * `digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId)`, which is
+ * deliberately DISTINCT from the untagged `MemberKey || '|' || PeerId` payload
+ * {@link signStrandPayload} produces for registration. That separation is what stops
+ * a captured registration signature from being replayed as a removal. Same tagged
+ * variadic-digest idiom as {@link signStrandMemberAction}; the four-element spelling
+ * is pinned against SQL by `test/digest-variadic-parity.spec.ts` case (d).
+ *
+ * The member's OWN removal of its own binding does NOT use this — the self branch
+ * verifies the same untagged payload registration signs, so `signStrandPayload`
+ * covers it.
+ *
+ * @param memberKey - The `MemberPeer.MemberKey` of the row being cleared.
+ * @param peerId - The `MemberPeer.PeerId` of the row being cleared.
+ * @param privateKeyB64 - The signing manager's base64url ed25519 private seed.
+ * @returns The base64url ed25519 signature over the tagged digest.
+ */
+export function signStrandMemberPeerRemoval(memberKey: string, peerId: string, privateKeyB64: string): string {
+  const hashBytes = digest(['Strand.MemberPeer', 'remove', memberKey, peerId], 'sha256', 'bytes') as Uint8Array;
+  return sign(hashBytes, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+}
+
 /** Parameters for {@link bootstrapFounderMembership}. */
 export interface FounderBootstrapParams {
   /** The strand id — written to `Header.Id`. */
@@ -627,11 +653,12 @@ export interface RegisterMemberPeerParams {
  * may register multiple DISTINCT `PeerId`s (multi-device); each is its own row under the
  * same `MemberKey`.
  *
- * Out of scope: peer DELETION. The schema's `MemberExists` reads `new.MemberKey`,
- * which is null on delete, so a `MemberPeer` delete is currently rejected by the
- * schema (noted in the `apply-strand-membership-schema` review). Removing a peer
- * would need a schema tweak (e.g. `coalesce(new.MemberKey, old.MemberKey)` in
- * `MemberExists`), so no `removeMemberPeer` is provided here.
+ * Peer DELETION is signature-checked too, not rejected outright: `Authorized` carries an
+ * explicit `on insert, update, delete` mask and coalesces `new`/`old`, so a delete verifies
+ * against the member key the row names. `MemberExists` is insert/update only (a delete
+ * leaves no row image to validate), so it neither blocks nor cascades. Both removal
+ * paths — the member clearing its own binding and a manager clearing someone else's —
+ * live in {@link removeMemberPeer}.
  *
  * @param db - The closed strand's database (the member already exists).
  * @param params - The member's own keypair and the peer id to bind.
@@ -651,7 +678,7 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
   const signature = signStrandPayload(payload, memberKeyPair.privateKeyB64);
   await db.exec(
     `insert into Strand.MemberPeer (MemberKey, PeerId)
-       with context Signature = ?
+       with context Signature = ?, ManagerKey = null, ManagerSignature = null
        values (?, ?)`,
     [signature, memberKey, peerId],
   );
@@ -699,6 +726,125 @@ async function memberPeerExists(db: Database, memberKey: string, peerId: string)
     }
   }
   return false;
+}
+
+/** Parameters for the SELF branch of {@link removeMemberPeer}. */
+export interface RemoveOwnPeerParams {
+  /**
+   * The member's OWN strand keypair. Its `publicKeyB64` is the `MemberPeer.MemberKey`
+   * of the row being deleted, and it signs the same untagged `MemberKey || '|' || PeerId`
+   * payload registration signs — the self branch of `MemberPeer.Authorized` verifies
+   * against the row's own member key, so only that member can clear its own bindings.
+   */
+  memberKeyPair: Ed25519KeyPair;
+  /** The `PeerId` of the binding to delete. */
+  peerId: string;
+}
+
+/** Parameters for the MANAGER branch of {@link removeMemberPeer}. */
+export interface RemoveMemberPeerByManagerParams {
+  /**
+   * The clearing manager's strand keypair. Its `publicKeyB64` must be a PRE-EXISTING
+   * `Strand.Manager` row (the manager branch reads `committed.Manager`, so a manager
+   * seated in the same transaction cannot authorize); it signs the remove-tagged
+   * digest over the exact row.
+   */
+  managerKeyPair: Ed25519KeyPair;
+  /** The `MemberPeer.MemberKey` whose binding is being cleared. */
+  memberKey: string;
+  /** The `PeerId` of the binding to delete. */
+  peerId: string;
+}
+
+/**
+ * Either shape accepted by {@link removeMemberPeer}. A discriminated union rather than
+ * one opaque keypair: the two branches sign DIFFERENT payloads (untagged self vs
+ * remove-tagged manager), so each case carries exactly the fields its payload needs.
+ */
+export type RemoveMemberPeerParams = RemoveOwnPeerParams | RemoveMemberPeerByManagerParams;
+
+/**
+ * Delete a `MemberPeer` binding — either the member clearing its own, or a manager
+ * clearing another member's.
+ *
+ * `MemberPeer` rows do NOT cascade when the member is revoked (`MemberExists` runs on
+ * insert/update only, and nothing deletes them), so a removed member's peer bindings
+ * survive as orphans. Only that member can sign the self branch, and a member being
+ * removed against its will has no reason to cooperate — hence the manager branch, which
+ * is the cleanup path after a revocation.
+ *
+ * The manager branch is deliberately NOT gated on the member already being gone: a
+ * manager may clear a still-present member's binding too, matching "any manager can
+ * remove any member". It verifies the remove-tagged
+ * `digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId)` against a
+ * `committed.Manager` row, so a captured registration signature (untagged payload) can
+ * never be replayed as a removal.
+ *
+ * Cleanup is an explicit follow-up call by the revoking manager, never a cascade inside
+ * {@link revokeMember}: a revocation that also had to clear an unbounded number of peer
+ * rows in the same transaction would couple two concerns and make its failure modes
+ * harder to reason about.
+ *
+ * @param db - The closed strand's database.
+ * @param params - Either the owning member's keypair, or a manager's keypair plus the
+ *   target member key.
+ * @throws If `MemberPeer.Authorized` rejects (neither branch satisfied), or if the row
+ *   is still present after the delete (see the point-lookup note below).
+ */
+export async function removeMemberPeer(db: Database, params: RemoveMemberPeerParams): Promise<void> {
+  const memberKey = 'memberKeyPair' in params ? params.memberKeyPair.publicKeyB64 : params.memberKey;
+  const { peerId } = params;
+
+  // Delete-if-present mirrors registerMemberPeer's insert-if-absent, so a repeated or
+  // restarted cleanup is a quiet no-op rather than a silent zero-row "success" that the
+  // caller cannot distinguish from a real one.
+  if (!(await memberPeerExists(db, memberKey, peerId))) {
+    log('MemberPeer (%s, %s) already absent; skipping', memberKey, peerId);
+    return;
+  }
+
+  if ('memberKeyPair' in params) {
+    await deleteOwnMemberPeer(db, params);
+  } else {
+    await deleteMemberPeerByManager(db, params);
+  }
+
+  // NOTE: the delete's `where` puts an equality on BOTH composite-PK columns, which the
+  // optimystic vtab module serves via a single-key seek that can MISS on a networked
+  // strand (see memberPeerExists' doc). A missed seek deletes zero rows and still
+  // reports success — a silent no-op on the very cleanup path this writer exists to
+  // provide. The re-check turns that into a loud failure. Tracked as
+  // `debt-composite-pk-point-lookup-unreliable-untracked`; this is an availability
+  // failure mode, never a security one (a miss removes nothing, it never over-removes).
+  if (await memberPeerExists(db, memberKey, peerId)) {
+    throw new Error(`MemberPeer (${memberKey}, ${peerId}) still present after delete`);
+  }
+  log('Removed MemberPeer (%s, %s)', memberKey, peerId);
+}
+
+/** The self branch: the owning member signs the untagged registration payload. */
+async function deleteOwnMemberPeer(db: Database, params: RemoveOwnPeerParams): Promise<void> {
+  const { memberKeyPair, peerId } = params;
+  const memberKey = memberKeyPair.publicKeyB64;
+  const signature = signStrandPayload(`${memberKey}|${peerId}`, memberKeyPair.privateKeyB64);
+  await db.exec(
+    `delete from Strand.MemberPeer
+       with context Signature = ?, ManagerKey = null, ManagerSignature = null
+       where MemberKey = ? and PeerId = ?`,
+    [signature, memberKey, peerId],
+  );
+}
+
+/** The manager branch: a manager signs the remove-tagged digest over the target row. */
+async function deleteMemberPeerByManager(db: Database, params: RemoveMemberPeerByManagerParams): Promise<void> {
+  const { managerKeyPair, memberKey, peerId } = params;
+  const signature = signStrandMemberPeerRemoval(memberKey, peerId, managerKeyPair.privateKeyB64);
+  await db.exec(
+    `delete from Strand.MemberPeer
+       with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+       where MemberKey = ? and PeerId = ?`,
+    [managerKeyPair.publicKeyB64, signature, memberKey, peerId],
+  );
 }
 
 // ── Manager rotation (add / remove RBAC admins) ───────────────────────────────

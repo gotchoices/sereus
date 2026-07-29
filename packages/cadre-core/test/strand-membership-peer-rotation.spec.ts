@@ -9,7 +9,10 @@ import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-memb
 import {
   bootstrapFounderMembership,
   addMemberByManager,
+  revokeMember,
   registerMemberPeer,
+  removeMemberPeer,
+  signStrandMemberPeerRemoval,
   addManager,
   removeManager,
   signStrandPayload,
@@ -123,14 +126,16 @@ describe('registerMemberPeer', () => {
 
     // The MemberKey is the real founder member (so the deferred MemberExists passes),
     // but the Signature is made by an unrelated key over the same payload — so the
-    // immediate Authorized check (verify against MemberKey itself) fails.
+    // Authorized check (verify against MemberKey itself) fails. Authorized now carries
+    // a subquery (the manager-cleanup branch), so Quereus auto-defers it: the rejection
+    // lands at commit, not at statement time.
     const payload = `${founder.publicKeyB64}|${peerId}`;
     const wrongSignature = signStrandPayload(payload, impostor.privateKeyB64);
 
     await expect(
       db.exec(
         `insert into Strand.MemberPeer (MemberKey, PeerId)
-           with context Signature = ?
+           with context Signature = ?, ManagerKey = null, ManagerSignature = null
            values (?, ?)`,
         [wrongSignature, founder.publicKeyB64, peerId],
       ),
@@ -243,6 +248,162 @@ describe('registerMemberPeer', () => {
     await expect(
       registerMemberPeer(db, { memberKeyPair: stranger, peerId: 'peer-open' }),
     ).rejects.toThrow();
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+});
+
+// ── Phase 1b: MemberPeer removal (self-signed, or manager cleanup) ───────────
+//
+// `MemberPeer` rows do NOT cascade when a member is revoked — `MemberExists` is
+// `on insert, update` only and nothing deletes them — so a revoked member's peer
+// bindings survive as orphans. Only that member can sign the self branch, and a
+// member removed against its will has no reason to cooperate, so `Authorized`
+// carries a second branch letting a `committed.Manager` clear ANOTHER member's
+// binding over a remove-tagged digest.
+
+describe('removeMemberPeer', () => {
+  it('a member deletes its OWN peer binding (deletes are signature-checked, not rejected)', async () => {
+    const { db, founder } = await openStrand('c');
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-own' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    await removeMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-own' });
+
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+
+  it('a stranger cannot delete ANOTHER member\'s peer binding (neither branch is satisfied)', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-victim' });
+    const stranger = freshKeyPair();
+
+    // Route 1 — via the writer's manager branch: the stranger holds no Manager row, so
+    // the `committed.Manager` lookup finds nothing and `Signature` is null (verify → false).
+    await expect(
+      removeMemberPeer(db, { managerKeyPair: stranger, memberKey: member.publicKeyB64, peerId: 'peer-victim' }),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    // Route 2 — raw, aiming at the SELF branch: a correctly-shaped self-signature, but
+    // minted by the wrong key. The branch verifies against `old.MemberKey` (the victim),
+    // so the stranger's signature cannot stand in for the member's own.
+    const wrongSignature = signStrandPayload(`${member.publicKeyB64}|peer-victim`, stranger.privateKeyB64);
+    await expect(
+      db.exec(
+        `delete from Strand.MemberPeer
+           with context Signature = ?, ManagerKey = null, ManagerSignature = null
+           where MemberKey = ? and PeerId = ?`,
+        [wrongSignature, member.publicKeyB64, 'peer-victim'],
+      ),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+  }, 30_000);
+
+  it('peer rows SURVIVE their member\'s revocation, and a manager-signed cleanup clears them', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-orphan' });
+    expect(await tableCount(db, 'Member')).toBe(2);
+
+    // The founder stays (MinOneMember) and the second member holds no Manager row
+    // (NotAManager), so the revocation is accepted.
+    await revokeMember(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    expect(await tableCount(db, 'Member')).toBe(1);
+
+    // Nothing cascaded: the binding is now an orphan naming a MemberKey with no Member row.
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    // The departed member would never sign this, so the manager branch is the only
+    // way the row can ever be cleared.
+    await removeMemberPeer(db, { managerKeyPair: founder, memberKey: member.publicKeyB64, peerId: 'peer-orphan' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+
+  it('a manager may also clear a STILL-PRESENT member\'s binding (branch is not gated on removal)', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-live' });
+
+    // Deliberate: the manager branch carries no "member is gone" condition, matching
+    // "any manager can remove any member". A manager can evict a device without
+    // evicting its owner.
+    await removeMemberPeer(db, { managerKeyPair: founder, memberKey: member.publicKeyB64, peerId: 'peer-live' });
+
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+    expect(await tableCount(db, 'Member')).toBe(2); // the member itself is untouched
+  }, 30_000);
+
+  it('a register-peer signature cannot be replayed as a manager remove-peer signature', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-replay' });
+
+    // A REAL manager signs the untagged registration payload (`MemberKey|PeerId`) over
+    // another member's row and presents it as the removal approval. The manager branch
+    // verifies the remove-TAGGED digest instead, so the payloads differ and it fails.
+    //
+    // Note this narrowing applies to the manager branch only: on the self branch the
+    // registration and removal payloads are deliberately identical, which is harmless —
+    // it is the same principal and its own row either way.
+    const registrationShaped = signStrandPayload(`${member.publicKeyB64}|peer-replay`, founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `delete from Strand.MemberPeer
+           with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+           where MemberKey = ? and PeerId = ?`,
+        [founder.publicKeyB64, registrationShaped, member.publicKeyB64, 'peer-replay'],
+      ),
+    ).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    // The properly remove-tagged signature from the SAME manager over the SAME row is
+    // accepted — proving the rejection above was the payload tagging, nothing else.
+    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-replay', founder.privateKeyB64);
+    await db.exec(
+      `delete from Strand.MemberPeer
+         with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+         where MemberKey = ? and PeerId = ?`,
+      [founder.publicKeyB64, removeTagged, member.publicKeyB64, 'peer-replay'],
+    );
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+
+  it('removing ONE peer leaves the member\'s other peers intact', async () => {
+    const { db, founder } = await openStrand('c');
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-phone' });
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-laptop' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(2);
+
+    await removeMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-phone' });
+
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+    const row = await db.get('select PeerId from Strand.MemberPeer');
+    expect(row?.PeerId).toBe('peer-laptop');
+  }, 30_000);
+
+  it('removing an already-absent binding is a quiet no-op (delete-if-present guard)', async () => {
+    const { db, founder } = await openStrand('c');
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-once' });
+
+    await removeMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-once' });
+    // A repeated (or restarted) cleanup must not throw — the mirror of
+    // registerMemberPeer's insert-if-absent.
+    await expect(
+      removeMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-once' }),
+    ).resolves.toBeUndefined();
+    // Never-registered is the same quiet no-op, on both branches.
+    await expect(
+      removeMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-never' }),
+    ).resolves.toBeUndefined();
+    await expect(
+      removeMemberPeer(db, { managerKeyPair: founder, memberKey: freshKeyPair().publicKeyB64, peerId: 'peer-never' }),
+    ).resolves.toBeUndefined();
+
     expect(await tableCount(db, 'MemberPeer')).toBe(0);
   }, 30_000);
 });
