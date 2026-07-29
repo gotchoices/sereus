@@ -2636,7 +2636,7 @@ export class CadreNode implements SAppIdLookup {
    * {@link ed25519KeyPairFromLibp2p} also exposes as the node's owner keypair,
    * so peer identity and owner key are one and the same. That key must be
    * enrolled in `OwnerKey` (e.g. via {@link ControlDatabase.ensureOwnerKey}
-   * at genesis) or the schema's `Strand.Authorized` constraint rejects the write.
+   * at genesis) or the schema's `Strand.AuthorizedInsert` constraint rejects the write.
    * Failing loudly here is intentional: a silently-unpublished strand would run
    * as a local-only island that no peer could ever discover or join.
    *
@@ -2671,7 +2671,7 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Publish an owner-signed `FormationInvite` (open-invitation token) to the
    * shared control database, so a later {@link formStrand} redemption can be
-   * validated against it (the consent branch of `Strand.Authorized`).
+   * validated against it (the consent branch of `Strand.AuthorizedInsert`).
    *
    * Counterpart to {@link createOpenInvitation}, which only mints the
    * out-of-band {@link OpenInvitation} envelope: persisting the matching

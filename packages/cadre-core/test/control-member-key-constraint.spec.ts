@@ -12,7 +12,7 @@ import { Database } from '@quereus/quereus';
  *
  * The `MemberKeyClosedOnly` predicate itself uses NO crypto, so this spec applies a
  * MINIMAL schema carrying only that predicate (the real Strand row also gates on the
- * `Authorized` `verify(digest(...))` branch, which cannot be satisfied without the
+ * `AuthorizedInsert` `verify(digest(...))` branch, which cannot be satisfied without the
  * crypto plugin) and exercises the truth table directly in the Quereus engine. The
  * `control-schema-drift` guard separately pins that this predicate text is byte-for-byte
  * what the real `CadreControl.Strand` table carries, so the two specs together cover

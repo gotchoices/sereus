@@ -86,7 +86,7 @@ export interface FormationUsageRecorder {
    * ATOMICALLY (single `FormationUsage` row → single-use enforced on the next redemption).
    * Optional: a recorder that only supports provision-then-record omits it, and the
    * manager falls back to its {@link StrandProvisioner}. Mirrors the create-strand-by-consent
-   * path the schema's `Strand.Authorized` `FormationUsage` branch authorizes. Returns the
+   * path the schema's `Strand.AuthorizedInsert` `FormationUsage` branch authorizes. Returns the
    * minted strand id plus its membership key (null for an open responder-provisioned strand).
    */
   provisionAndRecord?(

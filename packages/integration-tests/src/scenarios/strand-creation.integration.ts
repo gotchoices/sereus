@@ -34,7 +34,7 @@ describe('Strand Creation', () => {
     expect(strand.type).toBe('o');
 
     // Real control-DB read: the row really landed in Alice's CadreControl.Strand
-    // (createStrand inserts through the schema's Authorized constraint), rather
+    // (createStrand inserts through the schema's AuthorizedInsert constraint), rather
     // than asserting harness membership bookkeeping.
     await network.waitForControlSync(alice, 'Strand', 1);
     const aliceStrands = await alice.controlDatabase.queryStrands();

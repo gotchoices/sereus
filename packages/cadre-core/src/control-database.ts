@@ -603,7 +603,7 @@ export class ControlDatabase {
     const peerId = this.config.libp2pNode.peerId.toString();
     const stampId = generateStampId(peerId);
 
-    // Field order MUST match the schema's Strand `Authorized` verify:
+    // Field order MUST match the schema's Strand `AuthorizedInsert` verify:
     // Id, Type, MemberPrivateKey ('' when null), StampId.
     const message = buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, type, memberPrivateKey ?? '', stampId]);
     const signature = signMessage(message);
@@ -642,7 +642,7 @@ export class ControlDatabase {
     const peerId = this.config.libp2pNode.peerId.toString();
     const stampId = generateStampId(peerId);
 
-    // Field order MUST match the schema's ValidationKey `Authorized` verify: Key, StampId.
+    // Field order MUST match the schema's ValidationKey `AuthorizedInsert` verify: Key, StampId.
     const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stampId]);
     const signature = signMessage(message);
 
@@ -661,7 +661,7 @@ export class ControlDatabase {
    * The invite is the on-network record that later authorizes an
    * owner-signature-FREE `Strand` creation: an invited cadre peer redeems it
    * by inserting a matching `FormationUsage` row (see {@link redeemInvitation}),
-   * which satisfies the consent branch of `Strand.Authorized`.
+   * which satisfies the consent branch of `Strand.AuthorizedInsert`.
    *
    * Like {@link insertStrand}/{@link insertValidationKey}, the owner signs the
    * canonical row-bound authorization message (see {@link buildAuthorizationMessage})
@@ -752,12 +752,12 @@ export class ControlDatabase {
    * `FormationUsage` row **atomically, in one transaction**.
    *
    * The two CHECK constraints are mutually circular under immediate evaluation:
-   * `Strand.Authorized`'s consent branch requires the `FormationUsage` row, while
+   * `Strand.AuthorizedInsert`'s consent branch requires the `FormationUsage` row, while
    * `FormationUsage.StrandExists` requires the `Strand` row. Both CHECKs contain
    * subqueries, so Quereus auto-defers them to transaction commit — wrapping both
    * inserts in a single explicit `begin … commit` lets both deferred CHECKs see
    * both rows at commit. The strand is authorised WITHOUT an owner signature
-   * (the `FormationUsage` branch of `Strand.Authorized`) but still gets a fresh,
+   * (the `FormationUsage` branch of `Strand.AuthorizedInsert`) but still gets a fresh,
    * unique `StampId` column to satisfy the not-null/unique anti-replay column.
    *
    * `UseNumber` is computed as `max(UseNumber)+1` for the token (the `Monotonic`

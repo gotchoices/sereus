@@ -79,7 +79,7 @@ describe('Happy Path - Cadre bring-up & intra-cadre control records', () => {
     expect(strand.type).toBe('o');
 
     // Real control-DB read: the owner's CadreControl.Strand now holds the row
-    // (createStrand inserts it through the schema's Authorized constraint). This
+    // (createStrand inserts it through the schema's AuthorizedInsert constraint). This
     // replaces the old `strand.parties` (harness-stub) membership assertion.
     await network.waitForControlSync(alice, 'Strand', 1);
     const aliceStrands = await alice.controlDatabase.queryStrands();

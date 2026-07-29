@@ -629,7 +629,7 @@ export async function joinViaInvitation(
 /**
  * Demonstrate the `CadreControl` owner gate: attempt a `Strand` insert that
  * claims an owner it does not hold (a non-enrolled key + bogus signature) and
- * carries no consuming `FormationUsage` row. The `Strand.Authorized` constraint
+ * carries no consuming `FormationUsage` row. The `Strand.AuthorizedInsert` constraint
  * satisfies *neither* branch, so the write must be rejected at commit.
  *
  * Returns `{ rejected: true }` when the constraint correctly blocks the write
@@ -646,7 +646,7 @@ export async function attemptUnauthorizedStrandWrite(): Promise<OwnerGateProbe> 
 	// the `Strand` context is exactly `(OwnerKey, Signature)` and `StampId` is a
 	// real `not null unique` column supplied in `values`. Providing a fresh StampId
 	// keeps the not-null/anti-replay column satisfied so the ONLY failing condition
-	// is the `Authorized` check — no enrolled owner matches the bogus key and no
+	// is the `AuthorizedInsert` check — no enrolled owner matches the bogus key and no
 	// `FormationUsage` row consents — proving the rejection is the owner gate
 	// itself, not an incidental column/context error.
 	const stampId = `rbac-probe-stamp-${crypto.randomUUID()}`;

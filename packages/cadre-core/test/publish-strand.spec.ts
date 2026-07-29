@@ -89,7 +89,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
 
   it('rejects when the node is not an enrolled owner (constraint propagates)', async () => {
     // Self-signing key is present (past the "no signing key" guard), but it is
-    // not enrolled in OwnerKey, so the Strand.Authorized gate rejects the
+    // not enrolled in OwnerKey, so the Strand.AuthorizedInsert gate rejects the
     // insert and the rejection must surface (no silent local-only strand).
     node = await startSelfOwnerNode(false);
     const db = node.getControlDatabase()!;

@@ -20,10 +20,10 @@ import { ControlFormationUsageRecorder } from '../src/control-formation-recorder
  *     therefore FAILS against the pre-fix schema and PASSES after it, pinning the
  *     bug.
  *  2. Redemption: inserting the `Strand` row + its `FormationUsage` row in ONE
- *     transaction so the mutually-circular deferred CHECKs (`Strand.Authorized`'s
+ *     transaction so the mutually-circular deferred CHECKs (`Strand.AuthorizedInsert`'s
  *     consent branch ↔ `FormationUsage.StrandExists`) both see both rows at
  *     commit. The strand carries NO owner signature — it is authorised purely
- *     by the FormationUsage branch of `Strand.Authorized`.
+ *     by the FormationUsage branch of `Strand.AuthorizedInsert`.
  *  3. Rejection of redemptions against a non-existent or expired invite.
  *
  * Boots a real CadreNode (empty bootstrap, transaction profile — no network

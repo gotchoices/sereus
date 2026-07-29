@@ -23,7 +23,7 @@ import type {
 /**
  * Ed25519-sign the canonical authorization message bytes and return a base64url signature.
  *
- * The control schema's `Authorized` constraints bind the signature to a domain-tagged
+ * The control schema's authorization constraints bind the signature to a domain-tagged
  * field vector — ('CadreControl.<Table>', <action>, row fields...) built by
  * `buildAuthorizationMessage` in cadre-core — so an approval verifies only against the
  * one rule it was minted for. The signer receives the raw message bytes and signs them

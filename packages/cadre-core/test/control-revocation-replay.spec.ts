@@ -635,6 +635,11 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       'AuthorizedDelete',
     );
     expect(await strandRow(id)).toBeDefined();
+
+    // The owner branch does not care HOW the row was seated: the same signed-delete +
+    // tombstone shape removes a consent-formed strand as cleanly as an owner-seated one.
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
   }, 60_000);
 
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
