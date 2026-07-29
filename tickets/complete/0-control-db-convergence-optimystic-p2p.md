@@ -1,28 +1,60 @@
-description: Tests that check whether data written on one node reaches a second connected node still fail every time; the write half of the cause is fixed, but the read half is a defect in the underlying peer-to-peer networking library that cannot be fixed from this repo.
-blocked-reason: dependency (upstream ../optimystic read-side fix) — see "Update 2026-07-29"
-files:
-  - packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts
-  - packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts
-  - packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts
-  - packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts
-  - packages/integration-tests/src/scenarios/control-cohort-auto-convergence.integration.ts
-  - packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts
-  - packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts
-  - packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts
-  - packages/integration-tests/src/scenarios/websocket-chat.integration.ts
-  - packages/integration-tests/src/scenarios/convergence-stress.integration.ts
-  - packages/cadre-core/src/types.ts (DEFAULT_CLUSTER_SIZE, CadreNodeConfig.clusterSize)
-  - packages/integration-tests/src/harness/test-party.ts (clusterSize call site)
-  - packages/cadre-core/src/cadre-node.ts (clusterSize call site, control network)
-  - packages/cadre-core/src/strand-instance-manager.ts (clusterSize call site, strand networks)
-  - ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (admitMembership, lines 893-911 — emits low-confidence-downsize)
-  - ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (consensusConfig.clusterSize, line 649)
-  - ../optimystic/packages/db-core/src/cluster/structs.ts (allowUnvalidatedSmallCluster, line 135 — not plumbed)
-  - ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts
-  - ../optimystic/packages/db-core/src/transactor/network-transactor.ts
-  - docs/STATUS.md
-difficulty: hard
 ----
+description: Data written on one node never reached a second connected node, failing about eighteen tests. Four separate defects in the underlying peer-to-peer library, plus one configuration bug here, all had to be fixed; the integration suite now goes from eighteen failures to three unrelated ones.
+----
+
+# Complete: two-node control-DB convergence
+
+Resolved 2026-07-29. `control-db-two-node-convergence` converges in **1.3 s**, where it
+previously timed out at 30 s. The `packages/integration-tests` suite went from ~18 failures to
+**3 failed / 113 passed** (24 of 27 files green), and the three survivors are unrelated —
+filed as `bug-control-cohort-no-auto-dial` and `bug-strand-three-party-replication`.
+
+## What was actually wrong — five defects, found one behind the other
+
+| # | Defect | Where | Fix |
+|---|--------|-------|-----|
+| 1 | `clusterSize: 3` hardcoded while real cadres run 1–2 nodes, so members refused to vote on writes (`membership-not-admitted`) | this repo | `bug-cluster-size-exceeds-cadre-size` |
+| 2 | `selectQuorumRev`'s absolute `Math.max(2, …)` floor made a revision held by exactly one peer unselectable at any cluster size; its lone-responder fallback let a reader corroborate its own stale revision | optimystic | `50af693` |
+| 3 | A member could commit revision N holding no base revision — `applyTransform` returned undefined so nothing materialized, but `setLatest` advanced anyway, leaving the block unreadable, unservable, and poisoned against later writes | optimystic | `d6a22d2` |
+| 4 | `reconcileBlock` declined at *two* gates: it never passed `corroboratorCapacity` to `selectQuorumRev` at all, and `selectQuorumBlock`'s content gate stayed on the strict floor | optimystic | `07cb230` |
+| 5 | A node with no local metadata could never acquire a block by reading, even having just established which revision the cohort held — `getBlock` returned before `ensureRevision`, and restore is only reachable from there | optimystic | `559df6a` |
+
+Defect 5 was the one that mattered downstream: the stranded block was the **collection header**,
+so the reader could not open the collection at all — and `Collection.createOrOpen` treats an
+unfetchable header as "does not exist" and silently invents an empty collection, which is why
+this presented as "no members" rather than an error.
+
+## Two wrong diagnoses on the way, both recorded in the history below
+
+`txn-perf-authoritative-notfound` and, later, read-repair revision selection were each named as
+the root cause with confidence and each was wrong. Both were derailed by the same artifact:
+`cluster-fetch:synced` was logged **unconditionally**, whether or not anything was restored, so
+222 lines that read as successful syncs were noise. That log line now reports the outcome
+(`cluster-fetch:not-restored` when nothing moved), which is what finally made the real fault
+legible in one grep.
+
+Two methodology notes worth keeping: `packages/integration-tests` consumes `cadre-core` from
+`dist/`, so two early experiments silently tested unmodified code — now guarded by
+`debt-integration-tests-detect-stale-build`. And `quorum-restore.ts` contained a literal NUL
+byte, so git classified it as binary and showed no diff or blame across two prior fixes to that
+same file.
+
+## Left open upstream
+
+Filed in `../optimystic`, none blocking this repo:
+`clustersize-conflates-replication-factor-and-admission-yardstick`,
+`collection-open-silently-invents-empty-collection`,
+`feat-inbound-stream-authorization-hook` (which unblocks
+`control-repo-protocol-stream-authz-optimystic` here).
+
+Also unresolved, and worth understanding: FRET reported `fretCohort=1` while `connected=1`,
+which is the race that made the creating revision commit solo in the first place. The fixes make
+that race harmless rather than preventing it.
+
+---
+
+# Original investigation record
+
 
 **Category (b): dependency outside this repo.** The failure originates entirely in the
 linked sibling workspace `../optimystic` (the peer-to-peer database substrate), not in
