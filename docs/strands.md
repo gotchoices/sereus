@@ -201,8 +201,14 @@ Membership removal is governed by the same signed-approval discipline as admissi
   manager seat.
 - **Clearing the removed member's device records is a separate step, not a cascade.**
   Removing a member leaves behind the records binding its devices to the strand; a manager
-  clears each one with its own signed removal. Anything reading those device records must
-  check membership separately rather than treating a device record as proof of it.
+  lists the departed member's devices and clears each one with its own signed removal.
+  Anything reading those device records must check membership separately rather than
+  treating a device record as proof of it.
+- **A device record can only be added or deleted, never edited.** Every field of the record
+  is part of its identity, so re-binding is a delete plus a fresh add. Allowing an edit
+  would let any member re-point someone else's device record at its own key — clearing a
+  record it has no authority to delete — since an edit is only ever checked against the
+  values being written, not the ones being replaced.
 - **The last member can never be removed.** A member-count floor mirrors the last-manager
   floor above, with the same local-count caveat (see known gaps below).
 - **Revocation is forward-looking only.** A revoked member keeps whatever strand data its

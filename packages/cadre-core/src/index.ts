@@ -114,6 +114,7 @@ export {
   revokeMember,
   leaveStrand,
   registerMemberPeer,
+  listMemberPeers,
   removeMemberPeer,
   addManager,
   removeManager,

@@ -654,11 +654,11 @@ export interface RegisterMemberPeerParams {
  * same `MemberKey`.
  *
  * Peer DELETION is signature-checked too, not rejected outright: `Authorized` carries an
- * explicit `on insert, update, delete` mask and coalesces `new`/`old`, so a delete verifies
- * against the member key the row names. `MemberExists` is insert/update only (a delete
- * leaves no row image to validate), so it neither blocks nor cascades. Both removal
- * paths — the member clearing its own binding and a manager clearing someone else's —
- * live in {@link removeMemberPeer}.
+ * explicit `on insert, delete` mask and coalesces `new`/`old`, so a delete verifies against
+ * the member key the row names. `MemberExists` is insert-only (a delete leaves no row image
+ * to validate), so it neither blocks nor cascades. Both removal paths — the member clearing
+ * its own binding and a manager clearing someone else's — live in {@link removeMemberPeer}.
+ * UPDATE is refused outright by `NoUpdate`: a re-binding is a remove plus a fresh register.
  *
  * @param db - The closed strand's database (the member already exists).
  * @param params - The member's own keypair and the peer id to bind.
@@ -686,42 +686,73 @@ export async function registerMemberPeer(db: Database, params: RegisterMemberPee
 }
 
 /**
- * True iff a `MemberPeer` row already exists for this `(MemberKey, PeerId)`.
+ * Yield every `PeerId` bound to `memberKey`, re-comparing the member key in JavaScript.
  *
  * Deliberately does NOT filter on the full composite primary key. `MemberPeer`'s PK
  * is `(MemberKey, PeerId)`, so a `where MemberKey = ? and PeerId = ?` predicate puts
  * an equality on BOTH key columns — which the optimystic virtual-table module reports
  * as fully handled and serves via a single-key point lookup (one `find` descent), with
  * the SQL engine adding no filter of its own. On a networked strand that descent is not
- * reliable: a miss returns zero rows for a row that provably exists, the guard answers
- * `false`, and `registerMemberPeer` re-inserts a duplicate.
+ * reliable: a miss returns zero rows for a row that provably exists.
  *
  * Filtering on only the LEADING key column is a partial PK match, which the same module
  * explicitly declines to handle — it falls through to a table scan and the SQL engine
- * applies `MemberKey = ?` itself. No seek is involved, so no seek can miss. Both columns
- * are then re-compared here in JavaScript, so correctness depends only on the scan
- * returning a SUPERSET of the matching rows — the weakest possible assumption about the
- * storage layer. The `where` clause only trims what crosses into JS — it is NOT pushed
- * down (see the cost note below) — so it is not a correctness dependency: a dropped or
- * mis-applied predicate cannot produce a false positive (e.g. a different member that
- * happens to have registered the same `PeerId`).
+ * applies `MemberKey = ?` itself. No seek is involved, so no seek can miss. The member key
+ * is then re-compared here in JavaScript, so correctness depends only on the scan returning
+ * a SUPERSET of the matching rows — the weakest possible assumption about the storage layer.
+ * The `where` clause only trims what crosses into JS — it is NOT pushed down (see the cost
+ * note below) — so it is not a correctness dependency: a dropped or mis-applied predicate
+ * cannot produce a row attributed to the wrong member.
  */
-async function memberPeerExists(db: Database, memberKey: string, peerId: string): Promise<boolean> {
+async function* scanMemberPeerIds(db: Database, memberKey: string): AsyncGenerator<string> {
   // NOTE: because the predicate is not pushed down, the storage layer walks the WHOLE
-  // MemberPeer table (every member's rows) per registerMemberPeer call and the SQL engine
-  // filters. Fine at strand scale; if MemberPeer ever grows large, the fix is a reliable
-  // composite-key seek, not a bigger scan.
+  // MemberPeer table (every member's rows) per call and the SQL engine filters. Fine at
+  // strand scale; if MemberPeer ever grows large, the fix is a reliable composite-key
+  // seek, not a bigger scan.
   // NOTE: if a secondary index on MemberPeer.MemberKey is ever added, this query stops
   // being a scan and becomes an index seek — re-introducing the seek dependency this
   // shape exists to remove.
-  // NOTE: check-then-insert is not atomic. Two nodes registering the same
-  // (MemberKey, PeerId) concurrently can both observe "absent"; the primary key is the
-  // real backstop. This guard is for the sequential restart / re-register path.
   for await (const row of db.eval(
     'select MemberKey, PeerId from Strand.MemberPeer where MemberKey = ?',
     [memberKey],
   )) {
-    if (row.MemberKey === memberKey && row.PeerId === peerId) {
+    if (row.MemberKey === memberKey) {
+      yield row.PeerId as string;
+    }
+  }
+}
+
+/**
+ * Every `PeerId` currently bound to `memberKey`, in storage order.
+ *
+ * The enumeration side of {@link removeMemberPeer}: a manager cleaning up after a
+ * revocation knows only the departed member's key, never which devices it registered, so
+ * cleanup is `listMemberPeers` then one `removeMemberPeer` per id. Reads only — the rows
+ * it returns may name a `MemberKey` with no `Member` row (see the `MemberPeer` table NOTE
+ * in the schema), so this is NOT a membership test.
+ *
+ * @param db - The closed strand's database.
+ * @param memberKey - The `MemberPeer.MemberKey` to enumerate.
+ * @returns The bound peer ids, empty if the member has none.
+ */
+export async function listMemberPeers(db: Database, memberKey: string): Promise<string[]> {
+  const peerIds: string[] = [];
+  for await (const peerId of scanMemberPeerIds(db, memberKey)) {
+    peerIds.push(peerId);
+  }
+  return peerIds;
+}
+
+/**
+ * True iff a `MemberPeer` row already exists for this `(MemberKey, PeerId)`.
+ *
+ * NOTE: check-then-write is not atomic. Two nodes registering the same
+ * (MemberKey, PeerId) concurrently can both observe "absent"; the primary key is the
+ * real backstop. This guard is for the sequential restart / re-register path.
+ */
+async function memberPeerExists(db: Database, memberKey: string, peerId: string): Promise<boolean> {
+  for await (const found of scanMemberPeerIds(db, memberKey)) {
+    if (found === peerId) {
       return true;
     }
   }
@@ -734,7 +765,14 @@ export interface RemoveOwnPeerParams {
    * The member's OWN strand keypair. Its `publicKeyB64` is the `MemberPeer.MemberKey`
    * of the row being deleted, and it signs the same untagged `MemberKey || '|' || PeerId`
    * payload registration signs — the self branch of `MemberPeer.Authorized` verifies
-   * against the row's own member key, so only that member can clear its own bindings.
+   * against the row's own member key, so no OTHER member's row is reachable this way.
+   *
+   * Because insert and delete share that payload, a captured registration approval also
+   * authorizes the matching delete, and constraint context travels with the write out to
+   * the strand's peers. The exposure is availability only (the binding is re-registerable,
+   * and no other member's row is reachable); domain/action tagging for this branch is
+   * tracked by the `bug-strand-approval-domain-separation` ticket alongside the schema's
+   * other untagged approvals.
    */
   memberKeyPair: Ed25519KeyPair;
   /** The `PeerId` of the binding to delete. */
@@ -768,8 +806,9 @@ export type RemoveMemberPeerParams = RemoveOwnPeerParams | RemoveMemberPeerByMan
  * clearing another member's.
  *
  * `MemberPeer` rows do NOT cascade when the member is revoked (`MemberExists` runs on
- * insert/update only, and nothing deletes them), so a removed member's peer bindings
- * survive as orphans. Only that member can sign the self branch, and a member being
+ * insert only, and nothing deletes them), so a removed member's peer bindings survive
+ * as orphans — enumerate them with {@link listMemberPeers}, which is how a manager
+ * discovers what to clear. Only that member can sign the self branch, and a member being
  * removed against its will has no reason to cooperate — hence the manager branch, which
  * is the cleanup path after a revocation.
  *

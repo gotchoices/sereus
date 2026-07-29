@@ -193,20 +193,34 @@ export const STRAND_SCHEMA = `    table Header (
     -- A member-associated peer (node)
     --
     -- NOTE: a MemberPeer row can OUTLIVE the Member row it names. MemberExists runs on
-    -- insert/update only, and nothing cascades a Member delete, so revoking a member leaves
-    -- its peer bindings behind as orphans until a manager clears them (removeMemberPeer).
+    -- insert only, and nothing cascades a Member delete, so revoking a member leaves its
+    -- peer bindings behind as orphans until a manager clears them (removeMemberPeer).
     -- Any consumer that treats a MemberPeer row as evidence of membership MUST join to
     -- Member rather than trusting the row alone.
     table MemberPeer (
         MemberKey text,
         PeerId text,
         primary key (MemberKey, PeerId),
+        -- Binding is insert + delete only, as on Member and Manager; a re-binding is a
+        -- remove plus a fresh register. Every column IS the primary key, so an update is
+        -- never an edit — and Authorized reads the NEW image, so an update would let ANY
+        -- member re-point another member's row at its OWN key, signing only over its own
+        -- new values, and thereby clear a binding it has no signature to delete.
+        constraint NoUpdate check on update (false),
         -- Mask is explicit: a bare check defaults to insert|update and silently never runs on
-        -- DELETE. Stated rather than inherited — a delete removes no row image to validate.
-        constraint MemberExists check on insert, update (exists (select 1 from Member M where M.Key = new.MemberKey)),
-        constraint Authorized check on insert, update, delete (
+        -- DELETE. Insert is the only reachable case — update is forbidden above, and a delete
+        -- leaves no new row image to validate.
+        constraint MemberExists check on insert (exists (select 1 from Member M where M.Key = new.MemberKey)),
+        constraint Authorized check on insert, delete (
             -- The member itself signs the binding, verified against the MemberKey the row
             -- names — so only that member registers (or removes) its own peers.
+            --
+            -- NOTE: this branch signs the SAME payload for insert and delete, so a captured
+            -- registration approval also authorizes the matching delete. Context values travel
+            -- with the write out to the strand's peers, so anyone who saw a member register a
+            -- peer can unregister it. Availability only — the binding is re-registerable and
+            -- no other member's row is reachable. Tracked with the schema's other untagged
+            -- approvals by the bug-strand-approval-domain-separation ticket.
             verify(
                 digest(coalesce(new.MemberKey, old.MemberKey) || '|' || coalesce(new.PeerId, old.PeerId)),
                 context.Signature,
@@ -217,11 +231,11 @@ export const STRAND_SCHEMA = `    table Header (
                 -- or a manager clears ANOTHER member's binding — the cleanup path after a
                 -- revocation, which the departing member has no reason to cooperate with.
                 -- Gated to DELETE and bound to a remove-tagged digest over the exact row, so a
-                -- captured registration signature can never be replayed as a removal. The
-                -- authorizer is read from the PRE-transaction snapshot (committed.Manager) for
-                -- the same reason Member.Authorized does: this check now defers to commit, by
-                -- which point a manager seated in the SAME transaction would otherwise be able
-                -- to authorize its own cleanup.
+                -- captured registration signature can never be replayed as a removal on THIS
+                -- branch. The authorizer is read from the PRE-transaction snapshot
+                -- (committed.Manager) for the same reason Member.Authorized does: this check
+                -- now defers to commit, by which point a manager seated in the SAME transaction
+                -- would otherwise be able to authorize its own cleanup.
                 or (new.MemberKey is null and exists (
                     select 1 from committed.Manager A
                         where A.MemberKey = context.ManagerKey

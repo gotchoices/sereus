@@ -11,6 +11,7 @@ import {
   addMemberByManager,
   revokeMember,
   registerMemberPeer,
+  listMemberPeers,
   removeMemberPeer,
   signStrandMemberPeerRemoval,
   addManager,
@@ -348,8 +349,9 @@ describe('removeMemberPeer', () => {
     // verifies the remove-TAGGED digest instead, so the payloads differ and it fails.
     //
     // Note this narrowing applies to the manager branch only: on the self branch the
-    // registration and removal payloads are deliberately identical, which is harmless —
-    // it is the same principal and its own row either way.
+    // registration and removal payloads are still identical, so a captured registration
+    // approval also authorizes that same row's delete — availability only, since no other
+    // member's row is reachable. Tracked by `bug-strand-approval-domain-separation`.
     const registrationShaped = signStrandPayload(`${member.publicKeyB64}|peer-replay`, founder.privateKeyB64);
     await expect(
       db.exec(
@@ -405,6 +407,113 @@ describe('removeMemberPeer', () => {
     ).resolves.toBeUndefined();
 
     expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+
+  it('a member cannot hijack another member\'s binding via UPDATE (NoUpdate)', async () => {
+    const { db, founder } = await openStrand('c');
+    const victim = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: victim.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: victim, peerId: 'peer-target' });
+
+    // Without NoUpdate this SUCCEEDED: Authorized reads the NEW image, so an attacker
+    // re-points the victim's row at its OWN key and signs only over its own new values —
+    // clearing a binding it holds no signature to delete. The victim never consented.
+    const stolen = signStrandPayload(`${founder.publicKeyB64}|peer-target`, founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `update Strand.MemberPeer
+           with context Signature = ?, ManagerKey = null, ManagerSignature = null
+           set MemberKey = ?
+           where MemberKey = ? and PeerId = ?`,
+        [stolen, founder.publicKeyB64, victim.publicKeyB64, 'peer-target'],
+      ),
+    ).rejects.toThrow(/NoUpdate/);
+
+    const row = await db.get('select MemberKey from Strand.MemberPeer');
+    expect(row?.MemberKey).toBe(victim.publicKeyB64);
+  }, 30_000);
+
+  it('a manager cannot reach the removal branch through an UPDATE either', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-upd' });
+
+    // The manager branch is gated `new.MemberKey is null`, which an update never satisfies —
+    // but NoUpdate is what makes that unreachable rather than merely unsatisfied.
+    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-upd', founder.privateKeyB64);
+    await expect(
+      db.exec(
+        `update Strand.MemberPeer
+           with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+           set PeerId = ?
+           where MemberKey = ? and PeerId = ?`,
+        [founder.publicKeyB64, removeTagged, 'peer-upd-renamed', member.publicKeyB64, 'peer-upd'],
+      ),
+    ).rejects.toThrow(/NoUpdate/);
+
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+  }, 30_000);
+
+  it('a manager seated in the SAME transaction cannot authorize its own cleanup', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-samet' });
+    const climber = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: climber.publicKeyB64 });
+
+    // The manager branch reads `committed.Manager` — the PRE-transaction snapshot. Seating
+    // the climber and spending its authority in ONE transaction must not pass, or the
+    // deferred check (it carries a subquery) would see its own freshly inserted seat.
+    const seatSignature = signStrandPayload(`${climber.publicKeyB64}|1`, founder.privateKeyB64);
+    const removeTagged = signStrandMemberPeerRemoval(member.publicKeyB64, 'peer-samet', climber.privateKeyB64);
+    await db.exec('begin');
+    try {
+      await db.exec(
+        `insert into Strand.Manager (MemberKey, Generation)
+           with context ManagerKey = ?, Signature = ?
+           values (?, 1)`,
+        [founder.publicKeyB64, seatSignature, climber.publicKeyB64],
+      );
+      await db.exec(
+        `delete from Strand.MemberPeer
+           with context Signature = null, ManagerKey = ?, ManagerSignature = ?
+           where MemberKey = ? and PeerId = ?`,
+        [climber.publicKeyB64, removeTagged, member.publicKeyB64, 'peer-samet'],
+      );
+      await expect(db.exec('commit')).rejects.toThrow(/Authorized/);
+    } finally {
+      await db.exec('rollback').catch(() => undefined);
+    }
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // Positive control: the SAME seat and the SAME removal signature, only now the seat
+    // is committed first — so the rejection above was the same-transaction ordering, not
+    // a malformed seat or a bad removal payload.
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: climber.publicKeyB64 });
+    await removeMemberPeer(db, { managerKeyPair: climber, memberKey: member.publicKeyB64, peerId: 'peer-samet' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+  }, 30_000);
+
+  it('listMemberPeers enumerates exactly one member\'s bindings', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-b' });
+    await registerMemberPeer(db, { memberKeyPair: member, peerId: 'peer-a' });
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'peer-other' });
+
+    expect((await listMemberPeers(db, member.publicKeyB64)).sort()).toEqual(['peer-a', 'peer-b']);
+    expect(await listMemberPeers(db, freshKeyPair().publicKeyB64)).toEqual([]);
+
+    // The manager cleanup loop this exists to drive: enumerate, then clear each.
+    for (const peerId of await listMemberPeers(db, member.publicKeyB64)) {
+      await removeMemberPeer(db, { managerKeyPair: founder, memberKey: member.publicKeyB64, peerId });
+    }
+    expect(await listMemberPeers(db, member.publicKeyB64)).toEqual([]);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1); // the founder's own is untouched
   }, 30_000);
 });
 
