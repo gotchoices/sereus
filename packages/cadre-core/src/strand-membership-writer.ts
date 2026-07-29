@@ -542,6 +542,147 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
   log('Consumed invite %s -> member %s', inviteKey, memberKey);
 }
 
+/**
+ * Every value of `InviteKey` in one of the two invite-marker tables, as a `Set`.
+ *
+ * Unfiltered scan + JavaScript comparison, deliberately: `ConsumedInvite` and
+ * `CancelledInvite` each have the single column `InviteKey` as their primary key, so
+ * ANY where-equality on it is a FULL-PK predicate — which the optimystic virtual-table
+ * module serves via a single-key point lookup that can MISS on a networked strand (the
+ * argument {@link scanMemberPeers} makes in full). Reading the whole column and
+ * comparing in JS depends only on the scan returning a SUPERSET of the live rows.
+ *
+ * The table name is a fixed literal supplied by this module (never user input), so the
+ * interpolation is not an injection surface — same as {@link strandTableCount}.
+ */
+async function scanInviteKeys(db: Database, table: 'ConsumedInvite' | 'CancelledInvite'): Promise<Set<string>> {
+  const keys = new Set<string>();
+  for await (const row of db.eval(`select InviteKey from Strand.${table}`)) {
+    keys.add(row.InviteKey as string);
+  }
+  return keys;
+}
+
+/** Parameters for {@link cancelInvite}. */
+export interface CancelInviteParams {
+  /**
+   * The cancelling manager's strand keypair. Its `publicKeyB64` must be a
+   * PRE-EXISTING `Strand.Manager` row — `CancelledInvite.Authorized` reads
+   * `committed.Manager`, so a manager seated in the SAME transaction cannot cancel.
+   */
+  managerKeyPair: Ed25519KeyPair;
+  /** The `Invite.Key` to kill. */
+  inviteKey: string;
+}
+
+/**
+ * Cancel an outstanding invitation, permanently: it may never be consumed.
+ *
+ * Files a `Strand.CancelledInvite` tombstone carrying a manager signature over
+ * `digest('Strand.CancelledInvite', 'cancel', InviteKey)`. The digest binds the exact
+ * invite key, so an approval minted for one invitation cannot cancel another.
+ *
+ * One row, one statement — no transaction needed. `CancelledInvite.Authorized` is a
+ * deferred (subquery-bearing) check, so it fires at this statement's own auto-commit.
+ *
+ * Insert-if-absent, matching {@link registerMemberPeer}'s and {@link revokeMember}'s
+ * restart-safe shape: a repeat cancellation logs and returns rather than throwing on the
+ * primary key. (Check-then-write is not atomic; the primary key is the real backstop —
+ * the guard is for the sequential repeat/restart path.)
+ *
+ * Cancellation is what makes removal a re-entry gate: it is the `ConsumedInvite` insert
+ * that `NotCancelled` blocks, and `Member.Authorized`'s invite branch needs a
+ * same-transaction FRESH `ConsumedInvite` row, so a cancelled invitation rolls the whole
+ * join back. Un-cancelling is impossible (`CancelledInvite.Immutable`) — to re-invite a
+ * party, {@link issueInvite} a fresh invitation.
+ *
+ * Enumerate what there is to cancel with {@link listOutstandingInvites}: an invitation
+ * names no invitee, so the strand cannot tell a manager WHICH invitations a departing
+ * member holds. Invitee binding is tracked as `feat-strand-invitee-bound-invites`.
+ *
+ * @param db - The closed strand's database.
+ * @param params - The cancelling manager's keypair and the invite key to kill.
+ * @throws If `CancelledInvite.Authorized` rejects (a non-manager, a manager seated in
+ *   this transaction, or an approval minted for a different invite key) or `OnlyClosed`
+ *   rejects (an open strand); the insert rolls back, leaving no tombstone.
+ */
+export async function cancelInvite(db: Database, params: CancelInviteParams): Promise<void> {
+  const { managerKeyPair, inviteKey } = params;
+
+  if ((await scanInviteKeys(db, 'CancelledInvite')).has(inviteKey)) {
+    log('Invite %s already cancelled; skipping', inviteKey);
+    return;
+  }
+
+  const signature = signStrandApproval(
+    ['Strand.CancelledInvite', 'cancel', inviteKey],
+    managerKeyPair.privateKeyB64,
+  );
+  await db.exec(
+    `insert into Strand.CancelledInvite (InviteKey)
+       with context ManagerKey = ?, ManagerSignature = ?
+       values (?)`,
+    [managerKeyPair.publicKeyB64, signature, inviteKey],
+  );
+  log('Cancelled invite %s by manager %s', inviteKey, managerKeyPair.publicKeyB64);
+}
+
+/** One redeemable invitation, as reported by {@link listOutstandingInvites}. */
+export interface OutstandingInvite {
+  /** The `Invite.Key` (invite public key, base64url). */
+  inviteKey: string;
+  /** The canonical-datetime expiry string, or `null` for never-expires. */
+  expiration: string | null;
+}
+
+/**
+ * The invitations that are still redeemable: neither consumed, nor cancelled, nor
+ * expired at `nowMs`.
+ *
+ * `Strand.Invite` is insert-only and carries no state column, so "outstanding" is not a
+ * property of the row — it is the `Invite` set minus the `ConsumedInvite` keys, minus
+ * the `CancelledInvite` keys, minus anything whose `Expiration` has passed. All three
+ * exclusions mirror gates a consume would hit anyway (`ConsumedInvite`'s primary key,
+ * `NotCancelled`, `NotExpired`).
+ *
+ * Reads via unfiltered scans and compares in JavaScript — see {@link scanInviteKeys} for
+ * why a full-PK where-equality is not reliable on a networked strand.
+ *
+ * Expiry is compared as `expiration > canonicalDatetime(nowMs)`: the same transform
+ * {@link issueInvite} uses to STORE `Invite.Expiration`, so the string comparison orders
+ * chronologically, and the same strict `>` the on-engine `NotExpired` gate uses (expiry
+ * is exclusive — an invitation is dead at its expiry instant, not after it).
+ *
+ * This is the manager's enumeration side of {@link cancelInvite}, and the "door is open"
+ * pre-flight behind `StrandMemberVerifier.isAuthorizedToJoin`.
+ *
+ * @param db - The closed strand's database.
+ * @param nowMs - The instant (epoch ms) to compare expiries against; defaults to
+ *   `Date.now()`. Tests pin it so the comparison is deterministic, mirroring
+ *   {@link consumeInvite}'s `nowMs` convention.
+ * @returns The redeemable invitations, in storage order; empty if none.
+ */
+export async function listOutstandingInvites(db: Database, nowMs?: number): Promise<OutstandingInvite[]> {
+  // Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.
+  const nowCanonical = await canonicalDatetime(db, nowMs ?? Date.now());
+  const consumed = await scanInviteKeys(db, 'ConsumedInvite');
+  const cancelled = await scanInviteKeys(db, 'CancelledInvite');
+
+  const outstanding: OutstandingInvite[] = [];
+  for await (const row of db.eval('select Key, Expiration from Strand.Invite')) {
+    const inviteKey = row.Key as string;
+    const expiration = (row.Expiration as string | null) ?? null;
+    if (consumed.has(inviteKey) || cancelled.has(inviteKey)) {
+      continue;
+    }
+    if (expiration != null && expiration <= nowCanonical) {
+      continue;
+    }
+    outstanding.push({ inviteKey, expiration });
+  }
+  return outstanding;
+}
+
 // ── Member admission + removal (manager-admit, revoke, leave) ─────────────────
 
 /**
@@ -643,12 +784,14 @@ export interface RevokeMemberParams {
  * same-transaction FRESH consumption. Re-admission normally takes a fresh
  * manager action ({@link addMemberByManager} or a new invite).
  *
- * It does NOT, however, neutralize an UNSPENT invite the revoked party holds:
- * `Strand.Invite` has no deactivation path (only an optional `Expiration`), so
- * any unexpired invite whose private key it kept still consumes into a fresh
- * `ConsumedInvite` and re-seats it. Revocation is therefore not a re-entry gate
- * on its own — tracked as `bug-strand-invite-no-revocation`, pinned by
- * `test/strand-member-revocation.spec.ts`.
+ * An UNSPENT invite the revoked party holds is killed EXPLICITLY, by the manager
+ * calling {@link cancelInvite} on it (enumerate the candidates with
+ * {@link listOutstandingInvites}); a cancelled invitation can never be consumed,
+ * and cancellation is permanent. This removal does NOT cascade into cancellation:
+ * an invitation names no invitee, so there is nothing to match the removed member
+ * against — the strand cannot tell which invitations were meant for it, or whether
+ * it holds any. Binding an invitation to its invitee is tracked as
+ * `feat-strand-invitee-bound-invites`.
  *
  * A manager must resign its `Manager` row before (or in the same transaction
  * as) losing membership — `Member.NotAManager` rejects un-membering a key that

@@ -7,8 +7,8 @@ import {
   verifyStrandPayload,
   consumeInvite,
   addMemberByManager,
+  listOutstandingInvites,
 } from './strand-membership-writer.js';
-import { canonicalDatetime } from './canonical-datetime.js';
 
 const log = debug('sereus:cadre:strand-member-registry');
 
@@ -80,11 +80,11 @@ export class StrandMemberVerifier implements MemberVerifier {
    * single-use, and cryptographic gates are all enforced by the deferred
    * `Strand.*` constraints when the member is actually written.
    *
-   * Expired invites are filtered out so this pre-flight matches the on-engine
-   * `ConsumedInvite.NotExpired` gate — `Now` is canonicalised the same way the
-   * writer canonicalises it, so `Expiration > ?` compares like-for-like canonical
-   * strings. A member that already holds a `ConsumedInvite` short-circuits above,
-   * regardless of any invite's expiry.
+   * "Outstanding" is {@link listOutstandingInvites}: an `Invite` that is neither
+   * already consumed, nor cancelled by a manager, nor expired. All three exclusions
+   * mirror gates the actual write would hit (`ConsumedInvite`'s primary key,
+   * `NotCancelled`, `NotExpired`), so this pre-flight does not report a door the
+   * constraints will slam. A raw `Invite` count would over-report on all three.
    */
   async isAuthorizedToJoin(_strandId: string, memberKey: string): Promise<boolean> {
     const consumed = await scalarCount(
@@ -93,15 +93,15 @@ export class StrandMemberVerifier implements MemberVerifier {
       [memberKey],
     );
     if (consumed > 0) {
+      // NOTE: a REVOKED member still bears its stale ConsumedInvite row (the table is
+      // insert-only, and revocation does not delete it), so this short-circuit says
+      // "authorized" for a party that can no longer actually join. Harmless because the
+      // on-engine constraints are the real gate — Member.Authorized's invite branch
+      // requires a FRESH consumption row, which a stale one is not — and this pre-flight
+      // only decides whether attempting the write is worthwhile.
       return true;
     }
-    const nowCanonical = await canonicalDatetime(this.db, Date.now());
-    const invites = await scalarCount(
-      this.db,
-      'select count(1) as c from Strand.Invite where Expiration is null or Expiration > ?',
-      [nowCanonical],
-    );
-    return invites > 0;
+    return (await listOutstandingInvites(this.db)).length > 0;
   }
 }
 
