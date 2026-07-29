@@ -4,7 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import {
   MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith,
-  type PeerRow
+  type Owner, type PeerRow
 } from './membership-gate-helpers.js';
 
 /**
@@ -13,7 +13,9 @@ import {
  * `authorizeInboundStream` on the control node, gating the four Optimystic
  * control-DB protocols) and `refreshAuthorizedControlPeers` (the out-of-band
  * snapshot refresh that keeps its materialized authorized set current without
- * a live control-DB read on the stream path). The fail-open connection layer
+ * a live control-DB read on the stream path), plus its public face
+ * `refreshMembershipGate` — the obligation a caller that writes a `CadrePeer`
+ * row below the membership wrappers takes on. The fail-open connection layer
  * is covered by `membership-connection-gater.spec.ts`; the row builders and
  * node injector both suites share live in `membership-gate-helpers.ts`. The
  * wire-level effect (a HELD connection whose repo stream is refused) is proven
@@ -204,5 +206,66 @@ describe('CadreNode.refreshAuthorizedControlPeers', () => {
     await refresh(node);
 
     expect(snapshot(node).size).toBe(0);
+  });
+});
+
+describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', () => {
+  /** Anchored node holding one member, snapshot materialized; `members` stays writable. */
+  async function nodeWithMutableRows(): Promise<{ node: CadreNode; owner: Owner; members: PeerRow[] }> {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    const members = [vouchedRow(MEMBER, owner)];
+    inject(node, { members, anchor: await anchorWith('p', owner.publicKey) });
+    await refresh(node);
+    return { node, owner, members };
+  }
+
+  it('admits a peer whose row was written BELOW the membership wrappers — denied until it is called', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const LATE = 'peer-late';
+
+    // A write straight through `getSeedBootstrapService().insertSelfPeerRecord`:
+    // the row is in the control DB, but no wrapper re-materialized the snapshot.
+    members.push(vouchedRow(LATE, owner));
+    expect(authorize(node, LATE)).toBe(false);
+
+    await node.refreshMembershipGate();
+
+    expect(authorize(node, LATE)).toBe(true);
+    expect(authorize(node, MEMBER)).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
+  });
+
+  it('is idempotent and never rejects, even when the control-DB read blows up', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    members.push(vouchedRow('peer-late', owner));
+
+    await node.refreshMembershipGate();
+    await node.refreshMembershipGate();
+    expect([...snapshot(node)].sort()).toEqual([MEMBER, 'peer-late'].sort());
+
+    const db = (node as unknown as { controlDatabase: { queryCadrePeers: () => Promise<PeerRow[]> } }).controlDatabase;
+    db.queryCadrePeers = async () => { throw new Error('control DB read failed'); };
+    await expect(node.refreshMembershipGate()).resolves.toBeUndefined();
+    expect(authorize(node, 'peer-late')).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
+  });
+
+  it('addPhoneWithRelay refreshes the gate for the phone it just authorized', async () => {
+    // The service inserts the phone's `CadrePeer` row inside its own call, so the
+    // node wrapper — not the caller — owes the refresh.
+    const { node, owner, members } = await nodeWithMutableRows();
+    const PHONE = 'peer-phone';
+    (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+      addPhoneWithRelay: async (phonePeerId: string) => {
+        members.push(vouchedRow(phonePeerId, owner));
+        return { seed: {}, encodedSeed: '' };
+      }
+    };
+
+    await node.addPhoneWithRelay(PHONE);
+
+    expect(authorize(node, PHONE)).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
   });
 });

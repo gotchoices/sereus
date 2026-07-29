@@ -930,6 +930,15 @@ export class CadreNode implements SAppIdLookup {
    * deadlock into mutual denial. With a sync predicate the upstream deadline
    * (`authorizeInboundStreamTimeoutMs`) never trips, so it stays at its
    * default.
+   *
+   * NOTE: the snapshot keys on PEER ID, so a node with no persistent identity
+   * key never lands a `CadrePeer` row ({@link registerSelf} skips) and its
+   * siblings deny its control-DB streams once their own snapshot is non-empty —
+   * owner status is a KEY, not a peer id, so being the owner does not exempt it.
+   * Harmless today (a real deployment persists its identity; the ephemeral-owner
+   * case appears only in tests, which configure the owner as bootstrap infra —
+   * `push-wake-e2e.integration.ts` design note 3). If an ephemeral-identity node
+   * ever becomes a supported deployment, this gate needs a key-based admission.
    */
   private authorizeInboundControlStream(remotePeerId: string, protocol: string): boolean {
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
@@ -3119,9 +3128,9 @@ export class CadreNode implements SAppIdLookup {
    * control-DB gate ({@link authorizeInboundControlStream}) judges against.
    *
    * Every membership wrapper on this class (`authorizePeer`, `removePeer`,
-   * `addDrone`, `acceptPhone`, `applySeed`, `registerSelf`) already does this
-   * for itself, so ordinary callers never need it. It exists for a caller that
-   * wrote a `CadrePeer` row through a LOWER layer — reaching
+   * `addDrone`, `acceptPhone`, `addPhoneWithRelay`, `applySeed`, `registerSelf`)
+   * already does this for itself, so ordinary callers never need it. It exists
+   * for a caller that wrote a `CadrePeer` row through a LOWER layer — reaching
    * {@link getSeedBootstrapService} directly — whose snapshot would otherwise
    * stay stale until the next timed cohort reconcile. That window is not
    * cosmetic: while it lasts this node DENIES the just-written peer's own
@@ -3324,7 +3333,12 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    return await this.seedBootstrapService.addPhoneWithRelay(phonePeerId);
+    const result = await this.seedBootstrapService.addPhoneWithRelay(phonePeerId);
+    // The service authorizes the phone (a `CadrePeer` insert) on the way to the
+    // seed, so the per-stream gate must admit it now — not on the next reconcile,
+    // by which time the phone's own control-DB schema load may have died denied.
+    await this.refreshAuthorizedControlPeers('addPhoneWithRelay');
+    return result;
   }
 
   /**
