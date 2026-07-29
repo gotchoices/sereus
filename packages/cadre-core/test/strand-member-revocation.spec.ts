@@ -56,7 +56,7 @@ function freshKeyPair(): Ed25519KeyPair {
   return { privateKeyB64, publicKeyB64 };
 }
 
-type StrandTable = 'Header' | 'Member' | 'Manager' | 'ConsumedInvite';
+type StrandTable = 'Header' | 'Member' | 'Manager' | 'ConsumedInvite' | 'Revocation';
 
 async function tableCount(db: Database, table: StrandTable): Promise<number> {
   for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
@@ -165,14 +165,22 @@ async function memberStampId(db: Database, key: string): Promise<string> {
  * transaction — otherwise `RevocationRecorded` fires too and the reported
  * constraint becomes engine evaluation order. (The writer's own tombstone helper
  * is module-private, so the idiom is duplicated here.)
+ *
+ * `tableName` is deliberately a plain string rather than the three-name union the
+ * schema accepts: the confinement of that column is itself under test below.
  */
-async function fileTombstone(db: Database, stampId: string, retiree: Ed25519KeyPair): Promise<void> {
-  const signature = signStrandApproval(['Strand.Revocation', 'retire', 'Member', stampId], retiree.privateKeyB64);
+async function fileTombstone(
+  db: Database,
+  stampId: string,
+  retiree: Ed25519KeyPair,
+  tableName = 'Member',
+): Promise<void> {
+  const signature = signStrandApproval(['Strand.Revocation', 'retire', tableName, stampId], retiree.privateKeyB64);
   await db.exec(
     `insert into Strand.Revocation (TableName, StampId)
        with context MemberKey = ?, Signature = ?
-       values ('Member', ?)`,
-    [retiree.publicKeyB64, signature, stampId],
+       values (?, ?)`,
+    [retiree.publicKeyB64, signature, tableName, stampId],
   );
 }
 
@@ -570,7 +578,7 @@ describe('re-admission after revocation', () => {
     // are bearer tokens with no deactivation path (`Strand.Invite`'s own TODO), so
     // the spare survives the revocation and re-admits its holder with no further
     // manager action. Revocation is NOT a re-entry gate while a member holds any
-    // unconsumed invite — tracked as `feat-strand-invite-revocation`.
+    // unconsumed invite — tracked as `bug-strand-invite-no-revocation`.
     const spent = await issueInvite(db, { managerKeyPair: founder });
     const spare = await issueInvite(db, { managerKeyPair: founder });
     await consumeInvite(db, {
@@ -704,5 +712,133 @@ describe('committed-snapshot authorizer reads', () => {
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [m2.publicKeyB64])).toBeUndefined();
     expect(await tableCount(db, 'Manager')).toBe(1);
     expect(await isMemberRow(db, m3.publicKeyB64)).toBe(true);
+  }, 30_000);
+});
+
+// ── Strand.Revocation's own constraints (the tombstone table itself) ──────────
+
+describe('Revocation tombstones', () => {
+  it('rejects a tombstone signed by a stranger holding no Member row (Authorized)', async () => {
+    const { db } = await openStrand('c');
+    const stranger = freshKeyPair();
+
+    // A stamp that names no live row, so RowIsGone passes trivially; Immutable is
+    // update/delete-only and OnlyClosed passes on a closed strand — Authorized is
+    // the sole possible rejector.
+    await expect(fileTombstone(db, generateStrandStampId(), stranger)).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Revocation')).toBe(0);
+  }, 30_000);
+
+  it('rejects a tombstone signed by a member seated in the SAME transaction (committed.Member)', async () => {
+    const { db, founder } = await openStrand('c');
+    const newcomer = freshKeyPair();
+    const stampId = generateStrandStampId();
+
+    // The member insert itself is valid, but Authorized reads committed.Member, so
+    // the newcomer cannot authorize a tombstone in the transaction that seats it.
+    await expect(inTransaction(db, async () => {
+      await addMemberByManager(db, { managerKeyPair: founder, memberKey: newcomer.publicKeyB64 });
+      await fileTombstone(db, stampId, newcomer);
+    })).rejects.toThrow(/Authorized/);
+
+    expect(await isMemberRow(db, newcomer.publicKeyB64)).toBe(false);
+    expect(await tableCount(db, 'Revocation')).toBe(0);
+
+    // Positive control: with the membership committed, the identical tombstone lands.
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: newcomer.publicKeyB64 });
+    await fileTombstone(db, stampId, newcomer);
+    expect(await tableCount(db, 'Revocation')).toBe(1);
+  }, 30_000);
+
+  it('rejects retiring a stamp whose row is still live (RowIsGone)', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    const liveStamp = await memberStampId(db, member.publicKeyB64);
+
+    // The founder is a committed member, so Authorized passes and RowIsGone is the
+    // clean pin. This is what turns a delete that matched no rows into a loud commit
+    // failure: the paired tombstone refuses to retire a still-visible stamp.
+    await expect(fileTombstone(db, liveStamp, founder)).rejects.toThrow(/RowIsGone/);
+    expect(await tableCount(db, 'Revocation')).toBe(0);
+    expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
+
+    // Positive control: once the row is genuinely gone the same stamp retires — the
+    // writer files exactly this tombstone inside the revocation transaction.
+    await revokeMember(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    expect(await tableCount(db, 'Revocation')).toBe(1);
+  }, 30_000);
+
+  it('rejects a tombstone naming a table outside the three guarded ones (RowIsGone)', async () => {
+    const { db, founder } = await openStrand('c');
+
+    // A genuinely founder-signed tombstone, so Authorized passes. Every RowIsGone
+    // branch is guarded by an equality on one of Member / Manager / MemberPeer, so
+    // an unknown TableName matches none of them and the insert is refused — that is
+    // what confines the column, not a separate check.
+    await expect(
+      fileTombstone(db, generateStrandStampId(), founder, 'Bogus'),
+    ).rejects.toThrow(/RowIsGone/);
+    expect(await tableCount(db, 'Revocation')).toBe(0);
+  }, 30_000);
+
+  it('rejects updating or deleting an existing tombstone (Immutable)', async () => {
+    const { db, founder } = await openStrand('c');
+    const retired = generateStrandStampId();
+    await fileTombstone(db, retired, founder);
+    expect(await tableCount(db, 'Revocation')).toBe(1);
+
+    // Retirement is permanent: re-pointing or clearing a tombstone would restore the
+    // replay the stamp closed. Immutable is `check on update, delete (false)` —
+    // unconditional, so no context the caller supplies changes the outcome.
+    await expect(
+      db.exec(
+        `update Strand.Revocation
+           with context MemberKey = ?, Signature = ?
+           set StampId = ?
+           where TableName = 'Member' and StampId = ?`,
+        [founder.publicKeyB64, 'ignored', generateStrandStampId(), retired],
+      ),
+    ).rejects.toThrow(/Immutable/);
+
+    await expect(
+      db.exec(
+        `delete from Strand.Revocation
+           with context MemberKey = ?, Signature = ?
+           where TableName = 'Member' and StampId = ?`,
+        [founder.publicKeyB64, 'ignored', retired],
+      ),
+    ).rejects.toThrow(/Immutable/);
+
+    expect(await tableCount(db, 'Revocation')).toBe(1);
+  }, 30_000);
+
+  it('rejects a member delete that files no tombstone (RevocationRecorded)', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    const stampId = await memberStampId(db, member.publicKeyB64);
+
+    // A fully valid founder approval: Authorized, MinOneMember (the founder remains)
+    // and NotAManager (the target holds no Manager row) all pass. The delete is
+    // refused purely because no tombstone rides with it, which would leave the stamp
+    // replayable. Every other spec here works AROUND this check by pairing a
+    // tombstone; this is the one that pins it.
+    await expect(
+      rawDeleteMember(db, member.publicKeyB64, {
+        managerKey: founder.publicKeyB64,
+        managerSignature: signStrandApproval(
+          ['Strand.Member', 'remove', member.publicKeyB64, stampId],
+          founder.privateKeyB64,
+        ),
+      }),
+    ).rejects.toThrow(/RevocationRecorded/);
+    expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
+
+    // Positive control: the same removal through the writer, which files the
+    // tombstone in the same transaction, succeeds.
+    await revokeMember(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
+    expect(await isMemberRow(db, member.publicKeyB64)).toBe(false);
+    expect(await tableCount(db, 'Revocation')).toBe(1);
   }, 30_000);
 });

@@ -406,6 +406,16 @@ export const STRAND_SCHEMA = `    table Header (
     -- a node that has not yet converged on a Revocation row can still accept a replayed
     -- add and the resurrected row coexists with the tombstone after merge — the same
     -- convergence class as the MinOneMember / MinOneManager local-count notes.
+    -- NOTE: this table only grows — one row per membership deletion, plus any junk any
+    -- member chooses to file, and Immutable means rows never go away. Fine at strand
+    -- scale; if membership churn ever gets large it needs pruning bounded by something
+    -- other than "forever".
+    -- NOTE: nothing on the strand read side drops a row because its stamp is retired
+    -- (NotRevoked is insert-only), which is why a tombstone filed against a live but
+    -- not-yet-converged row is inert here. If a read path ever starts filtering on
+    -- Revocation (as the control layer's listAuthorizedMembers does), filing a tombstone
+    -- becomes a remote eviction primitive and Authorized below must narrow from "any
+    -- member" to "a manager, or the row's own owner".
     table Revocation (
         TableName text,             -- 'Member' | 'Manager' | 'MemberPeer' (confined by RowIsGone below)
         StampId text,               -- the retired nonce

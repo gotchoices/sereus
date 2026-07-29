@@ -161,7 +161,17 @@ enforces these invariants:
   including removing it.
 - **A manager can be removed by another manager, or resign itself.** Either way the
   removal carries a signature from the party authorizing it; an unrelated key cannot
-  remove anyone.
+  remove anyone. The two cases sign *different* approvals, so a resignation someone
+  collected cannot be turned into a removal, or the reverse.
+- **Every approval is good for one action, on one row, once.** Each membership row —
+  member, manager, or device record — carries a one-off random marker minted when the row
+  is created, and every signed approval covers that marker along with the table name, the
+  action, and the row's key. Deleting a row retires its marker permanently: the deletion
+  has to file a tombstone in the same step, and no row may ever be created carrying a
+  retired marker again. A captured approval therefore names a row incarnation that no
+  longer exists and can never exist again, so it cannot be replayed to re-remove,
+  re-admit, or re-appoint anyone. Re-adding the same key mints a fresh marker, which the
+  old approval does not cover.
 - **The last manager can never be removed.** A strand with no managers can never admit
   another member or appoint another manager, so it would be frozen permanently. Any
   removal that would empty the table is rejected.
@@ -177,7 +187,12 @@ enforces these invariants:
   be appointed while the outgoing manager still holds authority.
 
 Being a manager does not require being a member: a key with no `Member` row can still be
-promoted. Whether it should be is tracked separately as `debt-strand-manager-must-be-member`.
+promoted, and can then admit members, issue invitations, and promote other managers. What
+it cannot do is *remove* anything. Every deletion files a tombstone, and filing a tombstone
+requires a member row — so a manager that is not a member cannot revoke a member, clear a
+device record, or even resign its own seat; another manager who is a member has to remove
+it. Whether managers should be required to be members is tracked separately as
+`debt-strand-manager-must-be-member`.
 
 ### Removing Members
 
@@ -222,12 +237,6 @@ Known gaps remain, all out of scope of the rules above:
   and last-member floors each count the rows one node can see, so two nodes each removing
   a different manager (or member) can both believe a survivor remains. A cross-node guard
   is not attempted; tracked in the schema's own notes next to the checks.
-- **An authorization signature carries no nonce, so it can be replayed.** A manager
-  appointment now signs the new key *together with its generation* while removals sign
-  the action-tagged key, so an approval for one action can no longer double as another —
-  but a captured removal approval can still be replayed as a later removal (of a manager
-  or of a re-admitted member), and a captured appointment can be re-used if the same
-  generation becomes seatable again. Tracked as `bug-strand-manager-authority-antireplay`.
 - **An invitation cannot be cancelled, so removal is not a re-entry gate.** Invitations are
   bearer credentials with no deactivation path — only an optional expiry. A removed party
   holding an unspent, unexpired invitation re-admits itself with no further manager action,

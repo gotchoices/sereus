@@ -983,8 +983,9 @@ export async function removeMemberPeer(db: Database, params: RemoveMemberPeerPar
   // NOTE: the delete's `where` puts an equality on BOTH composite-PK columns, which the
   // optimystic vtab module serves via a single-key seek that can MISS on a networked
   // strand (see scanMemberPeers' doc). A missed seek deletes zero rows and still
-  // reports success — a silent no-op on the very cleanup path this writer exists to
-  // provide. The re-check turns that into a loud failure. Tracked as
+  // reports success. `Revocation.RowIsGone` now catches that first — the tombstone filed
+  // in the same transaction refuses to retire a stamp whose row is still visible, so the
+  // commit above fails loudly and this re-check is belt-and-braces behind it. Tracked as
   // `debt-composite-pk-point-lookup-unreliable-untracked`; this is an availability
   // failure mode, never a security one (a miss removes nothing, it never over-removes).
   if (await memberPeerStampId(db, memberKey, peerId) != null) {
