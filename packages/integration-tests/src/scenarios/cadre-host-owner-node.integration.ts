@@ -43,7 +43,7 @@ import {
   type ManagedNodeInfo,
 } from '@serfab/cadre-host';
 
-import { waitUntil } from '../harness/index.js';
+import { assertCadreBuildFresh, waitUntil } from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
@@ -83,6 +83,10 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
   const partyId = `owner-int-${Math.random().toString(36).slice(2)}`;
 
   beforeAll(async () => {
+    // Fail fast on a stale build rather than timing out minutes later against
+    // a stale-but-running cadre-cli child — see harness/build-freshness.ts.
+    assertCadreBuildFresh();
+
     tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-authnode-'));
     const identityPath = join(tmpRoot, 'identity.key');
     ({ peerId: expectedPeerId } = await writeIdentity(identityPath));
