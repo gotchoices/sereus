@@ -554,6 +554,13 @@ export async function consumeInvite(db: Database, params: ConsumeInviteParams): 
  *
  * The table name is a fixed literal supplied by this module (never user input), so the
  * interpolation is not an injection surface — same as {@link strandTableCount}.
+ *
+ * NOTE: every caller pays a WHOLE-column read — {@link cancelInvite}'s idempotence guard
+ * reads all cancelled keys to answer one membership question, and
+ * {@link listOutstandingInvites} reads both marker tables per call. Fine at strand scale
+ * (a handful of invitations); if invite churn ever gets large this wants a real filtered
+ * read, which in turn needs the networked point-lookup gap closed
+ * (`debt-composite-pk-point-lookup-unreliable-untracked`).
  */
 async function scanInviteKeys(db: Database, table: 'ConsumedInvite' | 'CancelledInvite'): Promise<Set<string>> {
   const keys = new Set<string>();
@@ -631,7 +638,16 @@ export async function cancelInvite(db: Database, params: CancelInviteParams): Pr
 export interface OutstandingInvite {
   /** The `Invite.Key` (invite public key, base64url). */
   inviteKey: string;
-  /** The canonical-datetime expiry string, or `null` for never-expires. */
+  /**
+   * The expiry as the engine's canonical `datetime` string
+   * (`YYYY-MM-DDTHH:MM:SS[.frac]`, no zone suffix — see {@link canonicalDatetime}), or
+   * `null` for never-expires.
+   *
+   * Deliberately the STORED form, not the epoch-ms {@link IssueInviteParams.expiration}
+   * takes: it is what compares like-for-like against another canonicalised instant, and
+   * what the on-engine `NotExpired` gate sees. It is NOT a JS-parseable ISO instant —
+   * pass it through the engine (or `canonicalDatetime`) rather than `Date.parse`.
+   */
   expiration: string | null;
 }
 
@@ -660,7 +676,9 @@ export interface OutstandingInvite {
  * @param nowMs - The instant (epoch ms) to compare expiries against; defaults to
  *   `Date.now()`. Tests pin it so the comparison is deterministic, mirroring
  *   {@link consumeInvite}'s `nowMs` convention.
- * @returns The redeemable invitations, in storage order; empty if none.
+ * @returns The redeemable invitations, in NO guaranteed order (the scans promise only a
+ *   superset of the live rows, not a stable sequence — sort by `expiration` if order
+ *   matters); empty if none.
  */
 export async function listOutstandingInvites(db: Database, nowMs?: number): Promise<OutstandingInvite[]> {
   // Plain runtime Date.now() — the tess Workflow restriction is on scripts, not libs.

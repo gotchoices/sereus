@@ -478,6 +478,31 @@ describe('cancelInvite', () => {
     expect(await tableCount(db, 'ConsumedInvite')).toBe(0);
   }, 30_000);
 
+  it('cancelling one invite leaves a SIBLING invite redeemable', async () => {
+    const { db, founder } = await openStrand('c');
+    const killed = await issueInvite(db, { managerKeyPair: founder });
+    const survivor = await issueInvite(db, { managerKeyPair: founder });
+    const member = freshKeyPair();
+
+    await cancelInvite(db, { managerKeyPair: founder, inviteKey: killed.inviteKey });
+
+    // NotCancelled matches on `C.InviteKey = new.InviteKey`, so a tombstone kills exactly
+    // the invitation it names. Without this, an UNKEYED `not exists (select 1 from
+    // CancelledInvite)` — one dead invitation freezing the whole strand's admissions —
+    // would satisfy every other test in this file: the rejection cases each have only one
+    // invite, and the sibling positive cases have no tombstone at all.
+    await consumeInvite(db, {
+      inviteKey: survivor.inviteKey,
+      invitePrivateKey: survivor.invitePrivateKey,
+      memberKey: member.publicKeyB64,
+    });
+
+    expect(await tableCount(db, 'ConsumedInvite')).toBe(1);
+    expect(await tableCount(db, 'CancelledInvite')).toBe(1);
+    // Both are spent now, each for a different reason — nothing is left to redeem.
+    expect(await listOutstandingInvites(db)).toEqual([]);
+  }, 30_000);
+
   it('rejects a cancellation signed by a non-manager key (Authorized)', async () => {
     const { db, founder } = await openStrand('c');
     const { inviteKey } = await issueInvite(db, { managerKeyPair: founder });

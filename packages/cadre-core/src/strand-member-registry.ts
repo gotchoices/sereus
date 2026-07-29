@@ -101,6 +101,11 @@ export class StrandMemberVerifier implements MemberVerifier {
       // only decides whether attempting the write is worthwhile.
       return true;
     }
+    // NOTE: materialises the whole outstanding set to answer a non-empty question (the
+    // former code was a single `select count(1)`). Deliberate — sharing one definition of
+    // "outstanding" with the manager-facing enumeration beats a second, drifting copy of
+    // the three exclusions. If this pre-flight ever runs hot on a strand with many
+    // invitations, add a short-circuiting variant rather than re-inlining the rules.
     return (await listOutstandingInvites(this.db)).length > 0;
   }
 }

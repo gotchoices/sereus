@@ -15,9 +15,9 @@ import { STRAND_SCHEMA } from '../src/strand-schema.js';
  *     wraps it in `declare schema Strand { ... } apply schema Strand;` at runtime.
  *
  * Because this schema gates strand membership, invites, and RBAC writes (the
- * `verify(...)` checks across Header / Invite / ConsumedInvite / Member / MemberPeer /
- * Manager), a one-sided edit is a silent security regression. This test fails the
- * build whenever the two copies drift.
+ * `verify(...)` checks across Invite / ConsumedInvite / CancelledInvite / Member /
+ * MemberPeer / Manager / Revocation), a one-sided edit is a silent security regression.
+ * This test fails the build whenever the two copies drift.
  *
  * This is a deliberate COPY of the shape of `cadre-core`'s
  * `control-schema-drift.spec.ts`, NOT a shared cross-package helper: there are

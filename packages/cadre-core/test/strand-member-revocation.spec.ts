@@ -11,6 +11,7 @@ import {
   issueInvite,
   consumeInvite,
   cancelInvite,
+  listOutstandingInvites,
   addMemberByManager,
   revokeMember,
   leaveStrand,
@@ -591,8 +592,11 @@ describe('re-admission after revocation', () => {
     await revokeMember(db, { managerKeyPair: founder, memberKey: joiner.publicKeyB64 });
     expect(await isMemberRow(db, joiner.publicKeyB64)).toBe(false);
 
-    // The manager enumerates what is still redeemable and kills the spare. The spent
-    // invite is already excluded from that list, so the spare is the only candidate.
+    // The manager enumerates what is still redeemable and kills the spare. This IS the
+    // operator workflow — removal reports nothing about which invitations the departing
+    // member holds — so the enumeration is exercised, not just described: the spent
+    // invite is already excluded, leaving the spare as the only candidate.
+    expect((await listOutstandingInvites(db)).map((i) => i.inviteKey)).toEqual([spare.inviteKey]);
     await cancelInvite(db, { managerKeyPair: founder, inviteKey: spare.inviteKey });
     expect(await tableCount(db, 'CancelledInvite')).toBe(1);
 
