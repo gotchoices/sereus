@@ -172,7 +172,8 @@ function inject(node: CadreNode, opts: {
   };
   if (opts.members) {
     (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-      queryCadrePeers: async () => opts.members
+      queryCadrePeers: async () => opts.members,
+      queryRevokedStamps: async () => new Set<string>()
     };
   }
   if (opts.anchor) {

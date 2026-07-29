@@ -68,12 +68,13 @@ function bareRow(peerId: string, multiaddr: string | null = null): PeerRow {
  * Wire the minimal control-node + DB + anchor fakes the membership reads touch.
  * `anchor` omitted → the pre-start shape (no trusted-owner store at all).
  */
-function inject(node: CadreNode, opts: { selfPeerId: string; members: PeerRow[]; anchor?: TrustedOwnerStore }): void {
+function inject(node: CadreNode, opts: { selfPeerId: string; members: PeerRow[]; anchor?: TrustedOwnerStore; revoked?: Set<string> }): void {
   (node as unknown as { controlNode: unknown }).controlNode = {
     peerId: { toString: () => opts.selfPeerId }
   };
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-    queryCadrePeers: async () => opts.members
+    queryCadrePeers: async () => opts.members,
+    queryRevokedStamps: async () => opts.revoked ?? new Set<string>()
   };
   if (opts.anchor) {
     (node as unknown as { trustedOwnerStore: TrustedOwnerStore }).trustedOwnerStore = opts.anchor;
@@ -212,6 +213,31 @@ describe('CadreNode addressable-vs-authorized surface', () => {
 
     expect(await node.isAuthorizedMember(A)).toBe(true);
     expect(await node.isAuthorizedMember(B)).toBe(false);
+  });
+
+  it('drops a fully valid, anchored voucher whose StampId is retired in Revocation', async () => {
+    // Mock-level is the ONLY place this state is constructible: on a real database the
+    // write-time constraints themselves forbid a live row coexisting with its tombstone
+    // (`Revocation.RowIsGone` blocks tombstoning a live row; the guarded table's
+    // `NotRevoked` blocks re-inserting over a tombstone). The coexistence models the
+    // cross-node CONVERGENCE race — a node accepts a replayed admission before the
+    // tombstone arrives, then both rows merge in via replication, not local writes.
+    // Readers must treat the tombstone as authoritative.
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    const resurrected = vouchedRow(A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' });
+    inject(node, {
+      selfPeerId: SELF,
+      members: [resurrected, vouchedRow(B, owner)],
+      anchor: await anchorWith('p', owner.publicKey),
+      revoked: new Set([resurrected.stampId!])
+    });
+
+    expect((await node.listAuthorizedMembers()).map(m => m.peerId)).toEqual([B]);
+    expect(await node.isAuthorizedMember(A)).toBe(false);
+    expect(await node.isAuthorizedMember(B)).toBe(true);
+    // Still ADDRESSABLE — revocation is a trust judgment, not an address purge.
+    expect(await node.isMember(A)).toBe(true);
   });
 
   it('authorizes no one when the anchor is empty (cold-start / not-yet-enrolled node)', async () => {

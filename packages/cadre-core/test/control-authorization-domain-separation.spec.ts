@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import debug from 'debug';
 import {
   generatePrivateKey,
   getPublicKey,
@@ -64,6 +65,8 @@ function freshStamp(): string {
   return 'stamp-' + Math.random().toString(36).slice(2);
 }
 
+const log = debug('sereus:cadre:test:domain-separation');
+
 describe('CadreControl approval domain separation', () => {
   let node: CadreNode;
   let db: ControlDatabase;
@@ -78,6 +81,35 @@ describe('CadreControl approval domain separation', () => {
   function expectConstraintFailure(write: Promise<unknown>, ...constraints: string[]) {
     return expect(write).rejects.toThrow(
       new RegExp(`CHECK constraint failed: (${constraints.join('|')})\\b`),
+    );
+  }
+
+  /** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
+  async function inTransaction(statements: () => Promise<void>): Promise<void> {
+    await rawDb.beginTransaction();
+    try {
+      await statements();
+      await rawDb.commit();
+    } catch (error) {
+      // A failed commit() already tore the transaction down, so rollback() throws
+      // "no transaction active" — log it rather than masking the real cause.
+      try {
+        await rawDb.rollback();
+      } catch (rollbackError) {
+        log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
+  }
+
+  /** Retire a stamp into `CadreControl.Revocation` — the delete-side companion every
+   * guarded delete must carry (`RevocationRecorded`), so rejection assertions stay
+   * pinned to the constraint under test. */
+  function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer', stampId: string): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.Revocation (TableName, StampId)
+         values (?, ?)`,
+      [tableName, stampId],
     );
   }
 
@@ -231,26 +263,37 @@ describe('CadreControl approval domain separation', () => {
       founder,
       buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [second.publicKey, stamp]),
     );
+    // The tombstone rides along so `RevocationRecorded` is satisfied and the rejection
+    // stays pinned to the cross-table replay constraint alone. The OwnerKey row
+    // deliberately shares the same stamp STRING — harmless, `Revocation.RowIsGone`'s
+    // branches are per-table.
     await expectConstraintFailure(
-      rawDb.exec(
-        `delete from CadreControl.CadrePeer
-           with context OwnerKey = ?, Signature = ?
-           where PeerId = ?`,
-        [founder.publicKey, removeSig, second.publicKey],
-      ),
+      inTransaction(async () => {
+        await rawDb.exec(
+          `delete from CadreControl.CadrePeer
+             with context OwnerKey = ?, Signature = ?
+             where PeerId = ?`,
+          [founder.publicKey, removeSig, second.publicKey],
+        );
+        await tombstoneStamp('CadrePeer', stamp);
+      }),
       'AuthorizedDelete',
     );
     expect(
       await rawDb.get('select PeerId from CadreControl.CadrePeer where PeerId = ?', [second.publicKey]),
     ).toBeDefined();
 
-    // Prove the removal signature is genuine: the rule it was minted for accepts it.
-    await rawDb.exec(
-      `delete from CadreControl.OwnerKey
-         with context OwnerKey = ?, Signature = ?
-         where Key = ?`,
-      [founder.publicKey, removeSig, second.publicKey],
-    );
+    // Prove the removal signature is genuine: the rule it was minted for accepts it
+    // (with the mandatory stamp retirement alongside).
+    await inTransaction(async () => {
+      await rawDb.exec(
+        `delete from CadreControl.OwnerKey
+           with context OwnerKey = ?, Signature = ?
+           where Key = ?`,
+        [founder.publicKey, removeSig, second.publicKey],
+      );
+      await tombstoneStamp('OwnerKey', stamp);
+    });
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
 

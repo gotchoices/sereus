@@ -112,6 +112,20 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     );
   }
 
+  /**
+   * Retire an OwnerKey stamp into `CadreControl.Revocation`. Every delete below rides in
+   * a transaction alongside one of these: `RevocationRecorded` refuses a bare delete, and
+   * keeping the tombstone present keeps each rejection test pinned to its ORIGINAL
+   * constraint name instead of widening the accepted alternatives.
+   */
+  function tombstoneOwnerKeyStamp(stampId: string): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.Revocation (TableName, StampId)
+         values ('OwnerKey', ?)`,
+      [stampId],
+    );
+  }
+
   function rawUpdateOwnerKey(fromKey: string, toKey: string): Promise<void> {
     return rawDb.exec(
       `update CadreControl.OwnerKey
@@ -246,11 +260,14 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await enrollByFounder(second);
     const stamp = await stampIdOf(second.publicKey);
 
-    await rawDeleteOwnerKey(
-      founder.publicKey,
-      signAs(founder, removeMessage(second.publicKey, stamp)),
-      second.publicKey,
-    );
+    await inTransaction(async () => {
+      await rawDeleteOwnerKey(
+        founder.publicKey,
+        signAs(founder, removeMessage(second.publicKey, stamp)),
+        second.publicKey,
+      );
+      await tombstoneOwnerKeyStamp(stamp);
+    });
 
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
@@ -318,18 +335,31 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const second = freshKeyPair();
     await enrollByFounder(second);
     const before = await ownerKeys();
+    const stamp = await stampIdOf(second.publicKey);
 
-    await expectConstraintFailure(rawDeleteOwnerKey(null, null, second.publicKey), 'Authorized');
+    // The tombstone rides along so `RevocationRecorded` is satisfied and the ONLY
+    // failing constraint is the authorization one — the assertion stays pinned to it.
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteOwnerKey(null, null, second.publicKey);
+        await tombstoneOwnerKeyStamp(stamp);
+      }),
+      'Authorized',
+    );
     expect(await ownerKeys()).toEqual(before);
   }, 60_000);
 
   it('rejects: an unsigned delete of the LAST owner (would brick the control plane)', async () => {
     const before = await ownerKeys();
+    const stamp = await stampIdOf(founder.publicKey);
 
     // Two constraints are violated at once here (unsigned AND last-row), and the deferred
     // queue does not promise which reports first — either name proves the intended block.
     await expectConstraintFailure(
-      rawDeleteOwnerKey(null, null, founder.publicKey),
+      inTransaction(async () => {
+        await rawDeleteOwnerKey(null, null, founder.publicKey);
+        await tombstoneOwnerKeyStamp(stamp);
+      }),
       'MinOneOwner',
       'Authorized',
     );
@@ -358,6 +388,8 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
           signAs(second, removeMessage(founder.publicKey, founderStamp)),
           founder.publicKey,
         );
+        await tombstoneOwnerKeyStamp(secondStamp);
+        await tombstoneOwnerKeyStamp(founderStamp);
       }),
       'MinOneOwner',
     );
@@ -371,7 +403,14 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const stamp = await stampIdOf(second.publicKey);
 
     await expectConstraintFailure(
-      rawDeleteOwnerKey(second.publicKey, signAs(second, removeMessage(second.publicKey, stamp)), second.publicKey),
+      inTransaction(async () => {
+        await rawDeleteOwnerKey(
+          second.publicKey,
+          signAs(second, removeMessage(second.publicKey, stamp)),
+          second.publicKey,
+        );
+        await tombstoneOwnerKeyStamp(stamp);
+      }),
       'Authorized',
     );
     expect(await ownerKeys()).toEqual(before);
@@ -390,10 +429,12 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
 
   it('rejects: an unsigned delete-of-founder + insert-of-attacker in ONE transaction (sole-owner swap)', async () => {
     const attacker = freshKeyPair();
+    const founderStamp = await stampIdOf(founder.publicKey);
 
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(null, null, founder.publicKey);
+        await tombstoneOwnerKeyStamp(founderStamp);
         await rawInsertOwnerKey(null, null, attacker.publicKey, freshStamp());
       }),
       'Authorized',
@@ -413,7 +454,10 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     const before = await ownerKeys();
 
     await expectConstraintFailure(
-      rawDeleteOwnerKey(founder.publicKey, enrollSig, second.publicKey),
+      inTransaction(async () => {
+        await rawDeleteOwnerKey(founder.publicKey, enrollSig, second.publicKey);
+        await tombstoneOwnerKeyStamp(stamp);
+      }),
       'Authorized',
     );
     expect(await ownerKeys()).toEqual(before);

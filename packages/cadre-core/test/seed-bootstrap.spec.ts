@@ -1054,10 +1054,16 @@ describe('SeedBootstrapService Helper Methods', () => {
         expect(after).toBeDefined();
         expect(after!.Multiaddr).toBe(multiaddrs.join(','));
 
+        // Capture the row's stamp before removal: removePeer must retire it into
+        // CadreControl.Revocation in the same transaction as the delete.
+        const removedStampId = await db!.queryCadrePeerStampId(dronePeerId);
+        expect(removedStampId).not.toBeNull();
+
         await node.removePeer(dronePeerId);
 
         const removed = await readCadrePeer(node, dronePeerId);
         expect(removed).toBeUndefined();
+        expect((await db!.queryRevokedStamps('CadrePeer')).has(removedStampId!)).toBe(true);
 
         // Re-authorize the same peer to exercise the insert→delete→insert
         // cycle through the flat OLD/NEW row layout that deferred constraints
