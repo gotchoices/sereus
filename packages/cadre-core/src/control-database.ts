@@ -10,6 +10,10 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
+import { controlAuthorizationFields } from './control-authorization.js';
+import type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
+
+export type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
 
 const log = debug('sereus:cadre:control-db');
 const timing = debug('sereus:cadre:timing');
@@ -67,26 +71,34 @@ function parseNullableStoredDatetimeMs(value: string | number | null | undefined
 /**
  * Build the canonical authorization message that owner signatures are bound to.
  *
- * The message is a SINGLE framed SHA-256 digest over the ordered tuple of fields (the
- * crypto plugin's injective multi-field encoding), in a fixed field order, with the
- * single-use StampId as the final field:
+ * The message is a SINGLE framed SHA-256 digest over the ordered field vector from
+ * {@link controlAuthorizationFields} (the crypto plugin's injective multi-field
+ * encoding): two fixed literals — the domain tag naming the table rule and the action
+ * tag — followed by the row fields in the schema's fixed order, with the single-use
+ * StampId as the final field where the table has one:
  *
- *   message = sha256(encodeFields([field_1, field_2, ..., StampId]))   // raw digest bytes
+ *   message = sha256(encodeFields([domain, action, field_1, ..., StampId]))   // raw digest bytes
  *
  * ed25519 signs these raw digest bytes DIRECTLY (no second hash). The SQL constraints
  * verify the identical bytes with one variadic call
- * (`verify(digest(field_1, ..., StampId), context.Signature, A.Key, 'ed25519')`): SQL
- * `digest(...)` returns the base64url string of the same digest, which `verify`'s default
+ * (`verify(digest('CadreControl.X', 'add', field_1, ...), context.Signature, A.Key, 'ed25519')`):
+ * SQL `digest(...)` returns the base64url string of the same digest, which `verify`'s default
  * base64url input encoding decodes back to those raw bytes — so signer and verifier
  * operate on the same bytes. Every field is TEXT on both sides (the SQL columns are
  * `cast(... as text)` / `coalesce(...,'')`; the TS args are strings), so the per-field
- * type tags agree. This binds the signature to the row contents (not a bare stamp),
- * closing the captured-stamp replay / privilege-escalation hole. Single source of truth:
- * every signed writer (and every test/harness signer) MUST build the message through this
- * function in the schema's field order, or `verify` will reject the row.
+ * type tags agree. Binding the row contents closes captured-stamp replay; the leading
+ * domain/action tags scope the signature to ONE table rule, so an approval minted for
+ * one constraint can never satisfy another (e.g. a ValidationKey enrollment can no
+ * longer double as an OwnerKey enrollment). Single source of truth: every signed writer
+ * (and every test/harness signer) MUST build the message through this function with the
+ * schema's tags and field order, or `verify` will reject the row.
  */
-export function buildAuthorizationMessage(fields: string[]): Uint8Array {
-  return digest([...fields], 'sha256', 'bytes') as Uint8Array;
+export function buildAuthorizationMessage(
+  domain: ControlDomain,
+  action: ControlAction,
+  rowFields: string[],
+): Uint8Array {
+  return digest(controlAuthorizationFields(domain, action, rowFields), 'sha256', 'bytes') as Uint8Array;
 }
 
 /**
@@ -114,21 +126,6 @@ interface OptimysticPluginResult {
   hydrate: (db: Database) => Promise<{ tables: number; indexes: number }>;
   [key: string]: unknown;
 }
-
-/**
- * Names of the CadreControl tables that {@link ControlDatabase.countRows} can
- * read. Constraining to this union keeps the dynamic `from` clause off the
- * SQL-injection surface and hands callers (e.g. the integration harness's
- * `waitForControlSync`) a typo-proof table argument.
- */
-export type ControlTable =
-  | 'OwnerKey'
-  | 'ValidationKey'
-  | 'Strand'
-  | 'CadrePeer'
-  | 'DeviceToken'
-  | 'FormationInvite'
-  | 'FormationUsage';
 
 /** Runtime guard mirroring {@link ControlTable} for the dynamic-`from` count. */
 const CONTROL_TABLES: ReadonlySet<ControlTable> = new Set<ControlTable>([
@@ -594,7 +591,7 @@ export class ControlDatabase {
 
     // Field order MUST match the schema's Strand `Authorized` verify:
     // Id, Type, MemberPrivateKey ('' when null), StampId.
-    const message = buildAuthorizationMessage([strandId, type, memberPrivateKey ?? '', stampId]);
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'add', [strandId, type, memberPrivateKey ?? '', stampId]);
     const signature = signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
@@ -632,7 +629,7 @@ export class ControlDatabase {
     const stampId = generateStampId(peerId);
 
     // Field order MUST match the schema's ValidationKey `Authorized` verify: Key, StampId.
-    const message = buildAuthorizationMessage([key, stampId]);
+    const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stampId]);
     const signature = signMessage(message);
 
     await this.db!.exec(`
@@ -657,9 +654,9 @@ export class ControlDatabase {
    * over (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId) — NOT a
    * bare stamp — so the signature is bound to this invite's contents and cannot be
    * transplanted onto an attacker-chosen row. The StampId is persisted as a unique
-   * column for single-use anti-replay. `FormationInvite.AuthorizedAddOrRemove` gates
-   * both insert and delete; its `coalesce(new, old)` verify binds the NEW row on
-   * insert and the OLD row on delete.
+   * column for single-use anti-replay. `FormationInvite.AuthorizedInsert` gates insert
+   * over an `'add'`-tagged digest; deletes verify a DISTINCT `'remove'`-tagged digest
+   * (`AuthorizedDelete`), so this insert approval can never be replayed as a revocation.
    *
    * `StrandId` binds the invite to a pre-existing host strand (provision-then-record):
    * when set, a responder redeeming this token records a `FormationUsage` against that
@@ -709,9 +706,9 @@ export class ControlDatabase {
     const validationUrlField = options.validationUrl ?? '';
     const strandIdField = options.strandId ?? '';
 
-    // Field order MUST match the schema's FormationInvite `AuthorizedAddOrRemove` verify:
+    // Field order MUST match the schema's FormationInvite `AuthorizedInsert` verify:
     // Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId.
-    const message = buildAuthorizationMessage([
+    const message = buildAuthorizationMessage('CadreControl.FormationInvite', 'add', [
       token, sAppId, expiresAtField, totalUsesField, validationUrlField, strandIdField, stampId,
     ]);
     const signature = signMessage(message);

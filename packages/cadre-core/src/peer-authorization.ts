@@ -1,48 +1,80 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
+import { controlAuthorizationFields } from './control-authorization.js';
+import type { ControlAction, ControlDomain } from './control-authorization.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
 /**
- * Canonical digest an owner signs to authorize a peer.
+ * base64url SHA-256 digest over the shared domain-tagged field vector (see
+ * control-authorization.ts). The base64url twin of
+ * control-database.ts:buildAuthorizationMessage (which returns the same digest as raw
+ * bytes): sign either encoding with input encoding to match and the signed bytes agree.
+ */
+function taggedDigest(domain: ControlDomain, action: ControlAction, rowFields: string[]): string {
+  return digest(controlAuthorizationFields(domain, action, rowFields), 'sha256', 'base64url') as string;
+}
+
+/**
+ * Canonical digest an owner signs to vouch a peer's ENROLLMENT — the offline
+ * credential `cadre enroll register` verifies. No table checks this digest, so it
+ * carries its own `'Cadre.Enrollment'` domain tag to stay disjoint from every
+ * CadreControl table rule (pre-tag it collided with the `DeviceToken` owner digests,
+ * so an enrollment vouch doubled as a push-token delete approval).
  *
- * This is the exact byte construction {@link SeedBootstrapService.authorizePeer}
- * signs over when it inserts an authorized `CadrePeer` row:
- * `digest([peerId], 'sha256', 'base64url')`. Factored into one place so the
- * producer (owner signing) and the verifier (the offline `cadre enroll
- * register` check) can never drift apart — change the digest here and both move
- * together. The SQL mirror is the bare single-field `digest(coalesce(new.PeerId, old.PeerId))`.
+ * Factored into one place so the producer (owner signing) and the verifier (the
+ * offline `cadre enroll register` check) can never drift apart — change the digest
+ * here and both move together.
  */
 export function peerAuthorizationDigest(peerId: string): string {
-  return digest([peerId], 'sha256', 'base64url') as string;
+  return taggedDigest('Cadre.Enrollment', 'vouch', [peerId]);
+}
+
+/**
+ * Canonical digest an owner signs to authorize a `DeviceToken` INSERT. SQL mirror:
+ * `digest('CadreControl.DeviceToken', 'add', new.PeerId)` in `DeviceToken.AuthorizedInsert`.
+ * Distinct from {@link deviceTokenRemoveDigest} so a captured insert approval can never
+ * be replayed to delete the token, and vice versa.
+ */
+export function deviceTokenAddDigest(peerId: string): string {
+  return taggedDigest('CadreControl.DeviceToken', 'add', [peerId]);
+}
+
+/**
+ * Canonical digest an owner signs to authorize a `DeviceToken` DELETE. SQL mirror:
+ * `digest('CadreControl.DeviceToken', 'remove', old.PeerId)` in `DeviceToken.AuthorizedDelete`.
+ */
+export function deviceTokenRemoveDigest(peerId: string): string {
+  return taggedDigest('CadreControl.DeviceToken', 'remove', [peerId]);
 }
 
 /**
  * Canonical digest an owner signs to VOUCH a `CadrePeer` membership row (insert
- * and the owner re-touch update). Binds the peer id to the row's single-use
- * `StampId` nonce, so a captured signed insert cannot be replayed (the `StampId` is
- * unique) and — because {@link cadrePeerRemoveDigest} scopes a DIFFERENT payload — the
- * stored voucher (`VouchSig`) cannot be replayed to authorize a delete.
+ * and the owner re-touch update — same semantics, deliberately the same digest).
+ * Binds the peer id to the row's single-use `StampId` nonce, so a captured signed
+ * insert cannot be replayed (the `StampId` is unique) and — because
+ * {@link cadrePeerRemoveDigest} scopes a DIFFERENT payload — the stored voucher
+ * (`VouchSig`) cannot be replayed to authorize a delete. The domain tag keeps the
+ * stored, replicated `VouchSig` useless against every OTHER table's rules.
  *
- * The SQL mirror is `digest(new.PeerId, new.StampId)` (two TEXT fields), matching the
- * canonical multi-field framing in control-database.ts:buildAuthorizationMessage.
+ * SQL mirror: `digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId)`.
  */
 export function cadrePeerVoucherDigest(peerId: string, stampId: string): string {
-  return digest([peerId, stampId], 'sha256', 'base64url') as string;
+  return taggedDigest('CadreControl.CadrePeer', 'vouch', [peerId, stampId]);
 }
 
 /**
  * Canonical digest an owner signs to REMOVE a `CadrePeer` row. Deliberately a
- * distinct payload from {@link cadrePeerVoucherDigest} (adds the `'remove'` action
- * tag) so the row's stored voucher — a signature over the voucher digest — can never
+ * distinct payload from {@link cadrePeerVoucherDigest} (the `'remove'` action tag)
+ * so the row's stored voucher — a signature over the voucher digest — can never
  * satisfy this delete check. The signature is supplied in write context and never
  * stored, so no reader can replay it; binding the live row's `StampId` also invalidates
  * any captured remove after a delete+reinsert (the nonce rotates).
  *
- * SQL mirror: `digest(old.PeerId, old.StampId, 'remove')`.
+ * SQL mirror: `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`.
  */
 export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
-  return digest([peerId, stampId, 'remove'], 'sha256', 'base64url') as string;
+  return taggedDigest('CadreControl.CadrePeer', 'remove', [peerId, stampId]);
 }
 
 /**

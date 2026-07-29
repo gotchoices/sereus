@@ -34,6 +34,10 @@ declare schema CadreControl {
         -- takeover: a deferred post-image count is also true of an update that re-points
         -- the only row at an attacker key. Mirrors Strand.Manager.NoUpdate.
         constraint NoUpdate check on update (false),
+        -- NOTE: the domain tag scopes an approval to a table and an action, not to a PARTY. Two
+        -- parties that share an owner key would accept each other's approvals. Fine today (each
+        -- party has its own owner key); if shared-owner multi-party ever ships, bind a party
+        -- identity row into these digests.
         constraint Authorized check on insert, delete (
             -- Every authorizer is read from the PRE-transaction snapshot (committed.*):
             -- this CHECK auto-defers to commit (it has a subquery), by which point the row
@@ -41,6 +45,13 @@ declare schema CadreControl {
             -- from-OwnerKey would let a row authorize itself, or two strangers seat each
             -- other. committed.* excludes both, stating the rule directly: the authorizer
             -- must have existed BEFORE this transaction.
+
+            -- Every signed digest below (and in every other CadreControl table) leads with two
+            -- fixed literals — a 'CadreControl.<Table>' domain tag and an 'add'/'remove'/
+            -- 'vouch'/'publish' action tag (cadre-core control-authorization.ts) — so an
+            -- approval verifies ONLY against the one rule it was minted for. Without them,
+            -- e.g. a ValidationKey enrollment approval covered the identical bytes as an
+            -- OwnerKey enrollment: a narrow grant that doubled as full ownership.
 
             -- Bootstrap: the FOUNDING transaction — one whose pre-transaction owner set is
             -- empty — needs no authorization, and every row it inserts rides this branch
@@ -51,13 +62,13 @@ declare schema CadreControl {
             (old.Key is null and (select count(1) from committed.OwnerKey) = 0)
 
                 -- or a pre-existing owner authorizes by signing over THIS row (Key, StampId)
-                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
+                or (old.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519')))
 
-                -- or a removal authorized by ANOTHER pre-existing owner over a DISTINCT
-                -- 'remove'-scoped digest bound to the stored row's StampId, so an enrollment
+                -- or a removal authorized by ANOTHER pre-existing owner over the DISTINCT
+                -- 'remove'-tagged digest bound to the stored row's StampId, so an enrollment
                 -- signature can never be replayed as a removal (cf. CadrePeer.AuthorizedDelete).
                 -- A.Key <> old.Key: an owner cannot sign its own removal (no self-resignation).
-                or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and verify(digest(old.Key, old.StampId, 'remove'), context.Signature, A.Key, 'ed25519')))
+                or (new.Key is null and exists (select 1 from committed.OwnerKey A where A.Key = context.OwnerKey and A.Key <> old.Key and verify(digest('CadreControl.OwnerKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519')))
         )
     ) with context (OwnerKey text null, Signature text null);
 
@@ -67,7 +78,7 @@ declare schema CadreControl {
         StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
             -- Owners authorize by signing over THIS row (Key, StampId); single-use via unique StampId
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 
@@ -80,7 +91,7 @@ declare schema CadreControl {
         StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint Authorized check (
             -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
 
                 -- or authorized by a cadre peer who has received a valid formation invitation.
                 -- That path has no signed writer yet; when one is built it must still supply a
@@ -106,13 +117,15 @@ declare schema CadreControl {
         Sig text null,                  -- ed25519 self-signature over the signed payload (base64url); null until self-published
         StampId text not null unique,    -- single-use authorization nonce (anti-replay), bound into the voucher/remove digests; rotates on (re)insert
         VouchOwner text null,        -- ed25519 (base64url) owner key that vouched this membership (== insert context.OwnerKey)
-        VouchSig text null,              -- that owner's signature over digest(PeerId, StampId) (== insert context.Signature). A reader checks VouchOwner against its NODE-LOCAL trusted-owner anchor (not this replicated table, which a self-owner can pollute) to decide authorized membership.
+        VouchSig text null,              -- that owner's signature over the 'vouch'-tagged digest below (== insert context.Signature). A reader checks VouchOwner against its NODE-LOCAL trusted-owner anchor (not this replicated table, which a self-owner can pollute) to decide authorized membership. The domain/action tags keep this STORED, REPLICATED signature useless against every other rule (pre-tag it satisfied OwnerKey/ValidationKey inserts for Key = PeerId).
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key, which vouches both membership and the
             -- PublicKey<->PeerId binding (cadre-core derives PublicKey from PeerId before insert).
             -- The digest binds PeerId + the single-use StampId nonce (two TEXT fields),
-            -- matching cadre-core peer-authorization.ts:cadrePeerVoucherDigest.
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+            -- matching cadre-core peer-authorization.ts:cadrePeerVoucherDigest. The same
+            -- 'vouch'-tagged digest is DELIBERATELY shared with the owner branch of
+            -- AuthorizedUpdate below: both mean "this owner vouches this membership row".
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
             -- Persist the vouching (owner, signature) onto the row so a reader can later
             -- re-check VouchOwner against its node-local anchor. The stored pair MUST equal
             -- the pair the verify above validated, so a writer cannot store a voucher it did
@@ -121,11 +134,11 @@ declare schema CadreControl {
             and new.VouchSig = context.Signature
         ),
         constraint AuthorizedDelete check on delete (
-            -- Delete is authorized by a signature over a DISTINCT 'remove'-scoped digest bound
+            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound
             -- to the row's StampId (cadre-core peer-authorization.ts:cadrePeerRemoveDigest), so
-            -- the stored voucher (a signature over digest(PeerId, StampId)) can NEVER be replayed
-            -- to authorize a delete. The remove signature rides in context and is never stored.
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(old.PeerId, old.StampId, 'remove'), context.Signature, A.Key, 'ed25519'))
+            -- the stored voucher (a signature over the 'vouch'-tagged digest) can NEVER be
+            -- replayed to authorize a delete. The remove signature rides in context and is never stored.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
@@ -141,13 +154,13 @@ declare schema CadreControl {
                 and new.VouchSig = old.VouchSig
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and verify(
-                        digest(new.PeerId || '|' || new.Multiaddr || '|' || cast(new.UpdatedAt as text)),
+                        digest('CadreControl.CadrePeer', 'publish', new.PeerId, new.Multiaddr, cast(new.UpdatedAt as text)),
                         new.Sig, new.PublicKey, 'ed25519')
             )
                 -- or an owner re-authorizes (rotation / correction): re-vouches the row over
                 -- its current StampId, so the stored voucher is re-bound to the re-authorizing owner.
                 or (
-                    exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
+                    exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'vouch', new.PeerId, new.StampId), context.Signature, A.Key, 'ed25519'))
                     and new.VouchOwner = context.OwnerKey
                     and new.VouchSig = context.Signature
                 )
@@ -166,10 +179,15 @@ declare schema CadreControl {
         Token text not null,            -- opaque platform device/registration token
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay guard)
         Sig text null,                  -- ed25519 self-sig over (PeerId|Platform|Token|UpdatedAt)
-        constraint AuthorizedInsert check on insert, delete (
+        constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key (membership vouch), exactly like CadrePeer.
-            -- The single-field digest frames the base58btc PeerId as TEXT.
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(coalesce(new.PeerId, old.PeerId)), context.Signature, A.Key, 'ed25519'))
+            -- The digest frames the base58btc PeerId as TEXT behind the domain/action tags;
+            -- the DISTINCT 'remove'-tagged digest below keeps a captured insert approval
+            -- from doubling as a delete (and vice versa).
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'add', new.PeerId), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own token, signing with its OWN ed25519 key (the key
@@ -181,11 +199,11 @@ declare schema CadreControl {
                 new.PeerId = old.PeerId
                 and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
                 and exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(
-                        digest(new.PeerId || '|' || new.Platform || '|' || new.Token || '|' || cast(new.UpdatedAt as text)),
+                        digest('CadreControl.DeviceToken', 'publish', new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text)),
                         new.Sig, P.PublicKey, 'ed25519'))
             )
                 -- or an owner re-authorizes (rotation / correction)
-                or exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest(new.PeerId), context.Signature, A.Key, 'ed25519'))
+                or exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'vouch', new.PeerId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text null, Signature text);
 
@@ -198,27 +216,43 @@ declare schema CadreControl {
         ValidationUrl text null,   -- Web hook - send disclosure, IP address...
         StrandId text null,   -- Host strand this invite binds to (provision-then-record). Non-null => the responder records consent against this pre-existing strand; null => legacy responder-provisions path.
         StampId text not null unique,   -- single-use authorization nonce (anti-replay)
-        constraint AuthorizedAddOrRemove check on insert, delete (
+        constraint AuthorizedInsert check on insert (
             -- Authorized by an owner signing over THIS row
             -- (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId); single-use via unique StampId.
-            -- coalesce(new.F, old.F) binds the NEW row on insert and the OLD row on delete (cf. CadrePeer).
-            -- StrandId is a nullable bound field: it signs as '' when absent (cf. ValidationUrl).
+            -- Nullable bound fields (ExpiresAt/TotalUses/ValidationUrl/StrandId) sign as '' when absent.
+            -- The 'remove'-tagged AuthorizedDelete digest below is DISTINCT, so a captured
+            -- insert approval can never be replayed to revoke-then-reissue an invite (or vice versa).
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
                 digest(
-                    coalesce(new.Token, old.Token),
-                    coalesce(new.sAppId, old.sAppId),
-                    coalesce(cast(coalesce(new.ExpiresAt, old.ExpiresAt) as text), ''),
-                    coalesce(cast(coalesce(new.TotalUses, old.TotalUses) as text), ''),
-                    coalesce(coalesce(new.ValidationUrl, old.ValidationUrl), ''),
-                    coalesce(coalesce(new.StrandId, old.StrandId), ''),
-                    coalesce(new.StampId, old.StampId)
+                    'CadreControl.FormationInvite', 'add',
+                    new.Token,
+                    new.sAppId,
+                    coalesce(cast(new.ExpiresAt as text), ''),
+                    coalesce(cast(new.TotalUses as text), ''),
+                    coalesce(new.ValidationUrl, ''),
+                    coalesce(new.StrandId, ''),
+                    new.StampId
+                ),
+                context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest(
+                    'CadreControl.FormationInvite', 'remove',
+                    old.Token,
+                    old.sAppId,
+                    coalesce(cast(old.ExpiresAt as text), ''),
+                    coalesce(cast(old.TotalUses as text), ''),
+                    coalesce(old.ValidationUrl, ''),
+                    coalesce(old.StrandId, ''),
+                    old.StampId
                 ),
                 context.Signature, A.Key, 'ed25519'))
         ),
         -- Invites are insert/delete only: forbid in-place mutation so the row-bound
-        -- AuthorizedAddOrRemove signature cannot be sidestepped by updating consent
+        -- AuthorizedInsert signature cannot be sidestepped by updating consent
         -- parameters (TotalUses/ExpiresAt/...) after a legitimate insert. A bare check
-        -- defaults to insert+update; the check on insert, delete above excludes update,
+        -- defaults to insert+update; the checks on insert / on delete above exclude update,
         -- so this guard is required. Mirrors FormationUsage.InsertOnly.
         constraint Immutable check on update (false)
     ) with context (OwnerKey text, Signature text);
@@ -246,7 +280,7 @@ declare schema CadreControl {
                     where FI.Token = new.Token
                         and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
-                        and (FI.ValidationUrl is null or verify(digest(new.Token || new.Disclosure), context.ValidationSignature, context.ValidationKey, 'ed25519'))
+                        and (FI.ValidationUrl is null or verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey, 'ed25519'))
             )
         ),
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId)),
