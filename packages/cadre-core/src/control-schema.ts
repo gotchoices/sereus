@@ -415,6 +415,12 @@ declare schema CadreControl {
                         -- re-examine the FormationUsage rows it already approved. The sign-off was valid when
                         -- given and the strand it authorized stays formed; removal narrows who may approve
                         -- FUTURE redemptions, it is not a retroactive revocation of past ones.
+                        --
+                        -- KNOWN GAP: the vouch digest binds only (Token, Disclosure) — not UseNumber, the
+                        -- strand, or the joining peer — so one approval is replayable for any other
+                        -- redemption of the same token that repeats the disclosure. Dormant while nothing
+                        -- calls the ValidationUrl hook (so no approvals exist to capture); tracked in
+                        -- tickets/backlog/debt-formation-approval-signature-replayable.md.
                         and (FI.ValidationUrl is null or exists (
                             select 1 from ValidationKey VK
                                 where VK.Key = context.ValidationKey

@@ -484,6 +484,42 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await db.recordFormationUsage({ token, strandId, disclosure: 'open' })).toBe(1);
       expect(await usageCount()).toBe(before + 1);
     });
+
+    it('stops approving once the key is removed, without unwinding what it already approved', async () => {
+      // A SECOND, self-contained approver so removing it leaves the block's shared key alone.
+      const retiredPrivate = generatePrivateKey('ed25519', 'base64url') as string;
+      const retiredPublic = getPublicKey(retiredPrivate, 'ed25519', 'base64url', 'base64url') as string;
+      await db.insertValidationKey(retiredPublic, ownerPublicKey, signMessage);
+
+      const approved = await validatingInvite('before-removal');
+      expect(await db.recordFormationUsage({
+        ...approved, disclosure: 'before-removal-disclosure',
+        validationKey: retiredPublic,
+        validationSignature: vouch(retiredPrivate, approved.token, 'before-removal-disclosure'),
+      })).toBe(1);
+
+      await db.deleteValidationKey(retiredPublic, ownerPublicKey, signMessage);
+
+      // Future redemptions: the `exists` finds no row, so the same approver is now powerless.
+      const later = await validatingInvite('after-removal');
+      const disclosure = 'after-removal-disclosure';
+      const before = await usageCount();
+      await expectConstraintFailure(
+        db.recordFormationUsage({
+          ...later, disclosure,
+          validationKey: retiredPublic,
+          validationSignature: vouch(retiredPrivate, later.token, disclosure),
+        }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(before);
+
+      // Past redemptions: CHECKs run on write only, so the already-approved row stands.
+      expect(await rawDb.get(
+        'select UseNumber from CadreControl.FormationUsage where Token = ?',
+        [approved.token],
+      )).toBeDefined();
+    });
   });
 
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
