@@ -20,7 +20,7 @@ Conventions:
 - [ ] Add initial Compose files (or placeholders) for:
   - [x] `sereus/ops/docker/bootstrap/docker-compose.yml`
   - [x] `sereus/ops/docker/relay/docker-compose.yml`
-  - [~] `sereus/ops/docker/sereus-node/docker-compose.yml` (template; needs image/entrypoint)
+  - [x] `sereus/ops/docker/sereus-node/` — removed as a duplicate; see the "Superseded" note below (canonical template is `packages/cadre-cli/docker/docker-compose.yml`)
   - [x] `sereus/ops/docker/bootstrap-relay/docker-compose.yml` (combined node)
 - [x] Add env example files for each folder with the minimum required knobs
   - Note: dotfiles like `.env.example` are blocked in this workspace; using `env.example`.
@@ -35,7 +35,7 @@ Conventions:
 - [x] Document quickstart flows:
   - [x] “Run a public relay” (`sereus/ops/docker/quickstarts/relay.md`)
   - [x] “Run a private bootstrap node” (`sereus/ops/docker/quickstarts/bootstrap.md`)
-  - [ ] “Add a headless sereus-node to a cadre” (deferred; needs real image/entrypoint)
+  - [ ] “Add a headless sereus-node to a cadre” (deferred; a real image/entrypoint exists now — `packages/cadre-cli/docker/` — this is just a missing quickstart doc, not a missing artifact)
 
 ### Ops validation status (as-tested on `sereus.org`)
 - [x] Relay container works (Circuit Relay v2 server)
@@ -121,12 +121,19 @@ Conventions:
     - Optimystic storage repo (file storage path)
     - any cadre enrollment state / certificates / ACLs (TBD)
 
-- [ ] Bring `sereus/ops/docker/sereus-node` up to the current ops patterns
-  - [ ] Replace the current placeholder `SEREUS_NODE_IMAGE` approach with either:
-    - a local-build Dockerfile + entrypoint (preferred, consistent with other ops/docker stacks), or
-    - an explicitly deferred “prebuilt image” doc.
-  - [ ] Refactor `env.example` to host-level knobs (`HOST_PORT`, `HOST_BIND_IP`, `HOST_DATA_DIR`) plus the minimum `sereus-node` knobs above.
-  - [ ] Update the compose file to use `./svc` and `--env-file env.local` workflow (same as relay/bootstrap).
+- [x] **Superseded (2026-07-28):** `sereus/ops/docker/sereus-node` no longer carries its own
+  compose/env template. It had drifted into a hand-maintained duplicate of the real one shipped
+  with `@serfab/cadre-cli` (`packages/cadre-cli/docker/`, which already builds from a real
+  `Dockerfile` — the "placeholder `SEREUS_NODE_IMAGE`" below is stale), so `ops/docker/sereus-node/`
+  is now a pointer README to that canonical template
+  (`tickets/complete/8-consolidate-duplicate-cadre-node-docker-templates.md`). It intentionally does
+  **not** move to the `./svc`/`env.local` ops pattern used by relay/bootstrap — a `sereus-node`
+  belongs to one user's cadre, not shared ops infra — so the sub-bullets below no longer apply.
+  - [ ] ~~Replace the current placeholder `SEREUS_NODE_IMAGE` approach with either:~~
+    - ~~a local-build Dockerfile + entrypoint (preferred, consistent with other ops/docker stacks), or~~
+    - ~~an explicitly deferred “prebuilt image” doc.~~
+  - [ ] ~~Refactor `env.example` to host-level knobs (`HOST_PORT`, `HOST_BIND_IP`, `HOST_DATA_DIR`) plus the minimum `sereus-node` knobs above.~~
+  - [ ] ~~Update the compose file to use `./svc` and `--env-file env.local` workflow (same as relay/bootstrap).~~
 
 - [ ] Docker wiring
   - [ ] Map required ports (tcp/ws/quic/etc) and document firewall rules (start with tcp only)
