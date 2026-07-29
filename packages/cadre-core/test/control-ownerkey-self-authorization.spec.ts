@@ -118,12 +118,20 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
    * a transaction alongside one of these: `RevocationRecorded` refuses a bare delete, and
    * keeping the tombstone present keeps each rejection test pinned to its ORIGINAL
    * constraint name instead of widening the accepted alternatives.
+   *
+   * Owner-signed over its OWN domain-tagged digest (`Revocation.Authorized`) — the
+   * delete's `'CadreControl.OwnerKey'` `'remove'` signature does not satisfy it.
    */
   function tombstoneOwnerKeyStamp(stampId: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, StampId)
+         with context OwnerKey = ?, Signature = ?
          values ('OwnerKey', ?)`,
-      [stampId],
+      [
+        founder.publicKey,
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', stampId])),
+        stampId,
+      ],
     );
   }
 

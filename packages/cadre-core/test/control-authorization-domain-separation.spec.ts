@@ -94,12 +94,19 @@ describe('CadreControl approval domain separation', () => {
 
   /** Retire a stamp into `CadreControl.Revocation` — the delete-side companion every
    * guarded delete must carry (`RevocationRecorded`), so rejection assertions stay
-   * pinned to the constraint under test. */
+   * pinned to the constraint under test. Owner-signed over its OWN domain-tagged digest
+   * (`Revocation.Authorized`); the delete's `'remove'` signature does not satisfy it. */
   function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer', stampId: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, StampId)
+         with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [tableName, stampId],
+      [
+        founder.publicKey,
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, stampId])),
+        tableName,
+        stampId,
+      ],
     );
   }
 

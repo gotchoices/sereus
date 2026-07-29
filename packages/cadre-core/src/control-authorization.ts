@@ -27,9 +27,10 @@
  * SQL-injection surface), so a new table cannot be added to one and missed in
  * the other.
  *
- * `Revocation` derives a `'CadreControl.Revocation'` domain tag like every
- * other entry, but no signature is ever minted for it — the table's CHECKs
- * carry no `verify(...)`; it is listed so `countRows` can count it.
+ * `Revocation` is here for the same two reasons as every other entry: it
+ * derives a `'CadreControl.Revocation'` domain tag — its `Authorized` CHECK
+ * verifies an owner signature over the `'remove'`-tagged digest that
+ * `peer-authorization.ts`'s `revocationDigest` mints — and `countRows` counts it.
  */
 export const CONTROL_TABLES = [
   'OwnerKey',
@@ -47,6 +48,20 @@ export const CONTROL_TABLES = [
  * {@link ControlDomain} tag.
  */
 export type ControlTable = typeof CONTROL_TABLES[number];
+
+/**
+ * The control tables whose rows carry a single-use `StampId` retired into
+ * `CadreControl.Revocation` on delete — i.e. the ones the schema's
+ * `NotRevoked` / `RevocationRecorded` CHECK pair guards, and the only values
+ * `Revocation.RowIsGone` accepts in `TableName`. `Extract` from
+ * {@link ControlTable} rather than a fresh literal list, so a renamed table is a
+ * compile error here instead of a silently dead branch.
+ *
+ * Lives in this import-free module rather than beside its main consumer
+ * (`control-database.ts`) so the lightweight signers — `peer-authorization.ts`'s
+ * `revocationDigest` — can type against it without pulling in the runtime.
+ */
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'>;
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for

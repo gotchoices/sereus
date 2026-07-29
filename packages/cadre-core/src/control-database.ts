@@ -11,9 +11,9 @@ import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, Pus
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
-import type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
+import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
-export type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
+export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
 const log = debug('sereus:cadre:control-db');
 const timing = debug('sereus:cadre:timing');
@@ -148,15 +148,6 @@ interface OptimysticPluginResult {
 
 /** Runtime guard for the dynamic-`from` count, over the one table list. */
 const CONTROL_TABLE_SET: ReadonlySet<ControlTable> = new Set<ControlTable>(CONTROL_TABLES);
-
-/**
- * The control tables whose rows carry a single-use `StampId` retired into
- * `CadreControl.Revocation` on delete — i.e. the ones the schema's
- * `NotRevoked` / `RevocationRecorded` CHECK pair guards. `Extract` from
- * {@link ControlTable} rather than a fresh literal list, so a renamed table is a
- * compile error here instead of a silently dead branch.
- */
-export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'>;
 
 /** Primary-key column of each {@link RevocableTable}, in that order. */
 type GuardedKeyColumn = 'Key' | 'Id' | 'PeerId';
@@ -794,6 +785,12 @@ export class ControlDatabase {
 
     const message = buildAuthorizationMessage(`CadreControl.${table}`, 'remove', [keyValue, stampId]);
     const signature = signMessage(message);
+    // The tombstone carries its OWN owner signature (`Revocation.Authorized`): retiring a
+    // stamp is permanent and party-wide, so the delete's signature deliberately does not
+    // cover it — the digests are domain-separated and neither replays as the other.
+    const revocationSignature = signMessage(
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', [table, stampId]),
+    );
 
     await this.inTransaction(`delete ${table}`, async () => {
       await this.db!.exec(`
@@ -803,8 +800,9 @@ export class ControlDatabase {
       `, [ownerKey, signature, keyValue]);
       await this.db!.exec(`
         insert into CadreControl.Revocation (TableName, StampId)
+          with context OwnerKey = ?, Signature = ?
           values (?, ?)
-      `, [table, stampId]);
+      `, [ownerKey, revocationSignature, table, stampId]);
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);

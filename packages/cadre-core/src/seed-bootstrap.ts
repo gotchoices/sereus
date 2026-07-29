@@ -23,7 +23,7 @@ import type {
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
-import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest, deviceTokenRemoveDigest } from './peer-authorization.js';
+import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest, deviceTokenRemoveDigest, revocationDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -456,6 +456,11 @@ export class SeedBootstrapService {
    * transaction — `CadrePeer.RevocationRecorded` refuses a bare delete, and without the
    * tombstone the stamp would free up and the original admission approval (which never
    * expires, and which the removed peer holds a copy of) would re-seat the row.
+   *
+   * The tombstone is separately owner-signed ({@link revocationDigest}, satisfying
+   * `Revocation.Authorized`): retiring a stamp evicts that peer party-wide and permanently
+   * forecloses re-admitting the row, so it is an owner action in its own right, not a
+   * side effect the delete's signature covers.
    */
   async removePeer(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
@@ -474,6 +479,7 @@ export class SeedBootstrapService {
       return;
     }
     const signature = this.signDigest(cadrePeerRemoveDigest(peerId, stampId));
+    const revocationSignature = this.signDigest(revocationDigest('CadrePeer', stampId));
 
     log('Removing peer: %s', peerId);
 
@@ -487,8 +493,9 @@ export class SeedBootstrapService {
       `, [this.ownerPublicKey, signature, peerId]);
       await db.exec(`
         insert into CadreControl.Revocation (TableName, StampId)
+          with context OwnerKey = ?, Signature = ?
           values ('CadrePeer', ?)
-      `, [stampId]);
+      `, [this.ownerPublicKey, revocationSignature, stampId]);
       await db.commit();
     } catch (error) {
       // A failed commit() already tears down the transaction, so rollback() would

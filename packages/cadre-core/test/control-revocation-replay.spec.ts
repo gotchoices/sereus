@@ -99,6 +99,10 @@ const strandAddMessage = (
 const strandRemoveMessage = (id: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.Strand', 'remove', [id, stampId]);
 
+/** `Revocation.Authorized` binds the whole tombstone row under its own domain tag. */
+const revocationMessage = (tableName: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, stampId]);
+
 describe('Revocation: remove-then-replay resurrection is closed', () => {
   let node: CadreNode;
   let db: ControlDatabase;
@@ -264,12 +268,24 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
   }
 
-  /** Retire a stamp into the append-only tombstone table (no context clause — the table declares none). */
+  /**
+   * Retire a stamp into the append-only tombstone table, owner-signed over the digest
+   * `Revocation.Authorized` verifies: `digest('CadreControl.Revocation', 'remove',
+   * new.TableName, new.StampId)`. `tableName` is a plain string (not `RevocableTable`)
+   * so the tests can probe names outside the guarded set — `RowIsGone` is what must
+   * reject those, and it only gets the chance once `Authorized` is satisfied.
+   */
   function tombstoneStamp(tableName: string, stampId: string): Promise<void> {
     return rawDb.exec(
       `insert into CadreControl.Revocation (TableName, StampId)
+         with context OwnerKey = ?, Signature = ?
          values (?, ?)`,
-      [tableName, stampId],
+      [
+        founder.publicKey,
+        signAs(founder, revocationMessage(tableName, stampId)),
+        tableName,
+        stampId,
+      ],
     );
   }
 

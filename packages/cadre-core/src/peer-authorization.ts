@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { digest, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
-import type { ControlAction, ControlDomain } from './control-authorization.js';
+import type { ControlAction, ControlDomain, RevocableTable } from './control-authorization.js';
 
 const log = debug('sereus:cadre:peer-authorization');
 
@@ -78,6 +78,22 @@ export function cadrePeerVoucherDigest(peerId: string, stampId: string): string 
  */
 export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
   return taggedDigest('CadreControl.CadrePeer', 'remove', [peerId, stampId]);
+}
+
+/**
+ * Canonical digest an owner signs to APPEND a `CadreControl.Revocation` tombstone —
+ * the row retiring `stampId` for the named guarded table. SQL mirror:
+ * `digest('CadreControl.Revocation', 'remove', new.TableName, new.StampId)` in
+ * `Revocation.Authorized`.
+ *
+ * Its own `'CadreControl.Revocation'` domain tag makes it disjoint from the
+ * `'CadreControl.CadrePeer'` (or `OwnerKey` / `ValidationKey` / `Strand`)
+ * `'remove'` digest the same owner signs in the SAME transaction for the delete
+ * this tombstone accompanies — a removal signature is not a retirement
+ * signature and cannot be replayed as one.
+ */
+export function revocationDigest(tableName: RevocableTable, stampId: string): string {
+  return taggedDigest('CadreControl.Revocation', 'remove', [tableName, stampId]);
 }
 
 /**

@@ -482,8 +482,10 @@ declare schema CadreControl {
     -- resurrected row coexists with the tombstone after merge — same class as the MinOneOwner
     -- note on OwnerKey. The read-side mitigation is CadreNode.listAuthorizedMembers, which
     -- drops any CadrePeer row whose StampId appears here.
-    -- NOTE: append-only, so this table only ever grows. Cadres are a handful of peers and
-    -- owner rotation is rare, so unbounded growth is fine today; revisit if either changes.
+    -- NOTE: append-only, so this table only ever grows. Every append is owner-signed
+    -- (Authorized below), so the growth surface is the owner keys, not every writer that can
+    -- reach the control database. Cadres are a handful of peers and owner rotation is rare, so
+    -- unbounded growth is fine today; revisit if either changes.
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' (confined by RowIsGone below)
         StampId text,               -- the retired nonce
@@ -500,8 +502,30 @@ declare schema CadreControl {
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
                 or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
+        ),
+        -- Appending a tombstone is an OWNER action, like every other write in this schema.
+        -- Ungated, any writer that could reach the control database could retire a stamp:
+        -- filing one against a CadrePeer row not visible locally (RowIsGone reads LOCALLY
+        -- VISIBLE rows — see the convergence note above) evicted that peer party-wide AND
+        -- permanently blocked the owner's own later re-admission of it (NotRevoked), and
+        -- filing arbitrary stamps flooded a table whose rows never go away.
+        -- The digest binds the WHOLE row (TableName, StampId); the 'CadreControl.Revocation'
+        -- domain tag keeps it disjoint from every other rule — including the
+        -- 'CadreControl.CadrePeer' 'remove' digest the same owner signs in the SAME
+        -- transaction for the delete this tombstone accompanies.
+        -- Reads LIVE OwnerKey (like ValidationKey / Strand / CadrePeer / DeviceToken), not
+        -- committed.OwnerKey. The one difference that makes: a founding transaction on an
+        -- owner-less database could seat an owner key and file a tombstone in one go. An
+        -- owner-less control database is already a total loss, and a second transaction
+        -- achieves the same thing under committed.*, so consistency with the siblings is
+        -- worth more than the distinction — do not "tighten" this without a reason other
+        -- than that one.
+        -- RowIsGone and Immutable are unchanged: they guard an owner retiring a stamp early
+        -- or withdrawing one later, which authorization does not cover.
+        constraint Authorized check on insert (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.StampId), context.Signature, A.Key, 'ed25519'))
         )
-    );
+    ) with context (OwnerKey text, Signature text);
 }
 
 apply schema CadreControl;
