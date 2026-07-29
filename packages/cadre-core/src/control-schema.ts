@@ -332,31 +332,79 @@ declare schema CadreControl {
         Token text not null,            -- opaque platform device/registration token
         UpdatedAt int null,             -- epoch ms; strictly increases per self-update (replay guard)
         Sig text null,                  -- ed25519 self-sig over (PeerId|Platform|Token|UpdatedAt)
+        StampId text not null unique,    -- single-use authorization nonce, bound into the add/remove digests;
+                                         -- rotates on (re)insert. A cleared token's stamp is retired permanently
+                                         -- into Revocation (NotRevoked below), so the approval that published a
+                                         -- token cannot re-seat it after the owner cleared it (logout).
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert
+        -- naming a retired stamp: the approval that seated this row can never re-seat it after
+        -- the clear. \`unique\` alone did not do this — it only holds over LIVE rows, so a delete
+        -- freed the stamp and the original never-expiring signature verified again. A legitimate
+        -- re-register mints a FRESH StampId and a fresh signature, so it is unaffected. This
+        -- matters more here than the stored-approval case (CadrePeer.VouchSig): a resurrected
+        -- push token has NO freshness ceiling to retire it — cadre-node.ts:resolveDeviceToken
+        -- defaults maxAgeMs to infinity by design — so retirement is the only thing that sticks.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = old.StampId)
+        ),
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key (membership vouch), exactly like CadrePeer.
-            -- The digest frames the base58btc PeerId as TEXT behind the domain/action tags;
-            -- the DISTINCT 'remove'-tagged digest below keeps a captured insert approval
-            -- from doubling as a delete (and vice versa).
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'add', new.PeerId), context.Signature, A.Key, 'ed25519'))
+            -- The digest binds the WHOLE row behind the domain/action tags — every column,
+            -- with the nullable UpdatedAt/Sig signing as '' when absent (the shape
+            -- FormationInvite and Strand already use) — so a replayed approval can only ever
+            -- reproduce the row it approved, never one carrying attacker-chosen
+            -- Platform/Token/UpdatedAt; NotRevoked above then refuses even that exact row
+            -- once it has been cleared. The DISTINCT 'remove'-tagged digest below keeps a
+            -- captured insert approval from doubling as a delete (and vice versa).
+            -- Mirrors cadre-core peer-authorization.ts:deviceTokenAddDigest.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(
+                digest(
+                    'CadreControl.DeviceToken', 'add',
+                    new.PeerId,
+                    new.Platform,
+                    new.Token,
+                    coalesce(cast(new.UpdatedAt as text), ''),
+                    coalesce(new.Sig, ''),
+                    new.StampId
+                ),
+                context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedDelete check on delete (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId), context.Signature, A.Key, 'ed25519'))
+            -- Bound to the STORED row's (PeerId, StampId) — cadre-core
+            -- peer-authorization.ts:deviceTokenRemoveDigest — so the never-expiring insert
+            -- approval can never be replayed as a clear, and a captured clear approval is
+            -- dead once the stamp it names is retired.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own token, signing with its OWN ed25519 key (the key
-            -- behind PeerId). PeerId is immutable, UpdatedAt must strictly increase (replay
-            -- guard), and Sig is verified against the stored CadrePeer.PublicKey over the
-            -- signed payload (cadre-core device-token.ts:deviceTokenSignedPayload). Platform
-            -- and Token may change on self-update (platform switch / reinstall / rotation).
-            (
-                new.PeerId = old.PeerId
-                and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
-                and exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(
-                        digest('CadreControl.DeviceToken', 'publish', new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text)),
-                        new.Sig, P.PublicKey, 'ed25519'))
-            )
-                -- or an owner re-authorizes (rotation / correction)
-                or exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'vouch', new.PeerId), context.Signature, A.Key, 'ed25519'))
+            -- behind PeerId). PeerId and StampId are immutable, UpdatedAt must strictly
+            -- increase (replay guard), and Sig is verified against the stored
+            -- CadrePeer.PublicKey over the signed payload (cadre-core
+            -- device-token.ts:deviceTokenSignedPayload). Platform and Token may change on
+            -- self-update (platform switch / reinstall / rotation).
+            -- StampId is immutable for the reason CadrePeer spells out: an update that
+            -- rotated it would leave the OLD stamp live-free and untombstoned, so retiring a
+            -- stamp stays delete + Revocation row, never an update.
+            -- This is the ONLY branch: there is deliberately NO owner re-touch. The branch
+            -- that used to sit beside it verified an owner signature over the peer id alone
+            -- and sat OUTSIDE the monotonicity requirement, so one captured owner approval
+            -- rewrote Platform/Token and rolled UpdatedAt BACKWARDS — and seating a
+            -- far-future UpdatedAt wedged the peer's own self-updates permanently. No writer
+            -- used it. An owner that must correct a row deletes it (retiring the stamp) and
+            -- inserts a fresh one, the same path it already takes for CadrePeer.
+            new.PeerId = old.PeerId
+            and new.StampId = old.StampId
+            and new.UpdatedAt > coalesce(old.UpdatedAt, 0)
+            and exists (select 1 from CadrePeer P where P.PeerId = new.PeerId and verify(
+                    digest('CadreControl.DeviceToken', 'publish', new.PeerId, new.Platform, new.Token, cast(new.UpdatedAt as text)),
+                    new.Sig, P.PublicKey, 'ed25519'))
         )
     ) with context (OwnerKey text null, Signature text);
 
@@ -498,7 +546,7 @@ declare schema CadreControl {
     -- reach the control database. Cadres are a handful of peers and owner rotation is rare, so
     -- unbounded growth is fine today; revisit if either changes.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' (confined by RowIsGone below)
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken' (confined by RowIsGone below)
         StampId text,               -- the retired nonce
         primary key (TableName, StampId),
         -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
@@ -513,6 +561,7 @@ declare schema CadreControl {
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
                 or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
                 or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
+                or (new.TableName = 'DeviceToken' and not exists (select 1 from DeviceToken D where D.StampId = new.StampId))
         ),
         -- Appending a tombstone is an OWNER action, like every other write in this schema.
         -- Ungated, any writer that could reach the control database could retire a stamp:
