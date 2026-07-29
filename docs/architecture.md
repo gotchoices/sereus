@@ -32,13 +32,13 @@ The control network is a private Optimystic network involving only the party's o
 | Table | Purpose |
 |-------|---------|
 | `OwnerKey` | Keys authorized to make control changes. Add/remove only (rotation is add-then-remove), each authorized by a signature from an owner that existed **before** the transaction — so no key can seat itself and no pair can seat each other — and the table can never be emptied. Details in the constraint comments in `schemas/control.qsql` |
-| `ValidationKey` | Keys that can validate strand formation disclosures |
-| `Strand` | List of strands the party participates in |
+| `ValidationKey` | Keys that can validate strand formation disclosures. Add/remove only (rotation is add-then-remove); both writes need an owner signature bound to the row, over distinct add/remove digests, and a removal must retire the row's stamp into `Revocation` in the same transaction |
+| `Strand` | List of strands the party participates in. Add/remove only, same owner-signed add/remove rule as `ValidationKey`. Adding may instead be authorized by a redeemed formation invitation (no signature); removing may **not** — an invitation authorizes forming a strand, never destroying one, and a closed strand's row carries the party's `MemberPrivateKey` for that network |
 | `CadrePeer` | Registry of nodes in the cadre |
 | `DeviceToken` | Self-published FCM/APNs push token per mobile peer (for push-wake of a suspended app) |
 | `FormationInvite` | Open invitations to form strands with this party |
 | `FormationUsage` | Audit log of formation invite consumption |
-| `Revocation` | Append-only retirement record for the one-off `StampId` nonces of removed `OwnerKey` / `CadrePeer` rows. Removing a row without retiring its stamp would leave the add-approval signature (never expires, and for `CadrePeer` stored on the replicated row) able to re-seat the row verbatim. Details in the constraint comments in `schemas/control.qsql` |
+| `Revocation` | Append-only retirement record for the one-off `StampId` nonces of removed `OwnerKey` / `CadrePeer` / `ValidationKey` / `Strand` rows. Removing a row without retiring its stamp would leave the add-approval signature (never expires, and for `CadrePeer` stored on the replicated row) able to re-seat the row verbatim. Details in the constraint comments in `schemas/control.qsql` |
 
 #### Network scoping (current implementation)
 

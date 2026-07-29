@@ -9,6 +9,7 @@ import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
 import { buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
  * Verifies the row-bound, single-use authorization scheme for the privileged control
@@ -16,6 +17,12 @@ import type { ControlDatabase } from '../src/control-database.js';
  * the row's contents (not a bare stamp), and the StampId is a unique single-use column,
  * so a captured `(StampId, Signature)` pair cannot be transplanted onto an attacker-
  * chosen row (privilege escalation) or replayed.
+ *
+ * Row-binding only covers the write that carries the signature, so each of these tables
+ * also forbids UPDATE outright (`NoUpdate` / `Immutable`) — otherwise a legitimately
+ * inserted row could be rewritten afterwards with no signature at all. Those guards are
+ * pinned here; the delete half (signature + `Revocation` tombstone) lives in
+ * `control-revocation-replay.spec.ts`, which has the transaction helpers it needs.
  *
  * Boots a real CadreNode (empty bootstrap, transaction profile — no network peers), the
  * same harness the genesis spec uses, and drives both the real writers
@@ -519,6 +526,53 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await expect(rawInsertStrand(inviteSig, attackerStrand, 'o', null, stamp)).rejects.toThrow();
     expect(await strandCount()).toBe(before);
     expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [attackerStrand])).toBeUndefined();
+  });
+
+  it('ValidationKey tamper-via-update rejected: the stamp cannot be rotated out from under a tombstone (NoUpdate)', async () => {
+    // Row-binding only guards the write that carries the signature. Rotating StampId by
+    // update would strand the OLD stamp — never tombstoned (a delete only retires the stamp
+    // it carries), no longer on a live row — so the original enrollment approval could
+    // re-seat the key after a later removal. Retiring a stamp is delete + Revocation, never
+    // an update. Mirrors the CadrePeer stamp-rotation guard.
+    const key = 'val-noupd-' + Math.random().toString(36).slice(2);
+    const stamp = freshStamp();
+    const sig = signMessage(buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stamp]));
+    await rawInsertValidationKey(sig, key, stamp);
+
+    await expectConstraintFailure(
+      rawDb.exec('update CadreControl.ValidationKey set StampId = ? where Key = ?', [freshStamp(), key]),
+      'NoUpdate',
+    );
+    const row = await rawDb.get('select StampId from CadreControl.ValidationKey where Key = ?', [key]);
+    expect(row?.StampId).toBe(stamp);
+  });
+
+  it('Strand tamper-via-update rejected: a consent-formed strand cannot be rewritten unsigned (NoUpdate)', async () => {
+    // The consent branch of `Strand.AuthorizedInsert` authorizes by the EXISTENCE of a
+    // FormationUsage row for the strand id and carries no signature. While that rule was a
+    // bare `check` — which covers insert AND update — it therefore also said "anyone may
+    // rewrite any consent-formed strand, unsigned": flipping Type to 'o' and nulling
+    // MemberPrivateKey destroys the party's own membership key for that network in place.
+    const token = 'fi-strand-noupd-' + Math.random().toString(36).slice(2);
+    const strandId = 'strand-noupd-' + Math.random().toString(36).slice(2);
+    const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+
+    await db.insertFormationInvite(token, 'sapp-strand-noupd', ownerPublicKey, signMessage, { totalUses: 1 });
+    await db.redeemInvitation({ token, strandId, type: 'c', memberPrivateKey });
+
+    await expectConstraintFailure(
+      rawDb.exec(
+        'update CadreControl.Strand set Type = ?, MemberPrivateKey = ? where Id = ?',
+        ['o', null, strandId],
+      ),
+      'NoUpdate',
+    );
+    const row = await rawDb.get(
+      'select Type, MemberPrivateKey from CadreControl.Strand where Id = ?',
+      [strandId],
+    );
+    expect(row?.Type).toBe('c');
+    expect(row?.MemberPrivateKey).toBe(memberPrivateKey);
   });
 
   it('FormationInvite tamper-via-update rejected: a row cannot be mutated after insertion (no unauthorized update)', async () => {

@@ -11,15 +11,24 @@ import { CadreNode } from '../src/cadre-node.js';
 import { buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { cadrePeerVoucherDigest, cadrePeerRemoveDigest } from '../src/peer-authorization.js';
+import { expectConstraintFailure } from './control-constraint-helpers.js';
 
 /**
- * Remove-then-replay resurrection coverage for `CadreControl.Revocation`.
+ * Remove-then-replay resurrection coverage for `CadreControl.Revocation`, plus the
+ * authorization of `ValidationKey` / `Strand` deletes.
  *
  * Before this suite's fix, deleting an `OwnerKey` or `CadrePeer` row freed its one-off
  * `StampId` nonce: `unique` only holds over LIVE rows. The original add-approval signature
  * never expires — and for `CadrePeer` it is even STORED on the replicated row as `VouchSig`
  * — so anyone who kept a copy could re-seat a removed owner or peer verbatim, making every
  * removal undoable.
+ *
+ * `ValidationKey` and `Strand` joined the guarded set later. Their authorization was a bare
+ * `constraint Authorized check (...)`, which in Quereus covers insert and update only — so
+ * DELETE on either table was gated by nothing at all and any writer could drop a strand row
+ * (destroying the party's `MemberPrivateKey` for that network) or a validation key. They now
+ * carry the same `AuthorizedDelete` + `RevocationRecorded` + `NotRevoked` triple as the
+ * tables above, and the `Revocation.RowIsGone` branch list was extended to match.
  *
  * The fix is an append-only `CadreControl.Revocation` table that retires
  * `(TableName, StampId)` on removal. Three constraints carry it, each pinned here BY NAME:
@@ -73,6 +82,23 @@ const enrollMessage = (key: string, stampId: string): Uint8Array =>
 const removeMessage = (key: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.OwnerKey', 'remove', [key, stampId]);
 
+/** `ValidationKey` binds (Key, StampId) under both action tags. */
+const validationKeyMessage = (action: 'add' | 'remove', key: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.ValidationKey', action, [key, stampId]);
+
+/** `Strand`'s add branch binds the whole row; MemberPrivateKey signs as '' when null. */
+const strandAddMessage = (
+  id: string,
+  type: string,
+  memberPrivateKey: string | null,
+  stampId: string,
+): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Strand', 'add', [id, type, memberPrivateKey ?? '', stampId]);
+
+/** `Strand`'s delete branch binds only the stored (Id, StampId) — a distinct, narrower digest. */
+const strandRemoveMessage = (id: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Strand', 'remove', [id, stampId]);
+
 describe('Revocation: remove-then-replay resurrection is closed', () => {
   let node: CadreNode;
   let db: ControlDatabase;
@@ -94,6 +120,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
 
   function cadrePeerRow(peerId: string): Promise<Record<string, unknown> | undefined> {
     return rawDb.get('select PeerId from CadreControl.CadrePeer where PeerId = ?', [peerId]);
+  }
+
+  function validationKeyRow(key: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get('select Key from CadreControl.ValidationKey where Key = ?', [key]);
+  }
+
+  function strandRow(id: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get('select Id, StampId from CadreControl.Strand where Id = ?', [id]);
   }
 
   function rawInsertOwnerKey(
@@ -174,6 +208,62 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
   }
 
+  function rawInsertValidationKey(
+    contextOwner: string | null,
+    signature: string | null,
+    key: string,
+    stampId: string,
+  ): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.ValidationKey (Key, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?)`,
+      [contextOwner, signature, key, stampId],
+    );
+  }
+
+  function rawDeleteValidationKey(
+    contextOwner: string | null,
+    signature: string | null,
+    key: string,
+  ): Promise<void> {
+    return rawDb.exec(
+      `delete from CadreControl.ValidationKey
+         with context OwnerKey = ?, Signature = ?
+         where Key = ?`,
+      [contextOwner, signature, key],
+    );
+  }
+
+  function rawInsertStrand(
+    contextOwner: string | null,
+    signature: string | null,
+    id: string,
+    type: string,
+    memberPrivateKey: string | null,
+    stampId: string,
+  ): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?, ?, ?)`,
+      [contextOwner, signature, id, type, memberPrivateKey, stampId],
+    );
+  }
+
+  function rawDeleteStrand(
+    contextOwner: string | null,
+    signature: string | null,
+    id: string,
+  ): Promise<void> {
+    return rawDb.exec(
+      `delete from CadreControl.Strand
+         with context OwnerKey = ?, Signature = ?
+         where Id = ?`,
+      [contextOwner, signature, id],
+    );
+  }
+
   /** Retire a stamp into the append-only tombstone table (no context clause — the table declares none). */
   function tombstoneStamp(tableName: string, stampId: string): Promise<void> {
     return rawDb.exec(
@@ -199,17 +289,6 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       }
       throw error;
     }
-  }
-
-  /**
-   * Assert the write was rejected by one of the NAMED CHECK constraints, not by an
-   * incidental SQL, binding, or transaction error. A bare `rejects.toThrow()` goes green on
-   * a mistyped statement, which would silently retire the attack it claims to pin.
-   */
-  function expectConstraintFailure(write: Promise<unknown>, ...constraints: string[]) {
-    return expect(write).rejects.toThrow(
-      new RegExp(`CHECK constraint failed: (${constraints.join('|')})\\b`),
-    );
   }
 
   /** Seat a second owner the legitimate way, handing back what a replay attacker captures. */
@@ -248,6 +327,50 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         peerId,
       );
       await tombstoneStamp('CadrePeer', stamp);
+    });
+  }
+
+  /** Enroll a validation key the legitimate way, handing back what a replay attacker captures. */
+  async function enrollValidationKey(key: string): Promise<{ stamp: string; addSig: string }> {
+    const stamp = freshStamp();
+    const addSig = signAs(founder, validationKeyMessage('add', key, stamp));
+    await rawInsertValidationKey(founder.publicKey, addSig, key, stamp);
+    return { stamp, addSig };
+  }
+
+  /** Seat a strand the legitimate (owner-signed) way — the non-consent branch of AuthorizedInsert. */
+  async function seatStrand(
+    id: string,
+    type: 'o' | 'c' = 'c',
+    memberPrivateKey: string | null = 'member-key-' + Math.random().toString(36).slice(2),
+  ): Promise<{ stamp: string; addSig: string }> {
+    const stamp = freshStamp();
+    const addSig = signAs(founder, strandAddMessage(id, type, memberPrivateKey, stamp));
+    await rawInsertStrand(founder.publicKey, addSig, id, type, memberPrivateKey, stamp);
+    return { stamp, addSig };
+  }
+
+  /** The legitimate ValidationKey removal shape: signed delete + tombstone in ONE transaction. */
+  async function removeValidationKey(key: string, stamp: string): Promise<void> {
+    await inTransaction(async () => {
+      await rawDeleteValidationKey(
+        founder.publicKey,
+        signAs(founder, validationKeyMessage('remove', key, stamp)),
+        key,
+      );
+      await tombstoneStamp('ValidationKey', stamp);
+    });
+  }
+
+  /** The legitimate Strand removal shape: signed delete + tombstone in ONE transaction. */
+  async function removeStrand(id: string, stamp: string): Promise<void> {
+    await inTransaction(async () => {
+      await rawDeleteStrand(
+        founder.publicKey,
+        signAs(founder, strandRemoveMessage(id, stamp)),
+        id,
+      );
+      await tombstoneStamp('Strand', stamp);
     });
   }
 
@@ -433,9 +556,191 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await cadrePeerRow(peerId)).toBeDefined();
   }, 60_000);
 
+  // ── ValidationKey / Strand: delete used to be gated by NOTHING ─────────────
+  //
+  // Each attack below rides in a transaction alongside its tombstone so
+  // `RevocationRecorded` is satisfied and the ONLY failing constraint is the authorization
+  // one — the same technique control-ownerkey-self-authorization.spec.ts uses to keep a
+  // rejection pinned to the constraint it is actually about.
+
+  it('ValidationKey: a delete is refused unless an owner signs the remove digest (AuthorizedDelete)', async () => {
+    const key = 'val-del-' + Math.random().toString(36).slice(2);
+    const { stamp, addSig } = await enrollValidationKey(key);
+    const decoy = 'val-decoy-' + Math.random().toString(36).slice(2);
+    const { stamp: decoyStamp } = await enrollValidationKey(decoy);
+
+    const attack = (contextOwner: string | null, signature: string | null) =>
+      inTransaction(async () => {
+        await rawDeleteValidationKey(contextOwner, signature, key);
+        await tombstoneStamp('ValidationKey', stamp);
+      });
+
+    // Before the fix `Authorized` was a bare `check`, which in Quereus covers insert and
+    // update only — so this unsigned delete was ACCEPTED and the row simply vanished.
+    await expectConstraintFailure(attack(null, null), 'AuthorizedDelete');
+
+    // The enrollment approval covers the same (Key, StampId) fields, but under the 'add'
+    // action tag, so it can never be replayed as a removal.
+    await expectConstraintFailure(attack(founder.publicKey, addSig), 'AuthorizedDelete');
+
+    // A genuine 'remove' signature minted for ANOTHER row does not transplant onto this one.
+    await expectConstraintFailure(
+      attack(founder.publicKey, signAs(founder, validationKeyMessage('remove', decoy, decoyStamp))),
+      'AuthorizedDelete',
+    );
+
+    expect(await validationKeyRow(key)).toBeDefined();
+  }, 60_000);
+
+  it('Strand: a delete is refused unless an owner signs the remove digest (AuthorizedDelete)', async () => {
+    // A closed strand's row carries MemberPrivateKey — the party's own membership key for
+    // that network — so an ungated delete was live data destruction, not just a registry edit.
+    const id = 'strand-del-' + Math.random().toString(36).slice(2);
+    const { stamp, addSig } = await seatStrand(id);
+    const decoy = 'strand-decoy-' + Math.random().toString(36).slice(2);
+    const { stamp: decoyStamp } = await seatStrand(decoy);
+
+    const attack = (contextOwner: string | null, signature: string | null) =>
+      inTransaction(async () => {
+        await rawDeleteStrand(contextOwner, signature, id);
+        await tombstoneStamp('Strand', stamp);
+      });
+
+    await expectConstraintFailure(attack(null, null), 'AuthorizedDelete');
+    await expectConstraintFailure(attack(founder.publicKey, addSig), 'AuthorizedDelete');
+    await expectConstraintFailure(
+      attack(founder.publicKey, signAs(founder, strandRemoveMessage(decoy, decoyStamp))),
+      'AuthorizedDelete',
+    );
+
+    expect(await strandRow(id)).toBeDefined();
+  }, 60_000);
+
+  it('Strand: a formation invitation authorizes forming a strand, never destroying one', async () => {
+    // `AuthorizedInsert`'s consent branch is signature-free (the existence of a
+    // FormationUsage row IS the authorization). Mirroring it onto delete would let any
+    // invited peer drop the host strand, so `AuthorizedDelete` deliberately omits it.
+    const token = 'fi-consent-del-' + Math.random().toString(36).slice(2);
+    const id = 'strand-consent-del-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(token, 'sapp-consent-del', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1 });
+    await db.redeemInvitation({ token, strandId: id, type: 'c', memberPrivateKey: 'member-key-' + id });
+
+    const stamp = String((await strandRow(id))?.StampId);
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteStrand(null, null, id);
+        await tombstoneStamp('Strand', stamp);
+      }),
+      'AuthorizedDelete',
+    );
+    expect(await strandRow(id)).toBeDefined();
+  }, 60_000);
+
+  it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
+    const key = 'val-tomb-' + Math.random().toString(36).slice(2);
+    const { stamp } = await enrollValidationKey(key);
+    const removeSig = (): string => signAs(founder, validationKeyMessage('remove', key, stamp));
+
+    // Fully authorized — the ONLY missing piece is the tombstone.
+    await expectConstraintFailure(
+      rawDeleteValidationKey(founder.publicKey, removeSig(), key),
+      'RevocationRecorded',
+    );
+    expect(await validationKeyRow(key)).toBeDefined();
+
+    // A tombstone filed under another table's name does not satisfy the scoped subquery.
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteValidationKey(founder.publicKey, removeSig(), key);
+        await tombstoneStamp('OwnerKey', stamp);
+      }),
+      'RevocationRecorded',
+    );
+    expect(await validationKeyRow(key)).toBeDefined();
+
+    // The legitimate shape: signed delete + matching tombstone in ONE transaction.
+    await removeValidationKey(key, stamp);
+    expect(await validationKeyRow(key)).toBeUndefined();
+  }, 60_000);
+
+  it('Strand: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
+    const id = 'strand-tomb-' + Math.random().toString(36).slice(2);
+    const { stamp } = await seatStrand(id);
+    const removeSig = (): string => signAs(founder, strandRemoveMessage(id, stamp));
+
+    await expectConstraintFailure(
+      rawDeleteStrand(founder.publicKey, removeSig(), id),
+      'RevocationRecorded',
+    );
+    expect(await strandRow(id)).toBeDefined();
+
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteStrand(founder.publicKey, removeSig(), id);
+        await tombstoneStamp('CadrePeer', stamp);
+      }),
+      'RevocationRecorded',
+    );
+    expect(await strandRow(id)).toBeDefined();
+
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
+  }, 60_000);
+
+  it('ValidationKey: a captured enrollment approval cannot re-seat a removed key, but a fresh stamp can', async () => {
+    const key = 'val-replay-' + Math.random().toString(36).slice(2);
+    const { stamp, addSig } = await enrollValidationKey(key);
+    await removeValidationKey(key, stamp);
+    expect(await validationKeyRow(key)).toBeUndefined();
+
+    // Replay the captured enrollment VERBATIM: the signature still verifies and the founder
+    // is still an owner, so `AuthorizedInsert` passes — only `NotRevoked` stands.
+    await expectConstraintFailure(
+      rawInsertValidationKey(founder.publicKey, addSig, key, stamp),
+      'NotRevoked',
+    );
+    expect(await validationKeyRow(key)).toBeUndefined();
+
+    // Removal retires the STAMP, not the identity: a fresh stamp + fresh signature re-enrolls.
+    const freshStampId = freshStamp();
+    await rawInsertValidationKey(
+      founder.publicKey,
+      signAs(founder, validationKeyMessage('add', key, freshStampId)),
+      key,
+      freshStampId,
+    );
+    expect(await validationKeyRow(key)).toBeDefined();
+  }, 60_000);
+
+  it('Strand: a captured add approval cannot re-seat a removed strand, but a fresh stamp can', async () => {
+    const id = 'strand-replay-' + Math.random().toString(36).slice(2);
+    const memberPrivateKey = 'member-key-' + Math.random().toString(36).slice(2);
+    const { stamp, addSig } = await seatStrand(id, 'c', memberPrivateKey);
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
+
+    await expectConstraintFailure(
+      rawInsertStrand(founder.publicKey, addSig, id, 'c', memberPrivateKey, stamp),
+      'NotRevoked',
+    );
+    expect(await strandRow(id)).toBeUndefined();
+
+    const freshStampId = freshStamp();
+    await rawInsertStrand(
+      founder.publicKey,
+      signAs(founder, strandAddMessage(id, 'c', memberPrivateKey, freshStampId)),
+      id,
+      'c',
+      memberPrivateKey,
+      freshStampId,
+    );
+    expect(await strandRow(id)).toBeDefined();
+  }, 60_000);
+
   // ── The tombstone table keeps itself honest ────────────────────────────────
 
-  it('Revocation: tombstoning a LIVE row\'s stamp is refused on both TableName branches (RowIsGone)', async () => {
+  it('Revocation: tombstoning a LIVE row\'s stamp is refused on every TableName branch (RowIsGone)', async () => {
     // No accompanying delete: retiring a live stamp would let the NEXT delete of that row
     // ride a pre-planted tombstone, decoupling retirement from the removal transaction.
     const founderStamp = await stampIdOf(founder.publicKey);
@@ -444,6 +749,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const peerId = '12D3KooWLiveStampTarget';
     const { stamp } = await admitPeer(peerId);
     await expectConstraintFailure(tombstoneStamp('CadrePeer', stamp), 'RowIsGone');
+
+    const valKey = 'val-live-stamp-' + Math.random().toString(36).slice(2);
+    const { stamp: valStamp } = await enrollValidationKey(valKey);
+    await expectConstraintFailure(tombstoneStamp('ValidationKey', valStamp), 'RowIsGone');
+
+    const strandId = 'strand-live-stamp-' + Math.random().toString(36).slice(2);
+    const { stamp: strandStamp } = await seatStrand(strandId);
+    await expectConstraintFailure(tombstoneStamp('Strand', strandStamp), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a TableName outside the guarded set is refused (both RowIsGone branches false)', async () => {

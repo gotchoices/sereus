@@ -89,10 +89,36 @@ declare schema CadreControl {
     -- A key that can validate a strand formation disclosure
     table ValidationKey (
         Key text primary key,
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
-        constraint Authorized check (
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
+                                        -- \`unique\` holds over LIVE rows only; a removed row's stamp is retired
+                                        -- permanently into Revocation (NotRevoked below), so the never-expiring
+                                        -- enrollment signature cannot resurrect a removed key.
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert naming
+        -- a retired stamp: the approval that seated this row can never re-seat it after removal.
+        -- Same rationale as OwnerKey.NotRevoked, stated in full there.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = old.StampId)
+        ),
+        -- Enrollment is insert + delete only; rotation is add-then-remove. No writer in the repo
+        -- updates a ValidationKey row. Required because the AuthorizedInsert / AuthorizedDelete
+        -- pair below covers neither update — and a bare \`check\`, which is what this rule used to
+        -- be, covers insert+update but NOT delete. Mirrors OwnerKey.NoUpdate.
+        constraint NoUpdate check on update (false),
+        constraint AuthorizedInsert check on insert (
             -- Owners authorize by signing over THIS row (Key, StampId); single-use via unique StampId
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'add', new.Key, new.StampId), context.Signature, A.Key, 'ed25519'))
+        ),
+        constraint AuthorizedDelete check on delete (
+            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
+            -- the STORED row (Key, StampId), so an enrollment approval — which never expires — can
+            -- never be replayed as a removal. Same shape as CadrePeer.AuthorizedDelete.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 
@@ -102,8 +128,32 @@ declare schema CadreControl {
         Id text primary key,    -- UUID
         MemberPrivateKey text null unique,   -- Our private key as a member of this strand
         Type text, -- Types: 'o' = Open, 'c' = Closed -- Open can still control writes in the sApp, but only Closed controls reads
-        StampId text not null unique,   -- single-use authorization nonce (anti-replay)
-        constraint Authorized check (
+        StampId text not null unique,   -- single-use authorization nonce (anti-replay).
+                                        -- \`unique\` holds over LIVE rows only; a removed row's stamp is retired
+                                        -- permanently into Revocation (NotRevoked below).
+        -- NOTE: NotRevoked is a per-transaction check against LOCALLY VISIBLE rows, so a node that
+        -- has not yet converged on the Revocation row can still accept a replayed add and end up
+        -- holding the resurrected strand alongside its tombstone. CadrePeer has a read-side
+        -- mitigation for this class (CadreNode.listAuthorizedMembers drops rows whose stamp is
+        -- retired); Strand and ValidationKey deliberately do NOT, because neither has a
+        -- per-request authorization surface today. If one ever gains one, filter it there.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
+        -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
+        -- insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = old.StampId)
+        ),
+        -- Strand rows are insert + delete only. Required: the consent branch of AuthorizedInsert
+        -- below authorizes by the EXISTENCE of a FormationUsage row for new.Id and carries no
+        -- signature, so while this rule was a bare \`check\` (insert+update) it also said "anyone may
+        -- REWRITE any consent-formed strand, unsigned" — flipping Type to 'o' and nulling
+        -- MemberPrivateKey destroys the party's own membership key for that network in place.
+        -- Mirrors OwnerKey.NoUpdate / FormationInvite.Immutable.
+        constraint NoUpdate check on update (false),
+        constraint AuthorizedInsert check on insert (
             -- Authorized by an owner signing over THIS row (Id, Type, MemberPrivateKey, StampId); single-use via unique StampId
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'add', new.Id, new.Type, coalesce(new.MemberPrivateKey, ''), new.StampId), context.Signature, A.Key, 'ed25519'))
 
@@ -111,6 +161,13 @@ declare schema CadreControl {
                 -- That path has no signed writer yet; when one is built it must still supply a
                 -- fresh, unique StampId to satisfy the not-null/unique anti-replay column.
                 or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id)
+        ),
+        constraint AuthorizedDelete check on delete (
+            -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
+            -- the STORED row (Id, StampId), so the add approval — which never expires — can never be
+            -- replayed as a removal. Note the consent branch above is deliberately NOT mirrored
+            -- here: an invitation authorizes forming a strand, never destroying one.
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint MemberKeyClosedOnly check (
             -- An open strand ('o') has no membership gate, so it must not carry a
@@ -323,7 +380,8 @@ declare schema CadreControl {
     ) with context (PeerId text, PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
-    -- CadrePeer rows. Without it a removal was undoable: the add approval is a signature over
+    -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add
+    -- approval is a signature over
     -- (row key, stamp) that never expires, and deleting the row freed the stamp, so anyone who
     -- kept a copy of the approval could resurrect the row.
     -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so a node
@@ -334,7 +392,7 @@ declare schema CadreControl {
     -- NOTE: append-only, so this table only ever grows. Cadres are a handful of peers and
     -- owner rotation is rare, so unbounded growth is fine today; revisit if either changes.
     table Revocation (
-        TableName text,             -- 'OwnerKey' | 'CadrePeer' (confined by RowIsGone below)
+        TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' (confined by RowIsGone below)
         StampId text,               -- the retired nonce
         primary key (TableName, StampId),
         -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
@@ -347,6 +405,8 @@ declare schema CadreControl {
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
+                or (new.TableName = 'ValidationKey' and not exists (select 1 from ValidationKey V where V.StampId = new.StampId))
+                or (new.TableName = 'Strand' and not exists (select 1 from Strand S where S.StampId = new.StampId))
         )
     );
 }
