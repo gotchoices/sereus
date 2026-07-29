@@ -431,9 +431,36 @@ export class ControlDatabase {
   }
 
   /**
+   * Read a single `Strand` row's single-use `StampId` nonce (null when the row does not
+   * exist). Mirrors {@link queryCadrePeerStampId}; {@link deleteStrand} reads the row's
+   * CURRENT stamp before signing so the remove digest binds to it.
+   */
+  async queryStrandStampId(strandId: string): Promise<string | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval('select StampId from CadreControl.Strand where Id = ?', [strandId])) {
+      return (row.StampId as string | null) ?? null;
+    }
+    return null;
+  }
+
+  /**
+   * Read a single `ValidationKey` row's single-use `StampId` nonce (null when the row
+   * does not exist). Mirrors {@link queryCadrePeerStampId}; {@link deleteValidationKey}
+   * reads the row's CURRENT stamp before signing so the remove digest binds to it.
+   */
+  async queryValidationKeyStampId(key: string): Promise<string | null> {
+    this.ensureInitialized();
+    for await (const row of this.db!.eval('select StampId from CadreControl.ValidationKey where Key = ?', [key])) {
+      return (row.StampId as string | null) ?? null;
+    }
+    return null;
+  }
+
+  /**
    * Collect the retired `StampId` nonces recorded in `CadreControl.Revocation` for one
-   * guarded table (`'OwnerKey'` | `'CadrePeer'`). A stamp lands here when its row is
-   * removed ({@link SeedBootstrapService.removePeer}), and retirement is permanent —
+   * guarded table (`'OwnerKey'` | `'CadrePeer'` | `'ValidationKey'` | `'Strand'`). A stamp
+   * lands here when its row is removed ({@link SeedBootstrapService.removePeer},
+   * {@link deleteValidationKey}, {@link deleteStrand}), and retirement is permanent —
    * the table is append-only. Read-side mitigation for the write-time race: the
    * schema's `NotRevoked` CHECK only sees locally visible tombstones, so a node that
    * converged on a resurrected row before its tombstone can hold both; readers
@@ -443,7 +470,7 @@ export class ControlDatabase {
    * gate request while the table only ever grows. Cheap today (a cadre removes peers
    * rarely); if removals ever become routine, cache the set and invalidate it on write.
    */
-  async queryRevokedStamps(tableName: 'OwnerKey' | 'CadrePeer'): Promise<Set<string>> {
+  async queryRevokedStamps(tableName: 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
     for await (const row of this.db!.eval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
@@ -619,6 +646,64 @@ export class ControlDatabase {
   }
 
   /**
+   * Delete a strand from the control database using an owner signature.
+   *
+   * Mirrors {@link insertStrand}'s row-bound approach for the delete half: the owner
+   * signs the canonical `'remove'`-tagged authorization message over (Id, StampId) — the
+   * schema's `Strand.AuthorizedDelete` verifies this DISTINCT digest, so the insert
+   * approval (which never expires) can never be replayed as a removal. The delete and
+   * the `Revocation` tombstone retiring the row's StampId commit in ONE transaction —
+   * `Strand.RevocationRecorded` refuses a bare delete, and without the tombstone the
+   * stamp would free up and the original formation approval could re-seat the strand.
+   * Transaction shape mirrors {@link SeedBootstrapService.removePeer}.
+   *
+   * The remove digest binds only (Id, StampId) — not Type/MemberPrivateKey — so this
+   * works identically for open and closed strands.
+   *
+   * A no-op (no throw, no tombstone) when the row does not exist.
+   */
+  async deleteStrand(
+    strandId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    this.ensureInitialized();
+    const stampId = await this.queryStrandStampId(strandId);
+    if (stampId === null) {
+      log('deleteStrand: no Strand row for %s (already absent)', strandId);
+      return;
+    }
+
+    const message = buildAuthorizationMessage('CadreControl.Strand', 'remove', [strandId, stampId]);
+    const signature = signMessage(message);
+
+    await this.db!.beginTransaction();
+    try {
+      await this.db!.exec(`
+        delete from CadreControl.Strand
+          with context OwnerKey = ?, Signature = ?
+          where Id = ?
+      `, [ownerKey, signature, strandId]);
+      await this.db!.exec(`
+        insert into CadreControl.Revocation (TableName, StampId)
+          values ('Strand', ?)
+      `, [stampId]);
+      await this.db!.commit();
+    } catch (error) {
+      // A failed commit() already tears down the transaction, so rollback() would
+      // throw "No transaction active" and mask the real cause — swallow only that.
+      try {
+        await this.db!.rollback();
+      } catch (rollbackError) {
+        log('Rollback after deleteStrand failure was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
+
+    log('Strand deleted: %s (stamp retired)', strandId);
+  }
+
+  /**
    * Insert a validation key into the control database using an owner signature.
    *
    * Mirrors {@link insertStrand}: the owner signs the canonical row-bound
@@ -653,6 +738,61 @@ export class ControlDatabase {
     `, [ownerKey, signature, key, stampId]);
 
     log('Validation key inserted: %s', key);
+  }
+
+  /**
+   * Delete a validation key from the control database using an owner signature.
+   *
+   * Mirrors {@link insertValidationKey}'s row-bound approach for the delete half: the
+   * owner signs the canonical `'remove'`-tagged authorization message over (Key,
+   * StampId) — the schema's `ValidationKey.AuthorizedDelete` verifies this DISTINCT
+   * digest, so the enrollment approval (which never expires) can never be replayed as a
+   * removal. The delete and the `Revocation` tombstone retiring the row's StampId commit
+   * in ONE transaction — `ValidationKey.RevocationRecorded` refuses a bare delete, and
+   * without the tombstone the stamp would free up and the original enrollment approval
+   * could re-seat the key. Transaction shape mirrors {@link SeedBootstrapService.removePeer}.
+   *
+   * A no-op (no throw, no tombstone) when the row does not exist.
+   */
+  async deleteValidationKey(
+    key: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    this.ensureInitialized();
+    const stampId = await this.queryValidationKeyStampId(key);
+    if (stampId === null) {
+      log('deleteValidationKey: no ValidationKey row for %s (already absent)', key);
+      return;
+    }
+
+    const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'remove', [key, stampId]);
+    const signature = signMessage(message);
+
+    await this.db!.beginTransaction();
+    try {
+      await this.db!.exec(`
+        delete from CadreControl.ValidationKey
+          with context OwnerKey = ?, Signature = ?
+          where Key = ?
+      `, [ownerKey, signature, key]);
+      await this.db!.exec(`
+        insert into CadreControl.Revocation (TableName, StampId)
+          values ('ValidationKey', ?)
+      `, [stampId]);
+      await this.db!.commit();
+    } catch (error) {
+      // A failed commit() already tears down the transaction, so rollback() would
+      // throw "No transaction active" and mask the real cause — swallow only that.
+      try {
+        await this.db!.rollback();
+      } catch (rollbackError) {
+        log('Rollback after deleteValidationKey failure was a no-op: %s', rollbackError);
+      }
+      throw error;
+    }
+
+    log('Validation key deleted: %s (stamp retired)', key);
   }
 
   /**

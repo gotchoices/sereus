@@ -94,6 +94,18 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     return Number(row?.c ?? 0);
   }
 
+  async function revocationCount(): Promise<number> {
+    const row = await rawDb.get('select count(1) as c from CadreControl.Revocation');
+    return Number(row?.c ?? 0);
+  }
+
+  function revocationRow(tableName: string, stampId: string): Promise<Record<string, unknown> | undefined> {
+    return rawDb.get(
+      'select TableName, StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
+      [tableName, stampId],
+    );
+  }
+
   /**
    * Build the FormationInvite row-bound authorization message: the domain/action tags
    * ('add' for AuthorizedInsert over new.*, 'remove' for AuthorizedDelete over old.*)
@@ -585,5 +597,75 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await expect(rawUpdateInviteTotalUses(token, 999999)).rejects.toThrow();
     const row = await rawDb.get('select TotalUses from CadreControl.FormationInvite where Token = ?', [token]);
     expect(Number(row?.TotalUses)).toBe(1);
+  });
+
+  // --- deleteValidationKey / deleteStrand: signed writers for the guarded delete rules ---
+  // Before these, the AuthorizedDelete / RevocationRecorded / NotRevoked constraints on
+  // ValidationKey and Strand were only ever exercised by hand-built raw SQL in tests; these
+  // writers are the production-side path, mirroring insertStrand / insertValidationKey for
+  // the delete half and SeedBootstrapService.removePeer for the delete+tombstone transaction shape.
+
+  it('deleteValidationKey with a correct owner signature removes the row and leaves a matching Revocation tombstone', async () => {
+    const key = 'val-writer-del-' + Math.random().toString(36).slice(2);
+    await db.insertValidationKey(key, ownerPublicKey, signMessage);
+    const stampId = await db.queryValidationKeyStampId(key);
+    expect(stampId).not.toBeNull();
+
+    await db.deleteValidationKey(key, ownerPublicKey, signMessage);
+
+    expect(await rawDb.get('select Key from CadreControl.ValidationKey where Key = ?', [key])).toBeUndefined();
+    expect(await revocationRow('ValidationKey', stampId!)).toBeDefined();
+  });
+
+  it('deleteStrand with a correct owner signature removes the row and leaves a matching Revocation tombstone', async () => {
+    const strandId = 'strand-writer-del-' + Math.random().toString(36).slice(2);
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    const stampId = await db.queryStrandStampId(strandId);
+    expect(stampId).not.toBeNull();
+
+    await db.deleteStrand(strandId, ownerPublicKey, signMessage);
+
+    expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [strandId])).toBeUndefined();
+    expect(await revocationRow('Strand', stampId!)).toBeDefined();
+  });
+
+  it('deleteValidationKey is a no-op (no throw, no tombstone) when the target row does not exist', async () => {
+    const before = await revocationCount();
+    const key = 'val-missing-' + Math.random().toString(36).slice(2);
+
+    await expect(db.deleteValidationKey(key, ownerPublicKey, signMessage)).resolves.toBeUndefined();
+
+    expect(await revocationCount()).toBe(before);
+  });
+
+  it('deleteStrand is a no-op (no throw, no tombstone) when the target row does not exist', async () => {
+    const before = await revocationCount();
+    const strandId = 'strand-missing-' + Math.random().toString(36).slice(2);
+
+    await expect(db.deleteStrand(strandId, ownerPublicKey, signMessage)).resolves.toBeUndefined();
+
+    expect(await revocationCount()).toBe(before);
+  });
+
+  it('after a deleteStrand, queryRevokedStamps("Strand") contains the retired stamp', async () => {
+    const strandId = 'strand-revoked-set-' + Math.random().toString(36).slice(2);
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    const stampId = await db.queryStrandStampId(strandId);
+    expect(stampId).not.toBeNull();
+
+    await db.deleteStrand(strandId, ownerPublicKey, signMessage);
+
+    const revoked = await db.queryRevokedStamps('Strand');
+    expect(revoked.has(stampId!)).toBe(true);
+  });
+
+  it('deleteStrand on a closed strand carrying a real MemberPrivateKey succeeds (the remove digest binds only Id, StampId)', async () => {
+    const strandId = 'strand-closed-del-' + Math.random().toString(36).slice(2);
+    const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    await db.insertStrand(strandId, 'c', ownerPublicKey, signMessage, memberPrivateKey);
+
+    await db.deleteStrand(strandId, ownerPublicKey, signMessage);
+
+    expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [strandId])).toBeUndefined();
   });
 });
