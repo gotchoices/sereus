@@ -505,15 +505,30 @@ the workspace linked 0.16.x, so an embedding app installed a substrate two minor
 this repo tests against, and hit a solo control-DB hang we could not reproduce.
 
 - [x] **Rule: bump the declared range in lockstep with the linked workspace version.** As of
-  2026-07-28 all seven optimystic-consuming packages (`cadre-core`, `cadre-cli`,
+  2026-07-29 all seven optimystic-consuming packages (`cadre-core`, `cadre-cli`,
   `quereus-plugin-sereus`, `integration-tests`, `reference-app-{rn,web,ns}`) declare
-  `@optimystic/*: ^0.16.3`, matching the linked workspace and the newest npm release.
-  `@quereus/quereus` declares `^4.4.0` against linked 4.4.1 — in-range, no drift.
+  `@optimystic/*: ^0.17.0`, and the six of those that also declare `@quereus/quereus` (all but
+  `cadre-cli`, which reaches Quereus only through `cadre-core`) declare `^4.5.0` — matching both the
+  linked workspace and the newest npm release (verified against the registry 2026-07-29). The `@optimystic/*` half was a genuine gap — for a `0.x` version `^0.16.3`
+  *excludes* 0.17.0, so the declared range omitted the four `db-p2p` replication fixes and the
+  inbound-stream authorization seam this repo builds and tests against. The `@quereus/quereus` half was
+  floor tracking only; `^4.4.0` already admitted 4.5.0.
 - `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
   run them when the sibling workspace is bumped, not only at release time.
 - Note `@optimystic/db-p2p-storage-fs` has **no** `resolutions` entry, so it always resolves from the
-  registry. Before this bump it was the one substrate package the repo genuinely ran at 0.14.1 while
-  everything around it ran 0.16.x.
+  registry — it is the one substrate package whose declared range is exercised here, and the only one
+  a range bump actually re-fetches (0.16.3 → 0.17.0 changed its `yarn.lock` checksum; every other
+  `@optimystic/*` entry moved metadata only). Earlier it was stuck at 0.14.1 while everything around
+  it ran 0.16.x. NOTE: that makes it the one package whose *resolved* version can silently trail its
+  linked siblings — it is consistent at 0.17.0 today only because 0.17.0 is published. The moment the
+  sibling checkout carries an unpublished version, this package runs an older build against newer
+  `db-core`/`db-p2p`. If that mix ever produces a confusing failure, add a `resolutions` entry for it
+  like the other storage backends have.
+- NOTE: the published packages declare `@quereus/quereus` as a regular `dependency`, not a
+  `peerDependency` — including `quereus-plugin-sereus`, which is loaded *into* a Quereus host. Ranges
+  agree today, so installers dedupe to one copy. If a consumer ever pins a Quereus major that our
+  range does not admit, they get two Quereus instances and cross-instance `instanceof` checks start
+  failing; move to `peerDependencies` at that point.
 
 ### Solo (cadre-of-one) control DB — supported and covered
 
