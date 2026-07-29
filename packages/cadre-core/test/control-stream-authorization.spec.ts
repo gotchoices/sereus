@@ -2,6 +2,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
+import type { ControlNetworkSeed } from '../src/types.js';
 import {
   MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith,
   type Owner, type PeerRow
@@ -259,9 +260,12 @@ describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', (
     members.push(vouchedRow(SEEDED, owner));
     expect(authorize(node, SEEDED)).toBe(false);
 
+    const seed: ControlNetworkSeed = { partyId: 'p', peers: [], signature: '', signerKey: '' };
     (node as unknown as {
-      seedEventCallbacks(): { onSeedApplied?: (partyId: string, peersAdded: number) => void };
-    }).seedEventCallbacks().onSeedApplied?.('p', 1);
+      seedEventCallbacks(): {
+        onSeedApplied?: (partyId: string, peersAdded: number, seed: ControlNetworkSeed) => void;
+      };
+    }).seedEventCallbacks().onSeedApplied?.('p', 1, seed);
 
     await vi.waitFor(() => expect(authorize(node, SEEDED)).toBe(true));
     expect(authorize(node, STRANGER)).toBe(false);

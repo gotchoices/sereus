@@ -218,6 +218,29 @@ export class CadreNode implements SAppIdLookup {
    */
   private authorizedControlPeers: Set<string> = new Set();
 
+  /**
+   * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
+   * this node has applied, keyed by peer id, valued by the seed's multiaddr
+   * strings (parsed lazily, at dial time). Populated by
+   * {@link recordSeedBootstrapPeers}; consumed only by
+   * {@link dialColdStartBootstrap} while the control database still has no
+   * siblings to dial.
+   *
+   * Deliberately NOT the libp2p peer store, which {@link peerStoreAddrs} already
+   * reads for the steady-state path. The peer store is shared with everything
+   * libp2p discovers, so "dial every entry" would grow into dialing arbitrary
+   * discovered peers as the node lives longer; this map holds exactly the peers
+   * an owner-signed, trust-anchored seed nominated as owners. `applySeed` merges
+   * the same addresses into the peer store as well, so the two never disagree —
+   * this one is just the precisely-scoped subset.
+   *
+   * A later seed OVERWRITES an entry rather than merging, so a re-seed after an
+   * owner's address changes replaces the stale address instead of accumulating
+   * dead ones. Entries are never evicted: they are the node's only way back into
+   * the party if it is ever stranded again.
+   */
+  private readonly controlBootstrapPeers = new Map<string, string[]>();
+
   /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
   private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
   /** TTL heartbeat that re-publishes the self record before it goes stale. */
@@ -1435,8 +1458,12 @@ export class CadreNode implements SAppIdLookup {
     const members = await this.listMembers();
     const siblings = members.filter((m) => m.peerId !== selfPeerId);
     if (siblings.length === 0) {
-      // Genuinely alone (cold start with no rows, or a solo cadre): nothing to
-      // dial. Must not throw or busy-loop.
+      // No rows to dial from. Either a solo cadre (nothing to do) or a COLD
+      // START whose seed dial never landed — and those look identical from here,
+      // because filling this table needs a connection and getting a connection
+      // needs this table. Fall back to the seed's bootstrap addresses; a solo
+      // cadre has none and this is a no-op. Must not throw or busy-loop.
+      await this.dialColdStartBootstrap();
       return;
     }
     // Re-guard after the await: a stop() may have raced the membership read.
@@ -1546,6 +1573,98 @@ export class CadreNode implements SAppIdLookup {
     } catch (error) {
       log('reconcileControlCohort: peerStore lookup for %s failed: %o', peerId, error);
       return [];
+    }
+  }
+
+  /**
+   * Retain a just-applied seed's owner-flagged peers as cold-start bootstrap
+   * dial targets (see {@link controlBootstrapPeers}).
+   *
+   * Called for every seed this node accepts, on BOTH intake paths — the
+   * {@link applySeed} wrapper (which may run on a throwaway service, so the
+   * service itself is the wrong place to keep this) and the inbound
+   * `/sereus/seed/1.0.0` handler via `onSeedApplied`. Peers with no address are
+   * skipped: there is nothing to dial.
+   *
+   * `isOwner` is the seed's own claim about its peers, exactly as
+   * `SeedBootstrapService.applySeed` uses it to choose its dial targets. That is
+   * sound here for the same reason it is sound there — the whole seed is
+   * signature-checked against a trust-anchored signer before this runs, and the
+   * flag only *selects a dial target*; a dial grants no authority.
+   */
+  private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
+    for (const peer of seed.peers) {
+      if (!peer.isOwner || peer.multiaddrs.length === 0) {
+        continue;
+      }
+      this.controlBootstrapPeers.set(peer.peerId, [...peer.multiaddrs]);
+    }
+  }
+
+  /**
+   * Cold-start branch of the reconcile pass: re-dial the seed's owner peers
+   * while the control database still has no siblings to dial.
+   *
+   * `SeedBootstrapService.applySeed` dials those owners exactly ONCE, best-effort.
+   * When that single dial fails — owner momentarily down, relay reservation not
+   * up yet, NAT traversal lost the race — the joining node has an empty
+   * `CadrePeer` table and no connection, and the steady-state pass above cannot
+   * help: it dials only siblings enumerated from that very table. Retrying here
+   * is the only way back in.
+   *
+   * Unbounded, at the reconcile cadence, with no backoff: the branch is already
+   * gated by "the control database has no siblings", so it stops the moment the
+   * node is actually in the party, and a node that is stranded MUST keep trying —
+   * a give-up rule would turn a transient outage into a permanent one. The steady
+   * cost is one dial per bootstrap peer per pass (seeds nominate one or a few
+   * owners), each failing fast against an unreachable address.
+   * NOTE: if seeds ever carry many owner peers, or the reconcile cadence tightens
+   * well below its 15 s default, add per-peer backoff here.
+   *
+   * Best-effort per peer, exactly like {@link dialControlSibling}: one dead
+   * address never aborts the pass.
+   */
+  private async dialColdStartBootstrap(): Promise<void> {
+    const controlNode = this.controlNode;
+    if (!controlNode || this.controlBootstrapPeers.size === 0) {
+      return;
+    }
+    // Same skip rule as step 3 of the steady-state pass: no churn on live links.
+    const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
+    let dialed = 0;
+    for (const [peerId, addrs] of this.controlBootstrapPeers) {
+      if (!this._running || !this.controlNode) {
+        return;
+      }
+      if (connected.has(peerId)) {
+        continue;
+      }
+      if (await this.dialBootstrapPeer(peerId, addrs)) {
+        dialed++;
+      }
+    }
+    log('reconcileControlCohort: cold-start pass complete (bootstrap=%d, connected=%d, dialed=%d)',
+      this.controlBootstrapPeers.size, connected.size, dialed);
+  }
+
+  /** Dial one cold-start bootstrap peer, best-effort. Returns whether it connected. */
+  private async dialBootstrapPeer(peerId: string, addrs: string[]): Promise<boolean> {
+    const controlNode = this.controlNode;
+    if (!controlNode) {
+      return false;
+    }
+    const parsed = this.parseMultiaddrs(addrs);
+    if (parsed.length === 0) {
+      log('reconcileControlCohort(cold-start): no parsable address for bootstrap peer %s; skipping', peerId);
+      return false;
+    }
+    try {
+      log('reconcileControlCohort(cold-start): dialing bootstrap peer %s (%d addr(s))', peerId, parsed.length);
+      await controlNode.dial(parsed);
+      return true;
+    } catch (error) {
+      log('reconcileControlCohort(cold-start): dial of bootstrap peer %s failed (continuing): %o', peerId, error);
+      return false;
     }
   }
 
@@ -3142,8 +3261,11 @@ export class CadreNode implements SAppIdLookup {
   private seedEventCallbacks(): SeedEventCallbacks {
     return {
       onSeedReceived: (partyId, peerId) => this.emit('seed:received', { partyId, peerId }),
-      onSeedApplied: (partyId, peersAdded) => {
+      onSeedApplied: (partyId, peersAdded, seed) => {
         this.emit('seed:applied', { partyId, peersAdded });
+        // A wire-delivered seed never passes through the `applySeed` wrapper, so
+        // this is where its owner peers become cold-start bootstrap targets.
+        this.recordSeedBootstrapPeers(seed);
         void this.refreshAuthorizedControlPeers('seed-applied');
       },
       onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
@@ -3255,12 +3377,31 @@ export class CadreNode implements SAppIdLookup {
         tempService.initialize(this.controlNode, this.controlDatabase, { registerHandler: false });
       }
       const tempResult = await tempService.applySeed(seed, options);
+      this.noteAppliedSeed(tempResult, seed);
       await this.refreshAuthorizedControlPeers('applySeed');
       return tempResult;
     }
     const result = await this.seedBootstrapService.applySeed(seed, options);
+    this.noteAppliedSeed(result, seed);
     await this.refreshAuthorizedControlPeers('applySeed');
     return result;
+  }
+
+  /**
+   * Post-process an {@link applySeed} outcome: retain the seed's owner peers as
+   * cold-start bootstrap targets, and surface a seed that was accepted but whose
+   * every owner dial failed — the node is now seeded yet unconnected, and the
+   * cold-start reconcile branch is what gets it out of that state.
+   */
+  private noteAppliedSeed(result: ApplySeedResult, seed: ControlNetworkSeed): void {
+    if (!result.success) {
+      return;
+    }
+    this.recordSeedBootstrapPeers(seed);
+    if (result.ownerDialsAttempted > 0 && result.ownerDialsFailed === result.ownerDialsAttempted) {
+      log('applySeed: seeded but no owner reachable (%d/%d dial(s) failed) — cold-start reconcile will retry',
+        result.ownerDialsFailed, result.ownerDialsAttempted);
+    }
   }
 
   /**

@@ -1047,6 +1047,27 @@ export interface ApplySeedResult {
   peersAdded: number;
   /** Error message if not successful */
   error?: string;
+  /**
+   * Owner-flagged seed peers this apply attempted to dial. Zero when the seed
+   * carried no owner peer with an address, or when the seed was rejected before
+   * the dial loop ran.
+   */
+  ownerDialsAttempted: number;
+  /**
+   * How many of those dials threw. `ownerDialsAttempted > 0 && ownerDialsFailed
+   * === ownerDialsAttempted` means "seeded but stranded": the seed itself was
+   * accepted (`success: true`) but no owner could be reached, so this node has
+   * no connection to bootstrap its control database from. The node retries those
+   * addresses on every control-cohort reconcile pass (see
+   * `CadreNode.dialColdStartBootstrap`), so this is a signal, not a fatal error.
+   *
+   * Zero failures is NOT proof of a live connection: the receiving node's
+   * membership gate denies AFTER the dialer's upgrade completes (see
+   * `createMembershipConnectionGater`), so a dial can resolve and then be torn
+   * down. Treat a non-zero value as certain failure and zero as "no failure
+   * observed".
+   */
+  ownerDialsFailed: number;
 }
 
 // ============================================================================

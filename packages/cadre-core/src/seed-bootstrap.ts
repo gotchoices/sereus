@@ -109,6 +109,14 @@ export function canonicalSeedPayload(
 }
 
 /**
+ * An {@link ApplySeedResult} for a seed refused before the owner-dial loop ran,
+ * so the dial counters read zero rather than being absent.
+ */
+function seedRejected(error: string): ApplySeedResult {
+  return { success: false, peersAdded: 0, error, ownerDialsAttempted: 0, ownerDialsFailed: 0 };
+}
+
+/**
  * Configuration for the SeedBootstrapService
  */
 export interface SeedBootstrapConfig {
@@ -170,8 +178,15 @@ export interface SeedBootstrapConfig {
 export interface SeedEventCallbacks {
   /** Called when a seed is received via the protocol */
   onSeedReceived?: (partyId: string, peerId: string) => void;
-  /** Called when a seed is successfully applied */
-  onSeedApplied?: (partyId: string, peersAdded: number) => void;
+  /**
+   * Called when a seed is successfully applied.
+   *
+   * `seed` is the applied seed itself: the inbound protocol handler applies it
+   * INSIDE the service, so this callback is the only seam through which a
+   * `CadreNode` sees a wire-delivered seed's contents — which it needs to
+   * retain the owner-flagged peers as cold-start bootstrap dial targets.
+   */
+  onSeedApplied?: (partyId: string, peersAdded: number, seed: ControlNetworkSeed) => void;
   /** Called when seed application fails */
   onSeedError?: (partyId: string, error: string) => void;
 }
@@ -618,7 +633,7 @@ export class SeedBootstrapService {
     options?: { trustPolicy?: SeedTrustPolicy }
   ): Promise<ApplySeedResult> {
     if (!this.libp2pNode) {
-      return { success: false, peersAdded: 0, error: 'Service not initialized' };
+      return seedRejected('Service not initialized');
     }
 
     // NOTE: `seed.partyId` is never checked against `config.partyId`. Nothing
@@ -631,7 +646,7 @@ export class SeedBootstrapService {
 
     // Validate the seed signature
     if (!this.validateSeedSignature(seed)) {
-      return { success: false, peersAdded: 0, error: 'Invalid seed signature' };
+      return seedRejected('Invalid seed signature');
     }
 
     // Evaluate the trust anchor for the signer key. The known-owner set comes
@@ -648,11 +663,7 @@ export class SeedBootstrapService {
       knownOwnerKeys,
     });
     if (!decision.trusted) {
-      return {
-        success: false,
-        peersAdded: 0,
-        error: decision.reason ?? 'Signer key not trusted by trust policy',
-      };
+      return seedRejected(decision.reason ?? 'Signer key not trusted by trust policy');
     }
     await this.anchorAcceptedSigner(seed.signerKey, decision);
 
@@ -678,23 +689,34 @@ export class SeedBootstrapService {
       }
     }
 
-    // Dial owner peers to establish connections
+    // Dial owner peers to establish connections. Best-effort and COUNTED: an
+    // owner that is momentarily down leaves this node seeded but unconnected,
+    // which the caller can only see if the outcome is reported (see
+    // `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
+    // `CadreNode.dialColdStartBootstrap` retries these same addresses on every
+    // control-cohort reconcile pass until the control database has siblings.
+    let ownerDialsAttempted = 0;
+    let ownerDialsFailed = 0;
     for (const peer of seed.peers.filter(p => p.isOwner)) {
+      if (peer.multiaddrs.length === 0) {
+        continue;
+      }
+      ownerDialsAttempted++;
       try {
-        if (peer.multiaddrs.length > 0) {
-          const addr = multiaddr(peer.multiaddrs[0]);
+        const addr = multiaddr(peer.multiaddrs[0]);
 
-          log('Dialing owner peer: %s', peer.peerId);
-          await this.libp2pNode.dial(addr);
-        }
+        log('Dialing owner peer: %s', peer.peerId);
+        await this.libp2pNode.dial(addr);
       } catch (error) {
+        ownerDialsFailed++;
         log('Failed to dial peer %s: %o', peer.peerId, error);
         // Continue - not all peers need to be reachable
       }
     }
 
-    log('Applied seed: %d peers added', peersAdded);
-    return { success: true, peersAdded };
+    log('Applied seed: %d peers added, %d/%d owner dial(s) failed',
+      peersAdded, ownerDialsFailed, ownerDialsAttempted);
+    return { success: true, peersAdded, ownerDialsAttempted, ownerDialsFailed };
   }
 
   /**
@@ -960,7 +982,7 @@ export class SeedBootstrapService {
 
       // Emit appropriate event based on result
       if (result.success) {
-        this.eventCallbacks.onSeedApplied?.(seed.partyId, result.peersAdded);
+        this.eventCallbacks.onSeedApplied?.(seed.partyId, result.peersAdded, seed);
       } else {
         this.eventCallbacks.onSeedError?.(seed.partyId, result.error ?? 'Unknown error');
       }
