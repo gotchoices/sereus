@@ -56,6 +56,11 @@ const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-host', distEntry: 'dist/index.js', location: 'workspace' },
+	// Not imported by a scenario directly, but loaded from `dist` on every run all
+	// the same: `cadre-core`'s entry point imports `quereus-plugin-sereus`, and
+	// `cadre-host`'s re-exports `cadre-provider`.
+	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
+	{ packageName: '@serfab/cadre-provider', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p-storage-fs', distEntry: 'dist/src/index.js', location: 'linked' },
@@ -217,7 +222,7 @@ export function checkBuildFreshness(packageRoot: string, distEntry: string): Sta
 function problemMessage(target: BuildTarget, reason: StaleReason, remedy: string): string {
 	switch (reason) {
 		case 'unresolved':
-			return `${target.packageName}: not resolvable from @serfab/integration-tests. ${remedy}`;
+			return `${target.packageName}: no workspace under packages/ declares this name. ${remedy}`;
 		case 'missing':
 			return `${target.packageName}: not built (missing ${target.distEntry}). ${remedy}`;
 		case 'stale':
