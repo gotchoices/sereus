@@ -318,6 +318,13 @@ cp env.example .env
 docker compose up -d
 ```
 
+Node state (peer key, storage) lives in the `sereus_cadre_data` volume. Back up
+the peer identity — losing it changes the node's PeerID:
+
+```bash
+docker compose exec cadre-node cat /data/cadre-peer.key > cadre-peer.key.bak
+```
+
 ## Programmatic Usage
 
 ```typescript
