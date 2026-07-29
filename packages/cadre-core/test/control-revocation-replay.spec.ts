@@ -749,6 +749,35 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await db.recordFormationUsage({ token: bound, strandId: id })).toBe(1);
   }, 60_000);
 
+  it('Strand: RESIDUAL — an id seated ONLY owner-signed, then removed, is still consent-seatable', async () => {
+    // Pins the known limit of the once-ever rule so it cannot regress unnoticed: that rule
+    // keys off a surviving FormationUsage row, and an owner-signed seat writes none. After a
+    // legitimate signed removal a spare unbound invite use CAN therefore re-seat the id.
+    // The re-seated row is open and keyless (the shape clauses still hold), so no secret is
+    // chosen — but the removal does not stick. Tracked in
+    // tickets/backlog/bug-consent-reseats-owner-only-removed-strand-id.md; when that lands,
+    // this test flips to an expectConstraintFailure('AuthorizedInsert').
+    const id = 'strand-owner-only-removed-' + Math.random().toString(36).slice(2);
+    const { stamp } = await seatStrand(id, 'c', 'owner-member-key-' + id);
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
+
+    const token = 'fi-owner-only-removed-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(token, 'sapp-owner-only-removed', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1 });
+    await db.redeemInvitation({ token, strandId: id });
+
+    const reseated = await strandRow(id);
+    expect(reseated).toBeDefined();
+    expect(reseated?.StampId).not.toBe(stamp);
+    const shape = await rawDb.get(
+      'select Type, MemberPrivateKey from CadreControl.Strand where Id = ?',
+      [id],
+    );
+    expect(shape?.Type).toBe('o');
+    expect(shape?.MemberPrivateKey).toBeNull();
+  }, 60_000);
+
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
     const key = 'val-tomb-' + Math.random().toString(36).slice(2);
     const { stamp } = await enrollValidationKey(key);

@@ -408,6 +408,30 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await usageCount()).toBe(usageBefore + 1);
     });
 
+    it('rejects a consent redemption seating a CLOSED but keyless strand (AuthorizedInsert)', async () => {
+      // Isolates the Type='o' clause from the MemberPrivateKey clause: a closed strand with a
+      // null key satisfies MemberKeyClosedOnly and the previous test's key clause, so only
+      // "the seated strand must be open" can reject. Without this the two shape clauses are
+      // only ever tested together and dropping either would go unnoticed.
+      const token = 'invite-closed-keyless-' + rand();
+      await db.insertFormationInvite(token, 'sapp-closed-keyless', ownerPublicKey, signMessage);
+
+      const strandId = 'strand-closed-keyless-' + rand();
+      const stamp = freshStamp();
+      const strandsBefore = await strandCount();
+      const usageBefore = await usageCount();
+
+      await expectConstraintFailure(
+        inTransaction(async () => {
+          await rawInsertStrandUnsigned(strandId, 'c', null, stamp);
+          await rawInsertFormationUsage(token, 1, strandId, stamp);
+        }),
+        'AuthorizedInsert',
+      );
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await usageCount()).toBe(usageBefore);
+    });
+
     it('a bound invite cannot redeem against an unrelated strand id (AuthorizedInsert)', async () => {
       const host = 'strand-bound-host-' + rand();
       const hostMemberKey = 'memkey-' + rand();

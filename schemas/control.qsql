@@ -190,6 +190,12 @@ declare schema CadreControl {
                 --     pre-block a legitimate id: StrandExists refuses a usage row naming a strand that
                 --     does not exist, so no usage row can be pre-planted for an unseated id — and ids
                 --     are 128 random bytes anyway.
+                --     RESIDUAL: the rule keys off a SURVIVING usage row, so it binds only ids that
+                --     ever carried one. A strand seated purely owner-signed (insertStrand, no consent
+                --     record) and then removed leaves nothing behind, so a spare unbound invite use
+                --     can still seat that id afterwards — open and keyless, so no secret is chosen,
+                --     but the removal does not stick. Tracked in
+                --     tickets/backlog/bug-consent-reseats-owner-only-removed-strand-id.md.
                 or (
                     new.Type = 'o'
                     and new.MemberPrivateKey is null
@@ -450,6 +456,12 @@ declare schema CadreControl {
                         -- arbitrary strand id — annotating an unrelated strand, or (before
                         -- Strand.AuthorizedInsert's consent branch was narrowed to unbound invites)
                         -- consent-seating that id outright.
+                        -- NOTE: an UNBOUND invite is deliberately left free to name any strand, so a
+                        -- holder can spend a use appending a consent row to an unrelated existing
+                        -- strand. Harmless today (the row grants nothing, it only burns a use and
+                        -- forecloses that id's consent-seating, which is the safe direction); if
+                        -- unlimited-TotalUses invites ever become common, this is an append-only
+                        -- growth surface worth bounding.
                         and (FI.StrandId is null or FI.StrandId = new.StrandId)
             )
         ),
