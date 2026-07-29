@@ -78,6 +78,8 @@ export const STRAND_SCHEMA = `    table Header (
     ) with context (ManagerKey text null, ManagerSignature text null, InviteSignature text null);
 
     -- Invite [InviteKey] has been used to add [MemberKey] as a member
+    -- No StampId here or on Invite: both tables are insert-only and their primary keys are
+    -- minted fresh per issuance/consumption, so a replayed insert collides on the PK.
     table ConsumedInvite (
         InviteKey text primary key,
         MemberKey text,
@@ -103,6 +105,25 @@ export const STRAND_SCHEMA = `    table Header (
     -- A party in the closed strand network
     table Member (
         Key text primary key,
+        StampId text not null unique,   -- per-row authorization nonce, bound into the signed digests below.
+                                        -- unique holds over LIVE rows only; a removed row's stamp is retired
+                                        -- permanently into Revocation (NotRevoked below), so the never-expiring
+                                        -- admission signature cannot resurrect a revoked member.
+        -- A removed row's StampId is retired into Revocation, and this refuses any insert
+        -- naming a retired stamp: the approval that seated this row can never re-seat it
+        -- after removal. unique alone did not do this — it only holds over LIVE rows, so
+        -- a delete freed the stamp and the original never-expiring signature verified
+        -- again. A legitimate re-add mints a FRESH StampId and a fresh signature, so it is
+        -- unaffected. Mirrors CadreControl.OwnerKey.NotRevoked (rationale in full there).
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'Member' and R.StampId = new.StampId)
+        ),
+        -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the
+        -- same transaction, or the stamp would free up again. Deferred (subquery), so the
+        -- sibling insert is visible at commit regardless of statement order.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'Member' and R.StampId = old.StampId)
+        ),
         -- Membership is insert + delete only; a re-keyed member is a remove + fresh add.
         constraint NoUpdate check on update (false),
         -- Mask is explicit on all three operations: a bare check defaults to
@@ -135,10 +156,12 @@ export const STRAND_SCHEMA = `    table Header (
             -- the rule directly: the authorizer existed BEFORE this transaction.
 
             -- Every signed digest below leads with two fixed literals — the
-            -- 'Strand.Member' domain tag and an 'add'/'remove' action tag — so an
-            -- approval verifies ONLY against the one rule it was minted for; an admit
-            -- approval can never be replayed as an eviction or vice versa (the idiom
-            -- of CadreControl's control-authorization.ts).
+            -- 'Strand.Member' domain tag and an action tag — so an approval verifies
+            -- ONLY against the one rule it was minted for (the idiom of CadreControl's
+            -- control-authorization.ts), and binds the row's StampId, so it authorizes
+            -- exactly one INCARNATION of the row: once the row is deleted (retiring the
+            -- stamp) or re-created under a fresh stamp, the captured approval matches
+            -- nothing.
 
             -- Bootstrap: the FOUNDING transaction — one whose pre-transaction member
             -- set is empty — seats the first member, AND ONLY THAT ONE, with no
@@ -153,11 +176,13 @@ export const STRAND_SCHEMA = `    table Header (
                 and (select count(1) from committed.Member) = 0
                 and (select count(1) from Member) <= 1)
 
-                -- or added directly by a pre-existing manager signing the add-tagged digest
+                -- or added directly by a pre-existing manager signing the add-tagged
+                -- digest over (Key, StampId) — bound to this row's fresh stamp, so the
+                -- approval seats exactly this incarnation and dies with it.
                 or (old.Key is null and exists (
                     select 1 from committed.Manager A
                         where A.MemberKey = context.ManagerKey
-                            and verify(digest('Strand.Member', 'add', new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                            and verify(digest('Strand.Member', 'add', new.Key, new.StampId), context.ManagerSignature, A.MemberKey, 'ed25519')
                 ))
 
                 -- or added by consuming an invite. The ConsumedInvite admitting this
@@ -175,18 +200,22 @@ export const STRAND_SCHEMA = `    table Header (
                 ))
 
                 -- or a removal authorized by a pre-existing manager over the DISTINCT
-                -- remove-tagged digest bound to the departing key.
+                -- remove-tagged digest bound to the departing row's (Key, StampId).
                 or (new.Key is null and exists (
                     select 1 from committed.Manager A
                         where A.MemberKey = context.ManagerKey
-                            and verify(digest('Strand.Member', 'remove', old.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+                            and verify(digest('Strand.Member', 'remove', old.Key, old.StampId), context.ManagerSignature, A.MemberKey, 'ed25519')
                 ))
 
-                -- or the member removes ITSELF (leaving): the remove-tagged signature
+                -- or the member removes ITSELF (leaving): the leave-tagged signature
                 -- verifies against old.Key itself, so only the departing key's holder
-                -- can produce it — no manager involved.
+                -- can produce it — no manager involved. The 'leave' tag (vs the manager
+                -- branch's 'remove') is belt-and-braces ONLY: the two branches verify
+                -- against DIFFERENT keys, so the former shared tag was never
+                -- exploitable — the anti-replay fix here is the StampId binding, not
+                -- this tag.
                 or (new.Key is null
-                    and verify(digest('Strand.Member', 'remove', old.Key), context.MemberSignature, old.Key, 'ed25519'))
+                    and verify(digest('Strand.Member', 'leave', old.Key, old.StampId), context.MemberSignature, old.Key, 'ed25519'))
         ),
     ) with context (ManagerKey text null, ManagerSignature text null, MemberSignature text null);
 
@@ -200,46 +229,56 @@ export const STRAND_SCHEMA = `    table Header (
     table MemberPeer (
         MemberKey text,
         PeerId text,
+        StampId text not null unique,   -- per-row authorization nonce, bound into the signed
+                                        -- digests below; retired into Revocation on delete
+                                        -- (same idiom as Member.StampId, rationale there).
         primary key (MemberKey, PeerId),
+        -- Refuses any insert naming a retired stamp — see Member.NotRevoked.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'MemberPeer' and R.StampId = new.StampId)
+        ),
+        -- A delete must retire its stamp in the same transaction — see Member.RevocationRecorded.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'MemberPeer' and R.StampId = old.StampId)
+        ),
         -- Binding is insert + delete only, as on Member and Manager; a re-binding is a
-        -- remove plus a fresh register. Every column IS the primary key, so an update is
-        -- never an edit — and Authorized reads the NEW image, so an update would let ANY
-        -- member re-point another member's row at its OWN key, signing only over its own
-        -- new values, and thereby clear a binding it has no signature to delete.
+        -- remove plus a fresh register. The whole visible identity IS the primary key, so
+        -- an update is never an edit — and Authorized reads the NEW image, so an update
+        -- would let ANY member re-point another member's row at its OWN key, signing only
+        -- over its own new values, and thereby clear a binding it has no signature to
+        -- delete.
         constraint NoUpdate check on update (false),
         -- Mask is explicit: a bare check defaults to insert|update and silently never runs on
         -- DELETE. Insert is the only reachable case — update is forbidden above, and a delete
         -- leaves no new row image to validate.
         constraint MemberExists check on insert (exists (select 1 from Member M where M.Key = new.MemberKey)),
         constraint Authorized check on insert, delete (
-            -- The member itself signs the binding, verified against the MemberKey the row
-            -- names — so only that member registers (or removes) its own peers.
-            --
-            -- NOTE: this branch signs the SAME payload for insert and delete, so a captured
-            -- registration approval also authorizes the matching delete. Context values travel
-            -- with the write out to the strand's peers, so anyone who saw a member register a
-            -- peer can unregister it. Availability only — the binding is re-registerable and
-            -- no other member's row is reachable. Tracked with the schema's other untagged
-            -- approvals by the bug-strand-approval-domain-separation ticket.
-            verify(
-                digest(coalesce(new.MemberKey, old.MemberKey) || '|' || coalesce(new.PeerId, old.PeerId)),
-                context.Signature,
-                coalesce(new.MemberKey, old.MemberKey),
-                'ed25519'
-            )
+            -- The member itself signs its own binding, verified against the MemberKey the
+            -- row names — so only that member registers (or removes) its own peers. The
+            -- registration and removal approvals are DISTINCT action-tagged digests, each
+            -- bound to the row's StampId, so a captured registration approval neither
+            -- re-registers a cleared binding (its stamp is retired) nor authorizes a
+            -- removal (wrong tag).
+            (old.MemberKey is null
+                and verify(digest('Strand.MemberPeer', 'add', new.MemberKey, new.PeerId, new.StampId), context.Signature, new.MemberKey, 'ed25519'))
+
+                -- or the member clears its OWN binding.
+                or (new.MemberKey is null
+                    and verify(digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId, old.StampId), context.Signature, old.MemberKey, 'ed25519'))
 
                 -- or a manager clears ANOTHER member's binding — the cleanup path after a
                 -- revocation, which the departing member has no reason to cooperate with.
-                -- Gated to DELETE and bound to a remove-tagged digest over the exact row, so a
-                -- captured registration signature can never be replayed as a removal on THIS
-                -- branch. The authorizer is read from the PRE-transaction snapshot
+                -- Gated to DELETE and bound to a manager-remove-tagged digest over the exact
+                -- row + stamp. The 'manager-remove' tag (vs the self branch's 'remove') is
+                -- belt-and-braces ONLY — the two branches verify against different keys.
+                -- The authorizer is read from the PRE-transaction snapshot
                 -- (committed.Manager) for the same reason Member.Authorized does: this check
-                -- now defers to commit, by which point a manager seated in the SAME transaction
+                -- defers to commit, by which point a manager seated in the SAME transaction
                 -- would otherwise be able to authorize its own cleanup.
                 or (new.MemberKey is null and exists (
                     select 1 from committed.Manager A
                         where A.MemberKey = context.ManagerKey
-                            and verify(digest('Strand.MemberPeer', 'remove', old.MemberKey, old.PeerId), context.ManagerSignature, A.MemberKey, 'ed25519')
+                            and verify(digest('Strand.MemberPeer', 'manager-remove', old.MemberKey, old.PeerId, old.StampId), context.ManagerSignature, A.MemberKey, 'ed25519')
                 ))
         ),
     ) with context (Signature text null, ManagerKey text null, ManagerSignature text null);
@@ -256,6 +295,19 @@ export const STRAND_SCHEMA = `    table Header (
         -- pre-existing one. Generation is NOT a privilege level: a generation-5 manager
         -- has exactly the same powers as a generation-1 manager.
         Generation integer not null,
+        StampId text not null unique,   -- per-row authorization nonce, bound into the signed
+                                        -- digests below; retired into Revocation on delete
+                                        -- (same idiom as Member.StampId, rationale there).
+        -- Refuses any insert naming a retired stamp — see Member.NotRevoked. This is what
+        -- makes a captured promotion approval single-use: once the manager is removed (its
+        -- stamp retired), the approval that seated it can never re-seat it.
+        constraint NotRevoked check on insert (
+            not exists (select 1 from Revocation R where R.TableName = 'Manager' and R.StampId = new.StampId)
+        ),
+        -- A delete must retire its stamp in the same transaction — see Member.RevocationRecorded.
+        constraint RevocationRecorded check on delete (
+            exists (select 1 from Revocation R where R.TableName = 'Manager' and R.StampId = old.StampId)
+        ),
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
@@ -275,6 +327,10 @@ export const STRAND_SCHEMA = `    table Header (
             (select count(1) from Manager) >= 1
         ),
         constraint Authorized check on insert, delete (
+            -- Every signed branch below is a domain/action-tagged digest bound to the
+            -- row's StampId — the same single-use idiom as Member.Authorized: an
+            -- approval seats (or removes) exactly one incarnation of one row.
+
             -- Bootstrap: the founding manager is seated with no prior signer, at
             -- generation 0. Gated to INSERT (old.MemberKey is null) AND to the founding
             -- state — at most one Member, and this manager IS that member. Deferred
@@ -287,14 +343,22 @@ export const STRAND_SCHEMA = `    table Header (
                 and (select count(1) from Member) <= 1
                 and exists (select 1 from Member M where M.Key = new.MemberKey))
 
-                -- or authorized by this former manager (self-resignation)
+                -- or authorized by this former manager (self-resignation), over the
+                -- resign-tagged digest bound to its own row's stamp. The 'resign' tag
+                -- (vs the admin branch's 'remove') is belt-and-braces — the two
+                -- branches verify against different keys; the anti-replay fix is the
+                -- stamp: once this manager is re-promoted under a fresh stamp, a
+                -- captured resignation no longer removes it.
                 or (
                     old.MemberKey is not null
                         and old.MemberKey = context.ManagerKey
-                        and verify(digest(old.MemberKey), context.Signature, old.MemberKey, 'ed25519')
+                        and verify(digest('Strand.Manager', 'resign', old.MemberKey, old.StampId), context.Signature, old.MemberKey, 'ed25519')
                 )
 
-                -- or a promotion signed by an EARLIER-generation manager. The strict
+                -- or a promotion signed by an EARLIER-generation manager, over the
+                -- add-tagged digest binding (MemberKey, Generation, StampId) — so a
+                -- captured promotion replays at neither a different generation nor a
+                -- second incarnation of the row. The strict
                 -- A.Generation < new.Generation is what closes same-transaction mutual
                 -- promotion: this subquery runs at commit against the post-insert row
                 -- set, so sibling rows inserted in the same transaction are visible —
@@ -311,20 +375,71 @@ export const STRAND_SCHEMA = `    table Header (
                         where A.MemberKey = context.ManagerKey
                             and A.MemberKey <> new.MemberKey
                             and A.Generation < new.Generation
-                            and verify(digest(new.MemberKey || '|' || new.Generation), context.Signature, A.MemberKey, 'ed25519')))
+                            and verify(digest('Strand.Manager', 'add', new.MemberKey, new.Generation, new.StampId), context.Signature, A.MemberKey, 'ed25519')))
 
-                -- or a removal authorized by ANOTHER existing manager. Deliberately no
+                -- or a removal authorized by ANOTHER existing manager, over the
+                -- remove-tagged digest bound to (MemberKey, StampId). Deliberately no
                 -- generation condition here: deletes are safe once inserts are (every
                 -- accepting branch requires a Manager row in the post-image, and no
                 -- attacker row can get there), and a generation gate would break a
-                -- later-generation manager removing an earlier-generation one. The
-                -- payload stays digest(old.MemberKey) — distinct from the insert
-                -- payload, which also carries the generation.
+                -- later-generation manager removing an earlier-generation one.
                 or (new.MemberKey is null and exists (
                     select 1 from Manager A
                         where A.MemberKey = context.ManagerKey
                             and A.MemberKey <> old.MemberKey
-                            and verify(digest(old.MemberKey), context.Signature, A.MemberKey, 'ed25519')))
+                            and verify(digest('Strand.Manager', 'remove', old.MemberKey, old.StampId), context.Signature, A.MemberKey, 'ed25519')))
         )
     ) with context (ManagerKey text null, Signature text null);
+
+    -- Permanent tombstones for retired per-row authorization nonces (StampIds) — the
+    -- delete half of the retired-stamp anti-replay idiom on Member / Manager /
+    -- MemberPeer. Adapted from CadreControl.Revocation (the idiom is stated in full on
+    -- CadreControl.OwnerKey); two deliberate differences:
+    --   1. TableName is confined to the three guarded STRAND tables (RowIsGone below).
+    --   2. Authorized verifies against a committed MEMBER row, not an owner key: every
+    --      delete path in this schema is driven by a manager or by the departing party,
+    --      and both are members. The action tag is 'retire' where the control layer
+    --      says 'remove'; the domain tag already keeps the two schemas' approvals
+    --      disjoint, so the divergence is cosmetic — kept because 'retire' names the
+    --      act (retiring a stamp), not a row operation.
+    -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so
+    -- a node that has not yet converged on a Revocation row can still accept a replayed
+    -- add and the resurrected row coexists with the tombstone after merge — the same
+    -- convergence class as the MinOneMember / MinOneManager local-count notes.
+    table Revocation (
+        TableName text,             -- 'Member' | 'Manager' | 'MemberPeer' (confined by RowIsGone below)
+        StampId text,               -- the retired nonce
+        primary key (TableName, StampId),
+        constraint OnlyClosed check (
+            exists (select 1 from Header H where H.Type = 'c')
+        ),
+        -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
+        constraint Immutable check on update, delete (false),
+        -- A stamp may only be retired once its row is actually gone. Deferred (subquery), so a
+        -- delete in the same transaction has already landed. Retiring a stamp that never
+        -- existed is permitted and harmless: a stamp carries 256 bits of CSPRNG output
+        -- (strand-membership-writer.ts generateStrandStampId), so a future legitimate one
+        -- cannot be guessed and pre-planted — junk stamps only grow the table.
+        constraint RowIsGone check on insert (
+            (new.TableName = 'Member' and not exists (select 1 from Member M where M.StampId = new.StampId))
+                or (new.TableName = 'Manager' and not exists (select 1 from Manager A where A.StampId = new.StampId))
+                or (new.TableName = 'MemberPeer' and not exists (select 1 from MemberPeer P where P.StampId = new.StampId))
+        ),
+        -- Filing a tombstone is a MEMBER action: every legitimate delete in this schema is
+        -- driven by a manager or by the departing party — both members — and the tombstone
+        -- rides the delete's own transaction. The authorizer is read from the
+        -- PRE-transaction snapshot (committed.Member) for the same reason the sibling
+        -- tables read committed.*: this check defers to commit, by which point a member
+        -- seated in the same transaction is live. The digest binds the WHOLE row
+        -- (TableName, StampId) under its own domain tag, so it is disjoint from every
+        -- other rule — including the remove-tagged approval the same party signs in the
+        -- SAME transaction for the delete this tombstone accompanies. RowIsGone and
+        -- Immutable guard what authorization does not: retiring a stamp early, or
+        -- withdrawing one later.
+        constraint Authorized check on insert (
+            exists (select 1 from committed.Member M
+                where M.Key = context.MemberKey
+                    and verify(digest('Strand.Revocation', 'retire', new.TableName, new.StampId), context.Signature, M.Key, 'ed25519'))
+        )
+    ) with context (MemberKey text, Signature text);
 `;
