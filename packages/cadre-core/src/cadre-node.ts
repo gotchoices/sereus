@@ -33,7 +33,7 @@ import type {
   CadrePeerVoucherFields,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { DEFAULT_CHECKIN_WINDOW_MS, DEFAULT_CLUSTER_SIZE } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
@@ -736,7 +736,7 @@ export class CadreNode implements SAppIdLookup {
       storage: controlStorageProvider,
       fretProfile: profile === 'storage' ? 'core' : 'edge',
       relay: enableRelay,
-      clusterSize: 3,
+      clusterSize: this.config.clusterSize ?? DEFAULT_CLUSTER_SIZE,
       clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
       arachnode: { enableRingZulu: this.config.profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
@@ -2438,6 +2438,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes: seed.bootstrapNodes,
       mode,
       requireSignedSchemas: this.config.requireSignedSchemas,
+      clusterSize: this.config.clusterSize,
       founder
     });
 

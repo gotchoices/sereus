@@ -48,6 +48,17 @@ Cadre uses `@optimystic/db-p2p` to create libp2p+Optimystic nodes. In that imple
 
 Cadre-specific protocols are separate and live under `/sereus/*` (e.g. seed delivery uses `/sereus/seed/1.0.0`; control-network push-wake uses `/sereus/strand-wake/1.0.0`, see [Strand Hibernation → Wake Mechanisms](#strand-hibernation); on-demand strand-address resolution uses `/sereus/strand-addr/1.0.0`, see [Strand-Address Resolution](#strand-address-resolution)).
 
+#### Replication cluster size
+
+Optimystic replicates each block to a group of nodes it calls a **cluster**. How many nodes that group should have is an embedder-supplied number — `CadreNodeConfig.clusterSize` (`DEFAULT_CLUSTER_SIZE`, currently **2**). Cadre passes the same value to the control network and to every strand network it starts; nothing so far justifies two separate knobs, and a second knob is a second chance for the two sides to disagree.
+
+Two rules matter operationally:
+
+- **Every node in a party must use the same value.** Optimystic's cluster member treats the number as an admission gate: a member refuses to vote on a write when the coordinator's declared peer set is smaller than the member's own configured size and the member has no confident network-size estimate. A commit needs a super-majority (unanimity at two nodes), so a single refusal fails the write. Under-configuring is safe — a node admits any cohort at or above its own number — so when in doubt the value should be too small rather than too large.
+- **It is frozen when the libp2p node is created**, not re-read as the cadre grows. Changing it takes effect on the next restart. This is also why the number is *not* derived from the live `CadrePeer` count: the control libp2p node is created before the `ControlDatabase` that holds those rows exists, and membership is eventually consistent, so per-node derivation would reintroduce exactly the divergence the gate punishes.
+
+Two is Optimystic's own `minAbsoluteClusterSize` and the smallest value that reaches the cluster path at all — a lone node writes to local storage without forming a cluster. The cost of a small value is replication breadth (blocks land on two nodes rather than three), not correctness. Raise it only for a cadre that reliably runs that many nodes, and set the same value on every node.
+
 ### Strand Networks
 
 Each strand is an independent Optimystic network with its own:

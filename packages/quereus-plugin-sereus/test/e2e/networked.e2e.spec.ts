@@ -17,15 +17,24 @@ import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js'
  * to that file, so this suite uses real libp2p + real optimystic.
  *
  * Each peer uses `fretProfile: 'edge'` (the plugin default and the production
- * default for non-storage participants). `clusterSize: 3` with
- * `sizeTolerance: 0.5` mirrors cadre-node.ts:277-280 and admits a two-peer
- * downsize.
+ * default for non-storage participants). `clusterSize` and `clusterPolicy`
+ * mirror what `CadreNode` configures for a strand network — see
+ * `TEST_CLUSTER_SIZE` below.
  *
  * Replication is not event-driven on `IRepo`, so the assertions poll via
  * `waitUntil` (10s default) — matching the integration-tests harness pattern.
  */
 
 const TEST_SCHEMA = 'table Msg (Id integer primary key, Body text not null)';
+
+/**
+ * Every peer on one network must declare the same cluster size: a member whose
+ * configured size exceeds the peer set the coordinator declares refuses to vote
+ * on the write, and one refusal fails the commit. This mirrors cadre-core's
+ * `DEFAULT_CLUSTER_SIZE`, duplicated as a literal because this package does not
+ * depend on `@serfab/cadre-core`.
+ */
+const TEST_CLUSTER_SIZE = 2;
 
 interface PeerHandle {
 	db: Database;
@@ -86,7 +95,7 @@ async function startPeer(
 		networkName: `strand-${strandId}`,
 		fretProfile: 'edge',
 		storage,
-		clusterSize: 3,
+		clusterSize: TEST_CLUSTER_SIZE,
 		clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
 	}) as Libp2pNodeWithRepo;
 	const coordinatedRepo = node.coordinatedRepo;

@@ -1,5 +1,5 @@
-description: Tests that check whether data written on one node reaches a second connected node fail every time, because a new safety check in the underlying peer-to-peer networking library refuses to accept a two-node group as a legitimate cluster; a human needs to decide whether we shrink the cluster size we ask for or push the fix upstream.
-blocked-reason: human-decision (cluster-size configuration vs. upstream ../optimystic fix) — see "Update 2026-07-27"
+description: Tests that check whether data written on one node reaches a second connected node still fail every time; the write half of the cause is fixed, but the read half is a defect in the underlying peer-to-peer networking library that cannot be fixed from this repo.
+blocked-reason: dependency (upstream ../optimystic read-side fix) — see "Update 2026-07-29"
 files:
   - packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts
   - packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts
@@ -11,9 +11,10 @@ files:
   - packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts
   - packages/integration-tests/src/scenarios/websocket-chat.integration.ts
   - packages/integration-tests/src/scenarios/convergence-stress.integration.ts
-  - packages/integration-tests/src/harness/test-party.ts (clusterSize: 3, line 48)
-  - packages/cadre-core/src/cadre-node.ts (clusterSize: 3, line 643)
-  - packages/cadre-core/src/strand-instance-manager.ts (clusterSize: 3, line 260)
+  - packages/cadre-core/src/types.ts (DEFAULT_CLUSTER_SIZE, CadreNodeConfig.clusterSize)
+  - packages/integration-tests/src/harness/test-party.ts (clusterSize call site)
+  - packages/cadre-core/src/cadre-node.ts (clusterSize call site, control network)
+  - packages/cadre-core/src/strand-instance-manager.ts (clusterSize call site, strand networks)
   - ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (admitMembership, lines 893-911 — emits low-confidence-downsize)
   - ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (consensusConfig.clusterSize, line 649)
   - ../optimystic/packages/db-core/src/cluster/structs.ts (allowUnvalidatedSmallCluster, line 135 — not plumbed)
@@ -429,3 +430,25 @@ are separate pieces of work.**
   sizes, and to stop counting the reader itself as a corroborator.
 
 This ticket stays blocked on the upstream change landing.
+
+## Update 2026-07-29 — write side landed; this ticket is now purely upstream
+
+`bug-cluster-size-exceeds-cadre-size` shipped. `clusterSize` is now one party-wide value
+(`DEFAULT_CLUSTER_SIZE = 2` in `packages/cadre-core/src/types.ts`, overridable via
+`CadreNodeConfig.clusterSize`) used by the control network, every strand network, the
+integration harness, and the plugin e2e spec. The stale line references in the `files:`
+header above (`clusterSize: 3` at `cadre-node.ts:643`, `strand-instance-manager.ts:260`,
+`test-party.ts:48`) no longer apply.
+
+Verified after the change, with `DEBUG='optimystic:db-p2p:cluster*'`:
+
+| Scenario | `admission-reject` | cluster transactions | test |
+| --- | --- | --- | --- |
+| `control-write-while-alone-convergence` | 0 (was 6) | 3 start → 3 complete | still fails |
+| `control-db-two-node-convergence` | 0 | 11 start → 11 complete | still fails |
+| `quereus-plugin-sereus` `networked.e2e` | 0 | 30 start → 30 complete | still fails |
+
+So every cluster write now commits and `membership-not-admitted` is gone everywhere. The
+remaining failures are the read side described above — `Failed to find materialized block
+… for revision N`, then a `waitUntil` timeout. Nothing further can be done from this repo;
+the ticket stays blocked on `selectQuorumRev`.

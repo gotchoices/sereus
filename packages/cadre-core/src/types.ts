@@ -245,6 +245,14 @@ export interface ControlNetworkConfig {
 }
 
 /**
+ * Default number of nodes Optimystic is told a replication cluster should have.
+ * Two is Optimystic's own `minAbsoluteClusterSize` and the smallest value that
+ * reaches the cluster path at all (a lone node writes locally without forming a
+ * cluster). See {@link CadreNodeConfig.clusterSize} for the rule.
+ */
+export const DEFAULT_CLUSTER_SIZE = 2;
+
+/**
  * Main configuration for a CadreNode
  */
 export interface CadreNodeConfig {
@@ -287,6 +295,23 @@ export interface CadreNodeConfig {
 
   /** Network configuration */
   network?: NetworkConfig;
+
+  /**
+   * Number of nodes Optimystic is told a replication cluster should have, for
+   * both the control network and every strand network this node starts.
+   *
+   * Every node in the same party MUST use the same value. A node configured
+   * higher than the cohort it is shown refuses to vote on the write, and one
+   * refusal fails the commit (a commit needs a super-majority, which at two
+   * nodes is unanimity). Under-configuring is safe — a node admits any cohort
+   * at or above its own number — so when in doubt leave this alone.
+   *
+   * Frozen when the libp2p node is created; a change takes effect on restart,
+   * not when cadre membership grows. Defaults to {@link DEFAULT_CLUSTER_SIZE}
+   * (2). Raise only for a cadre that reliably runs that many nodes; the cost of
+   * a smaller value is replication breadth, not correctness.
+   */
+  clusterSize?: number;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;
