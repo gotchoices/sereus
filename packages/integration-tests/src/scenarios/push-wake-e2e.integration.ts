@@ -602,7 +602,23 @@ describe('E2E push-wake over the control network', () => {
 	//    star (only S→A, Rx→A) leaves S↔Rx unlinked and resets streams it cannot route.
 	//    This is the ticket's "ensure all three are connected" precondition.
 	//
-	// 3. EPHEMERAL NON-OWNER IDENTITIES. Owner A and sender S use EPHEMERAL libp2p
+	// 3. OWNER A IS CONFIGURED CONTROL INFRASTRUCTURE ON S AND Rx. Both plain members
+	//    carry A's control multiaddr in `bootstrapNodes`, which is what makes A
+	//    unconditionally admitted by their fail-closed per-stream control-DB gate
+	//    (`CadreNode.authorizeInboundControlStream` → `admitControlPeerUnconditionally`
+	//    → `getBootstrapPeerIds`). Without it this scenario races: the moment Rx
+	//    converges S's authorized-member row its snapshot goes non-empty, and from then
+	//    on every inbound control-DB stream from a peer NOT in that snapshot is denied —
+	//    including A, whose EPHEMERAL identity (note 4) means its peer id is deliberately
+	//    never a `CadrePeer` row anywhere. Ownership here is a KEY (`aOwnerPub`), not a
+	//    peer id, so the gate has nothing to match A on. Unlike scenarios 1 and 2, A is
+	//    both a dial TARGET and a DIALER into the other cluster members (the 3-node commit
+	//    in note 2 routes between all three), so it needs an inbound admission path on
+	//    them. Scenario 2 already treats relay L this way on Rx; this is the same
+	//    already-shipped carve-out for the same reason — configured party infrastructure,
+	//    not a cadre member.
+	//
+	// 4. EPHEMERAL NON-OWNER IDENTITIES. Owner A and sender S use EPHEMERAL libp2p
 	//    identities (no `privateKey`), so they never self-publish a `CadrePeer` address
 	//    row (`registerSelf` skips without an identity key — cadre-node.ts:600-604).
 	//    The woken strand's `networked` resume no longer seeds from CadrePeer addrs at all:
@@ -633,16 +649,22 @@ describe('E2E push-wake over the control network', () => {
 			A = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
 			await A.start();
 			const aOwnerPub = await makeOwnOwner(A, aKey);
+			const aAddrs = controlAddrs(A);
+			expect(aAddrs.length).toBeGreaterThan(0);
+			const aAddr = aAddrs[0]!; // /ip4/127.0.0.1/tcp/<port>/ws/p2p/<A>
 
 			// Sender S and receiver Rx are plain members — NEITHER is its own owner, so
 			// neither can self-insert any control row. Every membership fact they consult must
 			// have been written by A and pulled over the wire. S's session peerId is stable.
-			S = new CadreNode(nodeConfig({ partyId }));
+			// Both configure A as a control bootstrap node so the fail-closed per-stream gate
+			// admits A unconditionally once their authorized-member snapshot goes non-empty —
+			// A's ephemeral identity is in no `CadrePeer` row (design note 3).
+			S = new CadreNode(nodeConfig({ partyId, bootstrapNodes: [aAddr] }));
 			await S.start();
 			const sPeerId = S.peerId!.toString();
 
 			const rxKey = await generateKeyPair('Ed25519');
-			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
+			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true, bootstrapNodes: [aAddr] }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
@@ -672,6 +694,18 @@ describe('E2E push-wake over the control network', () => {
 			//     insert carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes.
 			// Nothing is seeded on the consulting node itself (no `Rx.authorizePeer`, no
 			// `seedReceiverRecord(S, ...)`): each consulting node reads a SIBLING-written row.
+			// NOTE: `seedReceiverRecord` reaches A's SeedBootstrapService DIRECTLY, so unlike
+			// every `CadreNode` membership wrapper it does not re-materialize A's per-stream
+			// control-DB gate snapshot. A's snapshot therefore stays {S} (set by the
+			// `authorizePeer` above) until the 15s cohort-reconcile refresh, and for that
+			// window A denies Rx's own `…/db-p2p/sync/1.0.0` pulls — visible as bursts of
+			// `authorizeInboundControlStream: DENYING` under `DEBUG='sereus:cadre:*'` and as
+			// runs that take ~17s instead of ~3s. Harmless (the pulls retry and the run still
+			// passes); if it ever becomes a hard failure, give CadreNode a public
+			// "re-materialize the membership gate" call and use it here. Swapping the two
+			// writes so `authorizePeer` runs last DOES clear the denials, but measured
+			// WORSE overall (2/6 vs 4/5 passes) — it perturbs the commit ordering into the
+			// separate control-DB stale-revision race, so leave the order as is.
 			await A.authorizePeer(sPeerId);
 			await seedReceiverRecord(A, rxPeerId, rxKey, controlAddrs(Rx));
 
