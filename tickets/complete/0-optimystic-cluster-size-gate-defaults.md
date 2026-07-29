@@ -1,7 +1,31 @@
 ----
-description: The storage library we build on uses one setting for two different jobs — how many copies of data to keep, and how small a group of nodes it will accept a write from — and its default for that setting is far larger than any small deployment. Someone should raise this with the library.
-files: ../optimystic/packages/db-p2p/src/libp2p-node-base.ts (lines 639-650), ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts (lines 865-945)
+description: We noticed the storage library uses one setting for two different jobs and defaults it to a value no small deployment can meet. This ticket only asked that someone raise it with the library; that has been done.
 ----
+
+# Complete: raised upstream
+
+Resolved 2026-07-29 by filing it in the linked workspace as
+`../optimystic/tickets/plan/3-clustersize-conflates-replication-factor-and-admission-yardstick.md`
+(commit `8124cf6` there). This ticket asked for nothing else — no code change was ever in scope
+here.
+
+The upstream ticket carries the full finding: `clusterSize` is simultaneously the replication
+factor (which you want high) and the yardstick a member uses to judge whether an inbound write
+comes from a legitimately-sized group (which must not exceed the number of nodes that exist), so
+one number cannot satisfy both. It also carries the concrete cost to us — we lowered our
+replication factor from 3 to 2 purely to make writes work, which is now its own product decision
+in `blocked/replication-breadth-two-signoff` — and the observation that the `?? 10` default
+leaves any embedder who never configured it unable to commit at all, with an error that reads
+like a peer problem rather than a local setting.
+
+Three consolidation options are laid out there with tradeoffs, plus a request that the error
+message name the configured value. The choice is the upstream maintainers' to make; nothing here
+is waiting on it.
+
+---
+
+# Original ticket
+
 
 # Upstream (Optimystic): one number does two jobs, and its default is 10
 
