@@ -3,7 +3,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
-import type { CadreNodeConfig } from '../src/types.js';
+import type { CadreNodeConfig, ControlNetworkSeed, SeedPeer } from '../src/types.js';
 
 /**
  * Unit coverage for the proactive control-cohort reconcile orchestration
@@ -279,5 +279,207 @@ describe('CadreNode.reconcileControlCohort', () => {
     await node.reconcileControlCohort();
 
     expect(dialCalls).toHaveLength(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Cold-start bootstrap retry
+//
+// The branch reconcileControlCohort takes when the CadrePeer table holds no
+// siblings: re-dial the owner peers of the seeds this node applied. The
+// end-to-end proof is control-cohort-cold-start-retry.integration.ts; these
+// cover the pieces that scenario cannot isolate (skip-connected, peer-id
+// binding, mid-loop shutdown, what a seed does and does not retain).
+// ══════════════════════════════════════════════════════════════════════════════
+
+/** A real Ed25519 peer id — the dial path binds addresses to it, so it must parse. */
+async function realPeerId(): Promise<string> {
+  return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+}
+
+function seedWith(peers: SeedPeer[]): ControlNetworkSeed {
+  return { partyId: 'p', peers, signature: '', signerKey: '' };
+}
+
+/** Feed a seed through the retention step both intake paths share. */
+function recordSeed(node: CadreNode, seed: ControlNetworkSeed): void {
+  (node as unknown as { recordSeedBootstrapPeers(s: ControlNetworkSeed): void })
+    .recordSeedBootstrapPeers(seed);
+}
+
+function bootstrapPeers(node: CadreNode): Map<string, string[]> {
+  return (node as unknown as { controlBootstrapPeers: Map<string, string[]> }).controlBootstrapPeers;
+}
+
+/** Flatten the multiaddrs handed to the fake control node's dial() into strings. */
+function dialedAddrs(dialCalls: Array<unknown>): string[] {
+  return dialCalls.flatMap((call) => (call as Array<{ toString(): string }>).map((a) => a.toString()));
+}
+
+describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () => {
+  it('dials a retained bootstrap peer when the control DB has no siblings', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const { dialCalls } = injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [addr], isOwner: true }]));
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([addr]);
+  });
+
+  it('skips a bootstrap peer that is already connected', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    const { dialCalls } = injectCohort(node, { members: [], connections: [owner] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`], isOwner: true }
+    ]));
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toEqual([]);
+  });
+
+  it('leaves bootstrap peers alone once the table has a sibling to dial', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    const bootstrapAddr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: 'sibling-1', multiaddr: null }]
+    });
+    recordSeed(node, seedWith([{ peerId: owner, multiaddrs: [bootstrapAddr], isOwner: true }]));
+
+    await node.reconcileControlCohort();
+
+    // The stubbed resolver's sibling address, and nothing from the seed.
+    expect(dialedAddrs(dialCalls)).toEqual(['/ip4/1.2.3.4/tcp/4001']);
+  });
+
+  it('binds a bootstrap address that names no peer to the peer it was retained under', async () => {
+    // A record published through `addressOverrides` can lack the /p2p/ suffix;
+    // dialing it bare would accept whoever answers.
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    const { dialCalls } = injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: ['/ip4/1.2.3.4/tcp/4001/ws'], isOwner: true }
+    ]));
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`]);
+  });
+
+  it('drops a bootstrap address that names a different peer, and skips the dial', async () => {
+    const node = new CadreNode(createConfig());
+    const [owner, other] = [await realPeerId(), await realPeerId()];
+    const { dialCalls } = injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/1.2.3.4/tcp/4001/ws/p2p/${other}`], isOwner: true }
+    ]));
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toEqual([]);
+  });
+
+  it('continues to the next bootstrap peer after a dial throws', async () => {
+    const node = new CadreNode(createConfig());
+    const [first, second] = [await realPeerId(), await realPeerId()];
+    injectCohort(node, { members: [] });
+    const attempted: string[] = [];
+    (node as unknown as { controlNode: { dial(a: unknown): Promise<void> } }).controlNode.dial =
+      async (addrs: unknown) => {
+        attempted.push((addrs as Array<{ toString(): string }>)[0].toString());
+        throw new Error('dial boom');
+      };
+    recordSeed(node, seedWith([
+      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], isOwner: true },
+      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
+    ]));
+
+    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    expect(attempted).toHaveLength(2);
+  });
+
+  it('abandons the pass mid-loop when the node stops', async () => {
+    const node = new CadreNode(createConfig());
+    const [first, second] = [await realPeerId(), await realPeerId()];
+    injectCohort(node, { members: [] });
+    const attempted: string[] = [];
+    (node as unknown as { controlNode: { dial(a: unknown): Promise<void> } }).controlNode.dial =
+      async (addrs: unknown) => {
+        attempted.push((addrs as Array<{ toString(): string }>)[0].toString());
+        (node as unknown as { _running: boolean })._running = false;
+      };
+    recordSeed(node, seedWith([
+      { peerId: first, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${first}`], isOwner: true },
+      { peerId: second, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${second}`], isOwner: true }
+    ]));
+
+    await node.reconcileControlCohort();
+
+    expect(attempted).toHaveLength(1);
+  });
+});
+
+describe('CadreNode seed bootstrap-peer retention', () => {
+  it('retains only owner peers that carry an address', async () => {
+    const node = new CadreNode(createConfig());
+    const [owner, plain, addressless] = [await realPeerId(), await realPeerId(), await realPeerId()];
+    injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true },
+      { peerId: plain, multiaddrs: [`/ip4/2.2.2.2/tcp/2/ws/p2p/${plain}`], isOwner: false },
+      { peerId: addressless, multiaddrs: [], isOwner: true }
+    ]));
+
+    expect([...bootstrapPeers(node).keys()]).toEqual([owner]);
+  });
+
+  it('never retains self (createSeed projects every row, including this node)', async () => {
+    const node = new CadreNode(createConfig());
+    const self = await realPeerId();
+    injectCohort(node, { members: [], selfPeerId: self });
+    recordSeed(node, seedWith([
+      { peerId: self, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${self}`], isOwner: true }
+    ]));
+
+    expect(bootstrapPeers(node).size).toBe(0);
+  });
+
+  it('replaces a peer\'s addresses on re-seed rather than accumulating stale ones', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true }
+    ]));
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`], isOwner: true }
+    ]));
+
+    expect(bootstrapPeers(node).get(owner)).toEqual([`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`]);
+  });
+
+  it('retains from the inbound /sereus/seed/1.0.0 path too (onSeedApplied)', async () => {
+    // A wire-delivered seed is applied INSIDE SeedBootstrapService, below the
+    // CadreNode.applySeed wrapper, so the callback is its only retention seam.
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    injectCohort(node, { members: [] });
+    const seed = seedWith([
+      { peerId: owner, multiaddrs: [`/ip4/1.1.1.1/tcp/1/ws/p2p/${owner}`], isOwner: true }
+    ]);
+
+    (node as unknown as {
+      seedEventCallbacks(): {
+        onSeedApplied?: (partyId: string, peersAdded: number, seed: ControlNetworkSeed) => void;
+      };
+    }).seedEventCallbacks().onSeedApplied?.('p', 1, seed);
+
+    expect([...bootstrapPeers(node).keys()]).toEqual([owner]);
   });
 });

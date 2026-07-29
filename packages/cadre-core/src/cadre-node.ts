@@ -46,6 +46,7 @@ import {
   isPeerRecordFresh,
   orderSignalingFirst,
   isSignalingAddr,
+  trailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -1591,10 +1592,16 @@ export class CadreNode implements SAppIdLookup {
    * sound here for the same reason it is sound there — the whole seed is
    * signature-checked against a trust-anchored signer before this runs, and the
    * flag only *selects a dial target*; a dial grants no authority.
+   *
+   * Self is excluded. `createSeed` projects EVERY `CadrePeer` row, so an owner
+   * that applies a seed minted after it joined finds itself in the owner list;
+   * retaining that would make the cold-start pass dial this node forever (the
+   * steady-state pass filters self out of its sibling list for the same reason).
    */
   private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
+    const selfPeerId = this.controlNode?.peerId.toString();
     for (const peer of seed.peers) {
-      if (!peer.isOwner || peer.multiaddrs.length === 0) {
+      if (!peer.isOwner || peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
         continue;
       }
       this.controlBootstrapPeers.set(peer.peerId, [...peer.multiaddrs]);
@@ -1647,15 +1654,47 @@ export class CadreNode implements SAppIdLookup {
       this.controlBootstrapPeers.size, connected.size, dialed);
   }
 
+  /**
+   * Bind a bootstrap peer's seed addresses to its peer id, so the dial
+   * authenticates the peer it is aiming at rather than trusting whoever answers.
+   *
+   * An address that already carries `/p2p/<id>` must carry THIS peer's id or it
+   * is dropped (a seed that disagrees with itself is not a dial target); one
+   * that carries none — an `addressOverrides`-published record, say — gets the
+   * id encapsulated. Unencapsulatable addresses are dropped rather than dialed
+   * bare.
+   */
+  private bootstrapDialAddrs(peerId: string, addrs: string[]): Multiaddr[] {
+    const out: Multiaddr[] = [];
+    for (const addr of this.parseMultiaddrs(addrs)) {
+      const embedded = trailingPeerId(addr);
+      if (embedded === peerId) {
+        out.push(addr);
+        continue;
+      }
+      if (embedded !== null) {
+        log('reconcileControlCohort(cold-start): addr %s names peer %s, not %s; dropping',
+          addr.toString(), embedded, peerId);
+        continue;
+      }
+      try {
+        out.push(addr.encapsulate(`/p2p/${peerId}`));
+      } catch (error) {
+        log('reconcileControlCohort(cold-start): cannot bind %s to %s: %o', addr.toString(), peerId, error);
+      }
+    }
+    return out;
+  }
+
   /** Dial one cold-start bootstrap peer, best-effort. Returns whether it connected. */
   private async dialBootstrapPeer(peerId: string, addrs: string[]): Promise<boolean> {
     const controlNode = this.controlNode;
     if (!controlNode) {
       return false;
     }
-    const parsed = this.parseMultiaddrs(addrs);
+    const parsed = this.bootstrapDialAddrs(peerId, addrs);
     if (parsed.length === 0) {
-      log('reconcileControlCohort(cold-start): no parsable address for bootstrap peer %s; skipping', peerId);
+      log('reconcileControlCohort(cold-start): no dialable address for bootstrap peer %s; skipping', peerId);
       return false;
     }
     try {

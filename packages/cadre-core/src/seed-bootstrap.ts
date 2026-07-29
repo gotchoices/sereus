@@ -695,10 +695,16 @@ export class SeedBootstrapService {
     // `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
     // `CadreNode.dialColdStartBootstrap` retries these same addresses on every
     // control-cohort reconcile pass until the control database has siblings.
+    // `createSeed` projects EVERY CadrePeer row, so an owner applying a seed
+    // minted after it joined finds ITSELF in the owner list. Dialing self always
+    // throws, which would report a healthy owner as "seeded but stranded".
+    // Optional-chained: partial libp2p handles (unit-test doubles) omit `peerId`,
+    // and an undefined self simply matches nothing.
+    const selfPeerId = this.libp2pNode.peerId?.toString();
     let ownerDialsAttempted = 0;
     let ownerDialsFailed = 0;
     for (const peer of seed.peers.filter(p => p.isOwner)) {
-      if (peer.multiaddrs.length === 0) {
+      if (peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
         continue;
       }
       ownerDialsAttempted++;

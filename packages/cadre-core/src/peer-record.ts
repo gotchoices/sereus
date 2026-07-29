@@ -23,6 +23,7 @@
  * key), and its binding to `peerId` is checked separately at resolve time.
  */
 
+import type { Multiaddr } from '@multiformats/multiaddr';
 import { digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
 import { controlAuthorizationFields } from './control-authorization.js';
 import type { PeerAddressRecord, PeerResolveTrustPolicy } from './types.js';
@@ -119,6 +120,19 @@ export function isPeerRecordFresh(updatedAt: number, maxAgeMs: number, now: numb
 /** True if `addr` is a `/p2p-circuit` signaling/relay multiaddr. */
 export function isSignalingAddr(addr: string): boolean {
   return addr.includes(SIGNALING_PREFIX);
+}
+
+/**
+ * The peer id a multiaddr terminates in, or `null` when it names none.
+ *
+ * The LAST `/p2p/` component is the dial target: a circuit address
+ * (`…/p2p/<relay>/p2p-circuit/p2p/<target>`) names the relay first and the peer
+ * being reached last. Replaces the deprecated `Multiaddr.getPeerId()`, which
+ * cannot express that distinction.
+ */
+export function trailingPeerId(addr: Multiaddr): string | null {
+  const p2p = addr.getComponents().filter((c) => c.name === 'p2p');
+  return p2p.length > 0 ? (p2p[p2p.length - 1].value ?? null) : null;
 }
 
 /**

@@ -151,6 +151,10 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
+			// A is the seed's only owner peer with an address, so exactly one dial is
+			// attempted. `ownerDialsFailed` is deliberately NOT asserted: A's gate denies
+			// AFTER the dialer's upgrade completes, so the dial may or may not throw.
+			expect(applied.ownerDialsAttempted).toBe(1);
 
 			// 3. Confirm the first dial really did not stick. A's deny lands AFTER the
 			//    dialer's upgrade completes (see createMembershipConnectionGater), so
