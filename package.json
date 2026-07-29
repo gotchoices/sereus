@@ -23,9 +23,11 @@
     "build": "yarn workspaces foreach -At run build",
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
-    "test": "yarn workspaces foreach -A run test",
+    "test": "yarn workspaces foreach -A run test && yarn test:dep-ranges",
+    "test:dep-ranges": "node --test scripts/check-dep-ranges.test.mjs",
     "test:all": "yarn workspaces foreach -A run test:all",
-    "dep-check": "knip",
+    "dep-check": "knip && yarn check:dep-ranges",
+    "check:dep-ranges": "node scripts/check-dep-ranges.mjs",
     "doc": "yarn workspaces foreach -A run doc",
     "typecheck": "yarn workspaces foreach -A run typecheck",
     "check:svelte": "yarn workspaces foreach -A run check:svelte",
@@ -48,6 +50,7 @@
     "eslint-plugin-svelte": "^3.19.0",
     "globals": "^17.6.0",
     "knip": "^6.15.0",
+    "semver": "^7.7.3",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.60.1"
   }

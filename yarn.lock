@@ -14951,6 +14951,7 @@ __metadata:
     eslint-plugin-svelte: "npm:^3.19.0"
     globals: "npm:^17.6.0"
     knip: "npm:^6.15.0"
+    semver: "npm:^7.7.3"
     typescript: "npm:^5.9.3"
     typescript-eslint: "npm:^8.60.1"
   languageName: unknown

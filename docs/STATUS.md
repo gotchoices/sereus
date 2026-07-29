@@ -513,6 +513,22 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   *excludes* 0.17.0, so the declared range omitted the four `db-p2p` replication fixes and the
   inbound-stream authorization seam this repo builds and tests against. The `@quereus/quereus` half was
   floor tracking only; `^4.4.0` already admitted 4.5.0.
+- [x] **Gate: `yarn dep-check` now also runs `scripts/check-dep-ranges.mjs`** (`dep-check` is
+  `knip && yarn check:dep-ranges`), so this drift can no longer recur silently — it landed twice
+  before this existed. For every root `resolutions` entry that is a `link:` target, the script reads
+  the linked sibling workspace's `package.json` version, then walks every `packages/*/package.json`'s
+  `dependencies` / `peerDependencies` / `optionalDependencies` and fails if a declared range does not
+  admit that version (`semver.satisfies`), printing the package, the field, the declared range, the
+  linked version, which direction it drifted, and a suggested `^<linked version>` edit. It is generic
+  over whatever `resolutions` contains — not hardcoded to `@optimystic/*` — so it also covers
+  `@quereus/quereus`, and any future linked package for free. If a linked sibling workspace directory
+  is absent (e.g. a clean CI clone with no `../optimystic` checkout), that entry is skipped with a
+  logged notice rather than failing. Correctly treats the `0.x` vs `1.0+` caret boundary (`^0.16.3`
+  excludes 0.17.0; `^4.4.0` admits 4.5.0) since it defers to `semver` rather than a naive floor
+  comparison. `scripts/check-dep-ranges.test.mjs` (`yarn test:dep-ranges`, chained into root
+  `yarn test`) covers both caret-boundary directions, the "declared newer than linked" direction,
+  the absent-sibling skip, and a clean pass, each against a throwaway fixture workspace (not this
+  repo's own packages) via `DEP_RANGE_CHECK_ROOT`.
 - `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
   run them when the sibling workspace is bumped, not only at release time.
 - Note `@optimystic/db-p2p-storage-fs` has **no** `resolutions` entry, so it always resolves from the
