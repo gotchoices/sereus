@@ -1,0 +1,213 @@
+----
+description: Anyone at all can remove members from a private group — including removing everyone, which locks the group's own owner out. Removal needs to require permission, and a removed person must not be able to walk back in.
+files: schemas/strand.qsql (Member table, ~lines 93-116), packages/quereus-plugin-sereus/src/strand-schema.ts (mirrored STRAND_SCHEMA, ~lines 104-128), packages/cadre-core/src/strand-membership-writer.ts, packages/cadre-core/test/strand-membership-peer-rotation.spec.ts, packages/cadre-core/src/strand-member-registry.ts, schemas/control.qsql (OwnerKey — the idiom to copy), packages/cadre-core/src/control-authorization.ts, docs/strands.md
+difficulty: hard
+----
+
+# Authorize `Strand.Member` removal, and stop revoked members re-admitting themselves
+
+## Reproduced
+
+A throwaway spec (`packages/cadre-core/test/zz-repro-member-delete.spec.ts`, run against a real
+closed strand via `connectToStrand` in bootstrap mode, then deleted) confirmed all of the
+following. Re-create these as real tests during implementation — see TODO.
+
+| # | Attempt | Result |
+|---|---------|--------|
+| 1 | `delete from Strand.Member where Key = <victim>` with `ManagerKey = null, ManagerSignature = null` | **Accepted.** Victim evicted by a party holding no key at all. |
+| 2 | `delete from Strand.Member` (no `where`) with null context | **Accepted.** Every member, founder included, evicted in one statement. |
+| 3 | Invited member evicted, then re-inserts its own `Member` row with null context | **Accepted.** Unsigned self re-admission. |
+| 4 | Evicted member's `MemberPeer` rows after eviction | **Survive.** But a self-signed `delete from Strand.MemberPeer` **succeeds** — contradicting the schema comment and `registerMemberPeer`'s doc, which both claim peer deletes are rejected. |
+| 5 | Founder's `Member` row deleted | `Manager` row **survives** — the strand keeps an administrator with no membership. |
+
+## Root cause
+
+The ticket's original premise was that a `Member` delete is "gated by nothing but `OnlyClosed`".
+That understates it. Per Quereus (`../quereus/docs/sql-ddl.md` line 303):
+
+> `check (expr)` is enforced on INSERT and UPDATE by default; `check on {insert | update | delete}[,...]` restricts the operations.
+
+`Member.OnlyClosed` is written as a bare `check (...)`, so it carries the default `insert|update`
+mask and **never runs on DELETE**. `NoUpdate` is `on update`; `Authorized` is `on insert`. So a
+`Strand.Member` DELETE passes through **zero** constraints.
+
+The same default-mask reading explains finding 4: `MemberPeer.MemberExists` is a bare `check`, so
+it does not run on delete either — the `new.MemberKey is null on delete` reasoning recorded in the
+schema comment and in `registerMemberPeer`'s doc block never gets a chance to fire. Those comments
+are wrong and must be corrected (see `strand-memberpeer-revocation-cleanup`).
+
+Finding 3 is a **separate, independently-fixable defect** and the more dangerous one: it makes any
+delete gate we add pointless. `Member.Authorized`'s invite branch asks only
+
+```sql
+exists (select 1 from ConsumedInvite CI where CI.MemberKey = new.Key)
+```
+
+`ConsumedInvite` is insert-only and is never cleaned up, so that row outlives the membership it
+admitted. Once a member is removed, its stale `ConsumedInvite` row still satisfies the branch and
+the member re-inserts itself with no signature from anybody. **Both defects must land together** —
+fixing removal without fixing re-admission ships a revocation that any revoked party can undo.
+
+## Impact
+
+`Strand.Member` is the read gate for a closed strand: `StrandMemberRegistry.isMember`
+(`packages/cadre-core/src/strand-member-registry.ts:164`) resolves authorization by a
+`select ... from Strand.Member where Key = ?`. So an unauthorized delete strips a party's access,
+and a bare `delete from Strand.Member` is a total denial of service against the strand — an
+admin-less, member-less strand can never re-admit anyone. Constraint context values travel with a
+write to the strand's peers, so this needs no privileged network position.
+
+## Design
+
+Adopt the shape `schemas/control.qsql`'s `OwnerKey` table already uses (read it before starting —
+it is the reference implementation of every idea below), narrowed to what `Member` needs.
+
+### 1. `Member.Authorized` covers DELETE, and every authorizer is read pre-transaction
+
+Change the constraint to `check on insert, delete (...)` and resolve authorizers from
+`committed.Manager` rather than `Manager`. `committed.*` is the pre-transaction snapshot; it states
+directly that the authorizer must have existed **before** this transaction, so a manager seated in
+the same transaction cannot authorize a removal. This is strictly simpler than the generation
+ordering `Manager.Authorized` uses, and does not disturb it.
+
+**Verify `committed.*` resolves inside `declare schema Strand { ... }` before building on it.** It is
+proven in `CadreControl`, but the strand schema has never used it and the strand runs the same
+engine through a different composition path (`composeStrand`). Spike this first. If it does not
+resolve, fall back to gating each branch on `old.Key is null` / `new.Key is null` plus explicit
+post-image reasoning, and record the divergence in the ticket handoff.
+
+Branches:
+
+- **Founding member** — insert only, and only when the pre-transaction member set is empty:
+  `old.Key is null and (select count(1) from committed.Member) = 0`. Gating on the *committed*
+  count (not the post-image `count(1) from Member <= 1` the current schema uses) is load-bearing:
+  the existing ungated form is also true of a DELETE that drops the count to zero, and of the
+  insert half of a same-transaction wipe-then-seat-self. Mirrors `OwnerKey`'s bootstrap branch.
+- **Direct manager add** — `old.Key is null` and a `committed.Manager` row matching
+  `context.ManagerKey` signed the add-tagged digest over `new.Key`.
+- **Invite add** — `old.Key is null`, a `ConsumedInvite` row names `new.Key`, **and no
+  `committed.ConsumedInvite` row does**. The second clause is the fix for finding 3: `consumeInvite`
+  inserts `Member` + `ConsumedInvite` in one transaction, so the committed snapshot has no such row
+  and a genuine join passes; a revoked member's stale row *is* committed, so re-admission fails.
+  Single-use is untouched — `ConsumedInvite` rows are never deleted. Re-admission after revocation
+  is still possible, but only through a manager action: `addMemberByManager`, or a **fresh** invite
+  (new invite key → new `ConsumedInvite` row → passes).
+- **Manager-authorized removal** — `new.Key is null` and a `committed.Manager` row matching
+  `context.ManagerKey` signed the **remove**-tagged digest over `old.Key`.
+- **Self-departure (leaving)** — `new.Key is null`, `old.Key = context.MemberKey`, and `old.Key`
+  signed the remove-tagged digest over itself. Needs a new `MemberSignature` context field.
+  Mirrors manager self-resignation. If the team would rather members not leave unilaterally, drop
+  this branch — it is the one genuinely optional piece here.
+
+### 2. Domain/action tags on the signed payload
+
+Today `Member` insert signs `digest(new.Key)` — a bare key. A delete payload of the same shape
+would make an "add X" approval a valid "remove X" approval, the exact defect
+`bug-strand-manager-authority-antireplay` describes. So the payloads must be action-scoped from the
+start. Use the variadic tagged form `CadreControl` already uses:
+
+```sql
+verify(digest('Strand.Member', 'add',    new.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+verify(digest('Strand.Member', 'remove', old.Key), context.ManagerSignature, A.MemberKey, 'ed25519')
+```
+
+matched by a new TS signer alongside `signStrandPayload` (model it on
+`controlAuthorizationFields` in `packages/cadre-core/src/control-authorization.ts`; variadic-digest
+parity between SQL and TS is already pinned by `test/digest-variadic-parity.spec.ts`).
+
+Scope the tag change to `Member` only. `bug-strand-manager-authority-antireplay` (sequence 3.5,
+which already lists this ticket as a prereq) will retrofit the remaining tables and add a
+single-use stamp; leaving `Member` in the tagged form means that ticket only has to add the stamp
+field. Do **not** pre-empt it by adding a nonce here — a partial nonce is worse than none.
+
+### 3. Two floors
+
+- `MinOneMember check on delete ((select count(1) from Member) >= 1)` — mirrors
+  `Manager.MinOneManager`. Deferred, so it sees the post-delete count.
+- `NotAManager check on delete (not exists (select 1 from Manager A where A.MemberKey = old.Key))`
+  — closes finding 5. A member that still holds a `Manager` row must resign first; a single
+  transaction that deletes both rows still passes, since the deferred check reads the post-image.
+  Note that this is deliberately the *opposite* direction from
+  `debt-strand-manager-must-be-member` (which asks whether a manager must be a member on the way
+  in) — this only says a member cannot be un-membered while holding admin.
+
+Also fix `OnlyClosed` to `check on insert, update, delete (...)` so the mask is explicit rather
+than accidental. Not security-relevant on its own (Header type never changes), but the bare-`check`
+default is exactly what caused this bug and should not be left ambiguous anywhere in the table.
+
+The cross-node caveat recorded next to `Manager.MinOneManager` applies verbatim to `MinOneMember`:
+it counts locally-visible rows, so two partitioned nodes removing different members can both see a
+survivor. Carry the same NOTE comment across rather than restating it.
+
+### 4. Writers
+
+Add to `packages/cadre-core/src/strand-membership-writer.ts`:
+
+- `revokeMember(db, { managerKeyPair, memberKey })` — manager-authorized removal.
+- `leaveStrand(db, { memberKeyPair })` — self-departure (only if branch 5 is kept).
+
+Both bind the tagged remove payload. Export from `packages/cadre-core/src/index.ts`.
+
+### Schema mirror
+
+`schemas/strand.qsql` and the embedded `STRAND_SCHEMA` in
+`packages/quereus-plugin-sereus/src/strand-schema.ts` must stay byte-equivalent — the file header
+says so and `control-schema-drift.spec.ts` shows the drift-test pattern. Edit both.
+
+## TODO
+
+### Phase 1 — de-risk
+
+- Spike whether `committed.<Table>` resolves inside `declare schema Strand { ... }` as applied by
+  `composeStrand`. If not, adopt the `old.Key is null` / post-image fallback and say so in the
+  review handoff.
+
+### Phase 2 — schema
+
+- Add the tagged-payload signer to `strand-membership-writer.ts` (variadic digest, mirroring
+  `controlAuthorizationFields`).
+- Rewrite `Member` in `schemas/strand.qsql`: `Authorized` → `on insert, delete` with the five
+  branches above; add `MinOneMember` and `NotAManager`; widen `OnlyClosed`'s mask; add
+  `MemberSignature` to the `with context` list; delete the `-- TODO: handle member revocation
+  constraint` comment it replaces.
+- Mirror byte-for-byte into `packages/quereus-plugin-sereus/src/strand-schema.ts`.
+
+### Phase 3 — writers
+
+- Update `addMemberByManager` to the new add-tagged payload.
+- Add `revokeMember` and (if kept) `leaveStrand`; export both from `index.ts`.
+- Confirm `bootstrapFounderMembership` and `consumeInvite` still pass under the
+  `committed.Member` bootstrap gate and the new invite-branch clause — both are exercised by
+  `strand-founder-bootstrap.spec.ts` and `strand-membership-invite.spec.ts`.
+
+### Phase 4 — tests
+
+Extend `packages/cadre-core/test/strand-membership-peer-rotation.spec.ts` (or a sibling spec) with
+the five reproduced attacks, each now asserting rejection, plus:
+
+- stranger-signed removal rejected; unsigned removal rejected; mass `delete from Strand.Member`
+  rejected
+- manager-signed removal accepted, removing only the targeted row
+- self-departure accepted (if kept); another member cannot depart on someone's behalf
+- an "add X" signature replayed as "remove X" rejected, and the converse — mirroring the existing
+  `an "add X" signature cannot be replayed as "remove X"` test for `Manager`
+- revoked invite-member cannot re-insert itself; a manager CAN re-admit it via
+  `addMemberByManager`; a **fresh** invite also re-admits it (proves the new clause did not break
+  legitimate joins)
+- removing the last member rejected (`MinOneMember`)
+- removing a member that still holds a `Manager` row rejected (`NotAManager`); the same removal
+  succeeds once the manager resigns, including both deletes in one transaction
+- a manager seated in the same transaction cannot authorize a removal (the `committed.*` claim)
+
+Pin constraint names in `rejects.toThrow(/.../)` where exactly one constraint can fire, matching
+the existing spec's convention.
+
+### Phase 5 — validation + docs
+
+- `yarn build`, `yarn lint`, and the `cadre-core` vitest suite. Stream output with `tee`.
+- `docs/strands.md` → "Who May Administer a Closed Strand": add a member-revocation subsection
+  stating who may remove a member, that a removed member cannot re-admit itself without a fresh
+  manager action, and that a manager must resign before losing membership. Note the residual: a
+  revoked member keeps whatever strand data it already replicated — revocation is forward-looking,
+  and rotating the read gate still means re-forming the strand (per the existing "Closed-Strand
+  Member Key Handling" section).
