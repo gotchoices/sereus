@@ -279,6 +279,7 @@ on shutdown.
 | `port` | number | `0` | libp2p listening port (0 = random) |
 | `enableCache` | boolean | `true` | Enable optimystic caching |
 | `fretProfile` | `'edge' \| 'core'` | `'edge'` | FRET profile |
+| `clusterSize` | number | `2` | Nodes the strand's replication cluster should have. Every peer on the strand must use the same value — a peer configured higher than the cohort it is shown refuses to vote and the write fails. Must be an integer ≥ 2. Ignored when `libp2pNode` is injected |
 | `libp2pNode` | Libp2p | — | Inject an existing libp2p node |
 | `coordinatedRepo` | IRepo | — | Required when `libp2pNode` is provided |
 | `mode` | `'bootstrap' \| 'networked'` | `'networked'` | `'bootstrap'` routes through the local transactor (no peer round trips); `'networked'` uses the network transactor |

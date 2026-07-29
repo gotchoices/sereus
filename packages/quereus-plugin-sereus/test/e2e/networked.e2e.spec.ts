@@ -8,6 +8,7 @@ import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import type { Libp2p } from '@libp2p/interface';
 import { connectToStrand } from '../../src/connect.js';
+import { DEFAULT_CLUSTER_SIZE } from '../../src/cluster-size.js';
 import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js';
 
 /**
@@ -17,24 +18,17 @@ import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js'
  * to that file, so this suite uses real libp2p + real optimystic.
  *
  * Each peer uses `fretProfile: 'edge'` (the plugin default and the production
- * default for non-storage participants). `clusterSize` and `clusterPolicy`
- * mirror what `CadreNode` configures for a strand network — see
- * `TEST_CLUSTER_SIZE` below.
+ * default for non-storage participants) and `DEFAULT_CLUSTER_SIZE` — the same
+ * value `CadreNode` and `connectToStrand` resolve for a strand network. Every
+ * peer on one network must declare the same size: a member whose configured
+ * size exceeds the peer set the coordinator declares refuses to vote on the
+ * write, and one refusal fails the commit.
  *
  * Replication is not event-driven on `IRepo`, so the assertions poll via
  * `waitUntil` (10s default) — matching the integration-tests harness pattern.
  */
 
 const TEST_SCHEMA = 'table Msg (Id integer primary key, Body text not null)';
-
-/**
- * Every peer on one network must declare the same cluster size: a member whose
- * configured size exceeds the peer set the coordinator declares refuses to vote
- * on the write, and one refusal fails the commit. This mirrors cadre-core's
- * `DEFAULT_CLUSTER_SIZE`, duplicated as a literal because this package does not
- * depend on `@serfab/cadre-core`.
- */
-const TEST_CLUSTER_SIZE = 2;
 
 interface PeerHandle {
 	db: Database;
@@ -95,7 +89,7 @@ async function startPeer(
 		networkName: `strand-${strandId}`,
 		fretProfile: 'edge',
 		storage,
-		clusterSize: TEST_CLUSTER_SIZE,
+		clusterSize: DEFAULT_CLUSTER_SIZE,
 		clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
 	}) as Libp2pNodeWithRepo;
 	const coordinatedRepo = node.coordinatedRepo;

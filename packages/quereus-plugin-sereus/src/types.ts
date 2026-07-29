@@ -19,6 +19,13 @@ export interface StrandConnectionOptions {
 	enableCache?: boolean;
 	/** FRET profile (default: 'edge') */
 	fretProfile?: 'edge' | 'core';
+	/**
+	 * Number of nodes Optimystic is told this strand's replication cluster should
+	 * have. Ignored when {@link libp2pNode} is injected (the injected node was
+	 * built with its own value). Every peer on the strand must use the same
+	 * number — see `resolveClusterSize`. Defaults to `DEFAULT_CLUSTER_SIZE` (2).
+	 */
+	clusterSize?: number;
 	/** Inject an existing libp2p node instead of creating one */
 	libp2pNode?: Libp2p;
 	/** Required when libp2pNode is provided */

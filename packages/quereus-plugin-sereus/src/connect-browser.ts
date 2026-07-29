@@ -42,13 +42,14 @@ export async function connectToStrandBrowser(
 			const dbHandle = await openOptimysticWebDb(`sereus-strand-${strandId}`);
 			return new IndexedDBRawStorage(dbHandle);
 		},
-		async createNode({ networkName, bootstrapNodes, fretProfile, storage }) {
+		async createNode({ networkName, bootstrapNodes, fretProfile, clusterSize, storage }) {
 			return createLibp2pNode({
 				transports: [webSockets(), circuitRelayTransport()],
 				listenAddrs: [],
 				bootstrapNodes,
 				networkName,
 				fretProfile,
+				clusterSize,
 				...(storage && { storage }),
 			}) as Promise<Libp2p>;
 		},

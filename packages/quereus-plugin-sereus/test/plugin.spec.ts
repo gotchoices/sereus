@@ -5,6 +5,7 @@ import type { IRepo } from '@optimystic/db-core';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
+import { DEFAULT_CLUSTER_SIZE, resolveClusterSize } from '../src/cluster-size.js';
 
 // Mock only createLibp2pNode while preserving all other exports from db-p2p
 vi.mock('@optimystic/db-p2p', async (importOriginal) => {
@@ -306,6 +307,48 @@ describe('connectToStrand', () => {
 		await result.shutdown();
 	});
 
+	it('should create the node with the default cluster size', async () => {
+		// Omitting clusterSize must NOT fall through to optimystic's own default
+		// (10), which gates every write on a party smaller than ten nodes.
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-cluster-default',
+			mode: 'bootstrap',
+		});
+
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		expect(createLibp2pNode).toHaveBeenCalledWith(
+			expect.objectContaining({ clusterSize: DEFAULT_CLUSTER_SIZE }),
+		);
+
+		await result.shutdown();
+	});
+
+	it('should forward an explicit cluster size to the node', async () => {
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-cluster-override',
+			mode: 'bootstrap',
+			clusterSize: 5,
+		});
+
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		expect(createLibp2pNode).toHaveBeenCalledWith(
+			expect.objectContaining({ clusterSize: 5 }),
+		);
+
+		await result.shutdown();
+	});
+
+	it('should reject a cluster size below the optimystic minimum before creating a node', async () => {
+		await expect(connectToStrand(db, {
+			strandId: 'test-strand-cluster-invalid',
+			mode: 'bootstrap',
+			clusterSize: 1,
+		})).rejects.toThrow(/clusterSize must be an integer >= 2/);
+
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		expect(createLibp2pNode).not.toHaveBeenCalled();
+	});
+
 	it('should stop created node on shutdown', async () => {
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-9',
@@ -317,5 +360,23 @@ describe('connectToStrand', () => {
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		const mockNode = await vi.mocked(createLibp2pNode).mock.results[0].value;
 		expect(mockNode.stop).toHaveBeenCalled();
+	});
+});
+
+describe('resolveClusterSize', () => {
+	it('defaults when unset', () => {
+		expect(resolveClusterSize(undefined)).toBe(DEFAULT_CLUSTER_SIZE);
+	});
+
+	it('passes a legal value through', () => {
+		expect(resolveClusterSize(2)).toBe(2);
+		expect(resolveClusterSize(7)).toBe(7);
+	});
+
+	it('rejects values optimystic cannot honour', () => {
+		// Below `minAbsoluteClusterSize`, or not a whole number of nodes.
+		for (const bad of [0, 1, -3, 2.5, Number.NaN]) {
+			expect(() => resolveClusterSize(bad)).toThrow(/clusterSize must be an integer >= 2/);
+		}
 	});
 });

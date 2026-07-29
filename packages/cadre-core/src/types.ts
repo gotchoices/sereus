@@ -245,12 +245,12 @@ export interface ControlNetworkConfig {
 }
 
 /**
- * Default number of nodes Optimystic is told a replication cluster should have.
- * Two is Optimystic's own `minAbsoluteClusterSize` and the smallest value that
- * reaches the cluster path at all (a lone node writes locally without forming a
- * cluster). See {@link CadreNodeConfig.clusterSize} for the rule.
+ * Cluster-size default and resolver, re-exported so cadre embedders and the SQL
+ * plugin share one definition. Defined in `@serfab/quereus-plugin-sereus`
+ * because that package also creates libp2p nodes and cannot depend on this one.
+ * See {@link CadreNodeConfig.clusterSize} for the rule.
  */
-export const DEFAULT_CLUSTER_SIZE = 2;
+export { DEFAULT_CLUSTER_SIZE, resolveClusterSize } from '@serfab/quereus-plugin-sereus';
 
 /**
  * Main configuration for a CadreNode
@@ -308,8 +308,9 @@ export interface CadreNodeConfig {
    *
    * Frozen when the libp2p node is created; a change takes effect on restart,
    * not when cadre membership grows. Defaults to {@link DEFAULT_CLUSTER_SIZE}
-   * (2). Raise only for a cadre that reliably runs that many nodes; the cost of
-   * a smaller value is replication breadth, not correctness.
+   * (2); `start()` rejects anything below that. Raise only for a cadre that
+   * reliably runs that many nodes; the cost of a smaller value is replication
+   * breadth, not correctness.
    */
   clusterSize?: number;
 

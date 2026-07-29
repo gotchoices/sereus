@@ -6,6 +6,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
+import { resolveClusterSize } from './cluster-size.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -74,6 +75,12 @@ export interface CreateNodeContext {
 	fretProfile: 'edge' | 'core';
 	/** libp2p listening port (Node TCP). Browser transports ignore it. */
 	port: number;
+	/**
+	 * Resolved replication cluster size. Already defaulted — pass it to
+	 * `createLibp2pNode` verbatim; omitting it falls back to Optimystic's own
+	 * default of 10, which gates writes on any smaller party.
+	 */
+	clusterSize: number;
 	/** Resolved persistent storage to back the node, if any. */
 	storage?: IRawStorage;
 }
@@ -138,6 +145,10 @@ export async function composeStrand(
 		fretProfile = 'edge',
 		mode,
 	} = options;
+
+	// Resolve (and validate) up front so a nonsense value fails before any plugin
+	// registration or node creation has happened.
+	const clusterSize = resolveClusterSize(options.clusterSize);
 
 	// Resolve the transactor. `mode` is the public knob: bootstrap -> local,
 	// networked -> network. The legacy `transactor` override (used by unit
@@ -209,7 +220,7 @@ export async function composeStrand(
 				coordinatedRepo = options.coordinatedRepo;
 				log('Using injected libp2p node');
 			} else {
-				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, storage });
+				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, storage });
 				createdNode = created;
 				node = created;
 				const repo = (created as Libp2pNodeWithRepo).coordinatedRepo;
