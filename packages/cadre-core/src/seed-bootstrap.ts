@@ -502,8 +502,8 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // The owner branch of AuthorizedUpdate verifies a voucher over digest(PeerId,
-    // StampId) and re-binds VouchOwner/VouchSig. Sign over the row's CURRENT StampId
+    // The owner branch of AuthorizedUpdate verifies a voucher over the 'vouch'-tagged
+    // digest (PeerId, StampId) and re-binds VouchOwner/VouchSig. Sign over the row's CURRENT StampId
     // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
     // NOTE: this rebinds VouchOwner to THIS node's owner key, and the authorized-membership
     // predicate (`CadreNode.listAuthorizedMembers`) now judges rows by that column against

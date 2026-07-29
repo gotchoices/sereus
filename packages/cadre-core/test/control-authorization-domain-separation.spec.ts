@@ -318,5 +318,28 @@ describe('CadreControl approval domain separation', () => {
     expect(
       await rawDb.get('select Token from CadreControl.FormationInvite where Token = ?', [token]),
     ).toBeDefined();
+
+    // The properly 'remove'-tagged approval over the stored row IS what revokes it.
+    const stored = await rawDb.get(
+      'select StampId from CadreControl.FormationInvite where Token = ?',
+      [token],
+    );
+    const removeSig = signAs(
+      founder,
+      // Field order mirrors AuthorizedDelete: Token, sAppId, ExpiresAt, TotalUses,
+      // ValidationUrl, StrandId, StampId — the four nullable fields sign as ''.
+      buildAuthorizationMessage('CadreControl.FormationInvite', 'remove', [
+        token, 'sapp-domain-sep', '', '', '', '', String(stored?.StampId),
+      ]),
+    );
+    await rawDb.exec(
+      `delete from CadreControl.FormationInvite
+         with context OwnerKey = ?, Signature = ?
+         where Token = ?`,
+      [founder.publicKey, removeSig, token],
+    );
+    expect(
+      await rawDb.get('select Token from CadreControl.FormationInvite where Token = ?', [token]),
+    ).toBeUndefined();
   }, 60_000);
 });

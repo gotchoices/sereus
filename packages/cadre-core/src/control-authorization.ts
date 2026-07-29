@@ -21,19 +21,27 @@
  */
 
 /**
- * Names of the CadreControl tables. Doubles as the table half of a
- * {@link ControlDomain} tag and as the argument type for
- * `ControlDatabase.countRows`' dynamic `from` clause (keeping it off the
- * SQL-injection surface).
+ * Names of the CadreControl tables, in schema order. The single list: the
+ * {@link ControlTable} union is derived from it and `ControlDatabase.countRows`
+ * guards its dynamic `from` clause against it (keeping the table name off the
+ * SQL-injection surface), so a new table cannot be added to one and missed in
+ * the other.
  */
-export type ControlTable =
-  | 'OwnerKey'
-  | 'ValidationKey'
-  | 'Strand'
-  | 'CadrePeer'
-  | 'DeviceToken'
-  | 'FormationInvite'
-  | 'FormationUsage';
+export const CONTROL_TABLES = [
+  'OwnerKey',
+  'ValidationKey',
+  'Strand',
+  'CadrePeer',
+  'DeviceToken',
+  'FormationInvite',
+  'FormationUsage',
+] as const;
+
+/**
+ * Name of a CadreControl table. Doubles as the table half of a
+ * {@link ControlDomain} tag.
+ */
+export type ControlTable = typeof CONTROL_TABLES[number];
 
 /**
  * What a signature authorizes, scoped to one table rule — or, for

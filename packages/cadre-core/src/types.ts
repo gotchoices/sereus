@@ -741,7 +741,7 @@ export interface CadrePeerRow {
   stampId: string | null;
   /** ed25519 public key (base64url) of the owner that vouched this row. */
   vouchOwner: string | null;
-  /** That owner's signature over `digest(peerId, stampId)`, base64url. */
+  /** That owner's signature over `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`, base64url. */
   vouchSig: string | null;
 }
 

@@ -10,7 +10,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
-import { controlAuthorizationFields } from './control-authorization.js';
+import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
 
 export type { ControlTable, ControlDomain, ControlAction } from './control-authorization.js';
@@ -127,16 +127,8 @@ interface OptimysticPluginResult {
   [key: string]: unknown;
 }
 
-/** Runtime guard mirroring {@link ControlTable} for the dynamic-`from` count. */
-const CONTROL_TABLES: ReadonlySet<ControlTable> = new Set<ControlTable>([
-  'OwnerKey',
-  'ValidationKey',
-  'Strand',
-  'CadrePeer',
-  'DeviceToken',
-  'FormationInvite',
-  'FormationUsage',
-]);
+/** Runtime guard for the dynamic-`from` count, over the one table list. */
+const CONTROL_TABLE_SET: ReadonlySet<ControlTable> = new Set<ControlTable>(CONTROL_TABLES);
 
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
@@ -333,7 +325,7 @@ export class ControlDatabase {
   /**
    * Count rows in a CadreControl table as seen by THIS database instance.
    *
-   * `table` is validated against {@link CONTROL_TABLES} before it is interpolated
+   * `table` is validated against {@link CONTROL_TABLE_SET} before it is interpolated
    * into the `from` clause: the names are not user input, but the check keeps the
    * dynamic query off the injection surface and fails loudly on a typo instead of
    * emitting a malformed statement. The count reflects only the rows this node's
@@ -343,7 +335,7 @@ export class ControlDatabase {
    */
   async countRows(table: ControlTable): Promise<number> {
     this.ensureInitialized();
-    if (!CONTROL_TABLES.has(table)) {
+    if (!CONTROL_TABLE_SET.has(table)) {
       throw new Error(`Unknown CadreControl table: ${table}`);
     }
     for await (const row of this.db!.eval(`select count(1) as Count from CadreControl.${table}`)) {
