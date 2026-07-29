@@ -209,8 +209,15 @@ Membership removal is governed by the same signed-approval discipline as admissi
 - **A removed member cannot walk back in on the invitation it already used.** That
   invitation was spent at join time; the leftover record of its consumption does not
   re-admit anyone on its own. Re-admission takes a fresh manager action — a direct
-  manager admission or a newly issued invitation. It does *not*, however, neutralize an
-  invitation the removed party holds but has never spent (see known gaps below).
+  manager admission or a newly issued invitation.
+- **An unspent invitation is cancelled explicitly, and cancellation is permanent.** A
+  manager can list the strand's still-redeemable invitations and cancel any of them; a
+  cancelled invitation can never be redeemed again, and there is no un-cancelling — letting
+  a party back in means issuing a fresh invitation. Cancelling is what makes removal a
+  re-entry gate, but it is a *separate step*: removal does **not** cancel anything
+  automatically, because an invitation names no invitee, so the strand cannot tell which
+  invitations were meant for the departing member — or whether it holds any (see known gaps
+  below).
 - **A manager must resign before losing membership.** Deleting the member row of a key
   that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
   manager seat.
@@ -237,8 +244,10 @@ Known gaps remain, all out of scope of the rules above:
   and last-member floors each count the rows one node can see, so two nodes each removing
   a different manager (or member) can both believe a survivor remains. A cross-node guard
   is not attempted; tracked in the schema's own notes next to the checks.
-- **An invitation cannot be cancelled, so removal is not a re-entry gate.** Invitations are
-  bearer credentials with no deactivation path — only an optional expiry. A removed party
-  holding an unspent, unexpired invitation re-admits itself with no further manager action,
-  and a manager can mint spare invitations before being removed. Tracked as
-  `bug-strand-invite-no-revocation`.
+- **An invitation names no invitee, so cancelling one is a manual operator step.** An
+  invitation is a bearer credential: whoever holds it can redeem it once, and the strand
+  keeps no record of who it was meant for. Managers can now cancel invitations, but nothing
+  can cancel them *on a member's behalf* at removal time — a manager has to review the
+  outstanding invitations and decide. So a removed party holding an unspent, unexpired,
+  uncancelled invitation still re-admits itself. Binding an invitation to a specific invitee
+  is tracked as `feat-strand-invitee-bound-invites`.
