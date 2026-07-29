@@ -146,6 +146,10 @@ describe('Control-DB write-while-alone re-replication', () => {
 			expect(await A.isMember(xPeerId)).toBe(true);
 
 			// Sanity: A is genuinely alone at write time (no control connections).
+			// NOTE: holds because `bootPair` vouches B by peer id ALONE — A's copy of B's
+			// CadrePeer row carries no multiaddr, so A's cohort reconcile has nothing to
+			// dial. If the vouch ever carries B's addresses, A could connect to B here and
+			// this assertion (and the write-while-alone premise) would break.
 			expect(A.getControlNode()!.getConnections().length).toBe(0);
 
 			// NOW connect. A's connection:open drains the queue and re-issues the X write,

@@ -1,6 +1,6 @@
 description: Several integration-test scenario files copy the same setup boilerplate (network transports, node config, authority bootstrap, peer-connection helpers); pull the shared pieces into the test harness so there is one copy to maintain.
 prereq:
-files: packages/integration-tests/src/harness/test-network.ts, packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts, packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, packages/integration-tests/src/scenarios/rbac-signed-write.integration.ts, packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts, packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts
+files: packages/integration-tests/src/harness/test-network.ts, packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts, packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-auto-convergence.integration.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, packages/integration-tests/src/scenarios/rbac-signed-write.integration.ts, packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts, packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts
 difficulty: easy
 ----
 
@@ -15,15 +15,22 @@ and the two copies have already **diverged** (`connectControlNodes` is pair-scop
 `push-wake-e2e.integration.ts` but only checks `getConnections().length > 0` in
 `control-db-two-node-convergence.integration.ts`).
 
+The cost has since been paid for real: the "owner must vouch the reader before the reader
+connects" precondition was present in one copy of `bootPair` and missing from the other two
+control scenarios, which made both of those hang until timeout (`scenario-vouch-reader-before-seed`).
+One shared helper would have made that a one-line fix instead of a three-file diagnosis.
+
 Duplicated helpers observed across `packages/integration-tests/src/scenarios/`:
 
 | helper | files |
 | --- | --- |
-| `wsTransports()` | push-wake, control-db-two-node-convergence, strand-formation, rbac-signed-write, multi-party-workflows, strand-membership-closed-strand, convergence-stress, websocket-chat |
+| `wsTransports()` | push-wake, control-db-two-node-convergence, control-write-while-alone, control-cohort-auto, strand-formation, rbac-signed-write, multi-party-workflows, strand-membership-closed-strand, convergence-stress, websocket-chat |
 | `createSignedSAppConfig()` | push-wake, strand-formation, rbac-signed-write, multi-party-workflows, strand-membership-closed-strand |
-| `nodeConfig()` / `NodeOpts` | push-wake, control-db-two-node-convergence |
-| `makeOwnAuthority()` | push-wake, control-db-two-node-convergence |
-| `connectControlNodes()` | push-wake, control-db-two-node-convergence (already divergent) |
+| `nodeConfig()` / `NodeOpts` | push-wake, control-db-two-node-convergence, control-write-while-alone, control-cohort-auto (the last adds a `reconcileMs` knob) |
+| `makeOwnAuthority()` / `makeOwnOwner()` | push-wake, control-db-two-node-convergence, control-write-while-alone, control-cohort-auto |
+| `randomPeerId()` | control-db-two-node-convergence, control-write-while-alone, control-cohort-auto |
+| `connectControlNodes()` | push-wake, control-db-two-node-convergence, control-write-while-alone (already divergent) |
+| `bootPair()` | control-db-two-node-convergence, control-write-while-alone — now byte-for-byte the same recipe (boot A as owner+storage+relay, boot B as a plain reader, `A.authorizePeer(B)`); only the party-id prefix differs |
 
 ## Desired outcome
 

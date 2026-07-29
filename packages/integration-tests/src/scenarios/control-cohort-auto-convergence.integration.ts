@@ -125,17 +125,16 @@ describe('Control-cohort auto-convergence (no manual dial)', () => {
 				{ timeoutMs: 20_000, intervalMs: 250, description: 'A self-registers a CadrePeer row with addrs' }
 			);
 
-			// Production cold-start: B applies A's seed (pinned-key trust, the
-			// CadreInvite.ownerKeys cold-start path). This populates B's peerStore
-			// and best-effort dials A — NOT a raw test-side getControlNode().dial().
-			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
-
 			// Production onboarding vouches the new node BEFORE handing it a seed
 			// (addDrone / acceptPhone / addPhoneWithRelay in seed-bootstrap.ts, and the
 			// enrollment sequences in docs/architecture.md). Without it A's inbound gate
 			// refuses B's cold-start seed dial.
 			await A.authorizePeer(B.peerId!.toString());
 
+			// Production cold-start: B applies A's seed (pinned-key trust, the
+			// CadreInvite.ownerKeys cold-start path). This populates B's peerStore
+			// and best-effort dials A — NOT a raw test-side getControlNode().dial().
+			const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 			const seed = await A.createSeed();
 			const applied = await B.applySeed(seed, { trustPolicy: pinnedKeyTrustPolicy([aOwnerKey]) });
 			expect(applied.success).toBe(true);
