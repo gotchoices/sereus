@@ -370,6 +370,19 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 
 - [ ] Wire `@serfab/strand-proto` tests into workspace CI
 - [ ] Add root-level scripts for running package tests consistently (Yarn workspace)
+- [x] **Stale-build guard for `integration-tests`.** Every scenario there runs *compiled* cadre
+  output — a spawned real `cadre-cli` child, or an in-process import of `@serfab/cadre-host` /
+  `@serfab/cadre-core` from their `dist`. An edit to `src` with no following `yarn build` used to be
+  invisible: the run silently exercised the previous build and surfaced as an unrelated 90s startup
+  timeout. `src/global-setup.ts` (wired as vitest `globalSetup`) now calls `assertCadreBuildFresh()`
+  once per suite, comparing each package's newest `src` mtime against the entry point the tests
+  actually load (`dist/index.js` for cadre-core/cadre-host, `dist/bin/cadre.js` for cadre-cli), and
+  fails the run up front naming every stale package plus its `yarn workspace <name> build` remedy.
+  Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded — they aren't build
+  inputs. The guard itself is unit-covered by `src/harness/build-freshness.spec.ts`.
+- [ ] `packages/integration-tests/vitest.config.ts` still sets `test.poolOptions`, which **Vitest 4
+  removed** — the intended `singleFork: true` (added to avoid port conflicts) is silently ignored
+  and scenario files run in parallel. See `tickets/backlog/debt-vitest4-pooloptions-ignored.md`.
 
 ### Type-check coverage
 

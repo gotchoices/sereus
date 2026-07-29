@@ -52,7 +52,7 @@ import {
   type OwnerSpawnConfig,
 } from '@serfab/cadre-host';
 
-import { assertCadreBuildFresh, waitUntil } from '../harness/index.js';
+import { waitUntil } from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
@@ -90,10 +90,6 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
   let encodedSeed: string;
 
   beforeAll(async () => {
-    // Fail fast on a stale build rather than timing out minutes later against
-    // a stale-but-running cadre-cli child — see harness/build-freshness.ts.
-    assertCadreBuildFresh();
-
     tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-donation-'));
 
     // (1) Requester authority node — a second real cadre-cli child standing in

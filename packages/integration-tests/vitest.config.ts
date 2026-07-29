@@ -5,6 +5,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: ['src/**/*.spec.ts', 'src/**/*.integration.ts'],
+    // Fails the run immediately when a cadre package's dist predates its src,
+    // instead of testing a stale build — see src/global-setup.ts.
+    globalSetup: ['./src/global-setup.ts'],
     // Integration tests can be slow - give them time
     testTimeout: 60_000,
     hookTimeout: 30_000,
