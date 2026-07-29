@@ -6,6 +6,54 @@ difficulty: hard
 
 # Authorize `Strand.Member` removal, and stop revoked members re-admitting themselves
 
+<!-- resume-note -->
+## Resume note (prior run hit soft token budget during Phase 1 — NO code changes were made)
+
+A previous agent run spent its budget on discovery and stopped before editing anything.
+The working tree has zero modifications from that run. Everything below the note is the
+original ticket, still fully valid. Findings to save the next agent re-discovery:
+
+- **All named files were read; line refs confirmed.** `Member` table: `schemas/strand.qsql`
+  lines 93–116; mirrored byte-identically in
+  `packages/quereus-plugin-sereus/src/strand-schema.ts` lines 104–127. The two copies are
+  currently in sync — keep them so.
+- **Phase 1 spike (`committed.*` inside `declare schema Strand`) was NOT yet run.** One
+  refinement to the spike question: `composeStrand`
+  (`packages/quereus-plugin-sereus/src/compose-strand.ts` step 6) applies the schema on the
+  same Quereus engine `CadreControl` uses, so the parser side is not in doubt — the open
+  variable is the optimystic transactor. `ControlDatabase` (where `committed.*` is proven)
+  runs `default_transactor: 'network'` (`control-database.ts:208`), while the strand tests
+  run bootstrap mode → `'local'` transactor. So spike specifically: does `committed.<Table>`
+  evaluate correctly under the optimystic **local** transactor, in a
+  `connectToStrand({mode:'bootstrap'})` strand? Reuse the `openStrand('c')` helper from
+  `packages/cadre-core/test/strand-membership-peer-rotation.spec.ts` for the spike.
+- **Payload-collision check done:** `Manager.Authorized`'s delete branch signs bare
+  `digest(old.MemberKey)`; the planned `digest('Strand.Member', 'add'|'remove', key)`
+  variadic form is disjoint from every existing strand payload (all current ones are
+  single joined strings). Safe to add as specified.
+- **Test scaffolding to reuse:** `strand-membership-peer-rotation.spec.ts` has
+  `openStrand`, `freshKeyPair`, `inTransaction`, `tableCount`, and the
+  `rejects.toThrow(/ConstraintName/)` pinning convention. The variadic TS↔SQL parity spec
+  (`test/digest-variadic-parity.spec.ts`) case (d) already pins literal-tag parity
+  generically; add a strand-member-tagged case there only if the new signer's shape
+  differs from `buildAuthorizationMessage` (it shouldn't — model it on
+  `controlAuthorizationFields`, sign the raw digest bytes like `signStrandPayload` does).
+- **Writer touch-points confirmed:** `index.ts` export block for the membership writer is
+  lines ~105–125 of `packages/cadre-core/src/index.ts`. When the bootstrap branch moves to
+  `(select count(1) from committed.Member) = 0`, update the now-stale doc comment on
+  `insertFounderMemberIfAbsent` (`strand-membership-writer.ts:139-145`), which cites the
+  old `count(1) from Member <= 1` branch. `consumeInvite` (Member + ConsumedInvite in one
+  txn) passes the new invite-branch clause by construction — the committed snapshot has no
+  `ConsumedInvite` row for a genuine join.
+- **Docs anchor:** `docs/strands.md` "Who May Administer a Closed Strand" starts at
+  line 142; the known-gaps list (lines 182–193) is where the member-revocation subsection's
+  cross-references land. The "Closed-Strand Member Key Handling" section referenced by
+  Phase 5 is at line 95.
+- **Out-of-scope reminder held:** `registerMemberPeer`'s doc block
+  (`strand-membership-writer.ts:499-503`) wrongly claims `MemberPeer` deletes are rejected
+  (finding 4) — that correction belongs to `strand-memberpeer-revocation-cleanup`, not here.
+<!-- /resume-note -->
+
 ## Reproduced
 
 A throwaway spec (`packages/cadre-core/test/zz-repro-member-delete.spec.ts`, run against a real
