@@ -380,6 +380,18 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   fails the run up front naming every stale package plus its `yarn workspace <name> build` remedy.
   Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded — they aren't build
   inputs. The guard itself is unit-covered by `src/harness/build-freshness.spec.ts`.
+- [x] **Stale-build guard extended to the linked sibling workspaces.** The suite also runs compiled
+  output from `../optimystic` and `../quereus`, which reach `node_modules` as symlinks via the root
+  `package.json`'s `resolutions`. Those repos are developed concurrently, so the suite ran whatever
+  they last *built* — which cost three re-investigations of an `@optimystic/db-p2p` replication bug
+  whose fix had already landed but had not been rebuilt. `@optimystic/db-core`, `db-p2p`,
+  `db-p2p-storage-fs`, `quereus-plugin-crypto`, `quereus-plugin-optimystic` and `@quereus/quereus`
+  are now checked the same way, resolved through the `node_modules` symlink rather than the
+  `packages/` scan, and a stale sibling fails the run with a remedy naming that sibling's own
+  checkout (`yarn workspace` cannot reach outside this repo). A dependency that is a real directory
+  rather than a symlink — i.e. installed from the registry — is **skipped**, never judged: its `src`
+  and `dist` mtimes are packing artifacts (the copied `db-p2p-storage-fs` has `src` 13ms newer than
+  `dist`) and would report a permanent, unfixable "stale".
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
