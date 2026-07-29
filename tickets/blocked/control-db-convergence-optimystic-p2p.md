@@ -351,3 +351,81 @@ Option (A) — lowering `clusterSize` — is now clearly **not sufficient**: it 
 stops at the read. Whoever takes this should expect upstream work in `../optimystic` regardless,
 and should probably start by testing the `txn-perf-authoritative-notfound` hypothesis (revert it
 locally in the linked workspace and re-run this scenario) before designing anything.
+
+---
+
+## Update 2026-07-28 — read-side root cause identified; the previous suspect is wrong
+
+Two independent code audits of `../optimystic` (one per suspect commit) both landed on the same
+mechanism, and both **exonerate** the commit named in the 2026-07-27 update.
+
+### `txn-perf-authoritative-notfound` is not the cause — retract that suspicion
+
+Verified by reading the code, not inferred:
+
+- The change is one predicate in `NetworkTransactor.get` (`packages/db-core/src/transactor/network-transactor.ts:151-161`),
+  swapping `.some(entry has a block)` for `.every(id has an entry)` when deciding whether to retry.
+- It alters behavior **only for responses that carry no block at all** (a genuine not-found,
+  shape `{ state: {} }`). Our symptom is a block that exists at revision 1 — that response
+  carries a materialized block, so old and new predicates both decline to retry identically.
+  The changed line is never reached differently.
+- It caches nothing. `isAuthoritative` is a closure over batch objects rebuilt inside each
+  `get()` call; the only cache on `NetworkTransactor` stores coordinator peer ids, not results.
+  Every subsequent read re-asks the network from scratch, so it cannot produce a *permanent* miss.
+- Wrong layer entirely: `cluster-fetch:synced` is emitted server-side by `CoordinatorRepo` in
+  `db-p2p`; this change is in the `db-core` client-side retry loop and cannot influence it. The
+  only `db-p2p` delta in those commits is a comment.
+
+### The actual cause: quorum-corroborated revision selection cannot work at two nodes
+
+`packages/db-p2p/src/cluster/quorum-restore.ts` — `selectQuorumRev`, introduced 2026-07-03 by
+`42765d8` / `6ad29d9` (`p2p-read-repair-verify-peer-claims`). That commit's own message states it
+**replaced "max rev any single peer reports"** with a rule requiring peer corroboration.
+
+```ts
+quorumSize = Math.max(2, Math.floor(0.51 * responderCount))   // quorum-restore.ts:41-43
+```
+
+The `Math.max(2, …)` floor is absolute. Consequences, both verified:
+
+- **A revision held by exactly one peer can never be selected, at any cluster size.** In our
+  two-node cohort only A ever reaches rev 2, so rev 2 is permanently unselectable. The cohort
+  re-selects rev 1 on every read, forever. Under the pre-`42765d8` max-wins rule a single peer at
+  rev 2 was sufficient to drive restoration. This is a behavioral regression of exactly the
+  observed shape.
+- **The lone-responder fallback lets a node corroborate itself.** At `quorum-restore.ts:98-101`,
+  when `responderCount < quorum` and there is a single distinct claim, that claim is returned as
+  the quorum result. `clusterLatestCallback` self-short-circuits to local storage
+  (`libp2p-node-base.ts:800-807`), so the reader's *own* revision is one of the claims. If A's
+  `SyncClient.requestBlock` misses the hard 1 s per-peer timeout (`coordinator-repo.ts:354`), B is
+  left holding only its own stale claim, accepts it, and logs it as a successful sync. This is the
+  exact origin of our 235 × `cluster-fetch:synced { blockId: 'default/CadrePeer', rev: 1 }`.
+
+Corroborating detail, also verified: **`cluster-fetch:synced` does not mean data moved.** The
+"restoration" at `coordinator-repo.ts:318` calls `StorageRepo.get` with a commit context, which
+only promotes a pending transaction the node *already holds locally* (`storage-repo.ts:167-198`).
+It never fetches bytes from a peer. If the node has no pending for that `actionId` the call is a
+silent no-op and the success line is logged regardless. So even fixing revision selection may not
+be sufficient on its own — the block-transferring path (`reconcileBlock` → `fetchArchiveFromPeer`)
+runs only on commit.
+
+### Adjacent upstream defect found while looking
+
+`libp2p-node-base.ts:649` now defaults `clusterSize` to **10** when the embedder does not set one,
+and (since `cluster-membership-admission-gate`) feeds it to the member-side admission gate. Any
+Optimystic consumer that never configured `clusterSize` is therefore gated against a ten-node
+reference and will refuse to vote on writes under low FRET confidence. We are insulated only
+because we happen to set a value; other consumers are not.
+
+### Status of the human decision
+
+The original question — shrink `clusterSize` or push upstream — is now answered: **both, and they
+are separate pieces of work.**
+
+- The sereus-side half is no longer a decision. It is filed as `bug-cluster-size-exceeds-cadre-size`
+  in `tickets/fix/` and is in the pipeline. It fixes the write side only.
+- The read side is genuinely upstream in `../optimystic` and cannot be fixed from this repo. It
+  needs `selectQuorumRev` to stop requiring two corroborators for a revision at small cluster
+  sizes, and to stop counting the reader itself as a corroborator.
+
+This ticket stays blocked on the upstream change landing.
