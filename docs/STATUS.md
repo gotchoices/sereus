@@ -675,8 +675,9 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
    - `membership-cadrepeer-authority-antireplay` (inserted 2.5) — persisting the voucher on a replicated
      row turned one signature over `digest(peerId)` into a lift-and-replay token for insert/delete/reauth.
      Fix: a `not null unique` `StampId` nonce per row and action-scoped digests — insert/reauth sign
-     `digest(peerId, stampId)` (`cadrePeerVoucherDigest`), delete signs the distinct
-     `digest(peerId, stampId, 'remove')` (`cadrePeerRemoveDigest`) — and the combined `check on insert,
+     `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)` (`cadrePeerVoucherDigest`), delete signs
+     the distinct `digest('CadreControl.CadrePeer', 'remove', peerId, stampId)` (`cadrePeerRemoveDigest`;
+     both carry the domain/action tags every control-plane approval now leads with) — and the combined `check on insert,
      delete` splits into `AuthorizedInsert`/`AuthorizedDelete`, with `StampId`+voucher immutable on
      self-update. (Insert-replay after a delete frees the nonce; that residual is subsumed by #6's gater.)
 3. `membership-node-local-authority-anchor` — build the node-local, non-replicated
@@ -694,7 +695,7 @@ Human approved **Option B** with a connection-gater hardening layer folded in. F
 
 **Update (2026-07-27): steps 1–4 have LANDED — the wake hole is closed.** `isAuthorizedMember`
 is now the real predicate (not-self ∧ complete voucher ∧ `VouchOwner` in the node-local anchor ∧
-signature verifies over `digest(PeerId, StampId)`), and both the push-wake and strand-addr
+signature verifies over the tagged voucher digest `digest('CadreControl.CadrePeer', 'vouch', PeerId, StampId)`), and both the push-wake and strand-addr
 receivers consult it. Proven end-to-end in `push-wake-e2e` scenario 3: an outsider's self-minted
 owner key plus self-vouched `CadrePeer` row are written into the receiver's replicated tables — so
 `isMember` is TRUE — and the wake is still refused and the strand-addr RPC returns empty, until one
