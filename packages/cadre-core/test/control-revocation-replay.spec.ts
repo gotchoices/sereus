@@ -624,7 +624,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const id = 'strand-consent-del-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-consent-del', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId: id, type: 'c', memberPrivateKey: 'member-key-' + id });
+    await db.redeemInvitation({ token, strandId: id });
 
     const stamp = String((await strandRow(id))?.StampId);
     await expectConstraintFailure(
@@ -654,7 +654,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const id = 'strand-consent-replay-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-consent-replay', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId: id, type: 'c', memberPrivateKey: 'member-key-' + id });
+    await db.redeemInvitation({ token, strandId: id });
 
     const stamp = String((await strandRow(id))?.StampId);
     await removeStrand(id, stamp);
@@ -662,46 +662,91 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
 
     // Door 1 — a FRESH stamp. `NotRevoked` passes (that stamp was never retired) and the
     // owner branch is false (no context key/signature), so `AuthorizedInsert` can only
-    // reject via the consent branch: no usage row names this (id, stamp) pair.
+    // reject via the consent branch: no usage row names this (id, stamp) pair — and the
+    // closed shape plus caller-chosen member key are refused outright anyway.
     await expectConstraintFailure(
       rawInsertStrand(null, null, id, 'c', 'ATTACKER-KEY-' + id, freshStamp()),
       'AuthorizedInsert',
     );
     expect(await strandRow(id)).toBeUndefined();
 
-    // Door 2 — the ORIGINAL stamp. Here the consent branch DOES match (the surviving usage
-    // row names exactly this pair), so `AuthorizedInsert` passes and only `NotRevoked`
-    // stands — and the removal retired that stamp permanently. Both doors pinned.
+    // Door 2 — the ORIGINAL stamp, in the exact open/keyless shape the redemption seated.
+    // Here the consent branch DOES match (the surviving usage row names exactly this pair,
+    // from an unbound invite, and no other stamp was ever used for the id), so
+    // `AuthorizedInsert` passes and only `NotRevoked` stands — and the removal retired
+    // that stamp permanently. Both doors pinned.
     await expectConstraintFailure(
-      rawInsertStrand(null, null, id, 'c', 'ATTACKER-KEY-replay-' + id, stamp),
+      rawInsertStrand(null, null, id, 'o', null, stamp),
       'NotRevoked',
     );
     expect(await strandRow(id)).toBeUndefined();
   }, 60_000);
 
-  it('Strand: after a tombstoned removal a fresh redemption still re-forms the SAME strand id', async () => {
-    // Binding consent to the stamp must retire ONE authorization, not blacklist the strand
-    // id: a party that leaves a network and is re-invited has to be able to re-join. A new
-    // redemption writes a new usage row carrying a new `StrandStampId` beside a `Strand`
-    // row with that fresh stamp, and both deferred CHECKs see both rows at commit.
+  it('Strand: a spare use of the SAME token cannot re-seat a strand id after a tombstoned removal', async () => {
+    // Attack closed here: a totalUses-2 invite seats the strand; the owner then does a
+    // fully legitimate signed delete + tombstone; the token's SECOND use tries to re-seat
+    // the same id with a fresh stamp. `FormationUsage` is append-only, so the first
+    // redemption's record survives the removal — and the consent branch's once-EVER rule
+    // (no usage row under any OTHER stamp may name the id) forecloses the re-seat
+    // permanently, whatever shape the second redemption attempts.
+    const token = 'fi-spare-use-' + Math.random().toString(36).slice(2);
+    const id = 'strand-spare-use-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(token, 'sapp-spare-use', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 2 });
+    await db.redeemInvitation({ token, strandId: id });
+
+    const stamp = String((await strandRow(id))?.StampId);
+    await removeStrand(id, stamp);
+    expect(await strandRow(id)).toBeUndefined();
+
+    // The spare use mints a NEW stamp, so `NotRevoked` passes; the invite is valid, so the
+    // usage row's `Authorized` passes; only the Strand consent branch can reject.
+    await expectConstraintFailure(
+      db.redeemInvitation({ token, strandId: id }),
+      'AuthorizedInsert',
+    );
+    expect(await strandRow(id)).toBeUndefined();
+  }, 60_000);
+
+  it('Strand: re-joining a removed strand id is owner-gated — a fresh redemption cannot, an owner re-seat + bound invite can', async () => {
+    // A strand id may be consent-seated once, EVER. After a tombstoned removal even a
+    // FRESH single-use invite cannot re-form the id unsigned — that shape was
+    // indistinguishable from the spare-use replay above. The id is NOT blacklisted
+    // forever, though: re-join is owner-gated. The owner re-seats the id signed (fresh
+    // stamp, fresh signature), issues an invite BOUND to it, and the returning party
+    // records its consent against the live row — record-only, no unsigned Strand insert.
     const id = 'strand-rejoin-' + Math.random().toString(36).slice(2);
     const first = 'fi-rejoin-a-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(first, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token: first, strandId: id, type: 'c', memberPrivateKey: 'member-key-a-' + id });
+    await db.redeemInvitation({ token: first, strandId: id });
 
     const firstStamp = String((await strandRow(id))?.StampId);
     await removeStrand(id, firstStamp);
     expect(await strandRow(id)).toBeUndefined();
 
+    // A fresh, valid, unbound invite: the redemption still may not re-form the id — the
+    // first redemption's surviving usage row trips the once-ever clause.
     const second = 'fi-rejoin-b-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(second, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token: second, strandId: id, type: 'c', memberPrivateKey: 'member-key-b-' + id });
+    await expectConstraintFailure(
+      db.redeemInvitation({ token: second, strandId: id }),
+      'AuthorizedInsert',
+    );
+    expect(await strandRow(id)).toBeUndefined();
 
+    // The owner-gated path: signed re-seat with a fresh stamp, then a BOUND invite the
+    // returning party records consent against.
+    await seatStrand(id, 'o', null);
     const reseated = await strandRow(id);
     expect(reseated).toBeDefined();
     expect(reseated?.StampId).not.toBe(firstStamp);
+
+    const bound = 'fi-rejoin-c-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(bound, 'sapp-rejoin', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1, strandId: id });
+    expect(await db.recordFormationUsage({ token: bound, strandId: id })).toBe(1);
   }, 60_000);
 
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {

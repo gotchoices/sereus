@@ -1,7 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import debug from 'debug';
 import {
   generatePrivateKey,
   getPublicKey,
+  randomBytes,
   sign as cryptoSign,
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
@@ -11,6 +13,8 @@ import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
 import { expectConstraintFailure } from './control-constraint-helpers.js';
+
+const log = debug('sereus:cadre:test:formation-invite');
 
 /**
  * Exercises the FormationInvite / FormationUsage consent path:
@@ -145,7 +149,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await db.redeemInvitation({ token, strandId, type: 'o', disclosure: 'hello' });
+    await db.redeemInvitation({ token, strandId, disclosure: 'hello' });
 
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
@@ -317,6 +321,212 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     await expect(db.recordFormationUsage({ token, strandId }))
       .rejects.toThrow(MissingHostStrandError);
     expect(await usageCount()).toBe(before);
+  });
+
+  /**
+   * The consent branch of `Strand.AuthorizedInsert` is deliberately narrow: an unsigned,
+   * redemption-seated strand must be open (`'o'`) and keyless, may only come from an
+   * UNBOUND invite (`FormationInvite.StrandId` null), and a given strand id may be
+   * consent-seated once, EVER. A bound invite is record-only, and
+   * `FormationUsage.Authorized` further pins it to its own host strand. Every rejection
+   * here names its constraint via the single-rejector technique
+   * (control-constraint-helpers.ts); the removed-id replay half (spare-use re-seat,
+   * owner-gated re-join) lives in control-revocation-replay.spec.ts beside the tombstone
+   * machinery it leans on.
+   */
+  describe('consent-branch narrowing (unbound-only, open/keyless, once-ever)', () => {
+    const freshStamp = (): string => randomBytes(256, 'base64url') as string;
+
+    /** The unsigned Strand insert a redemption writes, with Type / MemberPrivateKey / StampId under the caller's control. */
+    function rawInsertStrandUnsigned(
+      id: string,
+      type: string,
+      memberPrivateKey: string | null,
+      stampId: string,
+    ): Promise<void> {
+      return rawDb.exec(
+        `insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+           with context OwnerKey = null, Signature = null
+           values (?, ?, ?, ?)`,
+        [id, type, memberPrivateKey, stampId],
+      );
+    }
+
+    /** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
+    async function inTransaction(statements: () => Promise<void>): Promise<void> {
+      await rawDb.beginTransaction();
+      try {
+        await statements();
+        await rawDb.commit();
+      } catch (error) {
+        // A failed commit() already tore the transaction down, so rollback() throws
+        // "no transaction active" — log it rather than masking the real cause.
+        try {
+          await rawDb.rollback();
+        } catch (rollbackError) {
+          log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
+        }
+        throw error;
+      }
+    }
+
+    it('rejects a consent redemption seating a CLOSED strand with a caller-chosen member key (AuthorizedInsert)', async () => {
+      const token = 'invite-closed-consent-' + rand();
+      await db.insertFormationInvite(token, 'sapp-closed-consent', ownerPublicKey, signMessage);
+
+      const strandId = 'strand-closed-consent-' + rand();
+      const stamp = freshStamp();
+      const strandsBefore = await strandCount();
+      const usageBefore = await usageCount();
+
+      // The exact two-insert transaction redeemInvitation runs, except the strand is
+      // closed and carries a caller-chosen MemberPrivateKey — the party's own read-gating
+      // secret for that network, which no consent path may pick. The invite is valid and
+      // unbound, the (id, stamp) pair matches, and MemberKeyClosedOnly is satisfied
+      // ('c' + key), so the consent branch's shape clauses are the only rule that can
+      // reject.
+      await expectConstraintFailure(
+        inTransaction(async () => {
+          await rawInsertStrandUnsigned(strandId, 'c', 'ATTACKER-KEY-' + strandId, stamp);
+          await rawInsertFormationUsage(token, 1, strandId, stamp);
+        }),
+        'AuthorizedInsert',
+      );
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await usageCount()).toBe(usageBefore);
+
+      // The identical transaction in the open/keyless shape lands — the rejection above
+      // is about the shape and nothing else. (Use number 1 again: the failed transaction
+      // left no usage row behind.)
+      const okId = 'strand-open-consent-' + rand();
+      const okStamp = freshStamp();
+      await inTransaction(async () => {
+        await rawInsertStrandUnsigned(okId, 'o', null, okStamp);
+        await rawInsertFormationUsage(token, 1, okId, okStamp);
+      });
+      expect(await strandCount()).toBe(strandsBefore + 1);
+      expect(await usageCount()).toBe(usageBefore + 1);
+    });
+
+    it('a bound invite cannot redeem against an unrelated strand id (AuthorizedInsert)', async () => {
+      const host = 'strand-bound-host-' + rand();
+      const hostMemberKey = 'memkey-' + rand();
+      await db.insertStrand(host, 'c', ownerPublicKey, signMessage, hostMemberKey);
+      const token = 'invite-bound-attack-' + rand();
+      await db.insertFormationInvite(token, 'sapp-bound-attack', ownerPublicKey, signMessage, {
+        strandId: host,
+      });
+
+      const unrelated = 'strand-unrelated-' + rand();
+      const strandsBefore = await strandCount();
+      const usageBefore = await usageCount();
+
+      // Violates BOTH halves of the narrowing (the usage row names a strand other than
+      // the invite's own, and a bound invite may not seat a strand at all); the engine
+      // reports the Strand-side AuthorizedInsert.
+      await expectConstraintFailure(
+        db.redeemInvitation({ token, strandId: unrelated }),
+        'AuthorizedInsert',
+      );
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await usageCount()).toBe(usageBefore);
+
+      // The host row is untouched either way.
+      const hostRow = await rawDb.get(
+        'select Type, MemberPrivateKey from CadreControl.Strand where Id = ?',
+        [host],
+      );
+      expect(hostRow?.MemberPrivateKey).toBe(hostMemberKey);
+    });
+
+    it('a bound invite cannot consent-seat its own named host strand before that strand exists (AuthorizedInsert)', async () => {
+      const host = 'strand-unconverged-' + rand();
+      const token = 'invite-bound-early-' + rand();
+      await db.insertFormationInvite(token, 'sapp-bound-early', ownerPublicKey, signMessage, {
+        strandId: host,
+      });
+
+      const strandsBefore = await strandCount();
+      // The usage row itself is fine (the invite names its own strand), so
+      // FormationUsage.Authorized passes and the consent branch's unbound-invite-only
+      // clause is the single rejector. Without it, this shape would seat an open,
+      // keyless downgrade of the real (possibly closed, key-bearing) host row on a node
+      // where it has not converged yet; resolveStrand instead reports 'missing' and the
+      // formation manager rejects cleanly.
+      await expectConstraintFailure(
+        db.redeemInvitation({ token, strandId: host }),
+        'AuthorizedInsert',
+      );
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [host])).toBeUndefined();
+    });
+
+    it('a bound invite cannot record usage against a DIFFERENT existing strand (Authorized)', async () => {
+      const host = 'strand-bound-own-' + rand();
+      await db.insertStrand(host, 'o', ownerPublicKey, signMessage);
+      const other = 'strand-bound-other-' + rand();
+      await db.insertStrand(other, 'o', ownerPublicKey, signMessage);
+      const token = 'invite-bound-cross-' + rand();
+      await db.insertFormationInvite(token, 'sapp-bound-cross', ownerPublicKey, signMessage, {
+        strandId: host,
+      });
+
+      const usageBefore = await usageCount();
+      // Record-only — no Strand insert — against an ALREADY owner-signed strand, so
+      // StrandExists and Monotonic are satisfied and FormationUsage.Authorized's
+      // own-strand clause is the one rule that can reject. This isolates the
+      // FormationUsage half of the narrowing, which any shape carrying a Strand insert
+      // masks behind AuthorizedInsert.
+      await expectConstraintFailure(
+        db.recordFormationUsage({ token, strandId: other }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(usageBefore);
+    });
+
+    it('an unbound invite still seats one open, keyless strand per use, each with a distinct id', async () => {
+      const token = 'invite-multi-use-' + rand();
+      await db.insertFormationInvite(token, 'sapp-multi-use', ownerPublicKey, signMessage, {
+        totalUses: 2,
+      });
+
+      const first = 'strand-use1-' + rand();
+      const second = 'strand-use2-' + rand();
+      await db.redeemInvitation({ token, strandId: first });
+      await db.redeemInvitation({ token, strandId: second });
+
+      for (const id of [first, second]) {
+        const row = await rawDb.get(
+          'select Type, MemberPrivateKey from CadreControl.Strand where Id = ?',
+          [id],
+        );
+        expect(row?.Type).toBe('o');
+        expect(row?.MemberPrivateKey).toBeNull();
+      }
+      expect(await db.countFormationUsage(token)).toBe(2);
+    });
+
+    it('the bound record-only path accepts several invitees against one owner-signed host strand', async () => {
+      const host = 'strand-bound-many-' + rand();
+      const hostMemberKey = 'memkey-' + rand();
+      await db.insertStrand(host, 'c', ownerPublicKey, signMessage, hostMemberKey);
+      const token = 'invite-bound-many-' + rand();
+      await db.insertFormationInvite(token, 'sapp-bound-many', ownerPublicKey, signMessage, {
+        strandId: host,
+        totalUses: 3,
+      });
+
+      expect(await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-a' })).toBe(1);
+      expect(await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-b' })).toBe(2);
+
+      // Still exactly one Strand row for the host — joining by bound invite records
+      // consent, it never seats anything.
+      const row = await rawDb.get(
+        'select count(1) as c from CadreControl.Strand where Id = ?',
+        [host],
+      );
+      expect(Number(row?.c)).toBe(1);
+    });
   });
 
   describe('MemberKeyClosedOnly constraint', () => {

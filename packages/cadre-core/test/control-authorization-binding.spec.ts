@@ -563,18 +563,19 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     expect(row?.StampId).toBe(stamp);
   });
 
-  it('Strand tamper-via-update rejected: a consent-formed strand cannot be rewritten unsigned (NoUpdate)', async () => {
+  it('Strand tamper-via-update rejected: a strand row cannot be rewritten unsigned (NoUpdate)', async () => {
     // The consent branch of `Strand.AuthorizedInsert` authorizes by the EXISTENCE of a
     // FormationUsage row for the strand id and carries no signature. While that rule was a
     // bare `check` — which covers insert AND update — it therefore also said "anyone may
     // rewrite any consent-formed strand, unsigned": flipping Type to 'o' and nulling
     // MemberPrivateKey destroys the party's own membership key for that network in place.
-    const token = 'fi-strand-noupd-' + Math.random().toString(36).slice(2);
+    // The row under attack is owner-seated closed — consent can no longer produce a closed,
+    // key-bearing strand at all (see control-formation-invite.spec.ts) — and the NoUpdate
+    // rule under test does not care how the row was seated.
     const strandId = 'strand-noupd-' + Math.random().toString(36).slice(2);
     const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 
-    await db.insertFormationInvite(token, 'sapp-strand-noupd', ownerPublicKey, signMessage, { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId, type: 'c', memberPrivateKey });
+    await db.insertStrand(strandId, 'c', ownerPublicKey, signMessage, memberPrivateKey);
 
     await expectConstraintFailure(
       rawDb.exec(
