@@ -130,6 +130,18 @@ interface OptimysticPluginResult {
 /** Runtime guard for the dynamic-`from` count, over the one table list. */
 const CONTROL_TABLE_SET: ReadonlySet<ControlTable> = new Set<ControlTable>(CONTROL_TABLES);
 
+/**
+ * The control tables whose rows carry a single-use `StampId` retired into
+ * `CadreControl.Revocation` on delete — i.e. the ones the schema's
+ * `NotRevoked` / `RevocationRecorded` CHECK pair guards. `Extract` from
+ * {@link ControlTable} rather than a fresh literal list, so a renamed table is a
+ * compile error here instead of a silently dead branch.
+ */
+export type RevocableTable = Extract<ControlTable, 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'>;
+
+/** Primary-key column of each {@link RevocableTable}, in that order. */
+type GuardedKeyColumn = 'Key' | 'Id' | 'PeerId';
+
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
   partyId: string;
@@ -417,48 +429,48 @@ export class ControlDatabase {
   }
 
   /**
-   * Read a single `CadrePeer` row's single-use `StampId` nonce (null when the row
-   * does not exist). Used by the owner delete / re-touch paths, which must bind
-   * their signature to the row's CURRENT nonce ({@link cadrePeerRemoveDigest} /
-   * {@link cadrePeerVoucherDigest}).
+   * Read one guarded row's single-use `StampId` nonce (null when the row does not
+   * exist). Every owner-signed delete / re-touch path must bind its signature to the
+   * row's CURRENT nonce, so they all read through here first.
+   *
+   * `table` / `keyColumn` are interpolated into the SQL, so both are typed as closed
+   * literal unions — no caller-supplied string can reach the statement (same
+   * injection-surface discipline as {@link countRows}'s `CONTROL_TABLE_SET` guard).
    */
-  async queryCadrePeerStampId(peerId: string): Promise<string | null> {
+  private async queryStampId(
+    table: RevocableTable,
+    keyColumn: GuardedKeyColumn,
+    keyValue: string
+  ): Promise<string | null> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval('select StampId from CadreControl.CadrePeer where PeerId = ?', [peerId])) {
+    const sql = `select StampId from CadreControl.${table} where ${keyColumn} = ?`;
+    for await (const row of this.db!.eval(sql, [keyValue])) {
       return (row.StampId as string | null) ?? null;
     }
     return null;
   }
 
   /**
-   * Read a single `Strand` row's single-use `StampId` nonce (null when the row does not
-   * exist). Mirrors {@link queryCadrePeerStampId}; {@link deleteStrand} reads the row's
-   * CURRENT stamp before signing so the remove digest binds to it.
+   * `CadrePeer` stamp nonce — bound into {@link cadrePeerRemoveDigest} /
+   * {@link cadrePeerVoucherDigest} by the owner delete / re-touch paths.
    */
-  async queryStrandStampId(strandId: string): Promise<string | null> {
-    this.ensureInitialized();
-    for await (const row of this.db!.eval('select StampId from CadreControl.Strand where Id = ?', [strandId])) {
-      return (row.StampId as string | null) ?? null;
-    }
-    return null;
+  queryCadrePeerStampId(peerId: string): Promise<string | null> {
+    return this.queryStampId('CadrePeer', 'PeerId', peerId);
   }
 
-  /**
-   * Read a single `ValidationKey` row's single-use `StampId` nonce (null when the row
-   * does not exist). Mirrors {@link queryCadrePeerStampId}; {@link deleteValidationKey}
-   * reads the row's CURRENT stamp before signing so the remove digest binds to it.
-   */
-  async queryValidationKeyStampId(key: string): Promise<string | null> {
-    this.ensureInitialized();
-    for await (const row of this.db!.eval('select StampId from CadreControl.ValidationKey where Key = ?', [key])) {
-      return (row.StampId as string | null) ?? null;
-    }
-    return null;
+  /** `Strand` stamp nonce — bound into {@link deleteStrand}'s remove digest. */
+  queryStrandStampId(strandId: string): Promise<string | null> {
+    return this.queryStampId('Strand', 'Id', strandId);
+  }
+
+  /** `ValidationKey` stamp nonce — bound into {@link deleteValidationKey}'s remove digest. */
+  queryValidationKeyStampId(key: string): Promise<string | null> {
+    return this.queryStampId('ValidationKey', 'Key', key);
   }
 
   /**
    * Collect the retired `StampId` nonces recorded in `CadreControl.Revocation` for one
-   * guarded table (`'OwnerKey'` | `'CadrePeer'` | `'ValidationKey'` | `'Strand'`). A stamp
+   * {@link RevocableTable}. A stamp
    * lands here when its row is removed ({@link SeedBootstrapService.removePeer},
    * {@link deleteValidationKey}, {@link deleteStrand}), and retirement is permanent —
    * the table is append-only. Read-side mitigation for the write-time race: the
@@ -470,7 +482,7 @@ export class ControlDatabase {
    * gate request while the table only ever grows. Cheap today (a cadre removes peers
    * rarely); if removals ever become routine, cache the set and invalidate it on write.
    */
-  async queryRevokedStamps(tableName: 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand'): Promise<Set<string>> {
+  async queryRevokedStamps(tableName: RevocableTable): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
     for await (const row of this.db!.eval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
@@ -662,45 +674,12 @@ export class ControlDatabase {
    *
    * A no-op (no throw, no tombstone) when the row does not exist.
    */
-  async deleteStrand(
+  deleteStrand(
     strandId: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
-    this.ensureInitialized();
-    const stampId = await this.queryStrandStampId(strandId);
-    if (stampId === null) {
-      log('deleteStrand: no Strand row for %s (already absent)', strandId);
-      return;
-    }
-
-    const message = buildAuthorizationMessage('CadreControl.Strand', 'remove', [strandId, stampId]);
-    const signature = signMessage(message);
-
-    await this.db!.beginTransaction();
-    try {
-      await this.db!.exec(`
-        delete from CadreControl.Strand
-          with context OwnerKey = ?, Signature = ?
-          where Id = ?
-      `, [ownerKey, signature, strandId]);
-      await this.db!.exec(`
-        insert into CadreControl.Revocation (TableName, StampId)
-          values ('Strand', ?)
-      `, [stampId]);
-      await this.db!.commit();
-    } catch (error) {
-      // A failed commit() already tears down the transaction, so rollback() would
-      // throw "No transaction active" and mask the real cause — swallow only that.
-      try {
-        await this.db!.rollback();
-      } catch (rollbackError) {
-        log('Rollback after deleteStrand failure was a no-op: %s', rollbackError);
-      }
-      throw error;
-    }
-
-    log('Strand deleted: %s (stamp retired)', strandId);
+    return this.deleteGuardedRow('Strand', 'Id', strandId, ownerKey, signMessage);
   }
 
   /**
@@ -754,45 +733,87 @@ export class ControlDatabase {
    *
    * A no-op (no throw, no tombstone) when the row does not exist.
    */
-  async deleteValidationKey(
+  deleteValidationKey(
     key: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
+    return this.deleteGuardedRow('ValidationKey', 'Key', key, ownerKey, signMessage);
+  }
+
+  /**
+   * Owner-signed delete of one guarded row plus the `Revocation` tombstone retiring its
+   * stamp, in ONE transaction. Shared body of {@link deleteStrand} /
+   * {@link deleteValidationKey}; see either for the security rationale.
+   *
+   * The row's CURRENT stamp is read first and signed over, so the remove digest binds to
+   * this exact row instance. A no-op (no throw, no tombstone) when the row is absent.
+   *
+   * NOTE: the stamp read is outside the transaction. A concurrent writer that removes
+   * the row in between makes the signature bind a stamp that is no longer live; the
+   * delete then matches nothing and the tombstone insert collides with the other
+   * writer's on `Revocation`'s (TableName, StampId) primary key, so the transaction
+   * fails rather than silently half-applying. If concurrent owner-device removals ever
+   * become routine, fold the stamp read into the transaction instead.
+   *
+   * `table` / `keyColumn` are interpolated into the SQL and typed as closed literal
+   * unions — no caller-supplied string reaches the statement.
+   */
+  private async deleteGuardedRow(
+    table: Extract<RevocableTable, 'Strand' | 'ValidationKey'>,
+    keyColumn: GuardedKeyColumn,
+    keyValue: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
     this.ensureInitialized();
-    const stampId = await this.queryValidationKeyStampId(key);
+    const stampId = await this.queryStampId(table, keyColumn, keyValue);
     if (stampId === null) {
-      log('deleteValidationKey: no ValidationKey row for %s (already absent)', key);
+      log('delete %s: no row for %s (already absent)', table, keyValue);
       return;
     }
 
-    const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'remove', [key, stampId]);
+    const message = buildAuthorizationMessage(`CadreControl.${table}`, 'remove', [keyValue, stampId]);
     const signature = signMessage(message);
 
-    await this.db!.beginTransaction();
-    try {
+    await this.inTransaction(`delete ${table}`, async () => {
       await this.db!.exec(`
-        delete from CadreControl.ValidationKey
+        delete from CadreControl.${table}
           with context OwnerKey = ?, Signature = ?
-          where Key = ?
-      `, [ownerKey, signature, key]);
+          where ${keyColumn} = ?
+      `, [ownerKey, signature, keyValue]);
       await this.db!.exec(`
         insert into CadreControl.Revocation (TableName, StampId)
-          values ('ValidationKey', ?)
-      `, [stampId]);
+          values (?, ?)
+      `, [table, stampId]);
+    });
+
+    log('%s deleted: %s (stamp retired)', table, keyValue);
+  }
+
+  /**
+   * Run `body` between `beginTransaction` and `commit`, rolling back on failure.
+   *
+   * A failed `commit()` has already torn the transaction down, so the `rollback()` in
+   * the failure path would itself throw "No transaction active" and mask the real
+   * cause — that secondary throw is logged and swallowed, and the original error always
+   * propagates.
+   *
+   * @param label - What the transaction was doing, for the rollback log line.
+   */
+  private async inTransaction(label: string, body: () => Promise<void>): Promise<void> {
+    await this.db!.beginTransaction();
+    try {
+      await body();
       await this.db!.commit();
     } catch (error) {
-      // A failed commit() already tears down the transaction, so rollback() would
-      // throw "No transaction active" and mask the real cause — swallow only that.
       try {
         await this.db!.rollback();
       } catch (rollbackError) {
-        log('Rollback after deleteValidationKey failure was a no-op: %s', rollbackError);
+        log('Rollback after %s failure was a no-op: %s', label, rollbackError);
       }
       throw error;
     }
-
-    log('Validation key deleted: %s (stamp retired)', key);
   }
 
   /**
@@ -929,8 +950,7 @@ export class ControlDatabase {
     const strandStampId = generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
-    await this.db!.beginTransaction();
-    try {
+    await this.inTransaction('redemption', async () => {
       // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
       //    still carrying a fresh unique StampId for the anti-replay column.
       await this.db!.exec(`
@@ -945,19 +965,9 @@ export class ControlDatabase {
         peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
+    });
 
-      await this.db!.commit();
-      log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
-    } catch (error) {
-      // A failed commit() already tears down the transaction, so rollback() would
-      // throw "No transaction active" and mask the real cause — swallow only that.
-      try {
-        await this.db!.rollback();
-      } catch (rollbackError) {
-        log('Rollback after redemption failure was a no-op: %s', rollbackError);
-      }
-      throw error;
-    }
+    log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
   }
 
   /**

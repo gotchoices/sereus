@@ -21,12 +21,16 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * Row-binding only covers the write that carries the signature, so each of these tables
  * also forbids UPDATE outright (`NoUpdate` / `Immutable`) — otherwise a legitimately
  * inserted row could be rewritten afterwards with no signature at all. Those guards are
- * pinned here; the delete half (signature + `Revocation` tombstone) lives in
- * `control-revocation-replay.spec.ts`, which has the transaction helpers it needs.
+ * pinned here. The SCHEMA half of the delete rules (a raw signature + `Revocation`
+ * tombstone, and the replay attacks they turn away) lives in
+ * `control-revocation-replay.spec.ts`, which has the transaction helpers it needs; the
+ * final block here covers the `deleteStrand` / `deleteValidationKey` WRITERS that mint
+ * that pair in production.
  *
  * Boots a real CadreNode (empty bootstrap, transaction profile — no network peers), the
  * same harness the genesis spec uses, and drives both the real writers
- * (`insertStrand` / `insertValidationKey`) and raw SQL to exercise the attack paths.
+ * (`insertStrand` / `insertValidationKey` / `deleteStrand` / `deleteValidationKey`) and
+ * raw SQL to exercise the attack paths.
  */
 describe('control authorization binding (row-bound + single-use stamp)', () => {
   let node: CadreNode;
@@ -667,5 +671,71 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await db.deleteStrand(strandId, ownerPublicKey, signMessage);
 
     expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [strandId])).toBeUndefined();
+  });
+
+  // The tombstone a writer leaves behind retires ONE stamp, not the identifier — so the
+  // insert/delete writers must compose into a working rotation (add -> remove -> re-add).
+  // The schema half of this is pinned on raw SQL in control-revocation-replay.spec.ts;
+  // these prove the real writer pair mints a fresh stamp and so clears `NotRevoked`.
+  it('insertValidationKey re-enrolls the same key after deleteValidationKey (fresh stamp clears NotRevoked)', async () => {
+    const key = 'val-readd-' + Math.random().toString(36).slice(2);
+    await db.insertValidationKey(key, ownerPublicKey, signMessage);
+    const firstStamp = await db.queryValidationKeyStampId(key);
+    await db.deleteValidationKey(key, ownerPublicKey, signMessage);
+
+    await db.insertValidationKey(key, ownerPublicKey, signMessage);
+
+    const secondStamp = await db.queryValidationKeyStampId(key);
+    expect(secondStamp).not.toBeNull();
+    expect(secondStamp).not.toBe(firstStamp);
+    // The first stamp stays retired — the tombstone is permanent, not consumed by the re-add.
+    expect(await revocationRow('ValidationKey', firstStamp!)).toBeDefined();
+  });
+
+  it('insertStrand re-forms the same strand after deleteStrand (fresh stamp clears NotRevoked)', async () => {
+    const strandId = 'strand-readd-' + Math.random().toString(36).slice(2);
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    const firstStamp = await db.queryStrandStampId(strandId);
+    await db.deleteStrand(strandId, ownerPublicKey, signMessage);
+
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+
+    const secondStamp = await db.queryStrandStampId(strandId);
+    expect(secondStamp).not.toBeNull();
+    expect(secondStamp).not.toBe(firstStamp);
+    expect(await revocationRow('Strand', firstStamp!)).toBeDefined();
+  });
+
+  // The writers hold the signing callback, so they are the surface where a caller could
+  // wire up the WRONG signer. These pin that the writer forwards the signature verbatim
+  // to AuthorizedDelete rather than short-circuiting it, and that the row survives.
+  it('deleteStrand signed by a NON-owner key is refused and leaves the row intact', async () => {
+    const strandId = 'strand-badsig-del-' + Math.random().toString(36).slice(2);
+    await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+    const strayPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const signWithStray = (message: Uint8Array): string =>
+      cryptoSign(message, strayPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+
+    await expectConstraintFailure(
+      db.deleteStrand(strandId, ownerPublicKey, signWithStray),
+      'AuthorizedDelete',
+    );
+
+    expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [strandId])).toBeDefined();
+  });
+
+  it('deleteValidationKey signed by a NON-owner key is refused and leaves the row intact', async () => {
+    const key = 'val-badsig-del-' + Math.random().toString(36).slice(2);
+    await db.insertValidationKey(key, ownerPublicKey, signMessage);
+    const strayPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const signWithStray = (message: Uint8Array): string =>
+      cryptoSign(message, strayPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+
+    await expectConstraintFailure(
+      db.deleteValidationKey(key, ownerPublicKey, signWithStray),
+      'AuthorizedDelete',
+    );
+
+    expect(await rawDb.get('select Key from CadreControl.ValidationKey where Key = ?', [key])).toBeDefined();
   });
 });
