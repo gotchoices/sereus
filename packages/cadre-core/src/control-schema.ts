@@ -96,6 +96,12 @@ declare schema CadreControl {
         -- A removed row's StampId is retired into Revocation, and this refuses any insert naming
         -- a retired stamp: the approval that seated this row can never re-seat it after removal.
         -- Same rationale as OwnerKey.NotRevoked, stated in full there.
+        -- NOTE: this table gained a consumer — FormationUsage.Authorized reads it to gate redemption of
+        -- a ValidationUrl invite — so the convergence gap noted on Strand.StampId now has teeth here: on
+        -- a node that has not yet seen the tombstone, a replayed enrollment re-seats the key and it can
+        -- approve redemptions there until the Revocation row arrives. Still no per-request READ surface to
+        -- filter (the gate is a write-time CHECK), so there is nothing to add today; if one appears, filter
+        -- retired stamps there.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = new.StampId)
         ),
@@ -396,7 +402,23 @@ declare schema CadreControl {
                     where FI.Token = new.Token
                         and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
-                        and (FI.ValidationUrl is null or verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, context.ValidationKey, 'ed25519'))
+                        -- An invite carrying a ValidationUrl demands a sign-off from a key the party
+                        -- ENROLLED in ValidationKey. The signature is verified against the STORED VK.Key,
+                        -- NOT against context.ValidationKey — that distinction is the whole point:
+                        -- context.ValidationKey is a plain insert parameter, so verifying against it asked
+                        -- only "did the redeemer sign its own disclosure with SOME key it holds?", which any
+                        -- redeemer answers by minting a throwaway keypair. context.ValidationKey survives
+                        -- purely to SELECT which enrolled row is being claimed; naming an enrolled key while
+                        -- signing with a different one fails the verify against VK.Key.
+                        --
+                        -- Deliberate: CHECKs run on write only, so removing a validation key later does NOT
+                        -- re-examine the FormationUsage rows it already approved. The sign-off was valid when
+                        -- given and the strand it authorized stays formed; removal narrows who may approve
+                        -- FUTURE redemptions, it is not a retroactive revocation of past ones.
+                        and (FI.ValidationUrl is null or exists (
+                            select 1 from ValidationKey VK
+                                where VK.Key = context.ValidationKey
+                                    and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
             )
         ),
         -- Matched on the (id, stamp) PAIR, the same key Strand.AuthorizedInsert's consent branch

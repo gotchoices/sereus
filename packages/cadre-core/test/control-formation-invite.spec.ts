@@ -6,7 +6,7 @@ import {
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { MissingHostStrandError } from '../src/control-database.js';
+import { MissingHostStrandError, buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -344,6 +344,145 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await strandCount()).toBe(before + 1);
       const row = await rawDb.get('select Type from CadreControl.Strand where Id = ?', [strandId]);
       expect(row?.Type).toBe('o');
+    });
+  });
+
+  /**
+   * `FormationUsage.Authorized`'s validation branch: an invite carrying a `ValidationUrl` may
+   * only be redeemed when the disclosure sign-off comes from a key the party ENROLLED in
+   * `ValidationKey`, and the signature is verified against the STORED `VK.Key` — not against
+   * `context.ValidationKey`, which is a caller-supplied insert parameter. Before the fix the
+   * CHECK verified against that parameter, so a redeemer minted a throwaway keypair, signed its
+   * own disclosure, passed both, and satisfied the gate; `ValidationKey` had no consumer at all.
+   *
+   * Every case records against a PRE-EXISTING owner-signed strand (`recordFormationUsage`, not
+   * `redeemInvitation`) so `Authorized` is the only constraint that can reject: `StrandExists` is
+   * satisfied by the committed strand and `Monotonic` by the writer's use-number read. That keeps
+   * `expectConstraintFailure(..., 'Authorized')` a single-rejector assertion.
+   */
+  describe('FormationUsage.Authorized validation-key branch', () => {
+    let validationPrivateKey: string;
+    let validationPublicKey: string;
+
+    /** ed25519 sign-off over the same 'vouch' digest the SQL builds, from an arbitrary key. */
+    const vouch = (privateKey: string, token: string, disclosure: string): string =>
+      cryptoSign(
+        buildAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [token, disclosure]),
+        privateKey, 'ed25519', 'bytes', 'base64url', 'base64url',
+      ) as string;
+
+    /** A `ValidationUrl` invite plus an owner-signed host strand to record consent against. */
+    async function validatingInvite(tag: string): Promise<{ token: string; strandId: string }> {
+      const token = `invite-${tag}-` + rand();
+      const strandId = `strand-${tag}-` + rand();
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(token, 'sapp-' + tag, ownerPublicKey, signMessage, {
+        validationUrl: `https://validate.example/${tag}`,
+      });
+      return { token, strandId };
+    }
+
+    beforeAll(async () => {
+      // The party enrols ONE approver, so every rejection below is about the key presented
+      // rather than about the party having no approver at all.
+      validationPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+      validationPublicKey = getPublicKey(validationPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+      await db.insertValidationKey(validationPublicKey, ownerPublicKey, signMessage);
+    });
+
+    it('rejects a rogue, unenrolled key that validly signed its own disclosure (pins the bug)', async () => {
+      const { token, strandId } = await validatingInvite('rogue');
+      const roguePrivate = generatePrivateKey('ed25519', 'base64url') as string;
+      const roguePublic = getPublicKey(roguePrivate, 'ed25519', 'base64url', 'base64url') as string;
+      const disclosure = 'rogue-disclosure';
+
+      const before = await usageCount();
+      // The signature IS valid over the right digest — it is the KEY that is not enrolled.
+      // Pre-fix this landed, because the CHECK verified against the key on the insert.
+      await expectConstraintFailure(
+        db.recordFormationUsage({
+          token, strandId, disclosure,
+          validationKey: roguePublic,
+          validationSignature: vouch(roguePrivate, token, disclosure),
+        }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(before);
+    });
+
+    it('rejects redemption of a ValidationUrl invite with no sign-off supplied at all', async () => {
+      const { token, strandId } = await validatingInvite('noapproval');
+
+      const before = await usageCount();
+      await expectConstraintFailure(
+        db.recordFormationUsage({ token, strandId, disclosure: 'no-approval' }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(before);
+    });
+
+    it('admits redemption when an ENROLLED ValidationKey signed the vouch digest', async () => {
+      const { token, strandId } = await validatingInvite('enrolled');
+      const disclosure = 'enrolled-disclosure';
+
+      const before = await usageCount();
+      expect(await db.recordFormationUsage({
+        token, strandId, disclosure,
+        validationKey: validationPublicKey,
+        validationSignature: vouch(validationPrivateKey, token, disclosure),
+      })).toBe(1);
+      expect(await usageCount()).toBe(before + 1);
+    });
+
+    it('rejects an enrolled key named alongside a signature from a DIFFERENT key', async () => {
+      const { token, strandId } = await validatingInvite('mismatch');
+      const otherPrivate = generatePrivateKey('ed25519', 'base64url') as string;
+      const disclosure = 'mismatch-disclosure';
+
+      const before = await usageCount();
+      // `context.ValidationKey` only SELECTS the enrolled row; the verify runs against the
+      // stored `VK.Key`, so an enrolled name cannot launder a foreign signature.
+      await expectConstraintFailure(
+        db.recordFormationUsage({
+          token, strandId, disclosure,
+          validationKey: validationPublicKey,
+          validationSignature: vouch(otherPrivate, token, disclosure),
+        }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(before);
+    });
+
+    it('rejects an enrolled key\'s signature presented under an unenrolled key name', async () => {
+      const { token, strandId } = await validatingInvite('unenrolled-name');
+      const roguePublic = getPublicKey(
+        generatePrivateKey('ed25519', 'base64url') as string, 'ed25519', 'base64url', 'base64url',
+      ) as string;
+      const disclosure = 'unenrolled-name-disclosure';
+
+      const before = await usageCount();
+      // The mirror of the case above: a genuine approver signature, but the row lookup is on
+      // the name presented, and no `ValidationKey` row matches it.
+      await expectConstraintFailure(
+        db.recordFormationUsage({
+          token, strandId, disclosure,
+          validationKey: roguePublic,
+          validationSignature: vouch(validationPrivateKey, token, disclosure),
+        }),
+        'Authorized',
+      );
+      expect(await usageCount()).toBe(before);
+    });
+
+    it('leaves an invite with NO ValidationUrl redeemable without any sign-off (unchanged)', async () => {
+      const token = 'invite-novalidation-' + rand();
+      const strandId = 'strand-novalidation-' + rand();
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(token, 'sapp-novalidation', ownerPublicKey, signMessage);
+
+      const before = await usageCount();
+      expect(await db.recordFormationUsage({ token, strandId, disclosure: 'open' })).toBe(1);
+      expect(await usageCount()).toBe(before + 1);
     });
   });
 
