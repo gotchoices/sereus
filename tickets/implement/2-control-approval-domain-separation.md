@@ -266,3 +266,41 @@ signer in `packages/integration-tests/src/harness/test-network.ts`.
 Research is static analysis of the schema plus the four signing modules; every collision above
 is read directly off the digest expressions and their producers. The live re-reproduction was
 not re-run in this session (token budget), which is why Phase 1 exists — do not skip it.
+
+<!-- resume-note -->
+## Resume note (2026-07-29, run hit budget before any code change)
+
+A prior implement run read every relevant source file and then hit its token budget BEFORE
+touching the working tree. **No code, schema, or test changes were made** — start at Phase 1.
+Verified facts, so the next run can skip re-discovery:
+
+- The ticket's inventory of digest sites is accurate against the current sources; no
+  discrepancies found in `schemas/control.qsql`, `control-schema.ts`, `control-database.ts`,
+  `peer-authorization.ts`, `seed-bootstrap.ts`, `peer-record.ts`, or `device-token.ts`.
+- Test harness helpers to model Phase 1 on, all in
+  `packages/cadre-core/test/control-ownerkey-self-authorization.spec.ts`:
+  `freshKeyPair`/`signAs` (~line 46-59), `rawInsertOwnerKey` (~line 88),
+  `expectConstraintFailure` (~line 148, asserts by constraint NAME), `bootFreshParty`
+  (~line 166 — confirms `CadreNode.getControlDatabase()` exists; boots
+  `new CadreNode({ controlNetwork: { partyId, bootstrapNodes: [] }, profile: 'transaction' })`
+  then `db.getDatabase()` for raw SQL). Each test boots its own node; 60s timeouts.
+- `buildAuthorizationMessage(fields)` is `control-database.ts:88`; `ControlTable` union +
+  `CONTROL_TABLES` set are `control-database.ts:124-142` (move both per Phase 2).
+- Owner-key signing sites in `seed-bootstrap.ts`: `insertCadrePeerRow` signs voucher at
+  ~line 342 (also persists VouchOwner/VouchSig), `insertSelfDeviceToken` ~367 and
+  `deleteDeviceToken` ~387 both go through `signPeerAuthorization` (~406) →
+  `peerAuthorizationDigest`, `removePeer` signs remove digest ~466, `reauthorizePeer` signs
+  voucher ~526. Single private `signDigest` (~431) applies the owner key everywhere.
+- Self-signed payload builders: `peer-record.ts:peerRecordSignedPayload` (line 53,
+  `PeerId|Multiaddr|UpdatedAt` joined then single-field digest) and
+  `device-token.ts:deviceTokenSignedPayload` (line 36, `PeerId|Platform|Token|UpdatedAt`).
+  Both sign the base64url digest string (input encoding 'base64url'), unlike the owner
+  writers which sign raw digest bytes — keep that distinction when re-pointing them.
+- `digest-variadic-parity.spec.ts` has a `sqlVerify(fields, sig, key)` helper that builds
+  variadic `digest(?, …, ?)` placeholders — the leading-literal-tag parity case is just
+  `['CadreControl.X', 'add', ...rowFields]` through the same helper.
+- `control-schema-drift.spec.ts` normalizes ONLY line endings / trailing whitespace, so the
+  two schema copies must match to the character otherwise.
+- `verifyPeerAuthorization` (peer-authorization.ts:62) is the offline `cadre enroll register`
+  verifier — it must move to the `'Cadre.Enrollment'`/`'vouch'` tagged digest together with
+  `signPeerAuthorization`, or enrollment breaks silently (verify returns false, no throw).
