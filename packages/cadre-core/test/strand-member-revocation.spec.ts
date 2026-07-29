@@ -245,9 +245,10 @@ describe('Member removal authorization', () => {
     expect(await tableCount(db, 'Member')).toBe(2);
 
     // The pre-fix schema accepted exactly this. MinOneMember (1 remains) and
-    // NotAManager (the target holds no Manager row) both pass, so Authorized is
+    // NotAManager (the target holds no Manager row) both pass, and the
+    // founder-signed tombstone satisfies RevocationRecorded, so Authorized is
     // the only constraint that can reject — pinning the name proves the gate fired.
-    await expect(rawDeleteMember(db, member.publicKeyB64)).rejects.toThrow(/Authorized/);
+    await expect(rawDeleteMember(db, member.publicKeyB64, {}, founder)).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Member')).toBe(2);
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
@@ -266,8 +267,11 @@ describe('Member removal authorization', () => {
     await expect(
       rawDeleteMember(db, member.publicKeyB64, {
         managerKey: founder.publicKeyB64,
-        managerSignature: signStrandMemberAction('remove', member.publicKeyB64, stranger.privateKeyB64),
-      }),
+        managerSignature: signStrandApproval(
+          ['Strand.Member', 'remove', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+          stranger.privateKeyB64,
+        ),
+      }, founder),
     ).rejects.toThrow(/Authorized/);
 
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
@@ -286,8 +290,11 @@ describe('Member removal authorization', () => {
     await expect(
       rawDeleteMember(db, victim.publicKeyB64, {
         managerKey: founder.publicKeyB64,
-        managerSignature: signStrandMemberAction('remove', approved.publicKeyB64, founder.privateKeyB64),
-      }),
+        managerSignature: signStrandApproval(
+          ['Strand.Member', 'remove', approved.publicKeyB64, await memberStampId(db, approved.publicKeyB64)],
+          founder.privateKeyB64,
+        ),
+      }, founder),
     ).rejects.toThrow(/Authorized/);
 
     expect(await isMemberRow(db, victim.publicKeyB64)).toBe(true);
@@ -302,21 +309,26 @@ describe('Member removal authorization', () => {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: collateral.publicKeyB64 });
 
     // Authorized is evaluated per ROW, so one valid approval cannot carry a batch:
-    // `collateral`'s row finds no branch and the whole statement rolls back —
-    // including the row the approval WAS minted for.
-    await expect(
-      db.exec(
+    // `collateral`'s row finds no branch and the whole transaction rolls back —
+    // including the row the approval WAS minted for. Both stamps get same-txn
+    // tombstones so RevocationRecorded is satisfied and /Authorized/ is the pin.
+    const approvedStamp = await memberStampId(db, approved.publicKeyB64);
+    const collateralStamp = await memberStampId(db, collateral.publicKeyB64);
+    await expect(inTransaction(db, async () => {
+      await db.exec(
         `delete from Strand.Member
            with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
            where Key in (?, ?)`,
         [
           founder.publicKeyB64,
-          signStrandMemberAction('remove', approved.publicKeyB64, founder.privateKeyB64),
+          signStrandApproval(['Strand.Member', 'remove', approved.publicKeyB64, approvedStamp], founder.privateKeyB64),
           approved.publicKeyB64,
           collateral.publicKeyB64,
         ],
-      ),
-    ).rejects.toThrow(/Authorized/);
+      );
+      await fileTombstone(db, approvedStamp, founder);
+      await fileTombstone(db, collateralStamp, founder);
+    })).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Member')).toBe(3);
     expect(await isMemberRow(db, approved.publicKeyB64)).toBe(true);
@@ -329,14 +341,18 @@ describe('Member removal authorization', () => {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
     const stranger = freshKeyPair();
 
-    // A perfectly-formed remove-tagged signature — but the signer holds no
-    // committed Manager row, so the manager-removal branch finds no authorizer.
-    const signature = signStrandMemberAction('remove', member.publicKeyB64, stranger.privateKeyB64);
+    // A perfectly-formed remove-tagged digest over the live stamp — but the
+    // signer holds no committed Manager row, so the manager-removal branch finds
+    // no authorizer.
+    const signature = signStrandApproval(
+      ['Strand.Member', 'remove', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+      stranger.privateKeyB64,
+    );
     await expect(
       rawDeleteMember(db, member.publicKeyB64, {
         managerKey: stranger.publicKeyB64,
         managerSignature: signature,
-      }),
+      }, founder),
     ).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Member')).toBe(2);
@@ -447,14 +463,17 @@ describe('revokeMember / leaveStrand', () => {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: memberB.publicKeyB64 });
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: memberC.publicKeyB64 });
 
-    // Member C signs the remove-tagged payload over B's key and presents it as
-    // MemberSignature: the self-departure branch verifies against old.Key (= B),
-    // so C's signature fails — verify pins the signer to the departing key itself.
-    // MinOneMember (2 remain) and NotAManager (B holds no Manager row) pass, so
-    // Authorized is the only possible rejector.
-    const cSignsB = signStrandMemberAction('remove', memberB.publicKeyB64, memberC.privateKeyB64);
+    // Member C signs a perfect leave-tagged digest over B's key and live stamp
+    // and presents it as MemberSignature: the self-departure branch verifies
+    // against old.Key (= B), so C's signature fails — verify pins the signer to
+    // the departing key itself. MinOneMember (2 remain) and NotAManager (B holds
+    // no Manager row) pass, so Authorized is the only possible rejector.
+    const cSignsB = signStrandApproval(
+      ['Strand.Member', 'leave', memberB.publicKeyB64, await memberStampId(db, memberB.publicKeyB64)],
+      memberC.privateKeyB64,
+    );
     await expect(
-      rawDeleteMember(db, memberB.publicKeyB64, { memberSignature: cSignsB }),
+      rawDeleteMember(db, memberB.publicKeyB64, { memberSignature: cSignsB }, founder),
     ).rejects.toThrow(/Authorized/);
     expect(await isMemberRow(db, memberB.publicKeyB64)).toBe(true);
 
@@ -475,15 +494,19 @@ describe('Member action-tag domain separation', () => {
     const member = freshKeyPair();
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: member.publicKeyB64 });
 
-    // The exact signature addMemberByManager minted for the admission, captured
-    // and presented on a delete: the remove branch hashes the 'remove' tag, so
-    // verify fails. The other delete constraints pass — Authorized is the pin.
-    const addSignature = signStrandMemberAction('add', member.publicKeyB64, founder.privateKeyB64);
+    // The exact signature addMemberByManager minted for the admission (same
+    // fields, and the row still carries that stamp), captured and presented on a
+    // delete: the remove branch hashes the 'remove' tag, so verify fails. The
+    // other delete constraints pass — Authorized is the pin.
+    const addSignature = signStrandApproval(
+      ['Strand.Member', 'add', member.publicKeyB64, await memberStampId(db, member.publicKeyB64)],
+      founder.privateKeyB64,
+    );
     await expect(
       rawDeleteMember(db, member.publicKeyB64, {
         managerKey: founder.publicKeyB64,
         managerSignature: addSignature,
-      }),
+      }, founder),
     ).rejects.toThrow(/Authorized/);
     expect(await isMemberRow(db, member.publicKeyB64)).toBe(true);
   }, 30_000);
@@ -492,16 +515,21 @@ describe('Member action-tag domain separation', () => {
     const { db, founder } = await openStrand('c');
     const target = freshKeyPair();
 
-    // A genuine founder remove-approval over the key, presented on an INSERT:
-    // the add branch hashes the 'add' tag, so verify fails; the bootstrap branch
-    // is off (the committed member set is non-empty) and no invite exists.
-    const removeSignature = signStrandMemberAction('remove', target.publicKeyB64, founder.privateKeyB64);
+    // A genuine founder remove-approval over the key and the stamp the insert
+    // itself carries, presented on an INSERT: the add branch hashes the 'add'
+    // tag, so verify fails; the bootstrap branch is off (the committed member set
+    // is non-empty) and no invite exists.
+    const freshStamp = generateStrandStampId();
+    const removeSignature = signStrandApproval(
+      ['Strand.Member', 'remove', target.publicKeyB64, freshStamp],
+      founder.privateKeyB64,
+    );
     await expect(
       db.exec(
-        `insert into Strand.Member (Key)
+        `insert into Strand.Member (Key, StampId)
            with context ManagerKey = ?, ManagerSignature = ?, MemberSignature = null
-           values (?)`,
-        [founder.publicKeyB64, removeSignature, target.publicKeyB64],
+           values (?, ?)`,
+        [founder.publicKeyB64, removeSignature, target.publicKeyB64, freshStamp],
       ),
     ).rejects.toThrow(/Authorized/);
     expect(await isMemberRow(db, target.publicKeyB64)).toBe(false);

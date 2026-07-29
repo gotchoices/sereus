@@ -131,10 +131,10 @@ describe('Strand membership schema (apply e2e)', () => {
 				expect(r1.hydrated).toEqual({ tables: 0, indexes: 0 });
 				await insertHeader(db1, 'c');
 				await db1.exec(
-					`insert into Strand.Member (Key)
+					`insert into Strand.Member (Key, StampId)
 						with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-						values (?)`,
-					['m1'],
+						values (?, ?)`,
+					['m1', 'stamp-m1'],
 				);
 			} finally {
 				await r1.shutdown();
@@ -168,19 +168,19 @@ describe('Strand membership schema (apply e2e)', () => {
 		// First Member: the bootstrap branch (empty PRE-transaction committed member
 		// set) — no manager needed. This auto-commit insert sees zero committed rows.
 		await db.exec(
-			`insert into Strand.Member (Key)
+			`insert into Strand.Member (Key, StampId)
 				with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-				values (?)`,
-			['m1'],
+				values (?, ?)`,
+			['m1', 'stamp-m1'],
 		);
 		expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(1);
 
 		// First Manager: the `count(Manager) <= 1` bootstrap branch — no manager needed.
 		await db.exec(
-			`insert into Strand.Manager (MemberKey, Generation)
+			`insert into Strand.Manager (MemberKey, Generation, StampId)
 				with context ManagerKey = null, Signature = null
-				values (?, 0)`,
-			['m1'],
+				values (?, 0, ?)`,
+			['m1', 'stamp-mgr-m1'],
 		);
 		expect(await selectCount(db, 'select count(*) as c from Strand.Manager')).toBe(1);
 	});
@@ -195,16 +195,16 @@ describe('Strand membership schema (apply e2e)', () => {
 		// Bootstrap the founder so the committed member set is non-empty — the
 		// bootstrap branch (empty pre-transaction member set) is off from here on.
 		await db.exec(
-			`insert into Strand.Member (Key)
+			`insert into Strand.Member (Key, StampId)
 				with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-				values (?)`,
-			['m1'],
+				values (?, ?)`,
+			['m1', 'stamp-m1'],
 		);
 		await db.exec(
-			`insert into Strand.Manager (MemberKey, Generation)
+			`insert into Strand.Manager (MemberKey, Generation, StampId)
 				with context ManagerKey = null, Signature = null
-				values (?, 0)`,
-			['m1'],
+				values (?, 0, ?)`,
+			['m1', 'stamp-mgr-m1'],
 		);
 
 		// A second Member that is neither manager-signed nor invite-backed: rejected
@@ -219,10 +219,10 @@ describe('Strand membership schema (apply e2e)', () => {
 		const memberCountBefore = await selectCount(db, 'select count(*) as c from Strand.Member');
 		await expect(
 			db.exec(
-				`insert into Strand.Member (Key)
+				`insert into Strand.Member (Key, StampId)
 					with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-					values (?)`,
-				['m2'],
+					values (?, ?)`,
+				['m2', 'stamp-m2'],
 			),
 		).rejects.toThrow();
 		expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(memberCountBefore);
@@ -257,20 +257,20 @@ describe('Strand membership schema (apply e2e)', () => {
 
 				await expect(
 					dbOpen.exec(
-						`insert into Strand.Member (Key)
+						`insert into Strand.Member (Key, StampId)
 							with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-							values (?)`,
-						['m1'],
+							values (?, ?)`,
+						['m1', 'stamp-m1'],
 					),
 				).rejects.toThrow();
 				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Member')).toBe(0);
 
 				await expect(
 					dbOpen.exec(
-						`insert into Strand.Manager (MemberKey, Generation)
+						`insert into Strand.Manager (MemberKey, Generation, StampId)
 							with context ManagerKey = null, Signature = null
-							values (?, 0)`,
-						['m1'],
+							values (?, 0, ?)`,
+						['m1', 'stamp-mgr-m1'],
 					),
 				).rejects.toThrow();
 				expect(await selectCount(dbOpen, 'select count(*) as c from Strand.Manager')).toBe(0);
@@ -302,10 +302,10 @@ describe('Strand membership schema (apply e2e)', () => {
 
 			await insertHeader(db, 'c');
 			await db.exec(
-				`insert into Strand.Member (Key)
+				`insert into Strand.Member (Key, StampId)
 					with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-					values (?)`,
-				['m1'],
+					values (?, ?)`,
+				['m1', 'stamp-m1'],
 			);
 			expect(await selectCount(db, 'select count(*) as c from Strand.Member')).toBe(1);
 

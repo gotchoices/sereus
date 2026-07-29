@@ -604,6 +604,10 @@ async function addExtraManagers(db: Database, founder: Ed25519KeyPair, count: nu
   const extras: Ed25519KeyPair[] = [];
   for (let i = 0; i < count; i++) {
     const kp = freshKeyPair();
+    // Seat the Member row first (the real promotion flow — managers are members):
+    // removeManager files a Revocation tombstone signed by the acting manager, and
+    // Revocation.Authorized verifies that signer against committed.Member.
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: kp.publicKeyB64 });
     await addManager(db, { byManagerKeyPair: founder, newManagerKey: kp.publicKeyB64 });
     extras.push(kp);
   }
@@ -1232,6 +1236,10 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const a = freshKeyPair();
     const b = freshKeyPair();
+    // Members first: B's removal of A files a tombstone signed by B, and
+    // Revocation.Authorized verifies that signer against committed.Member.
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: a.publicKeyB64 });
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: b.publicKeyB64 });
     await addManager(db, { byManagerKeyPair: founder, newManagerKey: a.publicKeyB64 }); // gen 1
     await addManager(db, { byManagerKeyPair: a, newManagerKey: b.publicKeyB64 });       // gen 2
     expect(await tableCount(db, 'Manager')).toBe(3);

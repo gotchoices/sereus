@@ -51,7 +51,8 @@ import {
 	consumeInvite,
 	registerMemberPeer,
 	addManager,
-	signStrandPayload,
+	signStrandApproval,
+	generateStrandStampId,
 	type StrandProvisioner,
 	type Ed25519KeyPair,
 } from '@serfab/cadre-core';
@@ -305,14 +306,17 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// Driven via raw exec because the writer always self-signs correctly.
 			const impostor = freshKeyPair();
 			const impostorPeerId = 'peer-impostor';
-			const impostorPayload = `${joinerMember.publicKeyB64}|${impostorPeerId}`;
-			const impostorSignature = signStrandPayload(impostorPayload, impostor.privateKeyB64);
+			const impostorStamp = generateStrandStampId();
+			const impostorSignature = signStrandApproval(
+				['Strand.MemberPeer', 'add', joinerMember.publicKeyB64, impostorPeerId, impostorStamp],
+				impostor.privateKeyB64,
+			);
 			await expect(
 				founderDb.exec(
-					`insert into Strand.MemberPeer (MemberKey, PeerId)
+					`insert into Strand.MemberPeer (MemberKey, PeerId, StampId)
 					   with context Signature = ?, ManagerKey = null, ManagerSignature = null
-					   values (?, ?)`,
-					[impostorSignature, joinerMember.publicKeyB64, impostorPeerId],
+					   values (?, ?, ?)`,
+					[impostorSignature, joinerMember.publicKeyB64, impostorPeerId, impostorStamp],
 				),
 			).rejects.toThrow();
 
