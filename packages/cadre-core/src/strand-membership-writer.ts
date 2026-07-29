@@ -132,8 +132,19 @@ export function generateStrandStampId(): string {
  * pair (Member + ConsumedInvite) and every delete-plus-tombstone pair (the
  * `RevocationRecorded` constraints require the `Revocation` row in the SAME
  * transaction as the delete it retires).
+ *
+ * JOINS a caller-owned transaction instead of opening its own: Quereus's
+ * `Database.beginTransaction()` hard-throws "Transaction already active" on any
+ * nesting, and a caller composing several writers in one transaction (e.g. a
+ * resign + revoke pair that must land atomically) is exactly the case where the
+ * deferred constraints should fire once, at the CALLER's commit. In joined mode
+ * commit/rollback belong to the caller, so failures simply propagate.
  */
 async function inStrandTransaction(db: Database, fn: () => Promise<void>): Promise<void> {
+  if (!db.getAutocommit()) {
+    await fn();
+    return;
+  }
   await db.beginTransaction();
   try {
     await fn();
