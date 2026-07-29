@@ -177,13 +177,44 @@ declare schema CadreControl {
                 -- Bound to the stamp, the removal retires that stamp into Revocation and NotRevoked
                 -- closes this consent record's branch permanently.
                 --
-                -- Residual, by design: this retires ONE authorization, not the strand id. An invitation
-                -- with uses left over (or unlimited TotalUses) can be redeemed again, minting a NEW
-                -- FormationUsage row with a NEW StrandStampId beside a new Strand row — that is the
-                -- legitimate re-join path. So removing a strand does NOT revoke the invitations that
-                -- could re-form it: an operator who wants a removal to be final must delete the
-                -- FormationInvite too (FormationInvite.AuthorizedDelete exists for that).
-                or exists (select 1 from FormationUsage FU where FU.StrandId = new.Id and FU.StrandStampId = new.StampId)
+                -- Beyond the stamp match, the branch is deliberately NARROW — each clause closes one door:
+                --   * Type = 'o' / MemberPrivateKey null — a consent-seated strand looks exactly like
+                --     what the unbound redemption path writes (open, keyless). A closed strand carrying
+                --     a caller-chosen member key (the party's own read-gating secret for that network)
+                --     has no legitimate producer. MemberKeyClosedOnly already implies the second clause
+                --     from the first today; both are stated so this rule does not silently depend on
+                --     another constraint staying as it is.
+                --   * the inner FI.StrandId is null — only an UNBOUND invite may seat a strand at all.
+                --     A bound invite's host strand is owner-provisioned up front; letting the invite
+                --     consent-seat that id would allow an open, keyless downgrade of the real (possibly
+                --     closed, key-bearing) host row on a node where it has not converged yet. The bound
+                --     path records usage only (resolveStrand reports an absent host as missing and the
+                --     formation manager rejects cleanly).
+                --   * the not-exists over OTHER stamps — a strand id may be consent-seated once, EVER.
+                --     FormationUsage is append-only, so the first redemption's record survives a later
+                --     owner-signed removal and permanently forecloses a second consent-seating of the
+                --     id (a spare use of the same token minted a new stamp and rode this branch to
+                --     re-seat the id with an attacker-chosen row). Re-joining a removed id is
+                --     owner-gated: the owner re-seats it signed (fresh stamp, fresh signature) and
+                --     issues a BOUND invite the returning party records consent against — the id is
+                --     not blacklisted, only its unsigned re-seat is. This cannot be weaponised to
+                --     pre-block a legitimate id: StrandExists refuses a usage row naming a strand that
+                --     does not exist, so no usage row can be pre-planted for an unseated id — and ids
+                --     are 128 random bytes anyway.
+                or (
+                    new.Type = 'o'
+                    and new.MemberPrivateKey is null
+                    and exists (
+                        select 1 from FormationUsage FU
+                            where FU.StrandId = new.Id
+                                and FU.StrandStampId = new.StampId
+                                and exists (select 1 from FormationInvite FI where FI.Token = FU.Token and FI.StrandId is null)
+                    )
+                    and not exists (
+                        select 1 from FormationUsage FU2
+                            where FU2.StrandId = new.Id and FU2.StrandStampId <> new.StampId
+                    )
+                )
         ),
         constraint AuthorizedDelete check on delete (
             -- Delete is authorized by a signature over the DISTINCT 'remove'-tagged digest bound to
@@ -425,6 +456,12 @@ declare schema CadreControl {
                             select 1 from ValidationKey VK
                                 where VK.Key = context.ValidationKey
                                     and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
+                        -- A bound invite (non-null StrandId) may only ever name its own host strand:
+                        -- without this, any holder of a bound token could record consent against an
+                        -- arbitrary strand id — annotating an unrelated strand, or (before
+                        -- Strand.AuthorizedInsert's consent branch was narrowed to unbound invites)
+                        -- consent-seating that id outright.
+                        and (FI.StrandId is null or FI.StrandId = new.StrandId)
             )
         ),
         -- Matched on the (id, stamp) PAIR, the same key Strand.AuthorizedInsert's consent branch

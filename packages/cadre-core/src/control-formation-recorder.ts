@@ -152,7 +152,6 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     await this.controlDatabase.redeemInvitation({
       token,
       strandId,
-      type: 'o',
       peerId: initiatorKey,
     });
     log('Provisioned + recorded unbound strand: token=%s strand=%s', token, strandId);

@@ -944,6 +944,14 @@ export class ControlDatabase {
    * (the `FormationUsage` branch of `Strand.AuthorizedInsert`) but still gets a fresh,
    * unique `StampId` column to satisfy the not-null/unique anti-replay column.
    *
+   * The seated strand is always open (`'o'`) and keyless — the consent branch of
+   * `Strand.AuthorizedInsert` accepts nothing else, the invite must be UNBOUND
+   * (`FormationInvite.StrandId` null; a bound invite's host strand is owner-provisioned
+   * and only ever record-only, see {@link recordFormationUsage}), and a given strand id
+   * may be consent-seated once, EVER: after an owner-signed removal, re-joining that id
+   * takes an owner re-seat ({@link insertStrand}) plus a bound invite, never another
+   * redemption.
+   *
    * `UseNumber` is computed as `max(UseNumber)+1` for the token (the `Monotonic`
    * constraint); callers redeeming concurrently against the same token must
    * serialise, since the next use number is read before the insert.
@@ -951,8 +959,6 @@ export class ControlDatabase {
   async redeemInvitation(params: {
     token: string;
     strandId: string;
-    type?: 'o' | 'c';
-    memberPrivateKey?: string;
     disclosure?: string;
     peerId?: string;
     peerSignature?: string;
@@ -962,8 +968,7 @@ export class ControlDatabase {
   }): Promise<void> {
     this.ensureInitialized();
     const {
-      token, strandId, type = 'o',
-      memberPrivateKey, disclosure = '',
+      token, strandId, disclosure = '',
       peerId, peerSignature,
       nowMs, validationKey, validationSignature,
     } = params;
@@ -976,11 +981,12 @@ export class ControlDatabase {
     await this.inTransaction('redemption', async () => {
       // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
       //    still carrying a fresh unique StampId for the anti-replay column.
+      //    Hard-coded open + keyless: the consent branch admits no other shape.
       await this.db!.exec(`
         insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
           with context OwnerKey = null, Signature = null
-          values (?, ?, ?, ?)
-      `, [strandId, type, memberPrivateKey ?? null, strandStampId]);
+          values (?, 'o', null, ?)
+      `, [strandId, strandStampId]);
 
       // 2. FormationUsage row — authorised by the matching FormationInvite, and
       //    carrying the strand's stamp so it authorizes THIS row and no other.
