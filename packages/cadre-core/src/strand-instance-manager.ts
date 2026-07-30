@@ -282,6 +282,10 @@ export class StrandInstanceManager {
         // `/ip4/0.0.0.0/tcp/4001`) would have control + strand nodes racing to
         // bind one port — EADDRINUSE. Unverified; if a deployment configures a
         // fixed port and strands fail to start, rewrite the port per node here.
+        // An inherited `/p2p-circuit` addr, by contrast, is deliberate — it is
+        // what gives a NAT'd strand node a reachable relay slot — and works
+        // because the launch path announces this strand's derived peerId to
+        // the relay first (delegate admission; see cadre-node.ts).
         ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs }),
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;

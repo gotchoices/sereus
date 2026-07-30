@@ -73,11 +73,24 @@ A single phone party connects to a more robust party with multiple nodes.
     - requires the MM party’s reachability info (explicit multiaddrs and/or bootstrap/discovery info)
 
 ## Some Questions
-- Can any sereus relay node serve as a relay for anyone?
-- Can a relay refuse service to unknown nodes?
-- Where is a SN party likely to find a willing relay?
-- If relays are not universally willing, what mechanisms make a relay “willing”?
-  - incentives (payment/credit), reputation, allowlists, invitation tokens, rate limits, etc.
+
+**Relay willingness — resolved (implemented).** A **dedicated** relay/bootstrap node (the
+`ops/` infrastructure stacks) has no membership gate and relays for anyone. A **party
+control node** that also runs the relay server (the default for every storage-profile node)
+is party-private infrastructure: it relays for its own party's nodes — including the extra
+transport identities its members' strand nodes run as — and for nobody else. The mechanism
+for the latter is a **member-announced delegate grant**: before a member's control node
+starts a strand node, it announces the derived transport peerId that strand node will run
+as, over the already-authenticated `/sereus/strand-addr/1.0.0` RPC, and the relay's
+connection gate holds a short-lived, in-memory admission grant for exactly that peerId
+(`packages/cadre-core/src/delegate-admission.ts`). The grant admits the *connection* only —
+control-DB streams stay member-gated. So a single-node NAT'd (SN) party finds a willing
+relay in its own party's storage nodes, or in the ungated dedicated relays.
+  - Deferred: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
+    PeerId)` row binding a member to its strand transport peerIds — would add revocation
+    and audit on top of the in-memory grant. It is the same binding strand-*mesh*
+    admission control will need, so it waits for that work rather than being built twice.
+
 - Before strand initialization, where (if anywhere) do peers publish reachability?
   - If the answer is “a DHT”, which one, and how is it invitation-only?
 - After strand initialization, the **strand** likely has its own DHT overlay for Optimystic/Quereus routing; does that DHT also serve as the canonical place to publish addresses for existing strand members?

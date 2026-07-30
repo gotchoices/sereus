@@ -33,13 +33,17 @@ const STRAND_TRANSPORT_KEY_DOMAIN = 'sereus.strand-transport-key.v1';
  * an input (not the public key) so that no third party can enumerate a member's
  * strand peerIds from public data; only the key holder can compute them.
  *
- * NOTE: nothing on the strand mesh gates admission by peerId today — strand
- * nodes deliberately keep the raw configured connection gater because their
- * peers are legitimately cross-party — so this derived peerId is unattested and
- * that breaks nothing. If strand-mesh admission control is ever added, the
- * binding it needs is a `MemberPeer(MemberKey, PeerId)` row: the table and its
- * self-signed `Authorized` constraint already exist in `schemas/strand.qsql`;
- * production code simply never writes one.
+ * NOTE: the derived peerId *is* attested at runtime: before a strand node
+ * starts, its control node announces it over the strand-addr RPC, and a
+ * membership-gated relay (a party control node running the relay server) holds
+ * a short-lived delegate admission grant for it (`delegate-admission.ts`) —
+ * without that grant the relay denies the strand node's reservation and
+ * `libp2p.start()` fails. The strand *mesh* itself still does not gate
+ * admission by peerId (strand peers are legitimately cross-party); if
+ * strand-mesh admission control is ever added, the durable binding it needs is
+ * a `MemberPeer(MemberKey, PeerId)` row: the table and its self-signed
+ * `Authorized` constraint already exist in `schemas/strand.qsql`; production
+ * code simply never writes one.
  *
  * @param identityKey - The cadre's Ed25519 identity key (the control node's key).
  * @param strandId - The strand whose transport key to derive.
