@@ -521,7 +521,9 @@ root against a single config (`knip.ts`, Option A) covering the workspaces liste
   out of scope for the dep-check ticket.
 - Phantom deps fixed (added as direct deps where production/test code imports them transitively):
   `@multiformats/multiaddr` (cadre-core, integration-tests, reference-app-rn), `@libp2p/crypto` + `@libp2p/interface`
-  (cadre-cli, cadre-host), `@libp2p/peer-id` (cadre-cli, cadre-host), `@vitest/coverage-v8` (cadre-core,
+  (cadre-cli, cadre-host), `@libp2p/peer-id` (cadre-cli, cadre-host, reference-app-web — the last a test-only
+  `devDependency`, and like `reference-app-ns` it sets `installConfig.hoistingLimits: "workspaces"`, so a
+  transitive resolution there is not a resolution it may rely on), `@vitest/coverage-v8` (cadre-core,
   integration-tests, quereus-plugin-sereus, strand-proto — coverage is configured in their vitest configs), and
   `@noble/ciphers` + `@noble/curves` (reference-app-ns — `src/shims/noise-crypto.js` imports both directly and
   only built because `@chainsafe/libp2p-noise` happened to install them; that package sets
