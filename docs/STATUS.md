@@ -758,8 +758,18 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   poll. The old local-only `CadreNode.removeStrand` was renamed `stopStrand` (behaviour unchanged:
   the row survives and the strand is rediscovered on restart). Unpublishing a closed strand
   destroys its `MemberPrivateKey` irreversibly; the id itself is not blacklisted — an owner
-  re-publish re-seats it on a fresh stamp (`strand-unpublish.spec.ts`). The operator-facing
-  command lands in `feat-strand-removal-cli`.
+  re-publish re-seats it on a fresh stamp (`strand-unpublish.spec.ts`). The operator surface
+  landed as `feat-strand-removal-cli`: `cadre strands` became a `cadre strand list|remove`
+  group (`strands` kept as an alias), where `remove <strandId>` reads the row first, reports
+  "nothing to do" (exit 0) for an unpublished strand, and **refuses a closed strand without
+  `--yes`** — naming the consequence (the membership key in that row exists nowhere else)
+  rather than destroying it on the operator's behalf. The refusal exits non-zero and is
+  structured under `--json`. `--yes` is a flag, not a prompt, because these commands run
+  non-interactively (`strand.spec.ts` in cadre-cli, over a fake store). **Not exercised
+  end-to-end:** no test drives the command against a real node, so the wiring from the parsed
+  argument through `withConnectedNode` to `unpublishStrand` is covered only by the node-level
+  spec on one side and the plan spec on the other. A cadre-host UI for the same operation is
+  parked in `backlog/feat-cadre-host-strand-removal-ui`.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic

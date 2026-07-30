@@ -112,12 +112,40 @@ cadre enroll register \
   --signature <signature>
 ```
 
-### List Strands
+### Strands
+
+List the strands this node is running (`cadre strands` is an alias for `cadre strand list`):
 
 ```bash
-cadre strands -c cadre.yaml
-cadre strands --json
+cadre strand list -c cadre.yaml
+cadre strand list --json
 ```
+
+Remove a strand. This deletes **this party's** `Strand` row, so every cadre node in the party
+stops running the strand on its next watcher poll. Other *parties* in that strand are
+unaffected — removal withdraws our participation, it does not destroy the network. The write
+is owner-signed, so the config's identity key must be an enrolled owner key.
+
+```bash
+cadre strand remove <strandId>
+cadre strand remove <strandId> --yes      # required for a closed strand
+cadre strand remove <strandId> --json
+```
+
+Removing a **closed** strand is irreversible and requires `--yes`: the row carries this
+party's membership key for that network, the key is stored nowhere else, and once it is gone
+the party can never admit another member to that strand. Without `--yes` the command refuses
+and exits non-zero (under `--json` it prints a structured refusal rather than removing).
+`--yes` is not needed for an open strand.
+
+A strand that was never published is not an error — the command reports "nothing to do" and
+exits 0.
+
+One caveat the CLI cannot paper over: a removal that commits while this node has **no**
+control-network connections is local-only, and a physical delete cannot be re-issued the way
+an insert can, so siblings may keep running the strand when they come back. Remove while the
+node is connected. See "Delete-while-alone durability" in
+[`docs/architecture.md`](../../docs/architecture.md).
 
 ### Approver Keys
 

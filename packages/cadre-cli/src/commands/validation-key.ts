@@ -1,9 +1,11 @@
 import { Command } from 'commander';
-import debug from 'debug';
-import type { CadreNode } from '@serfab/cadre-core';
-import { withConnectedNode } from './node-session.js';
-
-const log = debug('cadre:cli:validation-key');
+import {
+  withCommonOptions,
+  runSubcommand,
+  reportPlan,
+  type CommonOptions,
+  type PlanReport,
+} from './subcommand.js';
 
 /**
  * Operator surface for `CadreControl.ValidationKey` — the set of outside approver keys this
@@ -20,29 +22,18 @@ const log = debug('cadre:cli:validation-key');
  * "was not enrolled" from "removed" — the database treats both as a silent no-op.
  */
 
-interface CommonOptions {
-  config: string;
-  json?: boolean;
-  debug?: boolean;
-}
-
 /** What a read-then-write subcommand decided to do, and what to tell the operator. */
-export interface ValidationKeyPlan {
+export interface ValidationKeyPlan extends PlanReport {
   /** The trimmed key the plan is about — what gets written, and what gets printed. */
   key: string;
   /** Whether the write still has to happen; false when the read already settled it. */
   write: boolean;
-  /** Machine-readable outcome, printed verbatim under `--json`. */
   json: { key: string; enrolled: boolean; changed: boolean; wasLastKey?: boolean };
-  /** One-line human confirmation. */
-  human: string;
-  /** Operator warnings that accompany the confirmation in human output only. */
-  warnings: string[];
 }
 
 /**
  * Decide what `add` does, given the currently enrolled set. Trims the key so the comparison
- * is against the same bytes {@link CadreNode.enrollValidationKey} would write.
+ * is against the same bytes `CadreNode.enrollValidationKey` would write.
  */
 export function planAdd(enrolled: readonly string[], rawKey: string): ValidationKeyPlan {
   const key = rawKey.trim();
@@ -104,7 +95,7 @@ export function formatKeyList(keys: readonly string[]): string {
 }
 
 /**
- * The slice of {@link CadreNode} these subcommands need. Narrower than the node so the
+ * The slice of `CadreNode` these subcommands need. Narrower than the node so the
  * read→decide→write chain can be exercised without standing one up.
  */
 export interface ValidationKeyStore {
@@ -139,66 +130,14 @@ export async function applyRemove(store: ValidationKeyStore, key: string): Promi
   return plan;
 }
 
-/** Apply the shared `-c/--json/-d` options to a subcommand. */
-function withCommonOptions(command: Command): Command {
-  return command
-    .option('-c, --config <path>', 'Path to config file (YAML or JSON)', 'cadre.yaml')
-    .option('--json', 'Output in JSON format')
-    .option('-d, --debug', 'Enable debug logging');
-}
-
-/**
- * Shared body for every subcommand: enable debug logging, run `action` against a connected
- * node, and turn any failure into a one-line stderr message plus a non-zero exit.
- *
- * The `failure` prefix names the attempted operation so the operator sees which half of an
- * add-then-remove rotation failed.
- *
- * NOTE: `process.exit` does not flush a pipe, so output written just before it can be lost
- * when stdout is piped. Fine at these sizes (a line or two, or a short JSON array, which the
- * write completes synchronously); if a subcommand ever prints a large listing, drain stdout
- * before exiting. Every one-shot command in this package exits the same way — `strands`,
- * `status`, `start` — so a fix belongs across all of them, not here alone.
- */
-async function runSubcommand(
-  options: CommonOptions,
-  failure: string,
-  action: (node: CadreNode) => Promise<void>
-): Promise<void> {
-  if (options.debug) {
-    debug.enable('cadre:*,sereus:*');
-  }
-
-  try {
-    await withConnectedNode(options.config, action);
-    process.exit(0);
-  } catch (error) {
-    console.error(`${failure}:`, error instanceof Error ? error.message : error);
-    log('Error details: %o', error);
-    process.exit(1);
-  }
-}
-
-/** Report a plan: the JSON outcome under `--json`, otherwise the confirmation + warnings. */
-function reportPlan(options: CommonOptions, plan: ValidationKeyPlan): void {
-  if (options.json) {
-    console.log(JSON.stringify(plan.json, null, 2));
-    return;
-  }
-  console.log(plan.human);
-  for (const warning of plan.warnings) {
-    console.warn(warning);
-  }
-}
-
 const addCommand = withCommonOptions(
   new Command('add')
     .description('Enroll an approver public key (base64url) allowed to sign off on invitation redemptions')
     .argument('<key>', 'Approver public key (base64url)')
 ).action(async (key: string, options: CommonOptions) => {
-  await runSubcommand(options, 'Failed to enroll approver key', async (node) => {
-    reportPlan(options, await applyAdd(node, key));
-  });
+  await runSubcommand(options, 'Failed to enroll approver key', async (node) =>
+    reportPlan(options, await applyAdd(node, key))
+  );
 });
 
 const removeCommand = withCommonOptions(
@@ -206,9 +145,9 @@ const removeCommand = withCommonOptions(
     .description('Remove an approver public key')
     .argument('<key>', 'Approver public key (base64url)')
 ).action(async (key: string, options: CommonOptions) => {
-  await runSubcommand(options, 'Failed to remove approver key', async (node) => {
-    reportPlan(options, await applyRemove(node, key));
-  });
+  await runSubcommand(options, 'Failed to remove approver key', async (node) =>
+    reportPlan(options, await applyRemove(node, key))
+  );
 });
 
 const listCommand = withCommonOptions(
