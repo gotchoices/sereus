@@ -5,6 +5,7 @@ import { startCommand } from '../commands/start.js';
 import { statusCommand } from '../commands/status.js';
 import { enrollCommand } from '../commands/enroll.js';
 import { strandsCommand } from '../commands/strands.js';
+import { validationKeyCommand } from '../commands/validation-key.js';
 
 const program = new Command();
 
@@ -17,6 +18,7 @@ program.addCommand(startCommand);
 program.addCommand(statusCommand);
 program.addCommand(enrollCommand);
 program.addCommand(strandsCommand);
+program.addCommand(validationKeyCommand);
 
 program.parse();
 

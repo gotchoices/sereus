@@ -119,6 +119,29 @@ function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
 }
 
 /**
+ * Build the signing callback the `ControlDatabase` writers expect: they hand it the
+ * canonical row-bound message BYTES (see `buildAuthorizationMessage`), and it ed25519-signs
+ * them directly (no pre-hash) with the owner private key, returning a base64url signature.
+ */
+function signMessageWith(privateKeyB64: string): (message: Uint8Array) => string {
+  return (message: Uint8Array): string =>
+    sign(message, privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+}
+
+/**
+ * Reject a blank identifier before it reaches the control database, where it would fail an
+ * authorization CHECK as an opaque constraint error rather than an actionable message.
+ * Returns the trimmed value so callers write the same bytes they validated.
+ */
+function requireNonBlank(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`A ${label} is required (received an empty or whitespace-only value)`);
+  }
+  return trimmed;
+}
+
+/**
  * CadreNode is the main entry point for a cadre member.
  * It manages:
  * - Connection to the control network
@@ -2962,6 +2985,105 @@ export class CadreNode implements SAppIdLookup {
       options.expiresAtMs ?? Number.POSITIVE_INFINITY
     );
     log('Published formation invite %s (sApp %s) under owner %s', token, sAppId, signingKey.publicKeyB64);
+  }
+
+  /**
+   * Enroll an approver public key allowed to sign off on `ValidationUrl` redemptions.
+   *
+   * A `FormationInvite` carrying a `ValidationUrl` is only redeemable when the approval
+   * that comes back from that URL is signed by a key present in `CadreControl.ValidationKey`
+   * — this is how a party says which outside approver it trusts. Without an enrollment,
+   * every such invitation is unredeemable.
+   *
+   * Signs with the same self-owner key as {@link publishStrand} (the ed25519 key behind
+   * this node's PeerId, which must be an enrolled `OwnerKey`). Throws loudly if the node
+   * isn't started, exposes no signing key, or the key is blank — a blank key would reach
+   * the database and fail the signature CHECK as an opaque constraint error.
+   *
+   * Enrolling this node's OWN owner key is permitted and harmless: the domain/action tags
+   * baked into each authorization digest mean an owner-key signature can never satisfy the
+   * approval rule and an approval can never satisfy an owner rule. No guard is needed.
+   *
+   * NOTE: enrollment is replicated control state, so a key enrolled here is visible to a
+   * sibling cadre node only once control replication converges. A redemption that arrives
+   * at a node which has not caught up is refused as not-enrolled — the same convergence
+   * gap the schema records on `Strand.StampId`. Enroll before circulating the invitations
+   * that depend on the key.
+   *
+   * @param key - Approver public key to enroll (base64url ed25519 public key).
+   */
+  async enrollValidationKey(key: string): Promise<void> {
+    const signingKey = this.requireOwnerSigningKey('enroll a validation key');
+    const trimmed = requireNonBlank(key, 'validation key');
+    await this.controlDatabase!.insertValidationKey(
+      trimmed,
+      signingKey.publicKeyB64,
+      signMessageWith(signingKey.privateKeyB64)
+    );
+    log('Enrolled validation key %s under owner %s', trimmed, signingKey.publicKeyB64);
+  }
+
+  /**
+   * Remove an approver public key.
+   *
+   * Narrows who may approve FUTURE redemptions ONLY. The schema's approval CHECKs run at
+   * write time, so a join that was already approved by this key stays valid — removal is
+   * not retroactive and does not re-examine committed rows.
+   *
+   * Rotation is therefore add-then-remove, in that order: removing the only enrolled key
+   * while `ValidationUrl` invitations are outstanding makes every one of them unredeemable
+   * until a new key is enrolled.
+   *
+   * Removing a key that is not enrolled is a silent no-op (no throw, no `Revocation`
+   * tombstone) — see {@link ControlDatabase.deleteValidationKey}.
+   *
+   * @param key - Approver public key to remove (base64url ed25519 public key).
+   */
+  async removeValidationKey(key: string): Promise<void> {
+    const signingKey = this.requireOwnerSigningKey('remove a validation key');
+    const trimmed = requireNonBlank(key, 'validation key');
+    await this.controlDatabase!.deleteValidationKey(
+      trimmed,
+      signingKey.publicKeyB64,
+      signMessageWith(signingKey.privateKeyB64)
+    );
+    log('Removed validation key %s under owner %s', trimmed, signingKey.publicKeyB64);
+  }
+
+  /**
+   * The approver keys currently enrolled, sorted. Read-only, so unlike
+   * {@link enrollValidationKey} / {@link removeValidationKey} it needs no owner signing
+   * key — only a started node.
+   */
+  async listValidationKeys(): Promise<string[]> {
+    if (!this._running || !this.controlDatabase) {
+      throw new Error('CadreNode must be started before listing validation keys');
+    }
+    return await this.controlDatabase.queryValidationKeys();
+  }
+
+  /**
+   * Resolve the owner keypair every owner-signed control write needs, failing loudly with
+   * the same two-part message shape {@link publishStrand} uses (not started / no signing
+   * key, naming owner genesis as the fix). Narrows `controlDatabase` for the caller: a
+   * non-null return means `this.controlDatabase` is non-null too.
+   *
+   * @param action - Infinitive phrase naming the attempted write, e.g. `'enroll a
+   *   validation key'`; interpolated into both messages.
+   */
+  private requireOwnerSigningKey(action: string): { privateKeyB64: string; publicKeyB64: string } {
+    if (!this._running || !this.controlDatabase) {
+      throw new Error(`CadreNode must be started before attempting to ${action}`);
+    }
+    const signingKey = this.getSelfSigningKey();
+    if (!signingKey) {
+      throw new Error(
+        `Cannot ${action}: no owner signing key available ` +
+        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
+        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
+      );
+    }
+    return signingKey;
   }
 
   /**

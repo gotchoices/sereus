@@ -506,6 +506,24 @@ export class ControlDatabase {
   }
 
   /**
+   * Every approver public key currently enrolled in `CadreControl.ValidationKey` — the
+   * set a `ValidationUrl` redemption's approval signature must be signed by (see
+   * {@link ControlFormationUsageRecorder}, which checks one key at a time via
+   * {@link queryValidationKeyStampId}).
+   *
+   * Sorted in TypeScript rather than SQL so the order is stable regardless of storage
+   * order; the enrolled set is a handful of keys, so the sort is free.
+   */
+  async queryValidationKeys(): Promise<string[]> {
+    this.ensureInitialized();
+    const keys: string[] = [];
+    for await (const row of this.db!.eval('select Key from CadreControl.ValidationKey')) {
+      keys.push(row.Key as string);
+    }
+    return keys.sort();
+  }
+
+  /**
    * Read one guarded row's single-use `StampId` nonce (null when the row does not
    * exist). Every owner-signed delete / re-touch path must bind its signature to the
    * row's CURRENT nonce, so they all read through here first.

@@ -8,45 +8,17 @@ import {
   type CadreNodeConfig,
   type ControlNetworkSeed,
   type SeedTrustPolicy,
-  type StorageConfig,
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { fromString } from 'uint8arrays';
-import { resolveConfig, type ResolvedConfig } from '../config/index.js';
+import { resolveConfig } from '../config/index.js';
+import { resolveStorageConfig } from './node-session.js';
 import { HealthServer } from '../server/health.js';
 import { AdminServer } from '../server/admin-server.js';
 
 const log = debug('cadre:cli:start');
-
-/**
- * Convert CLI storage config to cadre-core StorageConfig with provider
- */
-function resolveStorageConfig(config: ResolvedConfig['storage']): StorageConfig | undefined {
-  if (!config) return undefined;
-
-  if (config.type === 'memory') {
-    return {
-      provider: () => new MemoryRawStorage(),
-      quotaBytes: config.quotaBytes,
-    };
-  }
-
-  if (config.type === 'file') {
-    if (!config.path) {
-      throw new Error('Storage path is required for file storage type');
-    }
-    return {
-      provider: (strandId: string) => new FileRawStorage(`${config.path}/${strandId}`),
-      quotaBytes: config.quotaBytes,
-    };
-  }
-
-  return undefined;
-}
 
 /**
  * Decode a base64url-encoded seed
