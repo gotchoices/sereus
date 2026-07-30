@@ -351,6 +351,15 @@ export class SeedBootstrapService {
    *
    * Wrapped in {@link ControlDatabase.mutateCadrePeer} so the admitted peer's traffic is
    * let in by the write itself — see that method for why the seam lives on the control DB.
+   *
+   * Idempotent on an already-present row: two writers can legitimately race the SAME
+   * peer's first row — the node's own background self-publish ({@link CadreNode.registerSelf})
+   * against a foreground {@link authorizePeer} of that node's id — and the write lock only
+   * serializes them; the loser would hit the `CadrePeer.PeerId` UNIQUE constraint. The
+   * existence check runs INSIDE the locked body, so it sees the winner's committed row
+   * (a pre-lock check would re-open the read-then-insert window). The existing row —
+   * voucher, addresses, self-`Sig` — is left untouched; re-touching a live row is
+   * {@link reauthorizePeer}'s job.
    */
   private async insertCadrePeerRow(row: {
     peerId: string;
@@ -369,7 +378,12 @@ export class SeedBootstrapService {
     const stampId = generateStampId(row.peerId);
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
-    await this.controlDatabase.mutateCadrePeer('peer-insert', async () => {
+    const controlDatabase = this.controlDatabase;
+    await controlDatabase.mutateCadrePeer('peer-insert', async () => {
+      if (await controlDatabase.queryCadrePeerStampId(row.peerId) !== null) {
+        log('CadrePeer row already present for %s; insert skipped (already a member)', row.peerId);
+        return;
+      }
       // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
       // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
       // reader can later re-check the voucher against its node-local trusted-owner anchor.
@@ -405,11 +419,11 @@ export class SeedBootstrapService {
       throw new Error('Control database not initialized');
     }
     const db = this.controlDatabase.getDatabase();
-    await db.exec(`
+    await this.controlDatabase.withWriteLock(() => db.exec(`
       insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]);
+    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]));
     log('Device token inserted (owner-signed): %s', record.peerId);
   }
 

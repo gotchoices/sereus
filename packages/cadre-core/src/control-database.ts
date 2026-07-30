@@ -945,6 +945,9 @@ export class ControlDatabase {
    * fails rather than silently half-applying. If concurrent owner-device removals ever
    * become routine, fold the stamp read into the transaction instead.
    *
+   * Deliberately NOT wrapped in {@link withWriteLock}: every public entry point already
+   * holds the (non-re-entrant) lock, so taking it again here would self-deadlock.
+   *
    * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
    * come from closed literal unions — no caller-supplied string reaches the statement.
    */
@@ -1003,6 +1006,9 @@ export class ControlDatabase {
    * Private: every multi-statement control write lives in this class (the owner-signed
    * delete/tombstone pairs all go through {@link deleteGuardedRow}), so needing to widen
    * this is a sign the writer that wants it belongs in here too.
+   *
+   * Deliberately NOT wrapped in {@link withWriteLock}: callers already hold the
+   * (non-re-entrant) lock, so taking it again here would self-deadlock.
    *
    * @param label - What the transaction was doing, for the rollback log line.
    */
@@ -1227,7 +1233,7 @@ export class ControlDatabase {
     // Persist the canonical ExpiresAt string (datetime parse is idempotent on it) so the
     // signed source-of-truth and the stored value are produced once. StampId is a real,
     // unique column (single-use anti-replay), no longer a context value.
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?, ?)
@@ -1239,7 +1245,7 @@ export class ControlDatabase {
       options.validationUrl ?? null,
       options.strandId ?? null,
       stampId,
-    ]);
+    ]));
 
     log('Formation invite inserted: %s', token);
   }
@@ -1315,7 +1321,7 @@ export class ControlDatabase {
     const stampId = usageStampId ?? generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
-    await this.inTransaction('redemption', async () => {
+    await this.withWriteLock(() => this.inTransaction('redemption', async () => {
       // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
       //    still carrying a fresh unique StampId for the anti-replay column.
       //    Hard-coded open + keyless: the consent branch admits no other shape.
@@ -1332,7 +1338,7 @@ export class ControlDatabase {
         peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
-    });
+    }));
 
     log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId: stampId };
@@ -1385,11 +1391,11 @@ export class ControlDatabase {
     }
     const useNumber = await this.nextUseNumber(token);
 
-    await this.execFormationUsageInsert({
+    await this.withWriteLock(() => this.execFormationUsageInsert({
       token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
       peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
       validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
-    });
+    }));
 
     log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId: stampId };
