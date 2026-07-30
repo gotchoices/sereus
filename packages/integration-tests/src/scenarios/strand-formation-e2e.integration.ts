@@ -664,6 +664,12 @@ describe('E2E Strand Formation', () => {
 				);
 
 				// Verify replication to Bob
+				// NOTE: a three-party strand still uses `DEFAULT_STRAND_CLUSTER_SIZE` = 2, so at
+				// most two of the three hold any given block; the third reader obtains it on demand
+				// via Optimystic's read-time block acquisition (`cluster-fetch:synced`). So this
+				// waiter and Carol's below prove every member can *read* the row, NOT that every
+				// member holds a copy. If read acquisition regresses, this fails as a replication
+				// timeout — see backlog/debt-strand-replication-breadth-ignores-party-count.
 				const bobDb = bobStrand.database!.getDatabase();
 				await waitUntil(
 					async () => {
