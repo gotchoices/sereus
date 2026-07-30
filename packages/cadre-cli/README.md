@@ -118,7 +118,7 @@ List the strands this node is running (`cadre strands` is an alias for `cadre st
 
 ```bash
 cadre strand list -c cadre.yaml
-cadre strand list --json
+cadre strand list --json          # payload on stdout, progress on stderr — pipes into jq
 ```
 
 Remove a strand. This deletes **this party's** `Strand` row, so every cadre node in the party

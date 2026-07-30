@@ -720,8 +720,8 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   `StreamResetError: The stream has been reset` in optimystic's `NetworkTransactor`.
   Reads/roster converge (pull-on-read) and single-coordinator writes succeed; only
   multi-coordinator writes fail. See the optimystic blocker below.
-- Gaps noted (not bugs): no CLI surface to **create a strand** (`cadre strands` is
-  list-only) or to **export a `ControlNetworkSeed`** (admin exposes `/admin/invites`
+- Gaps noted (not bugs): no CLI surface to **create a strand** (`cadre strand` is
+  list/remove only) or to **export a `ControlNetworkSeed`** (admin exposes `/admin/invites`
   = `CadreInvite`, but `--seed` consumes a `ControlNetworkSeed` with no extract path).
 
 ### Inviting another user / cross-party strand formation
@@ -760,16 +760,18 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   destroys its `MemberPrivateKey` irreversibly; the id itself is not blacklisted — an owner
   re-publish re-seats it on a fresh stamp (`strand-unpublish.spec.ts`). The operator surface
   landed as `feat-strand-removal-cli`: `cadre strands` became a `cadre strand list|remove`
-  group (`strands` kept as an alias), where `remove <strandId>` reads the row first, reports
-  "nothing to do" (exit 0) for an unpublished strand, and **refuses a closed strand without
-  `--yes`** — naming the consequence (the membership key in that row exists nowhere else)
-  rather than destroying it on the operator's behalf. The refusal exits non-zero and is
+  group (`strands` kept as an alias, with `list` as the default subcommand so the bare
+  invocation and its options keep working), where `remove <strandId>` reads the row first,
+  reports "nothing to do" (exit 0) for an unpublished strand, and **refuses a closed strand
+  without `--yes`** — naming the consequence (the membership key in that row exists nowhere
+  else) rather than destroying it on the operator's behalf. The refusal exits non-zero and is
   structured under `--json`. `--yes` is a flag, not a prompt, because these commands run
-  non-interactively (`strand.spec.ts` in cadre-cli, over a fake store). **Not exercised
-  end-to-end:** no test drives the command against a real node, so the wiring from the parsed
-  argument through `withConnectedNode` to `unpublishStrand` is covered only by the node-level
-  spec on one side and the plan spec on the other. A cadre-host UI for the same operation is
-  parked in `backlog/feat-cadre-host-strand-removal-ui`.
+  non-interactively (`strand.spec.ts` over a fake store; `subcommand-wiring.spec.ts` drives the
+  real commander → `runSubcommand` → `nodeStore` path over a stubbed `withConnectedNode`,
+  pinning the refusal's non-zero exit). **Still not exercised against a real node:** no test
+  stands one up, so the last hop — `withConnectedNode` itself and the control-database write —
+  is covered only by the node-level `strand-unpublish.spec.ts` on the far side. A cadre-host UI
+  for the same operation is parked in `backlog/feat-cadre-host-strand-removal-ui`.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic

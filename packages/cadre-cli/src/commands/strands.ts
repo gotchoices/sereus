@@ -184,10 +184,9 @@ function nodeStore(node: CadreNode): StrandStore {
 const listCommand = withCommonOptions(
   new Command('list').description('List active strands')
 ).action(async (options: CommonOptions) => {
-  // NOTE: printed to stdout even under `--json`, so `cadre strand list --json` is not directly
-  // pipeable into a JSON parser. Pre-existing behaviour, kept verbatim on purpose; route it to
-  // stderr (or suppress it under `--json`) if a caller ever needs to pipe the output.
-  console.log('Connecting to control network...');
+  // Progress, not result: on stderr so `cadre strand list --json` pipes straight into a JSON
+  // parser. A terminal still shows it, since both streams land there.
+  console.error('Connecting to control network...');
   await runSubcommand(options, 'Failed to list strands', async (node) => {
     // Force a poll to get current strands
     await node.forceStrandPoll();
@@ -225,10 +224,17 @@ const removeCommand = withCommonOptions(
   );
 });
 
+/**
+ * `list` is the DEFAULT subcommand, so the pre-group invocation keeps working in full: bare
+ * `cadre strands`, and `cadre strands --json` / `-c <path>`, all dispatch to `list` with their
+ * options intact. Without the default, a group with no action handler answers a bare call with
+ * usage text and exit 1, and rejects the group-level `--json` as an unknown option — a silent
+ * break for any script that ran the old command.
+ */
 export const strandCommand = new Command('strand')
   .alias('strands')
   .description('Inspect and remove the strands this party belongs to')
-  .addCommand(listCommand)
+  .addCommand(listCommand, { isDefault: true })
   .addCommand(removeCommand);
 
 function printStrand(strandId: string, instance: StrandInstance): void {
