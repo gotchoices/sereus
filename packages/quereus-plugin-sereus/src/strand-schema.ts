@@ -108,8 +108,7 @@ export const STRAND_SCHEMA = `    table Header (
         -- rows — no caller-supplied context decides admission (unlike NotExpired's Now).
         constraint NotCancelled check on insert (
             not exists (select 1 from CancelledInvite C where C.InviteKey = new.InviteKey)
-        ),
-        constraint MemberValid check (exists (select 1 from Member M where M.Key = new.MemberKey))
+        )
     ) with context (InviteSignature text null, Now datetime null);
 
     -- A manager has cancelled invitation [InviteKey]: it may never be consumed.

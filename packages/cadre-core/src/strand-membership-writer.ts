@@ -469,7 +469,7 @@ export interface ConsumeInviteParams {
  * Redeem an invite to admit a new `Member`, atomically.
  *
  * `Member.Authorized`'s invite branch needs a `ConsumedInvite` row, while
- * `ConsumedInvite`'s `MemberExists`/`MemberValid` need the `Member` row — a
+ * `ConsumedInvite`'s `MemberExists` needs the `Member` row — a
  * circular dependency. Both are deferred (subquery-bearing) checks that evaluate
  * at COMMIT, so inserting `Member` then `ConsumedInvite` inside one explicit
  * transaction lets both rows exist when the deferred checks fire. This mirrors

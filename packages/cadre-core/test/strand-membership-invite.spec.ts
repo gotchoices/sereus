@@ -466,7 +466,7 @@ describe('cancelInvite', () => {
 
     // NotCancelled is the ONLY constraint that can fire on this otherwise-valid
     // consume: InviteExists, ValidUsage, NotExpired (null expiry) and
-    // MemberExists/MemberValid all pass, and Member.Authorized's invite branch is
+    // MemberExists passes, and Member.Authorized's invite branch is
     // satisfied because the ConsumedInvite row IS in the post-image at commit.
     await expect(
       consumeInvite(db, { inviteKey, invitePrivateKey, memberKey: member.publicKeyB64 }),
