@@ -37,9 +37,16 @@ export {
 // key-store-file) so node:fs never lands in this graph.
 export {
   MemoryTrustedOwnerStore,
+  PersistentTrustedOwnerStore,
   type TrustedOwnerStore,
   type TrustSource
 } from './trusted-owner-store.js';
+
+// The one platform-specific piece of a persistent node-local store: a single
+// durable text slot the embedding app supplies (IndexedDB / SecureStore /
+// SQLite / a file). Everything else — envelope, load policy, snapshot write
+// chain — is cross-platform in node-local-snapshot.ts.
+export type { DurableSlot } from './node-local-snapshot.js';
 
 // Node-local cold-start bootstrap-peer store: the dial targets retained from an
 // applied seed so a node that could not connect on its first try keeps retrying
@@ -48,6 +55,7 @@ export {
 // '@serfab/cadre-core/bootstrap-peer-store-file'.
 export {
   MemoryBootstrapPeerStore,
+  PersistentBootstrapPeerStore,
   type BootstrapPeerStore,
   type BootstrapPeerEntry
 } from './bootstrap-peer-store.js';

@@ -10,18 +10,24 @@
  * that enrolled this node, or an explicit operator pin. It is never written
  * from replicated control state; that is the whole point.
  *
- * Two implementations:
+ * Three implementations:
  *  - {@link MemoryTrustedOwnerStore} (this module, cross-platform) — ephemeral;
  *    the default when no store is injected via `CadreNodeConfig.trustedOwners`.
- *  - `FileTrustedOwnerStore` — persisted JSON in the node's state directory;
- *    Node-only, behind the subpath `@serfab/cadre-core/trusted-owner-store-file` (same
- *    isolation pattern as `key-store-file`) so `node:fs` never lands in the
- *    RN/browser entry graph.
+ *  - {@link PersistentTrustedOwnerStore} (this module, cross-platform) — durable
+ *    over any `DurableSlot` the embedding app supplies (IndexedDB, SecureStore,
+ *    SQLite, …). The load/persist policy lives in `node-local-snapshot.ts`; read
+ *    {@link NodeLocalSnapshot.open} for what an absent, corrupt, foreign-party
+ *    or unreadable slot does.
+ *  - `FileTrustedOwnerStore` — the above over a Node file in the node's state
+ *    directory; Node-only, behind the subpath
+ *    `@serfab/cadre-core/trusted-owner-store-file` (same isolation pattern as
+ *    `key-store-file`) so `node:fs` never lands in the RN/browser entry graph.
  *
  * Keys are additive: nothing in this interface removes a key (owner revocation
  * is out of scope here and tracked with the broader control-sync design).
  */
 import debug from 'debug';
+import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from './node-local-snapshot.js';
 
 const log = debug('sereus:cadre:trusted-owner-store');
 
@@ -80,5 +86,86 @@ export class MemoryTrustedOwnerStore implements TrustedOwnerStore {
 		}
 		this.keys.set(ownerKey, source);
 		log('trusted owner key anchored (party=%s, source=%s)', this.partyId, source);
+	}
+}
+
+/** One anchored key as persisted: provenance + wall-clock trust time (ms). */
+interface TrustedOwnerEntry {
+	source: TrustSource;
+	trustedAt: number;
+}
+
+const KNOWN_SOURCES: ReadonlySet<string> = new Set<TrustSource>(['genesis', 'invite', 'operator']);
+
+/**
+ * What the anchor persists: `owners` maps ownerKey (base64url) -> provenance.
+ *
+ * One unusable entry discards the WHOLE record: trusting a subset of the keys a
+ * record claims is a silent, security-relevant downgrade, so a record that
+ * cannot be read in full is treated as no anchor at all (see
+ * `UnusableEntryPolicy` in `node-local-snapshot.ts`).
+ */
+const TRUSTED_OWNER_SNAPSHOT: NodeLocalSnapshotSpec<TrustedOwnerEntry> = {
+	label: 'trusted-owner anchor',
+	payloadKey: 'owners',
+	unusableEntry: 'discard-all',
+	acceptEntry: (_ownerKey, entry) => {
+		if (typeof entry !== 'object' || entry === null) return undefined;
+		const { source, trustedAt } = entry as { source?: unknown; trustedAt?: unknown };
+		if (typeof source !== 'string' || !KNOWN_SOURCES.has(source)) return undefined;
+		if (typeof trustedAt !== 'number') return undefined;
+		return { source: source as TrustSource, trustedAt };
+	}
+};
+
+/**
+ * Durable {@link TrustedOwnerStore} over an app-supplied {@link DurableSlot} —
+ * the cross-platform half of every persistent backend (the Node
+ * `FileTrustedOwnerStore` is this class over a file slot).
+ *
+ * Construct via {@link open}. Load and persist policy — what an absent,
+ * corrupt, foreign-party or unreadable slot does, and what a failed persist
+ * does — is documented once on `NodeLocalSnapshot`; this class only supplies
+ * the payload shape and the anchor's whole-record-on-bad-entry policy.
+ */
+export class PersistentTrustedOwnerStore implements TrustedOwnerStore {
+	private constructor(private readonly snapshot: NodeLocalSnapshot<TrustedOwnerEntry>) {}
+
+	/** Load (or cold-start) the party's anchor from `slot`. */
+	static async open(slot: DurableSlot, partyId: string): Promise<PersistentTrustedOwnerStore> {
+		return new PersistentTrustedOwnerStore(
+			await NodeLocalSnapshot.open(slot, partyId, TRUSTED_OWNER_SNAPSHOT)
+		);
+	}
+
+	get partyId(): string {
+		return this.snapshot.partyId;
+	}
+
+	has(ownerKey: string): boolean {
+		return this.snapshot.has(ownerKey);
+	}
+
+	all(): ReadonlySet<string> {
+		return this.snapshot.keySnapshot();
+	}
+
+	/**
+	 * Anchor a key: visible via {@link has} / {@link all} synchronously, then the
+	 * full snapshot is persisted (see `NodeLocalSnapshot.put`).
+	 */
+	trust(ownerKey: string, source: TrustSource): Promise<void> {
+		if (this.snapshot.has(ownerKey)) {
+			// Idempotent: re-enrollment / restart re-seeding keeps the original
+			// provenance and skips the write entirely.
+			// NOTE: this resolves immediately rather than joining the write chain, so
+			// re-trusting a key whose first persist is still in flight does not await
+			// that persist. Harmless for the seeding callers (they re-trust only after
+			// the original settled, or do not await at all); chain it if a caller ever
+			// needs "durable by the time trust() resolves" for a repeat key.
+			return Promise.resolve();
+		}
+		log('trusted owner key anchored (party=%s, source=%s); persisting', this.partyId, source);
+		return this.snapshot.put(ownerKey, { source, trustedAt: Date.now() });
 	}
 }

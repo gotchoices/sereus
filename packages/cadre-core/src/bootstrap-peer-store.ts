@@ -12,13 +12,17 @@
  * only in memory, they die with the process and the node is stranded for good,
  * which is what this store exists to prevent.
  *
- * Two implementations, mirroring `trusted-owner-store.ts` (read that first — it
- * solves the same "must outlive the process, storage differs per platform"
- * problem and the two stores are deliberately symmetrical):
+ * Three implementations, mirroring `trusted-owner-store.ts` (read that first —
+ * it solves the same "must outlive the process, storage differs per platform"
+ * problem, the two stores are deliberately symmetrical, and both persistent
+ * forms share `node-local-snapshot.ts`):
  *  - {@link MemoryBootstrapPeerStore} (this module, cross-platform) — ephemeral;
  *    the default when no store is injected via `CadreNodeConfig.bootstrapPeers`.
- *  - `FileBootstrapPeerStore` — persisted JSON in the node's state directory;
- *    Node-only, behind the subpath
+ *  - {@link PersistentBootstrapPeerStore} (this module, cross-platform) — durable
+ *    over any `DurableSlot` the embedding app supplies (IndexedDB, a LevelDB KV,
+ *    SQLite, …).
+ *  - `FileBootstrapPeerStore` — the above over a Node file in the node's state
+ *    directory; Node-only, behind the subpath
  *    `@serfab/cadre-core/bootstrap-peer-store-file` (same isolation pattern as
  *    `key-store-file`) so `node:fs` never lands in the RN/browser entry graph.
  *
@@ -33,6 +37,8 @@
  * carrying them into the dial loop.
  */
 import debug from 'debug';
+import { peerIdFromString } from '@libp2p/peer-id';
+import { NodeLocalSnapshot, type DurableSlot, type NodeLocalSnapshotSpec } from './node-local-snapshot.js';
 
 const log = debug('sereus:cadre:bootstrap-peer-store');
 
@@ -94,5 +100,73 @@ export class MemoryBootstrapPeerStore implements BootstrapPeerStore {
 	async record(peerId: string, addrs: readonly string[]): Promise<void> {
 		this.peers.set(peerId, { addrs: [...addrs], recordedAt: Date.now() });
 		log('bootstrap peer retained (party=%s, peer=%s, addrs=%d)', this.partyId, peerId, addrs.length);
+	}
+}
+
+/**
+ * What the store persists: `peers` maps peerId -> {@link BootstrapPeerEntry}.
+ *
+ * A structurally junk entry is DROPPED and its siblings retained — nothing here
+ * is trust-bearing (see the module comment) and the record is a stranded node's
+ * only way back into its party, so discarding the whole set over one bad entry
+ * would be strictly worse. What "junk" means: an unparseable peer id (the dial
+ * path binds every address to this id, so an id that cannot parse is not a dial
+ * target at all), an empty address list, or a non-string address — each would
+ * otherwise log a parse failure once per reconcile pass forever.
+ */
+const BOOTSTRAP_PEER_SNAPSHOT: NodeLocalSnapshotSpec<BootstrapPeerEntry> = {
+	label: 'bootstrap-peer store',
+	payloadKey: 'peers',
+	unusableEntry: 'drop-entry',
+	acceptEntry: (peerId, entry) => {
+		if (typeof entry !== 'object' || entry === null) return undefined;
+		const { addrs, recordedAt } = entry as { addrs?: unknown; recordedAt?: unknown };
+		if (!Array.isArray(addrs) || addrs.length === 0) return undefined;
+		if (addrs.some((addr) => typeof addr !== 'string' || addr.length === 0)) return undefined;
+		if (typeof recordedAt !== 'number') return undefined;
+		try {
+			peerIdFromString(peerId);
+		} catch {
+			return undefined;
+		}
+		return { addrs: [...(addrs as string[])], recordedAt };
+	}
+};
+
+/**
+ * Durable {@link BootstrapPeerStore} over an app-supplied {@link DurableSlot} —
+ * the cross-platform half of every persistent backend (the Node
+ * `FileBootstrapPeerStore` is this class over a file slot).
+ *
+ * Construct via {@link open}. Load and persist policy — what an absent, corrupt,
+ * foreign-party or unreadable slot does, and what a failed persist does — is
+ * documented once on `NodeLocalSnapshot`; this class only supplies the payload
+ * shape and the drop-the-bad-entry policy above.
+ */
+export class PersistentBootstrapPeerStore implements BootstrapPeerStore {
+	private constructor(private readonly snapshot: NodeLocalSnapshot<BootstrapPeerEntry>) {}
+
+	/** Load (or cold-start) the party's retained dial targets from `slot`. */
+	static async open(slot: DurableSlot, partyId: string): Promise<PersistentBootstrapPeerStore> {
+		return new PersistentBootstrapPeerStore(
+			await NodeLocalSnapshot.open(slot, partyId, BOOTSTRAP_PEER_SNAPSHOT)
+		);
+	}
+
+	get partyId(): string {
+		return this.snapshot.partyId;
+	}
+
+	all(): ReadonlyMap<string, BootstrapPeerEntry> {
+		return this.snapshot.entrySnapshot();
+	}
+
+	/**
+	 * Retain a peer's dial addresses: visible via {@link all} synchronously, then
+	 * the full snapshot is persisted (see `NodeLocalSnapshot.put`).
+	 */
+	record(peerId: string, addrs: readonly string[]): Promise<void> {
+		log('bootstrap peer retained (party=%s, peer=%s, addrs=%d); persisting', this.partyId, peerId, addrs.length);
+		return this.snapshot.put(peerId, { addrs: [...addrs], recordedAt: Date.now() });
 	}
 }
