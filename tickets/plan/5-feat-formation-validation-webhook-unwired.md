@@ -1,5 +1,5 @@
 description: A party can mark an invitation as "an outside approver must sign off before anyone joins", but the code that would contact that approver is never actually run — so such an invitation simply cannot be used.
-prereq: bug-formation-validation-key-never-checked
+prereq: bug-formation-validation-key-never-checked, debt-formation-approval-signature-replayable
 files: packages/cadre-core/src/strand-solicitation.ts, packages/cadre-core/src/strand-formation-manager.ts, packages/cadre-core/src/control-formation-recorder.ts, packages/cadre-core/src/control-database.ts
 ----
 
@@ -45,6 +45,11 @@ why.
 
 - The responder side of a formation request notices the invitation requires approval, sends
   the joiner's disclosure to the `ValidationUrl`, and gets back an approval signature.
+- The request to the hook carries everything the approval is bound to, not just the disclosure.
+  After `debt-formation-approval-signature-replayable` that is: the invitation token, a
+  single-use nonce for this redemption, the network being joined, the joining peer, and the
+  disclosure — minted/resolved by the responder *before* it calls the hook, and passed
+  unchanged into the redeeming write so the two agree.
 - That approval is threaded into the redemption write, so the control database's check passes
   for a legitimately-approved joiner.
 - A party has some way to enroll and remove approver keys — the database calls exist
