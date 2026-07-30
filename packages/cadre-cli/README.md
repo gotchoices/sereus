@@ -134,6 +134,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
+| `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor |
 
@@ -187,11 +188,17 @@ remotely-mutable surface in the default configuration.
 
 ### Data Locations
 
-| Deployment | Config | Keys | Strand Data |
-|------------|--------|------|-------------|
-| Systemd (dedicated user) | `/etc/cadre/cadre.yaml` | `/etc/cadre/cadre-peer.key` | `/var/lib/cadre/` |
-| Development (regular user) | `./cadre.yaml` | `./cadre-peer.key` | `./data/` |
-| Docker | Volume `/data/cadre.yaml` | Volume `/data/cadre-peer.key` | Volume `/data/storage/` |
+| Deployment | Config | Keys | Strand Data | Node State |
+|------------|--------|------|-------------|------------|
+| Systemd (dedicated user) | `/etc/cadre/cadre.yaml` | `/etc/cadre/cadre-peer.key` | `/var/lib/cadre/` | `/var/lib/cadre/` (unit sets `CADRE_NODE_STATE_DIR`) |
+| Development (regular user) | `./cadre.yaml` | `./cadre-peer.key` | `./data/` | `./` (config file's directory) |
+| Docker | Volume `/data/cadre.yaml` | Volume `/data/cadre-peer.key` | Volume `/data/storage/` | Volume `/data/` (config file's directory) |
+
+**Node State** holds the trusted-owner anchor (`trusted-owners.<partyId>.json`)
+and the retained cold-start dial targets (`bootstrap-peers.<partyId>.json`) —
+non-replicated, per-party, and required for the node to keep its out-of-band
+trust and its way back into the party across restarts. It must be writable by
+the node's user, and it belongs in backups alongside the identity key.
 
 ### Installation Steps
 

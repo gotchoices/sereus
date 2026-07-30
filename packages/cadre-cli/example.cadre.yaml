@@ -24,6 +24,15 @@ profile: storage
 # Options: 'all', 'none', { sAppId: "..." }, { strandId: "..." }
 strandFilter: all
 
+# Node-local durable state: the trusted-owner anchor
+# (trusted-owners.<partyId>.json) and the retained cold-start dial targets
+# (bootstrap-peers.<partyId>.json). Defaults to the directory holding THIS file
+# — set it explicitly whenever that directory is not writable by the node's
+# user (the systemd unit ships CADRE_NODE_STATE_DIR=/var/lib/cadre for exactly
+# that reason, since /etc/cadre is mounted read-only there).
+# nodeState:
+#   dir: /var/lib/cadre
+
 # Storage configuration (for storage profile)
 storage:
   type: file

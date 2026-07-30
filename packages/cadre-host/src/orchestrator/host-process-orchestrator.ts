@@ -453,6 +453,14 @@ export class HostProcessOrchestrator implements Orchestrator {
       CADRE_METRICS_PORT: String(ports.metrics),
       CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${ports.p2p}`,
       CADRE_SEED_TOKEN: seedToken,
+      // Pin each child's node-local state (trusted-owner anchor, retained
+      // cold-start dial targets) to its OWN workdir. This is the same value the
+      // cli would derive by default (the config file lives here too), but stated
+      // explicitly so a CADRE_NODE_STATE_DIR set on the HOST process — inherited
+      // via the `...process.env` spread above — cannot collapse every child's
+      // state into one shared directory, where same-party children would
+      // snapshot-clobber each other's files.
+      CADRE_NODE_STATE_DIR: workdir,
     };
     if (heapMB !== undefined) {
       env.NODE_OPTIONS = `${process.env.NODE_OPTIONS ?? ''} --max-old-space-size=${heapMB}`.trim();

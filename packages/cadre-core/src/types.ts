@@ -365,8 +365,8 @@ export interface CadreNodeConfig {
     /**
      * Injected store instance — e.g. a `FileTrustedOwnerStore` from the
      * Node-only subpath `@serfab/cadre-core/trusted-owner-store-file`,
-     * persisted next to the identity key (same injection/isolation pattern as
-     * {@link keyStore}). Its `partyId` must match `controlNetwork.partyId`;
+     * persisted in the node's state directory (same injection/isolation pattern
+     * as {@link keyStore}). Its `partyId` must match `controlNetwork.partyId`;
      * start() fails closed on a mismatch.
      */
     store?: TrustedOwnerStore;
@@ -405,7 +405,7 @@ export interface CadreNodeConfig {
     /**
      * Injected store instance — e.g. a `FileBootstrapPeerStore` from the
      * Node-only subpath `@serfab/cadre-core/bootstrap-peer-store-file`, persisted
-     * next to the identity key (same injection/isolation pattern as
+     * in the node's state directory (same injection/isolation pattern as
      * {@link keyStore} / {@link trustedOwners}). Its `partyId` must match
      * `controlNetwork.partyId`; start() fails closed on a mismatch.
      */

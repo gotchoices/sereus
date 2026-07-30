@@ -13,8 +13,8 @@
  * Two implementations:
  *  - {@link MemoryTrustedOwnerStore} (this module, cross-platform) — ephemeral;
  *    the default when no store is injected via `CadreNodeConfig.trustedOwners`.
- *  - `FileTrustedOwnerStore` — persisted JSON next to the identity key; Node-only,
- *    behind the subpath `@serfab/cadre-core/trusted-owner-store-file` (same
+ *  - `FileTrustedOwnerStore` — persisted JSON in the node's state directory;
+ *    Node-only, behind the subpath `@serfab/cadre-core/trusted-owner-store-file` (same
  *    isolation pattern as `key-store-file`) so `node:fs` never lands in the
  *    RN/browser entry graph.
  *

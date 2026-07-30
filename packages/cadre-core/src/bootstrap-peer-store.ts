@@ -17,7 +17,7 @@
  * problem and the two stores are deliberately symmetrical):
  *  - {@link MemoryBootstrapPeerStore} (this module, cross-platform) — ephemeral;
  *    the default when no store is injected via `CadreNodeConfig.bootstrapPeers`.
- *  - `FileBootstrapPeerStore` — persisted JSON next to the identity key;
+ *  - `FileBootstrapPeerStore` — persisted JSON in the node's state directory;
  *    Node-only, behind the subpath
  *    `@serfab/cadre-core/bootstrap-peer-store-file` (same isolation pattern as
  *    `key-store-file`) so `node:fs` never lands in the RN/browser entry graph.

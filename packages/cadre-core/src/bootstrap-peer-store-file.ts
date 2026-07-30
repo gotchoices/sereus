@@ -1,7 +1,8 @@
 /**
  * Node-only file-backed {@link BootstrapPeerStore}: one JSON file per party under
- * a configured directory (typically next to the identity key), holding the
- * node-local, non-replicated cold-start dial targets a seed nominated.
+ * a configured directory (the node's state directory — `cadre-cli` passes
+ * `ResolvedConfig.nodeStateDir`), holding the node-local, non-replicated
+ * cold-start dial targets a seed nominated.
  *
  * This module imports `node:fs/promises`, `node:path`, and `node:crypto`, so it
  * is deliberately kept OUT of the package's cross-platform default entry

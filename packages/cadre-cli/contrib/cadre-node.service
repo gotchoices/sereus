@@ -15,6 +15,12 @@ WorkingDirectory=/opt/cadre
 # Configuration file location
 Environment="CADRE_CONFIG=/etc/cadre/cadre.yaml"
 
+# Node-local durable state (trusted-owner anchor, retained cold-start dial
+# targets). This MUST be a writable path: it defaults to the directory holding
+# the config file, and /etc/cadre is read-only for this unit (see ReadOnlyPaths
+# below), so the node would fail to anchor trust without this override.
+Environment="CADRE_NODE_STATE_DIR=/var/lib/cadre"
+
 # Node.js settings
 Environment="NODE_ENV=production"
 Environment="NODE_OPTIONS=--max-old-space-size=4096"

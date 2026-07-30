@@ -163,4 +163,19 @@ describe('resolveConfig nodeStateDir', () => {
 
     expect(resolved.nodeStateDir).toBe(resolve(stateDir));
   });
+
+  // The env var must beat a file value, not merely fill in for a missing one —
+  // that is what lets an orchestrator (or the systemd unit, whose /etc/cadre is
+  // read-only) relocate a child's state without rewriting its config file.
+  it('lets CADRE_NODE_STATE_DIR override an explicit nodeState.dir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-state-both-'));
+    tmpDirs.push(dir);
+    const fileStateDir = join(dir, 'from-file');
+    const envStateDir = join(dir, 'from-env');
+    process.env.CADRE_NODE_STATE_DIR = envStateDir;
+
+    const resolved = await resolveConfig(writeConfig(dir, fileStateDir));
+
+    expect(resolved.nodeStateDir).toBe(resolve(envStateDir));
+  });
 });
