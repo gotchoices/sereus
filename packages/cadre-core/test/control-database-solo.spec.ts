@@ -1,11 +1,14 @@
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
-import { withTimeout } from '../src/control-stream.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import type { CadreNodeConfig, NodeProfile } from '../src/types.js';
-
+import {
+	controlNodeConfig,
+	expectNotListening,
+	freshPartyId,
+	readColumn,
+	withinOp
+} from './control-db-node-helpers.js';
 /**
  * The **cadre of one** (solo) control-DB shape, as embedding mobile/browser apps
  * actually configure it: WebSockets-only transports, NO listen address, and an
@@ -23,9 +26,9 @@ import type { CadreNodeConfig, NodeProfile } from '../src/types.js';
  * surfaces as a *failing assertion naming the operation* rather than a silent
  * vitest timeout with nothing to diagnose.
  *
- * Not covered here, deliberately: a cadre of *more than one* whose peers are
- * offline. That shape must also fail fast or serve a local read rather than hang,
- * and nothing asserts it yet — see backlog `debt-control-db-offline-peer-no-hang-coverage`.
+ * The next shape up — a cadre of *more than one* whose peers are all offline —
+ * is covered by `control-database-offline-peers.spec.ts` (same harness, lifted
+ * into `control-db-node-helpers.ts`).
  */
 
 /** Per-operation budget. Solo ops complete in milliseconds; this only catches hangs. */
@@ -33,82 +36,19 @@ const OP_TIMEOUT_MS = 15_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 
-/**
- * Run `op` with a hard deadline that *fails the test* naming the operation:
- * `solo control op <label> timed out after <ms>ms`. A bare `await` on a hung
- * control call would instead blow vitest's own test timeout, which reports no
- * operation and no stack worth reading.
- *
- * Delegates to cadre-core's own {@link withTimeout} rather than re-deriving the
- * race — that helper is covered by `control-stream-timeout.spec.ts`, so this
- * spec's diagnostics rest on tested code.
- */
+/** {@link withinOp} scoped to this spec's failure label: `solo control op <label> …`. */
 function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> {
-	return withTimeout(ms, `solo control op ${label}`, op);
-}
-
-/**
- * Assert the node really came up non-listening. `soloConfig` asks for
- * `listenAddrs: []`, but `CadreNode` forwards it through a truthiness spread
- * (`cadre-node.ts` → `...(network?.listenAddrs && { listenAddrs })`); a refactor
- * to a length check would silently drop the empty array and this spec would
- * quietly revert to testing the *listening* shape its companion already covers.
- */
-function expectNotListening(node: CadreNode): void {
-	expect(node.getMultiaddrs()).toEqual([]);
-}
-
-/** Collect a column from the control DB's inner Quereus database. */
-async function readColumn(node: CadreNode, sql: string, column: string): Promise<unknown[]> {
-	const db = node.getControlDatabase();
-	expect(db).not.toBeNull();
-	const values: unknown[] = [];
-	for await (const row of db!.getDatabase().eval(sql)) {
-		values.push(row[column]);
-	}
-	return values;
-}
-
-/**
- * The mobile/browser solo config: WebSockets-only, no listen address, no
- * bootstrap peers. `keyStore` + `storage` are passed in so a restart can reuse
- * the same identity and the same block storage (a warm start).
- */
-function soloConfig(opts: {
-	partyId: string;
-	profile: NodeProfile;
-	keyStore: InMemoryKeyStore;
-	storage: MemoryRawStorage;
-}): CadreNodeConfig {
-	return {
-		keyStore: opts.keyStore,
-		controlNetwork: {
-			partyId: opts.partyId,
-			bootstrapNodes: []
-		},
-		profile: opts.profile,
-		storage: { provider: () => opts.storage },
-		network: {
-			transports: [webSockets()],
-			// The RN/browser default (see types.ts NetworkConfig.listenAddrs): these
-			// runtimes cannot accept inbound connections at all.
-			listenAddrs: []
-		}
-	};
-}
-
-function freshPartyId(tag: string): string {
-	return `solo-${tag}-${Math.random().toString(36).slice(2)}`;
+	return withinOp('solo', label, ms, op);
 }
 
 describe('control database, cadre of one (no listen addr, no bootstrap peers)', () => {
 	for (const profile of ['transaction', 'storage'] as const) {
 		describe(`${profile} profile`, () => {
 			it('completes genesis, a read-back, a solo write, and a read-back of that write', async () => {
-				const partyId = freshPartyId(`${profile}-write`);
+				const partyId = freshPartyId(`solo-${profile}-write`);
 				const keyStore = new InMemoryKeyStore();
 				const storage = new MemoryRawStorage();
-				const node = new CadreNode(soloConfig({ partyId, profile, keyStore, storage }));
+				const node = new CadreNode(controlNodeConfig({ partyId, profile, keyStore, storage }));
 
 				try {
 					await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
@@ -165,7 +105,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 	}
 
 	it('re-reads its control rows after a restart on the same identity and storage', async () => {
-		const partyId = freshPartyId('restart');
+		const partyId = freshPartyId('solo-restart');
 		// Shared across both runs: same identity slot, same block storage — a warm
 		// restart, which enters ControlDatabase.initialize's catalog-hydrate path
 		// rather than the fresh-schema path.
@@ -175,7 +115,7 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		// `FileRawStorage` variant of this test rather than widening the memory one.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
-		const config = () => soloConfig({ partyId, profile: 'transaction', keyStore, storage });
+		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
 
 		const first = new CadreNode(config());
 		let ownerPublicKey: string;
