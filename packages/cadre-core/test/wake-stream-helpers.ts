@@ -44,6 +44,7 @@ export interface MockStream extends AsyncIterable<Uint8Array> {
 export class CapturingStream implements AsyncIterable<Uint8Array> {
   readonly sent: Uint8Array[] = [];
   closed = false;
+  aborted: Error | null = null;
 
   constructor(private readonly inbound: Uint8Array[]) {}
 
@@ -56,8 +57,9 @@ export class CapturingStream implements AsyncIterable<Uint8Array> {
     this.closed = true;
   }
 
-  abort(_err: Error): void {
-    // no-op
+  /** Records the reset without releasing the read — the script is finite anyway. */
+  abort(err: Error): void {
+    this.aborted = err;
   }
 
   async *[Symbol.asyncIterator](): AsyncGenerator<Uint8Array> {

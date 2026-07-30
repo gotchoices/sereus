@@ -2,9 +2,9 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { digest, sign, verify, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p, Connection } from '@libp2p/interface';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { peerIdFromString } from '@libp2p/peer-id';
-import { type ControlStream, writeFrame, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, writeFrame, withTimeout, readStreamToEnd } from './control-stream.js';
 import type {
   ControlNetworkSeed,
   SeedPeer,
@@ -44,6 +44,9 @@ const DEFAULT_SEED_READ_TIMEOUT_MS = 10_000;
 
 /** Default cap on concurrent inbound seed streams a single peer can pin open. */
 const DEFAULT_MAX_CONCURRENT_SEEDS = 100;
+
+/** Default time the sender waits for a seed delivery (dial + ack read) before aborting (ms). */
+const DEFAULT_SEED_DELIVER_TIMEOUT_MS = 10_000;
 
 /**
  * Decode a 4-byte big-endian length-prefixed frame; returns the body bytes.
@@ -170,6 +173,15 @@ export interface SeedBootstrapConfig {
    * returned without applying any seed.
    */
   maxConcurrentSeeds?: number;
+  /**
+   * Time {@link SeedBootstrapService.deliverSeed} waits for the whole exchange —
+   * dial, write, ack read — before aborting (ms). Defaults to
+   * {@link DEFAULT_SEED_DELIVER_TIMEOUT_MS}. Bounds the SENDER against a seed
+   * target that accepts the stream and then never replies; the target is a
+   * not-yet-trusted node during onboarding, so this is the more exposed
+   * direction than the receiver knobs above.
+   */
+  seedDeliverTimeoutMs?: number;
 }
 
 /**
@@ -206,6 +218,7 @@ export class SeedBootstrapService {
   private readonly trustPolicy: SeedTrustPolicy;
   private readonly seedReadTimeoutMs: number;
   private readonly maxConcurrentSeeds: number;
+  private readonly seedDeliverTimeoutMs: number;
   /** In-flight inbound seed streams, used to enforce {@link maxConcurrentSeeds}. */
   private activeStreams = 0;
   private eventCallbacks: SeedEventCallbacks = {};
@@ -215,6 +228,7 @@ export class SeedBootstrapService {
     this.trustPolicy = config.trustPolicy ?? anchoredTrustPolicy();
     this.seedReadTimeoutMs = config.seedReadTimeoutMs ?? DEFAULT_SEED_READ_TIMEOUT_MS;
     this.maxConcurrentSeeds = config.maxConcurrentSeeds ?? DEFAULT_MAX_CONCURRENT_SEEDS;
+    this.seedDeliverTimeoutMs = config.seedDeliverTimeoutMs ?? DEFAULT_SEED_DELIVER_TIMEOUT_MS;
 
     // Derive public key from private key if not provided
     if (config.ownerPrivateKey && !config.ownerPublicKey) {
@@ -819,19 +833,66 @@ export class SeedBootstrapService {
 
   /**
    * Deliver a seed directly to a peer via the /sereus/seed/1.0.0 protocol.
+   *
+   * Sender hardening: the whole exchange — dial, write, ack read — is bounded by
+   * {@link seedDeliverTimeoutMs}, and the ack is capped at {@link MAX_SEED_SIZE}.
+   * The target is a NOT-YET-TRUSTED node the instigator chose to dial during
+   * onboarding, so an unbounded read here is strictly more exposed than the
+   * membership-gated receiver paths: without the bound a target that accepts the
+   * stream and never replies parks this call forever, and one that streams
+   * arbitrary bytes as a fake ack exhausts memory.
    */
   async deliverSeed(targetMultiaddr: string, seed: ControlNetworkSeed): Promise<SeedAckMessage> {
     if (!this.libp2pNode) {
       throw new Error('Service not initialized');
     }
-
+    // Capture the node so the closure below needs no non-null assertion.
+    const node = this.libp2pNode;
     const addr = multiaddr(targetMultiaddr);
 
     log('Delivering seed to: %s', targetMultiaddr);
 
-    // Dial the target and open a stream
-    const rawStream = await this.libp2pNode.dialProtocol(addr, SEED_PROTOCOL);
+    // One controller for the attempt: on timeout, `withTimeout`'s `onTimeout`
+    // aborts it, which aborts the in-flight dialProtocol (via the dial `signal`)
+    // and the live stream — so neither the connect nor the ack-read leaks.
+    const controller = new AbortController();
+    return await withTimeout(
+      this.seedDeliverTimeoutMs,
+      `Seed delivery to ${targetMultiaddr}`,
+      () => this.sendSeed(node, addr, seed, controller.signal),
+      () => controller.abort(),
+    );
+  }
+
+  /**
+   * Open one stream to the target, send the seed frame, half-close, and read the ack.
+   *
+   * `signal` is the per-attempt abort signal from {@link deliverSeed}: it is passed
+   * to `dialProtocol` so a timeout during connect aborts the dial, and once the
+   * stream is open an abort listener resets the live stream — releasing the
+   * otherwise unbounded ack-read.
+   *
+   * Deliberately NOT `runOnLimitedConnection`: a wake sets it because a wake is a
+   * tiny frame over a relay, whereas a seed is up to 1MB and this delivery path
+   * does not dial relay addresses today. Changing that is a separate decision.
+   */
+  private async sendSeed(
+    node: Libp2p,
+    addr: Multiaddr,
+    seed: ControlNetworkSeed,
+    signal: AbortSignal,
+  ): Promise<SeedAckMessage> {
+    const rawStream = await node.dialProtocol(addr, SEED_PROTOCOL, { signal });
     const stream = rawStream as unknown as ControlStream;
+
+    const abortErr = new Error('Seed delivery aborted by timeout');
+    const onAbort = (): void => stream.abort(abortErr);
+    // If the timeout already fired during connect, release the freshly-opened stream now.
+    if (signal.aborted) {
+      onAbort();
+      throw abortErr;
+    }
+    signal.addEventListener('abort', onAbort, { once: true });
 
     try {
       // Send the seed message as one length-prefixed frame (shared writer).
@@ -848,31 +909,31 @@ export class SeedBootstrapService {
       // while the read end remains open for receiving the ack.
       await stream.close();
 
-      // Read the acknowledgment (stream is AsyncIterable in libp2p 3.x)
-      const chunks: Uint8Array[] = [];
-      for await (const chunk of stream) {
-        const bytes = chunk instanceof Uint8Array ? chunk : (chunk as { subarray(): Uint8Array }).subarray();
-        chunks.push(bytes);
-      }
+      // The read timeout here is a BACKSTOP, not the primary bound: the outer
+      // `withTimeout` started first and therefore fires first. This covers the
+      // case where the abort does not propagate (e.g. a stream double whose
+      // `abort()` is a no-op). Same reasoning as `sendWake`.
+      const data = await readStreamToEnd(stream, {
+        maxBytes: MAX_SEED_SIZE,
+        timeoutMs: this.seedDeliverTimeoutMs,
+        label: 'Seed ack',
+      });
 
-      const responseData = new Uint8Array(chunks.reduce((sum, c) => sum + c.length, 0));
-      let offset = 0;
-      for (const chunk of chunks) {
-        responseData.set(chunk, offset);
-        offset += chunk.length;
-      }
-
-      // Parse length-prefixed response
-      const responseBody = decodeLengthPrefixedFrame(responseData);
+      // Parse length-prefixed response. `JSON.parse` stays INSIDE the try so a
+      // non-JSON ack body resets the stream rather than leaking it.
+      const responseBody = decodeLengthPrefixedFrame(data);
       const responseJson = new TextDecoder().decode(responseBody);
       const ack = JSON.parse(responseJson) as SeedAckMessage;
 
       log('Seed delivery response: accepted=%s', ack.accepted);
       return ack;
-
     } catch (err) {
+      // `readStreamToEnd`'s size-cap path deliberately does NOT abort (see its
+      // doc comment), so this catch is what resets the stream on an oversized ack.
       stream.abort(err instanceof Error ? err : new Error(String(err)));
       throw err;
+    } finally {
+      signal.removeEventListener('abort', onAbort);
     }
   }
 

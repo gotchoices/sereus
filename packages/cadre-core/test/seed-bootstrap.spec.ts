@@ -26,7 +26,7 @@ import type {
   DroneInitResult,
   InviteResult
 } from '../src/types.js';
-import { decodeFrames, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
+import { CapturingStream, decodeFrames, duplexPair, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
 
 /**
  * Test-only window into the private SeedBootstrapService surface these specs
@@ -42,6 +42,17 @@ interface SeedServiceTestInternals {
 
 function serviceInternals(service: SeedBootstrapService): SeedServiceTestInternals {
   return service as unknown as SeedServiceTestInternals;
+}
+
+/** Invoke the extracted private inbound-seed handler seam directly. */
+function runHandleSeedStream(
+  service: SeedBootstrapService,
+  stream: unknown,
+  remotePeerId: string
+): Promise<void> {
+  return (service as unknown as {
+    handleSeedStream(s: unknown, p: string): Promise<void>;
+  }).handleSeedStream(stream, remotePeerId);
 }
 
 /** Test-only window into the private CadreNode timer these specs neutralize. */
@@ -1373,17 +1384,6 @@ describe('registerSelf — owner self-registration into CadrePeer', () => {
 });
 
 describe('SeedBootstrapService.handleSeedStream — read-timeout + concurrency cap', () => {
-  /** Invoke the extracted private inbound-seed handler seam directly. */
-  function runHandleSeedStream(
-    service: SeedBootstrapService,
-    stream: unknown,
-    remotePeerId: string
-  ): Promise<void> {
-    return (service as unknown as {
-      handleSeedStream(s: unknown, p: string): Promise<void>;
-    }).handleSeedStream(stream, remotePeerId);
-  }
-
   it('settles within the read timeout (does not hang) on a never-half-closing stream', async () => {
     // Same hang class as wake: a peer that opens the seed stream and never
     // half-closes. The read timeout aborts + rejects so the handler replies with
@@ -1418,6 +1418,114 @@ describe('SeedBootstrapService.handleSeedStream — read-timeout + concurrency c
 
     // Release the held reads so their read-timeout timers clear before teardown.
     for (const s of held) s.release();
+  });
+});
+
+describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () => {
+  const targetAddr = '/ip4/1.2.3.4/tcp/4001';
+
+  /** A mock control node whose `dialProtocol` hands back a fixed client stream. */
+  function dialingNode(stream: unknown): unknown {
+    return { dialProtocol: async () => stream };
+  }
+
+  /** A signed seed with an empty peer list — enough for a framing round trip. */
+  function makeSignedSeed(partyId: string): { seed: ControlNetworkSeed; ownerPublicKey: string } {
+    const privateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const ownerPublicKey = getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string;
+    const seedData = { partyId, peers: [] as SeedPeer[] };
+    const signature = sign(
+      digest([canonicalSeedPayload(seedData)], 'sha256', 'base64url') as string,
+      privateKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    ) as string;
+    return { seed: { ...seedData, signature, signerKey: ownerPublicKey }, ownerPublicKey };
+  }
+
+  /** A length-prefixed frame whose declared body length is `declared` bytes. */
+  function overDeclaredFrame(declared: number, bodyBytes: number): Uint8Array {
+    const out = new Uint8Array(4 + bodyBytes);
+    new DataView(out.buffer).setUint32(0, declared, false);
+    return out;
+  }
+
+  it('rejects and aborts the stream when the target never replies', async () => {
+    // The target accepts the stream but never writes/half-closes the ack —
+    // pre-fix the bare `for await` parked here forever.
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 50 });
+    const stream = new PausableStream();
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/timed out/i);
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('still settles at the deadline when abort does not release the read', async () => {
+    // NeverEndingStream's abort() records but does NOT unblock the iterator, so
+    // this proves the bound comes from the timer race, not from abort happening
+    // to free the read.
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 50 });
+    const stream = new NeverEndingStream();
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/timed out/i);
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('rejects an oversized streamed ack without buffering it all', async () => {
+    // 9 x 128KB = 1,179,648 bytes, over the 1MB MAX_SEED_SIZE. The generous
+    // timeout makes it provably the size cap, not the clock, that trips.
+    const chunks = Array.from({ length: 9 }, () => new Uint8Array(128 * 1024));
+    const stream = new CapturingStream(chunks);
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/too large/i);
+    // readStreamToEnd's size-cap path does not abort; sendSeed's catch does.
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('rejects an ack frame whose declared length exceeds the max', async () => {
+    // A distinct guard from the streamed-bytes cap: few bytes actually arrive,
+    // but the 4-byte prefix claims 2,000,000.
+    const stream = new CapturingStream([overDeclaredFrame(2_000_000, 4)]);
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/exceeding max/i);
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('round-trips against a live receiver (framing survives the rewrite)', async () => {
+    const { seed, ownerPublicKey } = makeSignedSeed('round-trip-party');
+
+    const receiver = new SeedBootstrapService({
+      partyId: 'round-trip-party',
+      trustPolicy: pinnedKeyTrustPolicy([ownerPublicKey]),
+    });
+    serviceInternals(receiver).libp2pNode = {
+      peerStore: { merge: async () => {} },
+      dial: async () => {},
+    };
+
+    const sender = new SeedBootstrapService({ partyId: 'round-trip-party', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(sender).libp2pNode = {
+      dialProtocol: async () => {
+        const { clientStream, serverStream } = duplexPair();
+        void runHandleSeedStream(receiver, serverStream, 'target-peer');
+        return clientStream;
+      },
+    };
+
+    const ack = await sender.deliverSeed(targetAddr, seed);
+    expect(ack.accepted).toBe(true);
   });
 });
 
