@@ -418,12 +418,11 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    const db = this.controlDatabase.getDatabase();
-    await this.controlDatabase.withWriteLock(() => db.exec(`
+    await this.controlDatabase.execWrite(`
       insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]));
+    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]);
     log('Device token inserted (owner-signed): %s', record.peerId);
   }
 

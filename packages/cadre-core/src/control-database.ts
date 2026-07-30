@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { Database, registerPlugin } from '@quereus/quereus';
-import type { VTablePluginInfo, FunctionPluginInfo } from '@quereus/quereus';
+import type { VTablePluginInfo, FunctionPluginInfo, SqlParameters } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
@@ -651,12 +651,12 @@ export class ControlDatabase {
   async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
     this.ensureInitialized();
     const multiaddr = record.addrs.join(',');
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       update CadreControl.CadrePeer
         with context OwnerKey = null, Signature = ?
         set Multiaddr = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]));
+    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
     log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
   }
 
@@ -704,12 +704,12 @@ export class ControlDatabase {
    */
   async updateSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
     this.ensureInitialized();
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       update CadreControl.DeviceToken
         with context OwnerKey = null, Signature = ?
         set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]));
+    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]);
     log('Self device token updated: %s (platform=%s, updatedAt=%d)', record.peerId, record.platform, record.updatedAt);
   }
 
@@ -729,11 +729,11 @@ export class ControlDatabase {
     // StampId in the row's own column to satisfy the not-null/unique anti-replay constraint —
     // the StampId is a real column value, not the optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       insert into CadreControl.OwnerKey (Key, StampId)
         with context OwnerKey = null, Signature = null
         values (?, ?)
-    `, [key, stampId]));
+    `, [key, stampId]);
     log('Owner key inserted');
   }
 
@@ -772,11 +772,11 @@ export class ControlDatabase {
     const signature = signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]));
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
 
     log('Strand inserted: %s', strandId);
   }
@@ -835,11 +835,11 @@ export class ControlDatabase {
     const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stampId]);
     const signature = signMessage(message);
 
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       insert into CadreControl.ValidationKey (Key, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?)
-    `, [ownerKey, signature, key, stampId]));
+    `, [ownerKey, signature, key, stampId]);
 
     log('Validation key inserted: %s', key);
   }
@@ -1099,6 +1099,13 @@ export class ControlDatabase {
    * {@link mutateCadrePeer}) deadlock. The lock is NOT re-entrant — a locked writer's
    * body must never call another locked public method; the private bodies it composes
    * ({@link deleteGuardedRow}, {@link inTransaction}) stay bare for exactly that reason.
+   *
+   * NOTE: re-entry fails SILENTLY and PERMANENTLY. A locked body that calls another
+   * locked public method (including a {@link mutateCadrePeer} body, which runs an
+   * arbitrary caller-supplied callback) queues behind its own tail and never resolves —
+   * no error, and it strands the whole write queue, not only that call. There is no
+   * cheap fail-fast: a "held" flag cannot tell re-entry from a legitimately queued
+   * concurrent writer. Compose bare private bodies instead.
    */
   async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     // Chain behind the current tail regardless of how it settled, then park a
@@ -1106,6 +1113,20 @@ export class ControlDatabase {
     const run = this.writeQueue.then(fn, fn);
     this.writeQueue = run.then(() => undefined, () => undefined);
     return run;
+  }
+
+  /**
+   * One-statement local write, serialized by {@link withWriteLock}. Prefer this over a
+   * bare `getDatabase().exec` so a new writer cannot forget the lock — the hazard
+   * {@link assertCommitBoundary} can only catch after the fact.
+   *
+   * Public so `SeedBootstrapService`'s direct `CadrePeer`/`DeviceToken` SQL writes go
+   * through the same seam. Must NOT be called from inside an already-locked body (the
+   * lock is not re-entrant); such a caller uses a bare `getDatabase().exec` instead.
+   */
+  execWrite(sql: string, params?: SqlParameters): Promise<void> {
+    this.ensureInitialized();
+    return this.withWriteLock(() => this.db!.exec(sql, params));
   }
 
   /**
@@ -1233,7 +1254,7 @@ export class ControlDatabase {
     // Persist the canonical ExpiresAt string (datetime parse is idempotent on it) so the
     // signed source-of-truth and the stored value are produced once. StampId is a real,
     // unique column (single-use anti-replay), no longer a context value.
-    await this.withWriteLock(() => this.db!.exec(`
+    await this.execWrite(`
       insert into CadreControl.FormationInvite (Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?, ?)
@@ -1245,7 +1266,7 @@ export class ControlDatabase {
       options.validationUrl ?? null,
       options.strandId ?? null,
       stampId,
-    ]));
+    ]);
 
     log('Formation invite inserted: %s', token);
   }
@@ -1545,9 +1566,20 @@ export class ControlDatabase {
   }
 
   /**
-   * Close the database and cleanup resources
+   * Close the database and cleanup resources.
+   *
+   * Drains the local-write chain first: {@link withWriteLock} can park a write behind
+   * others across an await, and a queued closure evaluates `this.db!` only when it
+   * finally runs — so nulling the handle out from under it would throw a TypeError on a
+   * null handle instead of committing. The tail never rejects (it swallows both
+   * outcomes), so the bare await is safe.
+   *
+   * NOTE: this makes `close()` wait on a stuck write. Acceptable today — every locked
+   * body is a bounded local `exec` — but revisit (bounded drain, or abandon after a
+   * deadline) if a write can ever hang.
    */
   async close(): Promise<void> {
+    await this.writeQueue;
     if (this.collectionFactory) {
       await this.collectionFactory.shutdown();
       this.collectionFactory = null;
