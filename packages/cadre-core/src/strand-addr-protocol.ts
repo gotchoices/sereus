@@ -2,11 +2,13 @@
  * Control-network strand-address RPC.
  *
  * A strand runs as its own libp2p node (`strand-<id>`, random port), separate
- * from the control node (`control-<partyId>`) even though both share the same
- * peerId. To seed a strand's mesh, a node needs a sibling's **strand-network**
- * address — but `CadrePeer.Multiaddr` only stores the **control** node's
- * addresses. This protocol resolves the strand address on demand: a node asks
- * its connected co-cadre siblings "what are your live strand-`X` multiaddrs?" and
+ * from the control node (`control-<partyId>`), with its own transport peerId
+ * derived from the cadre identity key (`strand-transport-key.ts`). To seed a
+ * strand's mesh, a node needs a sibling's **strand-network** address — but
+ * `CadrePeer.Multiaddr` only stores the **control** node's addresses, and a
+ * control address now names a different peer entirely, not merely a different
+ * port. This protocol resolves the strand address on demand: a node asks its
+ * connected co-cadre siblings "what are your live strand-`X` multiaddrs?" and
  * uses the union of their answers as the seed.
  *
  * Modeled directly on `strand-wake-protocol.ts`: a dedicated libp2p protocol id,

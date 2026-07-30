@@ -36,6 +36,7 @@ import type {
 import { DEFAULT_CHECKIN_WINDOW_MS, resolveClusterSize } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
+import { strandTransportKey } from './strand-transport-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
@@ -2753,6 +2754,16 @@ export class CadreNode implements SAppIdLookup {
     const seed = await this.resolveCohortSeed(strand.Id);
     const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
 
+    // Each strand node gets its own transport identity, derived from the cadre
+    // identity key + strandId (see strand-transport-key.ts). Sharing the
+    // control node's key here gave every node one peerId, which collides at a
+    // shared circuit relay (github.com/gotchoices/sereus/issues/1). The
+    // retained launch config carries this derived key, so hibernate → wake
+    // (resumeStrand) reuses the same peerId.
+    const transportKey = this.identityKey
+      ? await strandTransportKey(this.identityKey, strand.Id)
+      : undefined;
+
     const instance = await this.strandManager.startStrand({
       strandRow: strand,
       sAppConfig,
@@ -2760,7 +2771,7 @@ export class CadreNode implements SAppIdLookup {
       network: this.config.network,
       profile: this.config.profile,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
-      privateKey: this.identityKey,
+      privateKey: transportKey,
       bootstrapNodes: seed.bootstrapNodes,
       mode,
       requireSignedSchemas: this.config.requireSignedSchemas,

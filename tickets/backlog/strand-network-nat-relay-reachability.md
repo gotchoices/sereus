@@ -13,14 +13,22 @@ limits of that approach are deliberately deferred and collected here:
 
 Each strand runs its own libp2p node on a random port. A node behind NAT needs
 that **strand** node to be dialable — i.e. its own circuit-relay reservation and
-a `/p2p-circuit` address, separately from the control node's reservation. The
-strand node already receives the `enableRelay` flag, but we have not verified it
-actually obtains a usable reservation, that `getMultiaddrs()` returns a dialable
-signaling/circuit address for a NAT'd strand node, and that a peer can dial that
-circuit address on the strand network (`runOnLimitedConnection` semantics on the
-optimystic strand dial path). Worst case, every strand a NAT'd node joins needs
-its own relay slot — a real cost to validate and possibly optimize (shared relay,
-multiplexed reservation, etc.).
+a `/p2p-circuit` address, separately from the control node's reservation.
+
+**Identity half resolved** (`strand-transport-identity`, closes issue #1): each
+strand node now derives its own transport peerId from the cadre identity key
+(`strand-transport-key.ts`), so a strand node's reservation no longer collides
+with the control node's at a shared relay — the relay keys reservations by
+peerId, and they used to be the same. Verified on a loopback relay
+(`packages/cadre-core/test/strand-transport-relay.spec.ts`).
+
+**Still open:** the strand node receives the `enableRelay` flag, but we have not
+verified that a NAT'd strand node actually obtains a usable reservation, that
+`getMultiaddrs()` returns a dialable signaling/circuit address for it, and that
+a peer can dial that circuit address on the strand network
+(`runOnLimitedConnection` semantics on the optimystic strand dial path). Worst
+case, every strand a NAT'd node joins needs its own relay slot — a real cost to
+validate and possibly optimize (shared relay, multiplexed reservation, etc.).
 
 ### 2. Cross-party strand discovery
 

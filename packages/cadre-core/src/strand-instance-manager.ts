@@ -276,6 +276,11 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
+        // NOTE: strand nodes receive the same `network.listenAddrs` as the
+        // control node. A fixed-port listen addr (e.g. cadre-cli's example
+        // `/ip4/0.0.0.0/tcp/4001`) would have control + strand nodes racing to
+        // bind one port — EADDRINUSE. Unverified; if a deployment configures a
+        // fixed port and strands fail to start, rewrite the port per node here.
         ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs }),
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;
