@@ -193,6 +193,17 @@ const CONTROL_TABLE_SET: ReadonlySet<ControlTable> = new Set<ControlTable>(CONTR
 /** Primary-key column of each {@link RevocableTable}, in that order. */
 type GuardedKeyColumn = 'Key' | 'Id' | 'PeerId';
 
+/**
+ * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
+ *
+ * The one hook the party-membership snapshot a node admits control-DB traffic
+ * against ({@link CadreNode.refreshMembershipGate}) hangs off, so that snapshot
+ * is refreshed by the WRITE rather than by whoever remembered to ask. `reason`
+ * only labels the log line. Must not reject (the notifier swallows and logs
+ * anyway — a committed write never fails because a snapshot refresh did).
+ */
+export type MembershipChangeListener = (reason: string) => Promise<void>;
+
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
   partyId: string;
