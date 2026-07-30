@@ -4,6 +4,21 @@ files: packages/integration-tests/src/harness/test-network.ts, packages/integrat
 difficulty: easy
 ----
 
+<!-- resume-note -->
+A prior implement run read the harness file (`test-network.ts`, `index.ts`) and all
+12 scenario files in full, confirmed every claim in the "Design" section below
+against the actual source (byte-identical helpers, divergence in `connectControlNodes`,
+etc. — all as documented), and derived the exact per-file edit list in the new
+"## Verification (confirmed by prior session)" section appended at the end of this
+file. It hit the session's soft token budget before making any edits — zero files were
+changed. Start straight from that appendix; it supersedes needing to re-read the 12
+scenario files from scratch (open them only to apply the listed edits, not to
+re-derive them). The one unfinished research item is the index.ts name-collision check
+(`port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`, `wait-utils.ts`,
+`types.ts`) called out in "Edge cases & interactions" — do that check first since it's
+quick, then proceed to edits, typecheck/lint, then tests.
+<!-- /resume-note -->
+
 ## Design (resolved — implement as specified, no open questions)
 
 Add the following exports to `packages/integration-tests/src/harness/test-network.ts`
@@ -213,3 +228,141 @@ packages are already dependencies of `@serfab/integration-tests` (see
   exceeding the runner's 10-minute idle timeout, stream output (`yarn ... 2>&1 |
   tee`) and/or run the touched scenario files individually rather than the
   whole package at once.
+
+## Verification (confirmed by prior session — all 12 scenario files + harness read in full)
+
+Every helper described in "Design" above was checked against the live source and
+matches exactly as specified (byte-identical `wsTransports`/`createSignedSAppConfig`
+across the listed files, the `connectControlNodes` pair-scoped-vs-loose divergence,
+the `bootPair` prefix difference, etc. — no surprises). What follows is the exact
+edit list per file so the implementer can go straight to editing.
+
+General pattern per file: delete the local helper(s), delete the now-orphaned
+top-of-file imports those helpers alone needed (transport packages, key-gen
+packages, `signSchema`, `CadreNodeConfig`/`SAppConfig`/`PrivateKey` types, etc. —
+verify with a search for each symbol before deleting its import, since a few files
+keep using an import directly even after the helper that used to need it is
+hoisted), and extend the existing `'../harness/index.js'` import (or, for the two
+files below still importing from `'../harness/wait-utils.js'`, switch that import
+to `'../harness/index.js'`) with the newly-needed harness names. Replace
+`nodeConfig(...)` call sites with `controlNodeConfig(...)` where applicable — field
+names are unchanged.
+
+- **push-wake-e2e.integration.ts** — delete local `wsTransports` (~L118-121),
+  `createSignedSAppConfig` (~L131-141), `NodeOpts`+`nodeConfig` (~L143-168),
+  `makeOwnOwner` (~L175-190), `connectControlNodes` (~L228-256). KEEP local:
+  `controlAddrs`, `seedReceiverRecord`, `bringUpHibernatingStrand`,
+  `RESERVATION_WAIT`, `SIMPLE_SCHEMA`. Drop now-unused imports `webSockets`,
+  `circuitRelayTransport` (L96-97), `MemoryRawStorage` (L102),
+  `generatePrivateKey`/`getPublicKey` (L103), `signSchema` (from the `@serfab/cadre-core`
+  import block L104-112 — keep `CadreNode`, `SeedBootstrapService`,
+  `collectStrandAddrs`, `ed25519KeyPairFromLibp2p`, `signPeerRecord`,
+  `ed25519PublicKeyB64FromPeerId`, all still used by the kept-local helpers), and
+  `CadreNodeConfig`/`SAppConfig` from the type import (L113 — keep `WakeAck`,
+  `PeerAddressRecord`). Keep `generateKeyPair`, `peerIdFromPrivateKey`, `PrivateKey`
+  (still used directly). Extend the L114 harness import with `createSignedSAppConfig`,
+  `controlNodeConfig`, `makeOwnOwner`, `connectControlNodes` (no need to import
+  `wsTransports` here — nothing in this file calls it directly once `nodeConfig` is
+  gone). Note: this file does NOT use `bootPair`/`randomPeerId`.
+
+- **control-db-two-node-convergence.integration.ts** — delete local `wsTransports`
+  (~L57-59), `NodeOpts`+`nodeConfig` (~L61-84), `makeOwnOwner` (~L87-98),
+  `connectControlNodes` (~L101-124), `randomPeerId` (~L126-129), `bootPair`
+  (~L132-156). No helpers stay local in this file. Drop imports `webSockets`,
+  `circuitRelayTransport`, `generateKeyPair`, `peerIdFromPrivateKey` (L44-47),
+  `PrivateKey` type (L48), `ed25519KeyPairFromLibp2p` + `CadreNodeConfig` type
+  (L50-51 — keep `CadreNode`), `MemoryRawStorage` (L49). The old `waitUntil` import
+  (L52) becomes unused too (it was only called from the now-hoisted
+  `connectControlNodes`) — drop it. Final harness import:
+  `waitForCadrePeerConverged, controlNodeConfig, makeOwnOwner, connectControlNodes,
+  randomPeerId, bootPair`. Call sites unchanged (`bootPair('converge')`,
+  `connectControlNodes(B, A)`, etc.) — verify with a search before deleting
+  `waitUntil`/`CadreNode` imports in case something was missed.
+
+- **control-write-while-alone-convergence.integration.ts** — same shape as the
+  two-node-convergence file: delete local `wsTransports` (~L42-44),
+  `NodeOpts`+`nodeConfig` (~L46-69), `makeOwnOwner` (~L72-78), `connectControlNodes`
+  (~L81-103), `randomPeerId` (~L105-108), `bootPair` (~L111-132, prefix
+  `'ctrl-alone'`). UNLIKE the two-node file, `waitUntil` IS still used directly
+  (second test, `resolveDeviceToken` polling ~L192-202) — keep that import. Drop
+  the same transport/keygen/type imports as above. **Call-site change required**:
+  the hoisted `bootPair(tag, partyIdPrefix = 'ctrl')` defaults to `'ctrl'`, not
+  `'ctrl-alone'` — update both call sites to `bootPair('cadrepeer', 'ctrl-alone')`
+  and `bootPair('devtoken', 'ctrl-alone')` (today they call `bootPair('cadrepeer')`
+  / `bootPair('devtoken')` because the prefix was hardcoded locally) to keep the
+  exact same partyId strings.
+
+- **control-cohort-auto-convergence.integration.ts** — delete local `wsTransports`
+  (~L46-48), `NodeOpts`+`nodeConfig` (~L50-76, keep the `reconcileMs` field — the
+  hoisted `ControlNodeOpts`/`controlNodeConfig` already support it), `makeOwnOwner`
+  (~L79-89), `randomPeerId` (~L91-94). This file has NEITHER `connectControlNodes`
+  NOR `bootPair` locally — don't import those. `ed25519KeyPairFromLibp2p` IS still
+  used directly in this file (L137, deriving `aOwnerKey` for `pinnedKeyTrustPolicy`)
+  — unlike the other 3 control files, KEEP that import. Also keep
+  `pinnedKeyTrustPolicy` and `generateKeyPair` (key generation stays local here).
+  Drop `webSockets`/`circuitRelayTransport`, `peerIdFromPrivateKey` (only used
+  inside the now-hoisted `randomPeerId`), `PrivateKey` type, `CadreNodeConfig` type,
+  `MemoryRawStorage`. Extend harness import with `controlNodeConfig`, `makeOwnOwner`,
+  `randomPeerId` (keep existing `waitUntil`, `waitForCadrePeerConverged`).
+
+- **strand-formation-e2e.integration.ts** — delete local `wsTransports` (~L66-68),
+  `createSignedSAppConfig` (~L78-89). KEEP local `createUnsignedSAppConfig`,
+  `createTamperedSAppConfig`, `createWrongKeySAppConfig`, `createTestNodeConfig` —
+  none of these are touched, but `createTestNodeConfig` calls `wsTransports()`
+  internally (~L136), so `wsTransports` MUST still be imported (from harness) even
+  though nothing else in this file calls it. Drop `webSockets`/`circuitRelayTransport`
+  imports (L14-15). Keep `generatePrivateKey`/`getPublicKey` (used by the 3 kept
+  invalid-config variants) and `signSchema` (used by `createTamperedSAppConfig`/
+  `createWrongKeySAppConfig`). Extend the existing harness import (currently
+  `TestCadreNetwork, signMessageEd25519, waitUntil` from `'../harness/index.js'`)
+  with `wsTransports, createSignedSAppConfig`.
+
+- **rbac-signed-write.integration.ts** — delete local `wsTransports` (~L34-36),
+  `createSignedSAppConfig` (~L67-78). KEEP local `createTestNodeConfig` (also calls
+  `wsTransports()` internally, ~L58 — same reasoning as above, still need the
+  import). Drop `webSockets`/`circuitRelayTransport` (L23-24). Drop `signSchema`
+  from the `@serfab/cadre-core` import (L26) — no longer used anywhere in this file
+  once `createSignedSAppConfig` is gone (keep `CadreNode`, `StrandProvisioner`
+  type). Keep `generatePrivateKey`, `getPublicKey`, `digest`, `sign` (L28 — all
+  still used by `createMember`/`signItem`/`signDelete`). Extend the harness import
+  (currently just `waitUntil`, L29) with `wsTransports, createSignedSAppConfig`.
+
+- **multi-party-workflows.integration.ts** — delete local `wsTransports`
+  (~L106-108), `createSignedSAppConfig` (~L59-69). KEEP local `createNodeConfig`
+  (the strand-family shape — do NOT touch it; it calls `wsTransports()` internally
+  at ~L120, so the import is still needed). Drop `webSockets`/`circuitRelayTransport`
+  (L17-18). Drop `signSchema` from the `@serfab/cadre-core` import (L20-29 block —
+  no other use in file; keep `CadreNode` and the re-exported types). Drop
+  `generatePrivateKey`/`getPublicKey` (L30) entirely — in this file they are ONLY
+  used by the now-deleted `createSignedSAppConfig`. **This file currently imports
+  `waitUntil` from `'../harness/wait-utils.js'` directly (L31), not from the
+  barrel** — change that import to `'../harness/index.js'` and add `wsTransports,
+  createSignedSAppConfig` to it (the barrel re-exports `wait-utils.js` too, so
+  `waitUntil` keeps working unchanged).
+
+- **strand-membership-closed-strand-e2e.integration.ts** — delete local
+  `wsTransports` (~L94-96), `createSignedSAppConfig` (~L127-138). KEEP local
+  `createTestNodeConfig`, `freshKeyPair`, and everything else — `createTestNodeConfig`
+  calls `wsTransports()` internally (~L118), so keep that import. Drop
+  `webSockets`/`circuitRelayTransport` (L66-67). Drop `signSchema` from the big
+  `@serfab/cadre-core` import (L69-85) — no other use in file. Keep
+  `generatePrivateKey`/`getPublicKey` (used by `freshKeyPair`) and `digest`/`sign`
+  (used by `signItem`) from L88. Extend the harness import (currently `waitUntil`
+  from `'../harness/index.js'`, L89) with `wsTransports, createSignedSAppConfig`.
+
+- **convergence-stress.integration.ts** — delete local `wsTransports` (~L58-60)
+  only (this file builds its `CHAT_SAPP_CONFIG` as an inline const object, not via
+  a `createSignedSAppConfig` function — leave that as-is, out of scope). Drop
+  `webSockets`/`circuitRelayTransport` (L19-20). **Currently imports from
+  `'../harness/wait-utils.js'`** (`waitUntil, sleep`, L25) — change to
+  `'../harness/index.js'` and add `wsTransports`.
+
+- **websocket-chat.integration.ts** — delete local `wsTransports` (~L54-56) only.
+  Drop `webSockets`/`circuitRelayTransport` (L16-17). **Currently imports from
+  `'../harness/wait-utils.js'`** (`waitUntil`, L22) — change to
+  `'../harness/index.js'` and add `wsTransports`.
+
+After editing, `yarn workspace @serfab/integration-tests typecheck` will catch any
+import left dangling (unused-import lint) or any accidentally-still-needed import
+that got dropped — treat its output as the authoritative check rather than
+re-deriving every import list by hand a second time.
