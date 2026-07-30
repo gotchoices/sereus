@@ -106,10 +106,11 @@ describe('Basic Connectivity', () => {
     // needs 3. Both now share CONTROL_CLUSTER_POLICY, which names no threshold at all.
     //
     // This reads the value a LIVE node resolved, after createLibp2pNode threaded
-    // clusterPolicy into both the coordinator and the cluster member — the config-layer
-    // guard in cadre-core's cadre-node-control-node-options.spec.ts can only see the
-    // options object.
-    const coordinator = frank.ownerNode.coordinatedRepo as unknown as CoordinatorRepo;
+    // clusterPolicy through — the config-layer guard in cadre-core's
+    // cadre-node-control-node-options.spec.ts can only see the options object.
+    // Reading the coordinator alone covers the cluster member too: createLibp2pNode's
+    // `assertSuperMajorityCoupling` throws at construction if the two resolve differently.
+    const coordinator = frank.ownerNode.coordinatedRepo as CoordinatorRepo;
     expect(coordinator.effectiveSuperMajorityThreshold).toBe(DEFAULT_SUPER_MAJORITY_THRESHOLD);
   });
 });

@@ -268,6 +268,12 @@ export class StrandInstanceManager {
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: enableRelay,
         clusterSize: resolveStrandClusterSize(config.clusterSize),
+        // Deliberately NOT CONTROL_CLUSTER_POLICY: a strand is application data with its own
+        // breadth reasoning, and the shape match with the control policy is a coincidence.
+        // NOTE: `quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts` hand-copies this literal
+        // for its strand mesh. They agree today and neither names a threshold; if either grows a
+        // `superMajorityThreshold` or any other consensus knob, hoist a shared
+        // `STRAND_CLUSTER_POLICY` into `cluster-size.ts` rather than editing both.
         clusterPolicy: {
           allowDownsize: true,
           sizeTolerance: 0.5

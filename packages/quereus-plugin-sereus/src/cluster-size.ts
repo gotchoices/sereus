@@ -1,3 +1,5 @@
+import type { NodeOptions } from '@optimystic/db-p2p';
+
 /**
  * Smallest cluster size Optimystic will honour — its own `minAbsoluteClusterSize`,
  * and the smallest value that reaches the cluster path at all (a lone node writes to
@@ -66,11 +68,15 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * NOT for strand networks: `strand-instance-manager.ts` passes a structurally identical
  * literal for a different network with different reasoning. The shape match is a coincidence;
  * keep them separate.
+ *
+ * The `satisfies` is load-bearing: without it a mistyped or obsolete key would compile at both
+ * this definition and every consumer, because TypeScript only excess-property-checks fresh
+ * object literals, not a shared constant handed to `clusterPolicy`.
  */
 export const CONTROL_CLUSTER_POLICY = Object.freeze({
 	allowDownsize: true,
 	sizeTolerance: 0.5,
-});
+} satisfies NonNullable<NodeOptions['clusterPolicy']>);
 
 /**
  * Default number of nodes a **strand** network is told its replication cluster should have.

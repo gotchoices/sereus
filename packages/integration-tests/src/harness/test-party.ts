@@ -50,11 +50,9 @@ async function createTestNode(
     // would leave a party member dependent on read repair, which cannot converge at a
     // two-member cohort.
     clusterSize: CONTROL_REPLICATION_BREADTH,
-    // The same policy object production runs, so an approval-threshold regression cannot
-    // pass here and fail in a real party. Sharing the constant is the point — an inline
-    // literal here is how the old `superMajorityThreshold: 0.51` override survived
-    // unnoticed. `basic-connectivity.integration.ts` asserts the resolved threshold on a
-    // live harness node matches Optimystic's default.
+    // The same policy object production runs — see CONTROL_CLUSTER_POLICY for why it is
+    // shared rather than copied. `basic-connectivity.integration.ts` asserts the threshold
+    // a live harness node resolves from it.
     // NOTE: harness control cohorts are self-only today, so a multi-peer approval bug
     // would still not be caught here — measured 213/213 single-peer cohorts across a
     // `happy-path` run, because FRET's `assembleCohort` returns no non-self candidates
