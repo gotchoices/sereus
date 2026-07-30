@@ -65,6 +65,16 @@ describe('TrustCircleService — real CadreNode integration', () => {
     await host.registerSelf();
 
     store = new TrustCircleStore(tmpRoot);
+    // Mirrors the self-labelling bin/host.ts does via OwnerNodeClient.getPeerId()
+    // after spawning the owner node — this test bypasses that client entirely
+    // (constructs TrustCircleService directly against a real CadreNode), so the
+    // local label has to be seeded by hand here.
+    store.addMember({
+      peerId: host.peerId!.toString(),
+      label: 'This device',
+      addedAt: new Date().toISOString(),
+      self: true,
+    });
     service = new TrustCircleService({ cadreNode: host, store });
   }, 60_000);
 

@@ -344,10 +344,32 @@ program
         // bearer token is picked up automatically.
         const owner = new OwnerNodeClient(() => orchestrator.getOwnerAdminEndpoint());
 
+        const trustCircleStore = new TrustCircleStore(cfg.dataDir);
         trustCircle = new TrustCircleService({
           cadreNode: owner,
-          store: new TrustCircleStore(cfg.dataDir),
+          store: trustCircleStore,
         });
+
+        // Label the owner's own device in the local store. list() splices a
+        // `self: true` local label back into the authorized-membership
+        // listing (which excludes the node's own self-published row by
+        // design — see auth/trust-circle.ts), so without this write the
+        // owner's own row never appears. Idempotent (addMember upserts) and
+        // best-effort: must not crash startup if the owner node isn't ready.
+        try {
+          const selfPeerId = await owner.getPeerId();
+          if (selfPeerId && !trustCircleStore.getMember(selfPeerId)) {
+            trustCircleStore.addMember({
+              peerId: selfPeerId,
+              label: 'This device',
+              addedAt: new Date().toISOString(),
+              self: true,
+            });
+          }
+        } catch (err) {
+          console.error(`self trust-circle label failed: ${(err as Error).message}`);
+        }
+
         natService = new NatService({
           rootDir: cfg.dataDir,
           cadreNode: owner,
