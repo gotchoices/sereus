@@ -634,12 +634,15 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   range does not admit, they get two Quereus instances and cross-instance `instanceof` checks start
   failing; move to `peerDependencies` at that point.
 
-### Solo (cadre-of-one) control DB — supported and covered
+### Control DB liveness: solo (cadre-of-one) and known-but-offline peers — supported and covered
 
 A **cadre of one** — a node whose only member is itself, the normal first-run state of every
 embedding app — is a supported configuration. Its single node is the whole membership and the sole
 authority over its own control data, so control reads and writes must complete from local state
-without consulting a network it knows is empty.
+without consulting a network it knows is empty. The same holds one step up: a cadre of **more than
+one** whose known siblings are currently unreachable must answer control reads and writes from
+local rows (Optimystic downsizes a cohort it cannot fill) — never hang, and never return empty
+where local rows exist.
 
 - [x] `packages/cadre-core/test/control-database-solo.spec.ts` — the **non-listening** solo shape that
   mobile and browser embedders actually configure: WebSockets-only transports, `listenAddrs: []`,
@@ -659,9 +662,18 @@ without consulting a network it knows is empty.
   `packages/cadre-core/test/control-stream-timeout.spec.ts` (previously it had no direct tests at all,
   so a regression in it would have silently downgraded every caller from "fails with a label" to
   "hangs until some outer timeout").
-- Gap: a cadre of **more than one** whose peers are offline is not covered. That shape must also fail
-  fast or serve a clearly local read rather than hang, and nothing asserts it — see backlog
-  `debt-control-db-offline-peer-no-hang-coverage`.
+- [x] `packages/cadre-core/test/control-database-offline-peers.spec.ts` — a cadre of **more than
+  one** whose known siblings are all unreachable (the phone + laptop most of the day). Two offline
+  flavours: **departed** (a real second node's published address, dead after `stop()` — connect
+  refused) and **blackhole** (RFC 5737 TEST-NET-1 — connect never answers, where a freeze would
+  live). Full control read/write table under per-op deadlines for both profiles, contents asserted
+  (an empty read where local rows exist is the same failure class as a hang); an awaited
+  `reconcileControlCohort()` that resolves despite dead dials; three-sibling sequential-dial cost
+  (~10 s per blackhole dial, js-libp2p's default, measured ~30 s for three); a concurrent
+  dial-storm pass that cannot block local ops; `stop()` bounded with a dial in flight; and a
+  circuit-relay transport variant. Shared harness with the solo spec:
+  `test/control-db-node-helpers.ts`. WebRTC-in-the-transport-set is deferred — see backlog
+  `debt-webrtc-transport-control-liveness-coverage`.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.
