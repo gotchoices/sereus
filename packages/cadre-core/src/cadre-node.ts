@@ -1734,7 +1734,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Retain a just-applied seed's owner-flagged peers as cold-start bootstrap
-   * dial targets (see {@link controlBootstrapPeers}).
+   * dial targets (see {@link bootstrapPeerStore}).
    *
    * Called for every seed this node accepts, on BOTH intake paths — the
    * {@link applySeed} wrapper (which may run on a throwaway service, so the

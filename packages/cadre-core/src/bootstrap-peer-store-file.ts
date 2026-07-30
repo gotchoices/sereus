@@ -83,6 +83,14 @@ function isUsableEntry(peerId: string, entry: unknown): entry is BootstrapPeerEn
  * without cross-party leakage. Construct via {@link open}, which loads the
  * existing file; an absent, corrupt, or wrong-party file is a cold start (empty
  * store), while a present-but-unreadable file throws (see {@link open}).
+ *
+ * NOTE: writes are serialised in-process only. Two processes opening the SAME
+ * directory for the SAME party would each snapshot-write their own view, so the
+ * loser's entries are dropped (and on Windows the rename can fail EPERM/EBUSY
+ * while the other process holds the destination open). Fine today — every
+ * launcher gives a node its own identity/work directory — but if a single
+ * directory ever backs two concurrent nodes of one party, this needs a lock file
+ * or a merge-on-write, not a snapshot replace.
  */
 export class FileBootstrapPeerStore implements BootstrapPeerStore {
 	/**

@@ -1,6 +1,7 @@
 /**
  * Node-only filesystem helpers shared by the file-backed stores
- * (`key-store-file.ts`, `trusted-owner-store-file.ts`).
+ * (`key-store-file.ts`, `trusted-owner-store-file.ts`,
+ * `bootstrap-peer-store-file.ts`).
  *
  * This module imports `node:fs/promises`, so — like its consumers — it is kept
  * OUT of the package's cross-platform default entry and is not itself an
