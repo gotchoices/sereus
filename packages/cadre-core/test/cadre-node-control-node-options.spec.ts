@@ -4,7 +4,7 @@ import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/inter
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
 /**
@@ -94,6 +94,18 @@ describe('CadreNode control-network node options', () => {
       const options = controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterPolicy?.sizeTolerance).toBe(0.5);
+    });
+
+    it('leaves superMajorityThreshold unset, so control writes commit at Optimystic\'s 0.75', () => {
+      const options = controlOptions(new CadreNode(createConfig()));
+
+      // Absence is the setting: `libp2p-node-base.ts` resolves
+      // `clusterPolicy?.superMajorityThreshold ?? DEFAULT_SUPER_MAJORITY_THRESHOLD` (0.75)
+      // for BOTH the cluster member and the coordinator. Naming any value here — as the
+      // integration harness once did with 0.51 — makes some other deployment approve
+      // control writes on fewer peers than this one. See CONTROL_CLUSTER_POLICY.
+      expect(options.clusterPolicy?.superMajorityThreshold).toBeUndefined();
+      expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
     });
   });
 

@@ -10,7 +10,7 @@ import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import { ControlDatabase, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
+import { ControlDatabase, CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { allocatePort, releasePorts } from './port-allocator.js';
@@ -50,17 +50,17 @@ async function createTestNode(
     // would leave a party member dependent on read repair, which cannot converge at a
     // two-member cohort.
     clusterSize: CONTROL_REPLICATION_BREADTH,
-    clusterPolicy: {
-      allowDownsize: true,
-      sizeTolerance: 0.5,
-      // NOTE: this harness is more permissive than production about how many cohort
-      // members must approve a write — CadreNode leaves Optimystic's default of 0.75.
-      // A commit-availability regression can therefore pass here and fail in a real
-      // party. Pre-existing; matters more now the cohort is the whole party rather
-      // than two nodes. Tracked as
-      // `backlog/debt-harness-supermajority-threshold-diverges-from-production`.
-      superMajorityThreshold: 0.51
-    },
+    // The same policy object production runs, so an approval-threshold regression cannot
+    // pass here and fail in a real party. Sharing the constant is the point — an inline
+    // literal here is how the old `superMajorityThreshold: 0.51` override survived
+    // unnoticed. `basic-connectivity.integration.ts` asserts the resolved threshold on a
+    // live harness node matches Optimystic's default.
+    // NOTE: harness control cohorts are self-only today, so a multi-peer approval bug
+    // would still not be caught here — measured 213/213 single-peer cohorts across a
+    // `happy-path` run, because FRET's `assembleCohort` returns no non-self candidates
+    // within a test's lifetime. Tracked as
+    // `backlog/debt-harness-control-cohort-never-multi-peer`.
+    clusterPolicy: CONTROL_CLUSTER_POLICY,
     arachnode: { enableRingZulu: true }
   }) as Libp2pNodeWithRepo;
 

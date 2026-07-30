@@ -246,16 +246,20 @@ export interface ControlNetworkConfig {
 }
 
 /**
- * Replication-breadth constants and the strand resolver, re-exported so cadre
- * embedders and the SQL plugin share one definition. Defined in
+ * Replication-breadth constants, the control network's cluster policy, and the
+ * strand resolver, re-exported so cadre embedders, the SQL plugin and the
+ * integration harness share one definition. Defined in
  * `@serfab/quereus-plugin-sereus` because that package also creates libp2p nodes
  * and cannot depend on this one. The control network's breadth is fixed
- * ({@link CONTROL_REPLICATION_BREADTH}, not configurable); the strand default is
+ * ({@link CONTROL_REPLICATION_BREADTH}, not configurable) and so is its consensus
+ * policy ({@link CONTROL_CLUSTER_POLICY} — notably the super-majority threshold,
+ * which it leaves at Optimystic's default by omission); the strand default is
  * {@link CadreNodeConfig.strandClusterSize}.
  */
 export {
   MIN_CLUSTER_SIZE,
   CONTROL_REPLICATION_BREADTH,
+  CONTROL_CLUSTER_POLICY,
   DEFAULT_STRAND_CLUSTER_SIZE,
   resolveStrandClusterSize
 } from '@serfab/quereus-plugin-sereus';

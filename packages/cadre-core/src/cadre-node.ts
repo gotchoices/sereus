@@ -34,7 +34,7 @@ import type {
   CadrePeerRow,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
@@ -945,7 +945,7 @@ export class CadreNode implements SAppIdLookup {
       // see CONTROL_REPLICATION_BREADTH. `assumedClusterSize` is deliberately left at
       // Optimystic's default of 2 (a party may genuinely run two nodes).
       clusterSize: CONTROL_REPLICATION_BREADTH,
-      clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
+      clusterPolicy: CONTROL_CLUSTER_POLICY,
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),

@@ -49,6 +49,30 @@ export const MIN_CLUSTER_SIZE = 2;
 export const CONTROL_REPLICATION_BREADTH = 16;
 
 /**
+ * Cluster consensus policy every CONTROL-network libp2p node runs — production
+ * (`CadreNode.buildControlNodeOptions`) and the integration harness alike. One definition so
+ * the two cannot drift: the object literal used to be hand-copied at both sites, and the copy
+ * at the harness had picked up a `superMajorityThreshold` override production never had.
+ *
+ * `superMajorityThreshold` is deliberately ABSENT. Omitting it makes both the cluster member
+ * and the coordinator fall back to Optimystic's `DEFAULT_SUPER_MAJORITY_THRESHOLD` (0.75) —
+ * the bar a real party commits control writes against. Setting it here, or at any one
+ * consumer, reintroduces exactly the divergence this constant exists to prevent.
+ *
+ * `sizeTolerance` only makes sense alongside `allowDownsize`: a fixed
+ * {@link CONTROL_REPLICATION_BREADTH}-wide target is unsatisfiable by any real (2-7 node)
+ * party, so the cohort must be allowed to shrink to the party that actually exists.
+ *
+ * NOT for strand networks: `strand-instance-manager.ts` passes a structurally identical
+ * literal for a different network with different reasoning. The shape match is a coincidence;
+ * keep them separate.
+ */
+export const CONTROL_CLUSTER_POLICY = Object.freeze({
+	allowDownsize: true,
+	sizeTolerance: 0.5,
+});
+
+/**
  * Default number of nodes a **strand** network is told its replication cluster should have.
  *
  * Strand data is application data, where partial replication is a legitimate choice: only

@@ -8,6 +8,8 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import { DEFAULT_SUPER_MAJORITY_THRESHOLD } from '@optimystic/db-core';
+import type { CoordinatorRepo } from '@optimystic/db-p2p';
 import { TestCadreNetwork, waitForCount } from '../harness/index.js';
 
 describe('Basic Connectivity', () => {
@@ -91,9 +93,24 @@ describe('Basic Connectivity', () => {
 
   it('should have coordinated repo available on nodes', async () => {
     const eve = await network.createParty({ name: 'eve' });
-    
+
     // The coordinatedRepo should be attached by createLibp2pNode
     expect(eve.ownerNode.coordinatedRepo).toBeDefined();
+  });
+
+  it('should commit control writes at the same approval threshold production does', async () => {
+    const frank = await network.createParty({ name: 'frank' });
+
+    // The harness once passed `superMajorityThreshold: 0.51` where CadreNode passes
+    // nothing, so a harness cohort of 3 committed on 2 approvals where a real party
+    // needs 3. Both now share CONTROL_CLUSTER_POLICY, which names no threshold at all.
+    //
+    // This reads the value a LIVE node resolved, after createLibp2pNode threaded
+    // clusterPolicy into both the coordinator and the cluster member — the config-layer
+    // guard in cadre-core's cadre-node-control-node-options.spec.ts can only see the
+    // options object.
+    const coordinator = frank.ownerNode.coordinatedRepo as unknown as CoordinatorRepo;
+    expect(coordinator.effectiveSuperMajorityThreshold).toBe(DEFAULT_SUPER_MAJORITY_THRESHOLD);
   });
 });
 
