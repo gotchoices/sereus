@@ -85,6 +85,43 @@ interface OwnerNode {
 	selfPeerId: string;
 }
 
+/** Start a node in the non-listening posture and assert it really came up that way. */
+async function startControlNode(node: CadreNode): Promise<OwnerNode> {
+	await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
+	expectNotListening(node);
+	expect(node.getControlDatabase()).not.toBeNull();
+	return {
+		node,
+		ownerPublicKey: node.getIdentityOwnerKey().publicKeyB64,
+		selfPeerId: node.peerId!.toString()
+	};
+}
+
+/** First boot: anchor the node's own identity as the founding owner, then publish self. */
+async function genesisOwner(owner: OwnerNode): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = owner.node.getIdentityOwnerKey();
+	const db = owner.node.getControlDatabase()!;
+	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
+		.toBe(true);
+	owner.node.initializeSeedBootstrap(privateKeyB64);
+	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => owner.node.registerSelf()))
+		.toBe('inserted');
+}
+
+/**
+ * Warm boot on rows written by a previous run: the owner key must already be
+ * there (a re-`ensureOwnerKey` is a no-op), and seed bootstrap is re-wired
+ * exactly as an embedding app does on every launch.
+ */
+async function rejoinOwner(owner: OwnerNode): Promise<void> {
+	const { privateKeyB64, publicKeyB64 } = owner.node.getIdentityOwnerKey();
+	const db = owner.node.getControlDatabase()!;
+	expect(await within('hasOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(true);
+	expect(await within('ensureOwnerKey() (warm start)', OP_TIMEOUT_MS, () => db.ensureOwnerKey(publicKeyB64)))
+		.toBe(false);
+	owner.node.initializeSeedBootstrap(privateKeyB64);
+}
+
 /**
  * Boot the node under test as its own owner (genesis exactly as the solo spec
  * does), in the mobile/browser posture: WebSockets-only, no listen address,
@@ -95,26 +132,15 @@ async function bootOwnerNode(
 	tag: string,
 	transports?: NetworkConfig['transports']
 ): Promise<OwnerNode> {
-	const node = new CadreNode(controlNodeConfig({
+	const owner = await startControlNode(new CadreNode(controlNodeConfig({
 		partyId: freshPartyId(`offline-${tag}`),
 		profile,
 		keyStore: new InMemoryKeyStore(),
 		storage: new MemoryRawStorage(),
 		...(transports ? { transports } : {})
-	}));
-	await within('node.start()', LIFECYCLE_TIMEOUT_MS, () => node.start());
-	expectNotListening(node);
-
-	const { privateKeyB64, publicKeyB64 } = node.getIdentityOwnerKey();
-	const db = node.getControlDatabase();
-	expect(db).not.toBeNull();
-	expect(await within('ensureOwnerKey() (genesis)', OP_TIMEOUT_MS, () => db!.ensureOwnerKey(publicKeyB64)))
-		.toBe(true);
-	node.initializeSeedBootstrap(privateKeyB64);
-	expect(await within('registerSelf() (genesis)', OP_TIMEOUT_MS, () => node.registerSelf()))
-		.toBe('inserted');
-
-	return { node, ownerPublicKey: publicKeyB64, selfPeerId: node.peerId!.toString() };
+	})));
+	await genesisOwner(owner);
+	return owner;
 }
 
 interface OfflinePeer {
@@ -253,7 +279,45 @@ async function runControlOperationSet(owner: OwnerNode, offline: OfflinePeer[]):
 	// re-replication; queueing must not have changed the returned outcome above.
 	expect(pendingPeerWrites(node).get(anotherPeerId)).toBe('authorize');
 
+	await runRemoveWrite(owner, new Set([...expectedMembers, anotherPeerId]));
 	return anotherPeerId;
+}
+
+/**
+ * The OTHER control write: a DELETE. It is a distinct SQL path from the insert
+ * (stamp retirement under `CadrePeer.AuthorizedDelete`, not an owner-vouched
+ * INSERT), so "reads and writes answer locally" is only half-tested without it.
+ * The victim is minted with no addrs and no self-signature, so — like the
+ * `authorizePeer` target — no reconcile pass ever dials it.
+ *
+ * @param expectedAfter - the membership set that must be unchanged once the
+ *   removed peer is gone again.
+ */
+async function runRemoveWrite(owner: OwnerNode, expectedAfter: ReadonlySet<string>): Promise<void> {
+	const { node } = owner;
+	const db = node.getControlDatabase()!;
+	const doomed = await generateKeyPair('Ed25519');
+	const doomedPeerId = peerIdFromPrivateKey(doomed).toString();
+
+	await within(`authorizePeer(${short(doomedPeerId)}) (to be removed)`, OP_TIMEOUT_MS,
+		() => node.authorizePeer(doomedPeerId, []));
+	expect(await within(`isMember(${short(doomedPeerId)}) (pre-remove)`, OP_TIMEOUT_MS,
+		() => node.isMember(doomedPeerId))).toBe(true);
+
+	await within(`removePeer(${short(doomedPeerId)})`, OP_TIMEOUT_MS, () => node.removePeer(doomedPeerId));
+
+	// Read-back is again a separate assertion from the write's resolution.
+	const afterRemove = await within('queryCadrePeers() (post-remove)', OP_TIMEOUT_MS, () => db.queryCadrePeers());
+	expect(new Set(afterRemove.map((p) => p.peerId))).toEqual(new Set(expectedAfter));
+	expect(await within(`isMember(${short(doomedPeerId)}) (post-remove)`, OP_TIMEOUT_MS,
+		() => node.isMember(doomedPeerId))).toBe(false);
+	// A delete that commits alone is queued under its own kind — see
+	// `CadreNode.noteControlWrite`, which logs it loudly as a durability gap.
+	expect(pendingPeerWrites(node).get(doomedPeerId)).toBe('remove');
+
+	// A second remove of an absent peer must also answer locally, not dial.
+	await within(`removePeer(${short(doomedPeerId)}) (already absent)`, OP_TIMEOUT_MS,
+		() => node.removePeer(doomedPeerId));
 }
 
 /**
@@ -304,6 +368,42 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		});
 	}
 
+	// The shape an embedding app actually relaunches into: the sibling rows are
+	// ALREADY on disk at start(), so the eager reconcile pass start() schedules
+	// begins dialing dead addresses while the app issues its first control reads.
+	// The cold-boot cases above can never reach this — they start with an empty
+	// membership table and only add siblings afterwards.
+	it('re-boots on stored rows and still serves every control read/write with a BLACKHOLE sibling', async () => {
+		const partyId = freshPartyId('offline-warm-restart');
+		// Shared across both runs: same identity slot, same block storage.
+		const keyStore = new InMemoryKeyStore();
+		const storage = new MemoryRawStorage();
+		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+
+		let blackhole: OfflinePeer;
+		const first = await startControlNode(new CadreNode(config()));
+		try {
+			await genesisOwner(first);
+			blackhole = await mintBlackholePeer(first, 41);
+		} finally {
+			await within('first.stop()', LIFECYCLE_TIMEOUT_MS, () => first.node.stop());
+		}
+
+		const second = await startControlNode(new CadreNode(config()));
+		try {
+			// Same key store ⇒ same identity ⇒ the stored rows are this node's own.
+			expect(second.selfPeerId).toBe(first.selfPeerId);
+			await rejoinOwner(second);
+
+			const authorizedPeerId = await runControlOperationSet(second, [blackhole]);
+			await within('reconcileControlCohort()', RECONCILE_TIMEOUT_MS,
+				() => second.node.reconcileControlCohort());
+			await expectIntactAfterPass(second, [blackhole], authorizedPeerId);
+		} finally {
+			await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.node.stop());
+		}
+	}, 180_000);
+
 	describe('stress and transport shapes (transaction profile)', () => {
 		it('three blackhole siblings: the sequential dial loop accumulates cost but the pass stays bounded', async () => {
 			const owner = await bootOwnerNode('transaction', 'three-blackhole');
@@ -323,7 +423,9 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 			}
 		}, 180_000);
 
-		it('a concurrent dial storm cannot block a local read or write', async () => {
+		// Named for what is concurrent: the local ops against the pass, NOT the dials
+		// against each other — `reconcileControlCohort` dials its siblings one at a time.
+		it('a reconcile pass grinding through dead dials cannot block a local read or write', async () => {
 			const owner = await bootOwnerNode('transaction', 'dial-storm');
 			try {
 				const blackholes = [
@@ -350,26 +452,32 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 
 		it('stop() resolves inside its budget with a blackhole dial in flight', async () => {
 			const owner = await bootOwnerNode('transaction', 'stop-mid-dial');
-			await mintBlackholePeer(owner, 21);
+			try {
+				await mintBlackholePeer(owner, 21);
 
-			// Kick a pass and wait until its blackhole dial is actually IN FLIGHT
-			// (visible in libp2p's dial queue) — stopping before the pass reaches
-			// the dial would test nothing. If the pass somehow settles first (e.g.
-			// a network that answers TEST-NET-1), proceed anyway: stop() must be
-			// bounded regardless.
-			const pass = owner.node.reconcileControlCohort();
-			let passSettled = false;
-			void pass.then(() => { passSettled = true; }, () => { passSettled = true; });
-			await within('dial in flight (dial queue non-empty)', OP_TIMEOUT_MS, async () => {
-				while (!passSettled && owner.node.getControlNode()!.getDialQueue().length === 0) {
-					await delay(25);
-				}
-			});
+				// Kick a pass and wait until its blackhole dial is actually IN FLIGHT
+				// (visible in libp2p's dial queue) — stopping before the pass reaches
+				// the dial would test nothing. If the pass somehow settles first (e.g.
+				// a network that answers TEST-NET-1), proceed anyway: stop() must be
+				// bounded regardless.
+				const pass = owner.node.reconcileControlCohort();
+				let passSettled = false;
+				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });
+				await within('dial in flight (dial queue non-empty)', OP_TIMEOUT_MS, async () => {
+					while (!passSettled && owner.node.getControlNode()!.getDialQueue().length === 0) {
+						await delay(25);
+					}
+				});
 
-			// Shutdown must not wait on an unanswerable connect…
-			await within('node.stop() (dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
-			// …and the abandoned pass still RESOLVES (per-sibling failures swallowed).
-			await within('reconcileControlCohort() (after stop)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+				// Shutdown must not wait on an unanswerable connect…
+				await within('node.stop() (dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+				// …and the abandoned pass still RESOLVES (per-sibling failures swallowed).
+				await within('reconcileControlCohort() (after stop)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+			} finally {
+				// stop() is the subject here, so it is called in the body; this is the
+				// leak guard for the paths that never reach it (stop() is idempotent).
+				await within('node.stop() (guard)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+			}
 		}, 120_000);
 
 		it('serves every control read/write locally with circuit-relay in the transport set', async () => {

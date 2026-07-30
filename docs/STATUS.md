@@ -667,10 +667,15 @@ where local rows exist.
   flavours: **departed** (a real second node's published address, dead after `stop()` — connect
   refused) and **blackhole** (RFC 5737 TEST-NET-1 — connect never answers, where a freeze would
   live). Full control read/write table under per-op deadlines for both profiles, contents asserted
-  (an empty read where local rows exist is the same failure class as a hang); an awaited
-  `reconcileControlCohort()` that resolves despite dead dials; three-sibling sequential-dial cost
+  (an empty read where local rows exist is the same failure class as a hang) — both write
+  directions, `authorizePeer` (owner-vouched INSERT) and `removePeer` (stamp-retiring DELETE,
+  including the already-absent re-run), each read back separately and each checked against the
+  write-while-alone queue; an awaited `reconcileControlCohort()` that resolves despite dead dials;
+  a **warm restart** on stored rows, where the sibling is on record before `start()` so the eager
+  reconcile pass dials a dead address while the first reads run; three-sibling sequential-dial cost
   (~10 s per blackhole dial, js-libp2p's default, measured ~30 s for three); a concurrent
-  dial-storm pass that cannot block local ops; `stop()` bounded with a dial in flight; and a
+  in-flight pass grinding through dead dials that cannot block local ops (the dials themselves are
+  sequential); `stop()` bounded with a dial in flight; and a
   circuit-relay transport variant. Shared harness with the solo spec:
   `test/control-db-node-helpers.ts`. WebRTC-in-the-transport-set is deferred — see backlog
   `debt-webrtc-transport-control-liveness-coverage`.
