@@ -243,6 +243,8 @@ export class ControlDatabase {
   private readonly config: ControlDatabaseConfig;
   private initialized = false;
   private membershipListener: MembershipChangeListener | null = null;
+  /** Tail of the local-write chain — see {@link withWriteLock}. */
+  private writeQueue: Promise<unknown> = Promise.resolve();
 
   constructor(config: ControlDatabaseConfig) {
     this.config = config;
@@ -649,12 +651,12 @@ export class ControlDatabase {
   async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
     this.ensureInitialized();
     const multiaddr = record.addrs.join(',');
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       update CadreControl.CadrePeer
         with context OwnerKey = null, Signature = ?
         set Multiaddr = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
+    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]));
     log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
   }
 
@@ -702,12 +704,12 @@ export class ControlDatabase {
    */
   async updateSelfDeviceToken(record: DeviceTokenRecord): Promise<void> {
     this.ensureInitialized();
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       update CadreControl.DeviceToken
         with context OwnerKey = null, Signature = ?
         set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]);
+    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]));
     log('Self device token updated: %s (platform=%s, updatedAt=%d)', record.peerId, record.platform, record.updatedAt);
   }
 
@@ -727,11 +729,11 @@ export class ControlDatabase {
     // StampId in the row's own column to satisfy the not-null/unique anti-replay constraint —
     // the StampId is a real column value, not the optimystic `StampId()` SQL function.
     const stampId = generateStampId(this.config.libp2pNode.peerId.toString());
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       insert into CadreControl.OwnerKey (Key, StampId)
         with context OwnerKey = null, Signature = null
         values (?, ?)
-    `, [key, stampId]);
+    `, [key, stampId]));
     log('Owner key inserted');
   }
 
@@ -770,11 +772,11 @@ export class ControlDatabase {
     const signature = signMessage(message);
 
     // StampId is a real, unique column (single-use anti-replay), no longer a context value.
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]));
 
     log('Strand inserted: %s', strandId);
   }
@@ -802,7 +804,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage);
+    return this.withWriteLock(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage));
   }
 
   /**
@@ -833,11 +835,11 @@ export class ControlDatabase {
     const message = buildAuthorizationMessage('CadreControl.ValidationKey', 'add', [key, stampId]);
     const signature = signMessage(message);
 
-    await this.db!.exec(`
+    await this.withWriteLock(() => this.db!.exec(`
       insert into CadreControl.ValidationKey (Key, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?)
-    `, [ownerKey, signature, key, stampId]);
+    `, [ownerKey, signature, key, stampId]));
 
     log('Validation key inserted: %s', key);
   }
@@ -863,7 +865,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage);
+    return this.withWriteLock(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage));
   }
 
   /**
@@ -913,7 +915,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage);
+    return this.withWriteLock(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage));
   }
 
   /**
@@ -1051,15 +1053,53 @@ export class ControlDatabase {
    *
    * That contract is enforced, not merely documented — see {@link assertCommitBoundary}.
    *
+   * Runs under {@link withWriteLock}, notification included: with the lock held through
+   * the notify, no other local writer can have a transaction open while the listener
+   * reads, so the listener always sees exactly the committed state it was told about.
+   * The listener itself only READS (it re-materializes the membership snapshot) — a
+   * listener that wrote through a locked method would deadlock.
+   *
    * @param reason - Label for the log line only (e.g. `'peer-insert'`).
    */
   async mutateCadrePeer<T>(reason: string, body: () => Promise<T>): Promise<T> {
     this.ensureInitialized();
-    this.assertCommitBoundary(reason, 'on entry to');
-    const result = await body();
-    this.assertCommitBoundary(reason, 'on return from');
-    await this.notifyMembershipChanged(reason);
-    return result;
+    return this.withWriteLock(async () => {
+      this.assertCommitBoundary(reason, 'on entry to');
+      const result = await body();
+      this.assertCommitBoundary(reason, 'on return from');
+      await this.notifyMembershipChanged(reason);
+      return result;
+    });
+  }
+
+  /**
+   * Run one local write under the database-wide write lock, serializing it against
+   * every other local writer on this ControlDatabase.
+   *
+   * Quereus tracks transaction state per `Database` (`getAutocommit()`), and a write
+   * statement's implicit transaction stays open across the awaits inside `exec`. Two
+   * local writers interleaving mid-statement therefore either trip
+   * {@link assertCommitBoundary} (any `CadrePeer` path) or silently join each other's
+   * open transaction — a torn commit if either side rolls back. This lock closes that
+   * class: every public write method of this class runs its statement(s) under it, and
+   * `SeedBootstrapService` wraps its direct `db.exec` writes in it too. The race is
+   * real, not theoretical: the background self-record publish on a control connection
+   * opening (`CadreNode.drainPendingControlReplication` → `registerSelf`) collided with
+   * a foreground `authorizePeer` — both `CadrePeer` inserts — and tripped the boundary
+   * assert.
+   *
+   * Reads are deliberately not locked: they take no transaction of their own, and
+   * serializing them here would let a listener that reads during a notify (see
+   * {@link mutateCadrePeer}) deadlock. The lock is NOT re-entrant — a locked writer's
+   * body must never call another locked public method; the private bodies it composes
+   * ({@link deleteGuardedRow}, {@link inTransaction}) stay bare for exactly that reason.
+   */
+  async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
+    // Chain behind the current tail regardless of how it settled, then park a
+    // swallowed copy as the new tail so one failed write never poisons the queue.
+    const run = this.writeQueue.then(fn, fn);
+    this.writeQueue = run.then(() => undefined, () => undefined);
+    return run;
   }
 
   /**
@@ -1077,10 +1117,12 @@ export class ControlDatabase {
    * Neither is reachable from today's callers, so this is a fail-fast guard on a future
    * mistake rather than a live code path.
    *
-   * NOTE: `getAutocommit()` reports the whole `Database`, not this call. Control writes are
-   * issued sequentially today; if some future path runs a `CadrePeer` write CONCURRENTLY
-   * with an unrelated control transaction on the same `Database`, this throws instead of
-   * silently joining that transaction — the safe outcome, but such a caller must serialize.
+   * NOTE: `getAutocommit()` reports the whole `Database`, not this call. Local writers
+   * serialize through {@link withWriteLock}, so with every writer locked this can only
+   * trip on the two misuses above. A writer that bypasses the lock (a new method that
+   * forgets it, or raw `getDatabase().exec` outside a locked wrapper) re-opens the
+   * concurrent-writer window, and this assert is what catches it — it throws instead of
+   * silently joining the other write's transaction.
    */
   private assertCommitBoundary(reason: string, where: string): void {
     if (this.db!.getAutocommit()) {
