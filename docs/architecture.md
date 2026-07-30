@@ -1194,7 +1194,8 @@ Maestro Studio, with Appium as the documented fallback.
 
 ### `@serfab/cadre-cli` (Complete)
 
-- CLI commands: `cadre start`, `cadre status`, `cadre enroll`, `cadre strands`
+- CLI commands: `cadre start`, `cadre status`, `cadre enroll`, `cadre strands`, `cadre validation-key`
+  - `cadre validation-key add|remove|list` is the operator surface for the `ValidationKey` table above — the approver keys this party trusts to sign off on redemptions of a `ValidationUrl`-bearing invitation. Owner-signed, so it needs a config whose identity key is an enrolled `OwnerKey`. `add` and `remove` read the enrolled set before writing, so a repeat enrollment reports "already enrolled" instead of a raw constraint failure, and a removal can say whether anything was there — and warn when it emptied the set, which leaves every outstanding validation-gated invitation unredeemable until a key is enrolled (rotation is add-then-remove, in that order).
   - `cadre status` reads **live runtime** from the running node's health `/status` endpoint (`--health-host`/`--health-port`, env `CADRE_HEALTH_PORT`): it reports the live `running`/`peerId`/`multiaddrs`/strand counts when a node answers, clearly distinguished from the static "Configuration" summary. A missing config is non-fatal (the live query still runs); when no node is reachable it says so (and exits non-zero, code `3`) rather than asserting `running: false`.
   - `cadre enroll register` is an **offline signature verification** — it checks that the supplied owner signature is valid over the enrollment vouch digest `digest('Cadre.Enrollment', 'vouch', peerId)` (via `verifyPeerAuthorization` — domain-tagged, so an enrollment vouch cannot double as any table approval) and does **not** contact the control network or register the peer. Membership is granted by the running owner node (`cadre start --owner`), which self-registers and authorizes peers.
 - YAML/JSON config with environment variable overrides

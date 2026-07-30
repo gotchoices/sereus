@@ -92,8 +92,10 @@ export async function withConnectedNode(
   });
 
   try {
-    await node.start();
-    await connected;
+    // Awaited together, not in sequence: a `start()` that outlives the timer would leave the
+    // timeout's rejection with no handler attached, and Node turns an unhandled rejection into
+    // a process crash — losing the very message the timeout exists to print.
+    await Promise.all([node.start(), connected]);
     await action(node);
   } finally {
     clearTimeout(timer);

@@ -736,16 +736,21 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   - Integration `strand-formation-e2e` Phase 1 (`transaction`-profile parties via
     `createParty`) **passes** — open-invitation formation, token reuse rejection, disclosure
     accept/reject, and Phase 4 consent enforcement all green.
-- [ ] **An operator still cannot enroll the approver key a `ValidationUrl` invitation needs.**
-  The redemption side is now wired and unit-tested: `ControlFormationUsageRecorder` reads the
+- [x] **An operator can now enroll the approver key a `ValidationUrl` invitation needs (2026-07-30).**
+  The redemption side was already wired and unit-tested: `ControlFormationUsageRecorder` reads the
   invite's `ValidationUrl`, mints the redemption nonce, calls the approval hook, and writes the
   sign-off with the `FormationUsage` row on both redemption paths; failures map to distinct
   joiner-visible rejection reasons and consume nothing (`strand-formation-consent.spec.ts` cases
-  (h)–(k)). What is still missing is the other half: the control database only accepts a sign-off
-  from a key present in the `ValidationKey` table, and there is no operator-facing way to put one
-  there — that is `feat-validation-key-enrollment` (in `implement/`). So such an invitation still
-  cannot be redeemed end-to-end, and the HTTP approver has never been exercised against a real
-  server. Invitations without a `ValidationUrl` (every e2e above) are unaffected.
+  (h)–(k)). The missing other half — the control database only accepts a sign-off from a key
+  present in the `ValidationKey` table — landed as `feat-validation-key-enrollment`:
+  `ControlDatabase.queryValidationKeys`, `CadreNode.enrollValidationKey` /
+  `removeValidationKey` / `listValidationKeys`, and the `cadre validation-key add|remove|list`
+  command (`validation-key-enrollment.spec.ts` 9/9, `validation-key.spec.ts` in cadre-cli).
+  **Still unexercised end-to-end:** the HTTP approver has never been run against a real server,
+  so no test redeems a `ValidationUrl` invitation over a real network — tracked as
+  `backlog/debt-validation-url-redemption-e2e`. Enrollment also accepts any non-blank text as a
+  key (no base64url/length check), so a typo enrolls silently — `backlog/debt-control-key-enrollment-accepts-malformed-keys`.
+  Invitations without a `ValidationUrl` (every e2e above) are unaffected.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic

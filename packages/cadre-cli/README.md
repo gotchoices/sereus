@@ -119,6 +119,26 @@ cadre strands -c cadre.yaml
 cadre strands --json
 ```
 
+### Approver Keys
+
+An invitation may carry a validation URL: a web hook an outside approver operates, which has
+to sign off before the invitation can be redeemed. `validation-key` is how the party says
+which approvers it trusts — a party with none enrolled cannot use such invitations at all.
+
+The config's identity key must be an enrolled owner key; these writes are owner-signed.
+
+```bash
+cadre validation-key list -c cadre.yaml
+cadre validation-key list --json            # ["<key>", ...]
+cadre validation-key add <base64url-public-key>
+cadre validation-key remove <base64url-public-key>
+```
+
+Rotate by adding the new key **before** removing the old one: removing the last enrolled key
+leaves every outstanding validation-gated invitation unredeemable until a key is enrolled.
+Removal only narrows who may approve *future* redemptions — joins already approved by the
+removed key stay valid.
+
 ## Configuration
 
 See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration example.

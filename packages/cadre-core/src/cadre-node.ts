@@ -2916,23 +2916,14 @@ export class CadreNode implements SAppIdLookup {
    *   control DB rejects the (unauthorized) insert.
    */
   async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
-    if (!this._running || !this.controlDatabase) {
-      throw new Error('CadreNode must be started before publishing a strand');
-    }
-    const signingKey = this.getSelfSigningKey();
-    if (!signingKey) {
-      throw new Error(
-        `Cannot publish strand ${strandId}: no owner signing key available ` +
-        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
-        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
-      );
-    }
-    // insertStrand hands this callback the canonical row-bound message BYTES (see
-    // buildAuthorizationMessage); ed25519-sign them directly (no pre-hash) with
-    // the owner private key, returning a base64url signature.
-    const signMessage = (message: Uint8Array): string =>
-      sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
-    await this.controlDatabase.insertStrand(strandId, type, signingKey.publicKeyB64, signMessage, memberPrivateKey);
+    const signingKey = this.requireOwnerSigningKey(`publish strand ${strandId}`);
+    await this.controlDatabase!.insertStrand(
+      strandId,
+      type,
+      signingKey.publicKeyB64,
+      signMessageWith(signingKey.privateKeyB64),
+      memberPrivateKey
+    );
     log('Published strand %s (type %s) to control DB under owner %s', strandId, type, signingKey.publicKeyB64);
   }
 
@@ -2963,20 +2954,14 @@ export class CadreNode implements SAppIdLookup {
     sAppId: string,
     options: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string } = {}
   ): Promise<void> {
-    if (!this._running || !this.controlDatabase) {
-      throw new Error('CadreNode must be started before publishing a formation invite');
-    }
-    const signingKey = this.getSelfSigningKey();
-    if (!signingKey) {
-      throw new Error(
-        `Cannot publish formation invite ${token}: no owner signing key available ` +
-        '(node identity is unavailable or does not match the node PeerId). Run owner ' +
-        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
-      );
-    }
-    const signMessage = (message: Uint8Array): string =>
-      sign(message, signingKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
-    await this.controlDatabase.insertFormationInvite(token, sAppId, signingKey.publicKeyB64, signMessage, options);
+    const signingKey = this.requireOwnerSigningKey(`publish formation invite ${token}`);
+    await this.controlDatabase!.insertFormationInvite(
+      token,
+      sAppId,
+      signingKey.publicKeyB64,
+      signMessageWith(signingKey.privateKeyB64),
+      options
+    );
     // A host may publish an invite whose token was minted elsewhere; registering
     // it locally opens the connection gate's formation exemption immediately
     // rather than waiting for the durable row to become readable.
@@ -3063,10 +3048,11 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Resolve the owner keypair every owner-signed control write needs, failing loudly with
-   * the same two-part message shape {@link publishStrand} uses (not started / no signing
-   * key, naming owner genesis as the fix). Narrows `controlDatabase` for the caller: a
-   * non-null return means `this.controlDatabase` is non-null too.
+   * Resolve the owner keypair every owner-signed control write needs — {@link publishStrand},
+   * {@link publishFormationInvite}, {@link enrollValidationKey}, {@link removeValidationKey}
+   * — failing loudly in one two-part shape (not started / no signing key, naming owner
+   * genesis as the fix). Narrows `controlDatabase` for the caller: a non-null return means
+   * `this.controlDatabase` is non-null too.
    *
    * @param action - Infinitive phrase naming the attempted write, e.g. `'enroll a
    *   validation key'`; interpolated into both messages.
@@ -3080,7 +3066,8 @@ export class CadreNode implements SAppIdLookup {
       throw new Error(
         `Cannot ${action}: no owner signing key available ` +
         '(node identity is unavailable or does not match the node PeerId). Run owner ' +
-        'genesis (ensureOwnerKey + initializeSeedBootstrap) before publishing.'
+        'genesis (ensureOwnerKey + initializeSeedBootstrap) before writing owner-signed ' +
+        'control state.'
       );
     }
     return signingKey;
