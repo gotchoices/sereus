@@ -2912,19 +2912,22 @@ export class CadreNode implements SAppIdLookup {
    *   {@link addStrand}).
    * @param type - `'o'` for open (default) or `'c'` for closed.
    * @param memberPrivateKey - Optional membership key for a closed strand.
-   * @throws if the node is not started, exposes no owner signing key, or the
-   *   control DB rejects the (unauthorized) insert.
+   * @throws if the node is not started, exposes no owner signing key, the id is blank, or
+   *   the control DB rejects the (unauthorized) insert.
    */
   async publishStrand(strandId: string, type: 'o' | 'c' = 'o', memberPrivateKey?: string): Promise<void> {
     const signingKey = this.requireOwnerSigningKey(`publish strand ${strandId}`);
+    // Trim/reject here so the id that lands matches the one unpublishStrand looks up: it
+    // trims too, and an untrimmed row would be unreachable by the same string.
+    const trimmed = requireNonBlank(strandId, 'strand id');
     await this.controlDatabase!.insertStrand(
-      strandId,
+      trimmed,
       type,
       signingKey.publicKeyB64,
       signMessageWith(signingKey.privateKeyB64),
       memberPrivateKey
     );
-    log('Published strand %s (type %s) to control DB under owner %s', strandId, type, signingKey.publicKeyB64);
+    log('Published strand %s (type %s) to control DB under owner %s', trimmed, type, signingKey.publicKeyB64);
   }
 
   /**
@@ -2961,10 +2964,18 @@ export class CadreNode implements SAppIdLookup {
    * A no-op (no throw, no tombstone) when the row is already absent — but a
    * locally-running instance of that id is still stopped.
    *
+   * NOTE: control-plane only — the strand's local durable storage is retained. Stopping the
+   * instance closes the `StrandDatabase` and its libp2p node but purges no blocks, so a
+   * closed strand's content stays readable on disk to anyone with the data directory. If a
+   * caller ever needs removal to mean "and erase the local copy", that is a separate purge
+   * step, not a widening of this method.
+   *
    * @param strandId - The `Strand` row id to remove (as passed to {@link publishStrand}).
    * @throws if the node is not started, exposes no owner signing key, the id is blank, or
    *   the signer is not an enrolled owner (the schema's `Strand.AuthorizedDelete` rejects
-   *   the write and the row survives).
+   *   the write and the row survives). A rejection does NOT imply the row survived: the
+   *   local stop runs after the control-plane delete has already committed, so a failure
+   *   there throws over a completed removal.
    */
   async unpublishStrand(strandId: string): Promise<void> {
     const signingKey = this.requireOwnerSigningKey(`unpublish strand ${strandId}`);

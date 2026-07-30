@@ -110,6 +110,31 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     });
     await expect(stopped.publishStrand('strand-' + rand(), 'o')).rejects.toThrow(/must be started/i);
   });
+
+  it('rejects an empty or whitespace-only id before any write', async () => {
+    node = await startSelfOwnerNode(true);
+    const db = node.getControlDatabase()!;
+
+    for (const blank of ['', '   ', '\t\n']) {
+      await expect(node.publishStrand(blank, 'o')).rejects.toThrow(/required/i);
+    }
+
+    expect(await db.queryStrands()).toEqual([]);
+  }, 60_000);
+
+  it('trims the id it stores, so unpublishStrand can round-trip the same string', async () => {
+    node = await startSelfOwnerNode(true);
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-pad-' + rand();
+
+    await node.publishStrand(`  ${strandId}  `, 'o');
+
+    expect((await db.queryStrands()).map((s) => s.Id)).toEqual([strandId]);
+
+    await node.unpublishStrand(`  ${strandId}  `);
+
+    expect(await db.queryStrands()).toEqual([]);
+  }, 60_000);
 });
 
 // ── CadreNode.addStrand founder bootstrap (node-level seam) ──────────────────

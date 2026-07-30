@@ -171,7 +171,7 @@ describe('CadreNode strand unpublish', () => {
     expect((await db.queryStrands()).map((row) => row.Id)).toEqual([strandId]);
   }, 60_000);
 
-  it('stops a locally-running instance by the time the promise resolves', async () => {
+  it('stops a locally-running instance by the time the promise resolves, emitting strand:stopped once', async () => {
     node = await startSelfOwnerNode();
     const db = node.getControlDatabase()!;
     const strandId = 'strand-running-' + rand();
@@ -180,6 +180,9 @@ describe('CadreNode strand unpublish', () => {
     await node.publishStrand(strandId);
     expect(node.getStrand(strandId)).toBeDefined();
 
+    const stopped: string[] = [];
+    node.on('strand:stopped', ({ strandId: id }) => void stopped.push(id));
+
     await node.unpublishStrand(strandId);
 
     // Pins the force-poll + explicit-stop convergence step: no waiting on the 5 s
@@ -187,5 +190,29 @@ describe('CadreNode strand unpublish', () => {
     expect(node.getStrand(strandId)).toBeUndefined();
     expect(node.getStrands().size).toBe(0);
     expect(await db.queryStrands()).toEqual([]);
+    // Exactly once: the watcher's removal path and the explicit stop must not both fire.
+    expect(stopped).toEqual([strandId]);
+  }, 60_000);
+
+  it('stops a locally-running instance the watcher never tracked (never-published id)', async () => {
+    node = await startSelfOwnerNode();
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-unwatched-' + rand();
+
+    // addStrand without publishStrand: no Strand row exists, so the watcher never
+    // observes this id and can never fire its removal path. This is the branch the
+    // explicit getInstance + stopStrand step in unpublishStrand exists for.
+    await node.addStrand(createStrandConfig(strandId));
+    expect(node.getStrand(strandId)).toBeDefined();
+
+    const stopped: string[] = [];
+    node.on('strand:stopped', ({ strandId: id }) => void stopped.push(id));
+
+    await node.unpublishStrand(strandId);
+
+    expect(node.getStrand(strandId)).toBeUndefined();
+    expect(stopped).toEqual([strandId]);
+    // Still a control-plane no-op: nothing was published, so nothing is tombstoned.
+    expect((await db.queryRevokedStamps('Strand')).size).toBe(0);
   }, 60_000);
 });
