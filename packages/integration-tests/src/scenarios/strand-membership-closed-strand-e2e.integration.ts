@@ -205,6 +205,22 @@ function signItem(privateKeyB64: string, id: string, name: string, value: string
 
 // ── Two-node closed-strand bring-up ──────────────────────────────────────────
 
+/**
+ * Stop both nodes, never letting one failure strand the other.
+ *
+ * A sequential `await a.stop(); await b.stop()` leaks `b` whenever `a` rejects — and
+ * a live libp2p node outliving its test hangs the run. Every caller is a `finally`
+ * or a bring-up rollback, so a teardown fault is logged rather than rethrown: it must
+ * not mask the failure that brought us here.
+ */
+async function stopBoth(founderNode?: CadreNode, joinerNode?: CadreNode): Promise<void> {
+	for (const result of await Promise.allSettled([joinerNode?.stop(), founderNode?.stop()])) {
+		if (result.status === 'rejected') {
+			console.error('[closed-strand] node teardown failed:', result.reason);
+		}
+	}
+}
+
 /** A live two-node closed strand, ready for writer-driven membership work. */
 interface ClosedStrandFixture {
 	founderNode: CadreNode;
@@ -334,8 +350,7 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 	} catch (error) {
 		// A partially-built fixture still holds live libp2p nodes; the caller never
 		// receives it, so it can never run its own teardown.
-		await joinerNode?.stop();
-		await founderNode?.stop();
+		await stopBoth(founderNode, joinerNode);
 		throw error;
 	}
 }
@@ -470,8 +485,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			).rejects.toThrow();
 		} finally {
 			// Two-node teardown cascades to the strand libp2p nodes — no leaked nodes.
-			await joinerNode.stop();
-			await founderNode.stop();
+			await stopBoth(founderNode, joinerNode);
 		}
 	}, 60_000);
 
@@ -545,6 +559,13 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			 * skipped loudly rather than silently. Catches the failure that matters (a
 			 * delete that lands on the founder and never propagates) without flaking on a
 			 * slow or absent replica.
+			 *
+			 * NOTE: this proves the removal is VISIBLE from the second node's database, not
+			 * that the block replicated to it. A read on either node resolves one coordinator
+			 * peer per block; when that resolves to the founder, the joiner's `select` is a
+			 * remote call against the founder's storage and nothing needs to live locally.
+			 * Visibility is the property this test wants. If a future ticket needs to prove
+			 * replication itself, read the joiner's raw storage, or stop the founder first.
 			 */
 			const requireJoinerAgrees = async (expected: string[], what: string): Promise<void> => {
 				if (!peersVisibleOnJoiner) {
@@ -626,8 +647,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				),
 			).rejects.toThrow(/RowIsGone/);
 		} finally {
-			await joinerNode.stop();
-			await founderNode.stop();
+			await stopBoth(founderNode, joinerNode);
 		}
 	}, 60_000);
 });
