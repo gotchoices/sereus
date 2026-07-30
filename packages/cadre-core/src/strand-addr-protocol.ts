@@ -35,7 +35,7 @@ import { peerIdFromString } from '@libp2p/peer-id';
 import type { StrandAddrRequest, StrandAddrResponse } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
 import { orderSignalingFirst } from './peer-record.js';
-import { type ControlStream, writeFrame, withTimeout, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
 
 const log = debug('sereus:cadre:strand-addr');
 
@@ -364,16 +364,13 @@ async function dialOneSibling(
   }
 
   for (const target of targets) {
-    // One controller per attempt: on timeout, `withTimeout`'s `onTimeout` aborts
-    // it, which aborts the in-flight dialProtocol (via the dial `signal`) and the
-    // live stream — so neither the connect nor the unbounded response-read leaks.
-    const controller = new AbortController();
     try {
-      const response = await withTimeout(
+      // One deadline per attempt: its signal aborts the in-flight dialProtocol and
+      // resets the live stream, so neither the connect nor the response-read leaks.
+      const response = await withDeadline(
         timeoutMs,
         `Strand-addr dial ${peer.peerId}`,
-        () => sendStrandAddr(node, target, protocolId, request, timeoutMs, controller.signal),
-        () => controller.abort(),
+        (signal) => sendStrandAddr(node, target, protocolId, request, timeoutMs, signal),
       );
       return response.multiaddrs;
     } catch (err) {
@@ -411,12 +408,10 @@ function describeTarget(target: PeerId | Multiaddr): string {
  * Open one stream to a target, send the request, half-close, and read the
  * response.
  *
- * `signal` is the per-attempt abort signal from {@link dialOneSibling}: it is
- * passed to `dialProtocol` so a timeout during connect aborts the dial, and once
- * the stream is open an abort listener resets the live stream — releasing the
- * otherwise unbounded response-read. `readFrame` still applies `timeoutMs` as a
- * backstop for the case where an abort does not propagate (e.g. a stream double
- * whose `abort()` is a no-op).
+ * `signal` is the per-attempt deadline from {@link dialOneSibling}: it goes to
+ * `dialProtocol` so a timeout during connect aborts the dial, and into
+ * {@link exchangeFrame} so a timeout after the stream is open resets it —
+ * releasing the otherwise unbounded response-read.
  */
 async function sendStrandAddr(
   node: Libp2p,
@@ -432,29 +427,15 @@ async function sendStrandAddr(
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing over the relay.
   const rawStream = await node.dialProtocol(target, protocolId, { runOnLimitedConnection: true, signal });
-  const stream = rawStream as unknown as ControlStream;
 
-  const abortErr = new Error('Strand-addr dial aborted by timeout');
-  const onAbort = (): void => stream.abort(abortErr);
-  // If the timeout already fired during connect, release the freshly-opened stream now.
-  if (signal.aborted) {
-    onAbort();
-    throw abortErr;
-  }
-  signal.addEventListener('abort', onAbort, { once: true });
+  const response = await exchangeFrame(
+    rawStream as unknown as ControlStream,
+    signal,
+    request,
+    (stream) => readFrame<StrandAddrResponse>(stream, timeoutMs),
+    'Strand-addr dial aborted by timeout',
+  );
 
-  try {
-    writeFrame(stream, request);
-    // close() half-closes the write end (EOF) while the read end stays open for
-    // the response — the same libp2p 3.x pattern as wake/seed delivery.
-    await stream.close();
-    const response = await readFrame<StrandAddrResponse>(stream, timeoutMs);
-    log('Strand-addr response: %d addr(s) for %s', response.multiaddrs.length, response.strandId);
-    return response;
-  } catch (err) {
-    stream.abort(err instanceof Error ? err : new Error(String(err)));
-    throw err;
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
+  log('Strand-addr response: %d addr(s) for %s', response.multiaddrs.length, response.strandId);
+  return response;
 }

@@ -9,6 +9,12 @@
  * abort-on-timeout read-to-EOF helper so a misbehaving peer that opens a stream
  * and never half-closes its write end cannot pin a receiver forever.
  *
+ * The sender side of all three protocols is the same exchange — dial under a
+ * deadline, write one frame, half-close, read one response, reset the stream on
+ * any failure — so that shape lives here too, as {@link withDeadline} +
+ * {@link exchangeFrame}; each protocol supplies only its dial options, its
+ * request object, and its response decoder.
+ *
  * Dependency-free by design: it imports nothing from the protocol modules, so
  * the import graph stays acyclic (`control-stream` ← `seed-bootstrap` ←
  * `strand-wake-protocol`). In particular it returns RAW bytes from
@@ -37,10 +43,13 @@ export function writeFrame(stream: ControlStream, obj: unknown): void {
 
 /**
  * Reject if `op` does not settle within `ms`. On timeout, invoke `onTimeout`
- * (used by the sender to abort the in-flight dial/stream so it does not leak)
- * before rejecting. A throwing `onTimeout` is swallowed so it cannot mask the
- * timeout rejection. The rejection message is exactly `<label> timed out after
- * <ms>ms`, so callers fold any domain prefix into `label`.
+ * before rejecting — a hook for releasing whatever the op is parked on. A
+ * throwing `onTimeout` is swallowed so it cannot mask the timeout rejection. The
+ * rejection message is exactly `<label> timed out after <ms>ms`, so callers fold
+ * any domain prefix into `label`.
+ *
+ * Senders want {@link withDeadline}, which wires `onTimeout` to an
+ * `AbortController` so the in-flight dial/stream is cancelled rather than leaked.
  */
 export function withTimeout<T>(
   ms: number,
@@ -59,6 +68,74 @@ export function withTimeout<T>(
     }, ms);
     op().then(resolve, reject).finally(() => clearTimeout(timer));
   });
+}
+
+/**
+ * Run `op` under a `withTimeout` deadline that also *cancels* it: the signal
+ * handed to `op` is aborted immediately before the timeout rejection, so a
+ * sender can pass it to `dialProtocol` (cancelling an in-flight connect) and to
+ * {@link exchangeFrame} (resetting a live stream) instead of leaking either.
+ */
+export function withDeadline<T>(
+  ms: number,
+  label: string,
+  op: (signal: AbortSignal) => Promise<T>,
+): Promise<T> {
+  const controller = new AbortController();
+  return withTimeout(ms, label, () => op(controller.signal), () => controller.abort());
+}
+
+/**
+ * Send one request frame on an open stream, half-close the write end, and read
+ * the response through `readResponse`.
+ *
+ * `signal` is the caller's deadline (see {@link withDeadline}): an abort resets
+ * the stream, releasing the otherwise unbounded response read. If the deadline
+ * already fired while the stream was being dialed, the freshly-opened stream is
+ * reset here rather than left dangling. Every reset — deadline, response-decode
+ * failure, or a `readResponse` that rejects without aborting (the size-cap path
+ * of {@link readStreamToEnd}) — goes through one idempotent `abort`, so the
+ * deadline listener and the error path cannot double-reset a stream.
+ *
+ * `readResponse` owns its own read bound, which is a backstop rather than the
+ * primary one: the caller's deadline started first and therefore fires first.
+ * It matters only when an abort does not release the read (e.g. a stream double
+ * whose `abort()` is a no-op).
+ */
+export async function exchangeFrame<T>(
+  stream: ControlStream,
+  signal: AbortSignal,
+  request: unknown,
+  readResponse: (stream: ControlStream) => Promise<T>,
+  abortMessage: string,
+): Promise<T> {
+  let reset = false;
+  const resetStream = (err: Error): void => {
+    if (reset) return;
+    reset = true;
+    stream.abort(err);
+  };
+
+  const abortErr = new Error(abortMessage);
+  const onAbort = (): void => resetStream(abortErr);
+  if (signal.aborted) {
+    onAbort();
+    throw abortErr;
+  }
+  signal.addEventListener('abort', onAbort, { once: true });
+
+  try {
+    writeFrame(stream, request);
+    // close() half-closes the write end (EOF) while the read end stays open for
+    // the response — the libp2p 3.x request/response pattern.
+    await stream.close();
+    return await readResponse(stream);
+  } catch (err) {
+    resetStream(err instanceof Error ? err : new Error(String(err)));
+    throw err;
+  } finally {
+    signal.removeEventListener('abort', onAbort);
+  }
 }
 
 /** Normalize a libp2p chunk (Uint8Array or Uint8ArrayList) to a flat Uint8Array. */

@@ -30,7 +30,7 @@ import type { Libp2p, Connection } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type { StrandInstance, WakeRequest, WakeAck } from './types.js';
 import { decodeLengthPrefixedFrame } from './seed-bootstrap.js';
-import { type ControlStream, writeFrame, withTimeout, readStreamToEnd } from './control-stream.js';
+import { type ControlStream, writeFrame, withDeadline, exchangeFrame, readStreamToEnd } from './control-stream.js';
 
 const log = debug('sereus:cadre:strand-wake');
 
@@ -262,16 +262,13 @@ export async function dialWake(
 
   let lastError: Error | null = null;
   for (const addr of addrs) {
-    // One controller per attempt: on timeout, `withTimeout`'s `onTimeout` aborts
-    // it, which aborts the in-flight dialProtocol (via the dial `signal`) and the
-    // live stream — so neither the connect nor the unbounded ack-read leaks.
-    const controller = new AbortController();
     try {
-      return await withTimeout(
+      // One deadline per attempt: its signal aborts the in-flight dialProtocol and
+      // resets the live stream, so neither the connect nor the ack-read leaks.
+      return await withDeadline(
         timeoutMs,
         `Wake dial ${addr.toString()}`,
-        () => sendWake(node, addr, protocolId, request, timeoutMs, controller.signal),
-        () => controller.abort(),
+        (signal) => sendWake(node, addr, protocolId, request, timeoutMs, signal),
       );
     } catch (err) {
       lastError = err instanceof Error ? err : new Error(String(err));
@@ -284,12 +281,10 @@ export async function dialWake(
 /**
  * Open one stream, send the request, half-close, and read the ack.
  *
- * `signal` is the per-attempt abort signal from {@link dialWake}: it is passed to
- * `dialProtocol` so a timeout during connect aborts the dial, and once the stream
- * is open an abort listener resets the live stream — releasing the otherwise
- * unbounded ack-read. `readFrame` still applies `timeoutMs` as a backstop for the
- * case where an abort does not propagate (e.g. a stream double whose `abort()` is
- * a no-op).
+ * `signal` is the per-attempt deadline from {@link dialWake}: it goes to
+ * `dialProtocol` so a timeout during connect aborts the dial, and into
+ * {@link exchangeFrame} so a timeout after the stream is open resets it —
+ * releasing the otherwise unbounded ack-read.
  */
 async function sendWake(
   node: Libp2p,
@@ -305,29 +300,15 @@ async function sendWake(
   // relay's data/duration cap, so opening it on the limited connection is safe
   // and is the whole point of dialing the relay address.
   const rawStream = await node.dialProtocol(addr, protocolId, { runOnLimitedConnection: true, signal });
-  const stream = rawStream as unknown as ControlStream;
 
-  const abortErr = new Error('Wake dial aborted by timeout');
-  const onAbort = (): void => stream.abort(abortErr);
-  // If the timeout already fired during connect, release the freshly-opened stream now.
-  if (signal.aborted) {
-    onAbort();
-    throw abortErr;
-  }
-  signal.addEventListener('abort', onAbort, { once: true });
+  const ack = await exchangeFrame(
+    rawStream as unknown as ControlStream,
+    signal,
+    request,
+    (stream) => readFrame<WakeAck>(stream, timeoutMs),
+    'Wake dial aborted by timeout',
+  );
 
-  try {
-    writeFrame(stream, request);
-    // close() half-closes the write end (EOF) while the read end stays open for
-    // the ack — the same libp2p 3.x pattern as seed delivery.
-    await stream.close();
-    const ack = await readFrame<WakeAck>(stream, timeoutMs);
-    log('Wake ack from %s: accepted=%s status=%s', addr.toString(), ack.accepted, ack.status ?? '-');
-    return ack;
-  } catch (err) {
-    stream.abort(err instanceof Error ? err : new Error(String(err)));
-    throw err;
-  } finally {
-    signal.removeEventListener('abort', onAbort);
-  }
+  log('Wake ack from %s: accepted=%s status=%s', addr.toString(), ack.accepted, ack.status ?? '-');
+  return ack;
 }

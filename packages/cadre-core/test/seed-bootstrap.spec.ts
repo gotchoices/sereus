@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -26,7 +26,7 @@ import type {
   DroneInitResult,
   InviteResult
 } from '../src/types.js';
-import { CapturingStream, decodeFrames, duplexPair, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
+import { CapturingStream, decodeFrames, duplexPair, frameMessage, NeverEndingStream, PausableStream } from './wake-stream-helpers.js';
 
 /**
  * Test-only window into the private SeedBootstrapService surface these specs
@@ -1526,6 +1526,82 @@ describe('SeedBootstrapService.deliverSeed — ack read timeout + size cap', () 
 
     const ack = await sender.deliverSeed(targetAddr, seed);
     expect(ack.accepted).toBe(true);
+  });
+
+  it('dials the seed protocol with the deadline signal, then frames and half-closes', async () => {
+    // Pins the sender's half of the contract the mocks above take for granted:
+    // the protocol id, the abort signal the deadline cancels the dial with, and
+    // one framed request followed by a write-end half-close.
+    const stream = new CapturingStream([frameMessage({ accepted: true } satisfies SeedAckMessage)]);
+    const dial: { protocol?: string; signal?: AbortSignal } = {};
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(service).libp2pNode = {
+      dialProtocol: async (_addr: unknown, protocol: string, opts?: { signal?: AbortSignal }) => {
+        dial.protocol = protocol;
+        dial.signal = opts?.signal;
+        return stream;
+      },
+    };
+    const { seed } = makeSignedSeed('p');
+
+    const ack = await service.deliverSeed(targetAddr, seed);
+
+    expect(ack.accepted).toBe(true);
+    expect(dial.protocol).toBe(SEED_PROTOCOL);
+    expect(dial.signal).toBeInstanceOf(AbortSignal);
+    expect(dial.signal?.aborted).toBe(false);
+    expect(decodeFrames<SeedMessage>(stream.sent).partyId).toBe('p');
+    expect(stream.closed).toBe(true);
+    expect(stream.aborted).toBeNull();
+  });
+
+  it('rejects an empty ack rather than reading silence as a reply', async () => {
+    // A target that half-closes without writing. Surfacing the framing error is
+    // deliberate — it must not be folded into a synthetic non-accepting ack,
+    // which would look to the caller like a considered refusal.
+    const stream = new CapturingStream([]);
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/too short/i);
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('rejects a well-framed ack whose body is not JSON, and resets the stream', async () => {
+    // The decode runs inside the reset-on-failure path, so junk in a correctly
+    // framed body cannot leak the stream. The parser's message is engine-specific,
+    // so assert the reset rather than the wording.
+    const body = new TextEncoder().encode('<html>not an ack</html>');
+    const framed = new Uint8Array(4 + body.length);
+    new DataView(framed.buffer).setUint32(0, body.length, false);
+    framed.set(body, 4);
+    const stream = new CapturingStream([framed]);
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 5000 });
+    serviceInternals(service).libp2pNode = dialingNode(stream);
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow();
+    expect(stream.aborted).toBeTruthy();
+  });
+
+  it('resets a stream whose dial completes after the deadline has already fired', async () => {
+    // The deadline wins the race, but the dial still lands afterwards. Without the
+    // post-dial abort check that stream is never referenced again and leaks.
+    const stream = new PausableStream();
+    const service = new SeedBootstrapService({ partyId: 'p', seedDeliverTimeoutMs: 20 });
+    serviceInternals(service).libp2pNode = {
+      dialProtocol: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 60));
+        return stream;
+      },
+    };
+    const { seed } = makeSignedSeed('p');
+
+    await expect(service.deliverSeed(targetAddr, seed)).rejects.toThrow(/timed out/i);
+    // The dial is still in flight at this point — nothing to reset yet.
+    expect(stream.aborted).toBeNull();
+    await vi.waitFor(() => expect(stream.aborted).toBeTruthy());
   });
 });
 
