@@ -7,6 +7,8 @@
  *   proxy — see ns-storage.ts)
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
  * - Stable Ed25519 identity persisted in SQLite (key 'peer-private-key')
+ * - Durable node-local records (trusted-owner anchor + cold-start bootstrap
+ *   peers) in that same SQLite db — see node-local-slots.ts
  *
  * Mirrors packages/reference-app-rn/src/cadre-phone.ts with NS storage/identity.
  */
@@ -66,9 +68,9 @@ let node: CadreNode | null = null;
  * that hardening lands — moving one without the other would be a downgrade,
  * not an improvement.
  *
- * NOTE: opened at most once per process (`??=` below) — a leaked native
- * handle would block the next open of this file — and closed in
- * {@link stopPhoneNode}.
+ * At most one handle is open at a time (`??=` below, cleared on close) — a
+ * leaked native handle would block the next open of this file. Closed in
+ * {@link stopPhoneNode}, reopened by the next {@link startPhoneNode}.
  *
  * No migration: an existing install has no persisted anchor or bootstrap-peer
  * record under these keys, so it cold-starts once (empty anchor, empty
@@ -101,6 +103,12 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 	// share fate. `??=`, not a plain open: a leaked native handle blocks the next
 	// open of this file, and the `node?.isRunning` early-return above already
 	// keeps a healthy node from reaching here twice.
+	// NOTE: `??=` is not a re-entrancy guard — two OVERLAPPING starts would each
+	// see `null` and open their own handle, and the loser's leaks. Unreachable
+	// today: the Connect button is disabled while `status === 'connecting'`
+	// (settings-page.xml → `cadre.notConnecting`) and `startSolo` is only called
+	// programmatically. If a caller ever starts concurrently, cache the in-flight
+	// open promise instead of the handle.
 	identityDb ??= await openOptimysticNSDb(PEER_IDENTITY_DB_NAME);
 	const db = identityDb;
 

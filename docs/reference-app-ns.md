@@ -66,6 +66,31 @@ PeerId across cold launches) lives in `sereus-peer-identity`. Because
 factory, `src/ns-storage.ts` returns a lazy `IRawStorage` proxy that awaits a
 cached open before delegating each call.
 
+### Node-local records
+
+The two per-party records cadre-core never replicates — the trusted-owner anchor
+and the cold-start bootstrap-peer set — are durable here as well. Both go
+through `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore` over a
+`DurableSlot` this app supplies (`src/node-local-slots.ts`): one
+`SqliteKVStore` with an *empty* key prefix over the same
+`sereus-peer-identity` database, under the literal keys
+`trusted-owners.<partyId>` and `bootstrap-peers.<partyId>`. `cadre-phone.ts`
+holds that database handle open for the node's whole life (`identityDb`) and
+closes it in `stopPhoneNode`.
+
+One database, one fate: the identity BLOB and both node-local records are wiped
+together. This app has no Keychain/Keystore integration, so the anchor is only as
+protected as the plaintext identity key it qualifies — unlike React Native, which
+puts the anchor in the secure enclave (see [`reference-app-rn.md`](reference-app-rn.md)).
+Whoever adds NS secure storage should move both together.
+
+⚠️ Nothing in this app writes the anchor yet: it wires no owner private key (no
+genesis self-anchor) and has no invite-paste field (no pinned owner keys), so
+under the default `anchoredTrustPolicy` every seed it is handed is rejected —
+tracked as `feat-ns-invite-trust-pinning`. The bootstrap-peer record does fill
+in, from `applySeed`. Both records are party-scoped and the party id is typed
+into Settings each launch, so a relaunch with a fresh id loads empty slots.
+
 ## App Structure
 
 NativeScript Core (plain TS + XML), not Svelte Native or Vue. NS-Core
