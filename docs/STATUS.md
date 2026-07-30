@@ -463,14 +463,20 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 Each package defines a `typecheck` script (`tsc --noEmit`) so type validation no longer depends on
 the slower `yarn build`, and test files are type-checked where possible (vitest itself never type-checks).
 
-- [x] Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 (was 1 of 9)
-- [x] Every non-Svelte-app package's `typecheck` program also includes its own `vitest.config.ts`, so a
+- [x] Every TS package has a `typecheck` script; `yarn typecheck` validates all 10 workspaces (was 1 of 9,
+  before `reference-app-ns` landed)
+- [x] Every package that **has** a `vitest.config.ts` also has that file inside its `typecheck` program, so a
   Vitest option the installed version no longer recognizes fails `yarn typecheck` instead of sitting
   silently unused (this bit once: a `test.poolOptions.forks.singleFork` removal in Vitest 4 went
   unnoticed for a whole major-version upgrade — see "Sequential integration runs restored" above).
   Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
   `quereus-plugin-sereus`, `strand-proto`, `integration-tests`) or the package's main `tsconfig.json`
-  (`reference-app-rn`, `reference-app-web`).
+  (`reference-app-rn`, `reference-app-web`). `reference-app-ns` is the tenth workspace and has no
+  `vitest.config.ts` at all yet (see `debt-ns-unit-test-harness`), so nothing to include there.
+  Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
+  … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
+  (`ProjectConfig`), which is where the `poolOptions` precedent lived.
+  Nothing *enforces* the invariant for a package added later — see `debt-guard-vitest-config-typechecked`.
 - Per-package scope:
   - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
@@ -482,13 +488,19 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
 - Known coverage gaps:
   - `cadre-core` tests and `cadre-host` server tests have pre-existing type drift (libp2p `peerId`→`privateKey`,
     `CadreNodeConfig.privateKey` now `PrivateKey` not `Uint8Array`, `NodePorts.admin` added, implicit-`any` params).
-    Their `typecheck` stays at shippable-source until those tests are fixed — see fix ticket
-    `widen-typecheck-cadre-core-host-tests`.
+    Their `typecheck` stays at shippable-source until those tests are fixed — tracked by
+    `debt-widen-typecheck-to-test-files`, which also covers `cadre-provider` (4 errors across
+    `container-seed-endpoint.test.ts` and `orchestrator-port-leak.test.ts`).
   - `cadre-host` `ui/` (Svelte) and `reference-app-web` `.svelte` files are **not** covered — `tsc` can't type-check
     `.svelte`; that needs `svelte-check` (already a devDependency in both). Not wired into `typecheck` yet.
   - `cadre-provider` **does** have test files (`src/**/__tests__/**/*.test.ts`); its `tsconfig.typecheck.json`
     explicitly excludes them (same type-drift reasoning as `cadre-core`/`cadre-host`) rather than lacking any.
-    `strand-proto` is deprecated so left source-only by design. Neither needs a widened-test config.
+    `strand-proto` is deprecated so left source-only by design.
+  - The seven `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
+    `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
+    `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather
+    than new debt. If a compiler option ever has to change across all of them at once, that is the point to
+    introduce a root `tsconfig.base.json` and have every package extend it.
 
 ### Dependency-check coverage
 
