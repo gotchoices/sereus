@@ -228,6 +228,7 @@ export class ControlDatabase {
   private collectionFactory: CollectionFactory | null = null;
   private readonly config: ControlDatabaseConfig;
   private initialized = false;
+  private membershipListener: MembershipChangeListener | null = null;
 
   constructor(config: ControlDatabaseConfig) {
     this.config = config;
@@ -598,6 +599,13 @@ export class ControlDatabase {
    * is the refresh path for any member — owner or drone — once its row
    * exists. `PublicKey` is intentionally not in the SET list (it is immutable on
    * self-update and the constraint enforces `new.PublicKey = old.PublicKey`).
+   *
+   * Deliberately NOT wrapped in {@link mutateCadrePeer}, the one `CadrePeer` mutator that
+   * is not: it only ever touches THIS node's own row (sole caller
+   * `CadreNode.publishSelfRecord`), and `CadreNode.listAuthorizedMembers` filters self out
+   * of the membership snapshot, so it cannot change that snapshot. It also runs on the
+   * periodic self-registration refresh, where a notify would add a recurring membership
+   * read for nothing.
    */
   async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
     this.ensureInitialized();
@@ -895,6 +903,66 @@ export class ControlDatabase {
         log('Rollback after %s failure was a no-op: %s', label, rollbackError);
       }
       throw error;
+    }
+  }
+
+  /**
+   * Wire (or clear, with null) the single listener notified after every committed
+   * `CadreControl.CadrePeer` row write.
+   *
+   * At most one listener: a ControlDatabase instance belongs to exactly one
+   * {@link CadreNode}, which wires this in `start()` and clears it on teardown. A
+   * second call replaces the first rather than fanning out, so a stale node can
+   * never keep receiving notifications for a database it no longer owns.
+   */
+  setMembershipChangeListener(listener: MembershipChangeListener | null): void {
+    this.membershipListener = listener;
+  }
+
+  /**
+   * Run a `CadrePeer` row mutation and notify the membership listener once it has
+   * COMMITTED.
+   *
+   * EVERY `CadrePeer` writer goes through here — that is what makes the party-membership
+   * snapshot refresh automatic rather than a caller obligation. A writer necessarily holds
+   * the target node's ControlDatabase (the `SeedBootstrapService`'s event callbacks are
+   * NOT a viable seam: the temp services `CadreNode.applySeed`/`dialInvite` build, and
+   * services constructed outside `CadreNode` entirely, never get callbacks wired), so this
+   * is the one point on the write path that cannot be bypassed.
+   *
+   * `body` owns its own transaction if it needs one and must COMMIT before returning, so
+   * the notification never makes the listener read uncommitted state. A throwing `body`
+   * propagates and does NOT notify: nothing changed.
+   *
+   * NOTE: the wrapper cannot enforce that contract — Quereus' `Database` exposes no public
+   * "am I in a transaction?" probe, so there is nothing to assert against. No caller today
+   * opens a transaction around a `CadrePeer` write. A future caller that does must move the
+   * `mutateCadrePeer` wrapper OUT to enclose that outer commit, or the refresh reads
+   * pre-commit state.
+   *
+   * @param reason - Label for the log line only (e.g. `'peer-insert'`).
+   */
+  async mutateCadrePeer<T>(reason: string, body: () => Promise<T>): Promise<T> {
+    this.ensureInitialized();
+    const result = await body();
+    await this.notifyMembershipChanged(reason);
+    return result;
+  }
+
+  /**
+   * Best-effort notify. A listener that throws is logged and swallowed: the write has
+   * already committed, and it must never be reported as failed because a downstream
+   * snapshot refresh did. A null listener (no `CadreNode` attached — e.g. the service
+   * unit tests drive a bare control DB) is a silent no-op.
+   */
+  private async notifyMembershipChanged(reason: string): Promise<void> {
+    if (!this.membershipListener) {
+      return;
+    }
+    try {
+      await this.membershipListener(reason);
+    } catch (error) {
+      log('Membership change listener failed (%s): %s', reason, error);
     }
   }
 

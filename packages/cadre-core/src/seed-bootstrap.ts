@@ -348,6 +348,9 @@ export class SeedBootstrapService {
    * The owner signature does NOT cover the address columns — those are vouched only
    * as far as the owner asserts them, and a peer's own `Sig` (when present) is what
    * makes the row resolvable.
+   *
+   * Wrapped in {@link ControlDatabase.mutateCadrePeer} so the admitted peer's traffic is
+   * let in by the write itself — see that method for why the seam lives on the control DB.
    */
   private async insertCadrePeerRow(row: {
     peerId: string;
@@ -366,14 +369,16 @@ export class SeedBootstrapService {
     const stampId = generateStampId(row.peerId);
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
-    // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
-    // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
-    // reader can later re-check the voucher against its node-local trusted-owner anchor.
-    await db.exec(`
-      insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
-        with context OwnerKey = ?, Signature = ?
-        values (?, ?, ?, ?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.ownerPublicKey, signature]);
+    await this.controlDatabase.mutateCadrePeer('peer-insert', async () => {
+      // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
+      // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
+      // reader can later re-check the voucher against its node-local trusted-owner anchor.
+      await db.exec(`
+        insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
+          with context OwnerKey = ?, Signature = ?
+          values (?, ?, ?, ?, ?, ?, ?, ?)
+      `, [this.ownerPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.ownerPublicKey, signature]);
+    });
   }
 
   /**
@@ -543,29 +548,33 @@ export class SeedBootstrapService {
     log('Removing peer: %s', peerId);
 
     const db = this.controlDatabase.getDatabase();
-    await db.beginTransaction();
-    try {
-      await db.exec(`
-        delete from CadreControl.CadrePeer
-          with context OwnerKey = ?, Signature = ?
-          where PeerId = ?
-      `, [this.ownerPublicKey, signature, peerId]);
-      await db.exec(`
-        insert into CadreControl.Revocation (TableName, RowKey, StampId)
-          with context OwnerKey = ?, Signature = ?
-          values ('CadrePeer', ?, ?)
-      `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
-      await db.commit();
-    } catch (error) {
-      // A failed commit() already tears down the transaction, so rollback() would
-      // throw "No transaction active" and mask the real cause — swallow only that.
+    // The transaction lives INSIDE the mutateCadrePeer body, so the membership notify
+    // lands strictly after commit() and a rolled-back removal throws out without notifying.
+    await this.controlDatabase.mutateCadrePeer('peer-remove', async () => {
+      await db.beginTransaction();
       try {
-        await db.rollback();
-      } catch (rollbackError) {
-        log('Rollback after removePeer failure was a no-op: %s', rollbackError);
+        await db.exec(`
+          delete from CadreControl.CadrePeer
+            with context OwnerKey = ?, Signature = ?
+            where PeerId = ?
+        `, [this.ownerPublicKey, signature, peerId]);
+        await db.exec(`
+          insert into CadreControl.Revocation (TableName, RowKey, StampId)
+            with context OwnerKey = ?, Signature = ?
+            values ('CadrePeer', ?, ?)
+        `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
+        await db.commit();
+      } catch (error) {
+        // A failed commit() already tears down the transaction, so rollback() would
+        // throw "No transaction active" and mask the real cause — swallow only that.
+        try {
+          await db.rollback();
+        } catch (rollbackError) {
+          log('Rollback after removePeer failure was a no-op: %s', rollbackError);
+        }
+        throw error;
       }
-      throw error;
-    }
+    });
 
     log('Peer %s removed successfully (stamp retired)', peerId);
   }
@@ -619,12 +628,18 @@ export class SeedBootstrapService {
     }
     const signature = this.signDigest(cadrePeerVoucherDigest(peerId, stampId));
     const db = this.controlDatabase.getDatabase();
-    await db.exec(`
-      update CadreControl.CadrePeer
-        with context OwnerKey = ?, Signature = ?
-        set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?
-        where PeerId = ?
-    `, [this.ownerPublicKey, signature, updatedAt, this.ownerPublicKey, signature, peerId]);
+    // Notifies like the insert/remove paths even though this is "only" a re-touch: it
+    // rewrites VouchOwner/VouchSig, which the authorized-membership predicate judges on, so
+    // it CAN change the member set. Keeping the rule uniform ("every CadrePeer mutator
+    // notifies") beats a per-method exception the next reader has to relearn.
+    await this.controlDatabase.mutateCadrePeer('peer-reauthorize', async () => {
+      await db.exec(`
+        update CadreControl.CadrePeer
+          with context OwnerKey = ?, Signature = ?
+          set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?
+          where PeerId = ?
+      `, [this.ownerPublicKey, signature, updatedAt, this.ownerPublicKey, signature, peerId]);
+    });
     log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
   }
 
