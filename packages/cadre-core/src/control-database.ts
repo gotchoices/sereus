@@ -514,16 +514,19 @@ export class ControlDatabase {
   }
 
   /**
-   * `CadrePeer` stamp nonce — bound into {@link cadrePeerRemoveDigest} /
-   * {@link cadrePeerVoucherDigest} by the owner delete / re-touch paths.
+   * `CadrePeer` stamp nonce — bound into {@link cadrePeerVoucherDigest} by the owner
+   * re-touch path, and read by {@link SeedBootstrapService.removePeer} as its
+   * row-present gate before it delegates to {@link deleteGuardedRow}.
    */
   queryCadrePeerStampId(peerId: string): Promise<string | null> {
     return this.queryStampId('CadrePeer', 'PeerId', peerId);
   }
 
   /**
-   * `DeviceToken` stamp nonce — bound into {@link deviceTokenRemoveDigest} by
-   * {@link SeedBootstrapService.deleteDeviceToken}.
+   * `DeviceToken` stamp nonce. The delete path reads the stamp inside
+   * {@link deleteGuardedRow}, so this is the public reader for callers (tests, tooling)
+   * that need to observe a live row's nonce — the `DeviceToken` member of the same
+   * four-table set as {@link queryStrandStampId} / {@link queryValidationKeyStampId}.
    */
   queryDeviceTokenStampId(peerId: string): Promise<string | null> {
     return this.queryStampId('DeviceToken', 'PeerId', peerId);
@@ -756,7 +759,7 @@ export class ControlDatabase {
    * the `Revocation` tombstone retiring the row's StampId commit in ONE transaction —
    * `Strand.RevocationRecorded` refuses a bare delete, and without the tombstone the
    * stamp would free up and the original formation approval could re-seat the strand.
-   * Transaction shape mirrors {@link SeedBootstrapService.removePeer}.
+   * Body shared with every other guarded delete via {@link deleteGuardedRow}.
    *
    * The remove digest binds only (Id, StampId) — not Type/MemberPrivateKey — so this
    * works identically for open and closed strands.
@@ -818,7 +821,8 @@ export class ControlDatabase {
    * removal. The delete and the `Revocation` tombstone retiring the row's StampId commit
    * in ONE transaction — `ValidationKey.RevocationRecorded` refuses a bare delete, and
    * without the tombstone the stamp would free up and the original enrollment approval
-   * could re-seat the key. Transaction shape mirrors {@link SeedBootstrapService.removePeer}.
+   * could re-seat the key. Body shared with every other guarded delete via
+   * {@link deleteGuardedRow}.
    *
    * A no-op (no throw, no tombstone) when the row does not exist.
    */
@@ -832,11 +836,19 @@ export class ControlDatabase {
 
   /**
    * Owner-signed delete of one guarded row plus the `Revocation` tombstone retiring its
-   * stamp, in ONE transaction. Shared body of {@link deleteStrand} /
-   * {@link deleteValidationKey}; see either for the security rationale.
+   * stamp, in ONE transaction. The single body behind EVERY guarded delete —
+   * {@link deleteStrand}, {@link deleteValidationKey}, and (via the same public entry
+   * point) {@link SeedBootstrapService.removePeer} /
+   * {@link SeedBootstrapService.deleteDeviceToken}; see any of them for the per-table
+   * security rationale. `OwnerKey` is excluded from `table`: it only ever takes a genesis
+   * insert, never a delete.
    *
    * The row's CURRENT stamp is read first and signed over, so the remove digest binds to
    * this exact row instance. A no-op (no throw, no tombstone) when the row is absent.
+   *
+   * Public because `SeedBootstrapService` owns the `CadrePeer` / `DeviceToken` delete
+   * entry points (they carry the membership-notify wrapper and the owner-key
+   * precondition) but must not re-derive this body.
    *
    * NOTE: the stamp read is outside the transaction. A concurrent writer that removes
    * the row in between makes the signature bind a stamp that is no longer live; the
@@ -848,8 +860,8 @@ export class ControlDatabase {
    * `table` / `keyColumn` are interpolated into the SQL and typed as closed literal
    * unions — no caller-supplied string reaches the statement.
    */
-  private async deleteGuardedRow(
-    table: Extract<RevocableTable, 'Strand' | 'ValidationKey'>,
+  async deleteGuardedRow(
+    table: Exclude<RevocableTable, 'OwnerKey'>,
     keyColumn: GuardedKeyColumn,
     keyValue: string,
     ownerKey: string,
@@ -895,15 +907,18 @@ export class ControlDatabase {
    * cause — that secondary throw is logged and swallowed, and the original error always
    * propagates.
    *
-   * Public because `SeedBootstrapService` writes its own owner-signed delete/tombstone
-   * pairs against {@link getDatabase} and must not re-derive this shape. It opens a
-   * transaction unconditionally (Quereus hard-throws on a nested `beginTransaction`), so a
-   * caller already inside one must not call it. A `CadrePeer` write nests this INSIDE
-   * {@link mutateCadrePeer}, never the reverse — see {@link assertCommitBoundary}.
+   * It opens a transaction unconditionally (Quereus hard-throws on a nested
+   * `beginTransaction`), so a caller already inside one must not call it. A `CadrePeer`
+   * write nests this INSIDE {@link mutateCadrePeer}, never the reverse — see
+   * {@link assertCommitBoundary}.
+   *
+   * Private again now that every owner-signed delete/tombstone pair goes through
+   * {@link deleteGuardedRow}: no caller outside this class composes its own multi-statement
+   * control transaction, so re-widening this is a sign a writer belongs in here instead.
    *
    * @param label - What the transaction was doing, for the rollback log line.
    */
-  async inTransaction(label: string, body: () => Promise<void>): Promise<void> {
+  private async inTransaction(label: string, body: () => Promise<void>): Promise<void> {
     this.ensureInitialized();
     await this.db!.beginTransaction();
     try {

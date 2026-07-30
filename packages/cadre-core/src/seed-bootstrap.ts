@@ -23,7 +23,7 @@ import type {
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
-import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest, deviceTokenRemoveDigest, revocationDigest } from './peer-authorization.js';
+import { cadrePeerVoucherDigest, deviceTokenAddDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -417,50 +417,34 @@ export class SeedBootstrapService {
    * Owner-signed DELETE of a peer's `DeviceToken` row (logout / token
    * invalidation). The `DeviceToken.AuthorizedDelete` constraint validates an owner
    * signature over the 'remove'-tagged digest bound to the STORED row's
-   * (PeerId, StampId) ({@link deviceTokenRemoveDigest}) — deliberately distinct from
-   * the insert digest, so a captured insert approval can never be replayed to clear a
-   * token. Like {@link removePeer} for `CadrePeer`, clearing a token requires the
-   * owner key.
+   * (PeerId, StampId) — deliberately distinct from the insert digest, so a captured
+   * insert approval can never be replayed to clear a token. Like {@link removePeer}
+   * for `CadrePeer`, clearing a token requires the owner key.
    *
    * The delete and the `Revocation` tombstone retiring the row's `StampId` commit in
    * ONE transaction — `DeviceToken.RevocationRecorded` refuses a bare delete, and
    * without the tombstone the stamp would free up and the never-expiring insert
    * approval (which the cleared device holds a copy of) would re-seat the token. The
-   * tombstone carries its OWN owner signature ({@link revocationDigest}): retiring a
-   * stamp permanently forecloses that row, so it is an owner action in its own right.
+   * tombstone carries its OWN owner signature: retiring a stamp permanently forecloses
+   * that row, so it is an owner action in its own right.
    *
-   * A no-op when the row is already absent (mirrors {@link removePeer}).
+   * Both digests, the stamp read, and the transaction come from
+   * {@link ControlDatabase.deleteGuardedRow} — the one implementation of this shape,
+   * shared with `CadrePeer` / `Strand` / `ValidationKey`. A no-op when the row is
+   * already absent (that check lives in the helper; unlike {@link removePeer} nothing
+   * here rides on it).
    */
   async deleteDeviceToken(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE the DB read, so a non-owner gets the
     // owner-key error rather than a silent no-op on an absent row.
-    this.requireOwnerPrivateKey();
+    const ownerKey = this.requireOwnerPublicKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    const stampId = await this.controlDatabase.queryDeviceTokenStampId(peerId);
-    if (stampId === null) {
-      log('deleteDeviceToken: no DeviceToken row for %s (already absent)', peerId);
-      return;
-    }
-    const signature = this.signDigest(deviceTokenRemoveDigest(peerId, stampId));
-    const revocationSignature = this.signDigest(revocationDigest('DeviceToken', peerId, stampId));
-
-    const db = this.controlDatabase.getDatabase();
-    await this.controlDatabase.inTransaction('deleteDeviceToken', async () => {
-      await db.exec(`
-        delete from CadreControl.DeviceToken
-          with context OwnerKey = ?, Signature = ?
-          where PeerId = ?
-      `, [this.ownerPublicKey, signature, peerId]);
-      await db.exec(`
-        insert into CadreControl.Revocation (TableName, RowKey, StampId)
-          with context OwnerKey = ?, Signature = ?
-          values ('DeviceToken', ?, ?)
-      `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
-    });
-
-    log('Device token removed (owner-signed, stamp retired): %s', peerId);
+    await this.controlDatabase.deleteGuardedRow(
+      'DeviceToken', 'PeerId', peerId, ownerKey,
+      message => this.signMessageBytes(message),
+    );
   }
 
   /**
@@ -479,11 +463,27 @@ export class SeedBootstrapService {
   }
 
   /**
+   * The owner PUBLIC key that rides in every owner-signed write's context, non-null.
+   *
+   * The field is nullable because a read-only service carries no owner key at all, but the
+   * constructor derives the public key whenever `ownerPrivateKey` is set — so gating on
+   * {@link requireOwnerPrivateKey} first makes the pair inseparable and the second throw
+   * unreachable. Callers that must reject a keyless service BEFORE any DB read use this as
+   * their first line and get the owner-key precondition for free.
+   */
+  private requireOwnerPublicKey(): string {
+    this.requireOwnerPrivateKey();
+    if (!this.ownerPublicKey) {
+      throw new Error('Owner public key required to authorize peers');
+    }
+    return this.ownerPublicKey;
+  }
+
+  /**
    * Sign a base64url digest with the owner key (ed25519). The single place the
    * owner private key is applied; callers pass the canonical domain-tagged digest for
-   * the specific action ({@link cadrePeerVoucherDigest} / {@link cadrePeerRemoveDigest} /
-   * {@link deviceTokenAddDigest} / {@link deviceTokenRemoveDigest}). Throws if no
-   * owner key is set.
+   * the specific action ({@link cadrePeerVoucherDigest} / {@link deviceTokenAddDigest}),
+   * or the raw-bytes form via {@link signMessageBytes}. Throws if no owner key is set.
    */
   private signDigest(digestB64url: string): string {
     return sign(
@@ -497,62 +497,72 @@ export class SeedBootstrapService {
   }
 
   /**
+   * Adapt {@link ControlDatabase.deleteGuardedRow}'s raw-bytes `signMessage` callback to
+   * {@link signDigest}'s base64url-string form. Both encodings hash to the same signed
+   * bytes (`sign` decodes its base64url input), so a signature minted here satisfies the
+   * same schema CHECK as one from the callers that sign the bytes directly — see
+   * `control-revocation-replay.spec.ts`'s "raw-bytes and digest-string signers agree".
+   */
+  private signMessageBytes(message: Uint8Array): string {
+    return this.signDigest(uint8ArrayToString(message, 'base64url'));
+  }
+
+  /**
    * Remove a peer from the cadre by owner signature.
    *
    * The `CadrePeer.AuthorizedDelete` (`check on delete`) constraint validates a
    * signature over the DISTINCT 'remove'-tagged digest
-   * `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)`
-   * ({@link cadrePeerRemoveDigest}) by an owner key — deliberately NOT the
-   * insert voucher digest, so the row's stored `VouchSig` can never be replayed to delete.
+   * `digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId)` by an owner
+   * key — deliberately NOT the insert voucher digest, so the row's stored `VouchSig` can
+   * never be replayed to delete.
    *
    * The delete and the `Revocation` tombstone retiring the row's `StampId` commit in ONE
    * transaction — `CadrePeer.RevocationRecorded` refuses a bare delete, and without the
    * tombstone the stamp would free up and the original admission approval (which never
    * expires, and which the removed peer holds a copy of) would re-seat the row.
    *
-   * The tombstone is separately owner-signed ({@link revocationDigest}, satisfying
-   * `Revocation.Authorized`): retiring a stamp evicts that peer party-wide and permanently
-   * forecloses re-admitting the row, so it is an owner action in its own right, not a
-   * side effect the delete's signature covers.
+   * The tombstone is separately owner-signed (satisfying `Revocation.Authorized`):
+   * retiring a stamp evicts that peer party-wide and permanently forecloses re-admitting
+   * the row, so it is an owner action in its own right, not a side effect the delete's
+   * signature covers.
+   *
+   * Both digests, the stamp read, and the transaction come from
+   * {@link ControlDatabase.deleteGuardedRow} — the one implementation of this shape,
+   * shared with `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
+   * membership wrapper and the absent-row gate it depends on (below).
    */
   async removePeer(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
     // remove digest, and this precedence (owner key, then control DB) is what the
     // unit contract asserts.
-    this.requireOwnerPrivateKey();
+    const ownerKey = this.requireOwnerPublicKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // Delete is authorized by a signature over a DISTINCT 'remove'-scoped digest bound to
-    // the row's CURRENT StampId — so the row's stored voucher (a signature over the
-    // voucher digest) can never be replayed to authorize a delete.
+    // This absent-row gate must stay OUTSIDE mutateCadrePeer, even though
+    // deleteGuardedRow repeats it internally: mutateCadrePeer notifies whenever its body
+    // resolves, with no idea whether the body wrote anything, so delegating an absent
+    // peer would fire a spurious membership notification.
     const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
       log('removePeer: no CadrePeer row for %s (already absent)', peerId);
       return;
     }
-    const signature = this.signDigest(cadrePeerRemoveDigest(peerId, stampId));
-    const revocationSignature = this.signDigest(revocationDigest('CadrePeer', peerId, stampId));
 
     log('Removing peer: %s', peerId);
 
     const controlDatabase = this.controlDatabase;
-    const db = controlDatabase.getDatabase();
-    // The transaction lives INSIDE the mutateCadrePeer body, so the membership notify
-    // lands strictly after commit() and a rolled-back removal throws out without notifying.
+    // The transaction lives INSIDE the mutateCadrePeer body (deleteGuardedRow opens its
+    // own), so the membership notify lands strictly after commit() and a rolled-back
+    // removal throws out without notifying.
+    // NOTE: deleteGuardedRow re-reads the StampId, so a peer removed by another writer
+    // between the two reads no-ops silently yet still notifies. Narrow concurrent-removal
+    // window only — the common "already absent" case is caught by the gate above.
     await controlDatabase.mutateCadrePeer('peer-remove', () =>
-      controlDatabase.inTransaction('removePeer', async () => {
-        await db.exec(`
-          delete from CadreControl.CadrePeer
-            with context OwnerKey = ?, Signature = ?
-            where PeerId = ?
-        `, [this.ownerPublicKey, signature, peerId]);
-        await db.exec(`
-          insert into CadreControl.Revocation (TableName, RowKey, StampId)
-            with context OwnerKey = ?, Signature = ?
-            values ('CadrePeer', ?, ?)
-        `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
-      }));
+      controlDatabase.deleteGuardedRow(
+        'CadrePeer', 'PeerId', peerId, ownerKey,
+        message => this.signMessageBytes(message),
+      ));
 
     log('Peer %s removed successfully (stamp retired)', peerId);
   }
