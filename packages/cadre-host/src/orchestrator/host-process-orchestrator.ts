@@ -23,6 +23,7 @@ import type {
 } from '@serfab/cadre-provider';
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
+import { ensureNodeIdentity } from './node-identity.js';
 import { PortAllocator } from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
@@ -217,10 +218,26 @@ export class HostProcessOrchestrator implements Orchestrator {
     return dead;
   }
 
+  /**
+   * Spawn a generic managed node — the donated-node path (the requester's cadre,
+   * pinned to the *requester's* owner key). The node is given its own protobuf
+   * identity key inside its workdir (`ensureNodeIdentity`, reused across
+   * re-spawns of the same containerId), which is what makes its peer id stable
+   * across restarts AND what makes its node-local stores durable: `cadre-cli
+   * start` opens the file-backed bootstrap-peer and trusted-owner stores only
+   * when a protobuf identity key file is configured, and puts them beside it.
+   * Terminating the loan (`removeContainer`) deletes the workdir, so the key and
+   * both stores go with it.
+   */
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     const ports: NodePorts = {
       health: this.portAllocator.allocate(),
       metrics: this.portAllocator.allocate(),
+      // NOTE: the p2p port is re-allocated per spawn, so a re-spawned donated
+      // node keeps its peer id but may announce a different port. Recoverable —
+      // it dials out to its retained bootstrap peers and republishes its own
+      // CadrePeer row once connected. If that reconnect ever proves too slow,
+      // pin the p2p port per containerId (see backlog/bug-donated-nodes-never-respawned).
       p2p: this.portAllocator.allocate(),
       admin: this.portAllocator.allocate(),
     };
@@ -239,14 +256,18 @@ export class HostProcessOrchestrator implements Orchestrator {
     const extraEnv = request.pinnedOwnerKeys?.length
       ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
       : undefined;
+    const workdir = this.workdirFor(request.containerId);
+    mkdirSync(workdir, { recursive: true });
+    const identity = await ensureNodeIdentity(workdir);
+    log('container %s identity peerId=%s', request.containerId, identity.peerId);
     return this.launchChild({
       containerId: request.containerId,
       partyId: request.partyId,
       profile: request.profile,
       ports,
       owner: false,
-      buildConfig: (workdir) => this.buildChildConfig(request, workdir, push),
-      extraArgs: [],
+      buildConfig: () => this.buildChildConfig(request, workdir, push),
+      extraArgs: ['--identity-protobuf', identity.path],
       ...(extraEnv ? { extraEnv } : {}),
       ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
     });
@@ -394,7 +415,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     memoryLimit?: string;
   }): OrchestratorCreateResult {
     const { containerId, ports } = opts;
-    const workdir = join(this.rootDir, containerId);
+    const workdir = this.workdirFor(containerId);
     mkdirSync(workdir, { recursive: true });
     mkdirSync(join(workdir, 'storage'), { recursive: true });
 
@@ -518,6 +539,11 @@ export class HostProcessOrchestrator implements Orchestrator {
       seedToken,
       p2pPort: ports.p2p,
     };
+  }
+
+  /** A managed node's own directory under `rootDir` — config, log, storage, identity. */
+  private workdirFor(containerId: string): string {
+    return join(this.rootDir, containerId);
   }
 
   /** Locate the owner node's handle, if one has been spawned. */
