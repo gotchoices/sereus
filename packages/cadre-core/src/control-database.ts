@@ -794,13 +794,14 @@ export class ControlDatabase {
    * The remove digest binds only (Id, StampId) — not Type/MemberPrivateKey — so this
    * works identically for open and closed strands.
    *
-   * A no-op (no throw, no tombstone) when the row does not exist.
+   * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
+   * when a row was actually removed.
    */
   deleteStrand(
     strandId: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage);
   }
 
@@ -854,13 +855,14 @@ export class ControlDatabase {
    * could re-seat the key. Body shared with every other guarded delete via
    * {@link deleteGuardedRow}.
    *
-   * A no-op (no throw, no tombstone) when the row does not exist.
+   * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
+   * when a row was actually removed.
    */
   deleteValidationKey(
     key: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage);
   }
 
@@ -881,13 +883,14 @@ export class ControlDatabase {
    * gates on {@link queryCadrePeerStampId} first (see
    * {@link SeedBootstrapService.removePeer}).
    *
-   * A no-op (no throw, no tombstone) when the row does not exist.
+   * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
+   * when a row was actually removed.
    */
   deleteCadrePeer(
     peerId: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.mutateCadrePeer('peer-remove', () =>
       this.deleteGuardedRow('CadrePeer', peerId, ownerKey, signMessage));
   }
@@ -902,13 +905,14 @@ export class ControlDatabase {
    * never-expiring insert approval (which the cleared device holds a copy of) could
    * re-seat the token.
    *
-   * A no-op (no throw, no tombstone) when the row does not exist.
+   * A no-op (no throw, no tombstone) when the row does not exist — `false` then, `true`
+   * when a row was actually removed.
    */
   deleteDeviceToken(
     peerId: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<void> {
+  ): Promise<boolean> {
     return this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage);
   }
 
@@ -927,7 +931,10 @@ export class ControlDatabase {
    * needs no change.
    *
    * The row's CURRENT stamp is read first and signed over, so the remove digest binds to
-   * this exact row instance. A no-op (no throw, no tombstone) when the row is absent.
+   * this exact row instance. A no-op (no throw, no tombstone) when the row is absent —
+   * reported as `false` so a caller can tell "removed" from "was never there" without a
+   * second read (e.g. {@link CadreNode.unpublishStrand}'s committed-while-alone warning,
+   * which must not fire for a no-op).
    *
    * NOTE: the stamp read is outside the transaction. A concurrent writer that removes
    * the row in between makes the signature bind a stamp that is no longer live; the
@@ -944,12 +951,12 @@ export class ControlDatabase {
     keyValue: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
-  ): Promise<void> {
+  ): Promise<boolean> {
     this.ensureInitialized();
     const stampId = await this.queryStampId(table, keyValue);
     if (stampId === null) {
       log('delete %s: no row for %s (already absent)', table, keyValue);
-      return;
+      return false;
     }
 
     const message = buildAuthorizationMessage(`CadreControl.${table}`, 'remove', [keyValue, stampId]);
@@ -975,6 +982,7 @@ export class ControlDatabase {
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
+    return true;
   }
 
   /**

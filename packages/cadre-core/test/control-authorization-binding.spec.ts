@@ -642,7 +642,8 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const before = await revocationCount();
     const key = 'val-missing-' + Math.random().toString(36).slice(2);
 
-    await expect(db.deleteValidationKey(key, ownerPublicKey, signMessage)).resolves.toBeUndefined();
+    // `false` is the signal that nothing was removed — see ControlDatabase.deleteGuardedRow.
+    await expect(db.deleteValidationKey(key, ownerPublicKey, signMessage)).resolves.toBe(false);
 
     expect(await revocationCount()).toBe(before);
   });
@@ -651,7 +652,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     const before = await revocationCount();
     const strandId = 'strand-missing-' + Math.random().toString(36).slice(2);
 
-    await expect(db.deleteStrand(strandId, ownerPublicKey, signMessage)).resolves.toBeUndefined();
+    await expect(db.deleteStrand(strandId, ownerPublicKey, signMessage)).resolves.toBe(false);
 
     expect(await revocationCount()).toBe(before);
   });

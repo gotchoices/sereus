@@ -2969,12 +2969,14 @@ export class CadreNode implements SAppIdLookup {
   async unpublishStrand(strandId: string): Promise<void> {
     const signingKey = this.requireOwnerSigningKey(`unpublish strand ${strandId}`);
     const trimmed = requireNonBlank(strandId, 'strand id');
-    await this.controlDatabase!.deleteStrand(
+    const removed = await this.controlDatabase!.deleteStrand(
       trimmed,
       signingKey.publicKeyB64,
       signMessageWith(signingKey.privateKeyB64)
     );
-    if (this.committedAlone()) {
+    // Gate on `removed`: the absent-row no-op wrote nothing, so warning about an
+    // unreplicated deletion there would send an operator chasing a phantom.
+    if (removed && this.committedAlone()) {
       log('unpublishStrand(%s) committed while ALONE (0 control connections): the deletion is ' +
         'local-only, so other nodes may keep running the strand until re-replication — and a ' +
         'physical delete cannot be replayed without a schema tombstone — see ' +

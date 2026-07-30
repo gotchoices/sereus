@@ -1,90 +1,114 @@
-description: A party owner can now remove one of the party's shared networks: a new node-level operation deletes the shared record so every node in the party stops running that network. Review the implementation, tests, and docs.
+description: Finish reviewing the new "owner removes a shared network party-wide" operation — the first review pass fixed a misleading warning message and ran out of budget before closing a handful of smaller consistency and test-coverage items.
 prereq:
-files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/test/strand-unpublish.spec.ts, packages/cadre-core/test/cadre-node.spec.ts, packages/cadre-core/README.md, docs/architecture.md, docs/STATUS.md
+files: packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/test/strand-unpublish.spec.ts, packages/cadre-core/test/publish-strand.spec.ts, packages/cadre-core/test/control-authorization-binding.spec.ts, packages/cadre-core/README.md, docs/architecture.md, docs/STATUS.md
+difficulty: easy
 ----
 
-## What was built
+<!-- resume-note -->
+Continuation of the review of `feat-strand-removal-node-api`. The first pass ran out of
+token budget after landing two fixes. Everything below is what is left.
 
-Two changes in `packages/cadre-core/src/cadre-node.ts`:
+## What the first pass already did
 
-- **`CadreNode.removeStrand` renamed `stopStrand`** (~line 3370) — behaviour unchanged:
-  local-only stop, the shared `Strand` row survives and the strand is rediscovered as
-  `strand:discovered` on the next restart or watcher poll. Doc comment now says exactly
-  that and points at `unpublishStrand` for party-wide removal. Both spec call sites in
-  `cadre-node.spec.ts` updated; zero `removeStrand` references remain.
-- **New `CadreNode.unpublishStrand(strandId)`** (~line 2969, right after `publishStrand`)
-  — the owner-signed party-wide inverse of `publishStrand`, and the first caller of
-  `ControlDatabase.deleteStrand`. Flow: `requireOwnerSigningKey` → `requireNonBlank` →
-  `deleteStrand` (row + `Revocation` tombstone in one transaction) → loud log if
-  committed while alone (0 control connections; NOT queued for re-issue — see gaps) →
-  `strandWatcher?.forcePoll()` → explicit `stopStrand` if a local instance still runs →
-  success log. Sibling nodes converge on their own next watcher poll (default 5 s).
+**Read** the implement diff (`git show 2578979` and `git show 00d6647`), the surrounding
+code (`CadreNode.publishStrand` / `unpublishStrand` / `stopStrand`, `StrandWatcher.poll` +
+`forcePoll`, `CadreNode.handleStrandRemoved`, `StrandInstanceManager.stopStrand` /
+`releaseRuntime`, `ControlDatabase.deleteGuardedRow`, and the `Strand` / `FormationUsage` /
+`Revocation` constraints in `schemas/control.qsql`), plus every doc the change touched.
 
-Docs: README API table (`stopStrand` / `publishStrand` / `unpublishStrand` rows);
-`docs/architecture.md` Strand Membership Bootstrap item 1 gained a party-wide-removal
-paragraph cross-referencing the delete-while-alone durability bullet; `docs/STATUS.md`
-gained a `[x]` bullet under "Inviting another user / cross-party strand formation".
-Note: the STATUS.md entry the original ticket wanted amended ("nothing calls
-`deleteStrand`") never existed — a new bullet was added instead.
+**Fixed inline (already in the working tree):**
 
-## Semantics worth reviewing (all deliberate, doc-commented)
+- `ControlDatabase.deleteGuardedRow` now returns `Promise<boolean>` — `true` when a row was
+  actually deleted, `false` for the absent-row no-op — and all four wrappers
+  (`deleteStrand` / `deleteValidationKey` / `deleteCadrePeer` / `deleteDeviceToken`)
+  propagate it. Reason: `unpublishStrand` logged its "committed while ALONE, the deletion is
+  local-only and cannot be replayed" warning unconditionally, so unpublishing a
+  never-published id from a node with no control connections printed a durability warning
+  about a deletion that never happened. It now logs only when `removed` is true. Two
+  assertions in `control-authorization-binding.spec.ts` moved from
+  `.resolves.toBeUndefined()` to `.resolves.toBe(false)`.
 
-- Owner-only: approval is the node's own owner key; no cross-party agreement. Removing
-  the row removes THIS party's participation only — other parties keep their rows.
-- Closed strand (`Type='c'`): the row's `MemberPrivateKey` is destroyed with it,
-  irreversibly (stored nowhere else). The CLI confirmation gate is sibling ticket
-  `feat-strand-removal-cli` (implement/5.1, prereq on this slug).
-- The id is NOT blacklisted: owner re-publish re-seats it on a fresh stamp; only the
-  unsigned consent re-seat is foreclosed forever (tombstone `RowKey`).
-- Absent row: silent no-op (no throw, no tombstone) — but a locally-running instance of
-  that id is still stopped.
-- Error shapes DIFFER by design: `stopStrand` keeps its pre-existing
-  `'CadreNode not running'`; `unpublishStrand` throws
-  `must be started before attempting to unpublish strand …` via `requireOwnerSigningKey`,
-  which runs BEFORE the blank-id check (matches `removeValidationKey` ordering).
+**Verified green after those edits:** `yarn build`, `yarn lint` (exit 0), and
+`yarn --cwd packages/cadre-core test` → **74 files / 1162 passed, 1 skipped** (the
+pre-existing win32 `skipIf` in `key-store.spec.ts`). The stale-build guard tripped first on
+the linked sibling workspace; `yarn workspace @quereus/quereus build` run from
+`C:\projects\quereus` cleared it (same build drift already recorded in
+`tickets/.pre-existing-known.md`) — expect to need that again.
 
-## Test coverage (`test/strand-unpublish.spec.ts`, 7 tests, all green)
+**Checked and found sound — do not re-derive:**
 
-Harness copied from `validation-key-enrollment.spec.ts` (self-owner node: libp2p key =
-owner key, enrolled in `OwnerKey`). Covers: publish→unpublish removes row + files
-`Revocation` tombstone retiring the pre-read stamp; never-published id no-op (no
-tombstone); blank/whitespace id rejected `/required/i` before any write; stopped-node
-error shapes for both methods; closed-strand row + `MemberPrivateKey` destruction;
-re-publish after unpublish on a fresh stamp; local convergence — a running instance
-(`addStrand` + `publishStrand`) is stopped by the time `unpublishStrand` resolves (pins
-the force-poll + explicit-stop step, no 5 s wait).
+- The rename `removeStrand` → `stopStrand` is complete: zero `removeStrand` references
+  remain in `src/`, tests, or docs (the `removeStrand` hits in
+  `control-revocation-replay.spec.ts` are that file's own local test helper, unrelated).
+- The double-stop path is safe. `forcePoll()` drives `handleStrandRemoved` for a strand the
+  watcher tracked (deletes the sApp config, untracks hibernation, stops the instance, emits
+  `strand:stopped`); the explicit `getInstance(...)` + `stopStrand(...)` afterwards covers a
+  strand the watcher's filter never admitted. `StrandInstanceManager.stopStrand` no-ops on
+  an unknown id, and `handleStrandRemoved` deletes the instance before the explicit branch
+  reads it, so `strand:stopped` fires exactly once either way.
+- Deleting a `Strand` row cannot orphan or break `FormationUsage`: its `StrandExists` CHECK
+  is evaluated at insert time only, and the formation recorder already resolves an absent
+  host strand as missing.
+- The error-shape asymmetry between `stopStrand` (`'CadreNode not running'`) and
+  `unpublishStrand` (`requireOwnerSigningKey`'s started-guard message) is deliberate,
+  documented, and matches `removeValidationKey`'s ordering.
+- The delete-while-alone log text overlaps `noteControlWrite`'s remove branch, but the two
+  say genuinely different things (peer removal is queued in `pendingPeerWrites` for a
+  best-effort re-issue; a strand unpublish deliberately is not). Deliberately NOT merged — a
+  shared helper would have to erase that distinction. No action wanted.
 
-Deliberately NOT re-tested (pinned at DB layer by `control-authorization-binding.spec.ts`
-and `control-revocation-replay.spec.ts`): non-owner signer refused, add-approval replay
-refused, tombstone transactionality, owner re-publish mechanics.
+## What is left
 
-## Validation run
+- **`publishStrand` / `unpublishStrand` input-validation asymmetry.** `unpublishStrand` runs
+  `requireNonBlank(strandId, 'strand id')` and writes the *trimmed* id; `publishStrand`
+  validates nothing and writes the raw id. So a strand published as `' foo '` can never be
+  unpublished by passing the same string back (the trimmed lookup misses and the call
+  silently no-ops), and a blank id reaches the database as an opaque constraint error on
+  publish but an actionable one on unpublish. Add `requireNonBlank` to `publishStrand` for
+  symmetry with the `enrollValidationKey` / `removeValidationKey` pair, and cover it with a
+  blank-id test in `publish-strand.spec.ts`. No back-compat concern.
 
-- `yarn build` — green.
-- `yarn lint` — exit 0.
-- `yarn dep-check` — green (knip unused-export listing pre-existing, exit 0).
-- `yarn --cwd packages/cadre-core test` — **74 files / 1162 passed, 1 skipped
-  (pre-existing skip, untouched)**; includes the new spec.
-- Caveat: a later single-file re-run tripped the stale-build guard because
-  `../quereus` (linked sibling workspace) has in-flight human edits newer than its dist.
-  Not this repo, not rebuilt from here. If tests fail on stale-build at review time, run
-  `yarn workspace @quereus/quereus build` in `C:\projects\quereus` first.
+- **Three test gaps in `test/strand-unpublish.spec.ts`.** The spec is otherwise solid; these
+  are claims the code and its doc comment make that nothing pins:
+  - The doc says an absent row is a no-op "but a locally-running instance of that id is
+    still stopped". Untested — the existing no-op test never starts an instance. Add
+    `addStrand` *without* `publishStrand`, then `unpublishStrand`, and assert the instance is
+    gone. This is the branch the explicit `getInstance` + `stopStrand` step exists for, so
+    without it that step could be deleted and every test would still pass.
+  - The `strand:stopped` emission on the unpublish path is asserted nowhere — the
+    running-instance test checks instance state only.
+  - `unpublishStrand` throws if the local stop fails *after* the control-plane delete has
+    already committed, so a rejection does not mean the row survived. Not documented in the
+    method's `@throws`; add a sentence.
 
-## Known gaps / review focus
+- **`unpublishStrand` leaves the strand's local durable storage in place.** `stopStrand` →
+  `StrandInstanceManager.releaseRuntime` closes the `StrandDatabase` and stops the libp2p
+  node; nothing purges the on-disk blocks. Defensible (removal is a control-plane
+  operation), but a party owner "removing a shared network" plausibly expects the local copy
+  to go, and for a closed strand the content stays readable on disk. Not a defect — record
+  it as a `NOTE:` tripwire in the `unpublishStrand` doc comment stating explicitly that
+  local storage is retained, and index it in `## Review findings`. Do not file a ticket.
 
-- **No multi-node test**: sibling-node convergence (another node's watcher observing the
-  missing row and stopping its instance) is asserted only by reasoning over the existing
-  watcher path, not by an integration test. `handleStrandRemoved` itself is pre-existing
-  code, but nothing end-to-end exercises unpublish across two live nodes.
-- **Delete-while-alone**: an unpublish committed with 0 control connections is local-only
-  and does not propagate — logged loudly, deliberately NOT queued in `pendingPeerWrites`
-  (a physical delete cannot be re-issued; the schema tombstone fix is
-  `plan/control-delete-while-alone-tombstone`). This ticket only inherits the known gap.
-- **Events not pinned**: the spec asserts instance state, not the `strand:stopped`
-  emission on the unpublish path.
-- **Non-owner refusal through the node wrapper** untested (DB layer covers it; the
-  wrapper always signs with the node's own key, so the only node-level failure mode is
-  an unenrolled self key — same shape `validation-key-enrollment.spec.ts` pins for
-  enrollment).
-- Operator-facing surface (CLI command, confirmation prompt for closed strands) is
-  sibling `feat-strand-removal-cli` — not reviewable here.
+- **File a `backlog/debt-` ticket for the duplicated self-owner-node test harness.** Five
+  copies of the same "boot a node whose libp2p key is its own enrolled owner key" helper now
+  exist: `publish-strand.spec.ts` (twice — `startSelfOwnerNode` and `startNode`),
+  `publish-formation-invite.spec.ts`, `validation-key-enrollment.spec.ts`, and the new
+  `strand-unpublish.spec.ts`. This is a *different* duplication from the existing
+  `backlog/debt-strand-spec-helpers-duplicated` (that one covers strand-database setup
+  helpers), so it needs its own ticket — mention the relationship. The package convention for
+  the fix already exists (`test/control-constraint-helpers.ts`,
+  `test/membership-gate-helpers.ts`).
+
+- **Multi-node convergence remains untested** — the implementer flagged this and it stands:
+  no test exercises a sibling node's watcher observing the missing row and stopping its
+  instance. Decide the disposition (most likely a `backlog/debt-` ticket for a two-node
+  integration test, alongside the existing `plan/10-joiner-db-closed-strand-lifecycle-e2e`)
+  rather than attempting it inline.
+
+## Closing out
+
+Write `complete/5-feat-strand-removal-node-api.md` with a `## Review findings` section
+folding in **both** passes: the two items already fixed above, whatever this pass fixes, the
+tripwires parked in code comments, and the tickets filed. Empty categories are fine if
+stated with a reason. Re-run `yarn build`, `yarn lint`, and
+`yarn --cwd packages/cadre-core test` before handing off; delete this ticket.
