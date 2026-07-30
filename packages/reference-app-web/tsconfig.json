@@ -13,5 +13,9 @@
     "noEmit": true,
     "types": ["svelte", "vite/client"]
   },
-  "include": ["src/**/*.ts", "src/**/*.svelte"]
+  // `test/` and `vitest.config.ts` are in here so a type error in the unit suite
+  // (or a removed vitest option) fails `yarn typecheck` — vitest itself never
+  // type-checks. The Playwright specs need `@playwright/test` types and stay in
+  // `tsconfig.e2e.json`.
+  "include": ["src/**/*.ts", "src/**/*.svelte", "test/**/*.ts", "vitest.config.ts"]
 }

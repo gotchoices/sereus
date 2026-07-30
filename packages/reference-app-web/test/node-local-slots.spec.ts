@@ -1,3 +1,16 @@
+/**
+ * `kvSlot` — the browser's `DurableSlot` over the control database's `kv` store.
+ *
+ * Scope is deliberately narrow. The node-local *store policy* over an arbitrary
+ * slot (cold start, corrupt JSON, foreign partyId, unknown envelope,
+ * discard-all vs drop-entry, synchronous visibility, failed-persist recovery) is
+ * owned and covered by `packages/cadre-core/test/node-local-snapshot.spec.ts`
+ * against its own fake slot — re-asserting it here would only duplicate it.
+ * What this file covers is what web actually owns: `kvSlot` itself, and the
+ * composition of a real `kvSlot` with the two stores — including the two places
+ * the composition could quietly disagree with what the store expects (a
+ * non-string `kv` value, and a read that fails).
+ */
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -20,6 +33,7 @@ async function realPeerId(): Promise<string> {
 class FakeKvHandle {
 	readonly store = new Map<string, string | Uint8Array>();
 	getError: Error | null = null;
+	putError: Error | null = null;
 
 	async get(_storeName: 'kv', key: string): Promise<string | Uint8Array | undefined> {
 		if (this.getError) throw this.getError;
@@ -27,11 +41,18 @@ class FakeKvHandle {
 	}
 
 	async put(_storeName: 'kv', value: string | Uint8Array, key: string): Promise<string> {
+		if (this.putError) throw this.putError;
 		this.store.set(key, value);
 		return key;
 	}
 }
 
+// NOTE: the cast is unchecked — `IDBPDatabase` has far more surface than this
+// double implements, so the compiler cannot hold the two `kv` signatures
+// together. They match `OptimysticWebDB['kv']` (`key: string`,
+// `value: string | Uint8Array`) as of db-p2p-storage-web 0.17; if that store's
+// key or value type changes, this fake keeps compiling while testing the old
+// shape. Pin the two methods against the real type if that ever bites.
 function fakeHandle(): { fake: FakeKvHandle; handle: OptimysticWebDBHandle } {
 	const fake = new FakeKvHandle();
 	return { fake, handle: fake as unknown as OptimysticWebDBHandle };
@@ -46,6 +67,14 @@ describe('kvSlot', () => {
 		// A fresh slot instance, same backing map: proves the slot itself holds no
 		// state, only the map does.
 		expect(await kvSlot(handle, 'k').load()).toBe('hello world');
+	});
+
+	it('keeps distinct keys of one database independent', async () => {
+		const { handle } = fakeHandle();
+		await kvSlot(handle, TRUSTED_OWNERS_KV_KEY).save('owners');
+		await kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY).save('peers');
+		expect(await kvSlot(handle, TRUSTED_OWNERS_KV_KEY).load()).toBe('owners');
+		expect(await kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY).load()).toBe('peers');
 	});
 
 	it('loads undefined (not a throw) for a non-string value already under the key', async () => {
@@ -64,12 +93,27 @@ describe('kvSlot', () => {
 		fake.getError = new Error('IndexedDB blocked');
 		await expect(kvSlot(handle, 'k').load()).rejects.toThrow('IndexedDB blocked');
 	});
+
+	it('rejects on a failed write rather than resolving', async () => {
+		const { fake, handle } = fakeHandle();
+		fake.putError = new Error('quota exceeded');
+		await expect(kvSlot(handle, 'k').save('text')).rejects.toThrow('quota exceeded');
+	});
 });
 
-// ── PersistentTrustedOwnerStore ────────────────────────────────────────────────
+// ── The two node-local stores over a real kvSlot ───────────────────────────────
 
-describe('PersistentTrustedOwnerStore over kvSlot', () => {
-	it('persists a trusted key across a fresh open() of the same slot', async () => {
+describe('node-local stores over kvSlot', () => {
+	/**
+	 * The `kv` keys are a persistence contract: renaming one silently orphans
+	 * every existing tab's anchor and dial targets rather than failing.
+	 */
+	it('pins the kv keys the stores are persisted under', () => {
+		expect(TRUSTED_OWNERS_KV_KEY).toBe('trusted-owners');
+		expect(BOOTSTRAP_PEERS_KV_KEY).toBe('bootstrap-peers');
+	});
+
+	it('persists a trusted owner key across a fresh open() of the same slot', async () => {
 		const { handle } = fakeHandle();
 		const first = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
 		await first.trust('owner-key-b64', 'genesis');
@@ -79,28 +123,7 @@ describe('PersistentTrustedOwnerStore over kvSlot', () => {
 		expect(reopened.all()).toEqual(new Set(['owner-key-b64']));
 	});
 
-	it('a foreign partyId over the same slot cold-starts empty, not a throw', async () => {
-		const { handle } = fakeHandle();
-		const partyA = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-a');
-		await partyA.trust('owner-key-b64', 'genesis');
-
-		const partyB = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-b');
-		expect(partyB.all().size).toBe(0);
-	});
-
-	it('corrupt JSON in the slot cold-starts empty, not a throw', async () => {
-		const { fake, handle } = fakeHandle();
-		fake.store.set(TRUSTED_OWNERS_KV_KEY, '{not valid json');
-
-		const store = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
-		expect(store.all().size).toBe(0);
-	});
-});
-
-// ── PersistentBootstrapPeerStore ────────────────────────────────────────────────
-
-describe('PersistentBootstrapPeerStore over kvSlot', () => {
-	it('persists a recorded peer across a fresh open() of the same slot', async () => {
+	it('persists a bootstrap peer across a fresh open() of the same slot', async () => {
 		const { handle } = fakeHandle();
 		const peer = await realPeerId();
 		const first = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
@@ -111,37 +134,46 @@ describe('PersistentBootstrapPeerStore over kvSlot', () => {
 		expect(reopened.all().get(peer)?.addrs).toEqual(['/ip4/1.2.3.4/tcp/4001/ws']);
 	});
 
-	it('a foreign partyId over the same slot cold-starts empty, not a throw', async () => {
+	// Both records share ONE database with the tab's identity (see the module
+	// header of `node-local-slots.ts`), so their snapshot writes are the one place
+	// they could clobber each other.
+	it('keeps both records side by side in one database', async () => {
 		const { handle } = fakeHandle();
-		const partyA = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-a');
-		await partyA.record(await realPeerId(), ['/ip4/1.1.1.1/tcp/1/ws']);
+		const peer = await realPeerId();
+		const owners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
+		const peers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
+		await owners.trust('owner-key-b64', 'genesis');
+		await peers.record(peer, ['/ip4/1.2.3.4/tcp/4001/ws']);
 
-		const partyB = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-b');
-		expect(partyB.all().size).toBe(0);
+		const reopenedOwners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
+		const reopenedPeers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
+		expect(reopenedOwners.all()).toEqual(new Set(['owner-key-b64']));
+		expect([...reopenedPeers.all().keys()]).toEqual([peer]);
 	});
 
-	it('corrupt JSON in the slot cold-starts empty, not a throw', async () => {
+	// `kv` values are `string | Uint8Array`; `kvSlot` reports a non-string as
+	// absent, so the store must see a cold start rather than a load failure.
+	it('cold-starts empty when the kv value is not text', async () => {
 		const { fake, handle } = fakeHandle();
-		fake.store.set(BOOTSTRAP_PEERS_KV_KEY, '{not valid json');
+		fake.store.set(TRUSTED_OWNERS_KV_KEY, new Uint8Array([1, 2, 3]));
 
-		const store = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
+		const store = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
 		expect(store.all().size).toBe(0);
 	});
 
-	it('drops a structurally junk entry on load but keeps its well-formed sibling', async () => {
+	// The load-bearing half of the same distinction: a genuine IndexedDB fault
+	// must NOT look like a cold start, or the next snapshot write destroys an
+	// intact record. `startCadre` relies on open() rejecting here.
+	it('rejects open() when the database read fails, rather than cold-starting', async () => {
 		const { fake, handle } = fakeHandle();
-		const good = await realPeerId();
-		const envelope = {
-			version: 1,
-			partyId: 'party-1',
-			peers: {
-				[good]: { addrs: ['/ip4/1.1.1.1/tcp/1/ws'], recordedAt: 1 },
-				'junk-entry': { addrs: [], recordedAt: 1 } // empty addrs: structurally unusable
-			}
-		};
-		fake.store.set(BOOTSTRAP_PEERS_KV_KEY, JSON.stringify(envelope));
+		fake.getError = new Error('IndexedDB blocked');
 
-		const store = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
-		expect([...store.all().keys()]).toEqual([good]);
+		await expect(
+			PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1')
+		).rejects.toThrow('IndexedDB blocked');
+		await expect(
+			PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1')
+		).rejects.toThrow('IndexedDB blocked');
+		expect(fake.store.size).toBe(0);
 	});
 });

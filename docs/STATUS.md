@@ -385,6 +385,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 ## Testing / CI
 
 - [ ] Wire `@serfab/strand-proto` tests into workspace CI
+- [x] **`reference-app-web` has a vitest unit suite** (`yarn test` → `vitest run`), previously e2e-only.
+  First spec: `test/node-local-slots.spec.ts` covers `kvSlot` (the browser's `DurableSlot` over the
+  control database's `kv` store) and its composition with the real `PersistentTrustedOwnerStore` /
+  `PersistentBootstrapPeerStore` — the two node-local records' *policy* is covered once, in
+  `packages/cadre-core/test/node-local-snapshot.spec.ts`, and is not re-asserted per platform.
+  Still uncovered: `startCadre`'s own wiring of those stores into a running `CadreNode`.
 - [ ] Add root-level scripts for running package tests consistently (Yarn workspace)
 - [x] **Stale-build guard for `integration-tests`.** Every scenario there runs *compiled* cadre
   output — a spawned real `cadre-cli` child, or an in-process import of `@serfab/cadre-host` /
@@ -415,7 +421,13 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   guard therefore moved out of `integration-tests` to `test-harness/build-freshness.ts` at the repo
   root, exporting `assertBuildFresh(targets)`; each consuming package owns its own target list in its
   own vitest `globalSetup` file (`packages/integration-tests/test/global-setup.ts`,
-  `packages/cadre-core/test/global-setup.ts`). The module is imported by relative path, not as a
+  `packages/cadre-core/test/global-setup.ts`, `packages/reference-app-web/test/global-setup.ts`). The
+  web app's list is a single entry (`@serfab/cadre-core`) and it has no `build-targets.spec.ts`: that
+  package sets `installConfig.hoistingLimits: "workspaces"`, so its `@optimystic/*` / `@quereus/*`
+  copies live in its own `node_modules` while `checkLinkedTarget` resolves `linked` targets from the
+  repo root's — the manifest cross-check would demand entries the guard then reports as "not
+  installed". See backlog `debt-stale-build-guard-hoisting-limited-packages`. The guard caught a real
+  stale `cadre-core` dist the first time it ran there. The module is imported by relative path, not as a
   workspace package, and is never built — a compiled shared package would be consumed from its own
   `dist` and so could be defeated by exactly the staleness it exists to catch. `test-harness/` is
   marked ESM by its own `package.json` (the root manifest has no `"type"`) and is excluded from knip's
@@ -444,8 +456,10 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
 
 - [x] Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 (was 1 of 9)
 - Per-package scope:
-  - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`
-  - Shippable **source only** (`tsconfig.build.json`): `cadre-core`, `cadre-host`, `cadre-provider`, `strand-proto`, `reference-app-web`
+  - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
+    `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
+    specs stay in `tsconfig.e2e.json`, run by the separate `typecheck:e2e` script)
+  - Shippable **source only** (`tsconfig.build.json`): `cadre-core`, `cadre-host`, `cadre-provider`, `strand-proto`
 - Known coverage gaps:
   - `cadre-core` tests and `cadre-host` server tests have pre-existing type drift (libp2p `peerId`→`privateKey`,
     `CadreNodeConfig.privateKey` now `PrivateKey` not `Uint8Array`, `NodePorts.admin` added, implicit-`any` params).

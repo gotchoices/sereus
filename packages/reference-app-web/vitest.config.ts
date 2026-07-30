@@ -1,22 +1,17 @@
 import { defineConfig } from 'vitest/config';
 
 /**
- * Single `node` project: everything under `src/lib` this suite targets
- * (`node-local-slots.ts`) has no DOM/React/Svelte dependency — a plain node
- * environment with a hand-built fake `OptimysticWebDBHandle` is enough, no
- * real IndexedDB needed. Playwright specs under `e2e/` are a separate harness
- * (`test:e2e`), not part of this vitest run.
+ * Plain `node` environment: everything under `src/lib` this suite targets
+ * (`node-local-slots.ts`) has no DOM/Svelte dependency — a hand-built fake
+ * `OptimysticWebDBHandle` is enough, no real IndexedDB needed. Playwright specs
+ * under `e2e/` are a separate harness (`test:e2e`), not part of this run.
  */
 export default defineConfig({
 	test: {
-		projects: [
-			{
-				test: {
-					name: 'node',
-					environment: 'node',
-					include: ['test/**/*.spec.ts'],
-				},
-			},
-		],
+		environment: 'node',
+		include: ['test/**/*.spec.ts'],
+		// Fails the run immediately when @serfab/cadre-core's dist predates its src,
+		// instead of testing a stale build — see test/global-setup.ts.
+		globalSetup: ['./test/global-setup.ts'],
 	},
 });
