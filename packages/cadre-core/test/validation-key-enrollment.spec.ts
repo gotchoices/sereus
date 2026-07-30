@@ -183,11 +183,16 @@ describe('CadreNode validation-key enrollment', () => {
     // The approver is gone, but the join it approved is untouched.
     expect(await node.listValidationKeys()).toEqual([]);
     expect(await db.countFormationUsage(token)).toBe(1);
+    // The approver's key is deliberately NOT a FormationUsage column: it arrives as write-time
+    // `context.ValidationKey`, which only selects WHICH enrolled row the sign-off claims, and the
+    // signature is verified against the stored `ValidationKey.Key` (see FormationUsage.Authorized
+    // in schemas/control.qsql). What must survive the removal is the consent row it authorized,
+    // intact and still naming the same invitation, joiner and strand.
     const usage = await db.getDatabase().get(
-      'select ValidationKey from CadreControl.FormationUsage where UsageStampId = ?',
+      'select Token, PeerId, StrandId from CadreControl.FormationUsage where UsageStampId = ?',
       [usageStampId],
     );
-    expect(usage?.ValidationKey).toBe(approver.publicKey);
+    expect(usage).toMatchObject({ Token: token, PeerId: joiner, StrandId: strandId });
   }, 60_000);
 
   it('rejects an empty or whitespace-only key before any write', async () => {
