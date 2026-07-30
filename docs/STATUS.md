@@ -673,6 +673,24 @@ without consulting a network it knows is empty.
   was added — see the `NOTE:` comments at those three sites. If a control operation can hang again,
   bound it inside cadre-core so every embedder benefits, rather than time-boxing each call site.
 
+### Control DB local write serialization — covered
+
+Every public writer on `ControlDatabase` runs through its process-local write queue
+(`withWriteLock` / `execWrite`), so two of a node's own components never interleave mid-statement —
+see [`architecture.md` → Local write serialization](architecture.md#local-write-serialization).
+
+- [x] `packages/cadre-core/test/control-write-lock.spec.ts` — mutual exclusion and call order on
+  `withWriteLock` itself, raced strand inserts, a bare write raced against two transactional
+  `CadrePeer` mutations, both orderings of the self-publish/authorize first-row race (exactly one
+  row, no UNIQUE violation), and a rejecting locked body followed by a normal write.
+- The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
+  own: control writes are fast in-memory statements and Quereus serializes each one internally
+  (`Database._withMutex`), so a unit-scale race between two of them completes the first before the
+  second starts and passes with or without the lock. Only a body that spans a timer forces the
+  overlap. Keep that case when extending the spec.
+- Gap: the torn-transaction interleave the lock also prevents is asserted only by the
+  `strand-addr-seed-convergence` integration scenario — no unit reproduces it deterministically.
+
 ## Multi-node use-case validation (2026-06-26)
 
 Hands-on debugging of two flows (real cadre-cli processes on localhost + integration
