@@ -36,7 +36,32 @@ const MAX_FORMATION_MSG_SIZE = 1024 * 1024;
 const DEFAULT_SESSION_TIMEOUT_MS = 30_000;
 /** Default per-step (single read/write) timeout (ms). */
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
-/** Default cap on concurrent inbound formation sessions. */
+/**
+ * Default provisioning budget (ms) — distinct from {@link DEFAULT_STEP_TIMEOUT_MS} because
+ * `provisionStrand` is real work (DB writes, and an outbound approval-hook HTTP call once
+ * `feat-formation-approval-wiring` lands), not a bare wire read/write.
+ *
+ * Ordering is deliberate — each layer must be able to fail and report before the layer above
+ * it gives up:
+ *
+ *   approval hook (10 s, feat-formation-approval-client)
+ *     < responder provisioning (12 s)
+ *     < initiator await-response (15 s)
+ *     < session (30 s)
+ *
+ * The 3 s margin between responder provisioning and initiator await-response is the wire
+ * latency budget for the result frame to travel back.
+ */
+const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
+/** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
+const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = 15_000;
+/**
+ * Default cap on concurrent inbound formation sessions.
+ * NOTE: a longer provisioning budget holds a session's slot longer, so a slow hook can
+ * exhaust this cap and make the listener reject fresh joiners with 'Too many concurrent
+ * formation sessions'. Fine at the current default; revisit if `provisionTimeoutMs` is
+ * raised well above its default or this cap is lowered.
+ */
 const DEFAULT_MAX_CONCURRENT_SESSIONS = 100;
 
 // ── Roles ────────────────────────────────────────────────────────────────────
@@ -193,6 +218,31 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
   return true;
 }
 
+/**
+ * Resolve a caller-supplied provisioning budget: `0`/negative means "unset" (use
+ * `defaultMs`). If the result would let provisioning outlive the session — no result
+ * frame is ever sent, exactly the failure this budget exists to prevent — clamp it to
+ * `sessionTimeoutMs - stepTimeoutMs` and log a warning.
+ */
+function resolveProvisionTimeoutMs(
+  configured: number | undefined,
+  defaultMs: number,
+  sessionTimeoutMs: number,
+  stepTimeoutMs: number,
+  role: string
+): number {
+  const requested = configured && configured > 0 ? configured : defaultMs;
+  if (requested >= sessionTimeoutMs) {
+    const clamped = Math.max(1, sessionTimeoutMs - stepTimeoutMs);
+    log(
+      '%s provisionTimeoutMs %dms >= sessionTimeoutMs %dms; clamping to %dms',
+      role, requested, sessionTimeoutMs, clamped
+    );
+    return clamped;
+  }
+  return requested;
+}
+
 // ── Responder (listener) ─────────────────────────────────────────────────────
 
 export interface FormationListenerOptions {
@@ -214,6 +264,12 @@ export interface FormationListenerOptions {
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
   sessionTimeoutMs?: number;
   stepTimeoutMs?: number;
+  /**
+   * Budget for the `provisionStrand` hook call — distinct from `stepTimeoutMs` because
+   * provisioning is real work, not a bare wire read/write. Default 12 s; `0`/unset uses
+   * the default. See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering rationale.
+   */
+  provisionTimeoutMs?: number;
   maxConcurrentSessions?: number;
 }
 
@@ -227,6 +283,7 @@ export class FormationListener {
   private readonly options: FormationListenerOptions;
   private readonly sessionTimeoutMs: number;
   private readonly stepTimeoutMs: number;
+  private readonly provisionTimeoutMs: number;
   private readonly maxConcurrentSessions: number;
   private readonly registered = new Set<Libp2p>();
   private activeSessions = 0;
@@ -236,6 +293,10 @@ export class FormationListener {
     this.options = options;
     this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+    this.provisionTimeoutMs = resolveProvisionTimeoutMs(
+      options.provisionTimeoutMs, DEFAULT_PROVISION_TIMEOUT_MS,
+      this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener'
+    );
     this.maxConcurrentSessions = options.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
   }
 
@@ -309,7 +370,30 @@ export class FormationListener {
         return;
       }
 
-      const outcome = await this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
+      const provisionLabel = `Formation provisioning#${id}`;
+      let outcome: ResponderProvisionOutcome;
+      try {
+        outcome = await withTimeout(
+          this.provisionTimeoutMs,
+          provisionLabel,
+          () => this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure)
+        );
+      } catch (err) {
+        if (err instanceof Error && err.message === `${provisionLabel} timed out after ${this.provisionTimeoutMs}ms`) {
+          // Explicit catch so a slow hook reports 'Formation provisioning timed out' — a
+          // retryable reason — rather than falling through to the generic catch below,
+          // which would report the misleading 'Internal formation error'.
+          log('formation session #%d provisioning timed out after %dms', id, this.provisionTimeoutMs);
+          // NOTE: provisionStrand is not cancelled on timeout — its write (FormationUsage /
+          // Strand row, or invite-use record) may still land after this reply is sent, so the
+          // invite's single use may still be spent even though the initiator sees a timeout.
+          // Pre-existing race (a joiner timeout has always been able to race a commit); this
+          // budget only narrows the window, it does not close it.
+          send({ approved: false, reason: 'Formation provisioning timed out' });
+          return;
+        }
+        throw err;
+      }
       if (!outcome.approved) {
         // A post-validation rejection still discloses NEITHER identity NOR cadre,
         // exactly like the token/disclosure rejections above.
@@ -351,6 +435,12 @@ export interface FormationDialOptions {
   validateResponse(response: FormationResultMessage): Promise<boolean>;
   sessionTimeoutMs?: number;
   stepTimeoutMs?: number;
+  /**
+   * Budget for the `await-response` read only (the responder's provisioning + reply travel
+   * time) — `dial-connect` keeps using `stepTimeoutMs`. Default 15 s; `0`/unset uses the
+   * default. See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering rationale.
+   */
+  provisionTimeoutMs?: number;
   protocolId?: string;
 }
 
@@ -366,6 +456,10 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
   const protocolId = options.protocolId ?? FORMATION_PROTOCOL;
   const sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
   const stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
+  const provisionTimeoutMs = resolveProvisionTimeoutMs(
+    options.provisionTimeoutMs, DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS,
+    sessionTimeoutMs, stepTimeoutMs, 'dialFormation'
+  );
   const addr = multiaddr(options.responderAddrs[0]);
 
   return withTimeout(sessionTimeoutMs, 'Formation dial', async () => {
@@ -375,7 +469,7 @@ export async function dialFormation(node: Libp2p, options: FormationDialOptions)
       const reader = new FrameReader(stream);
       writeFrame(stream, options.contact);
 
-      const response = await withTimeout(stepTimeoutMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
+      const response = await withTimeout(provisionTimeoutMs, 'Formation await-response', () => reader.read<FormationResultMessage>());
       if (!response.approved) {
         throw new Error(`Formation rejected: ${response.reason ?? 'no reason provided'}`);
       }

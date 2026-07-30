@@ -32,6 +32,13 @@ export interface StrandFormationManagerConfig {
   sessionTimeoutMs?: number;
   /** Step timeout in milliseconds */
   stepTimeoutMs?: number;
+  /**
+   * Provisioning budget in milliseconds — responder's `provisionStrand` hook call and
+   * initiator's `await-response` read. See `strand-formation-protocol.ts` for the full
+   * ordering rationale (approval hook < responder provisioning < initiator await-response
+   * < session).
+   */
+  provisionTimeoutMs?: number;
   /** Maximum concurrent sessions */
   maxConcurrentSessions?: number;
   /** Enable debug logging */
@@ -102,6 +109,7 @@ export class StrandFormationManager {
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
+      provisionTimeoutMs: this.config.provisionTimeoutMs,
       maxConcurrentSessions: this.config.maxConcurrentSessions
     });
 
@@ -163,6 +171,7 @@ export class StrandFormationManager {
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
         sessionTimeoutMs: this.config.sessionTimeoutMs,
         stepTimeoutMs: this.config.stepTimeoutMs,
+        provisionTimeoutMs: this.config.provisionTimeoutMs,
         protocolId: this.config.protocolId
       });
 

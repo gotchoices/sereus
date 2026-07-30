@@ -198,6 +198,89 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(identityDisclosed()).toBe(false);
   });
 
+  it('completes when provisionStrand is slower than stepTimeoutMs but within provisionTimeoutMs', async () => {
+    // Regression: the responder used to run provisioning under the tiny per-wire-step
+    // budget, so real work (a DB write, a hook call) could time out a join that would
+    // otherwise have succeeded. provisionTimeoutMs is a separate, larger budget.
+    const { options, identityDisclosed } = baseOptions({
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        return {
+          approved: true,
+          result: {
+            strand: { strandId: 'strand-slow-but-ok', createdBy: 'responder' },
+            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+          }
+        };
+      }
+    });
+    const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 200 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(true);
+    expect(result.provisionResult?.strand.strandId).toBe('strand-slow-but-ok');
+    expect(identityDisclosed()).toBe(true);
+  });
+
+  it('reports a timed-out provisionStrand as a retryable rejection, not a dropped stream', async () => {
+    const { options, identityDisclosed } = baseOptions({
+      provisionStrand: (): Promise<ResponderProvisionOutcome> => new Promise(() => { /* never settles */ })
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 20 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Formation provisioning timed out');
+    expect(result.partyId).toBeUndefined();
+    expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(identityDisclosed()).toBe(false);
+    expect(stream.closed).toBe(true);
+  });
+
+  it('clamps provisionTimeoutMs when it would outlive the session, so a slow hook still gets a reply', async () => {
+    // provisionTimeoutMs (5000) >= sessionTimeoutMs (1000) must clamp to
+    // sessionTimeoutMs - stepTimeoutMs (900). A provisioning hook that takes longer than the
+    // clamped budget but would fit under the UNCLAMPED one must still see a clean rejection
+    // frame — not silence from the outer session timeout firing first.
+    const { options } = baseOptions({
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
+        await new Promise((resolve) => setTimeout(resolve, 950));
+        return {
+          approved: true,
+          result: {
+            strand: { strandId: 'strand-too-slow', createdBy: 'responder' },
+            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+          }
+        };
+      }
+    });
+    const listener = new FormationListener({
+      ...options,
+      sessionTimeoutMs: 1000,
+      stepTimeoutMs: 100,
+      provisionTimeoutMs: 5000
+    });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Formation provisioning timed out');
+  });
+
   it('converts an unexpected provisioning throw into a non-disclosing internal-error frame', async () => {
     // A future hook bug that THROWS must not reproduce the silent-drop symptom: a
     // best-effort approved:false frame is written before the stream closes.
@@ -323,5 +406,39 @@ describe('dialFormation provision-result invariant', () => {
     await expect(
       dialFormation(node, { contact, responderAddrs, validateResponse: async () => true })
     ).rejects.toThrow(/Formation rejected: Invalid token/);
+  });
+
+  it('bounds await-response by provisionTimeoutMs, not the tiny dial-connect stepTimeoutMs', async () => {
+    // Regression for the initiator side: the result read used to share stepTimeoutMs with
+    // dial-connect, so a responder doing real provisioning work could blow a 5s budget even
+    // though the join would have succeeded. Delay the response frame past stepTimeoutMs but
+    // within provisionTimeoutMs and confirm the dial still resolves.
+    const provisionResult: FormationProvisionResult = {
+      strand: { strandId: 'strand-delayed', createdBy: 'responder' },
+      dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+    };
+    const response: FormationResultMessage = {
+      approved: true,
+      partyId: RESPONDER_IDENTITY.partyId,
+      cadrePeerAddrs: RESPONDER_IDENTITY.cadrePeerAddrs,
+      provisionResult
+    };
+    class DelayedResponseStream extends MockStream {
+      async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        yield encodeFrame(response);
+      }
+    }
+    const stream = new DelayedResponseStream([]);
+    const node = { dialProtocol: async () => stream } as unknown as Libp2p;
+
+    const result = await dialFormation(node, {
+      contact,
+      responderAddrs,
+      validateResponse: async () => true,
+      stepTimeoutMs: 10,
+      provisionTimeoutMs: 200
+    });
+    expect(result).toEqual(provisionResult);
   });
 });
