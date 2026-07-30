@@ -1,77 +1,122 @@
 description: When an administrator revokes a peer's membership while their node is the only one online, that revocation can be lost — the removed peer may keep looking like a member to everyone else. Make membership revocations survive being made offline.
 prereq: control-write-ensure-replicated
-files: packages/cadre-core/src/control-schema.ts (CadrePeer table — would gain a tombstone/soft-delete column + constraints), schemas/control.qsql (mirror — kept in sync by control-schema-drift.spec.ts), packages/cadre-core/src/cadre-node.ts (removePeer + drainPendingPeerWrites delete path, isMember/listMembers/queryCadrePeers filtering), packages/cadre-core/src/control-database.ts (queryCadrePeers/queryPeerRecord must exclude tombstoned rows), packages/cadre-core/src/seed-bootstrap.ts (removePeer → soft-delete write)
+files: packages/cadre-core/src/control-database.ts (deleteGuardedRow — delete + Revocation tombstone in one transaction; queryRevokedStamps), packages/cadre-core/src/cadre-node.ts (noteControlWrite / drainPendingControlReplication / reissuePendingPeerWrites — the write-while-alone queue; listAuthorizedMembers / listMembers / isMember read paths), packages/cadre-core/src/control-schema.ts + schemas/control.qsql (CadrePeer, Revocation; kept in lockstep by control-schema-drift.spec.ts), packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts (the insert/update sibling scenario this one mirrors), packages/integration-tests/src/harness/node-fixtures.ts (bootPair / controlNodeConfig / connectControlNodes), docs/architecture.md (Control Network → delete-while-alone durability, ~line 199), ../optimystic/docs/internals.md (behind-member reconcile, ~lines 279-331)
+difficulty: hard
 ----
 
 ## Problem
 
 `control-write-ensure-replicated` closed the write-while-alone durability gap for
-INSERT/UPDATE-shaped control writes (authorize a peer, (re)publish a self record /
-device token) by re-issuing them as idempotent monotonic updates once the cohort
-grows. **DELETEs cannot be remedied the same way.**
+INSERT/UPDATE-shaped control writes. DELETEs were left open.
 
-`removePeer(X)` is a physical `delete from CadrePeer where PeerId = X`. When it
-commits while the node is alone (0 control connections ⇒ the block's cluster ≤1),
-the deletion is **local-only**: the row is gone locally, but the cohort — which may
-still hold X's membership row from an earlier replicated insert — never learns of
-the removal. On cohort growth the re-replication drain *attempts* a best-effort
-re-issue of the DELETE, but the row is already gone locally, so the re-issued
-`delete … where PeerId = X` matches nothing and produces no broadcasting
-transaction. The removal does **not** propagate.
+`removePeer(X)` deletes the `CadrePeer` row and, in the same transaction, appends a
+`Revocation` tombstone retiring that row's `StampId`
+(`ControlDatabase.deleteGuardedRow`). When that transaction commits while the node
+is alone (0 control connections ⇒ the block's cluster ≤1), Optimystic commits it
+**local-only**: neither the delete nor the tombstone is broadcast, and the rest of
+the cadre may keep treating X as a member.
 
-This is **security-relevant**: a peer whose membership was revoked while the
-authority was offline can remain a member elsewhere in the party (and across a
-restart of the authority, the intent to remove leaves no local trace at all — the
-row is simply absent). `control-write-ensure-replicated` ships this as a documented
-limitation: the alone-commit is **logged loudly** at `removePeer` time and a
-best-effort re-issue is attempted, but full durability is deferred here.
+The on-growth re-issue that rescues inserts/updates cannot replay a delete as-is:
+`deleteGuardedRow` reads the row's stamp first, finds the row already gone locally,
+and returns `false` without issuing any statement — so nothing broadcasts.
 
-## What "done" looks like
+Security-relevant: a peer whose membership was revoked while the authority was
+offline can remain a member elsewhere in the party.
 
-A membership revocation made while alone must converge to the rest of the cadre
-once the cohort forms — and survive a restart of the revoking node in between.
+## Research findings so far (read this before re-deriving anything)
 
-The agreed approach is a **tombstone (soft delete)** the schema carries, rather
-than a physical delete:
+**1. The schema already has a tombstone — `Revocation`.** The original premise of
+this ticket ("add a `Removed`/`RemovedAt` soft-delete column to `CadrePeer`") is not
+the only option and probably not the cheapest. Every guarded delete already writes an
+append-only `Revocation` row (`TableName`, `RowKey`, `StampId`), owner-signed under
+its own `'CadreControl.Revocation' / 'remove'` digest, and readers already honour it:
 
-- `CadrePeer` gains a tombstone marker (e.g. a `Removed`/`RemovedAt` column, or a
-  status enum) written under the existing authority signature. A revocation becomes
-  an authority UPDATE that sets the tombstone + bumps `UpdatedAt` — which IS
-  re-issuable on cohort growth exactly like an authorize re-touch, and IS
-  reconstructable on restart (the tombstoned row is still present locally).
-- Membership reads (`isMember`, `listMembers`, `queryCadrePeers`, `resolvePeerAddrs`,
-  `resolveDeviceToken`, cohort/seed derivation) must treat a tombstoned row as
-  **not a member** (filter it out), so a tombstone is observationally identical to a
-  removal for every consumer.
-- The schema constraints must keep a tombstone monotonic/irreversible enough that a
-  removed peer cannot silently un-revoke itself (decide whether re-authorization is
-  an authority-only un-tombstone or requires a fresh insert).
-- Decide the same disposition for `DeviceToken` deletes (`clearDeviceToken` /
-  `expireDeviceToken`), which have the identical physical-delete-while-alone gap but
-  are lower-severity (a stale push token, not a membership leak).
-- Keep `control-schema.ts` and `schemas/control.qsql` in lockstep
-  (`control-schema-drift.spec.ts` enforces this) and account for GC/compaction of
-  tombstones if the control tables are expected to stay small.
+- `CadreNode.listAuthorizedMembers` drops any `CadrePeer` row whose `StampId` is in
+  `queryRevokedStamps('CadrePeer')`.
+- `CadreNode.resolveDeviceToken` does the same for `DeviceToken`.
+
+So "tombstone the row" is already true; what is missing is getting that tombstone
+**broadcast** when it was written alone.
+
+`docs/architecture.md` (~line 199) already names this as the cheapest lever for this
+ticket, with the caveat that a re-issue must carry the tombstone's own owner
+signature in its write context, because `Revocation.Authorized` re-checks it on every
+node.
+
+**2. But a literal re-INSERT of the tombstone will not work.** The `Revocation` row
+is already present locally after the alone commit, and its primary key is
+`(TableName, StampId)` — re-inserting collides. `Revocation.Immutable` forbids update
+and delete, so there is no in-place re-touch either, and `StampId` is the retired
+stamp so it cannot be varied. **Any design that says "queue the tombstone insert and
+replay it" must first answer what statement it actually issues.** This is the single
+open question blocking the implement handoff.
+
+**3. There may be no need for a new statement at all — unverified.** Optimystic's
+`docs/internals.md` (~lines 279-331) states that a member which is *behind* on a block
+holds no usable revision and therefore **pulls the committed revision from the
+cohort** rather than applying a delta. If that holds for the control collection, then
+*any* broadcasting write after cohort growth (the drain already calls `registerSelf()`
+on the first growth edge, which is a `CadrePeer` write) would carry the earlier
+local-only delete along with it — and this ticket collapses into "prove it with a
+regression scenario, and guarantee a broadcasting write is issued whenever a `remove`
+is queued". Settle this empirically before designing any schema change.
+
+**4. The experiment to settle it was run and was INVALID — do not trust its result.**
+A scratch integration scenario (`bootPair` → connect → `authorizePeer(X)` → converge
+on B → close all connections on both sides → `removePeer(X)` → reconnect → does B drop
+X?) reported convergence, **but the log showed A holding 1 control connection at
+removal time**: something re-dialled between the both-sides-idle assertion and the
+write, so the removal was never actually made alone. The result says nothing about the
+alone case. A valid rerun needs the re-dial suppressed — candidates: pass a very large
+`reconcileMs` through `controlNodeConfig` on both nodes (the option already exists),
+gate dials on one side, or identify which side re-dials
+(`CadreNode.reconcileControlCohort` vs. the peer's own cohort logic) and quiesce it.
+Note the harness uses `MemoryRawStorage`, so the "survives a restart of the revoking
+node" case has no persistence to restart onto and needs a different fixture.
+
+Mechanics for a rerun: `cd packages/integration-tests && yarn vitest run -t "<test
+name>"` (a path filter did not match on Windows; `-t` did). The suite has a
+stale-build guard — `../quereus` needed `yarn build` before it would run.
+
+## Remaining work for this plan pass
+
+- Settle finding 3 with a **valid** isolation recipe. Its outcome decides everything
+  downstream.
+- If a later broadcast does NOT carry the delete: design the re-issuable removal.
+  Compare (a) a soft-delete column on `CadrePeer` (monotonic `RemovedAt` bumped by an
+  owner-signed UPDATE — re-issuable and reconstructable after restart, but a
+  cross-cutting read-path change plus new constraint surface: monotonicity, whether
+  re-authorization is an un-tombstone or a fresh insert, and tombstone GC) against
+  (b) any statement that makes the existing `Revocation` row re-broadcast. Pick one,
+  document the tradeoff, do not hand the choice to the implementer.
+- Decide the same disposition for `DeviceToken` clears (`clearDeviceToken` /
+  `expireDeviceToken`) and for `deleteStrand` / `deleteValidationKey`, which share
+  `deleteGuardedRow` and carry the identical gap at lower severity.
+- Keep `control-schema.ts` and `schemas/control.qsql` in lockstep if the schema
+  changes (`control-schema-drift.spec.ts` enforces it).
+- Emit the implement ticket(s) with an `## Edge cases & interactions` section
+  covering: a removal racing a re-authorization; a node that converged on the re-add
+  before the tombstone; re-authorizing a previously removed peer; a removal made alone
+  followed by a restart before any cohort forms; and every membership read path
+  (`isMember`, `listMembers`, `listAuthorizedMembers`, `resolvePeerAddrs`,
+  `resolveDeviceToken`, cohort/seed derivation) agreeing on tombstoned rows.
 
 ## Use cases / tests
 
 - **Revoke-while-alone converges.** Authority A removes peer X while no sibling is
-  connected, then a reader B connects: B must observe X is no longer a member
-  (today this is the gap — B keeps X).
+  connected, then a reader B connects: B must observe X is no longer a member.
 - **Revoke-while-alone survives restart.** A removes X while alone, A restarts, then
-  connects to B: the revocation still propagates (the tombstone is reconstructable;
-  a physical delete leaves nothing to reconstruct).
-- **Re-authorization after tombstone.** A tombstoned peer that is legitimately
-  re-added becomes a member again through the sanctioned path, without a replayed
-  stale row resurrecting it.
+  connects to B: the revocation still propagates.
+- **Re-authorization after tombstone.** A removed peer that is legitimately re-added
+  becomes a member again through the sanctioned path, without a replayed stale row
+  resurrecting it.
 - **Reader treats tombstone as absent.** Every membership read path excludes a
   tombstoned row.
 
 ## Notes
 
-- Out of scope for `control-write-ensure-replicated` (which deliberately shipped the
-  loud-log + best-effort + this follow-up). This is a schema change with cross-cutting
-  read-path impact, so it warrants its own design/plan pass before implementation.
-- The proxy for "alone" remains `getConnections().length === 0` (a sound lower
-  bound); a precise `getClusterSize(blockId)` seam would tighten it but is a separate
-  concern (see `control-write-ensure-replicated`).
+- The proxy for "alone" remains `getConnections().length === 0` (a sound lower bound);
+  a precise `getClusterSize(blockId)` seam would tighten it but is a separate concern
+  (see `control-write-ensure-replicated`).
+- The commit-alone is already logged loudly at `removePeer` time and a best-effort
+  re-issue is attempted, so the gap is visible in logs today.
