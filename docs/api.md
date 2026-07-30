@@ -71,6 +71,13 @@ Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the trans
 `FormationApprovalError` with a `failure` of `'refused' | 'unavailable' | 'malformed' |
 'misconfigured'`.
 
+> **Not yet contacted automatically.** The client exists and the contract below is settled, but
+> no redemption path calls it yet — a `ValidationUrl` on an invitation is currently only enforced
+> by the control database, which requires an approver signature the responder never asks for. So
+> an invitation with a `ValidationUrl` cannot be redeemed at all until the redemption path is
+> wired to this client. Stand a hook up against the contract by all means; expect it to sit idle
+> until then.
+
 ### Wire contract
 
 `POST <ValidationUrl>` with `content-type: application/json` and `accept: application/json`.
@@ -106,11 +113,19 @@ Operational notes for hook authors: redirects are **not** followed (re-publish a
 64 KiB; the request is aborted after 10 s by default; and `http:` is permitted (self-hosted LAN
 approvers) but puts the disclosure text on the wire in clear.
 
+Note what a hook is trusted with. It sees the joiner's disclosure text, and it sees the
+invitation token — a bearer credential, so whoever holds the hook could redeem the invitation
+itself instead of approving the joiner who presented it. That is inside the approver's existing
+trust boundary (an enrolled approver can already admit anyone it likes), but it does mean a hook
+is party infrastructure, not a public endpoint: host it accordingly, and prefer `https:` for
+anything off-link.
+
 ### What the signature covers
 
 The signature authorizes **exactly one** redemption. It is made over
 `digest('CadreControl.FormationUsage', 'vouch', Token, UsageStampId, StrandId, PeerId, Disclosure)`
-— build it with `formationVouchMessage` from `@serfab/cadre-core` rather than by hand — which
+— produce it with `signFormationApproval` (or, in another language, build the digest to match
+`formationVouchMessage`; never a hand-written field list) — which
 `FormationUsage.Authorized` re-verifies against the enrolled `ValidationKey` row when the
 redemption is written. Binding the nonce, strand, and peer makes the approval non-transferable:
 it cannot be re-presented for another use of the same invitation, another strand, or another
@@ -120,7 +135,7 @@ joiner. Sign the `disclosure` bytes verbatim; do not re-serialize them.
 
 ```ts
 import express from 'express';
-import { signFormationApproval, type FormationApprovalRequest } from '@serfab/cadre-core';
+import { signFormationApproval, type FormationVouchFields } from '@serfab/cadre-core';
 
 // The approver's ed25519 seed (base64url). Its public half must be enrolled as a
 // ValidationKey row in the inviting party's control database, or the redemption still fails.
@@ -128,14 +143,15 @@ const privateKeyB64 = process.env['APPROVER_KEY']!;
 const validationKey = process.env['APPROVER_PUBLIC_KEY']!;
 
 express().use(express.json()).post('/approve', (req, res) => {
-  const request = req.body as FormationApprovalRequest;
+  // `FormationVouchFields` is exactly the posted body — the five signed fields. (A redeeming
+  // node's own `FormationApprovalRequest` adds the `validationUrl`, which never reaches a hook.)
+  const fields = req.body as FormationVouchFields;
 
-  if (!mayJoin(request.peerId, request.disclosure)) {
+  if (!mayJoin(fields.peerId, fields.disclosure)) {
     res.status(403).json({ error: 'not on the roster' });
     return;
   }
 
-  // `signFormationApproval` ignores `validationUrl`; only the five signed fields matter.
-  res.json(signFormationApproval(request, validationKey, privateKeyB64));
+  res.json(signFormationApproval(fields, validationKey, privateKeyB64));
 }).listen(8080);
 ```

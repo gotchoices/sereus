@@ -118,6 +118,7 @@ export {
   verifyFormationApproval,
   FormationApprovalError,
   type FormationApprovalRequest,
+  type FormationVouchFields,
   type FormationApproval,
   type FormationApprover,
   type FormationApprovalFailure

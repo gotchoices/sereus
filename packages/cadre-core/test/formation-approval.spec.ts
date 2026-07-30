@@ -74,6 +74,35 @@ function jsonResponse(body: unknown, status = 200): Response {
   });
 }
 
+/**
+ * A response whose body has no reader, as React Native's fetch returns — the fallback path
+ * that reads to completion via `text()` instead of streaming to the cap.
+ */
+function readerlessResponse(text: string, extraHeaders: Record<string, string> = {}): Response {
+  return {
+    status: 200,
+    ok: true,
+    redirected: false,
+    headers: new Headers({ 'content-type': 'application/json', ...extraHeaders }),
+    body: null,
+    text: () => Promise.resolve(text)
+  } as unknown as Response;
+}
+
+/** A body that never ends, recording whether the client released it. */
+function endlessBody(): { stream: ReadableStream<Uint8Array>; cancelled: () => boolean } {
+  let cancelled = false;
+  const stream = new ReadableStream<Uint8Array>({
+    pull(controller) {
+      controller.enqueue(new Uint8Array(64));
+    },
+    cancel() {
+      cancelled = true;
+    }
+  });
+  return { stream, cancelled: () => cancelled };
+}
+
 describe('signFormationApproval / verifyFormationApproval', () => {
   it('round-trips: an approval signed for a request verifies against that request', () => {
     const { privateKeyB64, validationKey } = approverKeys();
@@ -338,6 +367,69 @@ describe('createHttpFormationApprover', () => {
     // Bailed early rather than buffering the whole stream.
     expect(pulled).toBeLessThan(CHUNKS);
   });
+
+  it('releases the body of a response it refuses to read (status decided the outcome)', async () => {
+    const { stream, cancelled } = endlessBody();
+    const { fetchImpl } = stubFetch(() => new Response(stream, { status: 500 }));
+
+    await expectFailure(
+      createHttpFormationApprover({ fetchImpl }).requestApproval(baseRequest()),
+      'unavailable'
+    );
+    // An undrained body keeps the connection checked out; a node polling a sick hook would
+    // accumulate one per redemption.
+    expect(cancelled()).toBe(true);
+  });
+
+  it('releases the body of an oversized response rejected on its declared content-length', async () => {
+    const { stream, cancelled } = endlessBody();
+    const { fetchImpl } = stubFetch(() =>
+      new Response(stream, {
+        status: 200,
+        headers: { 'content-type': 'application/json', 'content-length': String(65 * 1024) }
+      })
+    );
+
+    await expectFailure(
+      createHttpFormationApprover({ fetchImpl }).requestApproval(baseRequest()),
+      'malformed'
+    );
+    expect(cancelled()).toBe(true);
+  });
+
+  // The `body.getReader` fallback (React Native's fetch): read to completion, then measure.
+  it('accepts an approval from a response whose body has no reader', async () => {
+    const { privateKeyB64, validationKey } = approverKeys();
+    const request = baseRequest();
+    const expected = signFormationApproval(request, validationKey, privateKeyB64);
+    const { fetchImpl } = stubFetch(() => readerlessResponse(JSON.stringify(expected)));
+
+    await expect(createHttpFormationApprover({ fetchImpl }).requestApproval(request))
+      .resolves.toEqual(expected);
+  });
+
+  it('caps an oversized response whose body has no reader', async () => {
+    const { fetchImpl } = stubFetch(() => readerlessResponse('x'.repeat(65 * 1024)));
+
+    await expectFailure(
+      createHttpFormationApprover({ fetchImpl }).requestApproval(baseRequest()),
+      'malformed'
+    );
+  });
+
+  for (const timeoutMs of [0, -1, Number.NaN]) {
+    it(`refuses to build an approver with timeoutMs ${timeoutMs}`, () => {
+      // Would abort every request before it left, reading as a permanently-down hook.
+      let caught: unknown;
+      try {
+        createHttpFormationApprover({ timeoutMs });
+      } catch (error) {
+        caught = error;
+      }
+      expect(caught).toBeInstanceOf(FormationApprovalError);
+      expect((caught as FormationApprovalError).failure).toBe('misconfigured');
+    });
+  }
 
   it('rejects a non-http(s) ValidationUrl as misconfigured, before any request', async () => {
     const { fetchImpl, calls } = stubFetch(() => jsonResponse({}));

@@ -55,8 +55,12 @@ export interface FormationApprovalRequest {
  * JSON body posted to the hook. Derived from {@link FormationApprovalRequest} by subtraction so
  * a field added to the request must be consciously routed here (or the build breaks) rather
  * than silently dropping out of the digest.
+ *
+ * This is what an APPROVER receives: a hook is posted these five fields and nothing else, so it
+ * has no `validationUrl` to supply and should type its request body as this, not as the full
+ * {@link FormationApprovalRequest}.
  */
-type FormationVouchFields = Omit<FormationApprovalRequest, 'validationUrl'>;
+export type FormationVouchFields = Omit<FormationApprovalRequest, 'validationUrl'>;
 
 /** An approver's answer: which key vouched, and its signature over the request's digest. */
 export interface FormationApproval {
@@ -76,6 +80,10 @@ export interface FormationApproval {
  * {@link verifyFormationApproval} before writing.
  */
 export interface FormationApprover {
+  // NOTE: no caller-supplied `AbortSignal` — the only cancellation is the transport's own
+  // timeout. Enough while a redemption runs to completion or fails; if the responder ever gains
+  // a way to cancel a formation in flight, this needs an optional signal threaded through to
+  // `fetch` alongside the timeout's.
   requestApproval(request: FormationApprovalRequest): Promise<FormationApproval>;
 }
 
@@ -129,17 +137,21 @@ function vouchFields(request: FormationApprovalRequest): FormationVouchFields {
  * Signing with a key that is not enrolled produces a perfectly valid signature that the
  * database still rejects.
  *
- * @param request - The redemption being approved (all five signed fields).
+ * Takes the five signed fields, not a full {@link FormationApprovalRequest}: an approver is
+ * posted only those five and has no `validationUrl` to hand back. A redeeming node holding a
+ * whole request can still pass it straight in.
+ *
+ * @param fields - The redemption being approved (the five signed fields).
  * @param validationKey - base64url ed25519 public key that this approval claims.
  * @param privateKeyB64 - base64url 32-byte ed25519 seed to sign with.
  */
 export function signFormationApproval(
-  request: FormationApprovalRequest,
+  fields: FormationVouchFields,
   validationKey: string,
   privateKeyB64: string
 ): FormationApproval {
   const validationSignature = sign(
-    formationVouchMessage(vouchFields(request)),
+    formationVouchMessage(fields),
     privateKeyB64,
     'ed25519',
     'bytes',
@@ -164,12 +176,12 @@ export function signFormationApproval(
  * base64url, a garbage key, or any crypto failure resolves to `false`, logged at debug.
  */
 export function verifyFormationApproval(
-  request: FormationApprovalRequest,
+  fields: FormationVouchFields,
   approval: FormationApproval
 ): boolean {
   try {
     return verify(
-      formationVouchMessage(vouchFields(request)),
+      formationVouchMessage(fields),
       approval.validationSignature,
       approval.validationKey,
       'ed25519',
@@ -237,6 +249,12 @@ function resolveFetch(fetchImpl?: typeof fetch): typeof fetch {
  * measure. The declared `content-length` is checked first so an honest oversized response is
  * rejected without reading it at all — but it is only a hint, so the actual bytes are counted
  * either way.
+ *
+ * NOTE: on the no-reader path the cap is enforced only AFTER the runtime has buffered the whole
+ * body, so a hook that under-declares its `content-length` can still make that runtime hold an
+ * arbitrary amount. Harmless where it applies today (React Native clients are not formation
+ * responders); if a responder ever runs on a platform without a body reader, that path needs a
+ * real streaming read rather than a post-hoc measurement.
  */
 async function readCappedText(response: Response): Promise<string> {
   const declared = Number(response.headers.get('content-length'));
@@ -275,6 +293,26 @@ async function readCappedStream(reader: ReadableStreamDefaultReader<Uint8Array>)
     void reader.cancel().catch((error: unknown) => log('response cancel failed: %o', error));
   }
   return uint8ArrayToString(uint8ArrayConcat(chunks, total), 'utf8');
+}
+
+/**
+ * Release a body we are never going to read, so the runtime can put the connection back in its
+ * pool. Every failure decided from the status line (a refusal, a 5xx, a redirect) and the
+ * declared-oversize rejection throw before touching the body, and an undrained body keeps a
+ * socket checked out until GC — a node that asks a flapping hook once per redemption would
+ * accumulate them. Skips a body already locked by {@link readCappedStream}, which cancels its
+ * own reader.
+ */
+async function discardBody(response: Response): Promise<void> {
+  const body = response.body;
+  if (!body || body.locked) {
+    return;
+  }
+  try {
+    await body.cancel();
+  } catch (error) {
+    log('discarding unread response body failed: %o', error);
+  }
 }
 
 function assertUnderCap(bytes: number): void {
@@ -344,6 +382,19 @@ function assertApprovingStatus(response: Response, origin: string): void {
 }
 
 /**
+ * Turn a response into an approval, releasing the body on every path that rejects it.
+ */
+async function readApproval(response: Response, origin: string): Promise<FormationApproval> {
+  try {
+    assertApprovingStatus(response, origin);
+    return parseApproval(await readCappedText(response));
+  } catch (error) {
+    await discardBody(response);
+    throw error;
+  }
+}
+
+/**
  * Ask an outside approval service, over HTTP, whether a would-be joiner may redeem an
  * invitation. Contacted by the INVITING party's node (the formation responder) during
  * redemption — never by the joiner, which neither mints the nonce nor performs the write.
@@ -370,6 +421,14 @@ export function createHttpFormationApprover(options?: {
   fetchImpl?: typeof fetch;
 }): FormationApprover {
   const timeoutMs = options?.timeoutMs ?? DEFAULT_TIMEOUT_MS;
+  // A non-positive or non-finite budget would abort every request before it left, turning a
+  // config typo into a hook that appears permanently down. Fail where the mistake was made.
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) {
+    throw new FormationApprovalError(
+      'misconfigured',
+      `timeoutMs must be a positive number of milliseconds, got ${timeoutMs}`
+    );
+  }
   const fetchImpl = options?.fetchImpl;
 
   return {
@@ -395,8 +454,7 @@ export function createHttpFormationApprover(options?: {
           redirect: 'error',
           signal: controller.signal
         });
-        assertApprovingStatus(response, origin);
-        const approval = parseApproval(await readCappedText(response));
+        const approval = await readApproval(response, origin);
         log('approval obtained from %s for token %s', origin, request.token);
         return approval;
       } catch (error) {

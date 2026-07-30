@@ -736,6 +736,14 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   - Integration `strand-formation-e2e` Phase 1 (`transaction`-profile parties via
     `createParty`) **passes** — open-invitation formation, token reuse rejection, disclosure
     accept/reject, and Phase 4 consent enforcement all green.
+- [ ] **An invitation that carries a `ValidationUrl` cannot be redeemed.** The control database
+  requires an outside approver's sign-off for such an invite, and no redemption path asks for one.
+  The client half now exists and is tested (`formation-approval.ts`:
+  `createHttpFormationApprover()`, `signFormationApproval()`, `verifyFormationApproval()`, contract
+  in [`docs/api.md`](api.md)) but nothing calls it — wiring it into the responder's redemption is
+  `feat-formation-approval-wiring`, and enrolling an approver key is
+  `feat-validation-key-enrollment`. Invitations without a `ValidationUrl` (every e2e above) are
+  unaffected.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic

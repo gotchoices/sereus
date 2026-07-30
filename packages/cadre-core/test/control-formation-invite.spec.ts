@@ -8,7 +8,8 @@ import {
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { MissingHostStrandError, formationVouchMessage, generateStampId } from '../src/control-database.js';
+import { MissingHostStrandError, generateStampId } from '../src/control-database.js';
+import { signFormationApproval } from '../src/formation-approval.js';
 import type { ControlDatabase, FormationUsageResult } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -640,15 +641,18 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
     /**
      * ed25519 sign-off over the same 'vouch' digest the SQL builds, from an arbitrary key.
-     * Built through `formationVouchMessage` rather than a hand-written field list, so the
-     * spec and the writer share ONE definition of what an approver signs: a field added to
-     * the digest on one side cannot silently keep passing on the other.
+     *
+     * Produced by the shipped approver-side helper (`signFormationApproval`) rather than a
+     * hand-written field list, so every case below doubles as the end-to-end check that the
+     * bytes an approval hook signs are the bytes `FormationUsage.Authorized` accepts: a field
+     * added to the digest on one side cannot silently keep passing on the other.
      */
     const vouch = (privateKey: string, fields: Redemption): string =>
-      cryptoSign(
-        formationVouchMessage(fields),
-        privateKey, 'ed25519', 'bytes', 'base64url', 'base64url',
-      ) as string;
+      signFormationApproval(
+        fields,
+        getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string,
+        privateKey,
+      ).validationSignature;
 
     /**
      * A SECOND redemption of the same invite against the same host strand: its own
@@ -901,7 +905,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * either would go green after a refactor that dropped one of them.
      *
      * Between them the `Authorized` cases vary each of the five digest fields IN ISOLATION, so
-     * dropping any one field from BOTH sides of the digest (the SQL and `formationVouchMessage`)
+     * dropping any one field from BOTH sides of the digest (the SQL and the approver-side helper)
      * turns exactly one of these red. That property is the point: a suite whose cases each
      * varied two fields stays green when the weaker of the pair is dropped. The cross-joiner
      * case immediately below is the deliberate exception — it models the real attack (a SPENT
