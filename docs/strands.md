@@ -210,7 +210,8 @@ outright, so every manager can do everything a manager needs to — admit member
 invitations, promote other managers, revoke a member, clear a device record, and resign its
 own seat. Admitting a brand-new key as a member and promoting it to manager in the same
 step is supported, so a key can go straight from stranger to manager without ever passing
-through a member-but-not-yet-manager gap.
+through a member-but-not-yet-manager gap. Like the floors above, the rule is checked
+against what one node can see (see known gaps below).
 
 ### Removing Members
 
@@ -236,12 +237,10 @@ Membership removal is governed by the same signed-approval discipline as admissi
   automatically, because an invitation names no invitee, so the strand cannot tell which
   invitations were meant for the departing member — or whether it holds any (see known gaps
   below).
-- **A manager must resign before losing membership, and must already be a member before
-  being promoted.** Deleting the member row of a key that still holds a `Manager` row is
-  rejected, so a removal can never leave an orphaned manager seat; symmetrically, promoting
-  a key with no `Member` row is rejected too, so a manager seat can never be created without
-  one either. Admitting a new key and promoting it are still combinable in a single step —
-  the rule is that both rows must exist together, not that they must be seated separately.
+- **A manager must resign before losing membership.** Deleting the member row of a key
+  that still holds a `Manager` row is rejected, so a removal can never leave an orphaned
+  manager seat. This is the removal-side half of the manager-is-also-a-member rule stated
+  above; the other half refuses to promote a key that is not a member in the first place.
 - **Clearing the removed member's device records is a separate step, not a cascade.**
   Removing a member leaves behind the records binding its devices to the strand; a manager
   lists the departed member's devices and clears each one with its own signed removal.
@@ -261,10 +260,12 @@ Membership removal is governed by the same signed-approval discipline as admissi
 
 Known gaps remain, all out of scope of the rules above:
 
-- **Concurrent removals on different nodes can still empty a table.** The last-manager
-  and last-member floors each count the rows one node can see, so two nodes each removing
-  a different manager (or member) can both believe a survivor remains. A cross-node guard
-  is not attempted; tracked in the schema's own notes next to the checks.
+- **Membership rules are checked against the rows one node can see.** The last-manager and
+  last-member floors each count locally, so two nodes each removing a different manager (or
+  member) can both believe a survivor remains. The manager-must-also-be-a-member rule has
+  the same shape: one node promoting a key while another node removes that key's membership
+  can each pass locally and merge into a manager seat with no membership behind it. A
+  cross-node guard is not attempted; tracked in the schema's own notes next to the checks.
 - **An invitation names no invitee, so cancelling one is a manual operator step.** An
   invitation is a bearer credential: whoever holds it can redeem it once, and the strand
   keeps no record of who it was meant for. Managers can now cancel invitations, but nothing

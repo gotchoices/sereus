@@ -252,12 +252,12 @@ describe('Strand membership schema (apply e2e)', () => {
 	it('enforces OnlyClosed: membership inserts fail in an open strand, succeed in a closed one', async () => {
 		// Open strand: OnlyClosed must reject Member / Manager / Invite inserts even
 		// though the Member insert would otherwise satisfy its own bootstrap branch.
-		// The Manager insert doesn't even get that far: since the sibling Member
-		// insert above was itself rejected, 'm1' never became a committed Member, so
-		// the Manager insert now fails for two independent reasons — OnlyClosed AND
-		// Manager.MemberExists. Each rejection is a deferred-constraint failure that
-		// the optimystic transactor rolls back, so the target table is left empty
-		// (regression guard for optimystic-deferred-constraint-rejection-not-rolled-back).
+		// The Manager insert has two independent rejectors here — OnlyClosed AND
+		// Manager.MemberExists, since the sibling Member insert above rolled back and
+		// so 'm1' holds no Member row at all. Each rejection is a deferred-constraint
+		// failure that the optimystic transactor rolls back, so the target table is
+		// left empty (regression guard for
+		// optimystic-deferred-constraint-rejection-not-rolled-back).
 		{
 			const strandId = randomUUID();
 			const storage = new FileRawStorage(storageDir);
