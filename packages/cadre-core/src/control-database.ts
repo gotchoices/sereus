@@ -802,7 +802,7 @@ export class ControlDatabase {
     // stamp is permanent and party-wide, so the delete's signature deliberately does not
     // cover it — the digests are domain-separated and neither replays as the other.
     const revocationSignature = signMessage(
-      buildAuthorizationMessage('CadreControl.Revocation', 'remove', [table, stampId]),
+      buildAuthorizationMessage('CadreControl.Revocation', 'remove', [table, keyValue, stampId]),
     );
 
     await this.inTransaction(`delete ${table}`, async () => {
@@ -812,10 +812,10 @@ export class ControlDatabase {
           where ${keyColumn} = ?
       `, [ownerKey, signature, keyValue]);
       await this.db!.exec(`
-        insert into CadreControl.Revocation (TableName, StampId)
+        insert into CadreControl.Revocation (TableName, RowKey, StampId)
           with context OwnerKey = ?, Signature = ?
-          values (?, ?)
-      `, [ownerKey, revocationSignature, table, stampId]);
+          values (?, ?, ?)
+      `, [ownerKey, revocationSignature, table, keyValue, stampId]);
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);

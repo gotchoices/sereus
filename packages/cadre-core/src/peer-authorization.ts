@@ -130,9 +130,12 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
 
 /**
  * Canonical digest an owner signs to APPEND a `CadreControl.Revocation` tombstone —
- * the row retiring `stampId` for the named guarded table. SQL mirror:
- * `digest('CadreControl.Revocation', 'remove', new.TableName, new.StampId)` in
- * `Revocation.Authorized`.
+ * the row retiring `stampId` for the named guarded table, and recording `rowKey`
+ * (the removed row's primary key: OwnerKey.Key / ValidationKey.Key /
+ * CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id) as which row was retired.
+ * SQL mirror:
+ * `digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId)`
+ * in `Revocation.Authorized`.
  *
  * Its own `'CadreControl.Revocation'` domain tag makes it disjoint from the
  * `'CadreControl.CadrePeer'` (or `OwnerKey` / `ValidationKey` / `Strand`)
@@ -140,8 +143,8 @@ export function cadrePeerRemoveDigest(peerId: string, stampId: string): string {
  * this tombstone accompanies — a removal signature is not a retirement
  * signature and cannot be replayed as one.
  */
-export function revocationDigest(tableName: RevocableTable, stampId: string): string {
-  return taggedDigest('CadreControl.Revocation', 'remove', [tableName, stampId]);
+export function revocationDigest(tableName: RevocableTable, rowKey: string, stampId: string): string {
+  return taggedDigest('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
 }
 
 /**

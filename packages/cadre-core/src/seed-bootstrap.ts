@@ -425,7 +425,7 @@ export class SeedBootstrapService {
       return;
     }
     const signature = this.signDigest(deviceTokenRemoveDigest(peerId, stampId));
-    const revocationSignature = this.signDigest(revocationDigest('DeviceToken', stampId));
+    const revocationSignature = this.signDigest(revocationDigest('DeviceToken', peerId, stampId));
 
     const db = this.controlDatabase.getDatabase();
     await db.beginTransaction();
@@ -436,10 +436,10 @@ export class SeedBootstrapService {
           where PeerId = ?
       `, [this.ownerPublicKey, signature, peerId]);
       await db.exec(`
-        insert into CadreControl.Revocation (TableName, StampId)
+        insert into CadreControl.Revocation (TableName, RowKey, StampId)
           with context OwnerKey = ?, Signature = ?
-          values ('DeviceToken', ?)
-      `, [this.ownerPublicKey, revocationSignature, stampId]);
+          values ('DeviceToken', ?, ?)
+      `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
       await db.commit();
     } catch (error) {
       // A failed commit() already tears down the transaction, so rollback() would
@@ -524,7 +524,7 @@ export class SeedBootstrapService {
       return;
     }
     const signature = this.signDigest(cadrePeerRemoveDigest(peerId, stampId));
-    const revocationSignature = this.signDigest(revocationDigest('CadrePeer', stampId));
+    const revocationSignature = this.signDigest(revocationDigest('CadrePeer', peerId, stampId));
 
     log('Removing peer: %s', peerId);
 
@@ -537,10 +537,10 @@ export class SeedBootstrapService {
           where PeerId = ?
       `, [this.ownerPublicKey, signature, peerId]);
       await db.exec(`
-        insert into CadreControl.Revocation (TableName, StampId)
+        insert into CadreControl.Revocation (TableName, RowKey, StampId)
           with context OwnerKey = ?, Signature = ?
-          values ('CadrePeer', ?)
-      `, [this.ownerPublicKey, revocationSignature, stampId]);
+          values ('CadrePeer', ?, ?)
+      `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
       await db.commit();
     } catch (error) {
       // A failed commit() already tears down the transaction, so rollback() would

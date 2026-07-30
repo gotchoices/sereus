@@ -34,7 +34,9 @@ import { expectConstraintFailure } from './control-constraint-helpers.js';
  * tables above, and the `Revocation.RowIsGone` branch list was extended to match.
  *
  * The fix is an append-only `CadreControl.Revocation` table that retires
- * `(TableName, StampId)` on removal. Four constraints carry it, each pinned here BY NAME:
+ * `(TableName, StampId)` on removal, and records the removed row's key (`RowKey`) so the
+ * consent branch of `Strand.AuthorizedInsert` can refuse any id that has ever been
+ * removed. Four constraints carry it, each pinned here BY NAME:
  *   - `NotRevoked` (on the guarded tables) refuses an insert naming a retired stamp — the
  *     replay itself;
  *   - `RevocationRecorded` (on the guarded tables) refuses a delete that does not carry
@@ -112,8 +114,8 @@ const strandRemoveMessage = (id: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.Strand', 'remove', [id, stampId]);
 
 /** `Revocation.Authorized` binds the whole tombstone row under its own domain tag. */
-const revocationMessage = (tableName: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, stampId]);
+const revocationMessage = (tableName: string, rowKey: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
 
 describe('Revocation: remove-then-replay resurrection is closed', () => {
   let node: CadreNode;
@@ -298,28 +300,30 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     contextOwner: string | null,
     signature: string | null,
     tableName: string,
+    rowKey: string,
     stampId: string,
   ): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?)`,
-      [contextOwner, signature, tableName, stampId],
+         values (?, ?, ?)`,
+      [contextOwner, signature, tableName, rowKey, stampId],
     );
   }
 
   /**
    * Retire a stamp into the append-only tombstone table, owner-signed over the digest
    * `Revocation.Authorized` verifies: `digest('CadreControl.Revocation', 'remove',
-   * new.TableName, new.StampId)`. `tableName` is a plain string (not `RevocableTable`)
-   * so the tests can probe names outside the guarded set — `RowIsGone` is what must
-   * reject those, and it only gets the chance once `Authorized` is satisfied.
+   * new.TableName, new.RowKey, new.StampId)`. `tableName` is a plain string (not
+   * `RevocableTable`) so the tests can probe names outside the guarded set — `RowIsGone`
+   * is what must reject those, and it only gets the chance once `Authorized` is satisfied.
    */
-  function tombstoneStamp(tableName: string, stampId: string): Promise<void> {
+  function tombstoneStamp(tableName: string, rowKey: string, stampId: string): Promise<void> {
     return rawTombstone(
       founder.publicKey,
-      signAs(founder, revocationMessage(tableName, stampId)),
+      signAs(founder, revocationMessage(tableName, rowKey, stampId)),
       tableName,
+      rowKey,
       stampId,
     );
   }
@@ -366,7 +370,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         signAs(founder, removeMessage(target.publicKey, stamp)),
         target.publicKey,
       );
-      await tombstoneStamp('OwnerKey', stamp);
+      await tombstoneStamp('OwnerKey', target.publicKey, stamp);
     });
   }
 
@@ -377,7 +381,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
         peerId,
       );
-      await tombstoneStamp('CadrePeer', stamp);
+      await tombstoneStamp('CadrePeer', peerId, stamp);
     });
   }
 
@@ -429,7 +433,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         signAs(founder, validationKeyMessage('remove', key, stamp)),
         key,
       );
-      await tombstoneStamp('ValidationKey', stamp);
+      await tombstoneStamp('ValidationKey', key, stamp);
     });
   }
 
@@ -441,7 +445,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         signAs(founder, strandRemoveMessage(id, stamp)),
         id,
       );
-      await tombstoneStamp('Strand', stamp);
+      await tombstoneStamp('Strand', id, stamp);
     });
   }
 
@@ -552,7 +556,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
           signB64(founder, cadrePeerRemoveDigest(peerId, stamp)),
           peerId,
         );
-        await tombstoneStamp('OwnerKey', stamp);
+        await tombstoneStamp('OwnerKey', peerId, stamp);
       }),
       'RevocationRecorded',
     );
@@ -643,7 +647,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const attack = (contextOwner: string | null, signature: string | null) =>
       inTransaction(async () => {
         await rawDeleteValidationKey(contextOwner, signature, key);
-        await tombstoneStamp('ValidationKey', stamp);
+        await tombstoneStamp('ValidationKey', key, stamp);
       });
 
     // Before the fix `Authorized` was a bare `check`, which in Quereus covers insert and
@@ -674,7 +678,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const attack = (contextOwner: string | null, signature: string | null) =>
       inTransaction(async () => {
         await rawDeleteStrand(contextOwner, signature, id);
-        await tombstoneStamp('Strand', stamp);
+        await tombstoneStamp('Strand', id, stamp);
       });
 
     await expectConstraintFailure(attack(null, null), 'AuthorizedDelete');
@@ -701,7 +705,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteStrand(null, null, id);
-        await tombstoneStamp('Strand', stamp);
+        await tombstoneStamp('Strand', id, stamp);
       }),
       'AuthorizedDelete',
     );
@@ -820,14 +824,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await db.recordFormationUsage({ token: bound, strandId: id })).toBe(1);
   }, 60_000);
 
-  it('Strand: RESIDUAL — an id seated ONLY owner-signed, then removed, is still consent-seatable', async () => {
-    // Pins the known limit of the once-ever rule so it cannot regress unnoticed: that rule
-    // keys off a surviving FormationUsage row, and an owner-signed seat writes none. After a
-    // legitimate signed removal a spare unbound invite use CAN therefore re-seat the id.
-    // The re-seated row is open and keyless (the shape clauses still hold), so no secret is
-    // chosen — but the removal does not stick. Tracked in
-    // tickets/backlog/bug-consent-reseats-owner-only-removed-strand-id.md; when that lands,
-    // this test flips to an expectConstraintFailure('AuthorizedInsert').
+  it('Strand: an id seated ONLY owner-signed, then removed, can never be consent-seated', async () => {
+    // The once-ever FormationUsage rule keys off a surviving usage row, and an owner-signed
+    // seat writes none — so this id's removal leaves no usage trace. What forecloses the
+    // re-seat is the tombstone: removeStrand files a Revocation row naming the id in
+    // RowKey, and the consent branch refuses any id that has ever been tombstoned. The
+    // redemption transaction writes the usage row and the strand row together, so
+    // FormationUsage.StrandExists is satisfied in-flight and the rejecting constraint is
+    // unambiguously AuthorizedInsert.
     const id = 'strand-owner-only-removed-' + Math.random().toString(36).slice(2);
     const { stamp } = await seatStrand(id, 'c', 'owner-member-key-' + id);
     await removeStrand(id, stamp);
@@ -836,17 +840,24 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const token = 'fi-owner-only-removed-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-owner-only-removed', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId: id });
+    await expectConstraintFailure(
+      db.redeemInvitation({ token, strandId: id }),
+      'AuthorizedInsert',
+    );
+    expect(await strandRow(id)).toBeUndefined();
 
+    // The tombstone does NOT block the owner-gated re-join: the owner branch ignores
+    // Revocation.RowKey, so a signed re-seat with a fresh stamp succeeds, and a BOUND
+    // invite records the returning party's consent against the live row.
+    await seatStrand(id, 'o', null);
     const reseated = await strandRow(id);
     expect(reseated).toBeDefined();
     expect(reseated?.StampId).not.toBe(stamp);
-    const shape = await rawDb.get(
-      'select Type, MemberPrivateKey from CadreControl.Strand where Id = ?',
-      [id],
-    );
-    expect(shape?.Type).toBe('o');
-    expect(shape?.MemberPrivateKey).toBeNull();
+
+    const bound = 'fi-owner-only-rejoin-' + Math.random().toString(36).slice(2);
+    await db.insertFormationInvite(bound, 'sapp-owner-only-removed', founder.publicKey,
+      message => signAs(founder, message), { totalUses: 1, strandId: id });
+    expect(await db.recordFormationUsage({ token: bound, strandId: id })).toBe(1);
   }, 60_000);
 
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {
@@ -865,7 +876,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteValidationKey(founder.publicKey, removeSig(), key);
-        await tombstoneStamp('OwnerKey', stamp);
+        await tombstoneStamp('OwnerKey', key, stamp);
       }),
       'RevocationRecorded',
     );
@@ -890,7 +901,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteStrand(founder.publicKey, removeSig(), id);
-        await tombstoneStamp('CadrePeer', stamp);
+        await tombstoneStamp('CadrePeer', id, stamp);
       }),
       'RevocationRecorded',
     );
@@ -956,37 +967,37 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // No accompanying delete: retiring a live stamp would let the NEXT delete of that row
     // ride a pre-planted tombstone, decoupling retirement from the removal transaction.
     const founderStamp = await stampIdOf(founder.publicKey);
-    await expectConstraintFailure(tombstoneStamp('OwnerKey', founderStamp), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('OwnerKey', founder.publicKey, founderStamp), 'RowIsGone');
 
     const peerId = '12D3KooWLiveStampTarget';
     const { stamp } = await admitPeer(peerId);
-    await expectConstraintFailure(tombstoneStamp('CadrePeer', stamp), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('CadrePeer', peerId, stamp), 'RowIsGone');
 
     const valKey = 'val-live-stamp-' + Math.random().toString(36).slice(2);
     const { stamp: valStamp } = await enrollValidationKey(valKey);
-    await expectConstraintFailure(tombstoneStamp('ValidationKey', valStamp), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('ValidationKey', valKey, valStamp), 'RowIsGone');
 
     const strandId = 'strand-live-stamp-' + Math.random().toString(36).slice(2);
     const { stamp: strandStamp } = await seatStrand(strandId);
-    await expectConstraintFailure(tombstoneStamp('Strand', strandStamp), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('Strand', strandId, strandStamp), 'RowIsGone');
 
     const deviceTokenPeerId = '12D3KooWLiveStampTargetDeviceToken';
     const { stamp: deviceTokenStamp } = await seatDeviceToken(deviceTokenPeerId);
-    await expectConstraintFailure(tombstoneStamp('DeviceToken', deviceTokenStamp), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('DeviceToken', deviceTokenPeerId, deviceTokenStamp), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a TableName outside the guarded set is refused (every RowIsGone branch false)', async () => {
     // `FormationInvite` carries a unique StampId but is NOT revocable — invites are
     // insert/delete only and their stamps are never retired — so no RowIsGone branch
     // names it and a tombstone against it is refused.
-    await expectConstraintFailure(tombstoneStamp('FormationInvite', freshStamp()), 'RowIsGone');
+    await expectConstraintFailure(tombstoneStamp('FormationInvite', 'fi-not-revocable', freshStamp()), 'RowIsGone');
   }, 60_000);
 
   it('Revocation: a tombstone is permanent — delete and update are both refused (Immutable)', async () => {
     // Retiring a never-existing stamp is allowed and harmless: a stamp carries 128 bits of
     // CSPRNG output, so a future legitimate stamp cannot collide with a pre-planted tombstone.
     const orphan = freshStamp();
-    await tombstoneStamp('CadrePeer', orphan);
+    await tombstoneStamp('CadrePeer', '12D3KooWOrphanTombstoneTarget', orphan);
 
     await expectConstraintFailure(
       rawDb.exec(
@@ -1018,33 +1029,36 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   // PRE-BLOCK tests below.
 
   it('Revocation: an UNSIGNED tombstone is refused (Authorized)', async () => {
+    const peerId = '12D3KooWUnsignedTombstoneTarget';
     await expectConstraintFailure(
-      rawTombstone(null, null, 'CadrePeer', freshStamp()),
+      rawTombstone(null, null, 'CadrePeer', peerId, freshStamp()),
       'Authorized',
     );
     // A context owner with no signature, and a signature with no owner, are equally dead:
     // the CHECK needs BOTH halves to name a live OwnerKey row.
     const stamp = freshStamp();
     await expectConstraintFailure(
-      rawTombstone(founder.publicKey, null, 'CadrePeer', stamp),
+      rawTombstone(founder.publicKey, null, 'CadrePeer', peerId, stamp),
       'Authorized',
     );
     await expectConstraintFailure(
-      rawTombstone(null, signAs(founder, revocationMessage('CadrePeer', stamp)), 'CadrePeer', stamp),
+      rawTombstone(null, signAs(founder, revocationMessage('CadrePeer', peerId, stamp)), 'CadrePeer', peerId, stamp),
       'Authorized',
     );
   }, 60_000);
 
   it('Revocation: a tombstone signed by a NON-OWNER is refused (Authorized)', async () => {
     const stranger = freshKeyPair();
+    const peerId = '12D3KooWNonOwnerTombstoneTarget';
     const stamp = freshStamp();
 
     // Own key, own signature — valid ed25519, but no OwnerKey row names it.
     await expectConstraintFailure(
       rawTombstone(
         stranger.publicKey,
-        signAs(stranger, revocationMessage('CadrePeer', stamp)),
+        signAs(stranger, revocationMessage('CadrePeer', peerId, stamp)),
         'CadrePeer',
+        peerId,
         stamp,
       ),
       'Authorized',
@@ -1055,26 +1069,29 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(stranger, revocationMessage('CadrePeer', stamp)),
+        signAs(stranger, revocationMessage('CadrePeer', peerId, stamp)),
         'CadrePeer',
+        peerId,
         stamp,
       ),
       'Authorized',
     );
   }, 60_000);
 
-  it('Revocation: an owner signature does not transplant across TableName or StampId (Authorized)', async () => {
+  it('Revocation: an owner signature does not transplant across TableName, RowKey or StampId (Authorized)', async () => {
     // The digest binds the WHOLE row, so one owner-signed tombstone authorizes exactly one
-    // (TableName, StampId) pair — otherwise a single genuine retirement would be a
-    // reusable warrant to retire anything.
+    // (TableName, RowKey, StampId) triple — otherwise a single genuine retirement would be
+    // a reusable warrant to retire anything.
+    const peerId = '12D3KooWTransplantTombstoneTarget';
     const signedStamp = freshStamp();
     const otherStamp = freshStamp();
 
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, revocationMessage('CadrePeer', signedStamp)),
+        signAs(founder, revocationMessage('CadrePeer', peerId, signedStamp)),
         'CadrePeer',
+        peerId,
         otherStamp,
       ),
       'Authorized',
@@ -1083,8 +1100,36 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(
       rawTombstone(
         founder.publicKey,
-        signAs(founder, revocationMessage('OwnerKey', signedStamp)),
+        signAs(founder, revocationMessage('OwnerKey', peerId, signedStamp)),
         'CadrePeer',
+        peerId,
+        signedStamp,
+      ),
+      'Authorized',
+    );
+
+    // A signature over a DIFFERENT RowKey does not transplant either: the consent branch
+    // of Strand.AuthorizedInsert trusts the stored RowKey, so an owner signature must
+    // cover exactly the row name the tombstone files under.
+    await expectConstraintFailure(
+      rawTombstone(
+        founder.publicKey,
+        signAs(founder, revocationMessage('CadrePeer', '12D3KooWSomeOtherPeer', signedStamp)),
+        'CadrePeer',
+        peerId,
+        signedStamp,
+      ),
+      'Authorized',
+    );
+
+    // And the pre-RowKey 2-field digest shape is dead: a signature omitting RowKey
+    // entirely never verifies against the 3-field digest the schema binds.
+    await expectConstraintFailure(
+      rawTombstone(
+        founder.publicKey,
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['CadrePeer', signedStamp])),
+        'CadrePeer',
+        peerId,
         signedStamp,
       ),
       'Authorized',
@@ -1105,6 +1150,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         founder.publicKey,
         signB64(founder, cadrePeerRemoveDigest(peerId, orphan)),
         'CadrePeer',
+        peerId,
         orphan,
       ),
       'Authorized',
@@ -1119,6 +1165,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
         founder.publicKey,
         signAs(founder, removeMessage(ghost.publicKey, ownerOrphan)),
         'OwnerKey',
+        ghost.publicKey,
         ownerOrphan,
       ),
       'Authorized',
@@ -1131,7 +1178,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // gate request, so the table is a growth surface worth gating.
     for (let i = 0; i < 25; i++) {
       await expectConstraintFailure(
-        rawTombstone(null, null, 'CadrePeer', freshStamp()),
+        rawTombstone(null, null, 'CadrePeer', '12D3KooWFloodTarget' + i, freshStamp()),
         'Authorized',
       );
     }
@@ -1148,7 +1195,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await cadrePeerRow(peerId)).toBeUndefined();
 
     await expectConstraintFailure(
-      rawTombstone(null, null, 'CadrePeer', stamp),
+      rawTombstone(null, null, 'CadrePeer', peerId, stamp),
       'Authorized',
     );
     expect((await db.queryRevokedStamps('CadrePeer')).size).toBe(0);
@@ -1182,8 +1229,9 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       );
       await rawTombstone(
         second.publicKey,
-        signAs(second, revocationMessage('CadrePeer', stamp)),
+        signAs(second, revocationMessage('CadrePeer', peerId, stamp)),
         'CadrePeer',
+        peerId,
         stamp,
       );
     });
@@ -1201,13 +1249,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const { stamp: secondStamp } = await enrollByFounder(second);
 
     const orphan = freshStamp();
-    const signedWhileOwner = signAs(second, revocationMessage('CadrePeer', orphan));
+    const orphanPeerId = '12D3KooWRemovedOwnerTombstoneTarget';
+    const signedWhileOwner = signAs(second, revocationMessage('CadrePeer', orphanPeerId, orphan));
 
     await removeOwnerKey(second, secondStamp);
     expect(await ownerKeys()).toEqual([founder.publicKey]);
 
     await expectConstraintFailure(
-      rawTombstone(second.publicKey, signedWhileOwner, 'CadrePeer', orphan),
+      rawTombstone(second.publicKey, signedWhileOwner, 'CadrePeer', orphanPeerId, orphan),
       'Authorized',
     );
     expect((await db.queryRevokedStamps('CadrePeer')).size).toBe(0);
@@ -1253,6 +1302,14 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.deleteStrand(id, founder.publicKey, message => signAs(founder, message));
     expect(await strandRow(id)).toBeUndefined();
     expect((await db.queryRevokedStamps('Strand')).has(stamp)).toBe(true);
+
+    // The tombstone names WHICH row was retired — the consent branch of
+    // Strand.AuthorizedInsert depends on RowKey carrying the strand id.
+    const tombstone = await rawDb.get(
+      'select RowKey from CadreControl.Revocation where TableName = ? and StampId = ?',
+      ['Strand', stamp],
+    );
+    expect(tombstone?.RowKey).toBe(id);
   }, 60_000);
 
   it('the two-owner OwnerKey removal transaction retires the stamp', async () => {

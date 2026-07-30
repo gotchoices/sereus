@@ -190,12 +190,27 @@ declare schema CadreControl {
                 --     pre-block a legitimate id: StrandExists refuses a usage row naming a strand that
                 --     does not exist, so no usage row can be pre-planted for an unseated id — and ids
                 --     are 128 random bytes anyway.
-                --     RESIDUAL: the rule keys off a SURVIVING usage row, so it binds only ids that
-                --     ever carried one. A strand seated purely owner-signed (insertStrand, no consent
-                --     record) and then removed leaves nothing behind, so a spare unbound invite use
-                --     can still seat that id afterwards — open and keyless, so no secret is chosen,
-                --     but the removal does not stick. Tracked in
-                --     tickets/backlog/bug-consent-reseats-owner-only-removed-strand-id.md.
+                --   * the not-exists over Revocation — a strand id may be consent-seated once EVER
+                --     and never after ANY removal of that id, however it was seated. The usage-row
+                --     rule above binds only ids that ever carried a consent record; an id seated
+                --     purely owner-signed (insertStrand, no usage row) leaves nothing behind on
+                --     removal, so its removal needs its own trace. Every removal files a Revocation
+                --     row naming the removed row's key (RowKey), and this clause refuses any id
+                --     that has ever been tombstoned. The usage-row clause is arguably subsumed by
+                --     this one (a usage row implies the strand row existed, and its removal must
+                --     file a tombstone), but it does not depend on RowKey being populated
+                --     correctly; both are stated, per the style note above. The owner-signed branch
+                --     is deliberately unaffected, so re-join stays owner-gated exactly as described.
+                --     RowKey is owner-attested, not schema-verified (see Revocation.Authorized), so
+                --     an owner can file a tombstone naming an id that never existed and thereby
+                --     permanently foreclose consent-seating of that id — owner-only, the owner
+                --     already controls invite issuance, and unbound ids are 128 random bytes minted
+                --     at redemption, so no escalation (same reasoning as the pre-plant note above).
+                --     NOTE: like NotRevoked above, this is a write-time check against LOCALLY
+                --     VISIBLE rows — a node that has not yet converged on the Revocation row still
+                --     accepts the re-seat. Fails in the safe direction: the tombstone wins after
+                --     merge for the STAMP, and the resurrected row coexists with it (same class as
+                --     the StampId note above).
                 or (
                     new.Type = 'o'
                     and new.MemberPrivateKey is null
@@ -208,6 +223,10 @@ declare schema CadreControl {
                     and not exists (
                         select 1 from FormationUsage FU2
                             where FU2.StrandId = new.Id and FU2.StrandStampId <> new.StampId
+                    )
+                    and not exists (
+                        select 1 from Revocation R
+                            where R.TableName = 'Strand' and R.RowKey = new.Id
                     )
                 )
         ),
@@ -525,6 +544,9 @@ declare schema CadreControl {
     -- approval is a signature over
     -- (row key, stamp) that never expires, and deleting the row freed the stamp, so anyone who
     -- kept a copy of the approval could resurrect the row.
+    -- Each tombstone also records WHICH row was retired (RowKey below): the consent branch of
+    -- Strand.AuthorizedInsert reads it to refuse consent-seating any strand id that has ever
+    -- been removed, whichever way it was seated.
     -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so a node
     -- that has not yet converged on a Revocation row can still accept the replayed add, and the
     -- resurrected row coexists with the tombstone after merge — same class as the MinOneOwner
@@ -536,7 +558,12 @@ declare schema CadreControl {
     -- unbounded growth is fine today; revisit if either changes.
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken' (confined by RowIsGone below)
+        RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
+                                    -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id
         StampId text,               -- the retired nonce
+        -- Keyed on the stamp, not the RowKey: stamps are unique per row incarnation, and one
+        -- name may legitimately carry several tombstones over its life (seat -> delete ->
+        -- owner re-seat -> delete).
         primary key (TableName, StampId),
         -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
         constraint Immutable check on update, delete (false),
@@ -545,6 +572,11 @@ declare schema CadreControl {
         -- existed is permitted and harmless: a stamp carries 128 bits of CSPRNG output
         -- (control-database.ts:generateStampId — 16 bytes of sha256(PeerId) followed by 16
         -- random bytes), so a future legitimate one cannot be guessed and pre-planted.
+        -- Deliberately keyed on the STAMP only, not RowKey: checking "no live row named
+        -- new.RowKey" breaks under out-of-order convergence — a peer removed (tombstone names
+        -- it, stamp1) then re-admitted (stamp2) would leave a node that converges on the
+        -- re-add FIRST rejecting the stamp1 tombstone forever, never learning that stamp is
+        -- retired. The stamp-only form passes there (stamp1 is not live).
         constraint RowIsGone check on insert (
             (new.TableName = 'OwnerKey' and not exists (select 1 from OwnerKey K where K.StampId = new.StampId))
                 or (new.TableName = 'CadrePeer' and not exists (select 1 from CadrePeer P where P.StampId = new.StampId))
@@ -558,10 +590,19 @@ declare schema CadreControl {
         -- VISIBLE rows — see the convergence note above) evicted that peer party-wide AND
         -- permanently blocked the owner's own later re-admission of it (NotRevoked), and
         -- filing arbitrary stamps flooded a table whose rows never go away.
-        -- The digest binds the WHOLE row (TableName, StampId); the 'CadreControl.Revocation'
+        -- The digest binds the WHOLE row (TableName, RowKey, StampId); the 'CadreControl.Revocation'
         -- domain tag keeps it disjoint from every other rule — including the
         -- 'CadreControl.CadrePeer' 'remove' digest the same owner signs in the SAME
         -- transaction for the delete this tombstone accompanies.
+        -- RowKey is owner-ATTESTED, not schema-verified: positively binding it to the retired
+        -- row (e.g. requiring a committed.Strand row carrying the pair) would reject a
+        -- tombstone re-issued in a LATER transaction — which the delete-while-alone
+        -- durability path (docs/architecture.md) plans to do — and reject it outright on a
+        -- node that never converged on the removed row. Consequence: an owner can file a
+        -- tombstone naming an id that never existed and thereby permanently foreclose
+        -- CONSENT-seating of that id (Strand.AuthorizedInsert). Owner-only, the owner already
+        -- controls invite issuance, and unbound ids are 128 random bytes minted at redemption
+        -- — no escalation (same reasoning as the pre-plant note on RowIsGone).
         -- Reads LIVE OwnerKey (like ValidationKey / Strand / CadrePeer / DeviceToken), not
         -- committed.OwnerKey. The one difference that makes: a founding transaction on an
         -- owner-less database could seat an owner key and file a tombstone in one go. An
@@ -572,7 +613,7 @@ declare schema CadreControl {
         -- RowIsGone and Immutable are unchanged: they guard an owner retiring a stamp early
         -- or withdrawing one later, which authorization does not cover.
         constraint Authorized check on insert (
-            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.StampId), context.Signature, A.Key, 'ed25519'))
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 }
