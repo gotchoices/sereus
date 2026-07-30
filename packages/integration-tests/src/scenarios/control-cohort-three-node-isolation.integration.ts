@@ -204,17 +204,24 @@ async function bootTrio(opts: { reconcileMsB: number; handles: TrioHandles }): P
 	// ── 2. B: client-only (listens on nothing), pinning A's owner key so the
 	//        DEFAULT anchored seed policy accepts A's seed and B's own
 	//        authorized-member predicate is real.
+	//
+	// Production onboarding vouches before seeding (addDrone / acceptPhone in
+	// seed-bootstrap.ts); without it A's inbound gate refuses B's cold-start dial.
+	// Vouching a moment EARLIER — before B starts — costs nothing and makes step
+	// 2b's checkpoint observable: B's own start-time self-registration then has a
+	// row to refresh instead of logging "not yet a CadrePeer member" and skipping.
+	const bPeerId = peerIdFromPrivateKey(bKey).toString();
+	await A.authorizePeer(bPeerId);
+	const bVouchedAt = (await A.getControlDatabase()!.queryPeerRecord(bPeerId))!.updatedAt;
+
 	const B = new CadreNode(nodeConfig({
 		partyId, privateKey: bKey, profile: 'transaction',
 		listenAddrs: [], reconcileMs: reconcileMsB, pinnedOwnerKeys: [aOwnerKey]
 	}));
 	handles.B = B;
 	await B.start();
-	const bPeerId = B.peerId!.toString();
+	expect(B.peerId!.toString()).toBe(bPeerId);
 
-	// Production onboarding vouches before seeding (addDrone / acceptPhone in
-	// seed-bootstrap.ts); without it A's inbound gate refuses B's cold-start dial.
-	await A.authorizePeer(bPeerId);
 	const seedB = await A.createSeed();
 	// C has not been authorized and holds no row, so A's seed CANNOT name it.
 	// This is the "no shortcut" precondition: whatever B later knows about C did
@@ -231,6 +238,27 @@ async function bootTrio(opts: { reconcileMsB: number; handles: TrioHandles }): P
 		() => hasOutboundTo(B, aPeerId),
 		{ timeoutMs: 45_000, intervalMs: 250, description: 'B holds an outbound control connection to A' }
 	);
+
+	// ── 2b. Drain B's ONE automatic start-time reconcile pass here, while C does
+	//        not yet exist, so that pass can never be what forms B↔C later — case
+	//        2's negative window rests on that ordering, and without this the pass
+	//        lands right on top of it. `scheduleSelfRegistration` runs registerSelf
+	//        ~1s after start() and then fires a single eager pass; B's row gaining a
+	//        self-signed revision (strictly greater UpdatedAt) is the observable
+	//        that the callback has run.
+	await waitUntil(
+		async () => {
+			const row = await B.getControlDatabase()!.queryPeerRecord(bPeerId);
+			return !!row && row.updatedAt > bVouchedAt;
+		},
+		{ timeoutMs: 45_000, intervalMs: 250, description: "B's start-time self-registration lands" }
+	);
+	// The eager pass is fired unawaited immediately after that registration, so the
+	// checkpoint above can observe the write a beat before the pass is even issued:
+	// wait it out, then join the pass. `reconcileControlCohort` hands back the
+	// in-flight pass, so this resolves only once no pass is running on B.
+	await sleep(1_000);
+	await B.reconcileControlCohort();
 
 	// ── 3. C starts, still unauthorized. At this instant nothing anywhere has told
 	//        B that C exists, so this checkpoint is non-racy.
@@ -299,7 +327,17 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			// NEW row revision after B↔C formed, and B's view catches up to it.
 			// Honest scope: that revision may still reach B via A — this asserts the
 			// cohort converges with B↔C in place, it is NOT a proof of the B↔C wire.
-			expect(await C.registerSelf()).toBe('refreshed');
+			//
+			// Polled rather than called once: a 3-member cohort commits on Optimystic's
+			// default 0.75 super-majority over a cluster downsized to the 3 peers
+			// present — i.e. unanimity — so a single stream reset during the churn of
+			// B↔C forming fails the commit outright. Production retries the identical
+			// call on the record heartbeat; `waitUntil` logs each throw under the
+			// `sereus:integration:wait` debug namespace rather than eating it.
+			await waitUntil(
+				async () => (await C.registerSelf()) === 'refreshed',
+				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'C re-publishes its record into the 3-member cohort' }
+			);
 			const republished = await C.getControlDatabase()!.queryPeerRecord(cPeerId);
 			expect(republished).not.toBeNull();
 			const freshUpdatedAt = republished!.updatedAt;
