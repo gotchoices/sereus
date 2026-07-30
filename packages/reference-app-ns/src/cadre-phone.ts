@@ -11,7 +11,7 @@
  * Mirrors packages/reference-app-rn/src/cadre-phone.ts with NS storage/identity.
  */
 
-import { CadreNode } from '@serfab/cadre-core';
+import { CadreNode, PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
 	ControlNetworkSeed,
@@ -24,8 +24,14 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import type { PrivateKey } from '@libp2p/interface';
-import { loadOrCreateNSPeerKey, openOptimysticNSDb } from '@optimystic/db-p2p-storage-ns';
+import {
+	loadOrCreateNSPeerKey,
+	openOptimysticNSDb,
+	SqliteKVStore,
+	type OptimysticNSDBHandle,
+} from '@optimystic/db-p2p-storage-ns';
 import { makeLazyNsStorage } from './ns-storage';
+import { anchorSlotKey, bootstrapPeersSlotKey, kvSlot } from './node-local-slots';
 
 // ── Peer identity ─────────────────────────────────────────────────────────────
 // Persist a single Ed25519 keypair so the node keeps the same PeerId across
@@ -34,26 +40,41 @@ import { makeLazyNsStorage } from './ns-storage';
 
 const PEER_IDENTITY_DB_NAME = 'sereus-peer-identity';
 
-async function loadOrCreatePhoneKey(): Promise<PrivateKey> {
-	const db = await openOptimysticNSDb(PEER_IDENTITY_DB_NAME);
-	try {
-		// `loadOrCreateNSPeerKey` returns a PrivateKey branded by db-p2p-storage-ns's
-		// own pinned `@libp2p/interface`/`uint8arraylist` copies (it is linked from a
-		// separate install). Those carry a nominally-different `Uint8ArrayList[symbol]`
-		// brand than sereus's copy — `uint8arraylist` declares it as a `unique symbol`,
-		// which TypeScript treats per-copy — but the symbol is a global-registry key
-		// (`Symbol.for`), so the types are runtime-identical. Bridge with
-		// `as unknown as PrivateKey` — no `any`, no pinning transitive packages.
-		// Mirrors the transport cast in reference-app-rn/src/cadre-phone.ts.
-		return await loadOrCreateNSPeerKey(db) as unknown as PrivateKey;
-	} finally {
-		await db.close();
-	}
+async function loadOrCreatePhoneKey(db: OptimysticNSDBHandle): Promise<PrivateKey> {
+	// `loadOrCreateNSPeerKey` returns a PrivateKey branded by db-p2p-storage-ns's
+	// own pinned `@libp2p/interface`/`uint8arraylist` copies (it is linked from a
+	// separate install). Those carry a nominally-different `Uint8ArrayList[symbol]`
+	// brand than sereus's copy — `uint8arraylist` declares it as a `unique symbol`,
+	// which TypeScript treats per-copy — but the symbol is a global-registry key
+	// (`Symbol.for`), so the types are runtime-identical. Bridge with
+	// `as unknown as PrivateKey` — no `any`, no pinning transitive packages.
+	// Mirrors the transport cast in reference-app-rn/src/cadre-phone.ts.
+	return await loadOrCreateNSPeerKey(db) as unknown as PrivateKey;
 }
 
 // ── Singleton ──────────────────────────────────────────────────────────────────
 
 let node: CadreNode | null = null;
+
+/**
+ * The {@link PEER_IDENTITY_DB_NAME} SQLite handle, held open for the node's
+ * whole life. It backs three things that deliberately share one fate: the
+ * Ed25519 identity BLOB, the trusted-owner anchor, and the bootstrap-peer
+ * store (both node-local records, via `SqliteKVStore`'s `kv` table). This app
+ * has no Keychain/Keystore integration (see the module comment), so the
+ * anchor is only as protected as the plaintext identity it qualifies until
+ * that hardening lands — moving one without the other would be a downgrade,
+ * not an improvement.
+ *
+ * NOTE: opened at most once per process (`??=` below) — a leaked native
+ * handle would block the next open of this file — and closed in
+ * {@link stopPhoneNode}.
+ *
+ * No migration: an existing install has no persisted anchor or bootstrap-peer
+ * record under these keys, so it cold-starts once (empty anchor, empty
+ * bootstrap-peer set) rather than crashing or backfilling.
+ */
+let identityDb: OptimysticNSDBHandle | null = null;
 
 export interface PhoneNodeOptions {
 	/** Party ID — identifies this cadre. Generated on first run. */
@@ -75,7 +96,32 @@ export function getPhoneNode(): CadreNode | null {
 export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode> {
 	if (node?.isRunning) return node;
 
-	const privateKey = await loadOrCreatePhoneKey();
+	// One handle for the node's life, reused for the identity load below and for
+	// both node-local records — see the `identityDb` doc comment for why they
+	// share fate. `??=`, not a plain open: a leaked native handle blocks the next
+	// open of this file, and the `node?.isRunning` early-return above already
+	// keeps a healthy node from reaching here twice.
+	identityDb ??= await openOptimysticNSDb(PEER_IDENTITY_DB_NAME);
+	const db = identityDb;
+
+	const privateKey = await loadOrCreatePhoneKey(db);
+
+	// Empty prefix, not `SqliteKVStore`'s default `'optimystic:txn:'`: the slot
+	// keys are the literal `trusted-owners.<partyId>` / `bootstrap-peers.<partyId>`
+	// strings, and this db holds nothing else under those names.
+	const nodeLocalKv = new SqliteKVStore(db, '');
+	// NOTE: the trusted-owner anchor is only as protected as the plaintext
+	// identity BLOB it qualifies — this app has no Keychain/Keystore integration
+	// (see the module comment above), unlike reference-app-rn's secure-enclave
+	// anchor. Whoever adds NS secure storage must move both together.
+	const trustedOwnerStore = await PersistentTrustedOwnerStore.open(
+		kvSlot(nodeLocalKv, anchorSlotKey(opts.partyId)),
+		opts.partyId,
+	);
+	const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
+		kvSlot(nodeLocalKv, bootstrapPeersSlotKey(opts.partyId)),
+		opts.partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -93,6 +139,8 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },
+		trustedOwners: { store: trustedOwnerStore },
+		bootstrapPeers: { store: bootstrapPeerStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.
@@ -117,9 +165,24 @@ export async function startSolo(partyId: string): Promise<CadreNode> {
  * Stop the phone CadreNode and release resources.
  */
 export async function stopPhoneNode(): Promise<void> {
-	if (node) {
-		await node.stop();
-		node = null;
+	// Cleared BEFORE the stop, mirroring reference-app-rn's `stopPhoneNode`: a
+	// throwing `node.stop()` must not leave a module-level reference to a node
+	// whose `identityDb` handle the `finally` below has just closed — the
+	// `node?.isRunning` early-return in `startPhoneNode` would hand that node
+	// back and its next node-local write would fail on a closed handle.
+	const stopping = node;
+	node = null;
+	try {
+		if (stopping) await stopping.stop();
+	} finally {
+		// Close even when `node.stop()` threw, and even when a failed
+		// `startPhoneNode` never got as far as constructing the node — this is a
+		// native SQLite handle, and a leaked one blocks the next open of this file.
+		// Cleared first so a failed close cannot leave a dangling handle that the
+		// next start would reuse.
+		const db = identityDb;
+		identityDb = null;
+		if (db) await db.close();
 	}
 }
 
