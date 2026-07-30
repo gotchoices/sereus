@@ -2,7 +2,7 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
 import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
-import { peerIdFromString } from '@libp2p/peer-id';
+import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
@@ -77,8 +77,13 @@ import {
 } from './strand-solicitation.js';
 import { createMembershipConnectionGater, DEFAULT_ENROLLMENT_WINDOW_MS } from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
-import { StrandAddrService, collectStrandAddrs } from './strand-addr-protocol.js';
-import { DelegateAdmissionStore } from './delegate-admission.js';
+import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer } from './strand-addr-protocol.js';
+import {
+  DelegateAdmissionStore,
+  extractCircuitRelayTargets,
+  DELEGATE_GRANT_TTL_MS,
+  type CircuitRelayTarget
+} from './delegate-admission.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
@@ -230,6 +235,16 @@ export class CadreNode implements SAppIdLookup {
    * gate ({@link authorizeInboundControlStream}) never honors it.
    */
   private readonly delegateAdmission = new DelegateAdmissionStore();
+
+  /**
+   * When this node last ANNOUNCED a delegate, keyed `<targetPeerId>\n<strandId>`
+   * (the peer announced TO, not the delegate). Throttles
+   * {@link refreshDelegateGrants} to once per `DELEGATE_GRANT_TTL_MS / 2` per
+   * (relay, strand) so the 15 s reconcile tick never becomes per-tick RPC
+   * chatter; the launch/resume announce passes record here too. Keys whose
+   * strand is no longer running are pruned on each reconcile pass.
+   */
+  private readonly delegateAnnounceAt = new Map<string, number>();
 
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
@@ -1517,6 +1532,14 @@ export class CadreNode implements SAppIdLookup {
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
     }
+    // Refresh relay delegate grants BEFORE the sibling enumeration below: a
+    // solo cadre with a party relay has no siblings to dial but must still keep
+    // its running strands' grants alive (a dropped relay connection re-dials
+    // the reservation and faces the connection gate again).
+    await this.refreshDelegateGrants();
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
     const selfPeerId = this.controlNode.peerId.toString();
 
     // 1. Enumerate known siblings. This membership read is itself a pull-on-read
@@ -2546,7 +2569,13 @@ export class CadreNode implements SAppIdLookup {
    * (returns the live instance unchanged) as a backstop against double-resume.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
-    const seed = await this.resolveCohortSeed(strandId);
+    // Re-derive the transport peerId (deterministic and cheap — a quiesced
+    // instance has no `libp2pNode` to read it from) so the seed pass announces
+    // the delegate before `resumeStrand` runs `libp2p.start()`.
+    const delegatePeerId = this.identityKey
+      ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString()
+      : undefined;
+    const seed = await this.resolveCohortSeed(strandId, delegatePeerId);
     const mode = selectStrandMode(undefined, seed.hasOtherPeers);
     await this.strandManager.resumeStrand(strandId, {
       bootstrapNodes: seed.bootstrapNodes,
@@ -2816,9 +2845,6 @@ export class CadreNode implements SAppIdLookup {
     explicitMode?: StrandMode,
     founder?: boolean
   ): Promise<StrandInstance> {
-    const seed = await this.resolveCohortSeed(strand.Id);
-    const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
-
     // Each strand node gets its own transport identity, derived from the cadre
     // identity key + strandId (see strand-transport-key.ts). Sharing the
     // control node's key here gave every node one peerId, which collides at a
@@ -2837,6 +2863,14 @@ export class CadreNode implements SAppIdLookup {
     const transportKey = this.identityKey
       ? await strandTransportKey(this.identityKey, strand.Id)
       : undefined;
+
+    // Derived BEFORE seed resolution so the seed pass doubles as the delegate
+    // announcement and every grant is recorded before `startStrand` runs
+    // `libp2p.start()` (the responder records the grant before replying; the
+    // client awaits the replies).
+    const delegatePeerId = transportKey ? peerIdFromPrivateKey(transportKey).toString() : undefined;
+    const seed = await this.resolveCohortSeed(strand.Id, delegatePeerId);
+    const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
 
     const instance = await this.strandManager.startStrand({
       strandRow: strand,
@@ -2871,8 +2905,19 @@ export class CadreNode implements SAppIdLookup {
    * empty (`[]`) — mode still follows membership, and the empty seed self-heals
    * on the next resume / check-in pass. Returns an empty seed when the control DB
    * or node is absent (not yet started / torn down).
+   *
+   * When `delegatePeerId` is given (a strand launch/resume is imminent), the
+   * pass doubles as the delegate ANNOUNCEMENT: our circuit relays are merged
+   * into the RPC targets and every request carries the delegate peerId, so each
+   * receiver records an admission grant BEFORE `libp2p.start()` (re-)dials the
+   * relay reservation — the gate denial there is fatal, not degraded. A
+   * party-member relay answers the RPC (its control node admits us as a
+   * member); a dedicated ops/ relay does not speak the protocol and the
+   * per-peer failure folds to `[]` — harmless, it has no membership gate and
+   * needs no grant. The relay's direct addr rides along as the dial fallback
+   * for a relay we are not yet connected to.
    */
-  private async resolveCohortSeed(strandId: string): Promise<CohortSeed> {
+  private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<CohortSeed> {
     if (!this.controlDatabase || !this.controlNode) {
       return { bootstrapNodes: [], hasOtherPeers: false };
     }
@@ -2883,11 +2928,109 @@ export class CadreNode implements SAppIdLookup {
     // RPC only siblings we already have a control connection to — they can answer
     // now, and `dialProtocol` by peerId reuses the open connection.
     const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
-    const targets = otherPeerIds.filter((id) => connected.has(id));
+    const targets: StrandAddrPeer[] = otherPeerIds
+      .filter((id) => connected.has(id))
+      .map((peerId) => ({ peerId }));
+    if (delegatePeerId !== undefined) {
+      for (const relay of this.circuitRelayTargets()) {
+        if (!targets.some((t) => t.peerId === relay.relayPeerId)) {
+          targets.push({ peerId: relay.relayPeerId, addrs: [multiaddr(relay.relayAddr)] });
+        }
+      }
+    }
     const bootstrapNodes = targets.length
-      ? await collectStrandAddrs(this.controlNode, targets.map((peerId) => ({ peerId })), strandId)
+      ? await collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })
       : [];
+    if (delegatePeerId !== undefined) {
+      this.recordDelegateAnnounces(targets, strandId);
+    }
     return { bootstrapNodes, hasOtherPeers };
+  }
+
+  /**
+   * The circuit relays this node's strand nodes would reserve through: the
+   * union of the configured `network.listenAddrs` circuits (the strand node
+   * inherits these verbatim) and the control node's own live `/p2p-circuit`
+   * multiaddrs (a reservation this node discovered rather than configured).
+   *
+   * NOTE: a relay the STRAND node discovers on its own (autorelay — in neither
+   * source) gets no announcement, and a membership-gated one will deny it; fine
+   * now, every realistic topology feeds one of the two sources.
+   */
+  private circuitRelayTargets(): CircuitRelayTarget[] {
+    return extractCircuitRelayTargets([
+      ...(this.config.network?.listenAddrs ?? []),
+      ...(this.controlNode?.getMultiaddrs().map(String) ?? [])
+    ]);
+  }
+
+  /**
+   * Record the announce timestamps {@link refreshDelegateGrants} throttles on,
+   * for every target a delegate-carrying seed pass dialed.
+   *
+   * Recorded OPTIMISTICALLY at announce time: `collectStrandAddrs` folds
+   * per-peer failure to `[]` and reports no per-peer success, and threading
+   * success out would change its API for little gain. A failed INITIAL announce
+   * is fatal-at-start anyway (the relay denies the reservation,
+   * `libp2p.start()` throws, and wake/check-in re-resume retries with a fresh
+   * announce); a failed REFRESH retries within `DELEGATE_GRANT_TTL_MS / 2`
+   * (15 min), still inside the 30 min TTL. Extra sibling keys recorded here are
+   * harmless — the reconcile-pass prune covers them.
+   */
+  private recordDelegateAnnounces(targets: StrandAddrPeer[], strandId: string, now = Date.now()): void {
+    for (const target of targets) {
+      this.delegateAnnounceAt.set(`${target.peerId}\n${strandId}`, now);
+    }
+  }
+
+  /**
+   * Re-announce every running strand's delegate peerId to this node's circuit
+   * relays, throttled to once per `DELEGATE_GRANT_TTL_MS / 2` per
+   * (relay, strand). A grant must outlive the reservation: a dropped relay
+   * connection makes the strand's circuit-relay transport re-dial and face the
+   * connection gate again, so the relay must still hold a live grant then.
+   * RELAY targets only — siblings get their announce on every launch/resume
+   * seed pass, and a grant only matters where a reservation can be re-dialed.
+   */
+  private async refreshDelegateGrants(now = Date.now()): Promise<void> {
+    if (!this.controlNode) {
+      return;
+    }
+    // A running strand's delegate peerId is simply its live node's peerId — no
+    // re-derivation here.
+    const running = new Map<string, string>();
+    for (const [strandId, instance] of this.strandManager.getInstances()) {
+      if (instance.libp2pNode) {
+        running.set(strandId, instance.libp2pNode.peerId.toString());
+      }
+    }
+    // Prune throttle entries for strands no longer running.
+    for (const key of this.delegateAnnounceAt.keys()) {
+      if (!running.has(key.slice(key.indexOf('\n') + 1))) {
+        this.delegateAnnounceAt.delete(key);
+      }
+    }
+    if (running.size === 0) {
+      return;
+    }
+    const relays = this.circuitRelayTargets();
+    if (relays.length === 0) {
+      return;
+    }
+    for (const [strandId, delegatePeerId] of running) {
+      const due = relays.filter((relay) =>
+        now - (this.delegateAnnounceAt.get(`${relay.relayPeerId}\n${strandId}`) ?? 0) >= DELEGATE_GRANT_TTL_MS / 2
+      );
+      if (due.length === 0) {
+        continue;
+      }
+      const dueTargets: StrandAddrPeer[] = due.map((relay) => ({
+        peerId: relay.relayPeerId,
+        addrs: [multiaddr(relay.relayAddr)]
+      }));
+      await collectStrandAddrs(this.controlNode, dueTargets, strandId, { delegatePeerId });
+      this.recordDelegateAnnounces(dueTargets, strandId, now);
+    }
   }
 
   /**

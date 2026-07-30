@@ -48,11 +48,12 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
+import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
 import { MemoryRawStorage, RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p, collectStrandAddrs } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { waitUntil } from '../harness/index.js';
 
@@ -211,6 +212,101 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			).toBe(true);
 		} finally {
 			await Promise.allSettled([O?.stop(), M?.stop(), A?.stop()]);
+		}
+	}, 120_000);
+
+	it('denies an un-announced stranger connection, admits an announced delegate, and still refuses that delegate the repo and strand-addr surfaces', async () => {
+		let A: CadreNode | undefined;
+		let D: CadreNode | undefined;
+		try {
+			// ── Relay-owner A: armed gate (anchored, non-empty authorized set, no
+			// enrollment window, no outstanding invitation) ───────────────────────
+			const partyId = `delegate-admission-${Date.now()}`;
+			const aKey = await generateKeyPair('Ed25519');
+			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			await A.start();
+			await makeOwnOwner(A, aKey);
+
+			// The announcing member exists only as an authorized peerId — the grant
+			// path needs an announcer identity, not a live sibling node.
+			const mKey = await generateKeyPair('Ed25519');
+			const mPeerId = peerIdFromPrivateKey(mKey).toString();
+			await A.authorizePeer(mPeerId);
+
+			const aAddr = A.getControlNode()!.getMultiaddrs()[0]!;
+			const aPeerId = A.peerId!.toString();
+
+			// ── Delegate node D: a different party's node standing in for a strand
+			// node's derived transport identity — unknown to A's membership ───────
+			D = new CadreNode(nodeConfig({ partyId: 'delegate-admission-outsider' }));
+			await D.start();
+			const dPeerId = D.peerId!.toString();
+			const dNode = D.getControlNode()!;
+
+			// ── (a) Un-announced: the inbound connection is DENIED ────────────────
+			// The deny fires on A's side of the upgrade (after noise), so D's dial()
+			// may resolve before A aborts — D then sees its connection close moments
+			// later, and A never registers one (membership-connection-gater.ts).
+			await dNode.dial(aAddr).catch(() => undefined);
+			await waitUntil(
+				() => !dNode.getConnections().some(
+					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
+				),
+				{ timeoutMs: 15_000, intervalMs: 250, description: 'stranger connection torn down by the gate' }
+			);
+			expect(
+				A.getControlNode()!.getConnections().some(
+					(c) => c.remotePeer.toString() === dPeerId && c.status === 'open'
+				)
+			).toBe(false);
+
+			// ── (b) Announced: the same peerId, admitted by the grant alone ───────
+			const strandId = 'delegate-admission-strand';
+			A.grantDelegateAdmission(mPeerId, strandId, dPeerId);
+			expect(A.hasDelegateAdmission(dPeerId)).toBe(true);
+			await D.getControlNode()!.dial(aAddr);
+			await waitForConnection(A, dPeerId, 'relay-owner admits the announced delegate');
+
+			// ── (c) The admitted delegate still gets NOTHING above the connection ─
+			// Raw repo pend on the control-DB protocol: the fail-closed per-stream
+			// gate never honors a delegate grant, so the stream is aborted before
+			// any frame is decoded and the call rejects.
+			const dClient = RepoClient.create(
+				repoPeerIdFromString(aPeerId),
+				peerNetworkOver(D.getControlNode()!),
+				`/optimystic/control-${partyId}`
+			);
+			const B3 = 'delegate-admission-B3';
+			await expect(
+				dClient.pend(
+					{
+						transforms: { inserts: { [B3]: { header: { id: B3, type: 'TST', collectionId: 'delegate-admission-C1' } } } },
+						actionId: 'delegate-admission-act-1',
+						policy: 'c'
+					},
+					{ expiration: Date.now() + 10_000 }
+				)
+			).rejects.toThrow();
+
+			// Strand-addr: the responder's own isAuthorizedMember gate refuses a
+			// non-member (the grant buys the connection, not the RPC) — refusal is
+			// an empty address list by protocol design.
+			const refused = await collectStrandAddrs(
+				D.getControlNode()!,
+				[{ peerId: aPeerId, addrs: [multiaddr(aAddr.toString())] }],
+				strandId
+			);
+			expect(refused).toEqual([]);
+
+			// The refused streams did not cost the delegate its connection — the
+			// circuit-relay reservation riding it would survive.
+			expect(
+				A.getControlNode()!.getConnections().some(
+					(c) => c.remotePeer.toString() === dPeerId && c.status === 'open'
+				)
+			).toBe(true);
+		} finally {
+			await Promise.allSettled([D?.stop(), A?.stop()]);
 		}
 	}, 120_000);
 });

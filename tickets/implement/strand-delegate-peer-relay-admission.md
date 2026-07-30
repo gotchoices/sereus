@@ -6,6 +6,56 @@ difficulty: hard
 # Delegate-peer admission: let a party relay serve its own members' strand nodes
 
 <!-- resume-note -->
+**Run 5 (2026-07-29) landed ALL of Phase 3 (items 1-9 of the run-4 plan below, verbatim)
+and most of Phase 4, then hit the soft token budget.** Tree at exit:
+
+- Phase 3 COMPLETE in `packages/cadre-core/src/cadre-node.ts`: imports; `delegateAnnounceAt`
+  throttle map; `launchStrand` derives the transport key before seed resolution and computes
+  the delegate peerId; `resumeStrandRuntime` re-derives it; `resolveCohortSeed(strandId,
+  delegatePeerId?)` merges relay targets (sibling entry wins), passes `{delegatePeerId}`,
+  then `recordDelegateAnnounces`; `circuitRelayTargets()` with the autorelay `NOTE:`
+  tripwire; `recordDelegateAnnounces` with the optimistic-record tradeoff doc;
+  `refreshDelegateGrants` (stopped-strand prune, TTL/2 throttle, relay targets only);
+  called in `runReconcileControlCohort` after the authorized-peer refresh re-guard, before
+  sibling enumeration, with its own re-guard after.
+- VALIDATED (run 5): cadre-core `yarn typecheck` + `yarn build` clean, root `yarn lint`
+  clean, cadre-core `yarn vitest run` 997 passed / 1 skipped. **Gating scenario GREEN**:
+  `push-wake-e2e.integration.ts` passes alone via `-t "circuit-relay"` AND whole-file 4/4.
+- NEW, WRITTEN BUT NOT RUN: one `it` in
+  `packages/integration-tests/src/scenarios/control-stream-authz.integration.ts`
+  ("denies an un-announced stranger connection, admits an announced delegate, and still
+  refuses that delegate the repo and strand-addr surfaces") — ticket cases (a)/(b)/(c).
+  Uses a `dNode` const so closures narrow `D`; wraps the addr as
+  `multiaddr(aAddr.toString())` for the cross-package Multiaddr type (same pattern as
+  push-wake-e2e:570, which typechecks green). Integration-tests were NOT typechecked or
+  executed after the final edits — VERIFY FIRST.
+
+**Run 6 = finish validation + docs + bookkeeping, nothing else:**
+
+1. `yarn typecheck` in `packages/integration-tests`, then
+   `yarn vitest run --reporter=verbose src/scenarios/control-stream-authz.integration.ts 2>&1 | tee <scratch>/authz.log`.
+   Case (a) relies on the deny landing receiver-side after noise (D's `dial()` may resolve,
+   then the connection closes moments later — see `membership-connection-gater.ts` doc);
+   the test polls D-side closure then asserts A-side absence.
+2. Docs 4-pack: `docs/strands.md:76-79` open question → the Decision above (dedicated
+   `ops/` relay = open; party control node running a relay = party-private, serves its
+   members' delegate peerIds), plus the deferred durable-attestation (option B) bullet;
+   `strand-transport-key.ts:36-42` NOTE corrected (the derived peerId IS attested now, at
+   runtime, by the delegate announcement — keep the `MemberPeer` pointer as the
+   strand-mesh follow-up); `docs/architecture.md` strand-addr RPC section gains the
+   announce direction; `strand-instance-manager.ts` ~:280 "Unverified" listenAddrs note
+   gains one sentence: the inherited `/p2p-circuit` addr is deliberate (gives a NAT'd
+   strand a reachable slot) and depends on the delegate announcement.
+3. Bookkeeping: remove the entry at `tickets/.pre-existing-known.md:3-4` (scenario green in
+   run 5). Then write the review/ handoff and delete this ticket. Handoff MUST call out:
+   the announce lands before the strand's `libp2p.start()` on all three paths (addStrand,
+   resumeStrand via wake, via check-in — all funnel through `resolveCohortSeed` with the
+   delegate peerId before `startStrand`/`resumeStrand` starts libp2p); the
+   residual-exposure paragraph below, verbatim; and the authz-case run status from step 1.
+
+**Run 4 note below is HISTORICAL — its Phase-3 plan (items 1-9) is fully landed. Read only
+for context.**
+
 **Run 4 (2026-07-29) hit the soft token budget mid-Phase-3.** Working tree at exit:
 **Phases 1 and 2 are COMPLETE, tested, and green** (52 tests across the three spec files
 below pass via `yarn vitest run` in `packages/cadre-core`); Phase 3 is NOT started in the
@@ -544,29 +594,25 @@ an opening to strangers; option A would have opened it to everyone.
 
 ### Phase 3 — announce targets + sequencing
 
-- Helper (exported for test) that extracts relay peerIds from a multiaddr list:
-  `…/p2p/<relay>/p2p-circuit` → `<relay>`. Cover a bare `/p2p-circuit`, a full circuit addr
-  with a trailing `/p2p/<dst>`, and a non-circuit addr.
-- Reorder the `addStrand` path so the transport key is derived before cohort-seed resolution;
-  compute the delegate peerId from it; announce to the union target set; then `startStrand`.
-- Same for `resumeStrandRuntime`.
-- Re-announce from the control-cohort reconcile pass, throttled to `DELEGATE_GRANT_TTL_MS / 2`
-  per (relay, strand).
+- ~~Relay-peerId extractor helper~~ **DONE (run 2, tested run 4)** —
+  `extractCircuitRelayTargets` in `delegate-admission.ts`.
+- ~~Reorder `addStrand`/`launchStrand` (derive key → announce via seed pass → start)~~
+  **DONE (run 5)**.
+- ~~Same for `resumeStrandRuntime`~~ **DONE (run 5)**.
+- ~~Re-announce from the reconcile pass, throttled to TTL/2 per (relay, strand)~~
+  **DONE (run 5)** — `refreshDelegateGrants`.
 
 ### Phase 4 — validation
 
-- `yarn build` + `yarn typecheck` + `yarn lint` clean; `yarn test` in `packages/cadre-core`.
-- The gating scenario, from `packages/integration-tests`:
-  `yarn vitest run --reporter=verbose src/scenarios/push-wake-e2e.integration.ts -t "circuit-relay" 2>&1 | tee <scratch>/relay.log`
-  then the whole file. Remove the entry from `tickets/.pre-existing-known.md` once green.
-- Extend `packages/integration-tests/src/scenarios/control-stream-authz.integration.ts` (or a
-  sibling) so the policy is asserted at the **connection** layer, not merely implied by the
-  push-wake scenario passing. Three cases: (a) an un-announced stranger peerId is still denied
-  its inbound connection; (b) an announced delegate peerId is admitted; (c) that same admitted
-  delegate is still refused a control-DB stream (`repo`) **and** a wake/strand-addr request.
-- Docs: `docs/strands.md` open question resolved, `strand-transport-key.ts:38-43` note
+- ~~`yarn build` + `yarn typecheck` + `yarn lint` clean; `yarn test` in
+  `packages/cadre-core`~~ **DONE (run 5)** — 997 passed / 1 skipped.
+- ~~The gating scenario~~ **DONE (run 5)** — `-t "circuit-relay"` green, whole file 4/4
+  green. STILL TO DO: remove the entry from `tickets/.pre-existing-known.md:3-4`.
+- Extend `control-stream-authz.integration.ts` — **WRITTEN (run 5), NOT typechecked/run**;
+  cases (a)/(b)/(c) in one new `it`. Run it (see run-6 step 1).
+- Docs: `docs/strands.md` open question resolved, `strand-transport-key.ts:36-42` note
   corrected, `docs/architecture.md` strand-addr section updated,
-  `strand-instance-manager.ts:280-285` note extended.
+  `strand-instance-manager.ts` ~:280 note extended. **REMAINING (run 6)**.
 
 ## Review handoff must call out
 
