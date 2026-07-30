@@ -45,7 +45,10 @@ describe('cadre-host trust-circle', () => {
 		// ticket's CLI change), so it appears as a member alongside redeemed peers.
 		await cadreNode.registerSelf();
 
-		host = await createTestCadreHost({ cadreNodeForTrustCircle: cadreNode });
+		host = await createTestCadreHost({
+			cadreNodeForTrustCircle: cadreNode,
+			ownerPeerId: async () => cadreNode.peerId!.toString(),
+		});
 	}, 60_000);
 
 	afterEach(async () => {

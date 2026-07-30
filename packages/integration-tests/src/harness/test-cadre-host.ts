@@ -28,6 +28,7 @@ import {
 	TrustCircleStore,
 	UpdateService,
 	createLocalUiServer,
+	ensureSelfLabel,
 	readHostConfig,
 	type CadreNodeLike,
 	type HostConfigFile,
@@ -74,6 +75,8 @@ export function defaultFakeCadreNode(): CadreNodeLike {
 		encodeInvite() { return 'cadre://invite/test'; },
 		async listMembers() { return []; },
 		async isMember() { return false; },
+		async listAuthorizedMembers() { return []; },
+		async isAuthorizedMember() { return false; },
 	};
 }
 
@@ -93,6 +96,13 @@ export interface TestCadreHostOptions {
 	updateFetcher?: typeof fetch;
 	/** Inject a custom CadreNodeLike for trust-circle (e.g. a real CadreNode). */
 	cadreNodeForTrustCircle?: CadreNodeLike;
+	/**
+	 * Resolves the owner node's peer ID, mirroring `bin/host.ts`'s
+	 * `ensureSelfLabel({ getPeerId: () => owner.getPeerId() })` startup step.
+	 * Without it the trust-circle listing cannot show the owner's own device,
+	 * because the authorized set excludes the node's self-published row.
+	 */
+	ownerPeerId?: () => Promise<string>;
 	/** Test-only orchestrator spawn entrypoint (defaults to the cadre-cli bin). */
 	spawnEntrypoint?: string;
 	/** SSE heartbeat interval (ms) — forwarded to createLocalUiServer. */
@@ -176,10 +186,17 @@ export async function createTestCadreHost(opts: TestCadreHostOptions = {}): Prom
 	const orchestrator = new HostProcessOrchestrator(orchestratorOpts);
 	await orchestrator.init();
 
+	const trustCircleStore = new TrustCircleStore(dataDir);
 	const trustCircle = new TrustCircleService({
 		cadreNode: opts.cadreNodeForTrustCircle ?? defaultFakeCadreNode(),
-		store: new TrustCircleStore(dataDir),
+		store: trustCircleStore,
 	});
+
+	// Same self-labelling step bin/host.ts runs at startup — the listing splices
+	// the `self: true` row back in, since the authorized set never contains it.
+	if (opts.ownerPeerId) {
+		await ensureSelfLabel({ store: trustCircleStore, getPeerId: opts.ownerPeerId });
+	}
 
 	const nat = new NatService({
 		rootDir: dataDir,

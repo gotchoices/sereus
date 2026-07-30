@@ -47,6 +47,7 @@ export {
   TrustCircleError,
   createTrustCircleHandlers,
   parseDuration,
+  ensureSelfLabel,
   DEFAULT_INVITE_TTL_MS,
 } from './auth/index.js';
 export type {
