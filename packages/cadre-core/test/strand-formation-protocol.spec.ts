@@ -98,6 +98,20 @@ function baseOptions(overrides: Partial<FormationListenerOptions>): {
   return { options, identityDisclosed: () => disclosed };
 }
 
+/** An approving `provisionStrand` that spends `delayMs` of real work before answering. */
+function slowProvision(delayMs: number, strandId: string): () => Promise<ResponderProvisionOutcome> {
+  return async () => {
+    await new Promise((resolve) => setTimeout(resolve, delayMs));
+    return {
+      approved: true,
+      result: {
+        strand: { strandId, createdBy: 'responder' },
+        dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+      }
+    };
+  };
+}
+
 // ── Disclosure-timing: the responder cadre must NEVER leak on a rejection ──────
 
 describe('FormationListener disclosure timing (no responder cadre on rejection)', () => {
@@ -203,16 +217,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // budget, so real work (a DB write, a hook call) could time out a join that would
     // otherwise have succeeded. provisionTimeoutMs is a separate, larger budget.
     const { options, identityDisclosed } = baseOptions({
-      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
-        await new Promise((resolve) => setTimeout(resolve, 30));
-        return {
-          approved: true,
-          result: {
-            strand: { strandId: 'strand-slow-but-ok', createdBy: 'responder' },
-            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-          }
-        };
-      }
+      provisionStrand: slowProvision(30, 'strand-slow-but-ok')
     });
     const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 200 });
     const { node, invoke } = captureHandler();
@@ -253,16 +258,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // clamped budget but would fit under the UNCLAMPED one must still see a clean rejection
     // frame — not silence from the outer session timeout firing first.
     const { options } = baseOptions({
-      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
-        await new Promise((resolve) => setTimeout(resolve, 950));
-        return {
-          approved: true,
-          result: {
-            strand: { strandId: 'strand-too-slow', createdBy: 'responder' },
-            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
-          }
-        };
-      }
+      provisionStrand: slowProvision(950, 'strand-too-slow')
     });
     const listener = new FormationListener({
       ...options,
@@ -279,6 +275,48 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
     expect(result.approved).toBe(false);
     expect(result.reason).toBe('Formation provisioning timed out');
+  });
+
+  it('clamps a provisionTimeoutMs that leaves no room for the preceding wire step', async () => {
+    // 800ms fits under the 1000ms session on its own, but the session budget also has to
+    // cover the contact read (stepTimeoutMs 400), so it clamps to session - step = 600ms.
+    // A 700ms hook therefore gets a rejection frame; without the headroom in the guard it
+    // would have run to 800ms and raced the session timeout instead.
+    const { options } = baseOptions({
+      provisionStrand: slowProvision(700, 'strand-no-headroom')
+    });
+    const listener = new FormationListener({
+      ...options,
+      sessionTimeoutMs: 1000,
+      stepTimeoutMs: 400,
+      provisionTimeoutMs: 800
+    });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Formation provisioning timed out');
+  });
+
+  it('treats provisionTimeoutMs 0 as unset — the default budget, not an instant timeout', async () => {
+    // A 0/negative budget must not mean "fail immediately"; it means "no value supplied".
+    const { options } = baseOptions({
+      provisionStrand: slowProvision(30, 'strand-default-budget')
+    });
+    const listener = new FormationListener({ ...options, stepTimeoutMs: 10, provisionTimeoutMs: 0 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(true);
+    expect(result.provisionResult?.strand.strandId).toBe('strand-default-budget');
   });
 
   it('converts an unexpected provisioning throw into a non-disclosing internal-error frame', async () => {
@@ -440,5 +478,27 @@ describe('dialFormation provision-result invariant', () => {
       provisionTimeoutMs: 200
     });
     expect(result).toEqual(provisionResult);
+  });
+
+  it('fails the await-response read with its own timeout when the responder never answers', async () => {
+    // The initiator must surface the await-response budget, not hang until the whole-session
+    // timeout — and must still close the stream on the way out.
+    class SilentStream extends MockStream {
+      [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
+        return { next: () => new Promise<IteratorResult<Uint8Array>>(() => { /* never delivers a frame */ }) };
+      }
+    }
+    const stream = new SilentStream([]);
+    const node = { dialProtocol: async () => stream } as unknown as Libp2p;
+
+    await expect(dialFormation(node, {
+      contact,
+      responderAddrs,
+      validateResponse: async () => true,
+      sessionTimeoutMs: 500,
+      stepTimeoutMs: 10,
+      provisionTimeoutMs: 50
+    })).rejects.toThrow(/Formation await-response timed out after 50ms/);
+    expect(stream.closed).toBe(true);
   });
 });

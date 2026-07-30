@@ -223,6 +223,10 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
  * `defaultMs`). If the result would let provisioning outlive the session — no result
  * frame is ever sent, exactly the failure this budget exists to prevent — clamp it to
  * `sessionTimeoutMs - stepTimeoutMs` and log a warning.
+ *
+ * The session budget also has to cover the wire step that PRECEDES provisioning (the
+ * responder's contact read, the initiator's dial-connect), so the guard leaves a whole
+ * step of headroom rather than triggering only on a literal overrun.
  */
 function resolveProvisionTimeoutMs(
   configured: number | undefined,
@@ -232,11 +236,11 @@ function resolveProvisionTimeoutMs(
   role: string
 ): number {
   const requested = configured && configured > 0 ? configured : defaultMs;
-  if (requested >= sessionTimeoutMs) {
+  if (requested + stepTimeoutMs >= sessionTimeoutMs) {
     const clamped = Math.max(1, sessionTimeoutMs - stepTimeoutMs);
     log(
-      '%s provisionTimeoutMs %dms >= sessionTimeoutMs %dms; clamping to %dms',
-      role, requested, sessionTimeoutMs, clamped
+      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (step %dms); clamping to %dms',
+      role, requested, sessionTimeoutMs, stepTimeoutMs, clamped
     );
     return clamped;
   }
@@ -343,6 +347,38 @@ export class FormationListener {
     }
   }
 
+  /**
+   * Run the provisioning hook under {@link provisionTimeoutMs}, distinguishing a timeout
+   * (`undefined`) from every other failure (rethrown) — the caller turns the former into a
+   * retryable rejection frame and lets the latter reach the internal-error path.
+   */
+  private async provision(id: number, contact: FormationContactMessage): Promise<ResponderProvisionOutcome | undefined> {
+    let timedOut = false;
+    const pending = this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
+    try {
+      return await withTimeout(
+        this.provisionTimeoutMs,
+        `Formation provisioning#${id}`,
+        () => pending,
+        () => { timedOut = true; }
+      );
+    } catch (err) {
+      if (!timedOut) throw err;
+      log('formation session #%d provisioning timed out after %dms', id, this.provisionTimeoutMs);
+      // NOTE: provisionStrand is not cancelled on timeout — its write (FormationUsage /
+      // Strand row, or invite-use record) may still land after the timeout reply is sent, so
+      // the invite's single use may still be spent even though the initiator sees a timeout.
+      // Pre-existing race (a joiner timeout has always been able to race a commit); this
+      // budget only narrows the window, it does not close it. Log how it eventually settled
+      // so a late failure is not swallowed by the abandoned `withTimeout`.
+      void pending.then(
+        (late) => log('formation session #%d provisioning settled after its timeout: approved=%s', id, late.approved),
+        (err2) => log('formation session #%d provisioning failed after its timeout: %o', id, err2)
+      );
+      return undefined;
+    }
+  }
+
   private async runSession(id: number, stream: ControlStream): Promise<void> {
     // Track whether ANY frame has been written so the catch below can convert an
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
@@ -370,29 +406,12 @@ export class FormationListener {
         return;
       }
 
-      const provisionLabel = `Formation provisioning#${id}`;
-      let outcome: ResponderProvisionOutcome;
-      try {
-        outcome = await withTimeout(
-          this.provisionTimeoutMs,
-          provisionLabel,
-          () => this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure)
-        );
-      } catch (err) {
-        if (err instanceof Error && err.message === `${provisionLabel} timed out after ${this.provisionTimeoutMs}ms`) {
-          // Explicit catch so a slow hook reports 'Formation provisioning timed out' — a
-          // retryable reason — rather than falling through to the generic catch below,
-          // which would report the misleading 'Internal formation error'.
-          log('formation session #%d provisioning timed out after %dms', id, this.provisionTimeoutMs);
-          // NOTE: provisionStrand is not cancelled on timeout — its write (FormationUsage /
-          // Strand row, or invite-use record) may still land after this reply is sent, so the
-          // invite's single use may still be spent even though the initiator sees a timeout.
-          // Pre-existing race (a joiner timeout has always been able to race a commit); this
-          // budget only narrows the window, it does not close it.
-          send({ approved: false, reason: 'Formation provisioning timed out' });
-          return;
-        }
-        throw err;
+      const outcome = await this.provision(id, contact);
+      if (!outcome) {
+        // Reported as its own retryable reason rather than falling through to the generic
+        // catch below, which would report the misleading 'Internal formation error'.
+        send({ approved: false, reason: 'Formation provisioning timed out' });
+        return;
       }
       if (!outcome.approved) {
         // A post-validation rejection still discloses NEITHER identity NOR cadre,

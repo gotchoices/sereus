@@ -514,6 +514,8 @@ When forming a new strand with another party, a native cadre-core formation tran
 
 Cadre-disclosure timing is enforced: the responder reveals its own party id + cadre addresses — and, for a bound (closed) strand, that strand's membership key — only after the token and disclosure validate; a rejection discloses none of them. The initiator's `FormationResponseValidator` (built-in structural default) rejects a responder that omits its disclosed identity/cadre or returns an empty/non-responder-created strand.
 
+Formation timeouts are **nested so every layer can fail and report before the layer above it gives up**: outside approval hook (10s, `formation-approval.ts`) < responder provisioning (12s, `provisionTimeoutMs`) < initiator await-response (15s) < whole session (30s). Provisioning is real work — a DB write plus, once approval is wired, an outbound HTTP call — so it does **not** share the per-wire-step budget (`stepTimeoutMs`, 5s) used for a bare frame read/write; a responder whose provisioning overruns replies `approved: false, reason: 'Formation provisioning timed out'` rather than dropping the stream. Configured budgets that would leave no room under the session timeout are clamped to `sessionTimeoutMs - stepTimeoutMs`.
+
 ```mermaid
 sequenceDiagram
     participant A as Party A (Responder)
