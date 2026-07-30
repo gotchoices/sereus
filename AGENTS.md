@@ -6,6 +6,7 @@ Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for 
 - `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not app code.
 - `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/STATUS.md`](docs/STATUS.md) cover subsystems.
 - `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
+- `test-harness/` — test infrastructure shared across packages (stale-build guard). Not a workspace, never built; imported by relative path from packages' vitest `globalSetup`.
 - `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
 
 ## General

@@ -124,6 +124,13 @@ export default tseslint.config(
 			'packages/quereus-plugin-sereus/src/**/*.ts',
 			'packages/integration-tests/src/**/*.ts',
 		],
+		// NOTE: the repo-root `test-harness/` and the packages' `test/` trees are
+		// outside this pass — neither is covered by a `tsconfig.json` the project
+		// service can find (the packages' include only `src`, and test-harness has
+		// no tsconfig at all; `tsconfig.typecheck.json` is not what the service
+		// picks up). Nothing there is async today, so `no-floating-promises` has
+		// nothing to bite on. If test infrastructure ever grows promises, give
+		// test-harness its own `tsconfig.json` and add both globs here.
 		languageOptions: {
 			parserOptions: {
 				projectService: true,

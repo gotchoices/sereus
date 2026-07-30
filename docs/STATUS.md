@@ -420,6 +420,15 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `dist` and so could be defeated by exactly the staleness it exists to catch. `test-harness/` is
   marked ESM by its own `package.json` (the root manifest has no `"type"`) and is excluded from knip's
   root workspace, since its `vitest` import belongs to the consuming packages.
+- [x] **Target lists pinned against their manifests.** Those per-package lists are hand-written, so a
+  dependency added tomorrow would go unguarded in silence — the same false green, back again.
+  `test-harness/build-targets.ts` derives what each package actually runs from a rebuildable `dist`
+  (a `workspace:` range, or a name the root `resolutions` points at with `link:`; registry copies are
+  excluded, since the guard skips those anyway) and reports anything the list misses or files under
+  the wrong `location`. Each consuming package asserts on it from its own suite
+  (`packages/*/test/build-targets.spec.ts`), so drift fails that package's own `yarn test`. A list may
+  be *wider* than its `dependencies` — `integration-tests` guards `cadre-cli`, `cadre-provider` and
+  `quereus-plugin-sereus`, which it reaches transitively — so coverage is checked, not equality.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level

@@ -21,8 +21,11 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
  * entries of `package.json`'s `dependencies`. `@serfab/cadre-core` itself is
  * absent on purpose: vitest transpiles this package's own `src` directly, so its
  * `dist` is not what runs here.
+ *
+ * Exported so `build-targets.spec.ts` can hold it against this package's actual
+ * `dependencies` — a hand-written list rots silently otherwise.
  */
-const TARGETS: BuildTarget[] = [
+export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },

@@ -15,8 +15,13 @@
 
 import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-freshness.js';
 
-/** Every package a scenario in this suite ends up running compiled code from. */
-const TARGETS: BuildTarget[] = [
+/**
+ * Every package a scenario in this suite ends up running compiled code from.
+ *
+ * Exported so `build-targets.spec.ts` can hold it against this package's actual
+ * `dependencies` — a hand-written list rots silently otherwise.
+ */
+export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
 	{ packageName: '@serfab/cadre-host', distEntry: 'dist/index.js', location: 'workspace' },

@@ -20,7 +20,7 @@
  * package calls it once per suite from its own vitest `globalSetup` file, passing
  * the list of packages *it* runs compiled code from:
  *
- *   - `packages/integration-tests/src/global-setup.ts`
+ *   - `packages/integration-tests/test/global-setup.ts`
  *   - `packages/cadre-core/test/global-setup.ts`
  *
  * Two kinds of package are checked. A `workspace` target lives under this
@@ -306,7 +306,7 @@ function findRepoRoot(): string {
 }
 
 /** Nearest ancestor of `from` (inclusive) whose `package.json` declares `workspaces`. */
-function findWorkspaceRoot(from: string): string | undefined {
+export function findWorkspaceRoot(from: string): string | undefined {
 	let dir = from;
 	for (;;) {
 		if (readPackageJson(join(dir, 'package.json'))?.workspaces !== undefined) return dir;

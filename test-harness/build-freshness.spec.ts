@@ -16,7 +16,7 @@ import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { checkBuildFreshness, checkLinkedTarget, resolveLinkedPackage, type BuildTarget } from './build-freshness.js';
+import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, resolveLinkedPackage, type BuildTarget } from './build-freshness.js';
 
 const DIST_ENTRY = 'dist/index.js';
 /** Seconds since epoch; `dist` sits between OLD and NEW so either side can win. */
@@ -144,6 +144,40 @@ describe('checkBuildFreshness', () => {
 		writeAt('index.js', BUILT);
 
 		expect(checkBuildFreshness(root, 'index.js')).toBe('stale');
+	});
+});
+
+/**
+ * `assertBuildFresh` resolves against the real repository — a workspace target is
+ * looked up under `packages/`, a linked one in the root `node_modules` — so these
+ * cases use names no install can produce rather than temp-dir fixtures. What is
+ * pinned is the contract every caller depends on: silence when there is nothing to
+ * report, and one throw naming *every* problem at once, because a run aborted over
+ * the first stale package sends someone back for a second build.
+ */
+describe('assertBuildFresh', () => {
+	const absent = (packageName: string, location: BuildTarget['location']): BuildTarget =>
+		({ packageName, distEntry: DIST_ENTRY, location });
+
+	it('passes an empty target list', () => {
+		expect(() => assertBuildFresh([])).not.toThrow();
+	});
+
+	it('throws when a workspace target names no package under packages/', () => {
+		expect(() => assertBuildFresh([absent('@serfab/not-a-package', 'workspace')]))
+			.toThrow(/@serfab\/not-a-package: no workspace under packages\/ declares this name\. Run: yarn install/);
+	});
+
+	it('throws when a linked target is not installed', () => {
+		expect(() => assertBuildFresh([absent('@nobody/not-installed', 'linked')]))
+			.toThrow(/@nobody\/not-installed: not installed .*\. Run: yarn install/);
+	});
+
+	it('reports every problem in one throw, one per line', () => {
+		const problems = [absent('@serfab/not-a-package', 'workspace'), absent('@nobody/not-installed', 'linked')];
+
+		expect(() => assertBuildFresh(problems)).toThrow(/@serfab\/not-a-package[\s\S]*@nobody\/not-installed/);
+		expect(() => assertBuildFresh(problems)).toThrow(/Stale build detected/);
 	});
 });
 

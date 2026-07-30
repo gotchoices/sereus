@@ -5,7 +5,9 @@ export default defineConfig({
     globals: true,
     environment: 'node',
     include: [
-      'src/**/*.spec.ts',
+      // Real multi-party scenarios live in src/; test/ holds unit specs about the
+      // suite's own wiring, which need none of the network setup below.
+      'test/**/*.spec.ts',
       'src/**/*.integration.ts',
       // The stale-build guard lives at the repo root (shared with other packages'
       // suites) and is outside every package's own test globs, so this suite —
