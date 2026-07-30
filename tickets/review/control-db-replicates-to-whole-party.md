@@ -1,152 +1,154 @@
-description: The shared party database now copies every piece of data to every machine in the party instead of only two. This makes members reliably learn about each other, at the cost of needing more machines online to approve a write.
-files: packages/quereus-plugin-sereus/src/cluster-size.ts, packages/quereus-plugin-sereus/README.md, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/types.ts, packages/cadre-core/src/strand-instance-manager.ts, packages/cadre-core/test/cadre-node-control-replication.spec.ts, packages/integration-tests/src/harness/test-party.ts, docs/architecture.md, docs/cadre-consistency.md
+description: Finish the code-review pass on the change that makes the shared party database copy data to every machine in the party. The assumptions behind it have been checked and hold; what remains is running lint and tests, four small documentation corrections, and filing two follow-up items.
+prereq:
+files: packages/quereus-plugin-sereus/src/cluster-size.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/test/cadre-node-control-replication.spec.ts, packages/integration-tests/src/harness/test-party.ts, docs/architecture.md, docs/cadre-consistency.md, tickets/blocked/replication-breadth-two-signoff.md
 difficulty: medium
 ----
 
-# Review: control database replicates to the whole party
+# Review (continued): control database replicates to the whole party
 
-Two implement tickets produced this: `control-db-replicates-to-whole-party` (the code, committed
-as `e3a41af`) and `control-db-replicates-to-whole-party-validation` (validation + the remaining
-docs + a test guard, uncommitted at the time of writing). Reviewing them together — the split was
-a token-budget artifact, not a design boundary.
+A prior review run read the full implement diff (`e3a41af` + `5ed6378`) and verified the upstream
+Optimystic claims the design rests on. It hit the token budget before running lint/tests or applying
+its findings. **Everything below is already established — do not re-derive it.** The earlier
+handoff's own "what a reviewer should attack" list is superseded by the Verified section; read this
+file, not that one, for those five points.
 
-## What changed, in one paragraph
+## Verified against `../optimystic` source (every claim in the diff holds)
 
-Optimystic replicates each block of a database to a **cohort** — a subset of the network — and the
-embedder supplies the target size. Cadre used one number, 2, for both the control (party
-membership) database and strand (application) databases. Two is too narrow for the control
-database, because every control node reads *all* of it, so a member left out of a cohort may never
-learn a fact; the catch-up mechanism (read repair) provably cannot converge at a cohort of two.
-The two paths are now separate constants: control uses a fixed `CONTROL_REPLICATION_BREADTH` of 16
-— above any real party's node count, and Optimystic shrinks a cohort it cannot fill, so in practice
-the cohort is the whole party — and strands keep `DEFAULT_STRAND_CLUSTER_SIZE` of 2 behind a
-renamed resolver.
+Checked 2026-07-29. Each line names the file so a re-check is cheap.
 
-## Public surface changed
+- **A cohort is capped at real serving peers and downsized when unfillable — so 16 really is harmless
+  headroom.** `db-p2p/src/libp2p-key-network.ts:618` — `nonSelfTarget = Math.max(0, clusterSize - 1)`,
+  then `serves.slice(0, nonSelfTarget)` plus self. `libp2p-node-base.ts:721` defaults
+  `allowClusterDownsize` to true and Cadre passes it explicitly. The doc comment is accurate.
+- **`assumedClusterSize` really does default to 2.** `ClusterMember` itself has no default
+  (`cluster-repo.ts:263` is a bare `consensusConfig?.assumedClusterSize`), but the node factory
+  supplies one: `libp2p-node-base.ts:716,737` — `minAbsoluteClusterSize = 2` and
+  `assumedClusterSize: options.clusterPolicy?.assumedClusterSize ?? minAbsoluteClusterSize`. So every
+  comment and doc line saying "Optimystic's default of 2" is correct, and the new unit test's
+  `toBeUndefined()` assertion means what it claims to mean.
+- **Raising `clusterSize` to 16 cannot reintroduce `MEMBERSHIP_NOT_ADMITTED`.**
+  `cluster-repo.ts:916-948` — the low-confidence path measures the declared set against
+  `admissionFloor(assumedClusterSize)` = `max(2, ceil(0.75 x 2))` = 2, never against `clusterSize`;
+  the confident path measures against the member's own derived `kEst`, itself bounded by real peers.
+  `ceil(0.75 x 16) = 12` is the right arithmetic for the hypothetical the comment warns off.
+- **No read-repair deadlock from the wider cohort.** `CoordinatorRepo` receives
+  `{...consensusConfig}` (`libp2p-node-base.ts:823-829`), so its
+  `assumedClusterSize = policy.assumedClusterSize ?? policy.clusterSize` (`coordinator-repo.ts:207`)
+  resolves to **2**, not 16. Had it resolved to 16, `corroboratorCapacity(1, 16) = 15` would have put
+  a two-corroborator floor on a two-node party that can only ever supply one responder — permanently
+  dead read repair. It does not. Safe.
+- **Churn/re-replication work does not scale with 16.** `network/network-manager-service.ts:324,351`
+  cap the target at the FRET network-size estimate and at the candidate count respectively.
+- **The `membershipOverfetch` tripwire is accurately scoped.** `libp2p-key-network.ts:757-758` —
+  `max(clusterSize * 4, clusterSize + 16)`, so 64 candidates at breadth 16.
+- **Enterprise deployment is 7 nodes**, so "16 is roughly twice the largest documented deployment"
+  checks out (`docs/architecture.md:752-754` — phone + laptop + 3 cloud + 2 NAS).
+- **The `strandClusterSize` rename has no loose-config escape hatch.** The only `CadreNodeConfig`
+  construction sites outside cadre-core are `cadre-cli/src/commands/start.ts:153` and
+  `strands.ts:49`, both `const nodeConfig: CadreNodeConfig = { ... }` — annotated, so the compiler
+  catches a stale `clusterSize` key. No JSON / `Record` / spread path builds one; cadre-host and
+  cadre-provider never construct one. Nothing left to grep.
+- **No stale references to the removed names** anywhere in `packages/` or `docs/` — only historical
+  prose in `tickets/complete/`, which is correct as a record.
 
-| Before | After |
-|---|---|
-| `DEFAULT_CLUSTER_SIZE` | **gone** → `CONTROL_REPLICATION_BREADTH` (16) and `DEFAULT_STRAND_CLUSTER_SIZE` (2) |
-| `resolveClusterSize(n?)` | **gone** → `resolveStrandClusterSize(n?)`, strand-only |
-| — | `MIN_CLUSTER_SIZE` (2), validation floor only |
-| `CadreNodeConfig.clusterSize` | **renamed** `CadreNodeConfig.strandClusterSize`, re-documented strand-only |
+## Findings to apply in this pass (all minor — fix, do not file)
 
-Exported from `@serfab/quereus-plugin-sereus`, re-exported by `@serfab/cadre-core`. This is a
-breaking rename for embedders; the repo has no back-compat policy yet (AGENTS.md), so no aliases
-were kept.
+**1. `docs/cadre-consistency.md:24` overstates the fix.** "Replicating to everyone removes the need
+for read repair on the control path entirely" is false: a member *offline at write time* is not in
+the cohort (`findCluster` admits only positively-serving peers), so it still catches up by read
+repair, or by the write-while-alone re-replication queue in `cadre-node.ts`. Soften to the *routine*
+dependence being removed, and name the two catch-up paths that remain.
 
-## Validation actually run
+**2. The docs describe `assumedClusterSize` only as the admission gate's yardstick; it is also the
+read-repair corroboration floor's input.** Affected: `docs/cadre-consistency.md:28`,
+`docs/architecture.md:63`, and the "Deliberately not `clusterPolicy.assumedClusterSize`" paragraph in
+`cluster-size.ts`. `libp2p-node-base.ts:731-737` says it is read by the admission gate's fallback
+path *and* by the read-repair/reconcile corroboration floor **unconditionally**. Since read repair is
+the entire mechanism this change exists to route around, that second consumer belongs in the
+sentence. One clause each — do not restate the analysis three times (see finding 4).
 
-Everything below was run at the validation ticket's HEAD, after rebuilding `@quereus/quereus`, the
-whole `../optimystic` workspace, and the full sereus workspace.
+**3. The change also *strengthens* read repair on the control path — undocumented, and the more
+interesting half of the result.** `corroboratorCapacity(cohortPeerCount, assumedClusterSize) =
+max(cohortPeerCount, assumedClusterSize - 1)` (`quorum-restore.ts:91`), and `cohortPeerCount` is now
+the whole party rather than one peer. In a party of three or more the capacity rises from 1 to N-1,
+so the corroboration floor rises from 1 to `CORROBORATION_FLOOR` (2) and a lone stale — or lying —
+peer can no longer be accepted as the cluster's truth. `selectQuorumRev` then takes the *highest*
+corroborated revision, so repair genuinely converges. Two consequences, a sentence each, in
+`docs/cadre-consistency.md`'s shipped-behaviour section:
+- It retires the control-path half of `backlog/debt-read-repair-single-voter-corroboration` as a side
+  effect. Read that ticket and narrow its scope to strand data if that is now its only remaining
+  exposure — do not close it blind.
+- The narrow flip side: in a party of three where two members were offline for a write, the returning
+  majority sees only one peer holding the new revision, now *below* the floor of 2 where it used to
+  sit at a floor of 1. The write-while-alone re-replication queue (`cadre-node.ts:1788`
+  `drainControlReReplication`, fires on the 0→≥1 connection edge) is the backstop. Say so, so a
+  future reader does not read the floor rise as unambiguously free.
 
-| Check | Result |
-|---|---|
-| `yarn lint` (root) | clean |
-| `yarn typecheck` (root) | clean |
-| `yarn build` (root) | clean |
-| `packages/cadre-core` unit suite | **978 passed, 1 skipped** (was 974 before the 4 new tests) |
-| `packages/quereus-plugin-sereus` unit suite | **68 passed, 1 todo** |
-| Target scenario, 20 consecutive runs alone via `-t` | **20 pass / 0 fail** (baseline to beat: 4 failures in 10 at breadth 2; a later measurement had 6 in 20) |
-| Full `packages/integration-tests` suite, run twice | **131 passed / 1 failed**, both times — the same single already-tracked failure |
+**4. Source hygiene: the same reasoning is written out at length in three places.** The
+`CONTROL_REPLICATION_BREADTH` docblock (~40 lines of `cluster-size.ts`'s 101),
+`docs/architecture.md` § "Replication cluster size", and `docs/cadre-consistency.md`'s new section
+each independently explain the read-repair-cannot-converge argument. Three copies to keep in sync —
+and findings 1-3 have to be applied to all three, which is that cost showing up already. Make
+`docs/architecture.md` the canonical explanation; trim the other two to the decision plus a link.
+Move the mechanism detail, do not delete it.
 
-The one failure is
-`push-wake-e2e.integration.ts > … > delivers a wake to a NAT'd receiver over a circuit-relay
-(signaling-first) dial`. It is listed in `tickets/.pre-existing-known.md` against the in-flight
-`fix/bug-strand-node-relay-reservation-denied-by-membership-gate`, whose root cause is confirmed
-and unrelated (a strand node's derived transport peerId is denied by the relay's membership gater
-during `libp2p.start()`). Reproduced deterministically 5/5 in isolation here. Not re-reported, not
-skipped, not touched.
+## Findings to file as new tickets (major — not fixable in a review pass)
 
-`tickets/.pre-existing-known.md` was updated: the target scenario's entry moved to "Resolved in
-place" with the 20/20 evidence, and a dated observation was added to the three-party
-strand-formation entry (it passed in both full-suite runs — not a clearance, it was always
-intermittent, and this change did not touch the strand path).
+**A. `backlog/debt-` — nothing covers write availability with a degraded-but-connected cohort
+member.** This is the cost side of the whole change and is untested. A member that is *connected but
+slow or flaky* sits inside the cohort and counts against the super-majority, where at breadth 2 it
+would have been outside the cohort and ignored. Distinct from
+`debt-control-db-offline-peer-no-hang-coverage`, which covers *unreachable* peers (those never enter
+the cohort at all, and the write commits self-only under `allowDownsize`) — say so in the ticket so
+the two are not merged. Also distinct from `control-cohort-three-node-reconcile-isolation-test`,
+which is about dial formation.
 
-### One validation trap worth knowing about
+**B. `backlog/debt-` — the integration harness is more permissive than production about commit
+approval.** `packages/integration-tests/src/harness/test-party.ts:57` sets
+`clusterPolicy.superMajorityThreshold: 0.51`; `CadreNode` leaves Optimystic's default of `0.75`. In a
+three-node cohort that is 2-of-3 in the harness versus 3-of-3 in production, so a commit-availability
+regression can pass CI and fail in a real party — exactly the risk finding A describes.
+Pre-existing, but the whole-party cohort is what makes it bite. The implement pass parked it as a
+`NOTE:` at the override site and explicitly deferred the ticket-or-comment call to review: **file
+it**, and leave the `NOTE:` in place pointing at the new ticket.
 
-The first 20-run loop reported 12 failures starting at run 9. None were real: a **concurrent editor
-in the sibling `../quereus` checkout** touched `src` mid-loop, and `build-freshness.ts` correctly
-aborted every subsequent run with `Stale build detected`. Rebuilding quereus and re-running gave
-20/20. If you re-measure, distinguish a `Stale build detected` abort from a test failure — a bare
-exit code conflates them and silently corrupts the count.
+## Also needs updating (not a code finding)
 
-## What a reviewer should attack
+`tickets/blocked/replication-breadth-two-signoff.md` is now **stale and would mislead the human it is
+waiting on.** It asks "is two copies the right default?" and describes the setting as one number
+governing everything. No longer true: the control database now replicates to the whole party, so the
+open question is strand data only. Rewrite its `description:` and body to scope it to strand data and
+reference `backlog/debt-strand-replication-breadth-ignores-party-count`. Leave it in `blocked/` — it
+is still a human decision, just a narrower one.
 
-Ranked by where this is most likely to be wrong.
+## Not yet run — required before this ticket moves to `complete/`
 
-- **Is 16 the right number, and is "any value ≥ party size behaves identically" actually true?**
-  The whole design rests on Optimystic capping a cohort at real serving peers
-  (`Libp2pKeyPeerNetwork.findCluster` keeps `min(serving peers, clusterSize - 1)` non-self members)
-  and downsizing what it cannot fill (`allowDownsize: true`). Verify that claim in
-  `../optimystic/packages/db-p2p/src/libp2p-key-network.ts` rather than trusting the doc comment.
-  If it is false, 16 is not "harmless headroom", it is a target no real party can satisfy. Note
-  there is a related human decision parked in `blocked/replication-breadth-two-signoff.md`.
-- **Write availability is the cost side and is NOT covered by any test.** A commit needs a
-  super-majority of its cohort. With the cohort now the whole party rather than two nodes, one
-  flaky or slow member counts against that threshold where before it sat outside the cohort and was
-  ignored. Nothing in the suite exercises a party with a degraded member under the new breadth. If
-  you want one test written, this is the one.
-- **The harness is more permissive than production on exactly this axis.** `test-party.ts` passes
-  `clusterPolicy.superMajorityThreshold: 0.51`; `CadreNode` leaves Optimystic's default of `0.75`.
-  So a commit-availability regression can pass the harness and fail in a real party — which is
-  precisely the risk the previous bullet describes. Pre-existing, but it interacts badly with this
-  change. Recorded as a `NOTE:` at the override site in `test-party.ts`; consider whether it should
-  become a ticket rather than a comment.
-- **The `strandClusterSize` rename is the kind of thing TypeScript catches only if every caller is
-  typed.** `yarn typecheck` is clean and the strand path's own spec was updated, but a config object
-  built loosely (from JSON, a `Record`, a spread) would drop the old `clusterSize` key silently and
-  fall back to the default rather than erroring. Worth a grep for config construction that does not
-  flow through `CadreNodeConfig`.
-- **`assumedClusterSize` was deliberately left at Optimystic's default of 2.** Confirm that is
-  right. The reasoning: it means "the smallest cohort this deployment can genuinely field", the
-  membership admission gate runs it through `admissionFloor` on its low-confidence path
-  (`../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts`), and asserting 16 would demand
-  `ceil(0.75 × 16) = 12` declared peers and refuse every real party's writes. This is also why
-  raising `clusterSize` does not reintroduce `MEMBERSHIP_NOT_ADMITTED` — the gate never measures
-  against `clusterSize`. A new unit test pins the `undefined`.
+None of this was reached. The previous ticket's own run was clean, but that was before the doc edits
+above.
 
-## New test coverage added by the validation pass
+- `yarn lint` (root)
+- `yarn typecheck` (root)
+- `packages/cadre-core` and `packages/quereus-plugin-sereus` unit suites
+- One `packages/integration-tests` run. Expect exactly one failure:
+  `push-wake-e2e.integration.ts > ... > delivers a wake to a NAT'd receiver over a circuit-relay
+  (signaling-first) dial`, already listed in `tickets/.pre-existing-known.md` against
+  `fix/bug-strand-node-relay-reservation-denied-by-membership-gate`. Do not re-report it.
+- **Rebuild `../quereus` and `../optimystic` first, and watch for `Stale build detected` aborts** — a
+  concurrent editor in the sibling `../quereus` checkout corrupted a 20-run measurement during the
+  validation pass. A bare exit code conflates a stale-build abort with a test failure.
 
-`packages/cadre-core/test/cadre-node-control-replication.spec.ts` gained a
-`CadreNode control-network node options` block (4 tests). To make it possible, `createControlNode`
-in `cadre-node.ts` was split: the config→options mapping is now a private
-`buildControlNodeOptions()` that `createControlNode` calls, so the mapping is assertable on a bare
-`new CadreNode(config)` with no libp2p node started. The tests assert that control gets
-`CONTROL_REPLICATION_BREADTH`, that `strandClusterSize` does **not** reach it, that
-`allowDownsize` is on and `assumedClusterSize` is left unset, and that the network name is
-control-scoped.
+## Checked and found nothing
 
-Honest limits: this pins four options out of a dozen; the rest of the control-network wiring is
-still trusted rather than verified, which is what
-`backlog/debt-cadre-node-control-network-wiring-test` covers. It also asserts what
-`buildControlNodeOptions` *returns*, not what `createLibp2pNode` *receives* — a future refactor
-that stops calling the builder would not fail these tests.
+- The eight upstream Optimystic assumptions above — none wrong.
+- The `strandClusterSize` rename's blast radius — fully typed, no loose config path.
+- Leftover references to `DEFAULT_CLUSTER_SIZE` / `resolveClusterSize` in shipping code — none.
+- `docs/STATUS.md` — its cluster-size mention (`STATUS.md:669`) is historical narrative about an
+  already-fixed optimystic selection-layer bug and remains accurate. No edit needed.
+- The shipped-vs-speculative fencing in `docs/cadre-consistency.md` (the earlier handoff's main
+  worry) — the blockquote at line 18 plus the status-line pointer at line 3 read clearly. No change
+  needed beyond findings 1-4.
 
-## Docs updated
+## Deliberately out of scope
 
-- `docs/architecture.md` § "Replication cluster size" — rewritten for the two-constant split
-  (landed in `e3a41af`).
-- `docs/cadre-consistency.md` — new section "What Ships Today: The Control Database Replicates to
-  the Whole Party", explicitly fenced off as shipped behaviour because the rest of that file is an
-  unimplemented design exploration. The status line at the top now points at it. **Check the fencing
-  reads clearly** — mixing shipped fact into a speculative doc is the thing most likely to mislead a
-  later reader.
-- `packages/quereus-plugin-sereus/README.md` — the `clusterSize` row's default of 2 was right but
-  its justification was wrong (it claimed a peer configured higher than its cohort "refuses to vote
-  and the write fails"; the admission gate keys on `assumedClusterSize`, not `clusterSize`).
-  Rewritten to match `cluster-size.ts` and `architecture.md`.
-
-## Tripwires parked (index only — the analysis lives at each site)
-
-- `membershipOverfetch()` scales with the constant: 16 asks FRET for a 64-peer proximity band with
-  a peerStore protocol lookup per candidate. Free today (bounded by peers FRET actually knows).
-  → `NOTE:` on `CONTROL_REPLICATION_BREADTH` in `cluster-size.ts`.
-- Harness/production super-majority mismatch (see the attack list above).
-  → `NOTE:` at the `superMajorityThreshold` override in `test-party.ts`.
-
-## Explicitly not in scope
-
-`backlog/debt-read-repair-single-voter-corroboration` (Optimystic accepting a single voter at
-two-member cohorts), `backlog/debt-strand-replication-breadth-ignores-party-count` (the strand
-path's own breadth question), and the commit sweep's non-atomicity across trees.
+`backlog/debt-strand-replication-breadth-ignores-party-count` (the strand path's own breadth
+question), and the control commit sweep's non-atomicity across trees.
