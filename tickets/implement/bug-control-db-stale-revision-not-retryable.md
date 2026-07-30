@@ -1,261 +1,86 @@
 ----
-description: When two machines write to the party's control database at the same instant, the loser should quietly re-read and try again — instead it dies with a hard error and can leave a row half-written. Make the loser retry, which is what the code one layer up is already waiting to do.
-files: ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts, ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts, ../optimystic/packages/db-p2p/src/cluster/cluster-repo.ts, ../optimystic/packages/db-core/src/transactor/network-transactor.ts, ../optimystic/packages/db-core/src/collection/collection.ts, ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/txn-bridge.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts
-difficulty: hard
+description: When two machines write to the party's control database at the same instant, the loser used to die with a hard error and could leave a row half-written. The fix (make the loser quietly retry) is now fully coded and unit-tested; what remains is finishing the validation runs and writing the review handoff.
+files: ../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts, ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts, ../optimystic/packages/db-p2p/test/coordinator-repo-stale-classification.spec.ts, ../optimystic/packages/db-core/test/network-transactor.spec.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts
+difficulty: easy
 ----
 
-# Classify a stale-revision cluster rejection as a retryable failure, not a thrown error
+# Finish validation + handoff for the stale-revision retryability fix
 
-A concurrent-write conflict is meant to be routine: the loser re-reads, rebases, retries.
-`Collection.sync` already does exactly that (bounded backoff + jitter, ~10 attempts). The retry
-never runs, because the conflict arrives as a **thrown exception** instead of the `StaleFailure`
-**return value** the retry loop keys on. The SQL layer flushes each tree (main table, then each
-index) as its own commit, so the escaping throw lands mid-sweep and splits the write across trees.
+The defect: a concurrent-write conflict (two nodes pending the same block revision) surfaced as a
+**thrown error** instead of the `StaleFailure` **return value** that `Collection.sync`'s bounded
+retry loop keys on, so the loser never retried and the per-tree SQL commit sweep could split a
+write across trees (`PartialCommitError`). Full analysis, verified chain, and design constraints
+are in this ticket's prior revision — see git history of this file (commit `66cde66`). Do not
+re-derive; everything below is current state.
 
-## Progress (implement stage, 2026-07-29 — interrupted by budget; resume here)
+## DONE — implementation (uncommitted, in `../optimystic` working tree)
 
-A prior implement run verified the whole chain against current source, settled the design, and
-landed **one** edit before hitting the token budget. Everything below in this section is
-established fact — do not re-derive it.
+All code changes are complete, built, and unit-tested. **Do not redo any of this.**
 
-### Code already landed (uncommitted, in `../optimystic` working tree)
+- `db-p2p/src/repo/cluster-coordinator.ts` — exported `ValidatorRejectionError extends Error`
+  (typed, coordinator-local, never serialized; carries `rejectReasons: Record<string,string>` per
+  peer). The `rejectionCount > maxAllowedRejections` branch in `executeTransaction` now throws it
+  instead of a bare `Error`; the message string is byte-identical to before.
+- `db-p2p/src/repo/coordinator-repo.ts` — `pend`'s catch now calls a new private
+  `classifyStaleRejection(error, request, allBlockIds)` before rethrowing. It returns a
+  reason-only `StaleFailure` **only** when the error is a `ValidatorRejectionError`, the request
+  carried a `rev`, and a local `storageRepo.get` re-read confirms some affected block's
+  `state.latest.rev >= request.rev`. Read errors and unconfirmed rejections rethrow (fail-fast
+  preserved). A `NOTE:` tripwire at the site records the conservative choice: when only remote
+  members saw the newer rev, the rejection still throws.
+- Specs, all passing:
+  - `db-p2p/test/coordinator-repo-stale-classification.spec.ts` — 4 cases: confirmed stale →
+    returned `StaleFailure`, then retry at next rev succeeds; unconfirmed → throws typed error;
+    no-rev request → throws without re-read; re-read failure → throws.
+  - `db-core/test/network-transactor.spec.ts`, new describe "pend mixed stale + transport
+    failure" — one batch responds stale while another throws a transport error → `pend`
+    **returns** `success: false` (pins the stale-preemption branch,
+    `network-transactor.ts:511-518`).
+- Builds clean: `yarn workspace @optimystic/db-core build`, `yarn workspace @optimystic/db-p2p build`.
+- Full suites green: db-core **1267 passing**, db-p2p **1436 passing / 41 pending**.
+- Sereus consumers rebuilt: `@serfab/cadre-core`, `@serfab/cadre-host`.
 
-`packages/db-p2p/src/repo/cluster-coordinator.ts`: a new exported class
-`ValidatorRejectionError extends Error` was added just above the `TimerCancel` type, with a doc
-comment explaining why it exists (typed classification without string-matching signed reject
-reasons). Constructor: `(message: string, readonly rejectReasons: Record<string, string>)`, sets
-`this.name = 'ValidatorRejectionError'`. It is **not yet thrown anywhere** — behavior is
-unchanged and the package still compiles. `db-p2p/src/index.ts:12` already does
-`export * from "./repo/cluster-coordinator.js"`, so the class is package-visible with no index
-edit needed.
+## DONE — scenario evidence so far (14 of 20 runs)
 
-### Design settled (follow this; constraints in "Recommended fix" below all honored)
-
-1. **Throw site** — `cluster-coordinator.ts` `executeTransaction`, the
-   `rejectionCount > maxAllowedRejections` branch (~line 344 after the class insertion; look for
-   `'rejected-by-validators'`). Build a `Record<string,string>` of per-peer reject reasons
-   (currently flattened into a `; `-joined string), keep the thrown **message byte-identical**
-   (`Transaction rejected by validators (${rejectionCount}/${peerCount} rejected): ${reasons}`),
-   but throw `new ValidatorRejectionError(message, rejectReasonsByPeer)` instead of `new Error`.
-2. **Classification** — `coordinator-repo.ts` `pend`'s catch (currently logs + rethrows at
-   ~line 684). Before rethrow, call a new private method:
-   - returns `undefined` (→ rethrow) unless `error instanceof ValidatorRejectionError` **and**
-     `request.rev !== undefined`;
-   - re-reads `await this.storageRepo.get({ blockIds: allBlockIds })` (wrap in try/catch; on read
-     error log + return `undefined`);
-   - if any block's `state.latest.rev >= request.rev` → log a
-     `coordinator-repo:pend-stale-classified` event and return the reason-only `StaleFailure`
-     `{ success: false, reason: 'stale revision: block <id> at rev <latest>, requested rev <rev>' }`;
-   - otherwise `undefined` (conservative: only-remote-members-saw-newer stays a throw; note this
-     as a NOTE tripwire at the site).
-   `StaleFailure` needs adding to coordinator-repo's type-import list from `@optimystic/db-core`;
-   `GetBlockResults` is already imported. Import `ValidatorRejectionError` from
-   `./cluster-coordinator.js` (already imported for `ClusterCoordinator`).
-3. Nothing else changes. `network-transactor.ts:511-518` already turns any non-success pend
-   *response* into the `StaleFailure` return `Collection.sync` retries on, including mixed
-   stale+transport batch sets. Commit/cancel paths keep propagating the typed error unchanged.
-
-### Verified type facts (save the lookup)
-
-- `StaleFailure` = `{ success: false; reason?; missing?; pending? }` —
-  `db-core/src/network/struct.ts:66`. Reason-only shape is supported end-to-end; note the
-  transactor's stale branch re-aggregates it as `{ success: false, missing: [] }` (the `reason`
-  string is dropped there — fine, `Collection.sync` retries on any truthy `staleFailure`).
-- `PendRequest.rev` comes from `ActionTransforms.rev` (optional) — same file, line 14.
-- `IRepo` in `db-core/src/network/i-repo.ts`; `GetBlockResults = Record<BlockId, { block?, state }>`.
-- Cluster path in `pend` requires `getClusterSize > 1`; with 2 peers,
-  `superMajority = ceil(2 * 0.67) = 2`, `maxAllowedRejections = 0`, so **one** reject vote
-  triggers the rejected-by-validators branch — the cheapest unit-test topology.
-
-### Test recipes (patterns verified against existing specs)
-
-- **db-p2p** — copy the harness style of
-  `packages/db-p2p/test/cluster-coordinator-supermajority.spec.ts` (MockClusterClient with a
-  per-peer verdict, `peerIdFromPrivateKey(await generateKeyPair('Ed25519'))`, `baseCfg` with
-  `minAbsoluteClusterSize: 2`, mock `IKeyNetwork.findCluster` returning the 2-peer map). Drive
-  `CoordinatorRepo.pend` directly (constructor:
-  `(keyNetwork, createClusterClient, storageRepo, cfg, localCluster?, localPeerId?, ...)`;
-  leaving `localPeerId` unset makes `verifyResponsibility` pass trivially). New spec file, e.g.
-  `test/coordinator-repo-stale-classification.spec.ts`:
-  1. member votes `{ type: 'reject', rejectReason: 'stale revision: …' }`, mock storageRepo `get`
-     reports `latest.rev = 1`, request `rev = 1` → expect **returned** `StaleFailure`, no throw;
-     then flip members to approve, re-pend at `rev = 2` (storageRepo.pend → success) → expect
-     success (the "loser retries at next rev" half).
-  2. member votes reject with a non-stale reason, storageRepo `get` reports `latest.rev = 0` (or
-     no latest) → expect the pend to **throw** `ValidatorRejectionError` (fail-fast preserved).
-- **db-core** — extend `packages/db-core/test/network-transactor.spec.ts` (reuse its
-  `MockKeyNetwork` + disjoint-cluster pattern from "cluster intersection consolidation"): two
-  blocks on two coordinators, repo A's `pend` returns
-  `{ success: false, reason: 'stale …' }`, repo B's `pend` throws a transport `Error` → expect
-  `networkTransactor.pend` to **return** `success: false` (mixed batch classified stale), not
-  throw. This pins the captured-evidence behavior of lines 511-518.
-
-## Remaining TODO
-
-- [ ] Throw-site change in `cluster-coordinator.ts` (design item 1).
-- [ ] Classification method + catch wiring in `coordinator-repo.ts` (design item 2), with NOTE
-      tripwire for the remote-only-confirmation conservative rethrow.
-- [ ] The three regressions above (stale→return+retry-succeeds, non-stale→throw, mixed→stale).
-- [ ] Build: `cd ../optimystic && yarn workspace @optimystic/db-p2p build` (and db-core if its
-      spec additions need it); run `yarn workspace @optimystic/db-p2p test` +
-      `yarn workspace @optimystic/db-core test`.
-- [ ] Rebuild consumed dists, then re-run the scenario **20×** alone (command below). Assert zero
-      `PartialCommitError` and zero `Transaction rejected by validators` escaping to the test. Do
-      **not** expect zero failures — Shape B (~20 %) remains, tracked by
-      `bug-control-db-rx-record-never-converges-on-sender`.
-- [ ] Full `packages/integration-tests` suite; confirm no regression vs baseline.
-- [ ] Update `tickets/.pre-existing-known.md`: this slug drops off; the Shape-B slug stays.
-- [ ] Review handoff into `tickets/review/`, honest about any gaps.
-
-## Confirmed reproduction (fix stage, 2026-07-29, HEAD `7be4675`)
-
-From `packages/integration-tests`, scenario must run **alone**:
+From `packages/integration-tests`, scenario run **alone**:
 
 ```
 yarn vitest run src/scenarios/push-wake-e2e.integration.ts -t 'learned by control-DB replication'
 ```
 
-25 valid runs: **18 pass, 2 Shape A, 5 Shape B** (~28 % failure). A passing run takes ~15 s; a
-failing one ~45 s. Shape B turned out to be a **different defect** and is now tracked separately —
-see "Scope" below. This ticket covers **Shape A only**.
+14 runs: **9 pass, 5 fail. Zero `PartialCommitError`, zero `Transaction rejected by validators`
+in every run** — the ticket's success criterion holds so far. Failure shapes observed:
 
-Before running, both `@serfab/cadre-core` and `@serfab/cadre-host` needed a rebuild; the suite's
-build-freshness gate (`packages/integration-tests/src/harness/build-freshness.ts`) refuses to run
-otherwise. It also aborts whenever a sibling repo (`../quereus`, `../optimystic`) has `src` newer
-than `dist` — which happens whenever another agent is mid-edit there. That is deliberate (see the
-module comment); tolerate it by retrying, do not weaken the gate.
+- 2× `Timeout waiting …` (30 s replication timeout) — the known Shape B, tracked by
+  `bug-control-db-rx-record-never-converges-on-sender`. Expected to remain.
+- 2× **new shape**: `SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10
+  retries` (`lastReason: undefined`), thrown from the FIRST tree in `commitDirtyTreesLegacy` —
+  so nothing was durably committed; atomicity held. Meaning: the loser's retry loop now RUNS
+  (the fix is working) but its re-read never observes the winner's committed revision within 10
+  attempts, so it keeps recomputing the same rev and losing. Plausibly the same replication
+  read-path non-convergence as Shape B wearing a new symptom. `lastReason` is undefined because
+  the transactor's stale aggregation drops the `reason` string (known, pre-existing).
+- 1× failure whose shape was **not inspected** (exit 1 with none of the above markers in its
+  log); the log lived in the session scratchpad and is gone. Re-runs will re-encounter it if
+  it is real.
 
-## The chain, verified against current source (re-verified at implement stage)
+## Remaining TODO
 
-Each link checked by reading the file at the stated line, and each observed in the captured log.
-
-1. `db-p2p/src/cluster/cluster-repo.ts:1056-1063` — a cluster member validating a `pend` finds the
-   block already at the requested revision and votes reject with
-   `reason: "stale revision: block <id> at rev N, requested rev N"`. Correct detection.
-2. `db-p2p/src/repo/cluster-coordinator.ts:324-337` (pre-edit numbering) — enough members rejected
-   that super-majority is impossible, so `executeTransaction` does
-   `throw new Error("Transaction rejected by validators (…)")`. The reason is flattened into the
-   message string and otherwise discarded; a retryable stale loss and a genuine validation fault
-   become indistinguishable.
-3. `db-p2p/src/repo/coordinator-repo.ts:684-687` — `pend`'s `catch` logs and re-throws
-   unconditionally.
-4. `db-core/src/transactor/network-transactor.ts:490-519` — `pend` collects `stale` as batches that
-   returned a non-success **response** (line 511). A batch that **threw** is `isError`/`in-flight`,
-   never a response, so `stale.length === 0` and line 519 does `throw error`.
-5. `db-core/src/transactor/transactor-source.ts:96` — `transact` returns `pendResult` only when it
-   is a value; a throw propagates straight through.
-6. `db-core/src/collection/collection.ts:330` — `syncInternal` retries only `if (staleFailure)`.
-   Nothing thrown reaches the backoff/`updateInternal()`/replay path.
-7. `quereus-plugin-optimystic/src/optimystic-adapter/txn-bridge.ts:402` —
-   `commitDirtyTreesLegacy` flushes each dirty tree in its own `tree.sync()`. The `CadrePeer` table
-   tree succeeded, the `_uniq_5` index tree threw, and trees already committed cannot be
-   un-committed → `PartialCommitError`. That is the documented behaviour of that path (see the
-   warning block above `commitTransaction`), not a bug in it.
-
-**One-line statement:** a stale-revision rejection from cluster consensus is a retryable
-optimistic-concurrency loss, but `db-p2p` surfaces it as a thrown error, so `Collection.sync`'s
-retry loop never sees it and the per-tree commit sweep splits the write.
-
-### Captured evidence (Shape A)
-
-The aggregate error at `network-transactor.ts:502` in the captured failure:
-
-```
-Some peers did not complete:
-  <peerB>[block:9Lfsu…](in-flight) cause=The stream has been reset,
-  <peerA>[block:YHyOl…](in-flight) cause=Transaction rejected by validators (1/2 rejected):
-      <peerA>: stale revision: block YHyOl… at rev 1, requested rev 1,
-  <peerC>[block:9Lfsu…](in-flight) cause=Can not dial self,
-  <peerC>[block:YHyOl…](in-flight) cause=The stream has been reset,
-  <peerA>[block:9Lfsu…](in-flight) cause=Transaction rejected by validators (2/2 rejected): …
-  ; root: The stream has been reset
-```
-
-wrapped as
-
-```
-PartialCommitError: Legacy multi-tree commit was not atomic: 1 tree(s) were durably committed …
-  Persisted: [default/CadrePeer]  Not persisted: [default/CadrePeer/index/_uniq_5]
-```
-
-Two details this adds beyond the fix-stage analysis, both load-bearing for the fix:
-
-- **Every batch is `(in-flight)`.** Not one is a response, which is precisely why
-  `stale.length === 0` at `network-transactor.ts:511`. The stale rejection reached the caller only
-  as a *transport-level error on a batch*, never as a `PendResult`.
-- **`root:` is the transient error, not the rejection.** `firstBatchError` picked
-  `The stream has been reset`. So the aggregate's `cause` is a red herring for anyone trying to
-  classify at that layer — another reason the classification must happen at the coordinator, before
-  the throw crosses the wire.
-- Stale and genuinely transient failures **co-occur in one pend**. The fix must survive a mixed
-  batch set. `network-transactor.ts:511-518` already handles this correctly: any stale non-success
-  response preempts the transient errors and returns a `StaleFailure`.
-
-### Where the concurrency comes from
-
-Owner `A` is the sole writer of every row the assertions hinge on, but not the sole writer of the
-*tree*: receiver `Rx` runs `registerSelf` in the background (best-effort, non-fatal,
-`packages/cadre-core/src/cadre-node.ts:1100`), writing its own `CadrePeer` row from a different
-node. Both nodes compute `newRev = 1` for the same index block, both pend, one loses. Normal
-optimistic concurrency; must not be fatal. The rev in the capture is **1** — the first write to
-that index block — so this is not a lagging-reader problem.
-
-## Recommended fix
-
-`coordinator-repo.pend` catches the validator rejection, re-reads the affected block states from
-its own `storageRepo`, and returns a `StaleFailure` when the local view confirms
-`latestRev >= request.rev`. A reason-only `StaleFailure` (`{ success: false }` with no `missing`)
-is already a supported shape — `coordinator-repo.commitBlock` (`coordinator-repo.ts:627-635`) has
-an explicit note describing exactly that case on the commit side. Returning it makes the batch a
-non-success **response**, so `network-transactor.ts:511-518` takes the stale branch and
-`Collection.sync` retries.
-
-Purely local decision from local state; no protocol field, no wire change, no signed-payload
-change.
-
-### Constraints — read before choosing anything else
-
-- **Do not classify by string-matching the reason text.** `rejectReason` is free-form and is *part
-  of the signed vote payload* (`cluster-repo.ts:704-707`,
-  `payload = hash + ':' + type + ':' + rejectReason`). Matching `/^stale revision/` would make a
-  wire-visible human-readable string load-bearing for control flow.
-- **A typed rejection code is a protocol revision.** Any new field on the cluster signature
-  (`db-core/src/cluster/structs.ts`) that participates in `computeSigningPayload` changes what every
-  peer signs and verifies; mixed-version cohorts would fail signature verification. Do not take this
-  option without treating it as such. (The landed `ValidatorRejectionError` is coordinator-local —
-  constructed after vote counting, never serialized — so it is NOT a protocol revision.)
-- **Preserve the `PartialCommitError` contract.** It exists to refuse to falsely claim a rollback.
-  Do not weaken or swallow it — the fix is upstream, so it should simply stop firing.
-- **Keep the retry bounded.** `Collection.sync` defaults to 10 attempts / ~21 s
-  (`collection.ts`, `DefaultMaxAttempts`). A genuine, persistent, non-stale validator rejection must
-  still fail fast rather than spin.
-- **Do not serialize writes in `cadre-core`.** The writers are on different nodes; a local mutex
-  cannot see them. Suppressing `Rx.registerSelf` would hide the race and break the production
-  behaviour the scenario protects.
-
-## Scope
-
-**Shape A only.** The second failure shape observed in the same scenario — a 30 s timeout with the
-message `Timeout waiting for S resolves Rx's address record via replication` — was investigated at
-fix stage and is **not** this defect: 4 of 5 captured Shape-B failures contain zero
-`cluster-member:validation-stale-revision` events, zero `cluster-tx:rejected-by-validators`, and no
-`PartialCommitError`. It is now tracked as `bug-control-db-rx-record-never-converges-on-sender`.
-
-Consequence for validation: **fixing this ticket will not make the scenario green.** Shape B was
-the majority of observed failures (5 of 7). Expect the failure rate to drop from ~28 % to roughly
-20 %, with every remaining failure being the replication timeout. Judge this ticket by the
-disappearance of `PartialCommitError` / `Transaction rejected by validators` from the run, not by a
-green suite.
-
-## Cross-cutting obligations
-
-- **Upstream repo.** The fix lands in `../optimystic` (`db-p2p`, possibly `db-core`), which this
-  pipeline has modified before — `tickets/complete/0-control-db-convergence-optimystic-p2p.md`
-  records four such commits. Rebuild the touched sibling packages
-  (`cd ../optimystic && yarn workspace @optimystic/<pkg> build`) before re-running integration
-  tests; sereus consumes their built `dist/`, not their `src/`.
-- **No determinism edition bump, no golden fixture, no migration** — this changes error
-  classification and retry behaviour, not stored bytes or schema.
-- Not related to `bug-control-cohort-no-auto-dial` (connection establishment; here all three nodes
-  are explicitly meshed before any write) or to the archived
-  `control-db-convergence-optimystic-p2p` (replication read path).
+- [ ] 6 more scenario runs (to reach 20). Per run, grep the log for `PartialCommitError`,
+      `rejected by validators`, `SyncRetryExhaustedError`, `Timeout waiting` and tally shapes.
+      Success criterion: zero of the first two. Do NOT expect a green suite.
+- [ ] Inspect any failure matching none of the known shapes (the 1 uninspected failure above).
+- [ ] Full `packages/integration-tests` suite once; confirm no regression outside this scenario.
+- [ ] Update `tickets/.pre-existing-known.md`: this slug's entry drops off; the
+      `bug-control-db-rx-record-never-converges-on-sender` entry stays.
+- [ ] Review handoff into `tickets/review/` (then delete this ticket). Must cover, honestly:
+      - what changed and where (the two src files + two spec files in `files:` above);
+      - the constraint set honored (no string-matching signed reject reasons; no protocol/wire
+        change; `PartialCommitError` contract untouched; retry stays bounded; no serializing
+        writes in cadre-core);
+      - the new `SyncRetryExhaustedError` shape: state the evidence and pose the question for
+        review — is it the Shape-B root cause resurfacing (fold into
+        `bug-control-db-rx-record-never-converges-on-sender`) or a distinct defect needing its
+        own ticket? Do not silently drop it.
+      - the tripwire NOTE in `classifyStaleRejection` (remote-only-confirmation rethrow).
+- [ ] Runner commits; do not commit from the ticket.
