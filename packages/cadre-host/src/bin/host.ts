@@ -33,7 +33,7 @@ import { detectPlatform } from '../installer/platform.js';
 import { createServiceHost } from '../installer/service-host/index.js';
 import { UpdateService } from '../update/index.js';
 import { HostProcessOrchestrator } from '../orchestrator/index.js';
-import { TrustCircleService, TrustCircleStore } from '../auth/index.js';
+import { TrustCircleService, TrustCircleStore, ensureSelfLabel } from '../auth/index.js';
 import {
   GrantService,
   GrantStore,
@@ -350,26 +350,6 @@ program
           store: trustCircleStore,
         });
 
-        // Label the owner's own device in the local store. list() splices a
-        // `self: true` local label back into the authorized-membership
-        // listing (which excludes the node's own self-published row by
-        // design — see auth/trust-circle.ts), so without this write the
-        // owner's own row never appears. Idempotent (addMember upserts) and
-        // best-effort: must not crash startup if the owner node isn't ready.
-        try {
-          const selfPeerId = await owner.getPeerId();
-          if (selfPeerId && !trustCircleStore.getMember(selfPeerId)) {
-            trustCircleStore.addMember({
-              peerId: selfPeerId,
-              label: 'This device',
-              addedAt: new Date().toISOString(),
-              self: true,
-            });
-          }
-        } catch (err) {
-          console.error(`self trust-circle label failed: ${(err as Error).message}`);
-        }
-
         natService = new NatService({
           rootDir: cfg.dataDir,
           cadreNode: owner,
@@ -394,6 +374,18 @@ program
           await natService.start();
         } catch (err) {
           console.error(`NAT start failed: ${(err as Error).message}`);
+        }
+
+        // Label the owner's own device so it shows up in the trust-circle
+        // listing (see auth/self-label.ts for why the listing can't get it for
+        // free). Runs after natService.start(), which already waits out a
+        // freshly spawned node's warm-up, so the peer ID is normally there on
+        // the first try. Best-effort: a failure logs and the next start heals
+        // it — the listing gap is cosmetic, not a security boundary.
+        try {
+          await ensureSelfLabel({ store: trustCircleStore, getPeerId: () => owner.getPeerId() });
+        } catch (err) {
+          console.error(`self trust-circle label failed: ${(err as Error).message}`);
         }
       } else {
         // Donor-only. If ownCadre was toggled off after a prior founder run,

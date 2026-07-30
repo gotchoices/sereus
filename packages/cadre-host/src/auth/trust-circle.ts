@@ -224,6 +224,13 @@ export class TrustCircleService {
   /**
    * Remove an authorised member. Deletes the CadrePeer row and the local
    * label. Throws not_found when the peer is in neither place.
+   *
+   * NOTE: no special case for the host's own peer ID — the local UI hides the
+   * Remove button on the `self` row, but `DELETE /auth/members/<ownPeerId>`
+   * (or `cadre-host trust revoke <ownPeerId>`) will delete the node's own
+   * `CadrePeer` row. cadre-core re-registers self on node start, so a restart
+   * heals it. If that stops being true, or the removal path grows a
+   * non-loopback caller, guard `self` rows here.
    */
   async removeMember(peerId: string): Promise<void> {
     const inLocal = this.store.getMember(peerId);

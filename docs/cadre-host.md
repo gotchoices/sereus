@@ -191,12 +191,20 @@ The trust-circle invite flow lives in `cadre-host-trust-circle` and reuses the s
 
 > **Founder role only.** The trust circle governs membership in the host's *own* personal cadre (`ownCadre.enabled`). It is unrelated to [node donation](#node-donation-the-primary-role): donated nodes join *other people's* cadres and are gated by grant tokens, not trust-circle invites. Everything in this section applies only when the founder role is enabled.
 
-The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top. The trust-circle listing (`TrustCircleService.list()`) shows the *authorized* membership (`GET /admin/authorized-members`), which deliberately excludes the node's own self-published row (a node's own address record isn't something it "authorized"). So the owner node's own device isn't self-registering into that listing for free: at startup, once the owner node is up, cadre-host fetches its peer ID (`OwnerNodeClient.getPeerId()`) and writes a local `self: true` label for it (`"This device"`) if one isn't already recorded — idempotent, best-effort. `list()` splices that labelled self row back into the authorized set it returns, so the owner's own device still appears alongside the devices the admin has added, labelled rather than a bare peer ID:
+The trust circle is the set of devices (peers) authorised to participate in the host's cadre. Membership is canonical in cadre-core's `CadrePeer` table on the control network; cadre-host layers two pieces of host-local state on top:
 
 - **Labels** — human-readable display names (`"Mom's phone"`, `"My laptop"`) assigned by the host admin. Display-only; loss just shows the bare peer ID.
 - **Pending invites** — tokens that have been issued but not yet redeemed. Operational state; lives on the issuing node only.
 
 Both live in `<rootDir>/trust-circle.json`, written atomically (write-then-rename). If a future ticket wants cross-device label replication, a new `CadreMemberLabel` table can be added to the control schema; for now labels stay local.
+
+### The owner's own device in the listing
+
+`TrustCircleService.list()` shows the *authorized* membership (`GET /admin/authorized-members`) — devices an owner key vouched for. That set deliberately excludes the node's own self-published address record, so the owner node does not appear in it.
+
+To keep the owner's own machine visible, cadre-host records it locally: at startup (`ensureSelfLabel`, `src/auth/self-label.ts`) it reads the owner node's peer ID and writes a `self: true` label for it — `"This device"` — unless a label already exists, so an admin rename survives restarts. `list()` splices every `self` row back into the set it returns, and never prunes it. A stale `self` row (the node identity was replaced) is dropped on the next start.
+
+The write is best-effort: if the owner node isn't answering yet, nothing is written and the next start heals it — the row's absence is cosmetic, not a membership change. The local UI hides the **Remove** button on the `self` row; the HTTP/CLI removal path does not special-case it.
 
 ### Lifecycle
 

@@ -6,6 +6,7 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 
+import { ensureSelfLabel } from '../self-label.js';
 import { TrustCircleService } from '../trust-circle.js';
 import { TrustCircleStore } from '../trust-circle-store.js';
 
@@ -65,16 +66,10 @@ describe('TrustCircleService — real CadreNode integration', () => {
     await host.registerSelf();
 
     store = new TrustCircleStore(tmpRoot);
-    // Mirrors the self-labelling bin/host.ts does via OwnerNodeClient.getPeerId()
-    // after spawning the owner node — this test bypasses that client entirely
-    // (constructs TrustCircleService directly against a real CadreNode), so the
-    // local label has to be seeded by hand here.
-    store.addMember({
-      peerId: host.peerId!.toString(),
-      label: 'This device',
-      addedAt: new Date().toISOString(),
-      self: true,
-    });
+    // Same self-labelling call bin/host.ts makes at startup, wired to the real
+    // node's peer ID instead of an OwnerNodeClient (this test constructs
+    // TrustCircleService directly against a CadreNode, so no client is in play).
+    await ensureSelfLabel({ store, getPeerId: async () => host.peerId!.toString() });
     service = new TrustCircleService({ cadreNode: host, store });
   }, 60_000);
 
