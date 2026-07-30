@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
-import { DEFAULT_CLUSTER_SIZE } from '../src/types.js';
+import { DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -22,11 +22,12 @@ vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode 
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
 /**
- * The cluster size a node declares is an admission gate: a member whose value
- * exceeds the cohort the coordinator shows it refuses to vote, and one refusal
- * fails the commit. So the value an embedder configures must actually reach
- * `createLibp2pNode`, and omitting it must resolve to Cadre's default rather
- * than falling through to optimystic's own default of 10.
+ * A strand node's cluster size is its replication breadth, and it also bounds the
+ * cohort the node independently derives when Optimystic's cluster-membership gate
+ * judges a coordinator's declared peer set — so two nodes disagreeing about it can
+ * refuse each other's writes. The value an embedder configures must therefore
+ * actually reach `createLibp2pNode`, and omitting it must resolve to Cadre's strand
+ * default rather than falling through to optimystic's own default of 10.
  */
 describe('StrandInstanceManager cluster size wiring', () => {
   let authorPrivateKey: string;
@@ -63,7 +64,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     await manager.startStrand(createStartConfig('cs-default'));
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
-      expect.objectContaining({ clusterSize: DEFAULT_CLUSTER_SIZE })
+      expect.objectContaining({ clusterSize: DEFAULT_STRAND_CLUSTER_SIZE })
     );
   });
 

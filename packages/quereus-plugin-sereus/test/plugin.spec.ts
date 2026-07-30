@@ -5,7 +5,12 @@ import type { IRepo } from '@optimystic/db-core';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
-import { DEFAULT_CLUSTER_SIZE, resolveClusterSize } from '../src/cluster-size.js';
+import {
+	CONTROL_REPLICATION_BREADTH,
+	DEFAULT_STRAND_CLUSTER_SIZE,
+	MIN_CLUSTER_SIZE,
+	resolveStrandClusterSize
+} from '../src/cluster-size.js';
 
 // Mock only createLibp2pNode while preserving all other exports from db-p2p
 vi.mock('@optimystic/db-p2p', async (importOriginal) => {
@@ -317,7 +322,7 @@ describe('connectToStrand', () => {
 
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		expect(createLibp2pNode).toHaveBeenCalledWith(
-			expect.objectContaining({ clusterSize: DEFAULT_CLUSTER_SIZE }),
+			expect.objectContaining({ clusterSize: DEFAULT_STRAND_CLUSTER_SIZE }),
 		);
 
 		await result.shutdown();
@@ -363,20 +368,36 @@ describe('connectToStrand', () => {
 	});
 });
 
-describe('resolveClusterSize', () => {
+describe('resolveStrandClusterSize', () => {
 	it('defaults when unset', () => {
-		expect(resolveClusterSize(undefined)).toBe(DEFAULT_CLUSTER_SIZE);
+		expect(resolveStrandClusterSize(undefined)).toBe(DEFAULT_STRAND_CLUSTER_SIZE);
 	});
 
 	it('passes a legal value through', () => {
-		expect(resolveClusterSize(2)).toBe(2);
-		expect(resolveClusterSize(7)).toBe(7);
+		expect(resolveStrandClusterSize(2)).toBe(2);
+		expect(resolveStrandClusterSize(7)).toBe(7);
 	});
 
 	it('rejects values optimystic cannot honour', () => {
 		// Below `minAbsoluteClusterSize`, or not a whole number of nodes.
 		for (const bad of [0, 1, -3, 2.5, Number.NaN]) {
-			expect(() => resolveClusterSize(bad)).toThrow(/clusterSize must be an integer >= 2/);
+			expect(() => resolveStrandClusterSize(bad)).toThrow(/clusterSize must be an integer >= 2/);
 		}
+	});
+});
+
+describe('CONTROL_REPLICATION_BREADTH', () => {
+	// The control database is read in full by every party member, so its cohort must
+	// cover the whole party. The number is deliberately NOT the strand default: a
+	// two-member cohort leaves a member dependent on read repair, which cannot
+	// converge because a lone corroborator's stale answer is accepted as the truth.
+	it('is above the largest party the product documents, and above the strand default', () => {
+		// `docs/architecture.md` -> "Enterprise (Multi-Node Mixed)" is 7 nodes.
+		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThan(7);
+		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThan(DEFAULT_STRAND_CLUSTER_SIZE);
+	});
+
+	it('is at or above optimystic\'s minimum cluster size', () => {
+		expect(CONTROL_REPLICATION_BREADTH).toBeGreaterThanOrEqual(MIN_CLUSTER_SIZE);
 	});
 });

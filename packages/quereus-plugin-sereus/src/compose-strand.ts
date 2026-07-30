@@ -6,7 +6,7 @@ import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
-import { resolveClusterSize } from './cluster-size.js';
+import { resolveStrandClusterSize } from './cluster-size.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -148,7 +148,7 @@ export async function composeStrand(
 
 	// Resolve (and validate) up front so a nonsense value fails before any plugin
 	// registration or node creation has happened.
-	const clusterSize = resolveClusterSize(options.clusterSize);
+	const clusterSize = resolveStrandClusterSize(options.clusterSize);
 
 	// Resolve the transactor. `mode` is the public knob: bootstrap -> local,
 	// networked -> network. The legacy `transactor` override (used by unit

@@ -16,7 +16,7 @@ import type {
   StrandMode,
   Libp2pNodeWithRepo
 } from './types.js';
-import { resolveClusterSize } from './types.js';
+import { resolveStrandClusterSize } from './types.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -56,10 +56,11 @@ export interface StartStrandConfig {
   founder?: boolean;
   /**
    * Number of nodes Optimystic is told this strand's replication cluster should
-   * have. Same rule as {@link CadreNodeConfig.clusterSize}, which CadreNode
-   * forwards here: every node on the strand must use the same value, and it is
+   * have. Same rule as {@link CadreNodeConfig.strandClusterSize}, which CadreNode
+   * forwards here: every node on the strand should use the same value, and it is
    * frozen when the strand's libp2p node is created. Defaults to 2; values
-   * below that are rejected by `resolveClusterSize`.
+   * below that are rejected by `resolveStrandClusterSize`. Strand-only — the
+   * control network's breadth is the fixed `CONTROL_REPLICATION_BREADTH`.
    */
   clusterSize?: number;
 }
@@ -266,7 +267,7 @@ export class StrandInstanceManager {
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: enableRelay,
-        clusterSize: resolveClusterSize(config.clusterSize),
+        clusterSize: resolveStrandClusterSize(config.clusterSize),
         clusterPolicy: {
           allowDownsize: true,
           sizeTolerance: 0.5

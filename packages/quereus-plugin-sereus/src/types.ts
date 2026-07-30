@@ -22,8 +22,9 @@ export interface StrandConnectionOptions {
 	/**
 	 * Number of nodes Optimystic is told this strand's replication cluster should
 	 * have. Ignored when {@link libp2pNode} is injected (the injected node was
-	 * built with its own value). Every peer on the strand must use the same
-	 * number — see `resolveClusterSize`. Defaults to `DEFAULT_CLUSTER_SIZE` (2).
+	 * built with its own value). Every peer on the strand should use the same
+	 * number — see `resolveStrandClusterSize`. Defaults to
+	 * `DEFAULT_STRAND_CLUSTER_SIZE` (2).
 	 */
 	clusterSize?: number;
 	/** Inject an existing libp2p node instead of creating one */

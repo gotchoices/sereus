@@ -33,7 +33,7 @@ import type {
   CadrePeerVoucherFields,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { DEFAULT_CHECKIN_WINDOW_MS, resolveClusterSize } from './types.js';
+import { CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
@@ -786,7 +786,12 @@ export class CadreNode implements SAppIdLookup {
       storage: controlStorageProvider,
       fretProfile: profile === 'storage' ? 'core' : 'edge',
       relay: enableRelay,
-      clusterSize: resolveClusterSize(this.config.clusterSize),
+      // Fixed, and deliberately above any party's node count: every member reads the
+      // whole control database, so a cohort that excludes a member leaves it dependent
+      // on read repair — which cannot converge at a two-member cohort. Not a knob;
+      // see CONTROL_REPLICATION_BREADTH. `assumedClusterSize` is deliberately left at
+      // Optimystic's default of 2 (a party may genuinely run two nodes).
+      clusterSize: CONTROL_REPLICATION_BREADTH,
       clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
       arachnode: { enableRingZulu: this.config.profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
@@ -2784,7 +2789,7 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes: seed.bootstrapNodes,
       mode,
       requireSignedSchemas: this.config.requireSignedSchemas,
-      clusterSize: this.config.clusterSize,
+      clusterSize: this.config.strandClusterSize,
       founder
     });
 

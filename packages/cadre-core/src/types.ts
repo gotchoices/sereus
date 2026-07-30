@@ -245,12 +245,19 @@ export interface ControlNetworkConfig {
 }
 
 /**
- * Cluster-size default and resolver, re-exported so cadre embedders and the SQL
- * plugin share one definition. Defined in `@serfab/quereus-plugin-sereus`
- * because that package also creates libp2p nodes and cannot depend on this one.
- * See {@link CadreNodeConfig.clusterSize} for the rule.
+ * Replication-breadth constants and the strand resolver, re-exported so cadre
+ * embedders and the SQL plugin share one definition. Defined in
+ * `@serfab/quereus-plugin-sereus` because that package also creates libp2p nodes
+ * and cannot depend on this one. The control network's breadth is fixed
+ * ({@link CONTROL_REPLICATION_BREADTH}, not configurable); the strand default is
+ * {@link CadreNodeConfig.strandClusterSize}.
  */
-export { DEFAULT_CLUSTER_SIZE, resolveClusterSize } from '@serfab/quereus-plugin-sereus';
+export {
+  MIN_CLUSTER_SIZE,
+  CONTROL_REPLICATION_BREADTH,
+  DEFAULT_STRAND_CLUSTER_SIZE,
+  resolveStrandClusterSize
+} from '@serfab/quereus-plugin-sereus';
 
 /**
  * Main configuration for a CadreNode
@@ -297,22 +304,26 @@ export interface CadreNodeConfig {
   network?: NetworkConfig;
 
   /**
-   * Number of nodes Optimystic is told a replication cluster should have, for
-   * both the control network and every strand network this node starts.
+   * Number of nodes Optimystic is told a **strand** network's replication cluster
+   * should have, for every strand this node starts. The control network is not
+   * configurable — it always replicates to {@link CONTROL_REPLICATION_BREADTH}
+   * nodes, which is above any party's node count, because every member reads the
+   * whole control database and a member that misses a write may never learn the
+   * fact (see that constant for the full reasoning).
    *
-   * Every node in the same party MUST use the same value. A node configured
-   * higher than the cohort it is shown refuses to vote on the write, and one
-   * refusal fails the commit (a commit needs a super-majority, which at two
-   * nodes is unanimity). Under-configuring is safe — a node admits any cohort
-   * at or above its own number — so when in doubt leave this alone.
+   * Every node on the same strand should use the same value: the number bounds the
+   * cohort a member independently derives, and Optimystic's cluster-membership gate
+   * can reject a coordinator's smaller declared set as a downsize against a larger
+   * derived view.
    *
-   * Frozen when the libp2p node is created; a change takes effect on restart,
-   * not when cadre membership grows. Defaults to {@link DEFAULT_CLUSTER_SIZE}
-   * (2); `start()` rejects anything below that. Raise only for a cadre that
-   * reliably runs that many nodes; the cost of a smaller value is replication
-   * breadth, not correctness.
+   * Frozen when the strand's libp2p node is created; a change takes effect on
+   * restart, not when cadre membership grows. Defaults to
+   * {@link DEFAULT_STRAND_CLUSTER_SIZE} (2); anything below
+   * {@link MIN_CLUSTER_SIZE} is rejected before a node is created. The cost of a
+   * small value is replication breadth and reliance on read repair, not commit
+   * correctness.
    */
-  clusterSize?: number;
+  strandClusterSize?: number;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;

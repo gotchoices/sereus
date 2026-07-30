@@ -10,7 +10,7 @@ import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { createLibp2pNode, MemoryRawStorage } from '@optimystic/db-p2p';
-import { ControlDatabase, DEFAULT_CLUSTER_SIZE } from '@serfab/cadre-core';
+import { ControlDatabase, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import { allocatePort, releasePorts } from './port-allocator.js';
@@ -45,9 +45,11 @@ async function createTestNode(
     privateKey,
     storage: () => new MemoryRawStorage(),
     fretProfile: profile === 'storage' ? 'core' : 'edge',
-    // Must match what CadreNode configures — a node whose clusterSize exceeds the
-    // cohort it is shown refuses to vote on the write, failing the commit.
-    clusterSize: DEFAULT_CLUSTER_SIZE,
+    // These are CONTROL-network nodes (networkName `control-<partyId>`), so they must
+    // match what CadreNode configures for its control node: a narrower cohort here
+    // would leave a party member dependent on read repair, which cannot converge at a
+    // two-member cohort.
+    clusterSize: CONTROL_REPLICATION_BREADTH,
     clusterPolicy: {
       allowDownsize: true,
       sizeTolerance: 0.5,
