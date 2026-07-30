@@ -63,6 +63,20 @@ export class MissingHostStrandError extends Error {
 }
 
 /**
+ * What a recorded `FormationUsage` row came out as.
+ *
+ * `usageStampId` is echoed back so a caller that obtained an approver sign-off can prove the
+ * nonce it signed over is the one that landed — the two must match or
+ * `FormationUsage.Authorized` rejects the row (see {@link formationVouchMessage}).
+ */
+export interface FormationUsageResult {
+  /** The `UseNumber` assigned to this redemption (1-based per token). */
+  useNumber: number;
+  /** The single-use nonce written to `UsageStampId` — the caller's, or a freshly minted one. */
+  usageStampId: string;
+}
+
+/**
  * Parse a stored Quereus `datetime` value into epoch milliseconds.
  *
  * Quereus canonicalises a `datetime` column to a bare UTC `PlainDateTime` string
@@ -118,6 +132,33 @@ export function buildAuthorizationMessage(
   rowFields: string[],
 ): Uint8Array {
   return digest(controlAuthorizationFields(domain, action, rowFields), 'sha256', 'bytes') as Uint8Array;
+}
+
+/**
+ * The exact bytes an outside approver signs to authorize ONE redemption of a
+ * `ValidationUrl`-bearing `FormationInvite` — the TS mirror of the `'vouch'` digest in
+ * `FormationUsage.Authorized`, in the schema's field order.
+ *
+ * The approval covers the whole redemption: the invitation (`token`), the single-use nonce
+ * the redeeming node minted for THIS redemption (`usageStampId`), the network being joined
+ * (`strandId`), the joining peer (`peerId`), and the disclosure text. That makes it
+ * non-transferable — an approval cannot be re-presented for another use of the same
+ * invitation, another network, or another joiner — and the nonce's `unique` column makes a
+ * verbatim re-presentation a duplicate-row rejection. Mint the nonce first
+ * ({@link generateStampId}), sign these bytes, then pass BOTH the same `usageStampId` and the
+ * signature to {@link ControlDatabase.redeemInvitation} / {@link ControlDatabase.recordFormationUsage}:
+ * signing one nonce and inserting another fails the CHECK.
+ */
+export function formationVouchMessage(fields: {
+  token: string;
+  usageStampId: string;
+  strandId: string;
+  peerId: string;
+  disclosure: string;
+}): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [
+    fields.token, fields.usageStampId, fields.strandId, fields.peerId, fields.disclosure,
+  ]);
 }
 
 /**
@@ -965,28 +1006,34 @@ export class ControlDatabase {
    *
    * `UseNumber` is computed as `max(UseNumber)+1` for the token (the `Monotonic`
    * constraint); callers redeeming concurrently against the same token must
-   * serialise, since the next use number is read before the insert.
+   * serialise, since the next use number is read before the insert. A caller that already
+   * holds an approver sign-off should retry a lost race with the SAME `usageStampId` — the
+   * approval is bound to the nonce, not to the use number, so it survives the retry.
    */
   async redeemInvitation(params: {
     token: string;
     strandId: string;
+    /** The joining peer. Required: it is inside the approver's signed digest (see {@link formationVouchMessage}). */
+    peerId: string;
     disclosure?: string;
-    peerId?: string;
+    /** Single-use nonce for this redemption; supply the one the approval was signed over. Minted fresh when absent. */
+    usageStampId?: string;
     peerSignature?: string;
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
-  }): Promise<void> {
+  }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
-      peerId, peerSignature,
+      peerId, peerSignature, usageStampId,
       nowMs, validationKey, validationSignature,
     } = params;
     log('Redeeming invitation %s -> strand %s', token, strandId);
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
     const strandStampId = generateStampId(localPeerId);
+    const stampId = usageStampId ?? generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
     await this.inTransaction('redemption', async () => {
@@ -1002,13 +1049,14 @@ export class ControlDatabase {
       // 2. FormationUsage row — authorised by the matching FormationInvite, and
       //    carrying the strand's stamp so it authorizes THIS row and no other.
       await this.execFormationUsageInsert({
-        token, useNumber, disclosure, strandId, strandStampId,
-        peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+        token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
+        peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
     });
 
     log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
+    return { useNumber, usageStampId: stampId };
   }
 
   /**
@@ -1034,20 +1082,24 @@ export class ControlDatabase {
   async recordFormationUsage(params: {
     token: string;
     strandId: string;
+    /** The joining peer. Required: it is inside the approver's signed digest (see {@link formationVouchMessage}). */
+    peerId: string;
     disclosure?: string;
-    peerId?: string;
+    /** Single-use nonce for this redemption; supply the one the approval was signed over. Minted fresh when absent. */
+    usageStampId?: string;
     peerSignature?: string;
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
-  }): Promise<number> {
+  }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
-      peerId, peerSignature, nowMs, validationKey, validationSignature,
+      peerId, peerSignature, usageStampId, nowMs, validationKey, validationSignature,
     } = params;
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
+    const stampId = usageStampId ?? generateStampId(localPeerId);
     const strandStampId = await this.queryStrandStampId(strandId);
     if (strandStampId === null) {
       throw new MissingHostStrandError(strandId, token);
@@ -1055,19 +1107,21 @@ export class ControlDatabase {
     const useNumber = await this.nextUseNumber(token);
 
     await this.execFormationUsageInsert({
-      token, useNumber, disclosure, strandId, strandStampId,
-      peerId: peerId ?? localPeerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+      token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
+      peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
       validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
     });
 
     log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
-    return useNumber;
+    return { useNumber, usageStampId: stampId };
   }
 
   /** Parameterised `FormationUsage` insert shared by redeem + record paths. */
   private async execFormationUsageInsert(opts: {
     token: string;
     useNumber: number;
+    /** Single-use nonce bound into the approver's signed digest; `unique`, so one approval spends once. */
+    usageStampId: string;
     disclosure: string;
     strandId: string;
     /** The live `Strand.StampId` this consent record authorizes (`StrandExists` matches the pair). */
@@ -1088,13 +1142,14 @@ export class ControlDatabase {
     // not a fix for an observable mis-ordering.
     const nowCanonical = await canonicalDatetime(this.db!, opts.nowMs);
     await this.db!.exec(`
-      insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId, StrandStampId)
-        with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
-        values (?, ?, ?, ?, ?)
+      insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerId, Disclosure, StrandId, StrandStampId)
+        with context PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
+        values (?, ?, ?, ?, ?, ?, ?)
     `, [
-      opts.peerId, opts.peerSignature, nowCanonical,
+      opts.peerSignature, nowCanonical,
       opts.validationKey, opts.validationSignature,
-      opts.token, opts.useNumber, opts.disclosure, opts.strandId, opts.strandStampId,
+      opts.token, opts.useNumber, opts.usageStampId, opts.peerId,
+      opts.disclosure, opts.strandId, opts.strandStampId,
     ]);
   }
 

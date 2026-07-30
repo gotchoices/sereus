@@ -85,9 +85,12 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * single `FormationUsage` insert auto-commits and the deferred `StrandExists`
    * CHECK is satisfied by the pre-existing strand. This is the provision-then-record
    * commitment — the strand was minted owner-signed up front, so we do NOT
-   * re-insert it (which would double-insert the same PK). `initiatorKey` is carried
-   * as the usage `PeerId` (advisory). Use {@link ControlDatabase.redeemInvitation}
-   * for the consent-creates-strand path instead.
+   * re-insert it (which would double-insert the same PK). `initiatorKey` is written as the
+   * usage `PeerId`, which an approver sign-off is SIGNED OVER when the invite carries a
+   * `ValidationUrl` — so it is the joiner an approval is spent on, not a free-text note. It
+   * is still writer-asserted (nothing here verifies the joiner's own signature; see
+   * tickets/backlog/debt-formation-usage-peer-signature-unverified.md). Use
+   * {@link ControlDatabase.redeemInvitation} for the consent-creates-strand path instead.
    */
   async recordUsage(token: string, initiatorKey: string, strandId: string): Promise<void> {
     await this.controlDatabase.recordFormationUsage({ token, strandId, peerId: initiatorKey });

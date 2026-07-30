@@ -479,6 +479,25 @@ declare schema CadreControl {
     table FormationUsage (
         Token text,
         UseNumber int,
+        UsageStampId text not null unique,  -- single-use nonce for THIS redemption. The redeeming node mints it
+                                        -- BEFORE it asks the approver, and it is bound into the 'vouch' digest
+                                        -- below, so one sign-off is spendable exactly once.
+                                        -- Unlike every other StampId in this schema, this table is append-only
+                                        -- (InsertOnly below), so the nonce is never freed by a delete: `unique`
+                                        -- alone makes it permanent and there is deliberately NO NotRevoked /
+                                        -- RevocationRecorded pair here — do not go looking for the missing one.
+                                        -- NOTE: `unique` is evaluated against LOCALLY VISIBLE rows, so two nodes
+                                        -- that have not yet converged could each admit the same nonce and both
+                                        -- rows survive the merge. Same class as the NotRevoked convergence notes
+                                        -- on OwnerKey / Strand / ValidationKey; the digest binding still holds on
+                                        -- both nodes, so the outcome is a duplicated audit row, never a join
+                                        -- nobody approved.
+        PeerId text not null,           -- the joining peer this redemption is for, bound into the 'vouch' digest
+                                        -- below so an approval cannot be re-filed under a different joiner's name.
+                                        -- Writer-asserted: context.PeerSignature is declared but no constraint
+                                        -- verifies it, so this records who the approval NAMES, not proof that the
+                                        -- named peer consented — see
+                                        -- tickets/backlog/debt-formation-usage-peer-signature-unverified.md.
         Disclosure text,
         StrandId text,
         StrandStampId text not null,   -- the Strand.StampId this consent record authorizes. Consent is
@@ -519,15 +538,28 @@ declare schema CadreControl {
                         -- given and the strand it authorized stays formed; removal narrows who may approve
                         -- FUTURE redemptions, it is not a retroactive revocation of past ones.
                         --
-                        -- KNOWN GAP: the vouch digest binds only (Token, Disclosure) — not UseNumber, the
-                        -- strand, or the joining peer — so one approval is replayable for any other
-                        -- redemption of the same token that repeats the disclosure. Dormant while nothing
-                        -- calls the ValidationUrl hook (so no approvals exist to capture); tracked in
-                        -- tickets/backlog/debt-formation-approval-signature-replayable.md.
+                        -- What ONE sign-off buys: exactly ONE row. The digest covers
+                        -- (Token, UsageStampId, StrandId, PeerId, Disclosure), so an approval is NOT
+                        -- transferable across invitations, redemptions, networks, joiners, or disclosure
+                        -- text. Replay is closed twice over, by two independent mechanisms: presenting an
+                        -- approval VERBATIM repeats its UsageStampId and is refused by that column's
+                        -- `unique`; presenting it under any OTHER redemption changes a signed field and
+                        -- fails this verify.
+                        -- Why a fresh nonce rather than binding UseNumber: UseNumber is derived from the
+                        -- table's current state (max+1, see Monotonic), so binding it would make the
+                        -- approver sign a value a concurrent redemption can invalidate — the loser of the
+                        -- race would need a SECOND approval for the same joiner (for a manual review
+                        -- queue, a second human review). A nonce chosen freely by the redeeming node is
+                        -- just as single-use and lets the loser retry the same approval under a new use
+                        -- number.
+                        -- Why StrandStampId is deliberately NOT bound: it names the strand ROW
+                        -- incarnation, which the unbound path (redeemInvitation) mints inside its own
+                        -- transaction, and it adds nothing on top of a strictly single-use approval —
+                        -- StrandId already pins WHICH network the approver approved joining.
                         and (FI.ValidationUrl is null or exists (
                             select 1 from ValidationKey VK
                                 where VK.Key = context.ValidationKey
-                                    and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
+                                    and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.UsageStampId, new.StrandId, new.PeerId, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
                         -- A bound invite (non-null StrandId) may only ever name its own host strand:
                         -- without this, any holder of a bound token could record consent against an
                         -- arbitrary strand id — annotating an unrelated strand, or (before
@@ -547,7 +579,10 @@ declare schema CadreControl {
         -- can never be filed against a stamp of the writer's choosing and held in reserve to
         -- re-seat the id after a removal.
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId and S.StampId = new.StrandStampId)),
-    ) with context (PeerId text, PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
+    -- context.PeerSignature is declared but NO constraint reads it (the joining peer's signature is
+    -- not carried over the formation protocol yet); the joiner itself is the PeerId COLUMN above, so
+    -- the vouch digest is built from new.* only, like every other authorization rule here.
+    ) with context (PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
     -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add
