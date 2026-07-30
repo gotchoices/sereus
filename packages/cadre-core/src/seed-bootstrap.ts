@@ -447,8 +447,7 @@ export class SeedBootstrapService {
     const revocationSignature = this.signDigest(revocationDigest('DeviceToken', peerId, stampId));
 
     const db = this.controlDatabase.getDatabase();
-    await db.beginTransaction();
-    try {
+    await this.controlDatabase.inTransaction('deleteDeviceToken', async () => {
       await db.exec(`
         delete from CadreControl.DeviceToken
           with context OwnerKey = ?, Signature = ?
@@ -459,17 +458,7 @@ export class SeedBootstrapService {
           with context OwnerKey = ?, Signature = ?
           values ('DeviceToken', ?, ?)
       `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
-      await db.commit();
-    } catch (error) {
-      // A failed commit() already tears down the transaction, so rollback() would
-      // throw "No transaction active" and mask the real cause — swallow only that.
-      try {
-        await db.rollback();
-      } catch (rollbackError) {
-        log('Rollback after deleteDeviceToken failure was a no-op: %s', rollbackError);
-      }
-      throw error;
-    }
+    });
 
     log('Device token removed (owner-signed, stamp retired): %s', peerId);
   }
@@ -547,12 +536,12 @@ export class SeedBootstrapService {
 
     log('Removing peer: %s', peerId);
 
-    const db = this.controlDatabase.getDatabase();
+    const controlDatabase = this.controlDatabase;
+    const db = controlDatabase.getDatabase();
     // The transaction lives INSIDE the mutateCadrePeer body, so the membership notify
     // lands strictly after commit() and a rolled-back removal throws out without notifying.
-    await this.controlDatabase.mutateCadrePeer('peer-remove', async () => {
-      await db.beginTransaction();
-      try {
+    await controlDatabase.mutateCadrePeer('peer-remove', () =>
+      controlDatabase.inTransaction('removePeer', async () => {
         await db.exec(`
           delete from CadreControl.CadrePeer
             with context OwnerKey = ?, Signature = ?
@@ -563,18 +552,7 @@ export class SeedBootstrapService {
             with context OwnerKey = ?, Signature = ?
             values ('CadrePeer', ?, ?)
         `, [this.ownerPublicKey, revocationSignature, peerId, stampId]);
-        await db.commit();
-      } catch (error) {
-        // A failed commit() already tears down the transaction, so rollback() would
-        // throw "No transaction active" and mask the real cause — swallow only that.
-        try {
-          await db.rollback();
-        } catch (rollbackError) {
-          log('Rollback after removePeer failure was a no-op: %s', rollbackError);
-        }
-        throw error;
-      }
-    });
+      }));
 
     log('Peer %s removed successfully (stamp retired)', peerId);
   }

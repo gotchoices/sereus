@@ -606,6 +606,12 @@ export class ControlDatabase {
    * of the membership snapshot, so it cannot change that snapshot. It also runs on the
    * periodic self-registration refresh, where a notify would add a recurring membership
    * read for nothing.
+   *
+   * Its INSERT counterpart (`SeedBootstrapService.insertSelfPeerRecord`) does notify. Not an
+   * inconsistency: it shares the one owner-signed insert path with every other member's
+   * row, and a self insert happens once at startup, so the wasted refresh is a single read
+   * — cheaper than a conditional carve-out inside the shared writer. Only the repeating
+   * path is worth exempting.
    */
   async updateSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
     this.ensureInitialized();
@@ -889,9 +895,16 @@ export class ControlDatabase {
    * cause — that secondary throw is logged and swallowed, and the original error always
    * propagates.
    *
+   * Public because `SeedBootstrapService` writes its own owner-signed delete/tombstone
+   * pairs against {@link getDatabase} and must not re-derive this shape. It opens a
+   * transaction unconditionally (Quereus hard-throws on a nested `beginTransaction`), so a
+   * caller already inside one must not call it. A `CadrePeer` write nests this INSIDE
+   * {@link mutateCadrePeer}, never the reverse — see {@link assertCommitBoundary}.
+   *
    * @param label - What the transaction was doing, for the rollback log line.
    */
-  private async inTransaction(label: string, body: () => Promise<void>): Promise<void> {
+  async inTransaction(label: string, body: () => Promise<void>): Promise<void> {
+    this.ensureInitialized();
     await this.db!.beginTransaction();
     try {
       await body();
@@ -923,30 +936,60 @@ export class ControlDatabase {
    * Run a `CadrePeer` row mutation and notify the membership listener once it has
    * COMMITTED.
    *
-   * EVERY `CadrePeer` writer goes through here — that is what makes the party-membership
-   * snapshot refresh automatic rather than a caller obligation. A writer necessarily holds
-   * the target node's ControlDatabase (the `SeedBootstrapService`'s event callbacks are
-   * NOT a viable seam: the temp services `CadreNode.applySeed`/`dialInvite` build, and
-   * services constructed outside `CadreNode` entirely, never get callbacks wired), so this
-   * is the one point on the write path that cannot be bypassed.
+   * EVERY `CadrePeer` writer goes through here, with one documented exception
+   * ({@link updateSelfPeerRecord}, which cannot change the snapshot) — that is what makes
+   * the party-membership snapshot refresh automatic rather than a caller obligation. A
+   * writer necessarily holds the target node's ControlDatabase (the `SeedBootstrapService`'s
+   * event callbacks are NOT a viable seam: the temp services `CadreNode.applySeed`/
+   * `dialInvite` build, and services constructed outside `CadreNode` entirely, never get
+   * callbacks wired), so this is the one point on the write path that cannot be bypassed.
    *
    * `body` owns its own transaction if it needs one and must COMMIT before returning, so
    * the notification never makes the listener read uncommitted state. A throwing `body`
    * propagates and does NOT notify: nothing changed.
    *
-   * NOTE: the wrapper cannot enforce that contract — Quereus' `Database` exposes no public
-   * "am I in a transaction?" probe, so there is nothing to assert against. No caller today
-   * opens a transaction around a `CadrePeer` write. A future caller that does must move the
-   * `mutateCadrePeer` wrapper OUT to enclose that outer commit, or the refresh reads
-   * pre-commit state.
+   * That contract is enforced, not merely documented — see {@link assertCommitBoundary}.
    *
    * @param reason - Label for the log line only (e.g. `'peer-insert'`).
    */
   async mutateCadrePeer<T>(reason: string, body: () => Promise<T>): Promise<T> {
     this.ensureInitialized();
+    this.assertCommitBoundary(reason, 'on entry to');
     const result = await body();
+    this.assertCommitBoundary(reason, 'on return from');
     await this.notifyMembershipChanged(reason);
     return result;
+  }
+
+  /**
+   * Throw unless the database sits at a committed boundary — `getAutocommit()` is false
+   * exactly while a transaction is open.
+   *
+   * Both ends of a {@link mutateCadrePeer} body are checked, because either open
+   * transaction would notify a listener that then reads PRE-commit state and materializes
+   * a membership snapshot silently missing the write it was told about:
+   *
+   * - open on entry: the wrapper sits INSIDE an enclosing transaction and must be moved
+   *   out to enclose that outer commit.
+   * - open on return: the body opened a transaction and never committed it.
+   *
+   * Neither is reachable from today's callers, so this is a fail-fast guard on a future
+   * mistake rather than a live code path.
+   *
+   * NOTE: `getAutocommit()` reports the whole `Database`, not this call. Control writes are
+   * issued sequentially today; if some future path runs a `CadrePeer` write CONCURRENTLY
+   * with an unrelated control transaction on the same `Database`, this throws instead of
+   * silently joining that transaction — the safe outcome, but such a caller must serialize.
+   */
+  private assertCommitBoundary(reason: string, where: string): void {
+    if (this.db!.getAutocommit()) {
+      return;
+    }
+    throw new Error(
+      `mutateCadrePeer(${reason}): a transaction is open ${where} the mutation body — a ` +
+      'CadrePeer write must commit before the membership listener runs; move the ' +
+      'mutateCadrePeer wrapper out to enclose the commit'
+    );
   }
 
   /**
