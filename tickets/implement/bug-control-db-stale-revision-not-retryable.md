@@ -12,6 +12,101 @@ never runs, because the conflict arrives as a **thrown exception** instead of th
 **return value** the retry loop keys on. The SQL layer flushes each tree (main table, then each
 index) as its own commit, so the escaping throw lands mid-sweep and splits the write across trees.
 
+## Progress (implement stage, 2026-07-29 — interrupted by budget; resume here)
+
+A prior implement run verified the whole chain against current source, settled the design, and
+landed **one** edit before hitting the token budget. Everything below in this section is
+established fact — do not re-derive it.
+
+### Code already landed (uncommitted, in `../optimystic` working tree)
+
+`packages/db-p2p/src/repo/cluster-coordinator.ts`: a new exported class
+`ValidatorRejectionError extends Error` was added just above the `TimerCancel` type, with a doc
+comment explaining why it exists (typed classification without string-matching signed reject
+reasons). Constructor: `(message: string, readonly rejectReasons: Record<string, string>)`, sets
+`this.name = 'ValidatorRejectionError'`. It is **not yet thrown anywhere** — behavior is
+unchanged and the package still compiles. `db-p2p/src/index.ts:12` already does
+`export * from "./repo/cluster-coordinator.js"`, so the class is package-visible with no index
+edit needed.
+
+### Design settled (follow this; constraints in "Recommended fix" below all honored)
+
+1. **Throw site** — `cluster-coordinator.ts` `executeTransaction`, the
+   `rejectionCount > maxAllowedRejections` branch (~line 344 after the class insertion; look for
+   `'rejected-by-validators'`). Build a `Record<string,string>` of per-peer reject reasons
+   (currently flattened into a `; `-joined string), keep the thrown **message byte-identical**
+   (`Transaction rejected by validators (${rejectionCount}/${peerCount} rejected): ${reasons}`),
+   but throw `new ValidatorRejectionError(message, rejectReasonsByPeer)` instead of `new Error`.
+2. **Classification** — `coordinator-repo.ts` `pend`'s catch (currently logs + rethrows at
+   ~line 684). Before rethrow, call a new private method:
+   - returns `undefined` (→ rethrow) unless `error instanceof ValidatorRejectionError` **and**
+     `request.rev !== undefined`;
+   - re-reads `await this.storageRepo.get({ blockIds: allBlockIds })` (wrap in try/catch; on read
+     error log + return `undefined`);
+   - if any block's `state.latest.rev >= request.rev` → log a
+     `coordinator-repo:pend-stale-classified` event and return the reason-only `StaleFailure`
+     `{ success: false, reason: 'stale revision: block <id> at rev <latest>, requested rev <rev>' }`;
+   - otherwise `undefined` (conservative: only-remote-members-saw-newer stays a throw; note this
+     as a NOTE tripwire at the site).
+   `StaleFailure` needs adding to coordinator-repo's type-import list from `@optimystic/db-core`;
+   `GetBlockResults` is already imported. Import `ValidatorRejectionError` from
+   `./cluster-coordinator.js` (already imported for `ClusterCoordinator`).
+3. Nothing else changes. `network-transactor.ts:511-518` already turns any non-success pend
+   *response* into the `StaleFailure` return `Collection.sync` retries on, including mixed
+   stale+transport batch sets. Commit/cancel paths keep propagating the typed error unchanged.
+
+### Verified type facts (save the lookup)
+
+- `StaleFailure` = `{ success: false; reason?; missing?; pending? }` —
+  `db-core/src/network/struct.ts:66`. Reason-only shape is supported end-to-end; note the
+  transactor's stale branch re-aggregates it as `{ success: false, missing: [] }` (the `reason`
+  string is dropped there — fine, `Collection.sync` retries on any truthy `staleFailure`).
+- `PendRequest.rev` comes from `ActionTransforms.rev` (optional) — same file, line 14.
+- `IRepo` in `db-core/src/network/i-repo.ts`; `GetBlockResults = Record<BlockId, { block?, state }>`.
+- Cluster path in `pend` requires `getClusterSize > 1`; with 2 peers,
+  `superMajority = ceil(2 * 0.67) = 2`, `maxAllowedRejections = 0`, so **one** reject vote
+  triggers the rejected-by-validators branch — the cheapest unit-test topology.
+
+### Test recipes (patterns verified against existing specs)
+
+- **db-p2p** — copy the harness style of
+  `packages/db-p2p/test/cluster-coordinator-supermajority.spec.ts` (MockClusterClient with a
+  per-peer verdict, `peerIdFromPrivateKey(await generateKeyPair('Ed25519'))`, `baseCfg` with
+  `minAbsoluteClusterSize: 2`, mock `IKeyNetwork.findCluster` returning the 2-peer map). Drive
+  `CoordinatorRepo.pend` directly (constructor:
+  `(keyNetwork, createClusterClient, storageRepo, cfg, localCluster?, localPeerId?, ...)`;
+  leaving `localPeerId` unset makes `verifyResponsibility` pass trivially). New spec file, e.g.
+  `test/coordinator-repo-stale-classification.spec.ts`:
+  1. member votes `{ type: 'reject', rejectReason: 'stale revision: …' }`, mock storageRepo `get`
+     reports `latest.rev = 1`, request `rev = 1` → expect **returned** `StaleFailure`, no throw;
+     then flip members to approve, re-pend at `rev = 2` (storageRepo.pend → success) → expect
+     success (the "loser retries at next rev" half).
+  2. member votes reject with a non-stale reason, storageRepo `get` reports `latest.rev = 0` (or
+     no latest) → expect the pend to **throw** `ValidatorRejectionError` (fail-fast preserved).
+- **db-core** — extend `packages/db-core/test/network-transactor.spec.ts` (reuse its
+  `MockKeyNetwork` + disjoint-cluster pattern from "cluster intersection consolidation"): two
+  blocks on two coordinators, repo A's `pend` returns
+  `{ success: false, reason: 'stale …' }`, repo B's `pend` throws a transport `Error` → expect
+  `networkTransactor.pend` to **return** `success: false` (mixed batch classified stale), not
+  throw. This pins the captured-evidence behavior of lines 511-518.
+
+## Remaining TODO
+
+- [ ] Throw-site change in `cluster-coordinator.ts` (design item 1).
+- [ ] Classification method + catch wiring in `coordinator-repo.ts` (design item 2), with NOTE
+      tripwire for the remote-only-confirmation conservative rethrow.
+- [ ] The three regressions above (stale→return+retry-succeeds, non-stale→throw, mixed→stale).
+- [ ] Build: `cd ../optimystic && yarn workspace @optimystic/db-p2p build` (and db-core if its
+      spec additions need it); run `yarn workspace @optimystic/db-p2p test` +
+      `yarn workspace @optimystic/db-core test`.
+- [ ] Rebuild consumed dists, then re-run the scenario **20×** alone (command below). Assert zero
+      `PartialCommitError` and zero `Transaction rejected by validators` escaping to the test. Do
+      **not** expect zero failures — Shape B (~20 %) remains, tracked by
+      `bug-control-db-rx-record-never-converges-on-sender`.
+- [ ] Full `packages/integration-tests` suite; confirm no regression vs baseline.
+- [ ] Update `tickets/.pre-existing-known.md`: this slug drops off; the Shape-B slug stays.
+- [ ] Review handoff into `tickets/review/`, honest about any gaps.
+
 ## Confirmed reproduction (fix stage, 2026-07-29, HEAD `7be4675`)
 
 From `packages/integration-tests`, scenario must run **alone**:
@@ -30,15 +125,15 @@ otherwise. It also aborts whenever a sibling repo (`../quereus`, `../optimystic`
 than `dist` — which happens whenever another agent is mid-edit there. That is deliberate (see the
 module comment); tolerate it by retrying, do not weaken the gate.
 
-## The chain, verified against current source
+## The chain, verified against current source (re-verified at implement stage)
 
 Each link checked by reading the file at the stated line, and each observed in the captured log.
 
 1. `db-p2p/src/cluster/cluster-repo.ts:1056-1063` — a cluster member validating a `pend` finds the
    block already at the requested revision and votes reject with
    `reason: "stale revision: block <id> at rev N, requested rev N"`. Correct detection.
-2. `db-p2p/src/repo/cluster-coordinator.ts:324-337` — enough members rejected that super-majority
-   is impossible, so `executeTransaction` does
+2. `db-p2p/src/repo/cluster-coordinator.ts:324-337` (pre-edit numbering) — enough members rejected
+   that super-majority is impossible, so `executeTransaction` does
    `throw new Error("Transaction rejected by validators (…)")`. The reason is flattened into the
    message string and otherwise discarded; a retryable stale loss and a genuine validation fault
    become indistinguishable.
@@ -127,7 +222,8 @@ change.
 - **A typed rejection code is a protocol revision.** Any new field on the cluster signature
   (`db-core/src/cluster/structs.ts`) that participates in `computeSigningPayload` changes what every
   peer signs and verifies; mixed-version cohorts would fail signature verification. Do not take this
-  option without treating it as such.
+  option without treating it as such. (The landed `ValidatorRejectionError` is coordinator-local —
+  constructed after vote counting, never serialized — so it is NOT a protocol revision.)
 - **Preserve the `PartialCommitError` contract.** It exists to refuse to falsely claim a rollback.
   Do not weaken or swallow it — the fix is upstream, so it should simply stop firing.
 - **Keep the retry bounded.** `Collection.sync` defaults to 10 attempts / ~21 s
@@ -163,22 +259,3 @@ green suite.
 - Not related to `bug-control-cohort-no-auto-dial` (connection establishment; here all three nodes
   are explicitly meshed before any write) or to the archived
   `control-db-convergence-optimystic-p2p` (replication read path).
-
-## TODO
-
-- [ ] Add a unit-level regression in `../optimystic` for the classification: two concurrent pends on
-      one block via the cluster path → the loser gets a `StaleFailure` **return**, not a throw, and
-      its subsequent `Collection.sync` attempt succeeds at the next rev.
-- [ ] Add a regression asserting a *non*-stale validator rejection still throws / fails fast and is
-      not retried, so the classification is not "retry everything".
-- [ ] Add a regression for the mixed case: one batch stale-rejected, one batch failing with a
-      transport error → still classified stale and retried (matches the captured evidence).
-- [ ] Land the classification in `coordinator-repo.pend` per the recommended shape.
-- [ ] Rebuild the touched sibling packages.
-- [ ] Re-run the scenario **20×** alone. Assert zero occurrences of `PartialCommitError` and of
-      `Transaction rejected by validators` escaping to the test. Do **not** expect zero failures —
-      see "Scope".
-- [ ] Re-run the full `packages/integration-tests` suite; confirm no regression against the current
-      baseline.
-- [ ] Update the `tickets/.pre-existing-known.md` entry: this slug drops off it, the Shape-B slug
-      stays.
