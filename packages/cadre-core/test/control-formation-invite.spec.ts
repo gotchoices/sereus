@@ -1197,7 +1197,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertStrand(singleStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(single, 'sapp-su', ownerPublicKey, signMessage, { totalUses: 1 });
       expect(await recorder.isTokenUsed(single)).toBe(false);
-      await recorder.recordUsage(single, 'peer-x', singleStrand);
+      await recorder.recordUsage({ token: single, peerId: 'peer-x', strandId: singleStrand, disclosure: '' });
       expect(await recorder.isTokenUsed(single)).toBe(true);
 
       // Unlimited invite (null TotalUses): never "used up".
@@ -1205,7 +1205,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const unlimitedStrand = 'strand-unl-' + rand();
       await db.insertStrand(unlimitedStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(unlimited, 'sapp-unl', ownerPublicKey, signMessage);
-      await recorder.recordUsage(unlimited, 'peer-y', unlimitedStrand);
+      await recorder.recordUsage({ token: unlimited, peerId: 'peer-y', strandId: unlimitedStrand, disclosure: '' });
       expect(await recorder.isTokenUsed(unlimited)).toBe(false);
     });
 
@@ -1225,15 +1225,16 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         kind: 'bound',
         strandId: hostStrand,
         memberPrivateKey: hostMemberKey,
+        validationUrl: null,
       });
 
       // Unbound invite (legacy/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
       await db.insertFormationInvite(unbound, 'sapp-unbound', ownerPublicKey, signMessage);
-      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
+      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound', validationUrl: null });
 
       // Unknown token: no binding to act on → unbound.
-      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound' });
+      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound', validationUrl: null });
 
       // Bound but the named Strand row was NEVER inserted (unconverged host) → kind 'missing'.
       const missingStrand = 'strand-missing-' + rand();
@@ -1265,7 +1266,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expiresAtMs: Date.now() + 60_000,
       });
 
-      const out = await recorder.provisionAndRecord(token, 'peer-par', 'sapp-par');
+      const out = await recorder.provisionAndRecord({ token, peerId: 'peer-par', sAppId: 'sapp-par', disclosure: '' });
       expect(out.strandId.length).toBeGreaterThan('strand-'.length);
       // An unbound responder-provisioned strand is open → no membership key.
       expect(out.memberPrivateKey).toBeNull();

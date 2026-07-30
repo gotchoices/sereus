@@ -38,13 +38,13 @@ const DEFAULT_SESSION_TIMEOUT_MS = 30_000;
 const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 /**
  * Default provisioning budget (ms) — distinct from {@link DEFAULT_STEP_TIMEOUT_MS} because
- * `provisionStrand` is real work (DB writes, and an outbound approval-hook HTTP call once
- * `feat-formation-approval-wiring` lands), not a bare wire read/write.
+ * `provisionStrand` is real work (DB writes, and an outbound approval-hook HTTP call when
+ * the invite carries a `ValidationUrl`), not a bare wire read/write.
  *
  * Ordering is deliberate — each layer must be able to fail and report before the layer above
  * it gives up:
  *
- *   approval hook (10 s, feat-formation-approval-client)
+ *   approval hook (10 s, `formation-approval.ts`)
  *     < responder provisioning (12 s)
  *     < initiator await-response (15 s)
  *     < session (30 s)

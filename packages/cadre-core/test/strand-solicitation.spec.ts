@@ -166,11 +166,11 @@ describe('StrandSolicitationService', () => {
 
   describe('recordFormationComplete', () => {
     it('should call recorder when available', async () => {
-      let recorded: { token: string; initiatorKey: string; strandId: string } | null = null;
+      let recorded: { token: string; peerId: string; strandId: string; disclosure: string } | null = null;
 
       const mockRecorder: FormationUsageRecorder = {
-        recordUsage: async (token, initiatorKey, strandId) => {
-          recorded = { token, initiatorKey, strandId };
+        recordUsage: async (params) => {
+          recorded = params;
         },
         isTokenUsed: async () => false,
         isTokenValid: async () => ({ valid: true })
@@ -184,8 +184,9 @@ describe('StrandSolicitationService', () => {
 
       expect(recorded).toEqual({
         token: 'token-1',
-        initiatorKey: 'key-1',
-        strandId: 'strand-1'
+        peerId: 'key-1',
+        strandId: 'strand-1',
+        disclosure: ''
       });
     });
 

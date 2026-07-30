@@ -1,10 +1,15 @@
 import debug from 'debug';
+import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p } from '@libp2p/interface';
 import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure
 } from './types.js';
+import {
+  FormationApprovalError,
+  type FormationApprovalFailure
+} from './formation-approval.js';
 import type {
   DisclosureValidator,
   FormationUsageRecorder,
@@ -23,6 +28,28 @@ import {
 } from './strand-formation-protocol.js';
 
 const log = debug('sereus:cadre:formation-manager');
+
+/**
+ * Largest serialized disclosure a responder will accept (8 KiB). The disclosure is
+ * attacker-influenced text destined for a replicated table (`FormationUsage.Disclosure`)
+ * and for the approval hook's signed digest — the cap bounds both, and is enforced BEFORE
+ * any database read or hook contact so an oversized blob costs nothing downstream.
+ */
+const MAX_DISCLOSURE_BYTES = 8 * 1024;
+
+/**
+ * Rejection reason a would-be joiner is told for each approval-failure category
+ * (see {@link FormationApprovalFailure}). Distinct per category on purpose: mapping any
+ * of these onto the generic 'Formation conflict, retry' would tell an operator to retry
+ * what retrying can never fix (e.g. a non-enrolled validation key).
+ */
+const APPROVAL_REJECTION_REASONS: Record<FormationApprovalFailure, string> = {
+  refused: 'Formation approval refused',
+  unavailable: 'Formation approval unavailable, retry',
+  malformed: 'Formation approval invalid',
+  unenrolled: 'Formation approval key is not enrolled',
+  misconfigured: 'Formation approval misconfigured'
+};
 
 /**
  * Configuration for StrandFormationManager
@@ -253,18 +280,32 @@ export class StrandFormationManager {
   private async provisionAsResponder(
     token: string,
     initiatorPartyId: string,
-    _disclosure: StrandFormationDisclosure
+    disclosure: StrandFormationDisclosure
   ): Promise<ResponderProvisionOutcome> {
+    // Serialized ONCE, here: this exact string is what the approver signs and what the
+    // recorder writes to `FormationUsage.Disclosure` — a re-serialization anywhere below
+    // would break the signature-over-stored-bytes invariant.
+    const disclosureText = JSON.stringify(disclosure);
+    if (uint8ArrayFromString(disclosureText, 'utf8').byteLength > MAX_DISCLOSURE_BYTES) {
+      log('Disclosure over %d bytes; rejecting token %s', MAX_DISCLOSURE_BYTES, token);
+      return { approved: false, reason: 'Disclosure too large' };
+    }
+
     const recorder = this.formationUsageRecorder;
     const resolved: ResolvedHostStrand = recorder?.resolveStrand
       ? await recorder.resolveStrand(token)
-      : { kind: 'unbound' };
+      : { kind: 'unbound', validationUrl: null };
 
     try {
       switch (resolved.kind) {
         case 'bound': {
           // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
-          await recorder!.recordUsage(token, initiatorPartyId, resolved.strandId);
+          await recorder!.recordUsage({
+            token,
+            peerId: initiatorPartyId,
+            strandId: resolved.strandId,
+            disclosure: disclosureText
+          });
           return this.approve({
             strand: { strandId: resolved.strandId, createdBy: 'responder' },
             memberPrivateKey: resolved.memberPrivateKey ?? undefined,
@@ -276,9 +317,18 @@ export class StrandFormationManager {
           return { approved: false, reason: 'Host strand not yet available on this responder' };
         }
         case 'unbound':
-          return await this.provisionUnbound(token, initiatorPartyId);
+          return await this.provisionUnbound(token, initiatorPartyId, disclosureText);
       }
     } catch (err) {
+      if (err instanceof FormationApprovalError) {
+        log('approval failed (%s) for token %s: %o', err.failure, token, err);
+        return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
+      }
+      // NOTE: an approval obtained before landing here is spent — its nonce was never
+      // inserted, and the `unique` UsageStampId column bars re-presenting it — so a retry
+      // after a lost `(Token, UseNumber)` race (or any unrelated write failure) needs a
+      // FRESH approval; for a manual review queue that means a second human review. No
+      // usage row is written on any of these paths, so the invite itself is not consumed.
       log('provisionAsResponder failed for token %s: %o', token, err);
       return { approved: false, reason: 'Formation conflict, retry' };
     }
@@ -307,12 +357,18 @@ export class StrandFormationManager {
    */
   private async provisionUnbound(
     token: string,
-    initiatorPartyId: string
+    initiatorPartyId: string,
+    disclosureText: string
   ): Promise<ResponderProvisionOutcome> {
     const recorder = this.formationUsageRecorder;
     if (recorder?.provisionAndRecord) {
       const sAppId = await this.resolveInviteSAppId(token);
-      const provisioned = await recorder.provisionAndRecord(token, initiatorPartyId, sAppId);
+      const provisioned = await recorder.provisionAndRecord({
+        token,
+        peerId: initiatorPartyId,
+        sAppId,
+        disclosure: disclosureText
+      });
       return this.approve({
         strand: { strandId: provisioned.strandId, createdBy: 'responder' },
         memberPrivateKey: provisioned.memberPrivateKey ?? undefined,

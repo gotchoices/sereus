@@ -9,6 +9,13 @@ import type { Libp2p } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import {
+  FormationApprovalError,
+  signFormationApproval,
+  type FormationApproval,
+  type FormationApprovalRequest,
+  type FormationApprover,
+} from '../src/formation-approval.js';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import type {
@@ -41,6 +48,18 @@ import type { StrandFormationDisclosure } from '../src/types.js';
  *  (g) a bound invite naming a host strand absent on this responder yields a CLEAN
  *      `approved:false` (no hang, no dropped frame, no usage row, no identity disclosed) —
  *      previously the deferred StrandExists CHECK threw and the stream closed with no frame.
+ *
+ * Plus the outside-approval path (invite carries a `ValidationUrl`; a fake
+ * {@link FormationApprover} is injected so no HTTP leaves the test):
+ *  (h) a bound `ValidationUrl` invite obtains an approval and the nonce the approver SIGNED
+ *      is the nonce INSERTED (`UsageStampId` read back equals the request the fake saw),
+ *      with the real serialized disclosure recorded,
+ *  (i) same through the unbound path (`provisionAndRecord` mints the strand),
+ *  (j) each approval-failure category maps to its own distinct rejection reason, writes
+ *      nothing, and does NOT burn the invite (a good approver redeems it afterwards),
+ *  (k) an invite with no `ValidationUrl` never contacts the approver at all,
+ *  (l) an oversized disclosure is rejected before the approver or the DB is touched,
+ *  (m) a slow (6 s) approver still succeeds inside the 12 s default provisioning budget.
  */
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
@@ -97,12 +116,31 @@ function captureHandler(): { node: Libp2p; invoke: (stream: MockStream) => Promi
 
 const REAL_DISCLOSURE: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'consent-test' };
 
-function contactFor(token: string): FormationContactMessage {
+function contactFor(token: string, disclosure: StrandFormationDisclosure = REAL_DISCLOSURE): FormationContactMessage {
   return {
     token,
     partyId: 'initiator-key',
-    disclosure: REAL_DISCLOSURE,
+    disclosure,
     cadrePeerAddrs: ['/ip4/127.0.0.1/tcp/1/p2p/initiator'],
+  };
+}
+
+/**
+ * Fake {@link FormationApprover}: records every request it is shown (so tests can assert
+ * the approver was / was not contacted, and WHAT nonce it signed) and answers via the
+ * supplied function — a real signature, a tampered one, or a thrown
+ * {@link FormationApprovalError}. Never parses `validationUrl`; any string works.
+ */
+function recordingApprover(
+  answer: (request: FormationApprovalRequest) => FormationApproval | Promise<FormationApproval>
+): FormationApprover & { seen: FormationApprovalRequest[] } {
+  const seen: FormationApprovalRequest[] = [];
+  return {
+    seen,
+    async requestApproval(request) {
+      seen.push(request);
+      return answer(request);
+    },
   };
 }
 
@@ -115,6 +153,8 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   let rawDb: Database;
   let ownerPrivateKey: string;
   let ownerPublicKey: string;
+  let validationPrivateKey: string;
+  let validationPublicKey: string;
 
   // ed25519-sign the raw message bytes (no pre-hash), matching insert* signers.
   const signMessage = (message: Uint8Array): string =>
@@ -123,9 +163,9 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   const rand = (): string => Math.random().toString(36).slice(2);
 
   /** Fresh manager wired to a real DB-backed recorder, registered on a captured handler. */
-  function responder(): { invoke: (s: MockStream) => Promise<void> } {
+  function responder(approver?: FormationApprover): { invoke: (s: MockStream) => Promise<void> } {
     const manager = new StrandFormationManager({
-      formationUsageRecorder: new ControlFormationUsageRecorder(db),
+      formationUsageRecorder: new ControlFormationUsageRecorder(db, approver ? { approver } : undefined),
       partyId: HOST_PARTY,
       cadrePeerAddrs: HOST_CADRE,
     });
@@ -150,6 +190,12 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     rawDb = db.getDatabase();
 
     expect(await db.ensureOwnerKey(ownerPublicKey)).toBe(true);
+
+    // Enroll the validation keypair the fake approver signs with — the DB's
+    // FormationUsage.Authorized CHECK verifies against this stored row.
+    validationPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    validationPublicKey = getPublicKey(validationPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+    await db.insertValidationKey(validationPublicKey, ownerPublicKey, signMessage);
   }, 60_000);
 
   afterAll(async () => {
@@ -349,4 +395,234 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // No usage row written, so a retry after convergence is not blocked.
     expect(await db.countFormationUsage(token)).toBe(0);
   });
+
+  it('(h) bound ValidationUrl invite: nonce signed = nonce inserted, real disclosure recorded', async () => {
+    const hostStrandId = 'strand-host-vu-' + rand();
+    const hostMemberKey = await generateStrandMemberKey();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, hostMemberKey);
+
+    const token = 'invite-vu-bound-' + rand();
+    await db.insertFormationInvite(token, 'sapp-vu', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: hostStrandId,
+      validationUrl: 'https://hook.example/approve',
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const approver = recordingApprover((req) =>
+      signFormationApproval(req, validationPublicKey, validationPrivateKey));
+    const { invoke } = responder(approver);
+
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+    const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    // Redemption succeeds and still carries the host strand + its membership key.
+    expect(ok.approved).toBe(true);
+    expect(ok.provisionResult?.strand.strandId).toBe(hostStrandId);
+    expect(ok.provisionResult?.memberPrivateKey).toBe(hostMemberKey);
+
+    // The approver was asked exactly once, and was handed the invite's hook URL.
+    expect(approver.seen.length).toBe(1);
+    expect(approver.seen[0].validationUrl).toBe('https://hook.example/approve');
+
+    expect(await db.countFormationUsage(token)).toBe(1);
+    const usage = await rawDb.get(
+      'select UsageStampId, Disclosure from CadreControl.FormationUsage where Token = ?',
+      [token],
+    );
+    // The single most important invariant: the nonce the approver SIGNED is the nonce INSERTED.
+    expect(usage?.UsageStampId).toBe(approver.seen[0].usageStampId);
+    // The recorded disclosure is the exact serialized text the approver signed over.
+    expect(usage?.Disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
+    expect(approver.seen[0].disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
+  });
+
+  it('(i) unbound ValidationUrl invite: approval flows through provisionAndRecord, strand minted', async () => {
+    const token = 'invite-vu-unbound-' + rand();
+    await db.insertFormationInvite(token, 'sapp-vu-unbound', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      validationUrl: 'https://hook.example/approve-unbound',
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const approver = recordingApprover((req) =>
+      signFormationApproval(req, validationPublicKey, validationPrivateKey));
+    const { invoke } = responder(approver);
+
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+    const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    expect(ok.approved).toBe(true);
+    const mintedId = ok.provisionResult?.strand.strandId;
+    expect(mintedId).toBeDefined();
+    expect(await db.queryStrand(mintedId!)).not.toBeNull();
+
+    expect(approver.seen.length).toBe(1);
+    expect(await db.countFormationUsage(token)).toBe(1);
+    const usage = await rawDb.get(
+      'select UsageStampId, StrandId from CadreControl.FormationUsage where Token = ?',
+      [token],
+    );
+    expect(usage?.UsageStampId).toBe(approver.seen[0].usageStampId);
+    expect(usage?.StrandId).toBe(mintedId);
+    // The approver signed over the strand id that was actually minted + recorded.
+    expect(approver.seen[0].strandId).toBe(mintedId);
+  });
+
+  it('(j) approval failures map to distinct reasons, write nothing, and do not burn the invite', async () => {
+    const hostStrandId = 'strand-host-vu-fail-' + rand();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
+
+    const token = 'invite-vu-fail-' + rand();
+    await db.insertFormationInvite(token, 'sapp-vu-fail', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: hostStrandId,
+      validationUrl: 'https://hook.example/flaky',
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    // A valid keypair that was never enrolled as a ValidationKey row.
+    const strayPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const strayPublicKey = getPublicKey(strayPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+
+    const scenarios: Array<{ label: string; approver: FormationApprover; reason: string }> = [
+      {
+        label: 'refused',
+        approver: recordingApprover(() => { throw new FormationApprovalError('refused', 'hook said no'); }),
+        reason: 'Formation approval refused',
+      },
+      {
+        label: 'unavailable',
+        approver: recordingApprover(() => { throw new FormationApprovalError('unavailable', 'hook down'); }),
+        reason: 'Formation approval unavailable, retry',
+      },
+      {
+        label: 'invalid signature (signed over tampered fields)',
+        approver: recordingApprover((req) =>
+          signFormationApproval({ ...req, peerId: 'tampered-' + req.peerId }, validationPublicKey, validationPrivateKey)),
+        reason: 'Formation approval invalid',
+      },
+      {
+        label: 'non-enrolled key (valid signature, unknown key)',
+        approver: recordingApprover((req) =>
+          signFormationApproval(req, strayPublicKey, strayPrivateKey)),
+        reason: 'Formation approval key is not enrolled',
+      },
+    ];
+
+    for (const { label, approver, reason } of scenarios) {
+      const { invoke } = responder(approver);
+      const stream = new MockStream([encodeFrame(contactFor(token))]);
+      await invoke(stream);
+      const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+      expect(result.approved, label).toBe(false);
+      expect(result.reason, label).toBe(reason);
+      // A rejection discloses nothing.
+      expect(result.partyId, label).toBeUndefined();
+      expect(result.provisionResult, label).toBeUndefined();
+      // No usage row → the use count is unchanged, the invite is not consumed.
+      expect(await db.countFormationUsage(token), label).toBe(0);
+    }
+
+    // The four failures burned nothing: the SAME single-use invite still redeems cleanly.
+    const good = recordingApprover((req) =>
+      signFormationApproval(req, validationPublicKey, validationPrivateKey));
+    const { invoke } = responder(good);
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+    const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(ok.approved).toBe(true);
+    expect(await db.countFormationUsage(token)).toBe(1);
+  });
+
+  it('(k) invite without ValidationUrl: approver never contacted, real disclosure still recorded', async () => {
+    const hostStrandId = 'strand-host-novu-' + rand();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
+
+    const token = 'invite-novu-' + rand();
+    await db.insertFormationInvite(token, 'sapp-novu', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: hostStrandId,
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const approver = recordingApprover((req) =>
+      signFormationApproval(req, validationPublicKey, validationPrivateKey));
+    const { invoke } = responder(approver);
+
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+    const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    expect(ok.approved).toBe(true);
+    // No ValidationUrl on the invite → the approver is never asked.
+    expect(approver.seen.length).toBe(0);
+    // Every redemption now records the real serialized disclosure (was '' before this wiring).
+    const usage = await rawDb.get(
+      'select Disclosure from CadreControl.FormationUsage where Token = ?',
+      [token],
+    );
+    expect(usage?.Disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
+  });
+
+  it('(l) oversized disclosure: rejected before the approver or the database is touched', async () => {
+    const hostStrandId = 'strand-host-big-' + rand();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
+
+    const token = 'invite-big-' + rand();
+    await db.insertFormationInvite(token, 'sapp-big', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: hostStrandId,
+      validationUrl: 'https://hook.example/never-reached',
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    const approver = recordingApprover((req) =>
+      signFormationApproval(req, validationPublicKey, validationPrivateKey));
+    const { invoke } = responder(approver);
+
+    // Over the 8 KiB serialized cap.
+    const oversized: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'x'.repeat(9000) };
+    const stream = new MockStream([encodeFrame(contactFor(token, oversized))]);
+    await invoke(stream);
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Disclosure too large');
+    expect(approver.seen.length).toBe(0);
+    expect(await db.countFormationUsage(token)).toBe(0);
+  });
+
+  it('(m) slow (6 s) approver still succeeds inside the default provisioning budget', async () => {
+    const hostStrandId = 'strand-host-slow-' + rand();
+    const hostMemberKey = await generateStrandMemberKey();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, hostMemberKey);
+
+    const token = 'invite-slow-' + rand();
+    await db.insertFormationInvite(token, 'sapp-slow', ownerPublicKey, signMessage, {
+      totalUses: 1,
+      strandId: hostStrandId,
+      validationUrl: 'https://hook.example/slow',
+      expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+
+    // 6 s of REAL wall-clock: under the approval client's 10 s and the responder's 12 s
+    // provisioning budget (see strand-formation-protocol.ts ordering rationale).
+    const approver = recordingApprover(async (req) => {
+      await new Promise((resolve) => setTimeout(resolve, 6_000));
+      return signFormationApproval(req, validationPublicKey, validationPrivateKey);
+    });
+    const { invoke } = responder(approver);
+
+    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    await invoke(stream);
+    const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    expect(ok.approved).toBe(true);
+    expect(ok.provisionResult?.strand.strandId).toBe(hostStrandId);
+    expect(await db.countFormationUsage(token)).toBe(1);
+  }, 40_000);
 });

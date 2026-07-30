@@ -84,15 +84,15 @@ function createMockProvisioner(prefix = 'mp'): StrandProvisioner {
 
 function createMockUsageRecorder(): FormationUsageRecorder & {
 	knownTokens: Set<string>;
-	usedTokens: Map<string, { initiatorKey: string; strandId: string }>;
+	usedTokens: Map<string, { peerId: string; strandId: string }>;
 } {
 	const knownTokens = new Set<string>();
-	const usedTokens = new Map<string, { initiatorKey: string; strandId: string }>();
+	const usedTokens = new Map<string, { peerId: string; strandId: string }>();
 	return {
 		knownTokens,
 		usedTokens,
-		recordUsage: async (token, initiatorKey, strandId) => {
-			usedTokens.set(token, { initiatorKey, strandId });
+		recordUsage: async ({ token, peerId, strandId }) => {
+			usedTokens.set(token, { peerId, strandId });
 		},
 		isTokenUsed: async (token) => usedTokens.has(token),
 		isTokenValid: async (token) => ({
