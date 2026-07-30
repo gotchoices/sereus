@@ -247,3 +247,49 @@ Known pre-existing failure in this suite: one win32 `skipIf` in `key-store.spec.
 - Review handoff: state exactly which operations were asserted, what the measured worst-case
   reconcile pass cost, whether any hang was found and how it was disposed of, and that WebRTC
   transport coverage is deferred to `debt-webrtc-transport-control-liveness-coverage`
+
+## Resume notes (2026-07-30 — research complete, NO code written yet)
+
+A prior agent run hit its token budget during source reading. Working tree untouched — start at
+Phase 1. Findings below save re-discovery; all line numbers verified at commit `3051cc5`.
+
+- **`listAuthorizedMembers` WILL include minted offline peers.** `insertSelfPeerRecord`
+  (`src/seed-bootstrap.ts:332`) routes through the shared owner-signed insert
+  (`insertCadrePeerRow`, line 364) which mints StampId and persists VouchOwner/VouchSig — a full
+  voucher. `initializeSeedBootstrap` (`src/cadre-node.ts:3618`) anchors the genesis owner key in
+  the node-local trusted-owner store **synchronously** (only file persist is async), so the
+  anchored-voucher check passes. Self is excluded from `listAuthorizedMembers` by contract
+  (`cadre-node.ts:3739`) — assert offline peers present, self absent.
+- **`authorizePeer` queue peek.** `authorizePeer` (`cadre-node.ts:3979`) → service insert (Sig
+  null) → `noteControlWrite` (`:1964`); with 0 connections `committedAlone()` (`:1948`) is true →
+  entry lands in private `pendingPeerWrites` Map. Peek via cast, same pattern
+  `cadre-node-control-cohort.spec.ts` uses for `_running`/`controlNode`:
+  `(node as unknown as { pendingPeerWrites: Map<string, string> }).pendingPeerWrites`. "No drain
+  fires" = entry still queued after a reconcile pass completes (no 0→≥1 growth happened).
+- **Departed-node pattern.** `peer-record-resolution.spec.ts` `bootOwnerNode` (lines 32-49) passes
+  `privateKey: libp2pKey` directly in `CadreNodeConfig` — build the departed node that way (own
+  fresh partyId + MemoryRawStorage) with
+  `network: { transports: [webSockets()], listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'] }`, capture
+  `node.getMultiaddrs()` strings (non-empty assert) before `stop()`.
+- **Dial-timeout budget correction.** db-p2p `libp2p-node-base.js` sets only
+  `connectionManager: { maxConnections: 16, inboundUpgradeTimeout: 10_000 }` — no explicit
+  outbound dial timeout, so js-libp2p's own default (~10 s per dial attempt) governs. Three
+  blackhole siblings dialed sequentially ≈ 3 × 10 s, which BUSTS the ticket's 30 s reconcile
+  budget. Give the three-blackhole pass a **60 s** budget (comment why); keep 30 s for
+  single-sibling passes. Ordinary control ops keep 15 s.
+- **Reconcile pass internals confirmed** (`runReconcileControlCohort`, `cadre-node.ts:1623`):
+  refreshMembershipGate → refreshDelegateGrants → `listMembers` → `getOwnerKeys` →
+  `selectControlCohortDials` → sequential `dialControlSibling` loop (`:1693`); per-sibling dial
+  failures logged + swallowed; the whole pass never rejects. Single-flight guard collapses
+  concurrent passes (`:1609`) — the dial-storm case's unawaited pass and the later awaited call
+  share one run.
+- **`resolvePeerAddrs` gates confirmed** (`cadre-node.ts:1515`): record present → publicKey↔peerId
+  binding → self-sig verify → freshness (15 min default) → trust policy (default always-true).
+  A record minted per the ticket's `insertForeignMember` shape passes all five.
+- **Harness facts:** vitest `globals: true`, `include: test/**/*.spec.ts` (helper file
+  `control-db-node-helpers.ts` won't be collected as a spec), globalSetup stale-build guard.
+  `@libp2p/circuit-relay-v2` confirmed in cadre-core devDependencies. Solo-spec helpers to lift
+  sit at `control-database-solo.spec.ts:46-102`; its `freshPartyId` currently prefixes `solo-` —
+  have the shared helper take the full tag and pass `solo-…` from the solo spec.
+- **`stopRecordRefresh`** (`cadre-node.ts:1450`) clears `pendingPeerWrites` on stop — so peek the
+  queue BEFORE `stop()`, and the stop()-with-dial-in-flight case needs no queue assertions.
