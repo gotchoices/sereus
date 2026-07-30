@@ -6,10 +6,72 @@ difficulty: hard
 # Delegate-peer admission: let a party relay serve its own members' strand nodes
 
 <!-- resume-note -->
-**Prior run (2026-07-29) hit the soft token budget during investigation. NO code was
-changed — the working tree is untouched by that run.** All findings are inline below (no
-external log). The design in this ticket was verified against HEAD; nothing contradicts it.
-Start implementing directly from these confirmed sites — no re-discovery needed:
+**Run 2 (2026-07-29) hit the soft token budget after Phase 1's module landed.** State of
+the working tree: exactly ONE new file, `packages/cadre-core/src/delegate-admission.ts` —
+complete and self-contained, **not yet imported anywhere**, so build/tests are unaffected.
+It contains:
+
+- `DelegateAdmissionStore` — `grant(announcer, strandId, delegatePeerId, now?)` /
+  `has(remotePeerId, now?)` / `size`. Replace-per-(announcer, strandId) via a
+  `Map<announcer + '\n' + strandId, grant>`; lazy prune on every read/write; both caps
+  enforced with soonest-expiry-first eviction (`evictAtCap` runs per-member cap then
+  global cap, only on NEW keys — a replace never evicts). Injectable `now` param (not
+  fake timers) for expiry tests.
+- `extractCircuitRelayTargets(addrs: string[]): {relayPeerId, relayAddr}[]` — per addr:
+  `multiaddr(addr).getComponents()`, find `p2p-circuit` component, relay = the `p2p`
+  component immediately BEFORE it (`circuitIdx < 1` → skip; a trailing `/p2p/<dst>` is
+  the destination, ignored), validate via `peerIdFromString`, and
+  `relayAddr = ma.decapsulate('/p2p-circuit').toString()` for the direct-dial prefix.
+  Dedup by relay peerId, first addr wins. NOTE: `Multiaddr.getPeerId()` is deprecated —
+  `getComponents()` is the repo pattern (see `trailingPeerId`, `peer-record.ts:133`).
+- Constants `DELEGATE_GRANT_TTL_MS` / `MAX_DELEGATE_GRANTS_PER_MEMBER` /
+  `MAX_DELEGATE_GRANTS` and the module doc carrying the security rationale.
+
+**Nothing else changed.** No spec file yet, no wiring. Remaining work = everything from
+"grant + gate wiring" onward in the TODO below.
+
+Decisions made in run 2 (follow these; they refine the design without contradicting it):
+
+- **Reconcile re-announce targets = RELAY targets only** (configured `listenAddrs`
+  circuits + live `controlNode.getMultiaddrs()` circuits) — NOT siblings. Grants only
+  matter where a reservation can be re-dialed; siblings get their announce on every
+  launch/resume pass anyway. Throttle map `Map<targetPeerId + '\n' + strandId, epochMs>`
+  on `CadreNode`; during each pass prune keys whose strand is no longer running; record
+  optimistically (the tradeoff comment from the design below). Place the refresh in
+  `runReconcileControlCohort` BEFORE the `siblings.length === 0` early-return at
+  `cadre-node.ts:1479` — a solo cadre with a party relay must still refresh.
+- **`resolveCohortSeed(strandId, delegatePeerId?)`**: when the arg is present, merge
+  `extractCircuitRelayTargets(...)` targets (as `{peerId: relayPeerId, addrs:
+  [multiaddr(relayAddr)]}` — the `StrandAddrPeer.addrs` fallback, `strand-addr-protocol.ts:234`)
+  into the connected-sibling target list (dedup by peerId, sibling entry wins), pass
+  `{delegatePeerId}` through `collectStrandAddrs`, then record announce timestamps for
+  ALL dialed targets (harmless extra sibling keys; the prune covers them). When absent —
+  today's behavior byte-for-byte.
+- **`resumeStrandRuntime`**: re-derive the transport key + peerId (deterministic, cheap;
+  the quiesced instance has no `libp2pNode`), same optional-arg pass to
+  `resolveCohortSeed`. `launchStrand` swaps derivation (:2789) before seed resolution
+  (:2771) as the design already states.
+- **`grantDelegateAdmission` / `hasDelegateAdmission`** as thin public `CadreNode`
+  wrappers over one `private readonly delegateAdmission = new DelegateAdmissionStore()`
+  field — public so the integration scenario can drive case (b)/(c) below without a
+  full strand launch.
+- **Indent style**: cadre-core src + test = 2 spaces; `packages/integration-tests` = tabs.
+
+Harnesses confirmed in run 2 (read, ready to use):
+
+- `test/control-stream-authorization.spec.ts` — `establishedNode()`, `admitConnection()`,
+  `authorize()` helpers; put "delegate grant admits the CONNECTION but not the STREAM"
+  right beside the enrollment-window divergence test at :122. Any string works as the
+  delegate id at the store layer (peerId validation lives in the announce path only).
+- `test/strand-addr-protocol.spec.ts` — `makeService(addrs, overrides)` (extend its
+  overrides with `onDelegateAnnounce`), `freshPeerId()`, and the `collectNode` loopback
+  mock (:199) whose per-target `makeService` receiver is exactly where to capture the
+  client-side `delegatePeerId` landing in the framed request.
+- `control-stream-authz.integration.ts` — `nodeConfig()`/`makeOwnOwner()`/
+  `waitForConnection()` helpers + raw `RepoClient` pattern for case (c)'s repo denial;
+  its outsider-connection assertions (:201-211) are the template for case (a)/(b).
+
+Original run-1 confirmed sites, all still valid (line numbers verified in run 2):
 
 - **Delegate peerId computation.** `peerIdFromPrivateKey` from `@libp2p/peer-id` is the
   right call on the derived transport key (already used throughout
@@ -296,12 +358,13 @@ an opening to strangers; option A would have opened it to everyone.
 
 ### Phase 1 — grant + gate
 
-- Add `DELEGATE_GRANT_TTL_MS`, the two caps, and the `DelegateGrant` shape to `cadre-node.ts`
-  (or a small `delegate-admission.ts` if `cadre-node.ts` is already overfull — it is ~3300
-  lines; a separate module with an injectable store is preferred and matches
-  `membership-connection-gater.ts`'s testability pattern).
-- Implement `grantDelegateAdmission` / `hasDelegateAdmission` with replace-per-(announcer,
-  strandId), lazy expiry pruning, and both caps (evict soonest-expiry first).
+- ~~Add `DELEGATE_GRANT_TTL_MS`, the two caps, and the `DelegateGrant` shape~~ **DONE
+  (run 2)** — landed in `packages/cadre-core/src/delegate-admission.ts` together with the
+  relay-target extractor (see resume-note for the exact API).
+- ~~Implement the store with replace-per-(announcer, strandId), lazy expiry pruning, and
+  both caps~~ **DONE (run 2)** — `DelegateAdmissionStore` in the same module. The
+  `CadreNode` wrapper methods (`grantDelegateAdmission`/`hasDelegateAdmission`) are NOT
+  yet added.
 - Add the `hasDelegateAdmission` check to `admitInboundControlConnection`, between the
   enrollment-window check and the `listAuthorizedMembers()` read; update that method's doc
   block (the numbered admit list and the "who pays" ordering note).
