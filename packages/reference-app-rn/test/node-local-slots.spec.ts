@@ -12,9 +12,9 @@
  * with the two node-local stores.
  */
 import { describe, it, expect } from 'vitest';
-import type { SecureStoreOptions } from 'expo-secure-store';
-import { PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
-import type { SecureStoreApi } from '../src/secure-key-store';
+import { PersistentTrustedOwnerStore, PersistentBootstrapPeerStore, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
+import { SecureStoreKeyStore } from '../src/secure-key-store';
+import { FakeSecureStore, INDEX_KEY } from './fake-secure-store';
 import {
 	secureStoreSlot,
 	kvStoreSlot,
@@ -33,33 +33,9 @@ import {
  */
 const REAL_PEER_ID = '12D3KooWQVo7JTYHgoj9rt9HScoxaM5axn3uB8P1WHiKrhhUqed3';
 
-// ── Fake expo-secure-store ─────────────────────────────────────────────────────
-
-class FakeSecureStore implements SecureStoreApi {
-	readonly map = new Map<string, string>();
-	getError: Error | null = null;
-	setError: Error | null = null;
-	readonly getOptionsByKey = new Map<string, SecureStoreOptions | undefined>();
-	readonly setOptionsByKey = new Map<string, SecureStoreOptions | undefined>();
-
-	async getItemAsync(key: string, options?: SecureStoreOptions): Promise<string | null> {
-		this.getOptionsByKey.set(key, options);
-		if (this.getError) throw this.getError;
-		return this.map.has(key) ? this.map.get(key)! : null;
-	}
-
-	async setItemAsync(key: string, value: string, options?: SecureStoreOptions): Promise<void> {
-		this.setOptionsByKey.set(key, options);
-		if (this.setError) throw this.setError;
-		this.map.set(key, value);
-	}
-
-	async deleteItemAsync(key: string): Promise<void> {
-		this.map.delete(key);
-	}
-}
-
 // ── Fake LevelDBKVStore ─────────────────────────────────────────────────────────
+// The expo-secure-store double is shared with `secure-key-store.spec.ts` — see
+// `./fake-secure-store`.
 
 class FakeKvStore implements KvStoreApi {
 	readonly map = new Map<string, string>();
@@ -117,6 +93,17 @@ describe('secureStoreSlot', () => {
 		expect(backend.getOptionsByKey.get('k')).not.toHaveProperty('requireAuthentication');
 	});
 
+	it('forwards an empty options object when given none, never an explicit undefined field', async () => {
+		const backend = new FakeSecureStore();
+		await secureStoreSlot(backend, 'k').save('text');
+		await secureStoreSlot(backend, 'k').load();
+
+		// `{}` — not `{ requireAuthentication: undefined, keychainAccessible: undefined }`,
+		// which the native layer would read as an explicit choice instead of its default.
+		expect(backend.setOptionsByKey.get('k')).toEqual({});
+		expect(Object.keys(backend.getOptionsByKey.get('k')!)).toEqual([]);
+	});
+
 	it('throws at construction for a gated (requireAuthentication) slot', () => {
 		const backend = new FakeSecureStore();
 		expect(() => secureStoreSlot(backend, 'k', { requireAuthentication: true })).toThrow(
@@ -162,6 +149,11 @@ describe('key-shape helpers', () => {
 		expect(key.startsWith('sereus.anchor.')).toBe(true);
 		expect(key.startsWith('sereus.ks.')).toBe(false);
 		expect(key).toMatch(/^[A-Za-z0-9._-]+$/);
+	});
+
+	it('gives distinct parties distinct keys', () => {
+		expect(anchorSlotKey('party-1')).not.toBe(anchorSlotKey('party-2'));
+		expect(bootstrapPeersKvKey('party-1')).not.toBe(bootstrapPeersKvKey('party-2'));
 	});
 
 	it('bootstrapPeersKvKey is a plain dotted key', () => {
@@ -237,6 +229,49 @@ describe('PersistentTrustedOwnerStore over secureStoreSlot', () => {
 
 		await expect(store.trust('owner-key-b64', 'invite')).rejects.toThrow('SecureStore write failed');
 		expect(store.has('owner-key-b64')).toBe(true);
+	});
+});
+
+// ── The anchor slot beside the identity key store, in ONE secure store ─────────
+// Both live in the same `expo-secure-store` namespace on a real phone (see the
+// `ANCHOR_KEY_PREFIX` comment in `node-local-slots.ts`). Asserting the two prefix
+// strings differ is not enough: what matters is that the key store's `__index`
+// bookkeeping never picks the anchor up, and that neither write clobbers the other.
+
+describe('the anchor slot beside SecureStoreKeyStore', () => {
+	it('keeps the anchor out of the key store\'s index and its keys out of list()', async () => {
+		const backend = new FakeSecureStore();
+		const keyStore = new SecureStoreKeyStore(backend);
+		await keyStore.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1, 2, 3]));
+
+		const anchors = await PersistentTrustedOwnerStore.open(
+			secureStoreSlot(backend, anchorSlotKey('party-1')),
+			'party-1',
+		);
+		await anchors.trust('owner-key-b64', 'genesis');
+
+		expect(await keyStore.list()).toEqual([DEFAULT_IDENTITY_KEY_ID]);
+		expect(JSON.parse(backend.map.get(INDEX_KEY)!)).toEqual([DEFAULT_IDENTITY_KEY_ID]);
+	});
+
+	it('lets identity material and the anchor survive each other\'s writes', async () => {
+		const backend = new FakeSecureStore();
+		const keyStore = new SecureStoreKeyStore(backend);
+		const anchors = await PersistentTrustedOwnerStore.open(
+			secureStoreSlot(backend, anchorSlotKey('party-1')),
+			'party-1',
+		);
+
+		await anchors.trust('owner-key-b64', 'genesis');
+		await keyStore.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([1, 2, 3]));
+		await anchors.trust('second-owner-b64', 'invite');
+
+		expect([...(await keyStore.get(DEFAULT_IDENTITY_KEY_ID))!]).toEqual([1, 2, 3]);
+		const reopened = await PersistentTrustedOwnerStore.open(
+			secureStoreSlot(backend, anchorSlotKey('party-1')),
+			'party-1',
+		);
+		expect(reopened.all()).toEqual(new Set(['owner-key-b64', 'second-owner-b64']));
 	});
 });
 

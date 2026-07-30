@@ -387,11 +387,15 @@ export function getOwnerPublicKey(): string | null {
  * Stop the phone CadreNode and release resources.
  */
 export async function stopPhoneNode(): Promise<void> {
+  // Cleared BEFORE the stop, for the same reason `nodeLocalDb` is below: a
+  // throwing `node.stop()` must not leave a module-level reference to a node
+  // whose node-local LevelDB handle the `finally` has just closed — the
+  // `node?.isRunning` early-return in `startPhoneNode` would hand that node back
+  // and its next bootstrap-peer write would fail on a closed handle.
+  const stopping = node;
+  node = null;
   try {
-    if (node) {
-      await node.stop();
-      node = null;
-    }
+    if (stopping) await stopping.stop();
   } finally {
     // Close the node-local LevelDB handle even when `node.stop()` threw, and even
     // when a failed `startPhoneNode` never got as far as constructing the node —

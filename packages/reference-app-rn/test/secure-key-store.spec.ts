@@ -1,5 +1,4 @@
 import { describe, it, expect, vi } from 'vitest';
-import type { SecureStoreOptions } from 'expo-secure-store';
 import {
 	KeyStoreAccessError,
 	DEFAULT_IDENTITY_KEY_ID,
@@ -8,43 +7,9 @@ import {
 import {
 	SecureStoreKeyStore,
 	migrateLegacyIdentity,
-	type SecureStoreApi,
 	type SecureStoreKeyStoreOptions,
 } from '../src/secure-key-store';
-
-// ── In-memory expo-secure-store double ────────────────────────────────────────
-// Stands in for the native getItemAsync/setItemAsync/deleteItemAsync, records the
-// options each call received (for forwarding assertions), and can be told to throw
-// on a get to simulate an access-denied / cancelled-biometric prompt.
-
-const INDEX_KEY = 'sereus.ks.__index';
-
-class FakeSecureStore implements SecureStoreApi {
-	readonly map = new Map<string, string>();
-	readonly throwOnGet = new Set<string>();
-	readonly setOptionsByKey = new Map<string, SecureStoreOptions | undefined>();
-	readonly getOptionsByKey = new Map<string, SecureStoreOptions | undefined>();
-
-	async getItemAsync(key: string, options?: SecureStoreOptions): Promise<string | null> {
-		this.getOptionsByKey.set(key, options);
-		if (this.throwOnGet.has(key)) throw new Error('biometric prompt cancelled');
-		return this.map.has(key) ? this.map.get(key)! : null;
-	}
-
-	async setItemAsync(key: string, value: string, options?: SecureStoreOptions): Promise<void> {
-		this.setOptionsByKey.set(key, options);
-		this.map.set(key, value);
-	}
-
-	async deleteItemAsync(key: string): Promise<void> {
-		this.map.delete(key);
-	}
-
-	/** Material keys this store wrote (excludes the reserved index entry). */
-	materialKeys(): string[] {
-		return [...this.map.keys()].filter((k) => k !== INDEX_KEY);
-	}
-}
+import { FakeSecureStore, INDEX_KEY } from './fake-secure-store';
 
 function makeStore(options?: SecureStoreKeyStoreOptions): { store: SecureStoreKeyStore; fake: FakeSecureStore } {
 	const fake = new FakeSecureStore();

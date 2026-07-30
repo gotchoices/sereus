@@ -143,15 +143,33 @@ declare schema Chat {
 
 No signature verification, no invite flow, no authorization constraints. This keeps the reference app focused on the P2P plumbing rather than application-level crypto.
 
-## Peer Identity Persistence
+## Node-Local Persistence
+
+Three things the phone node keeps *locally* — never replicated, never derivable from the network — and where each lives.
+
+### Peer identity (secure enclave)
 
 The phone node maintains a stable PeerId across app restarts:
 
-1. **First launch** — an Ed25519 keypair is generated via `@libp2p/crypto/keys` and stored in MMKV as protobuf bytes under the key `sereus:peer-private-key`.
-2. **Subsequent launches** — the key is loaded from MMKV and passed as `CadreNodeConfig.privateKey`, producing the same PeerId every time.
+1. **First launch** — cadre-core generates an Ed25519 keypair and stores it through `SecureStoreKeyStore` (`src/secure-key-store.ts`), a `KeyStore` over `expo-secure-store`: iOS Keychain / Android Keystore-encrypted preferences, under the reserved `sereus.ks.` key prefix plus a `__index` entry listing the keyIds it holds.
+2. **Subsequent launches** — the key is loaded from the enclave, producing the same PeerId every time.
 3. **Single identity** — the same key is used for both the control network and all strand networks, matching the one-key-per-device architecture.
 
-MMKV is not secure storage (it is not backed by Keychain on iOS or Keystore on Android). Migration to platform-secure storage is a future hardening step.
+Gating: the store is opened **ungated** (no `requireAuthentication`) with `keychainAccessible: AFTER_FIRST_UNLOCK`, because the node must come up headless on a push wake while the device is locked, and because a biometric-set change would invalidate the entry. An earlier version of the app kept the key in plaintext MMKV, then plaintext LevelDB; `migrateLegacyIdentity` lifts a pre-existing plaintext identity into the enclave once on upgrade and deletes the legacy database.
+
+### Trusted-owner anchor (secure enclave)
+
+The set of owner public keys this device believes speak for its party — what seed acceptance, wake authorization, and vouching all check against. Persisted by cadre-core's `PersistentTrustedOwnerStore` over a `DurableSlot` the app supplies: one `expo-secure-store` entry under its own `sereus.anchor.<base64url partyId>` key (`src/node-local-slots.ts`). Deliberately *not* under the key store's `sereus.ks.` prefix, whose `__index` must never see a foreign entry.
+
+The anchor is not secret but it **is** trust-bearing — anything that can silently edit it can make this device trust a stranger — so it gets the most tamper-resistant store the app has, and shares the identity key's fate (including surviving an iOS reinstall, which is the desirable direction: same peer id, same trusted owners). The slot is ungated for the same headless reason as above, and `secureStoreSlot` **refuses** a gated slot outright: its "a `null` read means absent" mapping would misreport a biometric-invalidated anchor as empty, and the next snapshot write would make that permanent.
+
+### Cold-start bootstrap peers (app-private LevelDB)
+
+The dial targets retained from every seed the node has applied — the only addresses a stranded node has to re-dial its way back into the party. Persisted by cadre-core's `PersistentBootstrapPeerStore` over a `kvStoreSlot`: one key of a `LevelDBKVStore` in the app-private `sereus-node-local` database, separate from any strand's database so clearing it cannot disturb replicated data.
+
+Not the enclave, for two reasons: dialing grants no authority (`CadreNode` re-binds every retained address to the peer id it was recorded under before dialing), and multiaddrs run 80–120 characters each with several per peer and the snapshot growing for the node's whole lifetime — it would cross SecureStore's ~2048-byte value limit and simply fail the write.
+
+⚠️ **Both records are party-scoped, and the app does not yet persist its party id** — it is typed into Settings each launch. Until `feat-rn-persist-node-start-options` lands, a fresh party id per launch means both slots load empty every time: the storage is correct, but survival across a relaunch is not yet observable on device.
 
 ## cadre-core React Native Compatibility
 
@@ -282,9 +300,19 @@ packages/reference-app-rn/
     index.tsx                 # Chat screen (message list + input)
     settings.tsx              # Bootstrap config (seed paste, drone address)
   src/
-    cadre-phone.ts            # CadreNode setup: WS transports, MMKV storage, seed apply
+    cadre-phone.ts            # CadreNode setup: WS/WebRTC transports, LevelDB storage, seed apply
+    secure-key-store.ts       # KeyStore over expo-secure-store (identity in the enclave)
+    node-local-slots.ts       # DurableSlots for the owner anchor + bootstrap peers
     chat-strand.ts            # Strand lifecycle: create/join strand, load chat schema
     chat-operations.ts        # Quereus operations: insert message, query messages
+    strand-selection.ts       # Which strand the chat screen is showing
+    background-runner.ts      # AppState-driven hibernate / bounded resume
+    app-state.ts              # AppState seam the runner is tested against
+    push-wake.ts              # Platform-agnostic push-wake decision logic
+    push-wake-native.ts       # Expo notifications wiring for push-wake
+    connection-status.ts      # Derives UI connection state from node events
+    ice-config.ts             # STUN/TURN servers from the runtime manifest
+    cadre-context.tsx         # React context provider for the node
     use-chat.ts               # React hook: message list, send, connection status
     use-cadre.ts              # React hook: cadre lifecycle, seed application
   polyfills/

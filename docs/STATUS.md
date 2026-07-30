@@ -391,6 +391,15 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `PersistentBootstrapPeerStore` — the two node-local records' *policy* is covered once, in
   `packages/cadre-core/test/node-local-snapshot.spec.ts`, and is not re-asserted per platform.
   Still uncovered: `startCadre`'s own wiring of those stores into a running `CadreNode`.
+- [x] **`reference-app-rn`'s node-local slots are unit-covered** —
+  `packages/reference-app-rn/test/node-local-slots.spec.ts` covers the phone's two slots
+  (`secureStoreSlot` over `expo-secure-store`, `kvStoreSlot` over `LevelDBKVStore`), the key-shape
+  helpers as persistence contracts, each slot composed with the real store it backs, and the anchor
+  slot living beside `SecureStoreKeyStore` in one secure store without entering its `__index`. The
+  `expo-secure-store` double is shared with `secure-key-store.spec.ts` (`test/fake-secure-store.ts`).
+  Same scope boundary as web: store *policy* is not re-asserted. Still uncovered:
+  `startPhoneNode`/`stopPhoneNode`'s own wiring and the `sereus-node-local` LevelDB handle lifetime,
+  which no unit test opens a real handle for.
 - [ ] Add root-level scripts for running package tests consistently (Yarn workspace)
 - [x] **Stale-build guard for `integration-tests`.** Every scenario there runs *compiled* cadre
   output — a spawned real `cadre-cli` child, or an in-process import of `@serfab/cadre-host` /
