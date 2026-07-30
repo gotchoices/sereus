@@ -65,6 +65,17 @@ export interface CliConfigFile {
   /** Polling interval for strand watcher in ms */
   strandWatchInterval?: number;
 
+  /** Node-local state directory (bootstrap-peer store, trusted-owner anchor). */
+  nodeState?: {
+    /**
+     * Directory for this node's durable node-local stores. Defaults to the
+     * directory containing the config file itself — every launcher already
+     * writes a per-node config into that node's own working directory, so
+     * that default is node-specific by construction.
+     */
+    dir?: string;
+  };
+
   /**
    * Platform push-delivery credentials (FCM and/or APNs). Provisioned per node by
    * an orchestrator — `cadre-host` writes this block into `cadre.json`, and
@@ -94,6 +105,7 @@ export const ENV_MAPPINGS = {
   CADRE_HIBERNATION_ENABLED: 'hibernation.enabled',
   CADRE_STRAND_FILTER: 'strandFilter',
   CADRE_PUSH: 'push',
+  CADRE_NODE_STATE_DIR: 'nodeState.dir',
 } as const;
 
 /**
@@ -102,11 +114,13 @@ export const ENV_MAPPINGS = {
 export interface ResolvedConfig {
   privateKey?: PrivateKey;
   /**
-   * The `identity.protobufKeyFile` path the private key was loaded from, when
-   * that source won. Surfaced so node-local persistent state (the trusted-owner
-   * anchor) can live in the same directory as the identity key.
+   * Directory for this node's durable node-local stores (the bootstrap-peer
+   * store and the trusted-owner anchor). Always set — resolved from
+   * `nodeState.dir` / `CADRE_NODE_STATE_DIR` when given, else defaults to the
+   * directory containing the config file. Independent of how the node's
+   * identity is configured (`protobufKeyFile` / `keyFile` / `privateKeyHex`).
    */
-  identityProtobufKeyFile?: string;
+  nodeStateDir: string;
   controlNetwork: {
     partyId: string;
     bootstrapNodes: string[];

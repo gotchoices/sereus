@@ -1,5 +1,4 @@
 import { writeFileSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { Command } from 'commander';
 import debug from 'debug';
 import {
@@ -140,37 +139,33 @@ export const startCommand = new Command('start')
         console.log(`✓ Pinned ${pinnedKeys.length} owner key(s) for cold-start seed trust`);
       }
 
-      // Node-local trusted-owner anchor: file-backed next to the protobuf
-      // identity key when one is configured (so anchored trust survives
-      // restarts), else CadreNode falls back to an in-memory store. The
-      // operator pins above seed it either way (source 'operator').
-      const trustedOwnerStore = config.identityProtobufKeyFile
-        ? await FileTrustedOwnerStore.open(
-            dirname(config.identityProtobufKeyFile),
-            config.controlNetwork.partyId,
-          )
-        : undefined;
+      // Node-local trusted-owner anchor: file-backed in this node's state
+      // directory (so anchored trust survives restarts), regardless of how the
+      // node's identity is configured. The operator pins above seed it either
+      // way (source 'operator').
+      const trustedOwnerStore = await FileTrustedOwnerStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
 
       // Cold-start bootstrap dial targets: file-backed in the same directory, so a
       // seed pushed at RUNTIME (the /sereus/seed/1.0.0 protocol, or cadre-host's
       // donation flow pushing to POST /seed — neither of which gets a --seed
       // argument on the next start) still has addresses to retry after a process
       // or container restart.
-      const bootstrapPeerStore = config.identityProtobufKeyFile
-        ? await FileBootstrapPeerStore.open(
-            dirname(config.identityProtobufKeyFile),
-            config.controlNetwork.partyId,
-          )
-        : undefined;
+      const bootstrapPeerStore = await FileBootstrapPeerStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
 
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
-          ...(trustedOwnerStore ? { store: trustedOwnerStore } : {}),
+          store: trustedOwnerStore,
           pinnedKeys,
           pinnedSource: 'operator',
         },
-        ...(bootstrapPeerStore ? { bootstrapPeers: { store: bootstrapPeerStore } } : {}),
+        bootstrapPeers: { store: bootstrapPeerStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         strandFilter: config.strandFilter,

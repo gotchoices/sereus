@@ -276,13 +276,20 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
   fileConfig = applyEnvironmentOverrides(fileConfig);
   validateResolvedPush(fileConfig.push);
 
+  // Node-local state (bootstrap-peer store, trusted-owner anchor) lives in an
+  // explicit directory when configured, else defaults to the directory holding
+  // the config file — every launcher already writes a per-node config into
+  // that node's own working directory, so that default is node-specific
+  // regardless of how the node's identity is sourced.
+  const nodeStateDir = fileConfig.nodeState?.dir
+    ? path.resolve(fileConfig.nodeState.dir)
+    : path.dirname(path.resolve(configPath));
+
   // Load private key if specified. The protobuf identity (installer-written
   // `identity.key`) takes precedence, then a raw/hex key file, then inline hex.
   let privateKey: PrivateKey | undefined;
-  let identityProtobufKeyFile: string | undefined;
   if (fileConfig.identity?.protobufKeyFile) {
     privateKey = loadProtobufPrivateKey(fileConfig.identity.protobufKeyFile);
-    identityProtobufKeyFile = fileConfig.identity.protobufKeyFile;
   } else if (fileConfig.identity?.keyFile) {
     privateKey = decodePrivateKey(await loadPrivateKey(fileConfig.identity.keyFile));
   } else if (fileConfig.identity?.privateKeyHex) {
@@ -291,7 +298,7 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
 
   return {
     privateKey,
-    identityProtobufKeyFile,
+    nodeStateDir,
     controlNetwork: fileConfig.controlNetwork,
     profile: fileConfig.profile,
     strandFilter: parseStrandFilter(fileConfig.strandFilter),

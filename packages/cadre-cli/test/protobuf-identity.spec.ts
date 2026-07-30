@@ -1,7 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { toString as uint8ArrayToString } from 'uint8arrays';
@@ -92,5 +92,75 @@ describe('resolveConfig identity.keyFile', () => {
     expect(resolved.privateKey).toBeDefined();
     expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
       .toBe(peerIdFromPrivateKey(original).toString());
+  });
+
+  // Regression: node-local stores (bootstrap-peer store, trusted-owner anchor)
+  // must not depend on which identity source won — a `keyFile`-identity config
+  // still needs a directory to persist them in.
+  it('yields a nodeStateDir for a keyFile-identity config', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-raw-'));
+    tmpDirs.push(dir);
+
+    const original = await generateKeyPair('Ed25519');
+    const keyFile = join(dir, 'node.key');
+    writeFileSync(keyFile, uint8ArrayToString(original.raw, 'hex'));
+
+    const resolved = await resolveConfig(writeConfig(dir, keyFile));
+
+    expect(resolved.nodeStateDir).toBe(resolve(dir));
+  });
+});
+
+describe('resolveConfig nodeStateDir', () => {
+  const tmpDirs: string[] = [];
+
+  afterEach(() => {
+    delete process.env.CADRE_NODE_STATE_DIR;
+    for (const d of tmpDirs) {
+      try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
+    tmpDirs.length = 0;
+  });
+
+  /** Write a minimal valid config, optionally with a `nodeState.dir` entry, into `dir`. */
+  function writeConfig(dir: string, nodeStateDir?: string): string {
+    const configPath = join(dir, 'cadre.json');
+    writeFileSync(configPath, JSON.stringify({
+      controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
+      profile: 'storage',
+      storage: { type: 'memory' },
+      ...(nodeStateDir ? { nodeState: { dir: nodeStateDir } } : {}),
+    }));
+    return configPath;
+  }
+
+  it('defaults to the directory containing the config file', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-state-default-'));
+    tmpDirs.push(dir);
+
+    const resolved = await resolveConfig(writeConfig(dir));
+
+    expect(resolved.nodeStateDir).toBe(resolve(dir));
+  });
+
+  it('honors an explicit nodeState.dir', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-state-explicit-'));
+    tmpDirs.push(dir);
+    const stateDir = join(dir, 'state');
+
+    const resolved = await resolveConfig(writeConfig(dir, stateDir));
+
+    expect(resolved.nodeStateDir).toBe(resolve(stateDir));
+  });
+
+  it('honors the CADRE_NODE_STATE_DIR env override', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-state-env-'));
+    tmpDirs.push(dir);
+    const stateDir = join(dir, 'env-state');
+    process.env.CADRE_NODE_STATE_DIR = stateDir;
+
+    const resolved = await resolveConfig(writeConfig(dir));
+
+    expect(resolved.nodeStateDir).toBe(resolve(stateDir));
   });
 });
