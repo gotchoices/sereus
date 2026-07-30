@@ -84,13 +84,44 @@ const KEY_PREFIX = 'sereus.ks.';
 const INDEX_KEY = `${KEY_PREFIX}__index`;
 
 /**
- * Map a logical {@link KeyId} to a SecureStore key. SecureStore only permits
- * `[A-Za-z0-9._-]`; base64url emits exactly `[A-Za-z0-9-_]` (no padding), so the
- * encoded keyId is always valid and round-trips deterministically — `'cadre/identity'`
- * included (the `/` is encoded away). The prefix's `.` is also permitted.
+ * Encode arbitrary text as one SecureStore key SEGMENT. SecureStore only permits
+ * `[A-Za-z0-9._-]`; base64url emits exactly `[A-Za-z0-9-_]` (no padding), so any
+ * input is always valid and round-trips deterministically — `'cadre/identity'`
+ * included (the `/` is encoded away).
+ *
+ * Exported so every SecureStore slot this app opens escapes identically: the
+ * key store's own slots below, and the trusted-owner anchor's party-scoped slot
+ * in `node-local-slots.ts`.
+ */
+export function secureStoreKeySegment(value: string): string {
+	return uint8ArrayToString(uint8ArrayFromString(value, 'utf8'), 'base64url');
+}
+
+/**
+ * Build the {@link SecureStoreOptions} forwarded to every native call, omitting
+ * unset fields so the native layer sees its OWN defaults rather than an explicit
+ * `undefined` — notably an absent `requireAuthentication`, which means ungated.
+ *
+ * Exported so a plain `DurableSlot` over SecureStore (`node-local-slots.ts`)
+ * forwards exactly what this key store does, rather than re-deriving the rule.
+ */
+export function forwardedSecureStoreOptions(options: SecureStoreKeyStoreOptions): SecureStoreOptions {
+	const forwarded: SecureStoreOptions = {};
+	if (options.requireAuthentication !== undefined) {
+		forwarded.requireAuthentication = options.requireAuthentication;
+	}
+	if (options.keychainAccessible !== undefined) {
+		forwarded.keychainAccessible = options.keychainAccessible;
+	}
+	return forwarded;
+}
+
+/**
+ * Map a logical {@link KeyId} to a SecureStore key under this store's reserved
+ * {@link KEY_PREFIX} (whose `.` is also permitted).
  */
 function safeKey(keyId: KeyId): string {
-	return KEY_PREFIX + uint8ArrayToString(uint8ArrayFromString(keyId, 'utf8'), 'base64url');
+	return KEY_PREFIX + secureStoreKeySegment(keyId);
 }
 
 /** Parse the index JSON into a string[] defensively (a corrupt index reads as empty). */
@@ -125,16 +156,8 @@ export class SecureStoreKeyStore implements KeyStore {
 		private readonly backend: SecureStoreApi,
 		options: SecureStoreKeyStoreOptions = {},
 	) {
-		// Build the forwarded options object once, omitting unset fields so the
-		// native layer sees its own defaults rather than explicit `undefined`.
-		const forwarded: SecureStoreOptions = {};
-		if (options.requireAuthentication !== undefined) {
-			forwarded.requireAuthentication = options.requireAuthentication;
-		}
-		if (options.keychainAccessible !== undefined) {
-			forwarded.keychainAccessible = options.keychainAccessible;
-		}
-		this.options = forwarded;
+		// Built once, omitting unset fields (see forwardedSecureStoreOptions).
+		this.options = forwardedSecureStoreOptions(options);
 	}
 
 	/**

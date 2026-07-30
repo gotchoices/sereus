@@ -7,7 +7,13 @@
  * - Owner role: the phone holds the signing keys
  */
 
-import { CadreNode, ControlFormationUsageRecorder, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
+import {
+  CadreNode,
+  ControlFormationUsageRecorder,
+  DEFAULT_IDENTITY_KEY_ID,
+  PersistentTrustedOwnerStore,
+  PersistentBootstrapPeerStore,
+} from '@serfab/cadre-core';
 import type {
   CadreNodeConfig,
   ControlNetworkSeed,
@@ -26,9 +32,17 @@ import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { webRTC } from '@libp2p/webrtc';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import * as SecureStore from 'expo-secure-store';
-import { LevelDBRawStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
+import { LevelDBRawStorage, LevelDBKVStore, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
-import { SecureStoreKeyStore, migrateLegacyIdentity } from './secure-key-store';
+import { SecureStoreKeyStore, migrateLegacyIdentity, type SecureStoreKeyStoreOptions } from './secure-key-store';
+import {
+  anchorSlotKey,
+  bootstrapPeersKvKey,
+  kvStoreSlot,
+  secureStoreSlot,
+  NODE_LOCAL_DB_NAME,
+  NODE_LOCAL_KV_PREFIX,
+} from './node-local-slots';
 import { loadIceConfig } from './ice-config';
 
 /**
@@ -71,9 +85,18 @@ function createStorage(strandId: string) {
 // the first unlock — needed for background / push-wake bring-up. Enabling
 // biometric gating later also requires `NSFaceIDUsageDescription` in app.json
 // and is unsupported under Expo Go.
-const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, {
+//
+// ONE options object for every secure slot this app opens — the identity key
+// store here and the trusted-owner anchor slot in `startPhoneNode` — so the two
+// can never drift into different gating. `secureStoreSlot` REFUSES a gated slot
+// (its `null ⇒ absent` read would misreport an invalidated anchor as empty), so
+// turning `requireAuthentication` on here fails startup loudly rather than
+// quietly risking the anchor.
+const SECURE_STORE_OPTIONS: SecureStoreKeyStoreOptions = {
 	keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
-});
+};
+
+const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, SECURE_STORE_OPTIONS);
 
 // Legacy plaintext identity DB (pre-secure-store). Retained only so a one-time
 // migration can lift an existing identity into the enclave on upgrade; new nodes
@@ -132,6 +155,14 @@ async function deleteLegacyIdentity(): Promise<void> {
 
 let node: CadreNode | null = null;
 
+/**
+ * The {@link NODE_LOCAL_DB_NAME} LevelDB handle backing the bootstrap-peer
+ * store. Opened at most once per process (a native handle — a leaked one blocks
+ * the next open of the same database) and kept open for the node's whole life;
+ * {@link stopPhoneNode} closes it.
+ */
+let nodeLocalDb: ReturnType<typeof openLevelDb> | null = null;
+
 export interface PhoneNodeOptions {
   /** Party ID — identifies this cadre. Generated on first run. */
   partyId: string;
@@ -164,6 +195,39 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     readLegacy: readLegacyIdentityBytes,
     deleteLegacy: deleteLegacyIdentity,
   });
+
+  // Durable node-local records: the trusted-owner anchor in the secure enclave,
+  // the cold-start dial hints in app-private LevelDB. `node-local-slots.ts` has
+  // the why-they-differ; cadre-core's `node-local-snapshot.ts` has the load and
+  // persist policy. No migration is needed — an existing install has no persisted
+  // anchor, so it cold-starts once, and `runOwnerGenesis` below re-anchors this
+  // node's own key on every start while an invited phone re-anchors on its next
+  // applied seed.
+  //
+  // A read failure PROPAGATES and fails the start, unlike the fail-soft
+  // `runOwnerGenesis` / formation-responder wiring below: an unreadable anchor is
+  // a refusal to start, not a silent downgrade to trusting nobody — and cold-
+  // starting empty there would let the next snapshot write destroy an intact one.
+  //
+  // NOTE: both records are party-scoped and this app does not persist
+  // `opts.partyId` (it is typed into Settings each launch — see the comment in
+  // `push-wake-native.ts`). With a fresh party id per launch both slots load empty
+  // every time, so survival across a relaunch is gated on the backlog ticket
+  // `feat-rn-persist-node-start-options`.
+  //
+  // `??=`, not a plain open: `use-cadre`'s cold-start hook re-runs startPhoneNode
+  // after the OS killed the node WITHOUT calling stopPhoneNode, so an
+  // unconditional open would leak one native handle per resume. The
+  // `node?.isRunning` early-return above keeps a healthy node from reaching here.
+  nodeLocalDb ??= openLevelDb(NODE_LOCAL_DB_NAME);
+  const trustedOwnerStore = await PersistentTrustedOwnerStore.open(
+    secureStoreSlot(SecureStore, anchorSlotKey(opts.partyId), SECURE_STORE_OPTIONS),
+    opts.partyId,
+  );
+  const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
+    kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), bootstrapPeersKvKey(opts.partyId)),
+    opts.partyId,
+  );
 
   // ICE servers (STUN/TURN) from the runtime manifest, for the WebRTC transport's
   // RTCPeerConnection. Never throws; `[]` when no manifest is configured (the
@@ -208,6 +272,8 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     },
     strandFilter: { mode: 'all' },
     hibernation: { enabled: false },
+    trustedOwners: { store: trustedOwnerStore },
+    bootstrapPeers: { store: bootstrapPeerStore },
     // Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
     // ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
     // policy so the demo can form strands. Production nodes must leave this unset.
@@ -321,9 +387,20 @@ export function getOwnerPublicKey(): string | null {
  * Stop the phone CadreNode and release resources.
  */
 export async function stopPhoneNode(): Promise<void> {
-  if (node) {
-    await node.stop();
-    node = null;
+  try {
+    if (node) {
+      await node.stop();
+      node = null;
+    }
+  } finally {
+    // Close the node-local LevelDB handle even when `node.stop()` threw, and even
+    // when a failed `startPhoneNode` never got as far as constructing the node —
+    // it is a native handle, and a leaked one blocks the next open of that
+    // database. Cleared first so a failed close cannot leave a dangling handle
+    // that the next start would reuse.
+    const db = nodeLocalDb;
+    nodeLocalDb = null;
+    if (db) await db.close();
   }
 }
 
