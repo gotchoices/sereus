@@ -29,6 +29,12 @@
  * so an authorized member can hand CONNECTION-level access to a peerId of its
  * choosing for up to {@link DELEGATE_GRANT_TTL_MS}. The caps below bound how
  * far a buggy or compromised member can stretch that.
+ *
+ * The receiver side is {@link DelegateAdmissionStore}. The announcer side keeps
+ * its own throttle state (a "last announced at" map that `CadreNode` owns) and
+ * decides from it, per reconcile pass, which relays are due a re-announce —
+ * {@link dueRelayAnnounces} and {@link pruneStoppedStrandAnnounces} are that
+ * decision, pure and testable, kept here beside the TTL they are derived from.
  */
 
 import debug from 'debug';
@@ -62,9 +68,18 @@ interface DelegateGrant {
   expiresAt: number;
 }
 
-/** Map key for the replace-per-(announcer, strand) semantics. */
-function grantKey(announcerPeerId: string, strandId: string): string {
-  return `${announcerPeerId}\n${strandId}`;
+/**
+ * Composite map key for the per-(peer, strand) state on both sides: the
+ * receiver's replace-per-(announcer, strand) grant, and the announcer's
+ * per-(target, strand) throttle timestamp.
+ */
+export function peerStrandKey(peerId: string, strandId: string): string {
+  return `${peerId}\n${strandId}`;
+}
+
+/** The `strandId` half of a {@link peerStrandKey}. */
+function strandIdOfKey(key: string): string {
+  return key.slice(key.indexOf('\n') + 1);
 }
 
 /**
@@ -96,7 +111,7 @@ export class DelegateAdmissionStore {
    */
   grant(announcerPeerId: string, strandId: string, delegatePeerId: string, now: number = Date.now()): void {
     this.prune(now);
-    const key = grantKey(announcerPeerId, strandId);
+    const key = peerStrandKey(announcerPeerId, strandId);
     if (!this.grants.has(key)) {
       this.evictAtCap(
         MAX_DELEGATE_GRANTS_PER_MEMBER,
@@ -106,6 +121,15 @@ export class DelegateAdmissionStore {
     }
     this.grants.set(key, { announcerPeerId, strandId, delegatePeerId, expiresAt: now + this.ttlMs });
     log('Delegate grant recorded: %s → %s (strand %s, %d live)', announcerPeerId, delegatePeerId, strandId, this.grants.size);
+  }
+
+  /**
+   * Drop every grant. Called when the owning node stops: grants are scoped to
+   * the session that recorded them, and outliving it would admit delegates
+   * announced against a node that no longer exists.
+   */
+  clear(): void {
+    this.grants.clear();
   }
 
   /** Is `remotePeerId` covered by a live grant? Prunes expired entries as it goes. */
@@ -183,6 +207,43 @@ export function extractCircuitRelayTargets(addrs: string[]): CircuitRelayTarget[
     }
   }
   return [...byRelay.values()];
+}
+
+/**
+ * Of `relays`, the ones whose grant for `strandId` is due a re-announce: never
+ * announced to, or last announced at least half the TTL ago. Half, so a failed
+ * refresh has one more attempt before the grant lapses — a lapsed grant means
+ * the relay denies the strand node's reservation re-dial.
+ *
+ * `announceAt` is the announcer-side "last announced at" map, keyed by
+ * {@link peerStrandKey} on the peer announced TO.
+ */
+export function dueRelayAnnounces(
+  announceAt: ReadonlyMap<string, number>,
+  relays: readonly CircuitRelayTarget[],
+  strandId: string,
+  now: number,
+  ttlMs: number = DELEGATE_GRANT_TTL_MS
+): CircuitRelayTarget[] {
+  return relays.filter(
+    (relay) => now - (announceAt.get(peerStrandKey(relay.relayPeerId, strandId)) ?? 0) >= ttlMs / 2
+  );
+}
+
+/**
+ * Drop `announceAt` entries whose strand is no longer running — a stopped
+ * strand needs no refresh, and without this the map grows for the node's
+ * lifetime. Mutates in place.
+ */
+export function pruneStoppedStrandAnnounces(
+  announceAt: Map<string, number>,
+  runningStrandIds: ReadonlySet<string>
+): void {
+  for (const key of announceAt.keys()) {
+    if (!runningStrandIds.has(strandIdOfKey(key))) {
+      announceAt.delete(key);
+    }
+  }
 }
 
 /** One-addr body of {@link extractCircuitRelayTargets}; null when `addr` names no relay. */

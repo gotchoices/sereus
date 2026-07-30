@@ -4,9 +4,13 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
+  dueRelayAnnounces,
+  pruneStoppedStrandAnnounces,
+  peerStrandKey,
   DELEGATE_GRANT_TTL_MS,
   MAX_DELEGATE_GRANTS_PER_MEMBER,
-  MAX_DELEGATE_GRANTS
+  MAX_DELEGATE_GRANTS,
+  type CircuitRelayTarget
 } from '../src/delegate-admission.js';
 
 /**
@@ -101,6 +105,18 @@ describe('DelegateAdmissionStore', () => {
     expect(store.has('delegate-3-v2', T0 + 1000)).toBe(true);
   });
 
+  it('clear() drops every grant — a stopped node admits nobody on restart', () => {
+    const store = new DelegateAdmissionStore();
+    store.grant('member-A', 'strand-1', 'delegate-X', T0);
+    store.grant('member-B', 'strand-2', 'delegate-Y', T0);
+
+    store.clear();
+
+    expect(store.size).toBe(0);
+    expect(store.has('delegate-X', T0)).toBe(false);
+    expect(store.has('delegate-Y', T0)).toBe(false);
+  });
+
   it('caps grants globally across members, evicting the soonest-expiry grant overall', () => {
     const store = new DelegateAdmissionStore();
     // Spread across many members so the per-member cap never triggers; the
@@ -115,6 +131,64 @@ describe('DelegateAdmissionStore', () => {
     expect(store.size).toBe(MAX_DELEGATE_GRANTS);
     expect(store.has('delegate-0', T0 + 1000)).toBe(false);
     expect(store.has('delegate-new', T0 + 1000)).toBe(true);
+  });
+});
+
+describe('dueRelayAnnounces', () => {
+  const RELAY_A: CircuitRelayTarget = { relayPeerId: 'relay-A', relayAddr: '/ip4/1.2.3.4/tcp/4001/p2p/relay-A' };
+  const RELAY_B: CircuitRelayTarget = { relayPeerId: 'relay-B', relayAddr: '/ip4/5.6.7.8/tcp/4001/p2p/relay-B' };
+  const RELAYS = [RELAY_A, RELAY_B];
+  const HALF_TTL = DELEGATE_GRANT_TTL_MS / 2;
+
+  it('a never-announced relay is due', () => {
+    expect(dueRelayAnnounces(new Map(), RELAYS, 'strand-1', T0)).toEqual(RELAYS);
+  });
+
+  it('becomes due at exactly half the TTL, not a tick before', () => {
+    const announceAt = new Map([[peerStrandKey('relay-A', 'strand-1'), T0]]);
+
+    expect(dueRelayAnnounces(announceAt, [RELAY_A], 'strand-1', T0 + HALF_TTL - 1)).toEqual([]);
+    expect(dueRelayAnnounces(announceAt, [RELAY_A], 'strand-1', T0 + HALF_TTL)).toEqual([RELAY_A]);
+  });
+
+  it('throttles per (relay, strand) — a fresh relay does not suppress a stale sibling relay', () => {
+    const announceAt = new Map([
+      [peerStrandKey('relay-A', 'strand-1'), T0],
+      [peerStrandKey('relay-B', 'strand-1'), T0 - HALF_TTL]
+    ]);
+
+    expect(dueRelayAnnounces(announceAt, RELAYS, 'strand-1', T0)).toEqual([RELAY_B]);
+  });
+
+  it('another strand\'s announce to the same relay does not count as this strand\'s', () => {
+    const announceAt = new Map([[peerStrandKey('relay-A', 'strand-other'), T0]]);
+
+    expect(dueRelayAnnounces(announceAt, [RELAY_A], 'strand-1', T0)).toEqual([RELAY_A]);
+  });
+});
+
+describe('pruneStoppedStrandAnnounces', () => {
+  it('drops entries whose strand is no longer running, keeps the rest', () => {
+    const announceAt = new Map([
+      [peerStrandKey('relay-A', 'strand-live'), T0],
+      [peerStrandKey('relay-B', 'strand-live'), T0],
+      [peerStrandKey('relay-A', 'strand-stopped'), T0]
+    ]);
+
+    pruneStoppedStrandAnnounces(announceAt, new Set(['strand-live']));
+
+    expect([...announceAt.keys()]).toEqual([
+      peerStrandKey('relay-A', 'strand-live'),
+      peerStrandKey('relay-B', 'strand-live')
+    ]);
+  });
+
+  it('empties the map when nothing is running', () => {
+    const announceAt = new Map([[peerStrandKey('relay-A', 'strand-1'), T0]]);
+
+    pruneStoppedStrandAnnounces(announceAt, new Set());
+
+    expect(announceAt.size).toBe(0);
   });
 });
 

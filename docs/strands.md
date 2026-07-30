@@ -86,6 +86,12 @@ connection gate holds a short-lived, in-memory admission grant for exactly that 
 (`packages/cadre-core/src/delegate-admission.ts`). The grant admits the *connection* only —
 control-DB streams stay member-gated. So a single-node NAT'd (SN) party finds a willing
 relay in its own party's storage nodes, or in the ungated dedicated relays.
+  - Grants live only in the relay's memory, so a relay **restart** drops them all and the
+    announcing member is not told. A strand node whose reservation re-dials in that window
+    is denied until the announcer's next refresh pass re-announces (at most half the grant
+    lifetime, currently 15 min). Acceptable while a relay restart is rare and the strand
+    recovers on its own; if relay restarts become routine — or that outage window starts
+    mattering — the durable attestation below is the fix, not a shorter refresh interval.
   - Deferred: a **durable** attestation — a replicated, signed `MemberPeer(MemberKey,
     PeerId)` row binding a member to its strand transport peerIds — would add revocation
     and audit on top of the in-memory grant. It is the same binding strand-*mesh*

@@ -40,6 +40,20 @@
  *    strictly finer than this one: a peer admitted here can still be rejected
  *    in-protocol for a bogus or spent token.
  *
+ * There is one further connection-level carve-out, which is NOT a protocol
+ * exemption and needs no stranger window:
+ *
+ *  - **Announced delegate peers** (`delegate-admission.ts`). A member's strand
+ *    node runs as a separate libp2p identity whose peerId no sibling can
+ *    recompute, so a relay-running control node would deny its circuit-relay
+ *    reservation. Before starting a strand node, a member's control node
+ *    announces that peerId over the already-authenticated strand-addr RPC, and
+ *    the receiver holds a short-lived grant for it
+ *    (`CadreNode.grantDelegateAdmission`). The grant admits the CONNECTION and
+ *    nothing else — a reservation needs no stream — and is deliberately
+ *    invisible to the per-stream gate below, so a delegate still gets refused
+ *    on every members-only protocol.
+ *
  * Everything else a control node handles — the Optimystic control-DB protocols
  * (`/optimystic/control-<party>/{repo,cluster,sync,block-transfer}/…`), wake
  * (`/sereus/strand-wake/1.0.0`), and strand-addr (`/sereus/strand-addr/1.0.0`)

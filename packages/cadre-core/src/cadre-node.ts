@@ -81,7 +81,9 @@ import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer } from './st
 import {
   DelegateAdmissionStore,
   extractCircuitRelayTargets,
-  DELEGATE_GRANT_TTL_MS,
+  dueRelayAnnounces,
+  pruneStoppedStrandAnnounces,
+  peerStrandKey,
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { PushFanoutService } from './push-fanout.js';
@@ -105,6 +107,14 @@ const timing = debug('sereus:cadre:timing');
 const TURN_CONSUME_WINDOW_MS = 1000;
 
 type EventHandler<T> = (data: T) => void;
+
+/**
+ * A circuit relay as a strand-addr RPC target: dialed by peerId, with its
+ * direct addr riding along as the fallback for a relay we hold no connection to.
+ */
+function relayStrandAddrPeer(relay: CircuitRelayTarget): StrandAddrPeer {
+  return { peerId: relay.relayPeerId, addrs: [multiaddr(relay.relayAddr)] };
+}
 
 /**
  * CadreNode is the main entry point for a cadre member.
@@ -2475,6 +2485,13 @@ export class CadreNode implements SAppIdLookup {
     // Clear sApp configs
     this.sAppConfigs.clear();
 
+    // Drop delegate-admission state: the grants are scoped to the session that
+    // recorded them, so a stop()/start() cycle on this object must not keep
+    // admitting delegates announced under the previous one, nor carry stale
+    // announce timestamps that would suppress the next session's refresh.
+    this.delegateAdmission.clear();
+    this.delegateAnnounceAt.clear();
+
     // Close control database (this also shuts down the collection factory)
     if (this.controlDatabase) {
       await this.controlDatabase.close();
@@ -2931,19 +2948,18 @@ export class CadreNode implements SAppIdLookup {
     const targets: StrandAddrPeer[] = otherPeerIds
       .filter((id) => connected.has(id))
       .map((peerId) => ({ peerId }));
-    if (delegatePeerId !== undefined) {
-      for (const relay of this.circuitRelayTargets()) {
-        if (!targets.some((t) => t.peerId === relay.relayPeerId)) {
-          targets.push({ peerId: relay.relayPeerId, addrs: [multiaddr(relay.relayAddr)] });
-        }
+    const relays = delegatePeerId === undefined ? [] : this.circuitRelayTargets();
+    for (const relay of relays) {
+      if (!targets.some((t) => t.peerId === relay.relayPeerId)) {
+        targets.push(relayStrandAddrPeer(relay));
       }
     }
     const bootstrapNodes = targets.length
       ? await collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })
       : [];
-    if (delegatePeerId !== undefined) {
-      this.recordDelegateAnnounces(targets, strandId);
-    }
+    // Throttle state for the RELAY targets only — refreshDelegateGrants never
+    // looks up a sibling key, so recording one would only be dead weight.
+    this.recordDelegateAnnounces(relays.map((r) => r.relayPeerId), strandId);
     return { bootstrapNodes, hasOtherPeers };
   }
 
@@ -2966,7 +2982,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Record the announce timestamps {@link refreshDelegateGrants} throttles on,
-   * for every target a delegate-carrying seed pass dialed.
+   * for every relay a delegate-carrying announce pass dialed.
    *
    * Recorded OPTIMISTICALLY at announce time: `collectStrandAddrs` folds
    * per-peer failure to `[]` and reports no per-peer success, and threading
@@ -2974,12 +2990,11 @@ export class CadreNode implements SAppIdLookup {
    * is fatal-at-start anyway (the relay denies the reservation,
    * `libp2p.start()` throws, and wake/check-in re-resume retries with a fresh
    * announce); a failed REFRESH retries within `DELEGATE_GRANT_TTL_MS / 2`
-   * (15 min), still inside the 30 min TTL. Extra sibling keys recorded here are
-   * harmless — the reconcile-pass prune covers them.
+   * (15 min), still inside the 30 min TTL.
    */
-  private recordDelegateAnnounces(targets: StrandAddrPeer[], strandId: string, now = Date.now()): void {
-    for (const target of targets) {
-      this.delegateAnnounceAt.set(`${target.peerId}\n${strandId}`, now);
+  private recordDelegateAnnounces(relayPeerIds: readonly string[], strandId: string, now = Date.now()): void {
+    for (const relayPeerId of relayPeerIds) {
+      this.delegateAnnounceAt.set(peerStrandKey(relayPeerId, strandId), now);
     }
   }
 
@@ -2991,6 +3006,10 @@ export class CadreNode implements SAppIdLookup {
    * connection gate again, so the relay must still hold a live grant then.
    * RELAY targets only — siblings get their announce on every launch/resume
    * seed pass, and a grant only matters where a reservation can be re-dialed.
+   *
+   * Strands announce CONCURRENTLY: this runs ahead of the reconcile pass's
+   * sibling enumeration, and one unreachable relay costs a dial timeout per
+   * target, which must not stack up per strand.
    */
   private async refreshDelegateGrants(now = Date.now()): Promise<void> {
     if (!this.controlNode) {
@@ -3004,12 +3023,7 @@ export class CadreNode implements SAppIdLookup {
         running.set(strandId, instance.libp2pNode.peerId.toString());
       }
     }
-    // Prune throttle entries for strands no longer running.
-    for (const key of this.delegateAnnounceAt.keys()) {
-      if (!running.has(key.slice(key.indexOf('\n') + 1))) {
-        this.delegateAnnounceAt.delete(key);
-      }
-    }
+    pruneStoppedStrandAnnounces(this.delegateAnnounceAt, new Set(running.keys()));
     if (running.size === 0) {
       return;
     }
@@ -3017,20 +3031,28 @@ export class CadreNode implements SAppIdLookup {
     if (relays.length === 0) {
       return;
     }
-    for (const [strandId, delegatePeerId] of running) {
-      const due = relays.filter((relay) =>
-        now - (this.delegateAnnounceAt.get(`${relay.relayPeerId}\n${strandId}`) ?? 0) >= DELEGATE_GRANT_TTL_MS / 2
-      );
-      if (due.length === 0) {
-        continue;
-      }
-      const dueTargets: StrandAddrPeer[] = due.map((relay) => ({
-        peerId: relay.relayPeerId,
-        addrs: [multiaddr(relay.relayAddr)]
-      }));
-      await collectStrandAddrs(this.controlNode, dueTargets, strandId, { delegatePeerId });
-      this.recordDelegateAnnounces(dueTargets, strandId, now);
+    await Promise.all([...running].map(
+      ([strandId, delegatePeerId]) => this.announceDelegateToDueRelays(strandId, delegatePeerId, relays, now)
+    ));
+  }
+
+  /** One strand's share of {@link refreshDelegateGrants}: announce to the relays whose grant is due. */
+  private async announceDelegateToDueRelays(
+    strandId: string,
+    delegatePeerId: string,
+    relays: readonly CircuitRelayTarget[],
+    now: number
+  ): Promise<void> {
+    const controlNode = this.controlNode;
+    if (!controlNode) {
+      return;
     }
+    const due = dueRelayAnnounces(this.delegateAnnounceAt, relays, strandId, now);
+    if (due.length === 0) {
+      return;
+    }
+    await collectStrandAddrs(controlNode, due.map(relayStrandAddrPeer), strandId, { delegatePeerId });
+    this.recordDelegateAnnounces(due.map((relay) => relay.relayPeerId), strandId, now);
   }
 
   /**
