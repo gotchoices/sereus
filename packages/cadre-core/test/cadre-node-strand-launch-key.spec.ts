@@ -4,6 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
+import type { CohortSeed } from '../src/strand-cohort.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import { strandTransportKey } from '../src/strand-transport-key.js';
 
@@ -15,6 +16,9 @@ import { strandTransportKey } from '../src/strand-transport-key.js';
  * strand-transport-key.spec.ts and the relay collision it fixes is pinned in
  * strand-transport-relay.spec.ts with real libp2p nodes; neither would catch a
  * regression that reintroduces `privateKey: this.identityKey` here.
+ *
+ * The same derived key also drives the delegate peerId announced during seed
+ * resolution, so that argument is asserted here too.
  */
 
 function createConfig(): CadreNodeConfig {
@@ -47,6 +51,26 @@ function injectFakeStrandManager(node: CadreNode): { configs: StartStrandConfig[
 
 function injectIdentityKey(node: CadreNode, key: PrivateKey): void {
   (node as unknown as { identityKey: PrivateKey }).identityKey = key;
+}
+
+/**
+ * Records the `delegatePeerId` each `resolveCohortSeed` call receives, leaving the
+ * real implementation (and its empty-seed short-circuit) in place. That argument is
+ * the peerId the strand-addr pass announces to relays as an admission delegate, so
+ * it must be the *derived transport* peerId — announcing the control identity would
+ * grant the wrong peer and the strand's relay reservation would be denied at start.
+ */
+function captureDelegatePeerIds(node: CadreNode): (string | undefined)[] {
+  const delegates: (string | undefined)[] = [];
+  const target = node as unknown as {
+    resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<CohortSeed>;
+  };
+  const original = target.resolveCohortSeed.bind(target);
+  target.resolveCohortSeed = (strandId, delegatePeerId) => {
+    delegates.push(delegatePeerId);
+    return original(strandId, delegatePeerId);
+  };
+  return delegates;
 }
 
 function launchStrand(node: CadreNode, strandId: string): Promise<unknown> {
@@ -106,5 +130,38 @@ describe('CadreNode.launchStrand transport-key wiring', () => {
 
     expect(configs).toHaveLength(1);
     expect(configs[0]!.privateKey).toBeUndefined();
+  });
+
+  it('announces the derived transport peerId as the delegate, not the control identity', async () => {
+    const identity = await generateKeyPair('Ed25519');
+    const node = new CadreNode(createConfig());
+    injectIdentityKey(node, identity);
+    injectFakeStrandManager(node);
+    const delegates = captureDelegatePeerIds(node);
+
+    await launchStrand(node, 'strand-a');
+
+    const expected = peerIdFromPrivateKey(await strandTransportKey(identity, 'strand-a')).toString();
+    expect(delegates).toEqual([expected]);
+    expect(delegates[0]).not.toBe(peerIdFromPrivateKey(identity).toString());
+  });
+
+  it('announces no delegate when no identity key is configured', async () => {
+    const node = new CadreNode(createConfig());
+    injectFakeStrandManager(node);
+    const delegates = captureDelegatePeerIds(node);
+
+    await launchStrand(node, 'strand-a');
+
+    expect(delegates).toEqual([undefined]);
+  });
+
+  it('rejects the launch when the identity key is not Ed25519, without starting the strand', async () => {
+    const node = new CadreNode(createConfig());
+    injectIdentityKey(node, await generateKeyPair('secp256k1'));
+    const { configs } = injectFakeStrandManager(node);
+
+    await expect(launchStrand(node, 'strand-a')).rejects.toThrow(/Ed25519/);
+    expect(configs).toHaveLength(0);
   });
 });
