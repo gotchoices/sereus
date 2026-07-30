@@ -365,6 +365,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 - [x] Orchestrator pins the requester's owner public key into the donated child
   (`createContainer` → `CADRE_OWNER_KEYS` → cold-start pinned-key trust policy) so the node accepts
   the requester-signed seed. `donations.json` store + donation types landed.
+- [x] Donated nodes hold a durable identity. Each one is written its own `identity.key` in its
+  workdir on first spawn and re-launched with it (`orchestrator/node-identity.ts` →
+  `--identity-protobuf`), so its peer id survives a restart and `cadre-cli start` opens the
+  file-backed bootstrap-peer + trusted-owner stores beside it. `removeContainer` deletes the
+  workdir, so all of it dies with the loan. The same gap on the multi-tenant provider is open
+  (`tickets/backlog/bug-provider-container-identity-not-persisted.md`).
 - [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
   `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
 - [~] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`

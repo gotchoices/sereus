@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -41,6 +41,18 @@ describe('ensureNodeIdentity', () => {
     const { path, peerId } = await ensureNodeIdentity(workdir);
     expect(path).toBe(join(workdir, 'identity.key'));
     expect(peerId).toMatch(/^12D3Koo/);
+  });
+
+  // A key that is present but unreadable must FAIL the spawn, not fall through
+  // to `generateIdentity`. Regenerating would hand the cadre a stranger under
+  // the same containerId — silently reproducing the bug this module exists to
+  // fix — where a throw surfaces the damaged file to the operator.
+  it('throws rather than re-keying when the existing file does not decode', async () => {
+    const path = nodeIdentityPath(tmp);
+    writeFileSync(path, 'not a protobuf private key', 'utf8');
+
+    await expect(ensureNodeIdentity(tmp)).rejects.toThrow();
+    expect(readFileSync(path, 'utf8')).toBe('not a protobuf private key');
   });
 
   it.runIf(process.platform !== 'win32')('persists with mode 0600 on POSIX', async () => {

@@ -230,6 +230,14 @@ export class HostProcessOrchestrator implements Orchestrator {
    * both stores go with it.
    */
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
+    // Identity BEFORE any port is reserved: it is the one step here that can
+    // fail on its own (an unreadable or undecodable identity.key throws rather
+    // than silently re-keying), and everything past the allocation is either
+    // infallible or releases the ports itself. Allocating first would leak four
+    // ports from a bounded range on every failed provision attempt.
+    const workdir = this.workdirFor(request.containerId);
+    const identity = await ensureNodeIdentity(workdir);
+    log('container %s identity peerId=%s', request.containerId, identity.peerId);
     const ports: NodePorts = {
       health: this.portAllocator.allocate(),
       metrics: this.portAllocator.allocate(),
@@ -256,10 +264,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     const extraEnv = request.pinnedOwnerKeys?.length
       ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
       : undefined;
-    const workdir = this.workdirFor(request.containerId);
-    mkdirSync(workdir, { recursive: true });
-    const identity = await ensureNodeIdentity(workdir);
-    log('container %s identity peerId=%s', request.containerId, identity.peerId);
     return this.launchChild({
       containerId: request.containerId,
       partyId: request.partyId,

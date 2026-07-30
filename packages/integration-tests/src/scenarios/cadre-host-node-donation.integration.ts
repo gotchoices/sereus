@@ -32,11 +32,11 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 
@@ -242,6 +242,31 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
       return status.node?.partyId === partyId && (status.node?.connectionPaths?.total ?? 0) >= 1;
     }, { timeoutMs: STARTUP_MS, intervalMs: 1_000, description: 'donated node synced into requester cadre' });
   }, STARTUP_MS);
+
+  // The donated node's whole reason for holding a durable identity key is that
+  // `cadre-cli start` opens the file-backed bootstrap-peer and trusted-owner
+  // stores only when one is configured, and puts them beside it. Unit tests can
+  // only prove the spawn argument; this is the one place a real cadre-cli child
+  // has actually run and taken a real seed, so it is where that link is checked.
+  it('step 6b: the donated node persists its identity + node-local stores in its workdir', async () => {
+    const workdir = hostOrch.getNode(donationId)!.workdir;
+
+    const identityPath = join(workdir, 'identity.key');
+    const key = privateKeyFromProtobuf(new Uint8Array(readFileSync(identityPath)));
+    // The peer id the requester approved IS the one on disk — so a re-spawn
+    // from this workdir rejoins as the same node rather than as a stranger.
+    expect(peerIdFromPrivateKey(key).toString()).toBe(peerInfo.peerId);
+
+    // Both stores are written on seed intake, which lags applySeed's response.
+    await waitUntil(
+      async () => {
+        const files = readdirSync(workdir);
+        return files.some((f) => f.startsWith('bootstrap-peers.') && f.endsWith('.json'))
+          && files.some((f) => f.startsWith('trusted-owners.') && f.endsWith('.json'));
+      },
+      { timeoutMs: OP_MS, intervalMs: 500, description: 'node-local stores materialise in the donated workdir' },
+    );
+  }, OP_MS + 5_000);
 
   it('step 7: terminate removes the node and marks the donation terminated', async () => {
     await donationService.terminate(donationId);

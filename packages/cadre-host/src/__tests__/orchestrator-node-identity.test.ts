@@ -17,7 +17,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
+import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
 import { loadIdentity } from '../installer/identity.js';
 
 // Writes the --identity-protobuf argument (as seen on its own command line) next
@@ -59,11 +59,14 @@ afterEach(async () => {
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
 
-function makeOrchestrator(rootDir: string): HostProcessOrchestrator {
+function makeOrchestrator(
+  rootDir: string,
+  portRange: { start: number; end: number } = { start: 17500, end: 17999 },
+): HostProcessOrchestrator {
   mkdirSync(rootDir, { recursive: true });
   const orch = new HostProcessOrchestrator({
     rootDir,
-    portRange: { start: 17500, end: 17999 },
+    portRange,
     stopTimeoutMs: 1500,
     spawn: { entrypoint: scriptPath },
   });
@@ -154,5 +157,48 @@ describe('HostProcessOrchestrator node identity', () => {
     await orch.removeContainer(created.dockerId);
     expect(existsSync(identityPath)).toBe(false);
     expect(existsSync(join(rootDir, 'donated-3'))).toBe(false);
+  });
+
+  // The failure the identity step can actually produce is a damaged key file,
+  // and `DonationService.provision` turns every such throw into an `error`
+  // record and lets the grantee retry. If the spawn path reserved its ports
+  // before the step that throws, each retry would burn four more ports out of a
+  // bounded range until provisioning stopped working altogether.
+  it('reserves no ports when the identity step fails', async () => {
+    const rootDir = join(tmpRoot, 'd');
+    // Exactly one node's worth of ports (health, metrics, p2p, admin).
+    const orch = makeOrchestrator(rootDir, { start: 18100, end: 18103 });
+    await orch.init();
+
+    mkdirSync(join(rootDir, 'donated-bad'), { recursive: true });
+    writeFileSync(join(rootDir, 'donated-bad', 'identity.key'), 'not a protobuf private key', 'utf8');
+
+    const request = {
+      partyId: 'foreign-P',
+      bootstrapNodes: [],
+      profile: 'storage' as const,
+      pinnedOwnerKeys: ['key-a'],
+    };
+    await expect(orch.createContainer({ ...request, containerId: 'donated-bad' })).rejects.toThrow();
+
+    // The whole range is still free, so a healthy container still gets its four.
+    const ok = await orch.createContainer({ ...request, containerId: 'donated-good' });
+    expect(ok.p2pPort).toBeGreaterThanOrEqual(18100);
+  });
+
+  // The owner node carries the HOST's installer identity from <dataDir>, not a
+  // per-workdir key — a second key in its workdir would mean the host's own
+  // cadre node quietly changed peer id.
+  it('leaves the owner node on its own installer identity', async () => {
+    const rootDir = join(tmpRoot, 'e');
+    const orch = makeOrchestrator(rootDir);
+    await orch.init();
+
+    const hostIdentity = join(tmpRoot, 'host-identity.key');
+    await orch.ensureOwnerNode({ identityPath: hostIdentity, partyId: 'host-P', libp2pPort: 4101 });
+
+    const ownerWorkdir = join(rootDir, OWNER_CONTAINER_ID);
+    expect(await waitForFile(join(ownerWorkdir, 'identity-arg.txt'))).toBe(hostIdentity);
+    expect(existsSync(join(ownerWorkdir, 'identity.key'))).toBe(false);
   });
 });
