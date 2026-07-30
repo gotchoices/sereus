@@ -119,12 +119,37 @@ one of the five failures had only a single such denial.
   is working there. That is deliberate and documented; retry instead. Rebuild
   `@serfab/cadre-core` and `@serfab/cadre-host` before running.
 
+## Added evidence, review stage of `bug-control-db-stale-revision-not-retryable`, 2026-07-29
+
+The retry fix has landed. Re-running the same command 20 times: 14 pass, 6 fail. The original
+"conflict thrown instead of retried" shape is **gone**. What remains is this ticket's shape, in
+three costumes — all the same root cause, the read path never observing the winner's revision:
+
+- 2/20 — `Timeout waiting for S resolves Rx's address record via replication` (this ticket's
+  headline symptom).
+- 2/20 — `SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10 retries`.
+  This is the retry fix *working*: the loser now retries instead of hard-failing. But every retry
+  re-reads and still does not see the winner's committed revision, so it recomputes the same
+  revision number and loses again, ten times. Benign here — it failed on the first tree of the
+  commit sweep, so nothing was durably written.
+- 1/20 — the same retry exhaustion, but it happened on the *second* tree of the sweep after the
+  first had already committed → `PartialCommitError` (a real split write on disk).
+
+So the retry-exhaustion failures and this ticket's timeout are the same defect: **a writer whose
+re-read never converges inside its retry budget.** Whether that manifests as a timeout or as a
+split write is luck about which tree the sweep was on. Fixing the convergence here removes all
+three costumes. There is no separate write-path defect left to chase.
+
+(The split-write itself — a commit sweep that is not atomic across trees — is a known, documented
+structural limitation of the single-node commit mode, with a planned narrowing already recorded in
+`../optimystic/docs/transactions.md` § "Legacy (single-node) commit is not atomic across trees".
+Not a new defect and not this ticket's job; it is the amplifier, not the cause.)
+
 ## Relationship to other tickets
 
-- `bug-control-db-stale-revision-not-retryable` (now in `implement/`) — same scenario, different
-  shape. Independent; neither blocks the other. Landing it will remove Shape A from the run and
-  leave this shape as the only remaining failure, which will make reproduction here *cleaner*, not
-  harder.
+- `bug-control-db-stale-revision-not-retryable` (now in `review/`) — same scenario, different
+  shape. Independent; neither blocks the other. Landing it removed Shape A from the run and left
+  this shape as the only remaining failure, which makes reproduction here *cleaner*, not harder.
 - Not `bug-control-cohort-no-auto-dial` — all three nodes are explicitly meshed before any write.
 - Not `bug-strand-three-party-replication` — different subsystem.
 
