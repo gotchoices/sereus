@@ -464,11 +464,21 @@ Each package defines a `typecheck` script (`tsc --noEmit`) so type validation no
 the slower `yarn build`, and test files are type-checked where possible (vitest itself never type-checks).
 
 - [x] Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 (was 1 of 9)
+- [x] Every non-Svelte-app package's `typecheck` program also includes its own `vitest.config.ts`, so a
+  Vitest option the installed version no longer recognizes fails `yarn typecheck` instead of sitting
+  silently unused (this bit once: a `test.poolOptions.forks.singleFork` removal in Vitest 4 went
+  unnoticed for a whole major-version upgrade — see "Sequential integration runs restored" above).
+  Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
+  `quereus-plugin-sereus`, `strand-proto`, `integration-tests`) or the package's main `tsconfig.json`
+  (`reference-app-rn`, `reference-app-web`).
 - Per-package scope:
   - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, run by the separate `typecheck:e2e` script)
-  - Shippable **source only** (`tsconfig.build.json`): `cadre-core`, `cadre-host`, `cadre-provider`, `strand-proto`
+  - Shippable **source only**, now via a dedicated `tsconfig.typecheck.json` that also includes
+    `vitest.config.ts` (kept separate from the real `tsconfig.build.json` so widening the typecheck
+    program can't change what `yarn build` emits or where): `cadre-core`, `cadre-host`, `cadre-provider`,
+    `strand-proto`
 - Known coverage gaps:
   - `cadre-core` tests and `cadre-host` server tests have pre-existing type drift (libp2p `peerId`→`privateKey`,
     `CadreNodeConfig.privateKey` now `PrivateKey` not `Uint8Array`, `NodePorts.admin` added, implicit-`any` params).
@@ -476,8 +486,9 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
     `widen-typecheck-cadre-core-host-tests`.
   - `cadre-host` `ui/` (Svelte) and `reference-app-web` `.svelte` files are **not** covered — `tsc` can't type-check
     `.svelte`; that needs `svelte-check` (already a devDependency in both). Not wired into `typecheck` yet.
-  - `cadre-provider` has no test files, so its `tsconfig.build.json` scope already covers everything; `strand-proto`
-    is deprecated so left source-only by design. Neither needs a widened-test config.
+  - `cadre-provider` **does** have test files (`src/**/__tests__/**/*.test.ts`); its `tsconfig.typecheck.json`
+    explicitly excludes them (same type-drift reasoning as `cadre-core`/`cadre-host`) rather than lacking any.
+    `strand-proto` is deprecated so left source-only by design. Neither needs a widened-test config.
 
 ### Dependency-check coverage
 
