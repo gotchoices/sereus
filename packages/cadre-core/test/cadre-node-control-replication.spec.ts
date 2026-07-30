@@ -1,7 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import type { createLibp2pNode } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
-import { CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
 /**
@@ -368,57 +366,5 @@ describe('CadreNode write-while-alone re-replication', () => {
 
       expect(registerCalls()).toEqual([]);
     });
-  });
-});
-
-/**
- * The control network's replication breadth is the whole point of the queueing above
- * being a *backstop* rather than the primary convergence mechanism, so it gets its own
- * guard: nothing else fails if `createControlNode` stops passing
- * `CONTROL_REPLICATION_BREADTH`, and a narrower cohort silently reintroduces the
- * never-converging read-repair case documented on the constant.
- *
- * `buildControlNodeOptions` is the private config→options mapping `createControlNode`
- * hands to `createLibp2pNode`; calling it directly keeps this a pure unit test with no
- * libp2p node started. Partial coverage on purpose — the remaining control-network
- * options are still unasserted, tracked by
- * `backlog/debt-cadre-node-control-network-wiring-test`.
- */
-describe('CadreNode control-network node options', () => {
-  function controlOptions(node: CadreNode): Parameters<typeof createLibp2pNode>[0] {
-    return (node as unknown as {
-      buildControlNodeOptions: () => Parameters<typeof createLibp2pNode>[0]
-    }).buildControlNodeOptions();
-  }
-
-  it('replicates the control DB to the whole party, not the strand default', () => {
-    const options = controlOptions(new CadreNode(createConfig()));
-
-    expect(options.clusterSize).toBe(CONTROL_REPLICATION_BREADTH);
-    expect(options.clusterSize).toBeGreaterThan(DEFAULT_STRAND_CLUSTER_SIZE);
-  });
-
-  it('is not configurable — strandClusterSize does not reach the control node', () => {
-    const options = controlOptions(new CadreNode(createConfig({ strandClusterSize: 3 })));
-
-    expect(options.clusterSize).toBe(CONTROL_REPLICATION_BREADTH);
-  });
-
-  it('lets Optimystic shrink the cohort to the party that actually exists', () => {
-    // Without `allowDownsize` a 16-wide target would never be satisfiable by a real
-    // (2-7 node) party, so the two settings only make sense together.
-    const options = controlOptions(new CadreNode(createConfig()));
-
-    expect(options.clusterPolicy?.allowDownsize).toBe(true);
-    // Left at Optimystic's default of 2: the admission gate measures declared peers
-    // against this, not against clusterSize (see CONTROL_REPLICATION_BREADTH).
-    expect(options.clusterPolicy?.assumedClusterSize).toBeUndefined();
-  });
-
-  it('builds a control-scoped network, keeping it distinct from any strand network', () => {
-    const config = createConfig();
-    const options = controlOptions(new CadreNode(config));
-
-    expect(options.networkName).toBe(`control-${config.controlNetwork.partyId}`);
   });
 });

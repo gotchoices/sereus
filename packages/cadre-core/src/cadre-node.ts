@@ -912,7 +912,7 @@ export class CadreNode implements SAppIdLookup {
    * Map this node's config onto the control network's libp2p node options.
    *
    * Split out of {@link createControlNode} purely so the mapping is assertable without
-   * standing up a real libp2p node — `packages/cadre-core/test/cadre-node-control-replication.spec.ts`
+   * standing up a real libp2p node — `packages/cadre-core/test/cadre-node-control-node-options.spec.ts`
    * calls it on a bare `new CadreNode(config)`. Read nothing else into the split; the
    * only caller in production is `createControlNode`.
    */
