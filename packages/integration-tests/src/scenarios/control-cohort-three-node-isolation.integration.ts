@@ -54,7 +54,7 @@ import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
-import type { CadreNodeConfig, ControlNetworkSeed } from '@serfab/cadre-core';
+import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { waitUntil, sleep } from '../harness/index.js';
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -68,7 +68,6 @@ interface NodeOpts {
 	partyId: string;
 	privateKey: PrivateKey;
 	profile?: 'storage' | 'transaction';
-	enableRelay?: boolean;
 	listenAddrs?: string[];
 	/** Override the proactive control-cohort reconcile cadence (ms). */
 	reconcileMs?: number;
@@ -87,7 +86,6 @@ function nodeConfig(opts: NodeOpts): CadreNodeConfig {
 		network: {
 			transports: wsTransports(),
 			listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
 			...(opts.reconcileMs ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {})
 		},
 		...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
@@ -138,14 +136,11 @@ async function peerStoreAddrsFor(node: CadreNode, remotePeerId: string): Promise
 	}
 }
 
+/** What a booted trio hands the test body — the two nodes whose link is under test. */
 interface Trio {
-	A: CadreNode;
 	B: CadreNode;
 	C: CadreNode;
-	aPeerId: string;
-	bPeerId: string;
 	cPeerId: string;
-	seedB: ControlNetworkSeed;
 }
 
 /** Nodes booted so far, in the order they must be stopped (reverse of start). */
@@ -153,6 +148,18 @@ interface TrioHandles {
 	A?: CadreNode;
 	B?: CadreNode;
 	C?: CadreNode;
+}
+
+/**
+ * Stop whatever booted, newest first. A stop() failure is logged and the
+ * remaining nodes are still stopped — a throw here would leak the other two
+ * nodes' listeners AND mask the test failure that sent us into `finally`.
+ */
+async function stopTrio(handles: TrioHandles): Promise<void> {
+	for (const node of [handles.C, handles.B, handles.A]) {
+		await node?.stop().catch((error: unknown) =>
+			console.warn('stopTrio: node stop failed during teardown:', error));
+	}
 }
 
 /**
@@ -298,12 +305,18 @@ async function bootTrio(opts: { reconcileMsB: number; handles: TrioHandles }): P
 	// ── 6. C's record becomes resolvable ON B. This gate is the full signed path:
 	//        record present, publicKey ↔ peerId binding, self-signature, freshness,
 	//        trust policy (CadreNode.resolvePeerAddrs).
+	//
+	// NOTE: this poll timed out once, on the very first cold run of this scenario,
+	// and has resolved in milliseconds on every run since — no cause established.
+	// If it recurs, capture DEBUG='sereus:cadre:node' and check whether C's row
+	// reached B at all: a genuine A→B replication failure is a product bug and
+	// deserves its own ticket rather than a wider timeout here.
 	await waitUntil(
 		async () => (await B.resolvePeerAddrs(cPeerId)).length > 0,
 		{ timeoutMs: 45_000, intervalMs: 250, description: "B resolves C's signed CadrePeer address record" }
 	);
 
-	return { A, B, C, aPeerId, bPeerId, cPeerId, seedB };
+	return { B, C, cPeerId };
 }
 
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -349,9 +362,7 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 				{ timeoutMs: 45_000, intervalMs: 250, description: "B observes C's re-published record revision" }
 			);
 		} finally {
-			await handles.C?.stop();
-			await handles.B?.stop();
-			await handles.A?.stop();
+			await stopTrio(handles);
 		}
 	}, 120_000);
 
@@ -369,16 +380,27 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			//    learns C's peer id from A's announce snapshot, but its
 			//    `dialProtocol(peerId)` has no address to use; the cohort topic and
 			//    the connection manager are equally addressless here.
-			let resolvedDuringWindow = 0;
+			//
+			// NOTE: if this window ever fails, the first suspect is a
+			// `self:peer:update`-triggered reconcile pass on B (wired in
+			// `startRecordRefresh` alongside the interval, so the 10-minute cadence
+			// does not suppress it). B listens on nothing, so its libp2p address set
+			// should never change mid-test and no run has shown this — but the trigger
+			// exists. Diagnose with DEBUG='sereus:cadre:node' and look for
+			// "Control-cohort reconcile (self:peer:update)".
+			let checkpoints = 0;
+			let resolvedCheckpoints = 0;
 			for (let elapsed = 0; elapsed < 5_000; elapsed += 250) {
 				expect(connectionsTo(B, cPeerId)).toHaveLength(0);
 				expect(await peerStoreAddrsFor(B, cPeerId)).toHaveLength(0);
-				if ((await B.resolvePeerAddrs(cPeerId)).length > 0) resolvedDuringWindow++;
+				checkpoints++;
+				if ((await B.resolvePeerAddrs(cPeerId)).length > 0) resolvedCheckpoints++;
 				await sleep(250);
 			}
-			// The record stayed resolvable throughout, so the absence of a connection
-			// above is not "B had nothing to dial" — it is "nothing dialed".
-			expect(resolvedDuringWindow).toBeGreaterThan(0);
+			// The record stayed resolvable at EVERY checkpoint, so the absence of a
+			// connection above is not "B had nothing to dial" — it is "nothing dialed".
+			expect(checkpoints).toBeGreaterThan(0);
+			expect(resolvedCheckpoints).toBe(checkpoints);
 
 			// Last checkpoint before the dial: the record path is live and the
 			// cold-start fallback (`peerStoreAddrs`) is empty, so the address the
@@ -407,9 +429,7 @@ describe('Control-cohort reconcile as sole connector (three nodes, no manual dia
 			expect(passes).toBeGreaterThan(0);
 			expect(hasOutboundTo(B, cPeerId)).toBe(true);
 		} finally {
-			await handles.C?.stop();
-			await handles.B?.stop();
-			await handles.A?.stop();
+			await stopTrio(handles);
 		}
 	}, 120_000);
 });
