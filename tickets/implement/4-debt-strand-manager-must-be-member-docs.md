@@ -84,8 +84,10 @@ references need retiring.
 
 ## Validation owed
 
-- `yarn typecheck` and `yarn lint` — NEITHER has been run against any of this work
-  (schema, writer, or tests).
+- `yarn typecheck` (repo-wide, all workspaces) — not yet run against any of this work
+  (schema, writer, or tests). Repo-wide `yarn lint` and the `@serfab/cadre-core`
+  `typecheck` WERE run during the review of `debt-strand-manager-must-be-member-tests` and
+  were clean; still re-run lint after this ticket's own edits.
 - `yarn workspace @serfab/quereus-plugin-sereus test` — only the drift spec has been run.
 - The full `@serfab/cadre-core` suite is `debt-strand-manager-must-be-member-tests`' job;
   if that ticket's handoff says it went green, do not re-run it here.

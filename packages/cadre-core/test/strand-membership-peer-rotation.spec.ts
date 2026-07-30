@@ -25,11 +25,11 @@ import type { SAppConfig } from '../src/types.js';
 /**
  * Component coverage for the two remaining founder-reachable writers:
  * `MemberPeer` registration (a member binds its own network nodes, self-signed) and
- * `Manager` rotation (an existing manager promotes/removes admins, or a
- * manager resigns itself). Every test runs against a REAL closed strand DB in
- * bootstrap mode (libp2p node + MemoryRawStorage + the optimystic local transactor)
- * via `connectToStrand` — the same path `StrandDatabase` uses — so the real
- * apply/DML/deferred-constraint path is exercised, not a fake.
+ * `Manager` rotation (an existing manager promotes/removes admins, admits-and-promotes
+ * a key that is not in the strand yet, or resigns itself). Every test runs against a
+ * REAL closed strand DB in bootstrap mode (libp2p node + MemoryRawStorage + the
+ * optimystic local transactor) via `connectToStrand` — the same path `StrandDatabase`
+ * uses — so the real apply/DML/deferred-constraint path is exercised, not a fake.
  *
  * The founder is bootstrapped first (Member #1 + the sole founding Manager), so every
  * later rotation runs past `Manager.Authorized`'s bootstrap branch — which is gated to
@@ -911,10 +911,16 @@ describe('admitManager', () => {
     const stranger = freshKeyPair(); // holds no Manager row
     const newcomer = freshKeyPair();
 
-    // Member.Authorized rejects: its bootstrap branch is off (committed.Member is 1, not
-    // 0), the invite branch has no ConsumedInvite, and the direct-admit branch finds no
-    // committed.Manager for the stranger. MemberExists is NOT the rejector here — the
-    // sibling Member insert is live in the transaction, so it passes.
+    // BOTH halves are unauthorized, so the rejection is over-determined and the pin does
+    // not identify which fired: Member.Authorized has its bootstrap branch off
+    // (committed.Member is 1, not 0), no ConsumedInvite for the invite branch, and no
+    // committed.Manager for the stranger in the direct-admit branch — while
+    // Manager.Authorized finds no Manager row for the stranger either (the promotion half
+    // alone is covered by 'rejects an add whose signer is not a manager' above). Both
+    // constraints are named `Authorized`, and the engine reports the bare name, so
+    // /Authorized/ holds whichever runs first. What this test pins is the ATOMICITY below.
+    // MemberExists is NOT among the rejectors — the sibling Member insert is live in the
+    // transaction, so it passes.
     await expect(
       admitManager(db, { byManagerKeyPair: stranger, newManagerKey: newcomer.publicKeyB64 }),
     ).rejects.toThrow(/Authorized/);
@@ -923,6 +929,29 @@ describe('admitManager', () => {
     expect(await tableCount(db, 'Manager')).toBe(1); // the founder — and no Manager row
     expect(await db.get('select Key from Strand.Member where Key = ?', [newcomer.publicKeyB64])).toBeUndefined();
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [newcomer.publicKeyB64])).toBeUndefined();
+  }, 30_000);
+
+  it('is not insert-if-absent: a repeat call for an existing member seats no Manager row', async () => {
+    const { db, founder } = await openStrand('c');
+    const member = freshKeyPair();
+    await seatMembers(db, founder, member);
+
+    // admitManager always inserts the Member row (matching addMemberByManager's unguarded
+    // shape), so an already-seated key collides on the Member primary key. The promotion
+    // half would have been perfectly legal on its own — the key IS a member — which is
+    // what makes the rollback the load-bearing part: a caller reaching for admitManager
+    // where addManager was wanted gets an error, never a half-applied promotion.
+    await expect(
+      admitManager(db, { byManagerKeyPair: founder, newManagerKey: member.publicKeyB64 }),
+    ).rejects.toThrow(/UNIQUE constraint failed/i);
+
+    expect(await tableCount(db, 'Member')).toBe(2);  // the founder and the member, unchanged
+    expect(await tableCount(db, 'Manager')).toBe(1); // the founder alone — no promotion leaked
+    expect(await managerGeneration(db, member.publicKeyB64)).toBeUndefined();
+
+    // And the operation the caller actually wanted still works, on the untouched rows.
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: member.publicKeyB64 });
+    expect(await managerGeneration(db, member.publicKeyB64)).toBe(1);
   }, 30_000);
 
   it('cannot be chained: a manager admitted in THIS transaction cannot admit the next', async () => {
