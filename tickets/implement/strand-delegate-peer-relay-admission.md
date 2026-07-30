@@ -6,10 +6,57 @@ difficulty: hard
 # Delegate-peer admission: let a party relay serve its own members' strand nodes
 
 <!-- resume-note -->
-**Run 2 (2026-07-29) hit the soft token budget after Phase 1's module landed.** State of
-the working tree: exactly ONE new file, `packages/cadre-core/src/delegate-admission.ts` —
-complete and self-contained, **not yet imported anywhere**, so build/tests are unaffected.
-It contains:
+**Run 3 (2026-07-29) hit the soft token budget right after landing the Phase 1 gate
+wiring in `cadre-node.ts`.** Working tree = run 2's module (below) PLUS these run-3 edits
+to `packages/cadre-core/src/cadre-node.ts`, all complete and compile-clean (no unused
+imports/fields left; nothing else touched, no tests run yet):
+
+- Import `DelegateAdmissionStore` from `./delegate-admission.js`; new field
+  `private readonly delegateAdmission = new DelegateAdmissionStore();` (sits right after
+  `authorizedControlPeers`, with a doc block).
+- `admitInboundControlConnection`: `if (this.delegateAdmission.has(remotePeerId)) return true;`
+  inserted between the enrollment-window check and the `listAuthorizedMembers()` read.
+  Its doc block's numbered admit list is renumbered 1-6 (delegate grant is the new #3),
+  the "who pays" ordering note now reads "checks 1-3 are in-memory, 4/5 share one
+  control-DB read, … check 6's invitation lookup", and "Caveats of check 5" → "check 6".
+- Public wrappers `grantDelegateAdmission(announcer, strandId, delegate)` /
+  `hasDelegateAdmission(remotePeerId)` added directly after `openEnrollmentWindow`.
+- `authorizeInboundControlStream` doc block: the "minus the two stranger carve-outs"
+  paragraph now names all three carve-outs and states a delegate-admitted connection is
+  exactly a case this gate must still refuse. **No code change there — correct, keep it.**
+
+**Run 3 remaining = everything from "Phase 1 unit tests" onward**: the two spec additions,
+all of Phase 2 (types.ts field, `onDelegateAnnounce`, `collectStrandAddrs` option, the
+`StrandAddrService` construction at `cadre-node.ts` ~:541 gains the
+`onDelegateAnnounce: (a, s, d) => this.grantDelegateAdmission(a, s, d)` injection), all of
+Phase 3, Phase 4 validation, docs, bookkeeping. Run-3 verified details to reuse:
+
+- Phase 3 re-adds a `delegateAnnounceAt = new Map<string, number>()` field (key
+  `targetPeerId + '\n' + strandId`) — run 3 drafted then removed it to keep the tree
+  compiling (unused private fields fail the build). Re-add it WITH `refreshDelegateGrants`
+  + the optimistic-record tradeoff comment in the same change.
+- Phase 3 imports to re-add when used: `peerIdFromPrivateKey` (extend the existing
+  `@libp2p/peer-id` import), `extractCircuitRelayTargets` + `DELEGATE_GRANT_TTL_MS` +
+  `type CircuitRelayTarget` from `./delegate-admission.js`, `type StrandAddrPeer` from
+  `./strand-addr-protocol.js`.
+- `config.network?.listenAddrs` is `string[] | undefined` (`types.ts:142`) — feed it plus
+  `controlNode.getMultiaddrs().map(String)` to `extractCircuitRelayTargets` for the
+  reconcile/launch relay-target union. A live circuit addr carries a trailing
+  `/p2p/<self>`; the extractor already ignores trailing destinations.
+- Test harnesses re-confirmed in run 3 (both files read in full):
+  `control-stream-authorization.spec.ts` — put "a delegate grant admits the CONNECTION but
+  not the STREAM" beside the enrollment-window divergence test at :122, using
+  `establishedNode()` + `node.grantDelegateAdmission(MEMBER, 'strand-1', STRANGER)` then
+  `admitConnection(...)` true / `authorize(...)` false. Any string works as delegate id at
+  the store layer. `strand-addr-protocol.spec.ts` — `makeService(addrs, overrides)`
+  currently does NOT spread overrides (it names each option) — when adding
+  `onDelegateAnnounce`, pass it through explicitly in that helper; `freshPeerId()` mints
+  real parseable peerIds; the `collectNode` loopback (:199) routes per-target
+  `makeService` receivers — capture the client-side `delegatePeerId` there.
+
+**Run 2 (2026-07-29) hit the soft token budget after Phase 1's module landed.** Run 2
+landed ONE new file, `packages/cadre-core/src/delegate-admission.ts` — complete and
+self-contained. It contains:
 
 - `DelegateAdmissionStore` — `grant(announcer, strandId, delegatePeerId, now?)` /
   `has(remotePeerId, now?)` / `size`. Replace-per-(announcer, strandId) via a
@@ -363,13 +410,16 @@ an opening to strangers; option A would have opened it to everyone.
   relay-target extractor (see resume-note for the exact API).
 - ~~Implement the store with replace-per-(announcer, strandId), lazy expiry pruning, and
   both caps~~ **DONE (run 2)** — `DelegateAdmissionStore` in the same module. The
-  `CadreNode` wrapper methods (`grantDelegateAdmission`/`hasDelegateAdmission`) are NOT
-  yet added.
-- Add the `hasDelegateAdmission` check to `admitInboundControlConnection`, between the
+  `CadreNode` wrapper methods (`grantDelegateAdmission`/`hasDelegateAdmission`) were
+  added in run 3.
+- ~~Add the `hasDelegateAdmission` check to `admitInboundControlConnection`, between the
   enrollment-window check and the `listAuthorizedMembers()` read; update that method's doc
-  block (the numbered admit list and the "who pays" ordering note).
-- Leave `authorizeInboundControlStream` untouched; extend its doc to say a delegate-admitted
-  connection is exactly one of the cases it must still refuse.
+  block (the numbered admit list and the "who pays" ordering note).~~ **DONE (run 3)** —
+  including the `CadreNode` field + public `grantDelegateAdmission`/`hasDelegateAdmission`
+  wrappers (see resume-note).
+- ~~Leave `authorizeInboundControlStream` untouched; extend its doc to say a delegate-admitted
+  connection is exactly one of the cases it must still refuse.~~ **DONE (run 3)** — doc-only,
+  as designed.
 - Unit tests: grant expiry, replace-not-accumulate, both caps, and that
   `authorizeInboundControlStream` denies a peer that `admitInboundControlConnection` admits by
   grant.

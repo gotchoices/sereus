@@ -78,6 +78,7 @@ import {
 import { createMembershipConnectionGater, DEFAULT_ENROLLMENT_WINDOW_MS } from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
 import { StrandAddrService, collectStrandAddrs } from './strand-addr-protocol.js';
+import { DelegateAdmissionStore } from './delegate-admission.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
@@ -219,6 +220,16 @@ export class CadreNode implements SAppIdLookup {
    * voucher-anchored predicate.
    */
   private authorizedControlPeers: Set<string> = new Set();
+
+  /**
+   * In-memory delegate admission grants (see `delegate-admission.ts`): the
+   * strand-node transport peerIds this party's members have announced over the
+   * strand-addr RPC, admitted at the CONNECTION level so a member's NAT'd
+   * strand node can hold a circuit-relay reservation on this node. Consulted
+   * ONLY by {@link admitInboundControlConnection}; the fail-closed per-stream
+   * gate ({@link authorizeInboundControlStream}) never honors it.
+   */
+  private readonly delegateAdmission = new DelegateAdmissionStore();
 
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
@@ -844,10 +855,15 @@ export class CadreNode implements SAppIdLookup {
    *     configured bootstrap/relay infrastructure);
    *  2. an enrollment window is open ({@link openEnrollmentWindow}, opened by
    *     {@link createInvite}) — the invitee dials in before it is authorized;
-   *  3. the authorized-member set is empty — cold start: the rows that would
+   *  3. the peer holds a live DELEGATE ADMISSION GRANT — an authorized member
+   *     announced it (over the strand-addr RPC) as the transport peerId of its
+   *     own strand node, so a NAT'd member's strand node can hold a
+   *     circuit-relay reservation here (see `delegate-admission.ts`).
+   *     Connection only: the per-stream gate below never honors a grant;
+   *  4. the authorized-member set is empty — cold start: the rows that would
    *     authorize anyone arrive by replication over these very connections;
-   *  4. the peer IS an authorized member; or
-   *  5. an open invitation is OUTSTANDING — at least one unexpired,
+   *  5. the peer IS an authorized member; or
+   *  6. an open invitation is OUTSTANDING — at least one unexpired,
    *     not-fully-consumed invitation this node minted or persisted (see
    *     `StrandSolicitationService.hasOutstandingInvitation`). A formation
    *     initiator is another party's peer by design and its token is only
@@ -859,10 +875,10 @@ export class CadreNode implements SAppIdLookup {
    *     armed, because neither mints an invitation.
    *
    * Ordering is semantically free (the checks are OR'd) but decides who pays:
-   * checks 1-2 are in-memory, 3/4 share one control-DB read, and only a peer
-   * already on the deny path reaches check 5's invitation lookup.
+   * checks 1-3 are in-memory, 4/5 share one control-DB read, and only a peer
+   * already on the deny path reaches check 6's invitation lookup.
    *
-   * Caveats of check 5, both self-healing:
+   * Caveats of check 6, both self-healing:
    *  - the in-memory mint registry dies with the process, so after a restart
    *    only invitations persisted as `FormationInvite` rows still hold the
    *    exemption open (re-mint otherwise — same story as the enrollment window);
@@ -870,7 +886,7 @@ export class CadreNode implements SAppIdLookup {
    *    this node yet is denied even though the formation handler would have
    *    accepted it, exactly like the unreplicated-membership-row case below.
    *
-   * NOTE: check 3/4 runs a control-DB read per inbound connection
+   * NOTE: check 4/5 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, and this
    * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
    * read is safe here — unlike the per-stream gate, which must consult the
@@ -885,6 +901,9 @@ export class CadreNode implements SAppIdLookup {
       return true;
     }
     if (Date.now() < this.enrollmentWindowUntil) {
+      return true;
+    }
+    if (this.delegateAdmission.has(remotePeerId)) {
       return true;
     }
     const authorized = await this.listAuthorizedMembers();
@@ -916,6 +935,25 @@ export class CadreNode implements SAppIdLookup {
   openEnrollmentWindow(untilEpochMs: number): void {
     this.enrollmentWindowUntil = Math.max(this.enrollmentWindowUntil, untilEpochMs);
     log('Enrollment window open until %d', this.enrollmentWindowUntil);
+  }
+
+  /**
+   * Record (or refresh) a delegate admission grant: `delegatePeerId` is the
+   * transport peerId of `announcerPeerId`'s strand-`strandId` node, admitted
+   * at the CONNECTION level (all a circuit-relay reservation needs) for
+   * `DELEGATE_GRANT_TTL_MS`. Called by the strand-addr responder after its
+   * authorized-membership gate has passed; public so tests can drive the
+   * admission policy without a full strand launch. A re-announce for the same
+   * (announcer, strand) REPLACES the previous delegate rather than
+   * accumulating. Never honored by {@link authorizeInboundControlStream}.
+   */
+  grantDelegateAdmission(announcerPeerId: string, strandId: string, delegatePeerId: string): void {
+    this.delegateAdmission.grant(announcerPeerId, strandId, delegatePeerId);
+  }
+
+  /** Is `remotePeerId` covered by a live delegate admission grant? */
+  hasDelegateAdmission(remotePeerId: string): boolean {
+    return this.delegateAdmission.has(remotePeerId);
   }
 
   /**
@@ -954,11 +992,15 @@ export class CadreNode implements SAppIdLookup {
    *
    * The STRICT SUBSET of {@link admitInboundControlConnection}: the same
    * "no basis to judge" admissions (shared via
-   * {@link admitControlPeerUnconditionally}), minus the two stranger
-   * carve-outs (enrollment window, outstanding open invitation). Those exist
-   * so a stranger can reach `/sereus/seed/1.0.0` and `/sereus/formation/1.0.0`
-   * — neither is gated here, and admitting a stranger to `repo` during an
-   * enrollment window is exactly the hole this gate closes.
+   * {@link admitControlPeerUnconditionally}), minus the stranger carve-outs
+   * (enrollment window, outstanding open invitation, delegate admission
+   * grant). The first two exist so a stranger can reach `/sereus/seed/1.0.0`
+   * and `/sereus/formation/1.0.0` — neither is gated here, and admitting a
+   * stranger to `repo` during an enrollment window is exactly the hole this
+   * gate closes. A DELEGATE-admitted connection (a member's strand node
+   * holding a circuit-relay reservation, see `delegate-admission.ts`) is
+   * likewise exactly a case this gate must still refuse: the delegate gets
+   * the connection and never the control DB.
    *
    * Admits when ANY of:
    *  1. a shared-baseline check admits (not running / no DB, empty anchor,
