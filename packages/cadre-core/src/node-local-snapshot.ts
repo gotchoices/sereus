@@ -187,8 +187,15 @@ async function loadEntries<E>(
 		text = await slot.load();
 	} catch (error) {
 		// Present but unreadable: the one non-decidable case, and the one that must
-		// not cold-start empty (see NodeLocalSnapshot.open).
-		throw new Error(`failed to read the ${spec.label} for party ${partyId}`, { cause: error });
+		// not cold-start empty (see NodeLocalSnapshot.open). The slot's own text is
+		// folded into the message, not left only on `cause`: the operator-facing
+		// print sites (e.g. `cadre-cli start`) log `error.message` alone, and the
+		// slot is what knows the platform detail worth acting on (which file, which
+		// database).
+		throw new Error(
+			`failed to read the ${spec.label} for party ${partyId}: ${error instanceof Error ? error.message : String(error)}`,
+			{ cause: error }
+		);
 	}
 	if (text === undefined) return entries;
 
@@ -200,7 +207,7 @@ async function loadEntries<E>(
 		return entries;
 	}
 
-	const payload = envelopePayload(parsed, partyId, spec);
+	const payload = envelopePayload(parsed, partyId, spec.payloadKey);
 	if (!payload) {
 		log('%s: slot for party %s has an unknown shape or a foreign partyId (cold start)', spec.label, partyId);
 		return entries;
@@ -224,21 +231,30 @@ async function loadEntries<E>(
 
 /**
  * The envelope's `key -> entry` record, or undefined on any envelope mismatch —
- * wrong version, wrong (or absent) `partyId`, missing payload. Individual
- * entries are judged separately by {@link NodeLocalSnapshotSpec.acceptEntry},
- * because one bad entry does not always mean a bad record.
+ * wrong version, wrong (or absent) `partyId`, missing or non-record payload.
+ * Individual entries are judged separately by
+ * {@link NodeLocalSnapshotSpec.acceptEntry}, because one bad entry does not
+ * always mean a bad record.
  */
-function envelopePayload<E>(
+function envelopePayload(
 	value: unknown,
 	partyId: string,
-	spec: NodeLocalSnapshotSpec<E>
+	payloadKey: string
 ): Record<string, unknown> | undefined {
-	if (typeof value !== 'object' || value === null) return undefined;
-	const candidate = value as Record<string, unknown>;
+	if (!isRecord(value)) return undefined;
 	// A non-string partyId cannot equal the requested one, so this covers both
 	// "malformed partyId" and "another party's record".
-	if (candidate.version !== ENVELOPE_VERSION || candidate.partyId !== partyId) return undefined;
-	const payload = candidate[spec.payloadKey];
-	if (typeof payload !== 'object' || payload === null) return undefined;
-	return payload as Record<string, unknown>;
+	if (value.version !== ENVELOPE_VERSION || value.partyId !== partyId) return undefined;
+	const payload = value[payloadKey];
+	return isRecord(payload) ? payload : undefined;
+}
+
+/**
+ * A plain JSON object usable as a `key -> value` record. Arrays are excluded
+ * explicitly: they are `typeof 'object'`, so an array payload would otherwise
+ * reach `acceptEntry` once per numeric index — the entries all get rejected in
+ * the end, but by accident rather than by decision, and noisily.
+ */
+function isRecord(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }

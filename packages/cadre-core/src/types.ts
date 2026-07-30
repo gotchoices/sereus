@@ -397,9 +397,12 @@ export interface CadreNodeConfig {
    * node is stranded permanently if it restarts before connecting).
    *
    * Only the Node CLI injects a durable backend today; React Native and the
-   * browser stay ephemeral, tracked by
-   * `tickets/plan/2-durable-node-local-stores-on-mobile-web.md` (which covers the
-   * same gap for {@link trustedOwners}).
+   * browser stay ephemeral, tracked by the `web-` / `rn-` /
+   * `ns-durable-node-local-stores` tickets (which cover the same gap for
+   * {@link trustedOwners}). Those platforms need no new store class: supply a
+   * `DurableSlot` for the platform's storage and inject
+   * `PersistentBootstrapPeerStore.open(slot, partyId)` /
+   * `PersistentTrustedOwnerStore.open(slot, partyId)`.
    */
   bootstrapPeers?: {
     /**

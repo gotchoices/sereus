@@ -44,7 +44,7 @@ export interface TrustedOwnerStore {
 	/**
 	 * All anchored owner keys (e.g. for seed-trust `knownOwnerKeys`).
 	 *
-	 * NOTE: both backends copy into a fresh Set per call (so the result is a
+	 * NOTE: every backend copies into a fresh Set per call (so the result is a
 	 * snapshot decoupled from later `trust()` calls). Anchors hold a handful of
 	 * keys and callers are per-seed, so the copy is free today; if a hot path
 	 * ever calls this per message, prefer `has()` or cache the snapshot.
@@ -56,8 +56,8 @@ export interface TrustedOwnerStore {
 	 * operator pin). Idempotent: re-trusting a known key is a no-op that keeps
 	 * the original source. Implementations MUST reflect the key in {@link has} /
 	 * {@link all} synchronously; the returned promise tracks durability only
-	 * (a file-backed persist), so a synchronous caller may safely consult the
-	 * store right after invoking this.
+	 * (a persistent backend's write), so a synchronous caller may safely consult
+	 * the store right after invoking this.
 	 */
 	trust(ownerKey: string, source: TrustSource): Promise<void>;
 }

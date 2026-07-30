@@ -55,7 +55,7 @@ export interface BootstrapPeerStore {
 	readonly partyId: string;
 
 	/**
-	 * Every retained target, peerId -> entry. Both backends copy the map per call,
+	 * Every retained target, peerId -> entry. Every backend copies the map per call,
 	 * so the result is a snapshot decoupled from later {@link record} calls and is
 	 * safe to iterate while recording. The entry objects need no copy: `record`
 	 * REPLACES an entry rather than mutating it in place.

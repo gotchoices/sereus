@@ -87,6 +87,13 @@ describe('PersistentTrustedOwnerStore over a DurableSlot', () => {
 		expect((await PersistentTrustedOwnerStore.open(slot, PARTY)).all().size).toBe(0);
 	});
 
+	it('a payload that is an array, not a record, is a cold start (empty)', async () => {
+		const slot = new FakeSlot(JSON.stringify({
+			version: 1, partyId: PARTY, owners: [{ source: 'genesis', trustedAt: 1 }]
+		}));
+		expect((await PersistentTrustedOwnerStore.open(slot, PARTY)).all().size).toBe(0);
+	});
+
 	it('a present-but-unreadable slot rejects open() and writes nothing', async () => {
 		const slot = new FakeSlot(envelope('owners', PARTY, {}));
 		slot.loadError = new Error('EACCES');
@@ -94,6 +101,16 @@ describe('PersistentTrustedOwnerStore over a DurableSlot', () => {
 		await expect(PersistentTrustedOwnerStore.open(slot, PARTY))
 			.rejects.toThrow(/failed to read the trusted-owner anchor/i);
 		expect(slot.saves).toBe(0);
+	});
+
+	it('the load error names the slot\'s own failure, not only via cause', async () => {
+		const slot = new FakeSlot(envelope('owners', PARTY, {}));
+		// Operator-facing print sites log `error.message` alone, so the backend's
+		// detail (which file / which database) must survive in the message itself.
+		slot.loadError = new Error('FileDurableSlot: /state/trusted-owners.p.json is present but unreadable');
+
+		await expect(PersistentTrustedOwnerStore.open(slot, PARTY))
+			.rejects.toThrow(/\/state\/trusted-owners\.p\.json is present but unreadable/);
 	});
 
 	it('trust() is visible synchronously, before the returned promise settles', async () => {
