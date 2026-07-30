@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-07-30T23:31:45.149Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\10-control-delete-while-alone-tombstone.plan.2026-07-30T23-31-45-149Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: When an administrator revokes a peer's membership while their node is the only one online, that revocation can be lost — the removed peer may keep looking like a member to everyone else. Make membership revocations survive being made offline.
 prereq: control-write-ensure-replicated
 files: packages/cadre-core/src/control-database.ts (deleteGuardedRow — delete + Revocation tombstone in one transaction; queryRevokedStamps), packages/cadre-core/src/cadre-node.ts (noteControlWrite / drainPendingControlReplication / reissuePendingPeerWrites — the write-while-alone queue; listAuthorizedMembers / listMembers / isMember read paths), packages/cadre-core/src/control-schema.ts + schemas/control.qsql (CadrePeer, Revocation; kept in lockstep by control-schema-drift.spec.ts), packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts (the insert/update sibling scenario this one mirrors), packages/integration-tests/src/harness/node-fixtures.ts (bootPair / controlNodeConfig / connectControlNodes), docs/architecture.md (Control Network → delete-while-alone durability, ~line 199), ../optimystic/docs/internals.md (behind-member reconcile, ~lines 279-331)
