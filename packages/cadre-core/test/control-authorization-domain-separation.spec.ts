@@ -98,15 +98,16 @@ describe('CadreControl approval domain separation', () => {
    * guarded delete must carry (`RevocationRecorded`), so rejection assertions stay
    * pinned to the constraint under test. Owner-signed over its OWN domain-tagged digest
    * (`Revocation.Authorized`); the delete's `'remove'` signature does not satisfy it. */
-  function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer' | 'DeviceToken', stampId: string): Promise<void> {
+  function tombstoneStamp(tableName: 'OwnerKey' | 'CadrePeer' | 'DeviceToken', rowKey: string, stampId: string): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
          with context OwnerKey = ?, Signature = ?
-         values (?, ?)`,
+         values (?, ?, ?)`,
       [
         founder.publicKey,
-        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, stampId])),
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId])),
         tableName,
+        rowKey,
         stampId,
       ],
     );
@@ -189,7 +190,7 @@ describe('CadreControl approval domain separation', () => {
         signB64(founder, deviceTokenRemoveDigest(peerId, stampId)),
         peerId,
       );
-      await tombstoneStamp('DeviceToken', stampId);
+      await tombstoneStamp('DeviceToken', peerId, stampId);
     });
   }
 
@@ -340,7 +341,7 @@ describe('CadreControl approval domain separation', () => {
              where PeerId = ?`,
           [founder.publicKey, removeSig, second.publicKey],
         );
-        await tombstoneStamp('CadrePeer', stamp);
+        await tombstoneStamp('CadrePeer', second.publicKey, stamp);
       }),
       'AuthorizedDelete',
     );
@@ -357,7 +358,7 @@ describe('CadreControl approval domain separation', () => {
            where Key = ?`,
         [founder.publicKey, removeSig, second.publicKey],
       );
-      await tombstoneStamp('OwnerKey', stamp);
+      await tombstoneStamp('OwnerKey', second.publicKey, stamp);
     });
     expect(await ownerKeys()).toEqual([founder.publicKey]);
   }, 60_000);
@@ -377,7 +378,7 @@ describe('CadreControl approval domain separation', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteDeviceToken(founder.publicKey, addSig, peerId);
-        await tombstoneStamp('DeviceToken', row.stampId);
+        await tombstoneStamp('DeviceToken', peerId, row.stampId);
       }),
       'AuthorizedDelete',
     );

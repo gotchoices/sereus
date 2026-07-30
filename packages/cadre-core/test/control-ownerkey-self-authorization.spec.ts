@@ -122,14 +122,15 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
    * Owner-signed over its OWN domain-tagged digest (`Revocation.Authorized`) — the
    * delete's `'CadreControl.OwnerKey'` `'remove'` signature does not satisfy it.
    */
-  function tombstoneOwnerKeyStamp(stampId: string): Promise<void> {
+  function tombstoneOwnerKeyStamp(ownerKey: string, stampId: string): Promise<void> {
     return rawDb.exec(
-      `insert into CadreControl.Revocation (TableName, StampId)
+      `insert into CadreControl.Revocation (TableName, RowKey, StampId)
          with context OwnerKey = ?, Signature = ?
-         values ('OwnerKey', ?)`,
+         values ('OwnerKey', ?, ?)`,
       [
         founder.publicKey,
-        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', stampId])),
+        signAs(founder, buildAuthorizationMessage('CadreControl.Revocation', 'remove', ['OwnerKey', ownerKey, stampId])),
+        ownerKey,
         stampId,
       ],
     );
@@ -264,7 +265,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
         signAs(founder, removeMessage(second.publicKey, stamp)),
         second.publicKey,
       );
-      await tombstoneOwnerKeyStamp(stamp);
+      await tombstoneOwnerKeyStamp(second.publicKey, stamp);
     });
 
     expect(await ownerKeys()).toEqual([founder.publicKey]);
@@ -340,7 +341,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(null, null, second.publicKey);
-        await tombstoneOwnerKeyStamp(stamp);
+        await tombstoneOwnerKeyStamp(second.publicKey, stamp);
       }),
       'Authorized',
     );
@@ -356,7 +357,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(null, null, founder.publicKey);
-        await tombstoneOwnerKeyStamp(stamp);
+        await tombstoneOwnerKeyStamp(founder.publicKey, stamp);
       }),
       'MinOneOwner',
       'Authorized',
@@ -386,8 +387,8 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
           signAs(second, removeMessage(founder.publicKey, founderStamp)),
           founder.publicKey,
         );
-        await tombstoneOwnerKeyStamp(secondStamp);
-        await tombstoneOwnerKeyStamp(founderStamp);
+        await tombstoneOwnerKeyStamp(second.publicKey, secondStamp);
+        await tombstoneOwnerKeyStamp(founder.publicKey, founderStamp);
       }),
       'MinOneOwner',
     );
@@ -407,7 +408,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
           signAs(second, removeMessage(second.publicKey, stamp)),
           second.publicKey,
         );
-        await tombstoneOwnerKeyStamp(stamp);
+        await tombstoneOwnerKeyStamp(second.publicKey, stamp);
       }),
       'Authorized',
     );
@@ -432,7 +433,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(null, null, founder.publicKey);
-        await tombstoneOwnerKeyStamp(founderStamp);
+        await tombstoneOwnerKeyStamp(founder.publicKey, founderStamp);
         await rawInsertOwnerKey(null, null, attacker.publicKey, freshStamp());
       }),
       'Authorized',
@@ -454,7 +455,7 @@ describe('OwnerKey self-authorization and unauthorized deletion', () => {
     await expectConstraintFailure(
       inTransaction(async () => {
         await rawDeleteOwnerKey(founder.publicKey, enrollSig, second.publicKey);
-        await tombstoneOwnerKeyStamp(stamp);
+        await tombstoneOwnerKeyStamp(second.publicKey, stamp);
       }),
       'Authorized',
     );

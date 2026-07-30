@@ -105,7 +105,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
 
   function revocationRow(tableName: string, stampId: string): Promise<Record<string, unknown> | undefined> {
     return rawDb.get(
-      'select TableName, StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
+      'select TableName, RowKey, StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
       [tableName, stampId],
     );
   }
@@ -619,7 +619,9 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await db.deleteValidationKey(key, ownerPublicKey, signMessage);
 
     expect(await rawDb.get('select Key from CadreControl.ValidationKey where Key = ?', [key])).toBeUndefined();
-    expect(await revocationRow('ValidationKey', stampId!)).toBeDefined();
+    const tombstone = await revocationRow('ValidationKey', stampId!);
+    expect(tombstone).toBeDefined();
+    expect(tombstone?.RowKey).toBe(key);
   });
 
   it('deleteStrand with a correct owner signature removes the row and leaves a matching Revocation tombstone', async () => {
@@ -631,7 +633,9 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
     await db.deleteStrand(strandId, ownerPublicKey, signMessage);
 
     expect(await rawDb.get('select Id from CadreControl.Strand where Id = ?', [strandId])).toBeUndefined();
-    expect(await revocationRow('Strand', stampId!)).toBeDefined();
+    const tombstone = await revocationRow('Strand', stampId!);
+    expect(tombstone).toBeDefined();
+    expect(tombstone?.RowKey).toBe(strandId);
   });
 
   it('deleteValidationKey is a no-op (no throw, no tombstone) when the target row does not exist', async () => {
