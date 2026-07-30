@@ -5,18 +5,39 @@ difficulty: easy
 ----
 
 <!-- resume-note -->
-A prior implement run read the harness file (`test-network.ts`, `index.ts`) and all
-12 scenario files in full, confirmed every claim in the "Design" section below
-against the actual source (byte-identical helpers, divergence in `connectControlNodes`,
-etc. — all as documented), and derived the exact per-file edit list in the new
-"## Verification (confirmed by prior session)" section appended at the end of this
-file. It hit the session's soft token budget before making any edits — zero files were
-changed. Start straight from that appendix; it supersedes needing to re-read the 12
-scenario files from scratch (open them only to apply the listed edits, not to
-re-derive them). The one unfinished research item is the index.ts name-collision check
-(`port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`, `wait-utils.ts`,
-`types.ts`) called out in "Edge cases & interactions" — do that check first since it's
-quick, then proceed to edits, typecheck/lint, then tests.
+TWO prior implement runs have now read the harness file and all 12 scenario files in
+full and cross-checked the "## Verification (confirmed by prior session)" appendix
+below against actual source. Both hit the session's soft token budget before making
+any edits — **zero files have been changed by either run.** Start straight from that
+appendix (as amended by the correction below); do not re-read the 12 scenario files
+to re-derive the edit list, only to apply it.
+
+Session 2 finished the index.ts name-collision check the first run left open: grepped
+`port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`, `wait-utils.ts`, `types.ts`
+for `wsTransports|createSignedSAppConfig|ControlNodeOpts|controlNodeConfig|
+makeOwnOwner|randomPeerId|connectControlNodes|bootPair` — **zero matches, no
+collisions.** `harness/index.ts` needs no changes; adding the new exports to
+`test-network.ts` is safe as-is.
+
+Session 2 then re-verified every per-file bullet in the appendix against live source
+(all 12 files read in full again) and found the appendix correct **except one bug**:
+
+- **`multi-party-workflows.integration.ts` correction** — the appendix says (in its
+  own per-file bullet) to "Drop `generatePrivateKey`/`getPublicKey` (L30) entirely —
+  in this file they are ONLY used by the now-deleted `createSignedSAppConfig`." That
+  is WRONG for `generatePrivateKey`: it is called a SECOND time, standalone, at
+  `const aPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;` (~L235,
+  inside the "Party A generates its own member key for the strand" step, unrelated to
+  `createSignedSAppConfig`). Corrected instruction: **keep `generatePrivateKey` in
+  the `@optimystic/quereus-plugin-crypto` import; drop only `getPublicKey`** (which
+  really is used nowhere else in the file — confirmed by grep). Every other bullet in
+  the appendix (all 12 files) was re-verified line-by-line against current source
+  this session and needs no other correction.
+
+Next agent: apply the harness additions, then all 12 per-file edits from the appendix
+(using the corrected multi-party-workflows import list above), then
+`yarn workspace @serfab/integration-tests typecheck` and `yarn lint`, then tests. No
+further re-verification needed — go straight to editing.
 <!-- /resume-note -->
 
 ## Design (resolved — implement as specified, no open questions)
@@ -332,9 +353,12 @@ names are unchanged.
   (the strand-family shape — do NOT touch it; it calls `wsTransports()` internally
   at ~L120, so the import is still needed). Drop `webSockets`/`circuitRelayTransport`
   (L17-18). Drop `signSchema` from the `@serfab/cadre-core` import (L20-29 block —
-  no other use in file; keep `CadreNode` and the re-exported types). Drop
-  `generatePrivateKey`/`getPublicKey` (L30) entirely — in this file they are ONLY
-  used by the now-deleted `createSignedSAppConfig`. **This file currently imports
+  no other use in file; keep `CadreNode` and the re-exported types). CORRECTED (see
+  resume-note): `getPublicKey` (L30) is used ONLY by the now-deleted
+  `createSignedSAppConfig` — drop it. `generatePrivateKey` is NOT solely used there —
+  it is also called standalone at ~L235 (`const aPrivateKey = generatePrivateKey(...)`
+  for Party A's strand member key) — KEEP `generatePrivateKey` in the L30 import.
+  **This file currently imports
   `waitUntil` from `'../harness/wait-utils.js'` directly (L31), not from the
   barrel** — change that import to `'../harness/index.js'` and add `wsTransports,
   createSignedSAppConfig` to it (the barrel re-exports `wait-utils.js` too, so
