@@ -39,6 +39,7 @@ import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyP
 import { strandTransportKey } from './strand-transport-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
+import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -259,15 +260,27 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Cold-start bootstrap dial targets: the owner-flagged peers of every seed
    * this node has applied, keyed by peer id, valued by the seed's multiaddr
-   * strings (parsed lazily, at dial time). Populated by
-   * {@link recordSeedBootstrapPeers}; consumed only by
+   * strings (parsed lazily, at dial time). Written by
+   * {@link recordSeedBootstrapPeers}; read only by
    * {@link dialColdStartBootstrap} while the control database still has no
    * siblings to dial.
+   *
+   * A STORE rather than a plain map (see `bootstrap-peer-store.ts`), because the
+   * targets must outlive the process: a node seeded into a party it could not
+   * reach has nothing else on disk naming that party's addresses (`applySeed`
+   * writes no control row, and `CadrePeer` fills in only after a connection
+   * succeeds), so an in-memory-only set left it stranded permanently across a
+   * restart. Constructed (or adopted from `config.bootstrapPeers.store`) by
+   * {@link initializeBootstrapPeerStore} during {@link start}; deliberately NOT
+   * cleared by {@link cleanup}, so it survives a stop()→start() cycle of the same
+   * node instance — same lifecycle as {@link trustedOwnerStore}. Durability
+   * depends on the injected backend: Node gets a file-backed store from the CLI,
+   * RN/browser stay ephemeral for now.
    *
    * Deliberately NOT the libp2p peer store, which {@link peerStoreAddrs} already
    * reads for the steady-state path. The peer store is shared with everything
    * libp2p discovers, so "dial every entry" would grow into dialing arbitrary
-   * discovered peers as the node lives longer; this map holds exactly the peers
+   * discovered peers as the node lives longer; this store holds exactly the peers
    * an owner-signed, trust-anchored seed nominated as owners. `applySeed` merges
    * the same addresses into the peer store as well, so the two never disagree —
    * this one is just the precisely-scoped subset.
@@ -277,7 +290,7 @@ export class CadreNode implements SAppIdLookup {
    * dead ones. Entries are never evicted: they are the node's only way back into
    * the party if it is ever stranded again.
    */
-  private readonly controlBootstrapPeers = new Map<string, string[]>();
+  private bootstrapPeerStore: BootstrapPeerStore | null = null;
 
   /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
   private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
@@ -512,6 +525,12 @@ export class CadreNode implements SAppIdLookup {
       // here, and out-of-band pins are anchored before the first seed/peer
       // interaction could consult them.
       await this.initializeTrustedOwnerStore();
+
+      // Bring up the node-local cold-start bootstrap-peer store alongside the
+      // anchor, and for the same two reasons: a mis-scoped injected store fails
+      // closed before any network bring-up, and the retained dial targets are
+      // loaded before the first reconcile pass could consult them.
+      this.initializeBootstrapPeerStore();
 
       // Create the control network libp2p node
       let t0 = performance.now();
@@ -777,6 +796,43 @@ export class CadreNode implements SAppIdLookup {
     for (const key of trustedOwners?.pinnedKeys ?? []) {
       await this.trustedOwnerStore.trust(key, trustedOwners?.pinnedSource ?? 'operator');
     }
+  }
+
+  /**
+   * Construct (or adopt) the node-local cold-start bootstrap-peer store (see
+   * {@link bootstrapPeerStore}). Synchronous: an injected store has already
+   * loaded its persisted targets by the time it is handed in (its `open` is the
+   * async part), and the in-memory fallback has nothing to load.
+   *
+   * Idempotent across stop()→start(): the store instance is kept, so retained
+   * targets survive a restart of the same node instance even with the ephemeral
+   * default. An injected store scoped to a different party is a configuration
+   * error (fail closed before any network bring-up) — a foreign party's addresses
+   * must never enter this node's dial loop.
+   */
+  private initializeBootstrapPeerStore(): void {
+    const partyId = this.config.controlNetwork.partyId;
+    if (this.bootstrapPeerStore) {
+      return;
+    }
+    const store = this.config.bootstrapPeers?.store ?? new MemoryBootstrapPeerStore(partyId);
+    if (store.partyId !== partyId) {
+      throw new Error(
+        `CadreNodeConfig: bootstrapPeers.store is scoped to party ${store.partyId}, ` +
+        `but this node serves party ${partyId} — refusing to mix cold-start dial targets`
+      );
+    }
+    this.bootstrapPeerStore = store;
+  }
+
+  /**
+   * The node-local cold-start bootstrap-peer store (null before {@link start}) —
+   * the retained owner addresses {@link reconcileControlCohort}'s cold-start
+   * branch re-dials. Exposed for diagnostics and for a host that wants to show
+   * "what would this node dial if it is stranded?".
+   */
+  getBootstrapPeerStore(): BootstrapPeerStore | null {
+    return this.bootstrapPeerStore;
   }
 
   /**
@@ -1698,12 +1754,27 @@ export class CadreNode implements SAppIdLookup {
    * steady-state pass filters self out of its sibling list for the same reason).
    */
   private recordSeedBootstrapPeers(seed: ControlNetworkSeed): void {
+    const store = this.bootstrapPeerStore;
+    if (!store) {
+      // Unreachable in production: start() builds the store before any network
+      // bring-up, and both intake paths need a started node (an uninitialized
+      // SeedBootstrapService rejects the seed, so noteAppliedSeed returns early).
+      log('recordSeedBootstrapPeers: no bootstrap-peer store yet; retaining nothing');
+      return;
+    }
     const selfPeerId = this.controlNode?.peerId.toString();
     for (const peer of seed.peers) {
       if (!peer.isOwner || peer.multiaddrs.length === 0 || peer.peerId === selfPeerId) {
         continue;
       }
-      this.controlBootstrapPeers.set(peer.peerId, [...peer.multiaddrs]);
+      // Sync-visible by contract; the promise tracks durability only. A persist
+      // failure costs restart survival, never this session's retry set — the same
+      // trade `SeedBootstrapService.anchorAcceptedSigner` makes — so log and carry
+      // on rather than failing the seed that was already accepted.
+      void store.record(peer.peerId, peer.multiaddrs).catch((error: unknown) => {
+        log('recordSeedBootstrapPeers: persisting bootstrap peer %s failed (retained in memory): %o',
+          peer.peerId, error);
+      });
     }
   }
 
@@ -1732,25 +1803,28 @@ export class CadreNode implements SAppIdLookup {
    */
   private async dialColdStartBootstrap(): Promise<void> {
     const controlNode = this.controlNode;
-    if (!controlNode || this.controlBootstrapPeers.size === 0) {
+    // Snapshot up front: the store hands back a copy, so a seed applied mid-pass
+    // cannot mutate what we are iterating.
+    const targets = this.bootstrapPeerStore?.all();
+    if (!controlNode || !targets || targets.size === 0) {
       return;
     }
     // Same skip rule as step 3 of the steady-state pass: no churn on live links.
     const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
     let dialed = 0;
-    for (const [peerId, addrs] of this.controlBootstrapPeers) {
+    for (const [peerId, entry] of targets) {
       if (!this._running || !this.controlNode) {
         return;
       }
       if (connected.has(peerId)) {
         continue;
       }
-      if (await this.dialBootstrapPeer(peerId, addrs)) {
+      if (await this.dialBootstrapPeer(peerId, entry.addrs)) {
         dialed++;
       }
     }
     log('reconcileControlCohort: cold-start pass complete (bootstrap=%d, connected=%d, dialed=%d)',
-      this.controlBootstrapPeers.size, connected.size, dialed);
+      targets.size, connected.size, dialed);
   }
 
   /**

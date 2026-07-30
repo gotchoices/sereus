@@ -41,6 +41,17 @@ export {
   type TrustSource
 } from './trusted-owner-store.js';
 
+// Node-local cold-start bootstrap-peer store: the dial targets retained from an
+// applied seed so a node that could not connect on its first try keeps retrying
+// across restarts. Same cross-platform split as the trusted-owner anchor above —
+// interface + in-memory store here, Node-only file backend behind the subpath
+// '@serfab/cadre-core/bootstrap-peer-store-file'.
+export {
+  MemoryBootstrapPeerStore,
+  type BootstrapPeerStore,
+  type BootstrapPeerEntry
+} from './bootstrap-peer-store.js';
+
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
 

@@ -13,6 +13,7 @@ import {
 } from '@serfab/cadre-core';
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
+import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 import { fromString } from 'uint8arrays';
@@ -150,6 +151,18 @@ export const startCommand = new Command('start')
           )
         : undefined;
 
+      // Cold-start bootstrap dial targets: file-backed in the same directory, so a
+      // seed pushed at RUNTIME (the /sereus/seed/1.0.0 protocol, or cadre-host's
+      // donation flow pushing to POST /seed — neither of which gets a --seed
+      // argument on the next start) still has addresses to retry after a process
+      // or container restart.
+      const bootstrapPeerStore = config.identityProtobufKeyFile
+        ? await FileBootstrapPeerStore.open(
+            dirname(config.identityProtobufKeyFile),
+            config.controlNetwork.partyId,
+          )
+        : undefined;
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
@@ -157,6 +170,7 @@ export const startCommand = new Command('start')
           pinnedKeys,
           pinnedSource: 'operator',
         },
+        ...(bootstrapPeerStore ? { bootstrapPeers: { store: bootstrapPeerStore } } : {}),
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         strandFilter: config.strandFilter,

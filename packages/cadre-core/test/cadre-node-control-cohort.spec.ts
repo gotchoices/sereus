@@ -3,6 +3,7 @@ import { multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
+import { MemoryBootstrapPeerStore, type BootstrapPeerEntry, type BootstrapPeerStore } from '../src/bootstrap-peer-store.js';
 import type { CadreNodeConfig, ControlNetworkSeed, SeedPeer } from '../src/types.js';
 
 /**
@@ -50,6 +51,12 @@ function injectCohort(
     connections?: string[];
     selfPeerId?: string;
     running?: boolean;
+    /**
+     * Stands in for what `start()` → `initializeBootstrapPeerStore` would build.
+     * Pass the SAME instance to two nodes to model a store that outlived the
+     * process (what the file backend gives a restarted node).
+     */
+    bootstrapStore?: BootstrapPeerStore;
   }
 ): { dialCalls: Array<unknown>; resolvedFor: string[]; queryCalls: () => number } {
   const dialCalls: Array<unknown> = [];
@@ -57,6 +64,8 @@ function injectCohort(
   let queries = 0;
 
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
+  (node as unknown as { bootstrapPeerStore: BootstrapPeerStore }).bootstrapPeerStore =
+    opts.bootstrapStore ?? new MemoryBootstrapPeerStore('p');
   (node as unknown as { controlNode: unknown }).controlNode = fakeControlNode({
     selfPeerId: opts.selfPeerId ?? 'self-peer',
     connections: opts.connections,
@@ -307,8 +316,8 @@ function recordSeed(node: CadreNode, seed: ControlNetworkSeed): void {
     .recordSeedBootstrapPeers(seed);
 }
 
-function bootstrapPeers(node: CadreNode): Map<string, string[]> {
-  return (node as unknown as { controlBootstrapPeers: Map<string, string[]> }).controlBootstrapPeers;
+function bootstrapPeers(node: CadreNode): ReadonlyMap<string, BootstrapPeerEntry> {
+  return (node as unknown as { bootstrapPeerStore: BootstrapPeerStore }).bootstrapPeerStore.all();
 }
 
 /** Flatten the multiaddrs handed to the fake control node's dial() into strings. */
@@ -423,6 +432,29 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
 
     expect(attempted).toHaveLength(1);
   });
+
+  it('a restarted node re-dials the seed it applied in a previous process', async () => {
+    // The regression this store exists for. Nothing else on disk records that a
+    // seed was applied (applySeed writes no control row; CadrePeer fills in only
+    // after a connection succeeds), so an in-memory-only retry set stranded a
+    // seeded-but-unconnected node permanently across a restart. A shared
+    // BootstrapPeerStore instance stands in for the file surviving the process.
+    const owner = await realPeerId();
+    const addr = `/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`;
+    const shared = new MemoryBootstrapPeerStore('p');
+
+    const first = new CadreNode(createConfig());
+    injectCohort(first, { members: [], bootstrapStore: shared });
+    recordSeed(first, seedWith([{ peerId: owner, multiaddrs: [addr], isOwner: true }]));
+
+    // A fresh node — no second seed — hydrating the same store.
+    const restarted = new CadreNode(createConfig());
+    const { dialCalls } = injectCohort(restarted, { members: [], bootstrapStore: shared });
+
+    await restarted.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([addr]);
+  });
 });
 
 describe('CadreNode seed bootstrap-peer retention', () => {
@@ -461,7 +493,7 @@ describe('CadreNode seed bootstrap-peer retention', () => {
       { peerId: owner, multiaddrs: [`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`], isOwner: true }
     ]));
 
-    expect(bootstrapPeers(node).get(owner)).toEqual([`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`]);
+    expect(bootstrapPeers(node).get(owner)?.addrs).toEqual([`/ip4/9.9.9.9/tcp/9/ws/p2p/${owner}`]);
   });
 
   it('retains from the inbound /sereus/seed/1.0.0 path too (onSeedApplied)', async () => {

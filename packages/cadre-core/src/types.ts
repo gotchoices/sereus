@@ -5,6 +5,7 @@ import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
+import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 import type { PushNotifier } from './push-notifier.js';
 
 /**
@@ -382,6 +383,33 @@ export interface CadreNodeConfig {
      * internally by `initializeSeedBootstrap`.)
      */
     pinnedSource?: Exclude<TrustSource, 'genesis'>;
+  };
+
+  /**
+   * Node-local cold-start bootstrap-peer store (see `bootstrap-peer-store.ts`):
+   * the owner addresses an applied seed nominated, kept so
+   * `reconcileControlCohort`'s cold-start branch can keep retrying a node that
+   * was seeded but never managed to connect. Sibling of {@link trustedOwners} —
+   * same NON-replicated, per-party, injected-backend shape — but nothing here is
+   * trust-bearing: these are dial hints only, and every address is re-bound to
+   * its peer id before the dial. Absent ⇒ an in-memory store is created at
+   * start() (ephemeral: the retry set does not survive the process, and such a
+   * node is stranded permanently if it restarts before connecting).
+   *
+   * Only the Node CLI injects a durable backend today; React Native and the
+   * browser stay ephemeral, tracked by
+   * `tickets/plan/2-durable-node-local-stores-on-mobile-web.md` (which covers the
+   * same gap for {@link trustedOwners}).
+   */
+  bootstrapPeers?: {
+    /**
+     * Injected store instance — e.g. a `FileBootstrapPeerStore` from the
+     * Node-only subpath `@serfab/cadre-core/bootstrap-peer-store-file`, persisted
+     * next to the identity key (same injection/isolation pattern as
+     * {@link keyStore} / {@link trustedOwners}). Its `partyId` must match
+     * `controlNetwork.partyId`; start() fails closed on a mismatch.
+     */
+    store?: BootstrapPeerStore;
   };
 
   /**

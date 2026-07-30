@@ -28,6 +28,10 @@
       "types": "./dist/trusted-owner-store-file.d.ts",
       "import": "./dist/trusted-owner-store-file.js"
     },
+    "./bootstrap-peer-store-file": {
+      "types": "./dist/bootstrap-peer-store-file.d.ts",
+      "import": "./dist/bootstrap-peer-store-file.js"
+    },
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"
