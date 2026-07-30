@@ -8,7 +8,16 @@
 import debug from 'debug';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import type { ControlDatabase, ControlTable } from '@serfab/cadre-core';
+import { webSockets } from '@libp2p/websockets';
+import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import type { PrivateKey } from '@libp2p/interface';
+import { MemoryRawStorage } from '@optimystic/db-p2p';
+import type { Libp2pTransports } from '@optimystic/db-p2p';
+import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { CadreNode, ed25519KeyPairFromLibp2p, signSchema } from '@serfab/cadre-core';
+import type { CadreNodeConfig, ControlDatabase, ControlTable, SAppConfig } from '@serfab/cadre-core';
 import { createTestParty, shutdownTestParty } from './test-party.js';
 import { releaseAllPorts } from './port-allocator.js';
 import { waitForCount, waitUntil, type WaitOptions } from './wait-utils.js';
@@ -302,5 +311,138 @@ export async function waitForCadrePeerConverged(
     async (db) => (await db.queryCadrePeers()).some((p) => p.peerId === peerId),
     { description: `CadrePeer ${peerId} visible on reader control DB`, ...opts }
   );
+}
+
+/** WebSocket + circuit-relay transports shared by every e2e/integration scenario. */
+export function wsTransports(): Libp2pTransports {
+  return [webSockets(), circuitRelayTransport()];
+}
+
+/**
+ * A properly signed sApp config with a NON-realtime `latencyHint` (`'interactive'`) —
+ * realtime strands never hibernate, so any wake/hibernation scenario requires this.
+ */
+export function createSignedSAppConfig(schema: string, version: string): SAppConfig {
+  const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+  const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+  const signature = signSchema(schema, version, authorPrivateKey);
+  return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
+}
+
+export interface ControlNodeOpts {
+  partyId: string;
+  privateKey?: PrivateKey;
+  bootstrapNodes?: string[];
+  profile?: 'storage' | 'transaction';
+  enableRelay?: boolean;
+  listenAddrs?: string[];
+  hibernation?: boolean;
+  /** Override the proactive control-cohort reconcile cadence (ms). */
+  reconcileMs?: number;
+}
+
+/** Build a `CadreNodeConfig` for one control-network test node. */
+export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
+  return {
+    controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
+    profile: opts.profile ?? 'transaction',
+    strandFilter: { mode: 'all' },
+    storage: { provider: () => new MemoryRawStorage() },
+    ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
+    network: {
+      transports: wsTransports(),
+      listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
+      ...(opts.enableRelay ? { enableRelay: true } : {}),
+      ...(opts.reconcileMs ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {})
+    },
+    hibernation: { enabled: opts.hibernation ?? false },
+  };
+}
+
+/**
+ * Make a freshly-started node its own control owner (genesis): enroll its derived
+ * public key in `OwnerKey` and wire seed-bootstrap with the matching private key, so
+ * it can owner-sign `CadrePeer` inserts (and mint seeds). Returns the owner PUBLIC key
+ * (base64url) — the key an enrollee pins into its node-local trusted-owner anchor
+ * (`trustOwnerKeys`) so this owner's membership vouchers pass its authorized-member
+ * predicate. Callers that don't need the anchor key (most current callers) simply
+ * discard the return value.
+ */
+export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string> {
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
+  const db = node.getControlDatabase();
+  if (!db) throw new Error('control database missing after start');
+  await db.insertOwnerKey(publicKeyB64);
+  node.initializeSeedBootstrap(privateKeyB64);
+  return publicKeyB64;
+}
+
+/** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
+export async function randomPeerId(): Promise<string> {
+  return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+}
+
+/**
+ * Establish a DIRECT control-network connection from `reader` to `writer` and wait
+ * until BOTH sides report it, SCOPED to this specific peer pair (so the recipe stays
+ * correct when several readers attach to one writer, e.g. a 3-node full-mesh
+ * scenario). This is the test-only stand-in for production control-cohort discovery.
+ * Both-sides confirmation is a hard precondition of a replicating write: only once
+ * each peer sees the connection can the control collection's cohort span them and a
+ * commit be non-local-only.
+ */
+export async function connectControlNodes(reader: CadreNode, writer: CadreNode): Promise<void> {
+  const readerNode = reader.getControlNode()!;
+  const writerNode = writer.getControlNode()!;
+  const writerAddrs = writerNode.getMultiaddrs();
+  if (writerAddrs.length === 0) throw new Error('writer control node has no listen addresses');
+  const readerPeerId = reader.peerId!.toString();
+  const writerPeerId = writer.peerId!.toString();
+
+  await readerNode.dial(writerAddrs[0]!);
+  await waitUntil(() => readerNode.getConnections().some((c) => c.remotePeer.toString() === writerPeerId), {
+    timeoutMs: 15_000,
+    intervalMs: 250,
+    description: 'reader control node connects to writer',
+  });
+  await waitUntil(() => writerNode.getConnections().some((c) => c.remotePeer.toString() === readerPeerId), {
+    timeoutMs: 15_000,
+    intervalMs: 250,
+    description: 'writer control node sees inbound connection from reader',
+  });
+}
+
+/**
+ * Boot node A (owner + writer, storage profile so it holds the CadrePeer blocks) and
+ * node B (a plain READER — deliberately NOT its own owner, so every row it observes
+ * must have arrived over the wire) on a fresh party, DISCONNECTED. A vouches B
+ * (`authorizePeer`) right after B starts, so A's inbound connection gate later admits
+ * B's dial. Caller owns shutdown (`A.stop()` / `B.stop()`) and owns connecting them.
+ *
+ * `partyId` is built as `${partyIdPrefix}-${tag}-<timestamp>`; pass `partyIdPrefix` to
+ * keep an existing scenario's party-id namespacing (default `'ctrl'`).
+ */
+export async function bootPair(
+  tag: string,
+  partyIdPrefix = 'ctrl',
+): Promise<{ A: CadreNode; B: CadreNode }> {
+  const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
+
+  const aKey = await generateKeyPair('Ed25519');
+  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+  await A.start();
+  await makeOwnOwner(A, aKey);
+
+  const bKey = await generateKeyPair('Ed25519');
+  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
+  await B.start();
+
+  // A vouches B so B's inbound pull streams pass A's per-stream control-DB gate
+  // (A's snapshot is non-empty once it has an anchor + any member row). B still
+  // pins nobody — row presence (`isMember`) is what these scenarios assert, not
+  // trust.
+  await A.authorizePeer(B.peerId!.toString());
+
+  return { A, B };
 }
 

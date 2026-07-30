@@ -20,20 +20,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, signSchema, type StrandProvisioner } from '@serfab/cadre-core';
-import type { CadreNodeConfig, StrandRow, SAppConfig } from '@serfab/cadre-core';
+import { CadreNode, type StrandProvisioner } from '@serfab/cadre-core';
+import type { CadreNodeConfig, StrandRow } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil } from '../harness/index.js';
+import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
 
 /** Deterministic strand provisioner for test predictability */
 function createMockProvisioner(prefix = 'rbac'): StrandProvisioner {
@@ -60,20 +54,6 @@ function createTestNodeConfig(
 			...(opts.enableRelay ? { enableRelay: true } : {}),
 		},
 		hibernation: { enabled: false },
-	};
-}
-
-/** Create a properly signed sApp config (matches strand-formation-e2e). */
-function createSignedSAppConfig(schema: string, version: string): SAppConfig {
-	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	const signature = signSchema(schema, version, authorPrivateKey);
-	return {
-		id: authorPublicKey,
-		version,
-		schema,
-		signature,
-		latencyHint: 'interactive' as const,
 	};
 }
 

@@ -93,32 +93,30 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import {
 	CadreNode,
 	SeedBootstrapService,
 	collectStrandAddrs,
-	signSchema,
 	ed25519KeyPairFromLibp2p,
 	signPeerRecord,
 	ed25519PublicKeyB64FromPeerId,
 } from '@serfab/cadre-core';
-import type { CadreNodeConfig, SAppConfig, WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
-import { waitUntil, waitForCadrePeerConverged, waitForCrossNodeControlSync } from '../harness/index.js';
+import type { WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
+import {
+	waitUntil,
+	waitForCadrePeerConverged,
+	waitForCrossNodeControlSync,
+	createSignedSAppConfig,
+	controlNodeConfig,
+	makeOwnOwner,
+	connectControlNodes,
+} from '../harness/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-/** WebSocket + circuit-relay transports, matching the other e2e scenarios. */
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
 
 /** Minimal hibernation-friendly sApp schema. */
 const SIMPLE_SCHEMA = `
@@ -128,65 +126,9 @@ table Data (
 );
 `;
 
-/**
- * A properly signed sApp config with a NON-realtime `latencyHint` — realtime
- * strands never hibernate, so `'interactive'` is required for the wake path.
- * (Copied from `strand-formation-e2e.integration.ts`.)
- */
-function createSignedSAppConfig(schema: string, version: string): SAppConfig {
-	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	const signature = signSchema(schema, version, authorPrivateKey);
-	return { id: authorPublicKey, version, schema, signature, latencyHint: 'interactive' as const };
-}
-
-interface NodeOpts {
-	partyId: string;
-	privateKey?: PrivateKey;
-	bootstrapNodes?: string[];
-	profile?: 'storage' | 'transaction';
-	enableRelay?: boolean;
-	listenAddrs?: string[];
-	hibernation?: boolean;
-}
-
-/** Build a `CadreNodeConfig` for one node in the push-wake topology. */
-function nodeConfig(opts: NodeOpts): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
-		network: {
-			transports: wsTransports(),
-			listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
-		},
-		hibernation: { enabled: opts.hibernation ?? false },
-	};
-}
-
 /** The control node's currently-observed multiaddrs as strings. */
 function controlAddrs(node: CadreNode): string[] {
 	return node.getControlNode()!.getMultiaddrs().map((ma) => ma.toString());
-}
-
-/**
- * Make a freshly-started node its own control owner (genesis): enroll its
- * derived public key in `OwnerKey` and wire the seed-bootstrap service with
- * the matching private key, so it can owner-sign `CadrePeer` inserts into its
- * own local control DB. Returns the owner PUBLIC key (base64url) — the key an
- * enrollee pins into its node-local trusted-owner anchor (`trustOwnerKeys`) so
- * this owner's membership vouchers pass its authorized-membership predicate.
- */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
-	return publicKeyB64;
 }
 
 /**
@@ -223,36 +165,6 @@ async function seedReceiverRecord(
 	);
 	await ownerNode.getSeedBootstrapService()!.insertSelfPeerRecord(record);
 	return record;
-}
-
-/**
- * Establish a DIRECT control-network connection from `reader` to `writer` and wait
- * until BOTH sides report it (scoped to this specific peer pair, so the recipe is
- * correct when several readers attach to one writer). This is the test-only
- * stand-in for production control-cohort discovery, proven by
- * `control-db-two-node-convergence.integration.ts`. Both-sides confirmation is a
- * hard precondition of a replicating write: only once each peer sees the connection
- * can the control collection's cohort span them and a commit be non-local-only.
- */
-async function connectControlNodes(reader: CadreNode, writer: CadreNode): Promise<void> {
-	const readerNode = reader.getControlNode()!;
-	const writerNode = writer.getControlNode()!;
-	const writerAddrs = writerNode.getMultiaddrs();
-	expect(writerAddrs.length).toBeGreaterThan(0);
-	const readerPeerId = reader.peerId!.toString();
-	const writerPeerId = writer.peerId!.toString();
-
-	await readerNode.dial(writerAddrs[0]!);
-	await waitUntil(() => readerNode.getConnections().some((c) => c.remotePeer.toString() === writerPeerId), {
-		timeoutMs: 15_000,
-		intervalMs: 250,
-		description: 'reader control node connects to writer',
-	});
-	await waitUntil(() => writerNode.getConnections().some((c) => c.remotePeer.toString() === readerPeerId), {
-		timeoutMs: 15_000,
-		intervalMs: 250,
-		description: 'writer control node sees inbound connection from reader',
-	});
 }
 
 /**
@@ -295,7 +207,7 @@ describe('E2E push-wake over the control network', () => {
 			// pollute Rx's strand-resume cohort seed, exactly as scenario 4). Genesis ALONE
 			// before forming a cohort so the lone OwnerKey commits with no collision.
 			const sKey = await generateKeyPair('Ed25519');
-			S = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
+			S = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
 			await S.start();
 			const sOwnerPub = await makeOwnOwner(S, sKey);
 			const sPeerId = S.peerId!.toString();
@@ -303,7 +215,7 @@ describe('E2E push-wake over the control network', () => {
 			// Receiver Rx: hibernating plain member — NOT its own owner, so every
 			// membership fact it consults must have been written by S and pulled over the wire.
 			const rxKey = await generateKeyPair('Ed25519');
-			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
+			Rx = new CadreNode(controlNodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
@@ -380,7 +292,7 @@ describe('E2E push-wake over the control network', () => {
 			// commits with no shared-owner collision. Storage profile so it holds the
 			// CadrePeer blocks the readers pull.
 			const lKey = await generateKeyPair('Ed25519');
-			L = new CadreNode(nodeConfig({ partyId, profile: 'storage', enableRelay: true }));
+			L = new CadreNode(controlNodeConfig({ partyId, profile: 'storage', enableRelay: true }));
 			await L.start();
 			const lOwnerPub = await makeOwnOwner(L, lKey);
 			const lAddrs = controlAddrs(L);
@@ -391,7 +303,7 @@ describe('E2E push-wake over the control network', () => {
 			// makes the control cohort exactly {L, S} while the writes below commit, and
 			// gives the later relayed wake dial an open connection to route through L.
 			const sKey = await generateKeyPair('Ed25519');
-			S = new CadreNode(nodeConfig({ partyId, privateKey: sKey }));
+			S = new CadreNode(controlNodeConfig({ partyId, privateKey: sKey }));
 			await S.start();
 			const sPeerId = S.peerId!.toString();
 			await connectControlNodes(S, L);
@@ -430,7 +342,7 @@ describe('E2E push-wake over the control network', () => {
 			// L (explicit `…/p2p-circuit` listen, see header note). It bootstraps to L; it never
 			// genesises and writes nothing the assertions hinge on (its background `registerSelf`
 			// only self-UPDATEs its own already-resolvable row). (NOT hibernated — see header note.)
-			Rx = new CadreNode(nodeConfig({
+			Rx = new CadreNode(controlNodeConfig({
 				partyId,
 				privateKey: rxKey,
 				bootstrapNodes: [lAddr],
@@ -521,7 +433,7 @@ describe('E2E push-wake over the control network', () => {
 			// Receiver Rx: hibernating, empty node-local anchor — it was never enrolled
 			// by anyone, so NO owner key is trusted and nobody can be authorized.
 			const rxKey = await generateKeyPair('Ed25519');
-			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
+			Rx = new CadreNode(controlNodeConfig({ partyId, privateKey: rxKey, hibernation: true }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 
@@ -529,7 +441,7 @@ describe('E2E push-wake over the control network', () => {
 			// + dial Rx (the default trust policy trusts any peer with a row).
 			const oKey = await generateKeyPair('Ed25519');
 			const { privateKeyB64: oOwnerPriv, publicKeyB64: oOwnerPub } = ed25519KeyPairFromLibp2p(oKey);
-			O = new CadreNode(nodeConfig({ partyId, privateKey: oKey }));
+			O = new CadreNode(controlNodeConfig({ partyId, privateKey: oKey }));
 			await O.start();
 			await makeOwnOwner(O, oKey);
 			const oPeerId = O.peerId!.toString();
@@ -658,7 +570,7 @@ describe('E2E push-wake over the control network', () => {
 			// BEFORE forming a cohort so its lone OwnerKey commits without a shared-owner
 			// collision. NOT a relay (see the design note) — direct dials keep the cohort stable.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(nodeConfig({ partyId, profile: 'storage' }));
+			A = new CadreNode(controlNodeConfig({ partyId, profile: 'storage' }));
 			await A.start();
 			const aOwnerPub = await makeOwnOwner(A, aKey);
 			const aAddrs = controlAddrs(A);
@@ -671,12 +583,12 @@ describe('E2E push-wake over the control network', () => {
 			// Both configure A as a control bootstrap node so the fail-closed per-stream gate
 			// admits A unconditionally once their authorized-member snapshot goes non-empty —
 			// A's ephemeral identity is in no `CadrePeer` row (design note 3).
-			S = new CadreNode(nodeConfig({ partyId, bootstrapNodes: [aAddr] }));
+			S = new CadreNode(controlNodeConfig({ partyId, bootstrapNodes: [aAddr] }));
 			await S.start();
 			const sPeerId = S.peerId!.toString();
 
 			const rxKey = await generateKeyPair('Ed25519');
-			Rx = new CadreNode(nodeConfig({ partyId, privateKey: rxKey, hibernation: true, bootstrapNodes: [aAddr] }));
+			Rx = new CadreNode(controlNodeConfig({ partyId, privateKey: rxKey, hibernation: true, bootstrapNodes: [aAddr] }));
 			await Rx.start();
 			const rxPeerId = Rx.peerId!.toString();
 

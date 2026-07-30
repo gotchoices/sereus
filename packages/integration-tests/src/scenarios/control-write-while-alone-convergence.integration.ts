@@ -26,110 +26,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { waitUntil, waitForCadrePeerConverged } from '../harness/index.js';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** WebSocket + circuit-relay transports, matching the other e2e scenarios. */
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
-
-interface NodeOpts {
-	partyId: string;
-	privateKey: PrivateKey;
-	profile?: 'storage' | 'transaction';
-	enableRelay?: boolean;
-	listenAddrs?: string[];
-}
-
-/** Build a `CadreNodeConfig` for one control-network node. */
-function nodeConfig(opts: NodeOpts): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		privateKey: opts.privateKey,
-		network: {
-			transports: wsTransports(),
-			listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
-		},
-		hibernation: { enabled: false },
-	};
-}
-
-/** Make a freshly-started node its own control owner (genesis). */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
-}
-
-/**
- * Establish a DIRECT control-network connection from `reader` to `writer` and wait
- * until BOTH sides report it (the test-only stand-in for production cohort
- * discovery). The writer seeing the inbound connection is what fires its
- * `connection:open` growth edge and drains the write-while-alone queue.
- */
-async function connectControlNodes(reader: CadreNode, writer: CadreNode): Promise<void> {
-	const readerNode = reader.getControlNode()!;
-	const writerNode = writer.getControlNode()!;
-	const writerAddrs = writerNode.getMultiaddrs();
-	expect(writerAddrs.length).toBeGreaterThan(0);
-
-	await readerNode.dial(writerAddrs[0]!);
-	await waitUntil(() => readerNode.getConnections().length > 0, {
-		timeoutMs: 15_000,
-		intervalMs: 250,
-		description: 'reader control node connects to writer',
-	});
-	await waitUntil(() => writerNode.getConnections().length > 0, {
-		timeoutMs: 15_000,
-		intervalMs: 250,
-		description: 'writer control node sees inbound connection from reader',
-	});
-}
-
-/** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
-async function randomPeerId(): Promise<string> {
-	return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-}
-
-/**
- * Boot node A (owner + writer, storage profile so it holds the CadrePeer
- * blocks) and node B (a plain READER — never its own owner), on a fresh party,
- * DISCONNECTED. Caller owns shutdown.
- */
-async function bootPair(tag: string): Promise<{ A: CadreNode; B: CadreNode }> {
-	const partyId = `ctrl-alone-${tag}-${Date.now()}`;
-
-	const aKey = await generateKeyPair('Ed25519');
-	const A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
-	await A.start();
-	await makeOwnOwner(A, aKey);
-
-	const bKey = await generateKeyPair('Ed25519');
-	const B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
-	await B.start();
-
-	// A vouches B so A's inbound connection gate admits B's dial once A's authorized
-	// set is non-empty (mirrors `bootPair` in control-db-two-node-convergence).
-	await A.authorizePeer(B.peerId!.toString());
-
-	return { A, B };
-}
+import type { CadreNode } from '@serfab/cadre-core';
+import {
+	waitUntil,
+	waitForCadrePeerConverged,
+	connectControlNodes,
+	randomPeerId,
+	bootPair,
+} from '../harness/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -138,7 +42,7 @@ describe('Control-DB write-while-alone re-replication', () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {
-			({ A, B } = await bootPair('cadrepeer'));
+			({ A, B } = await bootPair('cadrepeer', 'ctrl-alone'));
 
 			// WRITE BEFORE CONNECT: A authorizes X while B is disconnected → local-only commit.
 			const xPeerId = await randomPeerId();
@@ -175,7 +79,7 @@ describe('Control-DB write-while-alone re-replication', () => {
 		let A: CadreNode | undefined;
 		let B: CadreNode | undefined;
 		try {
-			({ A, B } = await bootPair('devtoken'));
+			({ A, B } = await bootPair('devtoken', 'ctrl-alone'));
 			const aPeerId = A.peerId!.toString();
 
 			// A publishes its OWN CadrePeer record AND DeviceToken while ALONE → both

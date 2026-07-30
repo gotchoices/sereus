@@ -11,8 +11,6 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
@@ -25,7 +23,7 @@ import {
 } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation } from '@serfab/cadre-core';
-import { TestCadreNetwork, signMessageEd25519, waitUntil } from '../harness/index.js';
+import { TestCadreNetwork, signMessageEd25519, waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
 import type { TestParty } from '../harness/types.js';
 
 // ── Mock implementations ────────────────────────────────────────────────────
@@ -63,30 +61,12 @@ function createMockUsageRecorder(): FormationUsageRecorder & {
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
 
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
-
 const SIMPLE_SCHEMA = `
 table Data (
     Key text primary key,
     Val text
 );
 `;
-
-/** Create a properly signed sApp config for integration tests */
-function createSignedSAppConfig(schema: string, version: string): SAppConfig {
-	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	const signature = signSchema(schema, version, authorPrivateKey);
-	return {
-		id: authorPublicKey,
-		version,
-		schema,
-		signature,
-		latencyHint: 'interactive' as const,
-	};
-}
 
 /** Create an unsigned sApp config (no `signature`) — rejected under the default policy. */
 function createUnsignedSAppConfig(schema: string, version: string): SAppConfig {

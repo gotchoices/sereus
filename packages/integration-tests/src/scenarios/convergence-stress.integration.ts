@@ -16,13 +16,11 @@
  */
 
 import { describe, it, expect, afterAll } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, signSchema } from '@serfab/cadre-core';
 import type { CadreNodeConfig, StrandRow, StrandInstance, SAppConfig } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, sleep } from '../harness/wait-utils.js';
+import { waitUntil, sleep, wsTransports } from '../harness/index.js';
 import { randomUUID } from 'node:crypto';
 
 // ── Chat schema (mirrors websocket-chat.integration.ts) ─────────────────
@@ -54,10 +52,6 @@ const CHAT_SAPP_CONFIG: SAppConfig = {
 };
 
 // ── Helpers ─────────────────────────────────────────────────────────────
-
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
 
 function nowTimestamp(): string {
 	return new Date().toISOString().replace('T', ' ').replace(/\.\d{3}Z$/, '');

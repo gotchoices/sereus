@@ -14,12 +14,9 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
-	signSchema,
 	type CadreNodeConfig,
 	type StrandRow,
 	type StrandInstance,
@@ -27,8 +24,8 @@ import {
 	type StrandProvisioner,
 	type FormationUsageRecorder,
 } from '@serfab/cadre-core';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil } from '../harness/wait-utils.js';
+import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
+import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
 
 // ── Schemas ────────────────────────────────────────────────────────────────
 
@@ -55,18 +52,6 @@ table Data (
 `;
 
 // ── Signed sApp configs ────────────────────────────────────────────────────
-
-function createSignedSAppConfig(schema: string, version: string): SAppConfig {
-	const authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-	const authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-	return {
-		id: authorPublicKey,
-		version,
-		schema,
-		signature: signSchema(schema, version, authorPrivateKey),
-		latencyHint: 'interactive' as const,
-	};
-}
 
 const CHAT_SAPP_CONFIG = createSignedSAppConfig(CHAT_SCHEMA, '0.1.0');
 const SIMPLE_SAPP_CONFIG = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
@@ -102,10 +87,6 @@ function createMockUsageRecorder(): FormationUsageRecorder & {
 }
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
-
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
 
 function createNodeConfig(
 	partyId: string,
