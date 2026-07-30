@@ -90,6 +90,16 @@ export interface StrandAddrServiceOptions {
    */
   getStrandMultiaddrs(strandId: string): string[];
   /**
+   * Called when a member's request carries a `delegatePeerId` — the derived
+   * transport peerId its strand-`strandId` node runs as. Invoked only AFTER the
+   * `isMember` gate passed, with a validated (parseable, non-self) peerId.
+   * `CadreNode` injects its delegate-admission grant recorder so this node's
+   * connection gate — and thus its circuit-relay server, when it runs one —
+   * admits that peerId (see `delegate-admission.ts`). Optional: absent, an
+   * announce is ignored and the address lookup proceeds unchanged.
+   */
+  onDelegateAnnounce?(announcerPeerId: string, strandId: string, delegatePeerId: string): void;
+  /**
    * Time to wait for the inbound request frame before aborting the read (ms).
    * Defaults to {@link DEFAULT_ADDR_READ_TIMEOUT_MS}. Bounds a buggy/compromised
    * own-cadre node that opens a stream and never half-closes its write end.
@@ -212,21 +222,49 @@ export class StrandAddrService {
    * decision matrix can be unit-tested directly (mirrors wake's
    * `processWakeRequest`).
    *
-   * - Non-member sender → empty `multiaddrs` (refused).
+   * - Non-member sender → empty `multiaddrs` (refused), no delegate grant.
+   * - Member request carrying a `delegatePeerId` → recorded via
+   *   {@link StrandAddrServiceOptions.onDelegateAnnounce} before the lookup.
    * - Strand not running locally → empty `multiaddrs` (`getStrandMultiaddrs` → `[]`).
    * - Member + running strand → the strand's live, signaling-first multiaddrs.
    */
   async processAddrRequest(request: StrandAddrRequest, remotePeerId: string): Promise<StrandAddrResponse> {
     // Control-network membership is the v1 authorization: only this party's
-    // cadre peers may ask us for a strand address.
+    // cadre peers may ask us for a strand address (or announce a delegate).
     if (!(await this.options.isMember(remotePeerId))) {
       log('Refusing strand-addr from non-member %s', remotePeerId);
       return emptyResponse(request.strandId);
     }
 
+    this.recordDelegateAnnounce(request, remotePeerId);
+
     const multiaddrs = this.options.getStrandMultiaddrs(request.strandId);
     log('Strand-addr for %s → %d addr(s)', request.strandId, multiaddrs.length);
     return { strandId: request.strandId, multiaddrs };
+  }
+
+  /**
+   * Validate and forward a member's delegate announcement. A malformed field
+   * (unparsable peerId) and a self-announcement (`delegatePeerId` equal to the
+   * announcer's own peerId — a member is admitted directly, never by grant)
+   * are logged and dropped; the address lookup proceeds either way.
+   */
+  private recordDelegateAnnounce(request: StrandAddrRequest, remotePeerId: string): void {
+    const { strandId, delegatePeerId } = request;
+    if (delegatePeerId === undefined || !this.options.onDelegateAnnounce) {
+      return;
+    }
+    if (delegatePeerId === remotePeerId) {
+      log('Ignoring self-announcement from %s (strand %s)', remotePeerId, strandId);
+      return;
+    }
+    try {
+      peerIdFromString(delegatePeerId);
+    } catch (err) {
+      log('Ignoring malformed delegatePeerId %o from %s: %o', delegatePeerId, remotePeerId, err);
+      return;
+    }
+    this.options.onDelegateAnnounce(remotePeerId, strandId, delegatePeerId);
   }
 }
 
@@ -248,6 +286,13 @@ export interface CollectStrandAddrsOptions {
   timeoutMs?: number;
   /** Override the protocol id (defaults to {@link STRAND_ADDR_PROTOCOL}). */
   protocolId?: string;
+  /**
+   * The derived transport peerId the caller's own strand-`strandId` node runs
+   * (or is about to run) as. Set on every request this collection sends, so
+   * each receiver records a delegate admission grant for it — see
+   * {@link StrandAddrRequest.delegatePeerId}. Omit for a pure address lookup.
+   */
+  delegatePeerId?: string;
 }
 
 /**
@@ -271,7 +316,9 @@ export async function collectStrandAddrs(
   options: CollectStrandAddrsOptions = {}
 ): Promise<string[]> {
   const selfId = node.peerId.toString();
-  const request: StrandAddrRequest = { strandId };
+  const request: StrandAddrRequest = options.delegatePeerId !== undefined
+    ? { strandId, delegatePeerId: options.delegatePeerId }
+    : { strandId };
   const candidates = peers.filter(p => p.peerId !== selfId);
 
   // Concurrent dials; `dialOneSibling` swallows per-peer failure into `[]`, so

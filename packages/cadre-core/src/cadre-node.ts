@@ -549,9 +549,15 @@ export class CadreNode implements SAppIdLookup {
       // resolving a strand's bootstrap seed asks us for our live strand-network
       // multiaddrs (its CadrePeer row only knows our *control* address). Gated on
       // AUTHORIZED membership; answers only for strands we are actively meshing.
+      // The same RPC doubles as the delegate-announce channel: a member's request
+      // may carry the derived peerId its strand node runs as, and we record an
+      // admission grant so our connection gate (and thus our relay server, when
+      // enabled) admits it — see delegate-admission.ts.
       this.strandAddrService = new StrandAddrService({
         isMember: (peerId) => this.isAuthorizedMember(peerId),
         getStrandMultiaddrs: (strandId) => this.getStrandMultiaddrs(strandId),
+        onDelegateAnnounce: (announcer, strandId, delegate) =>
+          this.grantDelegateAdmission(announcer, strandId, delegate),
       });
       this.strandAddrService.initialize(this.controlNode);
 

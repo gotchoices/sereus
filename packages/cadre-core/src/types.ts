@@ -1036,6 +1036,14 @@ export interface WakeAck {
 export interface StrandAddrRequest {
   /** The strand whose strand-network address the requester wants to seed from. */
   strandId: string;
+  /**
+   * The derived transport peerId the requester's own strand-`strandId` node
+   * runs as (see `strand-transport-key.ts`). Present → the responder records a
+   * delegate admission grant for it, so its own connection gate (and thus its
+   * circuit-relay server, when it runs one) admits that peerId; absent →
+   * today's behavior exactly. See `delegate-admission.ts` for the trust model.
+   */
+  delegatePeerId?: string;
 }
 
 /**

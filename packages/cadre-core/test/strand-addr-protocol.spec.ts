@@ -33,6 +33,7 @@ function makeService(
     isMember: overrides.isMember ?? (async () => true),
     getStrandMultiaddrs:
       overrides.getStrandMultiaddrs ?? (typeof addrs === 'function' ? addrs : () => addrs),
+    onDelegateAnnounce: overrides.onDelegateAnnounce,
     readTimeoutMs: overrides.readTimeoutMs,
     maxConcurrent: overrides.maxConcurrent
   });
@@ -84,6 +85,73 @@ describe('StrandAddrService.processAddrRequest — decision matrix', () => {
     const response = await service.processAddrRequest({ strandId: 'hibernating' }, 'member-peer');
 
     expect(response).toEqual({ strandId: 'hibernating', multiaddrs: [] });
+  });
+});
+
+describe('StrandAddrService.processAddrRequest — delegate announce', () => {
+  type Announce = [announcer: string, strandId: string, delegate: string];
+
+  /** Service whose announce hook records into `announces`; addrs fixed. */
+  function announceService(announces: Announce[], overrides: Partial<StrandAddrServiceOptions> = {}): StrandAddrService {
+    return makeService(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a'], {
+      onDelegateAnnounce: (a, s, d) => announces.push([a, s, d]),
+      ...overrides
+    });
+  }
+
+  it('records a member announce and still answers the address lookup', async () => {
+    const announces: Announce[] = [];
+    const delegate = await freshPeerId();
+    const service = announceService(announces);
+
+    const response = await service.processAddrRequest(
+      { strandId: 'strand-1', delegatePeerId: delegate }, 'member-peer');
+
+    expect(announces).toEqual([['member-peer', 'strand-1', delegate]]);
+    expect(response.multiaddrs).toEqual(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
+  });
+
+  it('ignores a non-member announce — refused before the hook, like the address lookup', async () => {
+    const announces: Announce[] = [];
+    const delegate = await freshPeerId();
+    const service = announceService(announces, { isMember: async () => false });
+
+    const response = await service.processAddrRequest(
+      { strandId: 'strand-1', delegatePeerId: delegate }, 'stranger-peer');
+
+    expect(announces).toEqual([]);
+    expect(response).toEqual({ strandId: 'strand-1', multiaddrs: [] });
+  });
+
+  it('ignores a malformed delegatePeerId, keeping the address lookup intact', async () => {
+    const announces: Announce[] = [];
+    const service = announceService(announces);
+
+    const response = await service.processAddrRequest(
+      { strandId: 'strand-1', delegatePeerId: 'not-a-peer-id' }, 'member-peer');
+
+    expect(announces).toEqual([]);
+    expect(response.multiaddrs).toEqual(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
+  });
+
+  it('ignores a self-announcement (delegate equal to the announcer itself)', async () => {
+    const announces: Announce[] = [];
+    const member = await freshPeerId();
+    const service = announceService(announces);
+
+    await service.processAddrRequest({ strandId: 'strand-1', delegatePeerId: member }, member);
+
+    expect(announces).toEqual([]);
+  });
+
+  it('never calls the hook when the field is absent — pure lookups unchanged', async () => {
+    const announces: Announce[] = [];
+    const service = announceService(announces);
+
+    const response = await service.processAddrRequest({ strandId: 'strand-1' }, 'member-peer');
+
+    expect(announces).toEqual([]);
+    expect(response.multiaddrs).toEqual(['/ip4/10.0.0.1/tcp/5001/p2p/strand-a']);
   });
 });
 
@@ -199,7 +267,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
   function collectNode(
     selfId: string,
     replies: Map<string, string[]>,
-    opts: { throwing?: Set<string>; dialed?: string[] } = {}
+    opts: { throwing?: Set<string>; dialed?: string[]; receiver?: Partial<StrandAddrServiceOptions> } = {}
   ): Libp2p {
     return {
       peerId: { toString: () => selfId },
@@ -213,7 +281,7 @@ describe('collectStrandAddrs — client union/dedup', () => {
         if (reply === undefined) {
           throw new Error(`no route for ${id}`);
         }
-        const receiver = makeService(reply);
+        const receiver = makeService(reply, opts.receiver ?? {});
         const { clientStream, serverStream } = duplexPair();
         void runHandleStream(receiver, serverStream, selfId);
         return clientStream;
@@ -313,6 +381,30 @@ describe('collectStrandAddrs — client union/dedup', () => {
     expect(result).toEqual(['/ip4/4.4.4.4/tcp/4/p2p/strand']);
     // peerId dialed first (and failed), then the explicit addr fallback.
     expect(dialed).toEqual([sib, addr.toString()]);
+  });
+
+  it('carries the delegatePeerId to every receiver, which records the announce', async () => {
+    // The option rides the one shared request each sibling gets — end-to-end
+    // through the client framing, the loopback stream, and the receiver's
+    // validate-then-record path.
+    const [self, sib1, sib2, delegate] = await Promise.all([
+      freshPeerId(), freshPeerId(), freshPeerId(), freshPeerId()
+    ]);
+    const announces: Array<[string, string, string]> = [];
+    const replies = new Map<string, string[]>([[sib1, []], [sib2, []]]);
+    const node = collectNode(self, replies, {
+      receiver: { onDelegateAnnounce: (a, s, d) => announces.push([a, s, d]) }
+    });
+
+    await collectStrandAddrs(node, [{ peerId: sib1 }, { peerId: sib2 }], 'strand-x', {
+      delegatePeerId: delegate
+    });
+
+    // The loopback hands each receiver the CLIENT's id as the remote peer.
+    expect(announces).toEqual([
+      [self, 'strand-x', delegate],
+      [self, 'strand-x', delegate]
+    ]);
   });
 
   it('skips a sibling whose receiver never replies (per-dial timeout) and aborts its stream', async () => {

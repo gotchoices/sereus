@@ -131,6 +131,18 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     expect(authorize(node, MEMBER)).toBe(true);
   });
 
+  it('a delegate grant admits the CONNECTION but not the STREAM', async () => {
+    // Same divergence for the delegate carve-out: a member-announced strand
+    // transport peerId needs the connection (a circuit-relay `hop` reservation
+    // is connection-level), never the control-DB streams.
+    const node = await establishedNode();
+    node.grantDelegateAdmission(MEMBER, 'strand-1', STRANGER);
+
+    expect(await admitConnection(node, STRANGER)).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
+    expect(authorize(node, MEMBER)).toBe(true);
+  });
+
   it('an outstanding open invitation admits the CONNECTION but not the STREAM', async () => {
     // Same divergence for the formation carve-out: a cross-party initiator may
     // ride the connection to /sereus/formation/1.0.0, never to the control DB.

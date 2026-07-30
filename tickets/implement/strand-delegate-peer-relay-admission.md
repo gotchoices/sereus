@@ -6,6 +6,108 @@ difficulty: hard
 # Delegate-peer admission: let a party relay serve its own members' strand nodes
 
 <!-- resume-note -->
+**Run 4 (2026-07-29) hit the soft token budget mid-Phase-3.** Working tree at exit:
+**Phases 1 and 2 are COMPLETE, tested, and green** (52 tests across the three spec files
+below pass via `yarn vitest run` in `packages/cadre-core`); Phase 3 is NOT started in the
+tree — run 4 briefly landed its imports + throttle field, then backed them out to leave
+the tree compile-clean (unused imports/fields fail the build). Run-4 landed work:
+
+- `packages/cadre-core/test/delegate-admission.spec.ts` — NEW, complete: store expiry /
+  refresh / replace-per-(announcer,strand) / per-member cap with soonest-expiry eviction /
+  replace-never-evicts-at-cap / global cap, plus `extractCircuitRelayTargets` (relay + direct
+  prefix extraction, trailing `/p2p/<dst>` ignored, bare-circuit/non-circuit/garbage skipped,
+  dedup-first-wins).
+- `test/control-stream-authorization.spec.ts` — added "a delegate grant admits the
+  CONNECTION but not the STREAM" beside the enrollment-window divergence test.
+- `src/types.ts` — `StrandAddrRequest.delegatePeerId?: string` with doc.
+- `src/strand-addr-protocol.ts` — `StrandAddrServiceOptions.onDelegateAnnounce?` (doc'd);
+  `processAddrRequest` calls new private `recordDelegateAnnounce(request, remotePeerId)`
+  after the `isMember` gate, before the addr lookup — validates via `peerIdFromString`,
+  drops self-announce (`delegatePeerId === remotePeerId`) and malformed ids, logs both.
+  `CollectStrandAddrsOptions.delegatePeerId?`; `collectStrandAddrs` builds the request as
+  `options.delegatePeerId !== undefined ? { strandId, delegatePeerId } : { strandId }`.
+- `src/cadre-node.ts` — `StrandAddrService` construction now injects
+  `onDelegateAnnounce: (announcer, strandId, delegate) => this.grantDelegateAdmission(...)`
+  (comment explains the RPC doubling as the announce channel).
+- `test/strand-addr-protocol.spec.ts` — `makeService` passes `onDelegateAnnounce` through;
+  new describe "processAddrRequest — delegate announce" (member announce records + lookup
+  intact, non-member ignored, malformed ignored, self-announce ignored, absent-field never
+  calls hook); `collectNode` gained `opts.receiver` (receiver-side service overrides) and a
+  client-side test "carries the delegatePeerId to every receiver" (loopback hands the
+  CLIENT's id as remote peer, so announces arrive as `[self, 'strand-x', delegate]`).
+
+**Run 5 = Phase 3 + Phase 4 + docs + bookkeeping, nothing else.** Run 4 fully drafted
+Phase 3; land these verbatim (all against current `src/cadre-node.ts`):
+
+1. Imports: `peerIdFromString, peerIdFromPrivateKey` from `@libp2p/peer-id` (line 5);
+   `StrandAddrService, collectStrandAddrs, type StrandAddrPeer` from
+   `./strand-addr-protocol.js`; `DelegateAdmissionStore, extractCircuitRelayTargets,
+   DELEGATE_GRANT_TTL_MS, type CircuitRelayTarget` from `./delegate-admission.js`.
+   (`multiaddr` + `strandTransportKey` already imported.)
+2. Field after `delegateAdmission` (~:237): `private readonly delegateAnnounceAt = new
+   Map<string, number>();` — doc: key `<targetPeerId>\n<strandId>`, throttles
+   `refreshDelegateGrants` to TTL/2 per (relay, strand); launch/resume passes record too;
+   stopped-strand keys pruned each reconcile pass.
+3. `launchStrand`: move the whole `transportKey` derivation block (with its existing
+   comment) ABOVE `resolveCohortSeed`; then
+   `const delegatePeerId = transportKey ? peerIdFromPrivateKey(transportKey).toString() : undefined;`
+   and `const seed = await this.resolveCohortSeed(strand.Id, delegatePeerId);`. Add one
+   comment line: derived before seed resolution so the seed pass doubles as the delegate
+   announcement and every grant is recorded before `startStrand` runs `libp2p.start()`
+   (responder records grant before replying; client awaits replies).
+4. `resumeStrandRuntime`: prepend
+   `const delegatePeerId = this.identityKey ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString() : undefined;`
+   (comment: re-derived — deterministic, cheap; quiesced instance has no `libp2pNode`),
+   pass as 2nd arg to `resolveCohortSeed`.
+5. `resolveCohortSeed(strandId, delegatePeerId?)`: build
+   `const targets: StrandAddrPeer[] = otherPeerIds.filter(connected).map(peerId => ({ peerId }))`;
+   when `delegatePeerId !== undefined`, merge `this.circuitRelayTargets()` as
+   `{ peerId: relayPeerId, addrs: [multiaddr(relayAddr)] }` skipping peerIds already in
+   targets (sibling entry wins); call
+   `collectStrandAddrs(this.controlNode, targets, strandId, { delegatePeerId })` (safe when
+   undefined — client checks `!== undefined`); after, when announcing, call
+   `this.recordDelegateAnnounces(targets, strandId)`. Comment: relay must hold the grant
+   BEFORE `libp2p.start()` re-dials the reservation; a party-member relay answers, a
+   dedicated ops/ relay doesn't speak the protocol and folds to `[]` — harmless, needs no
+   grant; relay direct addr rides as the dial fallback for a not-yet-connected relay.
+6. New `private circuitRelayTargets(): CircuitRelayTarget[]` —
+   `extractCircuitRelayTargets([...(this.config.network?.listenAddrs ?? []), ...(this.controlNode?.getMultiaddrs().map(String) ?? [])])`.
+   Add `// NOTE:` tripwire: a relay the STRAND node discovers on its own (autorelay — in
+   neither source) gets no announcement and a membership-gated one will deny it; fine now,
+   every realistic topology feeds one of the two sources.
+7. New `private recordDelegateAnnounces(targets: StrandAddrPeer[], strandId: string, now = Date.now())` —
+   set `` `${t.peerId}\n${strandId}` `` for every target. Doc block MUST carry the
+   optimistic-record tradeoff verbatim from the design (collectStrandAddrs folds per-peer
+   failure to `[]`, no per-peer success signal; failed INITIAL announce is fatal-at-start
+   anyway → wake/check-in retries; failed REFRESH retries within TTL/2 = 15 min, inside
+   30 min TTL). Extra sibling keys are harmless — the reconcile prune covers them.
+8. New `private async refreshDelegateGrants(now = Date.now())`: build
+   `running: Map<strandId, delegatePeerId>` from `this.strandManager.getInstances()`
+   entries with a live `libp2pNode` (`instance.libp2pNode.peerId.toString()` — do NOT
+   re-derive here); prune `delegateAnnounceAt` keys whose
+   `key.slice(key.indexOf('\n') + 1)` is not in `running`; early-return when `running` or
+   `this.circuitRelayTargets()` is empty; per running strand, filter relays where
+   `now - (delegateAnnounceAt.get(key) ?? 0) >= DELEGATE_GRANT_TTL_MS / 2`, map due relays
+   to `StrandAddrPeer` (addrs fallback as in 5), one `collectStrandAddrs(controlNode,
+   dueTargets, strandId, { delegatePeerId })` per strand, then `recordDelegateAnnounces`.
+   RELAY targets only — siblings get their announce on every launch/resume pass; a grant
+   only matters where a reservation can be re-dialed.
+9. Call site in `runReconcileControlCohort`: after the `refreshAuthorizedControlPeers`
+   re-guard, BEFORE the sibling enumeration (a solo cadre with a party relay must still
+   refresh): `await this.refreshDelegateGrants();` + running re-guard after, comment: grant
+   must outlive the reservation — a dropped relay connection makes the circuit-relay
+   transport re-dial and face the gate again.
+
+Then Phase 4 (build/typecheck/lint clean, cadre-core `yarn test`, the push-wake
+circuit-relay scenario `-t "circuit-relay"` then whole file with `| tee`, the
+control-stream-authz integration extension cases (a)/(b)/(c)), docs 4-pack, and
+bookkeeping (remove `tickets/.pre-existing-known.md:3-4` once relay scenario green; review
+handoff must call out announce-lands-before-`libp2p.start()` on all three paths + the
+residual-exposure paragraph verbatim).
+
+Prior-run notes below remain valid; line numbers in them predate run 4's edits (types.ts
+and strand-addr-protocol.ts shifted by the additions above).
+
 **Run 3 (2026-07-29) hit the soft token budget right after landing the Phase 1 gate
 wiring in `cadre-node.ts`.** Working tree = run 2's module (below) PLUS these run-3 edits
 to `packages/cadre-core/src/cadre-node.ts`, all complete and compile-clean (no unused
@@ -420,20 +522,25 @@ an opening to strangers; option A would have opened it to everyone.
 - ~~Leave `authorizeInboundControlStream` untouched; extend its doc to say a delegate-admitted
   connection is exactly one of the cases it must still refuse.~~ **DONE (run 3)** — doc-only,
   as designed.
-- Unit tests: grant expiry, replace-not-accumulate, both caps, and that
+- ~~Unit tests: grant expiry, replace-not-accumulate, both caps, and that
   `authorizeInboundControlStream` denies a peer that `admitInboundControlConnection` admits by
-  grant.
+  grant.~~ **DONE (run 4)** — `test/delegate-admission.spec.ts` (new) + the divergence case in
+  `test/control-stream-authorization.spec.ts`; all green.
 
 ### Phase 2 — announce over the strand-addr RPC
 
-- Add `delegatePeerId?: string` to `StrandAddrRequest` (`types.ts`), plumb it through
-  `collectStrandAddrs` / `dialOneSibling` / `sendStrandAddr`.
-- Add `onDelegateAnnounce` to `StrandAddrServiceOptions`; call it in `processAddrRequest` after
-  the `isMember` gate. Validate/parse the peerId; ignore self-announcements.
-- `CadreNode.initializeStrandAddr` (wherever the service is constructed) injects
-  `grantDelegateAdmission`.
-- Unit tests on `processAddrRequest`: non-member announce is ignored, member announce grants,
-  malformed peerId is ignored, address-lookup behavior unchanged when the field is absent.
+- ~~Add `delegatePeerId?: string` to `StrandAddrRequest` (`types.ts`), plumb it through
+  `collectStrandAddrs` / `dialOneSibling` / `sendStrandAddr`.~~ **DONE (run 4)** — the field
+  rides the one shared request object; `dialOneSibling`/`sendStrandAddr` needed no change.
+- ~~Add `onDelegateAnnounce` to `StrandAddrServiceOptions`; call it in `processAddrRequest` after
+  the `isMember` gate. Validate/parse the peerId; ignore self-announcements.~~ **DONE (run 4)**
+  — private `recordDelegateAnnounce` helper.
+- ~~`CadreNode.initializeStrandAddr` (wherever the service is constructed) injects
+  `grantDelegateAdmission`.~~ **DONE (run 4)** — at the `StrandAddrService` construction in
+  `CadreNode.start()`.
+- ~~Unit tests on `processAddrRequest`: non-member announce is ignored, member announce grants,
+  malformed peerId is ignored, address-lookup behavior unchanged when the field is absent.~~
+  **DONE (run 4)** — plus a self-announce case and a client→receiver loopback case; all green.
 
 ### Phase 3 — announce targets + sequencing
 
