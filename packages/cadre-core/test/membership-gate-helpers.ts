@@ -73,6 +73,52 @@ export function bareRow(peerId: string): PeerRow {
  */
 export type Outstanding = boolean | 'throws' | 'hangs';
 
+/**
+ * The subset of `ControlDatabase` the gate paths touch, as {@link inject} fakes it:
+ * the two reads the snapshot is built from, plus the `CadrePeer` membership hub the
+ * node attaches its automatic gate refresh to.
+ *
+ * `queryCadrePeers` is a field (not a method) so a test can swap in a throwing read;
+ * `peerQueries` counts calls, which is how the coalescing assertions prove that N
+ * writes shared fewer than N reads.
+ */
+export interface FakeControlDatabase {
+  queryCadrePeers: () => Promise<PeerRow[]>;
+  queryRevokedStamps: () => Promise<Set<string>>;
+  setMembershipChangeListener: (listener: ((reason: string) => Promise<void>) | null) => void;
+  mutateCadrePeer: <T>(reason: string, body: () => Promise<T>) => Promise<T>;
+  /** How many times the snapshot read has been issued. */
+  peerQueries: number;
+  /** The listener the node wired, or null before `inject`-ed nodes are "started". */
+  listener: ((reason: string) => Promise<void>) | null;
+}
+
+/** The node's private control-DB slot, as the fake fills it. */
+export function fakeDb(node: CadreNode): FakeControlDatabase {
+  return (node as unknown as { controlDatabase: FakeControlDatabase }).controlDatabase;
+}
+
+/**
+ * Stand-in for the `CadrePeer` write path: run `body`, then notify the wired
+ * listener exactly as `ControlDatabase.mutateCadrePeer` does after a commit — so a
+ * throwing body notifies nothing.
+ */
+function buildFakeDb(members: PeerRow[], revoked: Set<string>): FakeControlDatabase {
+  const db: FakeControlDatabase = {
+    peerQueries: 0,
+    listener: null,
+    queryCadrePeers: async () => { db.peerQueries++; return members; },
+    queryRevokedStamps: async () => revoked,
+    setMembershipChangeListener: (listener) => { db.listener = listener; },
+    mutateCadrePeer: async (reason, body) => {
+      const result = await body();
+      await db.listener?.(reason);
+      return result;
+    }
+  };
+  return db;
+}
+
 /** Wire the minimal node internals the admission policies touch. */
 export function inject(node: CadreNode, opts: {
   running?: boolean;
@@ -87,10 +133,11 @@ export function inject(node: CadreNode, opts: {
     peerId: { toString: () => opts.selfPeerId ?? 'self-peer' }
   };
   if (opts.members) {
-    (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-      queryCadrePeers: async () => opts.members,
-      queryRevokedStamps: async () => opts.revoked ?? new Set<string>()
-    };
+    const db = buildFakeDb(opts.members, opts.revoked ?? new Set<string>());
+    (node as unknown as { controlDatabase: unknown }).controlDatabase = db;
+    // Same wiring `CadreNode.start()` performs right after the control DB comes up:
+    // every committed `CadrePeer` write re-materializes the gate snapshot itself.
+    db.setMembershipChangeListener((reason) => node.refreshMembershipGate(reason));
   }
   if (opts.anchor) {
     (node as unknown as { trustedOwnerStore: TrustedOwnerStore }).trustedOwnerStore = opts.anchor;

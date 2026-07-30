@@ -31,6 +31,7 @@ import type {
   PushPlatform,
   DeviceTokenRecord,
   CadrePeerVoucherFields,
+  CadrePeerRow,
   ResolveDeviceTokenOpts
 } from './types.js';
 import { CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
@@ -229,13 +230,25 @@ export class CadreNode implements SAppIdLookup {
    * connection gater). So the set is refreshed OUT OF BAND instead — after
    * start, on every {@link reconcileControlCohort} pass (15s cadence), and
    * immediately after every LOCAL membership mutation so a just-vouched peer
-   * is admitted without waiting for the timer. A change that arrives by
-   * REPLICATION is picked up on the next timed refresh — bounded staleness,
-   * acceptable because this gate is defense in depth: rows an unadmitted peer
-   * manages to write are still disbelieved at read time by the
-   * voucher-anchored predicate.
+   * is admitted without waiting for the timer. That last refresh is AUTOMATIC:
+   * the control database notifies {@link refreshMembershipGate} after every
+   * committed `CadrePeer` write (see `ControlDatabase.mutateCadrePeer`), so no
+   * writer has to remember. A change that arrives by REPLICATION is picked up
+   * on the next timed refresh — bounded staleness, acceptable because this gate
+   * is defense in depth: rows an unadmitted peer manages to write are still
+   * disbelieved at read time by the voucher-anchored predicate.
    */
   private authorizedControlPeers: Set<string> = new Set();
+
+  /**
+   * Coalescing state for {@link refreshMembershipGate}: a pending "the snapshot
+   * is stale" flag, the single in-flight drain that consumes it, and the depth
+   * of open {@link deferMembershipGateRefresh} scopes (a burst of writes inside
+   * one scope collapses to a single refresh at scope exit).
+   */
+  private membershipGateDirty = false;
+  private membershipGateDrain: Promise<void> | null = null;
+  private membershipGateDeferDepth = 0;
 
   /**
    * In-memory delegate admission grants (see `delegate-admission.ts`): the
@@ -556,6 +569,13 @@ export class CadreNode implements SAppIdLookup {
       timing('[start] controlDatabase.initialize: %dms', Math.round(performance.now() - t0));
       log('Control database initialized');
 
+      // Attach the per-stream gate to the control DB's membership hub, so every
+      // committed `CadrePeer` write re-materializes the authorized snapshot on its
+      // own. Wired before anything can write. `_running` is still false for the
+      // rest of start() and the refresh early-returns while it is — a write in that
+      // window is covered by start's own pass below.
+      this.controlDatabase.setMembershipChangeListener((reason) => this.refreshMembershipGate(reason));
+
       // Create strand queryable using the control database
       const queryable = this.createStrandQueryable();
 
@@ -625,7 +645,7 @@ export class CadreNode implements SAppIdLookup {
       // control DB is up (non-blocking; the helper never rejects). Until it
       // lands the snapshot is empty, which the stream gate treats as cold
       // start and admits.
-      void this.refreshAuthorizedControlPeers('start');
+      void this.refreshMembershipGate('start');
 
       // Schedule self-registration in background
       this.scheduleSelfRegistration();
@@ -1133,11 +1153,8 @@ export class CadreNode implements SAppIdLookup {
    * DB error can neither flip the stream gate's cold-start carve-out back open
    * nor drop a legitimate member mid-flight. Never rejects.
    *
-   * NOTE: two refreshes in flight at once (say a `removePeer` racing the timed
-   * reconcile) resolve last-writer-wins on completion order, not on read order,
-   * so the snapshot can briefly settle on the older read — self-corrected by the
-   * next refresh (≤ the reconcile interval). If that window ever needs closing,
-   * serialize with a single-flight guard like {@link registerSelfInFlight}.
+   * The SOLE caller is {@link drainMembershipGate}, which serializes refreshes —
+   * so two reads can no longer settle out of order.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
@@ -1294,7 +1311,6 @@ export class CadreNode implements SAppIdLookup {
       // owner). insertSelfPeerRecord throws if no owner key is present.
       await this.seedBootstrapService.insertSelfPeerRecord(record);
       if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-      await this.refreshAuthorizedControlPeers('self-insert');
       log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
       return 'inserted';
     }
@@ -1594,7 +1610,7 @@ export class CadreNode implements SAppIdLookup {
     // NOTE: this refresh and the sibling enumeration below each run their own
     // CadrePeer query (two reads per pass); if those reads ever get costly,
     // share one row-set across both.
-    await this.refreshAuthorizedControlPeers('reconcile');
+    await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
     }
@@ -2046,10 +2062,29 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.controlNode.peerId.toString();
     const members = await this.controlDatabase.queryCadrePeers();
+    // One gate refresh for the whole sweep: every re-touch is a notifying
+    // `CadrePeer` write, and these rows are already in the local snapshot (they
+    // committed here, just local-only), so per-row refreshes would be O(rows)
+    // membership reads for a snapshot that does not change.
+    const touched = await this.deferMembershipGateRefresh(
+      'drain-reconstruct',
+      () => this.reissueAuthoredMembershipRows(selfPeerId, members)
+    );
+    if (touched > 0) {
+      log('drain: reconstructed %d owner-authored membership row(s) on first cohort growth', touched);
+    }
+  }
+
+  /**
+   * Body of {@link reconstructAuthoredMembership}'s sweep: re-issue each candidate
+   * owner-authored row, returning how many were re-touched. A per-row failure is
+   * logged and skipped; a teardown mid-sweep stops it.
+   */
+  private async reissueAuthoredMembershipRows(selfPeerId: string, members: CadrePeerRow[]): Promise<number> {
     let touched = 0;
     for (const member of members) {
       if (!this._running || !this.controlNode || !this.controlDatabase) {
-        return;
+        return touched;
       }
       if (member.peerId === selfPeerId || this.pendingPeerWrites.has(member.peerId)) {
         continue;
@@ -2066,9 +2101,7 @@ export class CadreNode implements SAppIdLookup {
         log('drain: reconstruction re-touch of %s failed (continuing): %o', member.peerId, error);
       }
     }
-    if (touched > 0) {
-      log('drain: reconstructed %d owner-authored membership row(s) on first cohort growth', touched);
-    }
+    return touched;
   }
 
   /**
@@ -2097,9 +2130,20 @@ export class CadreNode implements SAppIdLookup {
       this.pendingPeerWrites.clear();
       return;
     }
-    let reissued = false;
+    // One gate refresh for the whole drain, not one per entry: these re-issues
+    // replay writes this node already applied locally (and already refreshed
+    // for), so the snapshot only has to be correct once the drain settles.
+    await this.deferMembershipGateRefresh('drain-reissue', () => this.reissuePendingPeerWrites());
+  }
+
+  /**
+   * Body of {@link drainPendingPeerWrites}' loop. An entry is cleared only on
+   * success (or when there is nothing left to re-issue); a failure is logged and
+   * the entry stays queued for the next cohort growth.
+   */
+  private async reissuePendingPeerWrites(): Promise<void> {
     for (const [peerId, kind] of [...this.pendingPeerWrites]) {
-      if (!this._running || !this.controlNode || !this.controlDatabase) {
+      if (!this._running || !this.controlNode || !this.controlDatabase || !this.seedBootstrapService) {
         return;
       }
       try {
@@ -2116,17 +2160,10 @@ export class CadreNode implements SAppIdLookup {
           // is somehow still present locally.
           await this.seedBootstrapService.removePeer(peerId);
         }
-        reissued = true;
         this.pendingPeerWrites.delete(peerId);
       } catch (error) {
         log('drain: re-issue of %s (%s) failed; leaving queued for next growth: %o', peerId, kind, error);
       }
-    }
-    if (reissued) {
-      // One refresh for the whole drain, not one per entry: these re-issues
-      // replay writes this node already applied locally (and already refreshed
-      // for), so the snapshot only has to be correct once the drain settles.
-      await this.refreshAuthorizedControlPeers('drain-reissue');
     }
   }
 
@@ -2566,8 +2603,11 @@ export class CadreNode implements SAppIdLookup {
     this.delegateAdmission.clear();
     this.delegateAnnounceAt.clear();
 
-    // Close control database (this also shuts down the collection factory)
+    // Close control database (this also shuts down the collection factory).
+    // Detach the membership hub first: nothing this teardown does should drive a
+    // gate refresh, and a notification arriving after this point is a no-op.
     if (this.controlDatabase) {
+      this.controlDatabase.setMembershipChangeListener(null);
       await this.controlDatabase.close();
       this.controlDatabase = null;
     }
@@ -3634,11 +3674,12 @@ export class CadreNode implements SAppIdLookup {
    * wired with — shared by the owner-capable service ({@link initializeSeedBootstrap})
    * and the listener-only one ({@link enableSeedListener}) so the two cannot drift.
    *
-   * A seed applied by the INBOUND protocol handler writes its `CadrePeer` rows
-   * inside the service, below every membership wrapper, so this is the site that
-   * owes the per-stream gate its refresh (same obligation as
-   * {@link refreshMembershipGate}); without it a just-seeded peer is denied until
-   * the next timed cohort reconcile.
+   * A seed applied by the INBOUND protocol handler writes no `CadrePeer` row of
+   * its own (it merges the libp2p peer store and dials owners), so the automatic
+   * write-driven refresh never fires for it — yet applying it can ANCHOR a new
+   * owner key, which flips rows already present from unauthorized to authorized.
+   * Hence the explicit refresh here; without it a peer the freshly anchored owner
+   * vouched for stays denied until the next timed cohort reconcile.
    */
   private seedEventCallbacks(): SeedEventCallbacks {
     return {
@@ -3648,7 +3689,7 @@ export class CadreNode implements SAppIdLookup {
         // A wire-delivered seed never passes through the `applySeed` wrapper, so
         // this is where its owner peers become cold-start bootstrap targets.
         this.recordSeedBootstrapPeers(seed);
-        void this.refreshAuthorizedControlPeers('seed-applied');
+        void this.refreshMembershipGate('seed-applied');
       },
       onSeedError: (partyId, error) => this.emit('seed:error', { partyId, error }),
     };
@@ -3658,20 +3699,83 @@ export class CadreNode implements SAppIdLookup {
    * Re-materialize the authorized-peer snapshot that the fail-closed per-stream
    * control-DB gate ({@link authorizeInboundControlStream}) judges against.
    *
-   * Every membership wrapper on this class (`authorizePeer`, `removePeer`,
-   * `addDrone`, `acceptPhone`, `addPhoneWithRelay`, `applySeed`, `registerSelf`)
-   * already does this for itself, so ordinary callers never need it. It exists
-   * for a caller that wrote a `CadrePeer` row through a LOWER layer — reaching
-   * {@link getSeedBootstrapService} directly — whose snapshot would otherwise
-   * stay stale until the next timed cohort reconcile. That window is not
-   * cosmetic: while it lasts this node DENIES the just-written peer's own
-   * control-DB streams, which can kill that peer's schema load outright.
+   * NO `CadrePeer` writer needs to call this: the control database notifies it
+   * after every committed member-row write (`ControlDatabase.mutateCadrePeer`,
+   * wired in {@link start}), which is exactly what makes the refresh automatic
+   * rather than a caller obligation. It stays public for the changes that write
+   * NO row locally and so raise no notification:
    *
-   * Idempotent and best-effort (a failed read keeps the previous snapshot);
-   * never rejects.
+   * - a membership row that arrived by REPLICATION (otherwise picked up on the
+   *   next timed cohort reconcile — bounded staleness by design), and
+   * - a newly anchored trusted owner key ({@link applySeed}), which flips rows
+   *   ALREADY present from unauthorized to authorized without touching them.
+   *
+   * Coalescing: marks the snapshot stale and resolves once a refresh that began
+   * after this call has completed, so a caller that awaits it always observes
+   * its own change. Concurrent callers share one read. Idempotent and
+   * best-effort (a failed read keeps the previous snapshot); never rejects.
    */
-  async refreshMembershipGate(): Promise<void> {
-    await this.refreshAuthorizedControlPeers('external-write');
+  async refreshMembershipGate(reason = 'external-write'): Promise<void> {
+    this.membershipGateDirty = true;
+    if (this.membershipGateDeferDepth > 0) {
+      // Flushed once when the enclosing scope exits.
+      return;
+    }
+    while (this.membershipGateDirty) {
+      // Re-checked after the await: the drain may have taken its last look at
+      // the flag before we set it, in which case we need a fresh one.
+      this.membershipGateDrain ??= this.drainMembershipGate(reason);
+      await this.membershipGateDrain;
+    }
+  }
+
+  /**
+   * The single in-flight refresh loop behind {@link refreshMembershipGate}: read
+   * until the stale flag stays clear, then release the slot.
+   */
+  private async drainMembershipGate(reason: string): Promise<void> {
+    try {
+      while (this.membershipGateDirty) {
+        // Cleared BEFORE the read (not after) so a write landing mid-read marks
+        // the snapshot stale again and earns another pass, and so a throw still
+        // terminates the loop.
+        this.membershipGateDirty = false;
+        await this.refreshAuthorizedControlPeers(reason);
+      }
+    } catch (error) {
+      // Upholds `refreshMembershipGate`'s never-rejects contract. The read helper
+      // already swallows its own failures, so this is defensive — but a rejection
+      // here would otherwise surface out of every awaiting writer.
+      log('membership gate drain (%s) failed — keeping previous snapshot: %o', reason, error);
+    } finally {
+      this.membershipGateDrain = null;
+    }
+  }
+
+  /**
+   * Collapse a burst of `CadrePeer` writes into ONE gate refresh at scope exit.
+   *
+   * For loops that re-touch many rows (the write-while-alone drains), where a
+   * per-row refresh would mean one full membership read per row for a snapshot
+   * that only has to be correct once the loop settles.
+   *
+   * The depth counter is instance-level, so it also suppresses a genuinely
+   * CONCURRENT external write's refresh for the life of the scope: that writer's
+   * promise resolves before its peer is admitted, and admission lands at scope
+   * exit instead. Acceptable — scope exit is milliseconds away (bounded by the
+   * drain), versus the ~15 s reconcile interval that was the alternative before
+   * any of this existed — but it is the reason these scopes stay short and rare.
+   */
+  private async deferMembershipGateRefresh<T>(reason: string, body: () => Promise<T>): Promise<T> {
+    this.membershipGateDeferDepth++;
+    try {
+      return await body();
+    } finally {
+      this.membershipGateDeferDepth--;
+      if (this.membershipGateDeferDepth === 0 && this.membershipGateDirty) {
+        await this.refreshMembershipGate(reason);
+      }
+    }
   }
 
   /**
@@ -3685,12 +3789,11 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
+    // The insert notifies the control DB's membership hub, so the per-stream gate
+    // has already admitted the just-vouched peer by the time this resolves.
     await this.seedBootstrapService.authorizePeer({ peerId, multiaddrs });
     // Queue for re-replication if this committed local-only (no connected cohort).
     this.noteControlWrite(peerId, 'authorize');
-    // The per-stream gate must admit the just-vouched peer immediately, not on
-    // the next timed refresh.
-    await this.refreshAuthorizedControlPeers('authorizePeer');
   }
 
   /**
@@ -3703,11 +3806,11 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
+    // The delete notifies the membership hub, so the removed peer is out of the
+    // per-stream gate by the time this resolves.
     await this.seedBootstrapService.removePeer(peerId);
     // Track + loudly flag a delete that committed local-only (security-relevant).
     this.noteControlWrite(peerId, 'remove');
-    // Drop the removed peer from the per-stream gate right away.
-    await this.refreshAuthorizedControlPeers('removePeer');
   }
 
   /**
@@ -3760,12 +3863,14 @@ export class CadreNode implements SAppIdLookup {
       }
       const tempResult = await tempService.applySeed(seed, options);
       this.noteAppliedSeed(tempResult, seed);
-      await this.refreshAuthorizedControlPeers('applySeed');
+      // Not a row write (so nothing notifies): applying a seed can anchor a new
+      // owner key, which flips rows ALREADY present into the authorized set.
+      await this.refreshMembershipGate('applySeed');
       return tempResult;
     }
     const result = await this.seedBootstrapService.applySeed(seed, options);
     this.noteAppliedSeed(result, seed);
-    await this.refreshAuthorizedControlPeers('applySeed');
+    await this.refreshMembershipGate('applySeed');
     return result;
   }
 
@@ -3841,9 +3946,9 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    const result = await this.seedBootstrapService.addDrone(options);
-    await this.refreshAuthorizedControlPeers('addDrone');
-    return result;
+    // The drone's `CadrePeer` insert notifies the membership hub on the way to the
+    // seed, so the per-stream gate already admits it here.
+    return await this.seedBootstrapService.addDrone(options);
   }
 
   /**
@@ -3870,9 +3975,9 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
+    // The just-accepted phone opens control-DB streams next; its `CadrePeer` insert
+    // notifies the membership hub, so it is already admitted when this resolves.
     await this.seedBootstrapService.acceptPhone(options, issuedInvite);
-    // The just-accepted phone opens control-DB streams next; admit it now.
-    await this.refreshAuthorizedControlPeers('acceptPhone');
   }
 
   /**
@@ -3883,12 +3988,11 @@ export class CadreNode implements SAppIdLookup {
     if (!this.seedBootstrapService) {
       throw new Error('Seed bootstrap service not initialized. Call initializeSeedBootstrap() first.');
     }
-    const result = await this.seedBootstrapService.addPhoneWithRelay(phonePeerId);
-    // The service authorizes the phone (a `CadrePeer` insert) on the way to the
-    // seed, so the per-stream gate must admit it now — not on the next reconcile,
-    // by which time the phone's own control-DB schema load may have died denied.
-    await this.refreshAuthorizedControlPeers('addPhoneWithRelay');
-    return result;
+    // The service authorizes the phone (a `CadrePeer` insert, which notifies the
+    // membership hub) on the way to the seed, so the per-stream gate admits it
+    // before this resolves — not on the next reconcile, by which time the phone's
+    // own control-DB schema load may have died denied.
+    return await this.seedBootstrapService.addPhoneWithRelay(phonePeerId);
   }
 
   /**

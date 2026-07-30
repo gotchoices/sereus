@@ -4,7 +4,7 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlNetworkSeed } from '../src/types.js';
 import {
-  MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith,
+  MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb,
   type Owner, type PeerRow
 } from './membership-gate-helpers.js';
 
@@ -284,15 +284,17 @@ describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', (
   });
 
   it('addPhoneWithRelay refreshes the gate for the phone it just authorized', async () => {
-    // The service inserts the phone's `CadrePeer` row inside its own call, so the
-    // node wrapper — not the caller — owes the refresh.
+    // The service inserts the phone's `CadrePeer` row inside its own call — through
+    // `mutateCadrePeer`, so the control DB's membership hub owes the refresh and
+    // neither the wrapper nor the caller has to remember.
     const { node, owner, members } = await nodeWithMutableRows();
     const PHONE = 'peer-phone';
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
-      addPhoneWithRelay: async (phonePeerId: string) => {
-        members.push(vouchedRow(phonePeerId, owner));
-        return { seed: {}, encodedSeed: '' };
-      }
+      addPhoneWithRelay: async (phonePeerId: string) =>
+        fakeDb(node).mutateCadrePeer('peer-insert', async () => {
+          members.push(vouchedRow(phonePeerId, owner));
+          return { seed: {}, encodedSeed: '' };
+        })
     };
 
     await node.addPhoneWithRelay(PHONE);
