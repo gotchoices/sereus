@@ -5,6 +5,72 @@ difficulty: hard
 
 # Delegate-peer admission: let a party relay serve its own members' strand nodes
 
+<!-- resume-note -->
+**Prior run (2026-07-29) hit the soft token budget during investigation. NO code was
+changed — the working tree is untouched by that run.** All findings are inline below (no
+external log). The design in this ticket was verified against HEAD; nothing contradicts it.
+Start implementing directly from these confirmed sites — no re-discovery needed:
+
+- **Delegate peerId computation.** `peerIdFromPrivateKey` from `@libp2p/peer-id` is the
+  right call on the derived transport key (already used throughout
+  `packages/integration-tests`). At reconcile/re-announce time, do NOT re-derive: a running
+  strand's delegate peerId is simply `instance.libp2pNode.peerId.toString()` — enumerate via
+  `StrandInstanceManager.getInstances()` (`strand-instance-manager.ts:154`). Re-derivation
+  via `strandTransportKey` is only needed on the launch/resume paths (deterministic, cheap).
+- **Gate wiring site.** `admitInboundControlConnection` is `cadre-node.ts:883-907`; insert
+  the delegate check between the enrollment-window check (:887-889) and the
+  `listAuthorizedMembers()` read (:890). Its doc block is :832-882 (numbered admit list
+  :841-860, the "who pays" ordering note :861-863). Stream gate
+  `authorizeInboundControlStream` is :985-999 (doc :948-984) — doc-only change there.
+- **Announce hook (responder).** `StrandAddrService` is constructed in `CadreNode.start()`
+  at `cadre-node.ts:541-545` — inject `onDelegateAnnounce` there. `processAddrRequest` is
+  `strand-addr-protocol.ts:219-230`; the `isMember` gate is :222 — call the hook after it,
+  before the `getStrandMultiaddrs` lookup. `peerIdFromString` is already imported in that
+  module (:34) for validation. The request is additive JSON — no framing changes.
+- **Announce plumbing (client).** `collectStrandAddrs` builds one shared request object at
+  `strand-addr-protocol.ts:274`; add `delegatePeerId` to `CollectStrandAddrsOptions` (:246)
+  and set it on that request. `StrandAddrRequest`/`StrandAddrResponse` live in
+  `types.ts:1036-1054`.
+- **Launch reorder.** In `launchStrand` (`cadre-node.ts:2765-2811`) the transport key is
+  derived at :2789 AFTER `resolveCohortSeed` at :2771 — swap. Clean approach: give
+  `resolveCohortSeed` (:2827-2843) an optional `delegatePeerId` and, when present, merge the
+  relay targets into the sibling set it already passes to `collectStrandAddrs` — the
+  announce then rides the exact RPC pass the launch already awaits, so every grant is
+  recorded on the responder BEFORE `startStrand` runs `libp2p.start()` (the responder
+  records the grant before writing its response; the client awaits responses).
+  `resumeStrandRuntime` (:2500-2507) gets the same optional-arg treatment.
+- **Relay targets.** For a configured circuit listen addr, strip the trailing
+  `/p2p-circuit` to get the relay's direct dial addr and pass it as the
+  `StrandAddrPeer.addrs` fallback (`strand-addr-protocol.ts:234-243` supports exactly this)
+  — covers the not-yet-connected-relay case. Live-circuit relays come from
+  `controlNode.getMultiaddrs()` (pattern at `getRelayAddress`, `cadre-node.ts:3535-3543`).
+  A party-member relay admits the announcer (the announcer's control node IS an authorized
+  member), so the responder-side `isAuthorizedMember` gate passes; a dedicated `ops/` relay
+  does not speak the protocol at all and the per-peer failure folds to `[]` — harmless and
+  correct (it needs no grant: it has no membership gate).
+- **Re-announce.** `runReconcileControlCohort` is `cadre-node.ts:1455-1530` (15 s interval
+  armed at :1273). Track `lastAnnouncedAt` per (target, strand). Record it OPTIMISTICALLY
+  at announce time: `collectStrandAddrs` folds per-peer failures to `[]` and reports no
+  per-peer success, and threading success out would change its API for little gain — a
+  failed INITIAL announce is fatal-at-start anyway (relay denies the reservation,
+  `libp2p.start()` throws, wake/check-in re-resume retries with a fresh announce), and a
+  failed REFRESH retries within TTL/2 = 15 min, still inside the 30 min TTL. State this
+  tradeoff in a comment at the site.
+- **Unit-test harnesses (exist, reuse).** `test/membership-gate-helpers.ts` `inject()` +
+  the private-method call pattern in `test/control-stream-authorization.spec.ts` (its
+  `admitConnection`/`authorize` helpers) are exactly how to assert "grant admits the
+  connection, stream gate still denies" — put that case beside the enrollment-window
+  divergence test (`control-stream-authorization.spec.ts:122`). For the responder,
+  `test/strand-addr-protocol.spec.ts` has `makeService(overrides)` and a `freshPeerId()`
+  helper that mints real parseable peerIds — extend `makeService` with `onDelegateAnnounce`.
+- **Bookkeeping.** `tickets/.pre-existing-known.md:3-4` is the entry to remove once the
+  circuit-relay scenario is green.
+- **Module placement.** `cadre-node.ts` is ~3300 lines; put the grant store + the
+  relay-peerId extractor in a new `packages/cadre-core/src/delegate-admission.ts` with its
+  own spec file, mirroring `membership-connection-gater.ts`'s injectable-policy pattern
+  (the ticket's stated preference — confirmed sensible on inspection).
+<!-- /resume-note -->
+
 ## What is broken (reproduced at HEAD, 2026-07-29)
 
 `packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts > E2E push-wake over
