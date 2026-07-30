@@ -946,7 +946,7 @@ export class CadreNode implements SAppIdLookup {
       // Optimystic's default of 2 (a party may genuinely run two nodes).
       clusterSize: CONTROL_REPLICATION_BREADTH,
       clusterPolicy: { allowDownsize: true, sizeTolerance: 0.5 },
-      arachnode: { enableRingZulu: this.config.profile === 'storage' },
+      arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
       ...(network?.listenAddrs && { listenAddrs: network.listenAddrs }),
