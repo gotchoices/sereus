@@ -1,6 +1,6 @@
 # Cadre Control Consistency Model
 
-**Status**: Design exploration. Not yet implemented. Captures a target architecture for the cadre control network's consistency model, intended to sit between Optimystic's synchronous quorum semantics and Quereus Sync's eventually-consistent CRDT semantics.
+**Status**: Design exploration. Not yet implemented. Captures a target architecture for the cadre control network's consistency model, intended to sit between Optimystic's synchronous quorum semantics and Quereus Sync's eventually-consistent CRDT semantics. The single exception is [What Ships Today](#what-ships-today-the-control-database-replicates-to-the-whole-party), which describes current behaviour and is marked as such.
 
 ## Motivation
 
@@ -12,6 +12,20 @@ The cadre control network has two pressures that the current toolkit doesn't ful
 Optimystic's `Right-is-Right` ([details](../../optimystic/docs/right-is-right.md)) solves the second concern with cluster validation + escalation, but synchronously: a dispute blocks the transaction. Quereus Sync ([details](../../quereus/docs/sync.md)) solves the first with offline-first CRDT replication, but discards SQL constraints and transactional atomicity in the process.
 
 The cadre control network needs **both** properties: a holder of a locally-integrity-satisfying change should be able to commit and proceed, and a holder of new information that invalidates a previously-accepted change should be able to reconcile without violating convergence.
+
+## What Ships Today: The Control Database Replicates to the Whole Party
+
+> **This section is shipped behaviour, not design exploration.** Everything from [Two Layers](#two-layers) onward is the target architecture and is not yet implemented; this one section describes what the code does now. Read it as the baseline the rest of the document proposes to improve on.
+
+Today the control network gets its durability from Optimystic's cluster replication, with no sync/CRDT layer underneath. Each block is replicated to a **cohort** — a group of nodes drawn from the network — and the number of nodes Cadre asks for is the constant `CONTROL_REPLICATION_BREADTH` (currently 16) in `packages/quereus-plugin-sereus/src/cluster-size.ts`. Optimystic caps a cohort at the peers that actually serve the network and shrinks a cohort it cannot fill, so any number at or above the party's node count has the same effect: **every member of the party holds every control block.** 16 is roughly twice the largest deployment [`architecture.md`](architecture.md) documents, so in practice the cohort is the whole party.
+
+**Why the control database is treated differently from strand data.** Strand data is application data. No single strand node needs all of it, so replicating each block to a subset is a storage-versus-availability tradeoff, and strand networks keep a default breadth of 2 (`DEFAULT_STRAND_CLUSTER_SIZE`). The control database is the opposite: membership, peer addresses and the strand list are read *in full* by every control node, so a member left out of a block's cohort is a member that may never learn the fact.
+
+Partial replication is supposed to make that safe via **read repair** — on reading a block a node asks the block's cohort for the newest revision and catches up. That mechanism has a floor it cannot go below. At a cohort of two, "the cohort" is exactly one other peer, and Optimystic accepts a single peer's answer as the cluster's truth when the cohort is too small to hold a second corroborator. If that one peer is the member that also missed the write, it honestly reports the older revision, the reader concludes it is already current, and re-arms its repair window — so it does not converge slowly, it never converges. Measured on the control-DB replication scenario: 4 failures in 10 runs at breadth 2, 0 failures in 20 runs at full-party breadth. Replicating to everyone removes the need for read repair on the control path entirely.
+
+**What it costs.** A commit needs a super-majority of its cohort to approve. With the cohort now the whole party rather than two nodes, a single flaky or slow member counts against that threshold where before it would simply have been outside the cohort and ignored. Broader replication buys convergence and pays for it in write availability — which is the tradeoff the asynchronous-authority design below exists to remove.
+
+**Two things this does *not* change.** The breadth is frozen when a node's libp2p node is created, so it does not track a party that grows at runtime — see [`architecture.md` → Replication cluster size](architecture.md#replication-cluster-size) for why it is a constant rather than the live member count. And it is not the same knob as `assumedClusterSize`, the separate "smallest cohort this deployment can genuinely field" value that Optimystic's membership admission gate measures against; Cadre leaves that at 2, because a party legitimately runs one or two nodes.
 
 ## Two Layers
 

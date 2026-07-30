@@ -279,7 +279,7 @@ on shutdown.
 | `port` | number | `0` | libp2p listening port (0 = random) |
 | `enableCache` | boolean | `true` | Enable optimystic caching |
 | `fretProfile` | `'edge' \| 'core'` | `'edge'` | FRET profile |
-| `clusterSize` | number | `2` | Nodes the strand's replication cluster should have. Every peer on the strand must use the same value — a peer configured higher than the cohort it is shown refuses to vote and the write fails. Must be an integer ≥ 2. Ignored when `libp2pNode` is injected |
+| `clusterSize` | number | `2` | Nodes the **strand's** replication cluster should have (the control network uses its own fixed `CONTROL_REPLICATION_BREADTH` and never reads this). Every peer on the strand should use the same value: a peer configured much higher derives a larger expected cohort and can reject a coordinator's smaller declared peer set as a downsize. Frozen when the libp2p node is created, so a change takes effect on the next restart. Must be an integer ≥ 2 (`MIN_CLUSTER_SIZE`, Optimystic's own minimum). Leaving it unset is *not* the same as passing 2 elsewhere — Optimystic's own fallback is 10, so this default is applied here. Ignored when `libp2pNode` is injected |
 | `libp2pNode` | Libp2p | — | Inject an existing libp2p node |
 | `coordinatedRepo` | IRepo | — | Required when `libp2pNode` is provided |
 | `mode` | `'bootstrap' \| 'networked'` | `'networked'` | `'bootstrap'` routes through the local transactor (no peer round trips); `'networked'` uses the network transactor |

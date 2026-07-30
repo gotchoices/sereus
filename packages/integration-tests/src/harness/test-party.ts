@@ -53,6 +53,11 @@ async function createTestNode(
     clusterPolicy: {
       allowDownsize: true,
       sizeTolerance: 0.5,
+      // NOTE: this harness is more permissive than production about how many cohort
+      // members must approve a write — CadreNode leaves Optimystic's default of 0.75.
+      // A commit-availability regression can therefore pass here and fail in a real
+      // party. Pre-existing; matters more now the cohort is the whole party rather
+      // than two nodes. Align the two, or drop this override, if that bites.
       superMajorityThreshold: 0.51
     },
     arachnode: { enableRingZulu: true }

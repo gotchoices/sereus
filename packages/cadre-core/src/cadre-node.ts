@@ -764,6 +764,18 @@ export class CadreNode implements SAppIdLookup {
   }
 
   private async createControlNode(): Promise<Libp2p> {
+    return await createLibp2pNode(this.buildControlNodeOptions());
+  }
+
+  /**
+   * Map this node's config onto the control network's libp2p node options.
+   *
+   * Split out of {@link createControlNode} purely so the mapping is assertable without
+   * standing up a real libp2p node — `packages/cadre-core/test/cadre-node-control-replication.spec.ts`
+   * calls it on a bare `new CadreNode(config)`. Read nothing else into the split; the
+   * only caller in production is `createControlNode`.
+   */
+  private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
     const { controlNetwork, network, storage, profile } = this.config;
     const identityKey = this.identityKey;
 
@@ -814,7 +826,7 @@ export class CadreNode implements SAppIdLookup {
         this.authorizeInboundControlStream(remotePeerId, protocol)
     };
 
-    return await createLibp2pNode(nodeOptions);
+    return nodeOptions;
   }
 
   /**

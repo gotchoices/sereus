@@ -45,6 +45,13 @@ export const MIN_CLUSTER_SIZE = 2;
  * two nodes. Cadre therefore leaves it at Optimystic's default of 2. Asserting 16 there
  * would make the membership admission gate demand `ceil(0.75 x 16) = 12` declared peers on
  * its low-confidence path and refuse every real party's writes.
+ *
+ * NOTE: cohort selection overfetches proportionally to this number —
+ * `Libp2pKeyPeerNetwork.membershipOverfetch` asks FRET for
+ * `max(clusterSize * 4, clusterSize + 16)` candidates and does a peerStore protocol lookup
+ * per candidate, so 16 requests a 64-peer proximity band. Free today, because the result is
+ * bounded by the peers FRET actually knows (2 in a 3-node party). If control-network cohort
+ * selection ever shows up as slow on a large mesh, look here first.
  */
 export const CONTROL_REPLICATION_BREADTH = 16;
 
