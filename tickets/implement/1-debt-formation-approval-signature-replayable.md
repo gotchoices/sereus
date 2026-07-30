@@ -226,3 +226,66 @@ Each of these is a test to write, not just a thing to keep in mind.
   `FormationUsage` row (line ~40) should say the log records the joining peer and a per-
   redemption nonce.
 - Run `yarn lint`, `yarn build`, and the `cadre-core` test suite in the foreground with `tee`.
+
+## Discovery notes (interrupted run, 2026-07-30 — no code changed yet)
+
+A prior run read the relevant files and hit its token budget before editing. **Nothing in the
+working tree was modified**; the whole TODO above is still outstanding. What that run learned,
+so the next one does not pay for it again:
+
+### Exact edit sites
+
+- `schemas/control.qsql` — `table FormationUsage` is lines 479–550. The `vouch` digest is
+  line 530; the `KNOWN GAP:` comment to replace is lines 522–526; the `with context (...)`
+  list carrying `PeerId` is line 550.
+- `packages/cadre-core/src/control-schema.ts` — same table at lines 490–561 (digest line 541,
+  `KNOWN GAP:` lines 533–537). **This file is one big TypeScript template literal**
+  (`export const CONTROL_SCHEMA = \`-- This manages ...\``), so every backtick inside the SQL
+  comments is written escaped (`` \` ``). Mirroring is byte-identical *after* accounting for
+  that escaping — the new comments contain no backticks, so a straight copy works, but do not
+  introduce any. The drift guard is
+  `packages/cadre-core/test/control-schema-drift.spec.ts`.
+- `packages/cadre-core/src/control-database.ts` — `buildAuthorizationMessage` at line 115
+  (build `formationVouchMessage` next to it, over `controlAuthorizationFields`);
+  `redeemInvitation` at 970; `recordFormationUsage` at 1034; the shared
+  `execFormationUsageInsert` at 1068 (its `insert` statement, line 1090, is the one that gains
+  the two columns and drops `PeerId` from the context list).
+- `packages/cadre-core/src/control-formation-recorder.ts:89` — the doc comment that calls
+  `PeerId` "advisory".
+- `docs/architecture.md:35` (the `ValidationKey` row, phrase "including the sign-off digest's
+  known replay gap") and `docs/architecture.md:40` (the `FormationUsage` row, currently just
+  "Audit log of formation invite consumption").
+
+### Call sites affected by making `peerId` required
+
+`packages/integration-tests/src/harness/test-network.ts:198` **already passes**
+`peerId: joiner.partyId` — contrary to the TODO above, it needs no change. Likewise
+`ControlFormationUsageRecorder.recordUsage` / `provisionAndRecord` already pass `initiatorKey`.
+
+The real cost is the specs, which call both methods with no `peerId` and will stop compiling:
+
+- `packages/cadre-core/test/control-formation-invite.spec.ts` — `redeemInvitation` at 152,
+  180, 198, 219, 237, 255, 452, 481, 519, 520; `recordFormationUsage` at 268, 269, 321, 505,
+  637, 652, 663, 680, 701, 718, 729, 742, 949. (543/544 already pass `peerId`.)
+- `packages/cadre-core/test/control-revocation-replay.spec.ts` — `redeemInvitation` at 702,
+  732, 771, 780, 797, 809, 844; `recordFormationUsage` at 824, 860.
+
+Mechanical, but it is most of the diff — budget for it.
+
+### Test-harness details
+
+- The `vouch` helper the validation-branch block signs with is
+  `control-formation-invite.spec.ts:602–606`; the raw insert helper is
+  `rawInsertFormationUsage` at lines 70–83 (it hardcodes `PeerId = 'peer-raw'` in the context
+  list and inserts `(Token, UseNumber, Disclosure, StrandId, StrandStampId)`). Both need the
+  new field vector / columns before any new case can be written.
+- **`expectConstraintFailure` cannot express the verbatim-replay case.** It matches
+  `/CHECK constraint failed: (<names>)\b/` (`test/control-constraint-helpers.ts:24`), and the
+  verbatim replay is rejected by `UsageStampId`'s `unique` constraint, not by a named CHECK.
+  Assert that one with a distinct matcher on the uniqueness error, and keep it distinct
+  deliberately — the ticket's "assert the distinct rejector" bullet is exactly this. Confirm
+  the engine's actual unique-violation message text before pinning a regex to it.
+- Every case in the `FormationUsage.Authorized validation-key branch` block records against a
+  pre-existing owner-signed strand via `recordFormationUsage` precisely so `Authorized` is the
+  only constraint that can reject (single-rejector technique, documented at spec:584–596).
+  New cross-joiner / cross-strand replay cases should keep that shape.
