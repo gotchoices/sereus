@@ -12,7 +12,7 @@ import { MissingHostStrandError, formationVouchMessage, generateStampId } from '
 import type { ControlDatabase, FormationUsageResult } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
-import { expectConstraintFailure } from './control-constraint-helpers.js';
+import { expectConstraintFailure, expectUniqueViolation } from './control-constraint-helpers.js';
 
 const log = debug('sereus:cadre:test:formation-invite');
 
@@ -613,10 +613,12 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
    * CHECK verified against that parameter, so a redeemer minted a throwaway keypair, signed its
    * own disclosure, passed both, and satisfied the gate; `ValidationKey` had no consumer at all.
    *
-   * Every case records against a PRE-EXISTING owner-signed strand (`recordFormationUsage`, not
-   * `redeemInvitation`) so `Authorized` is the only constraint that can reject: `StrandExists` is
-   * satisfied by the committed strand and `Monotonic` by the writer's use-number read. That keeps
-   * `expectConstraintFailure(..., 'Authorized')` a single-rejector assertion.
+   * Every case that asserts a REJECTION records against a PRE-EXISTING owner-signed strand
+   * (`recordFormationUsage`, not `redeemInvitation`) so `Authorized` is the only constraint that
+   * can reject: `StrandExists` is satisfied by the committed strand and `Monotonic` by the
+   * writer's use-number read. That keeps `expectConstraintFailure(..., 'Authorized')` a
+   * single-rejector assertion. The one `redeemInvitation` case below asserts a LANDING, so it is
+   * free of that restriction — see the note on it for why the consent-seating path needs its own.
    */
   describe('FormationUsage.Authorized validation-key branch', () => {
     let validationPrivateKey: string;
@@ -746,6 +748,47 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(row?.PeerId).toBe(redemption.peerId);
     });
 
+    it('admits a CONSENT-SEATING redemption (redeemInvitation) under an approver sign-off', async () => {
+      // Every other case here uses `recordFormationUsage` against a strand that already exists.
+      // That leaves the path a stranger actually joins by — `redeemInvitation`, which seats the
+      // strand and its usage row in ONE transaction — never exercised under an approval at all.
+      // It mints its own `usageStampId` when the caller supplies none, so a regression that
+      // stopped threading the caller's nonce through would be invisible to the record-only
+      // cases: the approver signs one nonce and a different one reaches the digest.
+      const token = 'invite-seating-' + rand();
+      const strandId = 'strand-seating-' + rand();  // deliberately NOT inserted: consent seats it
+      await db.insertFormationInvite(token, 'sapp-seating', ownerPublicKey, signMessage, {
+        validationUrl: 'https://validate.example/seating',
+      });
+      const redemption: Redemption = {
+        token, strandId,
+        usageStampId: generateStampId('vouch-seating-' + rand()),
+        peerId: 'peer-seating-' + rand(),
+        disclosure: 'seating-disclosure',
+      };
+
+      const landed = await db.redeemInvitation({
+        ...redemption,
+        validationKey: validationPublicKey,
+        validationSignature: vouch(validationPrivateKey, redemption),
+      });
+      expect(landed.useNumber).toBe(1);
+      expect(landed.usageStampId).toBe(redemption.usageStampId);
+
+      // The nonce the approver signed is the nonce on the row, and the strand it authorized
+      // came into existence unsigned off the back of that same row.
+      const row = await rawDb.get(
+        'select UsageStampId, PeerId, StrandId from CadreControl.FormationUsage where Token = ?',
+        [token],
+      );
+      expect(row?.UsageStampId).toBe(redemption.usageStampId);
+      expect(row?.PeerId).toBe(redemption.peerId);
+      expect(row?.StrandId).toBe(strandId);
+      expect(await rawDb.get(
+        'select Type from CadreControl.Strand where Id = ?', [strandId],
+      )).toMatchObject({ Type: 'o' });
+    });
+
     it('rejects an enrolled key named alongside a signature from a DIFFERENT key', async () => {
       const redemption = await validatingInvite('mismatch');
       const otherPrivate = generatePrivateKey('ed25519', 'base64url') as string;
@@ -857,14 +900,21 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * Keeping the two rejectors distinct is deliberate: a case that could be refused by
      * either would go green after a refactor that dropped one of them.
      *
-     * NOTE: the `UNIQUE constraint failed: <table>.<col>` assertions below match the wording
-     * the optimystic vtab renders (optimystic-module.ts → uniqueConstraintMessage), which is a
-     * storage-layer detail rather than anything the schema promises — if that message ever
-     * changes, these read as a formation regression when they are only a reworded error.
-     * Likewise the race case pins the (Token, UseNumber) primary-key collision because the
-     * vtab enforces the key on the insert, ahead of the deferred `Monotonic` CHECK; were that
+     * Between them the `Authorized` cases vary each of the five digest fields IN ISOLATION, so
+     * dropping any one field from BOTH sides of the digest (the SQL and `formationVouchMessage`)
+     * turns exactly one of these red. That property is the point: a suite whose cases each
+     * varied two fields stays green when the weaker of the pair is dropped. The cross-joiner
+     * case immediately below is the deliberate exception — it models the real attack (a SPENT
+     * approval re-filed under another name), which cannot help but carry a fresh nonce too, or
+     * `unique` answers before the digest does — so it is PAIRED with a single-field PeerId case
+     * on an unspent approval. Verified by mutation, not by reading: dropping PeerId reddens only
+     * the PeerId case, dropping UsageStampId only the fresh-nonce case.
+     *
+     * NOTE: the race case pins the (Token, UseNumber) primary-key collision because the vtab
+     * enforces the key on the insert, ahead of the deferred `Monotonic` CHECK; were that
      * ordering to invert, the same write would be refused by name instead. Re-observe what the
-     * engine emits and re-pin the single one it does — do NOT widen either match to accept both.
+     * engine emits and re-pin the single one it does — do NOT widen the match to accept both.
+     * `expectUniqueViolation` carries the caveat about that message's wording.
      */
     describe('one approval, one redemption (replay refusals)', () => {
       it('refuses one invitee\'s approval re-filed under ANOTHER joiner, without locking that joiner out', async () => {
@@ -914,10 +964,71 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         // `unique` is enforced on the insert itself rather than as a named deferred CHECK,
         // hence a duplicate-row rejection here instead of expectConstraintFailure.
         const before = await usageCount();
-        await expect(present()).rejects.toThrow(
-          /UNIQUE constraint failed: FormationUsage\.UsageStampId/i,
+        await expectUniqueViolation(present(), 'FormationUsage.UsageStampId');
+        expect(await usageCount()).toBe(before);
+      });
+
+      it('refuses a spent approval re-presented under a FRESH nonce — the one route around `unique`', async () => {
+        // The nonce column's `unique` only answers a VERBATIM re-presentation. A holder of a
+        // spent approval evades it trivially by minting a new nonce and changing NOTHING else:
+        // same invitation, same strand, same joiner, same disclosure text. The digest's
+        // UsageStampId is then the only thing standing between one sign-off and a second join,
+        // so this is the case that pins that field individually — the verbatim case above
+        // cannot, since `unique` answers there first.
+        const approved = await validatingInvite('nonce-swap');
+        const approval = vouch(validationPrivateKey, approved);
+
+        expect((await db.recordFormationUsage({
+          ...approved, validationKey: validationPublicKey, validationSignature: approval,
+        })).useNumber).toBe(1);
+
+        const before = await usageCount();
+        await expectConstraintFailure(
+          db.recordFormationUsage({
+            ...approved,
+            usageStampId: generateStampId('nonce-swap-fresh-' + rand()),
+            validationKey: validationPublicKey, validationSignature: approval,
+          }),
+          'Authorized',
         );
         expect(await usageCount()).toBe(before);
+
+        // The invite itself is not exhausted — it is uncapped, and a SECOND sign-off over a
+        // second nonce lands as use #2. So the refusal above was about the approval being
+        // spent, not about the token having run out of uses.
+        const second = sibling(approved, 'nonce-swap-second');
+        expect((await db.recordFormationUsage({
+          ...second,
+          validationKey: validationPublicKey,
+          validationSignature: vouch(validationPrivateKey, second),
+        })).useNumber).toBe(2);
+        expect(await usageCount()).toBe(before + 1);
+      });
+
+      it('refuses an UNSPENT approval presented for a different joiner (PeerId alone)', async () => {
+        // The cross-joiner case above necessarily varies the nonce too: a SPENT approval must
+        // carry a fresh one or `unique` answers before the digest does. So it cannot pin PeerId
+        // by itself. Here the approval has never landed, its nonce is still free, and the
+        // joining peer is the single field that differs — the exact "approval copied and
+        // re-presented for a different person" claim, isolated.
+        const approved = await validatingInvite('peer-swap');
+        const approval = vouch(validationPrivateKey, approved);
+
+        const before = await usageCount();
+        await expectConstraintFailure(
+          db.recordFormationUsage({
+            ...approved, peerId: 'peer-peer-swap-other-' + rand(),
+            validationKey: validationPublicKey, validationSignature: approval,
+          }),
+          'Authorized',
+        );
+        expect(await usageCount()).toBe(before);
+
+        // Same approval, same still-unspent nonce, the joiner it actually names: lands.
+        expect((await db.recordFormationUsage({
+          ...approved, validationKey: validationPublicKey, validationSignature: approval,
+        })).useNumber).toBe(1);
+        expect(await usageCount()).toBe(before + 1);
       });
 
       it('refuses an approval filed against a DIFFERENT strand than the one it names', async () => {
@@ -1020,11 +1131,12 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         // because A took that use number. The engine reports the (Token, UseNumber) primary-key
         // collision, which lands before the deferred `Monotonic` CHECK is ever evaluated.
         const before = await usageCount();
-        await expect(rawInsertFormationUsage({
-          ...joinerB, useNumber: 1, strandStampId: strandStampId!,
-          validationKey: validationPublicKey, validationSignature: approvalB,
-        })).rejects.toThrow(
-          /UNIQUE constraint failed: FormationUsage\.Token, FormationUsage\.UseNumber/i,
+        await expectUniqueViolation(
+          rawInsertFormationUsage({
+            ...joinerB, useNumber: 1, strandStampId: strandStampId!,
+            validationKey: validationPublicKey, validationSignature: approvalB,
+          }),
+          'FormationUsage.Token', 'FormationUsage.UseNumber',
         );
         expect(await usageCount()).toBe(before);
 
@@ -1037,10 +1149,13 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
         // A's nonce, though, is spent for good: its own approval re-presented verbatim under a
         // free use number is refused by the nonce's `unique`, not by anything about the retry.
-        await expect(rawInsertFormationUsage({
-          ...joinerA, useNumber: 3, strandStampId: strandStampId!,
-          validationKey: validationPublicKey, validationSignature: approvalA,
-        })).rejects.toThrow(/UNIQUE constraint failed: FormationUsage\.UsageStampId/i);
+        await expectUniqueViolation(
+          rawInsertFormationUsage({
+            ...joinerA, useNumber: 3, strandStampId: strandStampId!,
+            validationKey: validationPublicKey, validationSignature: approvalA,
+          }),
+          'FormationUsage.UsageStampId',
+        );
         expect(await usageCount()).toBe(before + 1);
       });
     });
