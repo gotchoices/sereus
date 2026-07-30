@@ -57,7 +57,8 @@ async function createTestNode(
       // members must approve a write — CadreNode leaves Optimystic's default of 0.75.
       // A commit-availability regression can therefore pass here and fail in a real
       // party. Pre-existing; matters more now the cohort is the whole party rather
-      // than two nodes. Align the two, or drop this override, if that bites.
+      // than two nodes. Tracked as
+      // `backlog/debt-harness-supermajority-threshold-diverges-from-production`.
       superMajorityThreshold: 0.51
     },
     arachnode: { enableRingZulu: true }

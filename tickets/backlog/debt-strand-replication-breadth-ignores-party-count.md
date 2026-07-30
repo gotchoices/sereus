@@ -34,19 +34,20 @@ it, not because all three members hold it.
 
 ## Why it happens
 
-Two numbers that should be independent are the same number.
-
-`CadreNodeConfig.clusterSize` is documented as applying to "both the control network
-and every strand network this node starts". Those are different populations:
+Two numbers that should be independent were the same number. **Since
+`control-db-replicates-to-whole-party` landed they are separate settings** —
+`CONTROL_REPLICATION_BREADTH` for the control network, `CadreNodeConfig.strandClusterSize` /
+`DEFAULT_STRAND_CLUSTER_SIZE` for strands — but the strand default is still the control
+network's old value of 2, so the behaviour below is unchanged. The populations differ:
 
 - The **control network** is one party's own devices — typically one or two.
 - A **strand** is the set of *parties* sharing a workspace — which is whatever people
   chose, and is the whole point of a three-party strand.
 
-`cadre-node.ts` passes the one value into strand startup unchanged, and
-`strand-instance-manager.ts` resolves it through `resolveClusterSize`, whose default
-and floor is 2 (`packages/quereus-plugin-sereus/src/cluster-size.ts`). Nothing in the
-strand path derives a value from strand membership, so a strand of any size gets 2.
+`cadre-node.ts` passes the configured value into strand startup unchanged, and
+`strand-instance-manager.ts` resolves it through `resolveStrandClusterSize`, whose
+default and floor is 2 (`packages/quereus-plugin-sereus/src/cluster-size.ts`). Nothing
+in the strand path derives a value from strand membership, so a strand of any size gets 2.
 
 Downstream, that number is the width of the cohort: `libp2p-key-network.ts` calls
 `assembleCohort(coord, wants)` with `wants` set to the configured size, and the
@@ -83,7 +84,7 @@ different problem.
 Raising the number is not a one-line change, and getting it wrong breaks writes
 outright.
 
-- **Members must agree.** As documented on `CadreNodeConfig.clusterSize`, a node
+- **Members must agree.** As documented on `CadreNodeConfig.strandClusterSize`, a node
   configured *higher* than the cohort it is shown refuses to vote on the write, and a
   single refusal fails the commit. Under-configuring is safe; over-configuring is not.
   So a value derived from party count is only safe if every member derives the same
@@ -101,10 +102,12 @@ outright.
   side can ask for "replicate to all members" without also telling every member to
   reject smaller cohorts.
 
-A reasonable first step that avoids all of the above is to stop having one knob serve
-two populations — give strands their own configuration separate from the control
-network's — which changes no behaviour by itself but makes the right value expressible.
-That is a decision to take deliberately, not to sneak in under a bug fix.
+The first step that avoids all of the above — stop having one knob serve two populations,
+so the right value becomes expressible — is **done**: `control-db-replicates-to-whole-party`
+split the control breadth out into its own constant and renamed the remaining knob
+`strandClusterSize`. What is left is the decision this ticket is about: what value a strand
+should use, and how members agree on it. That is a decision to take deliberately, not to
+sneak in under a bug fix.
 
 ## Not in scope
 

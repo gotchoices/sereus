@@ -6,10 +6,14 @@ difficulty: hard
 # Read repair accepts a single voter and then stops asking
 
 Latent defect in `../optimystic` (`db-p2p`), split out of Sereus's
-`bug-control-db-rx-record-never-converges-on-sender` at fix stage. Sereus's own exposure is removed by
-`implement/control-db-replicates-to-whole-party` (which stops configuring two-copy replication for the
-control database), so this is dormant for Sereus once that lands — but it remains wrong for any caller
-that configures a replication factor of 2.
+`bug-control-db-rx-record-never-converges-on-sender` at fix stage.
+
+**Scope narrowed 2026-07-29: strand data only.** `control-db-replicates-to-whole-party` has landed, so
+the control database no longer configures two-copy replication — its cohort is the whole party, which
+raises `corroboratorCapacity` from 1 to N-1 and with it the corroboration floor, so a lone stale peer
+can no longer pass as the cluster's truth there. Sereus's remaining exposure is **strand** networks,
+which still default to a replication breadth of 2 (`DEFAULT_STRAND_CLUSTER_SIZE`), and any other
+caller that configures a factor of 2.
 
 ## What happens
 
@@ -60,6 +64,8 @@ Optimystic as `debt-read-repair-commit-cert-verification`) rather than a headcou
 
 ## Why backlog rather than fix
 
-Sereus has no reachable path into this once `control-db-replicates-to-whole-party` lands, and the
-design question above wants a considered answer in the Optimystic repo rather than a quick patch
-driven by a Sereus scenario.
+Sereus's control path — where this was found and measured — is out of reach now that the control
+cohort is the whole party. What is left is the strand path, whose own breadth question is tracked
+separately (`backlog/debt-strand-replication-breadth-ignores-party-count`) and which has no reported
+failure yet. The design question above also wants a considered answer in the Optimystic repo rather
+than a quick patch driven by a Sereus scenario.
