@@ -664,16 +664,6 @@ export interface FormStrandResult {
 }
 
 /**
- * Result of validating a strand formation request
- */
-export interface ValidateFormationResult {
-  /** Public key for validating this formation */
-  validationKey: string;
-  /** Signature over the formation approval */
-  validationSignature: string;
-}
-
-/**
  * Disclosure object provided during strand formation.
  * Contains identity and context information from the initiator.
  */

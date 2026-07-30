@@ -8,7 +8,6 @@ import {
   StrandSolicitationService,
   type DisclosureValidator,
   type FormationUsageRecorder,
-  type FormationSigner,
   type FormationResponseValidator,
   type StrandProvisioner
 } from '../src/strand-solicitation.js';
@@ -55,89 +54,6 @@ describe('StrandSolicitationService', () => {
 
       expect(result1.memberKey).not.toBe(result2.memberKey);
       expect(result1.strandId).not.toBe(result2.strandId);
-    });
-  });
-
-  describe('validateStrandFormation', () => {
-    it('should throw without formationSigner', async () => {
-      const service = new StrandSolicitationService();
-      const disclosure: StrandFormationDisclosure = { partyId: 'party-123' };
-
-      await expect(service.validateStrandFormation('token', disclosure))
-        .rejects.toThrow('FormationSigner not configured');
-    });
-
-    it('should throw for invalid token', async () => {
-      const mockRecorder: FormationUsageRecorder = {
-        recordUsage: async () => {},
-        isTokenUsed: async () => false,
-        isTokenValid: async () => ({ valid: false })
-      };
-      const mockSigner: FormationSigner = {
-        signFormation: async () => ({ validationKey: 'key', validationSignature: 'sig' })
-      };
-
-      const service = new StrandSolicitationService({
-        formationUsageRecorder: mockRecorder,
-        formationSigner: mockSigner
-      });
-
-      await expect(service.validateStrandFormation('bad-token', {}))
-        .rejects.toThrow('Invalid or expired token');
-    });
-
-    it('should throw for already-used token', async () => {
-      const mockRecorder: FormationUsageRecorder = {
-        recordUsage: async () => {},
-        isTokenUsed: async () => true,
-        isTokenValid: async () => ({ valid: true })
-      };
-      const mockSigner: FormationSigner = {
-        signFormation: async () => ({ validationKey: 'key', validationSignature: 'sig' })
-      };
-
-      const service = new StrandSolicitationService({
-        formationUsageRecorder: mockRecorder,
-        formationSigner: mockSigner
-      });
-
-      await expect(service.validateStrandFormation('used-token', {}))
-        .rejects.toThrow('Token has already been used');
-    });
-
-    it('should throw for failed disclosure validation', async () => {
-      const mockValidator: DisclosureValidator = {
-        validateDisclosure: async () => false
-      };
-      const mockSigner: FormationSigner = {
-        signFormation: async () => ({ validationKey: 'key', validationSignature: 'sig' })
-      };
-
-      const service = new StrandSolicitationService({
-        disclosureValidator: mockValidator,
-        formationSigner: mockSigner
-      });
-
-      await expect(service.validateStrandFormation('token', { partyId: 'bad-party' }))
-        .rejects.toThrow('Disclosure validation failed');
-    });
-
-    it('should return validation result for valid formation', async () => {
-      const mockSigner: FormationSigner = {
-        signFormation: async () => ({
-          validationKey: 'validation-key-123',
-          validationSignature: 'signature-abc'
-        })
-      };
-
-      const service = new StrandSolicitationService({
-        formationSigner: mockSigner
-      });
-
-      const result = await service.validateStrandFormation('valid-token', { partyId: 'party-1' });
-
-      expect(result.validationKey).toBe('validation-key-123');
-      expect(result.validationSignature).toBe('signature-abc');
     });
   });
 

@@ -106,10 +106,22 @@ export {
   type FormationUsageRecorder,
   type ResolvedHostStrand,
   type StrandProvisioner,
-  type FormationSigner,
   type FormationResponseValidator,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
+
+// Formation approval client: asks an invite's ValidationUrl hook whether ONE redemption
+// may proceed, and checks the answer against the bytes the control database will verify.
+export {
+  createHttpFormationApprover,
+  signFormationApproval,
+  verifyFormationApproval,
+  FormationApprovalError,
+  type FormationApprovalRequest,
+  type FormationApproval,
+  type FormationApprover,
+  type FormationApprovalFailure
+} from './formation-approval.js';
 
 // DB-backed FormationUsageRecorder (reads/writes the real CadreControl tables)
 export { ControlFormationUsageRecorder } from './control-formation-recorder.js';

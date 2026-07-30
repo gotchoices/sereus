@@ -6,7 +6,6 @@ import type { Libp2p } from '@libp2p/interface';
 import type {
   OpenInvitation,
   FormStrandResult,
-  ValidateFormationResult,
   StrandFormationDisclosure
 } from './types.js';
 import {
@@ -120,29 +119,6 @@ export interface StrandProvisioner {
 }
 
 /**
- * Interface for signing formation approvals.
- *
- * No production implementation exists yet (only test doubles); the approval this returns is not
- * carried to the control database by any code path today — see
- * `tickets/plan/feat-formation-validation-webhook-unwired`.
- *
- * When one is built, these two arguments are NOT enough: `FormationUsage.Authorized` verifies the
- * signature over `formationVouchMessage({ token, usageStampId, strandId, peerId, disclosure })`
- * (`control-database.ts`), so the signer must also receive the redemption's single-use nonce, the
- * strand being joined, and the joining peer — which means the redeeming side has to mint the nonce
- * and know the strand id BEFORE it asks for the approval.
- */
-export interface FormationSigner {
-  /**
-   * Sign a formation approval
-   */
-  signFormation(token: string, disclosure: StrandFormationDisclosure): Promise<{
-    validationKey: string;
-    validationSignature: string;
-  }>;
-}
-
-/**
  * Interface for validating the responder's formation result on the initiator side.
  *
  * Symmetric to {@link DisclosureValidator} (which runs responder→initiator): it lets
@@ -180,7 +156,6 @@ export interface StrandSolicitationServiceOptions {
   disclosureValidator?: DisclosureValidator;
   formationUsageRecorder?: FormationUsageRecorder;
   strandProvisioner?: StrandProvisioner;
-  formationSigner?: FormationSigner;
   /** Validates the responder's result on the initiator side (defaults to a structural check) */
   formationResponseValidator?: FormationResponseValidator;
   /** Party ID for this node (used in protocol messages) */
@@ -196,7 +171,10 @@ export interface StrandSolicitationServiceOptions {
  *
  * This service handles the high-level API defined in api.md:
  * - formStrand(invitation, disclosure, node) - called by initiator
- * - validateStrandFormation(token, disclosure) - called by responder
+ *
+ * Outside approval of a redemption (an invite's `ValidationUrl`) is NOT here: it belongs to
+ * the redeeming node, which alone mints the nonce the approval is bound to. See
+ * `formation-approval.ts`.
  *
  * When a libp2p node is provided, the underlying protocol is handled by the
  * native cadre-core formation transport via StrandFormationManager.
@@ -205,7 +183,6 @@ export class StrandSolicitationService {
   private readonly disclosureValidator?: DisclosureValidator;
   private readonly formationUsageRecorder?: FormationUsageRecorder;
   private readonly strandProvisioner?: StrandProvisioner;
-  private readonly formationSigner?: FormationSigner;
   private readonly formationResponseValidator?: FormationResponseValidator;
   private readonly partyId: string;
   private readonly cadrePeerAddrs: string[];
@@ -228,7 +205,6 @@ export class StrandSolicitationService {
     this.disclosureValidator = options?.disclosureValidator;
     this.formationUsageRecorder = options?.formationUsageRecorder;
     this.strandProvisioner = options?.strandProvisioner;
-    this.formationSigner = options?.formationSigner;
     this.formationResponseValidator = options?.formationResponseValidator;
     this.partyId = options?.partyId ?? `party-${Date.now()}`;
     this.cadrePeerAddrs = options?.cadrePeerAddrs ?? [];
@@ -329,67 +305,6 @@ export class StrandSolicitationService {
       memberKey,
       invitePrivateKey,
       strandId
-    };
-  }
-
-  /**
-   * Validate a strand formation request.
-   *
-   * Called by the responder (the party who created the open invitation) when
-   * an initiator contacts them to form a strand. Validates the disclosure
-   * and returns a signed approval.
-   *
-   * @param token The invitation token being used
-   * @param disclosure The disclosure from the initiator
-   * @returns Validation key and signature if approved
-   * @throws If validation fails or token is invalid
-   */
-  async validateStrandFormation(
-    token: string,
-    disclosure: StrandFormationDisclosure
-  ): Promise<ValidateFormationResult> {
-    log('Validating strand formation for token: %s', token);
-
-    // Check token validity
-    if (this.formationUsageRecorder) {
-      const tokenCheck = await this.formationUsageRecorder.isTokenValid(token);
-      if (!tokenCheck.valid) {
-        log('Token invalid or expired: %s', token);
-        throw new Error('Invalid or expired token');
-      }
-
-      // Check if already used (for single-use tokens)
-      const isUsed = await this.formationUsageRecorder.isTokenUsed(token);
-      if (isUsed) {
-        log('Token already used: %s', token);
-        throw new Error('Token has already been used');
-      }
-    }
-
-    // Validate the disclosure
-    if (this.disclosureValidator) {
-      const isValid = await this.disclosureValidator.validateDisclosure(token, disclosure);
-      if (!isValid) {
-        log('Disclosure validation failed for token: %s', token);
-        throw new Error('Disclosure validation failed');
-      }
-    }
-
-    // Sign the formation approval
-    if (!this.formationSigner) {
-      throw new Error('FormationSigner not configured');
-    }
-
-    const { validationKey, validationSignature } = await this.formationSigner.signFormation(
-      token,
-      disclosure
-    );
-
-    log('Formation validated, key: %s', validationKey);
-
-    return {
-      validationKey,
-      validationSignature
     };
   }
 
