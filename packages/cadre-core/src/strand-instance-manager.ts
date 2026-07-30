@@ -211,7 +211,10 @@ export class StrandInstanceManager {
       memberPrivateKey: strandRow.MemberPrivateKey ?? undefined,
       connectedPeers: 0,
       lastActivity: new Date(),
-      latencyHint
+      latencyHint,
+      // Seed only — buildStrandRuntime overwrites this with the same resolution,
+      // so an instance that errors mid-build still reads sensibly.
+      mode: config.mode ?? 'networked'
     };
 
     this.instances.set(strandId, instance);
@@ -241,6 +244,7 @@ export class StrandInstanceManager {
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
     const { sAppConfig } = config;
+    const mode = config.mode ?? 'networked';
 
     // Resolve storage for this strand. If a factory function is provided, it is
     // called with the strandId to create strand-specific storage (e.g.,
@@ -298,6 +302,9 @@ export class StrandInstanceManager {
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 
       instance.libp2pNode = node;
+      // Assigned on every runtime (re)build — resume re-enters here with
+      // resumeConfig, so a bootstrap → networked shift refreshes the field.
+      instance.mode = mode;
 
       // Create and initialize the StrandDatabase. In bootstrap mode the same
       // strandStorage instance also backs the optimystic local transactor so
@@ -313,7 +320,7 @@ export class StrandInstanceManager {
         sAppConfig,
         libp2pNode: node,
         coordinatedRepo: node.coordinatedRepo,
-        mode: config.mode ?? 'networked',
+        mode,
         rawStorage: strandStorage,
         // Founder bootstrap inputs: the strand's type drives which membership rows
         // are written, and the closed-strand MemberPrivateKey derives the founding

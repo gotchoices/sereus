@@ -24,7 +24,8 @@ function makeInstance(strandId = 'strand-1', status: StrandStatus = 'hibernating
     status,
     connectedPeers: 0,
     lastActivity: new Date(0),
-    latencyHint: 'interactive'
+    latencyHint: 'interactive',
+    mode: 'networked'
   };
 }
 

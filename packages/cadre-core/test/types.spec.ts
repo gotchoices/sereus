@@ -100,6 +100,7 @@ describe('Types', () => {
       const instance: StrandInstance = {
         strandId: 'strand-789',
         status: 'active',
+        mode: 'networked',
         connectedPeers: 5,
         lastActivity: new Date(),
         latencyHint: 'interactive'
@@ -120,6 +121,7 @@ describe('Types', () => {
         const instance: StrandInstance = {
           strandId: 'test',
           status,
+          mode: 'bootstrap',
           connectedPeers: 0,
           lastActivity: new Date(),
           latencyHint: 'background'

@@ -478,6 +478,14 @@ export interface StrandInstance {
   status: StrandStatus;
   sAppInfo?: SAppInfo;
 
+  /**
+   * The lifecycle mode this instance's runtime was built with — `bootstrap`
+   * (purely local transactor) or `networked` (cluster transactor). Refreshed on
+   * every runtime (re)build, so a resume that shifts `bootstrap → networked`
+   * updates it. Read-only reporting; drives no behavior.
+   */
+  mode: StrandMode;
+
   /** The libp2p node for this strand (only when active/idle) */
   libp2pNode?: Libp2p;
 

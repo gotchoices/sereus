@@ -302,6 +302,7 @@ describe('CadreNode', () => {
         connectedPeers: 3,
         lastActivity: new Date(0),
         latencyHint: 'interactive',
+        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -397,6 +398,7 @@ describe('CadreNode', () => {
         connectedPeers: 1,
         lastActivity: new Date(0),
         latencyHint: 'interactive',
+        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -436,7 +438,8 @@ describe('CadreNode', () => {
         sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive'
+        latencyHint: 'interactive',
+        mode: 'networked'
       };
 
       const resumeCalls: Array<{ id: string; overrides: unknown }> = [];
@@ -491,7 +494,8 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive'
+        latencyHint: 'interactive',
+        mode: 'networked'
       };
 
       const quiesceCalls: string[] = [];
@@ -548,7 +552,8 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive'
+        latencyHint: 'interactive',
+        mode: 'networked'
       };
 
       const quiesceCalls: string[] = [];
@@ -594,6 +599,7 @@ describe('CadreNode', () => {
         connectedPeers: 2,
         lastActivity: new Date(0),
         latencyHint,
+        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -677,7 +683,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'hib', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(0), latencyHint: 'interactive'
+        lastActivity: new Date(0), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -746,7 +752,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-idle', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive'
+        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -766,7 +772,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-active', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive'
+        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -823,7 +829,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-fail', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive'
+        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       const manager = fakeManager(new Map([['sw-fail', instance]]), calls);
@@ -846,7 +852,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-coalesce', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive'
+        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -871,7 +877,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-teardown', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive'
+        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -925,7 +931,8 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(0),
-        latencyHint: 'interactive'
+        latencyHint: 'interactive',
+        mode: 'networked'
       };
       const wakeCalls: string[] = [];
       const receiver = new StrandWakeService({

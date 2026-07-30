@@ -13,6 +13,7 @@ function makeStubNode() {
 	const stubInstance: StrandInstance = {
 		strandId: 'stub',
 		status: 'active',
+		mode: 'networked',
 		connectedPeers: 0,
 		lastActivity: new Date(0),
 		latencyHint: 'interactive',
