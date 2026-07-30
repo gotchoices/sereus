@@ -911,6 +911,45 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     expect(await strandRow(id)).toBeUndefined();
   }, 60_000);
 
+  it('a signed delete must carry a tombstone naming the REMOVED ROW, not just its stamp (RevocationRecorded)', async () => {
+    // RowKey is what Strand.AuthorizedInsert's consent branch reads, so a removal that files a
+    // misnamed tombstone would silently fail to foreclose the id. RevocationRecorded binds it at
+    // the removal site for every guarded table — Strand because it is load-bearing there, and
+    // CadrePeer to pin that the convention ("RowKey is the row's primary key") is enforced, not
+    // just writer discipline.
+    const id = 'strand-rowkey-' + Math.random().toString(36).slice(2);
+    const { stamp } = await seatStrand(id);
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteStrand(founder.publicKey, signAs(founder, strandRemoveMessage(id, stamp)), id);
+        await tombstoneStamp('Strand', 'some-other-strand-id', stamp);
+      }),
+      'RevocationRecorded',
+    );
+    expect(await strandRow(id)).toBeDefined();
+
+    const peerId = '12D3KooWRowKeyBindingTarget';
+    const { stamp: peerStamp } = await admitPeer(peerId);
+    await expectConstraintFailure(
+      inTransaction(async () => {
+        await rawDeleteCadrePeer(
+          founder.publicKey,
+          signB64(founder, cadrePeerRemoveDigest(peerId, peerStamp)),
+          peerId,
+        );
+        await tombstoneStamp('CadrePeer', '12D3KooWSomeOtherPeer', peerStamp);
+      }),
+      'RevocationRecorded',
+    );
+    expect(await cadrePeerRow(peerId)).toBeDefined();
+
+    // Both rows still remove cleanly once the tombstone names them correctly.
+    await removeStrand(id, stamp);
+    await removeCadrePeer(peerId, peerStamp);
+    expect(await strandRow(id)).toBeUndefined();
+    expect(await cadrePeerRow(peerId)).toBeUndefined();
+  }, 60_000);
+
   it('ValidationKey: a captured enrollment approval cannot re-seat a removed key, but a fresh stamp can', async () => {
     const key = 'val-replay-' + Math.random().toString(36).slice(2);
     const { stamp, addSig } = await enrollValidationKey(key);

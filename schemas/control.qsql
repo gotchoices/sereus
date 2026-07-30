@@ -17,9 +17,10 @@ declare schema CadreControl {
         ),
         -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
         -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order.
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = old.StampId)
+            exists (select 1 from Revocation R where R.TableName = 'OwnerKey' and R.StampId = old.StampId and R.RowKey = old.Key)
         ),
         -- A party must never lose its last owner key: every other CadreControl table's
         -- CHECK requires an OwnerKey row, so an owner-less control database can never
@@ -96,9 +97,10 @@ declare schema CadreControl {
         ),
         -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
         -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order.
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = old.StampId)
+            exists (select 1 from Revocation R where R.TableName = 'ValidationKey' and R.StampId = old.StampId and R.RowKey = old.Key)
         ),
         -- Enrollment is insert + delete only; rotation is add-then-remove. No writer in the repo
         -- updates a ValidationKey row. Required because the AuthorizedInsert / AuthorizedDelete
@@ -137,9 +139,12 @@ declare schema CadreControl {
         ),
         -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
         -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order.
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey. That is what makes
+        -- the consent branch of AuthorizedInsert below trustworthy: a removal cannot file a
+        -- tombstone that omits or misnames the id it retires.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = old.StampId)
+            exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = old.StampId and R.RowKey = old.Id)
         ),
         -- Strand rows are insert + delete only. Required: the consent branch of AuthorizedInsert
         -- below authorizes by the EXISTENCE of a FormationUsage row naming (new.Id, new.StampId)
@@ -196,16 +201,19 @@ declare schema CadreControl {
                 --     purely owner-signed (insertStrand, no usage row) leaves nothing behind on
                 --     removal, so its removal needs its own trace. Every removal files a Revocation
                 --     row naming the removed row's key (RowKey), and this clause refuses any id
-                --     that has ever been tombstoned. The usage-row clause is arguably subsumed by
-                --     this one (a usage row implies the strand row existed, and its removal must
-                --     file a tombstone), but it does not depend on RowKey being populated
-                --     correctly; both are stated, per the style note above. The owner-signed branch
-                --     is deliberately unaffected, so re-join stays owner-gated exactly as described.
-                --     RowKey is owner-attested, not schema-verified (see Revocation.Authorized), so
-                --     an owner can file a tombstone naming an id that never existed and thereby
-                --     permanently foreclose consent-seating of that id — owner-only, the owner
-                --     already controls invite issuance, and unbound ids are 128 random bytes minted
-                --     at redemption, so no escalation (same reasoning as the pre-plant note above).
+                --     that has ever been tombstoned. RevocationRecorded above makes that trace
+                --     mandatory AND correctly named, so no removal can slip past this clause. The
+                --     usage-row clause is arguably subsumed by this one (a usage row implies the
+                --     strand row existed, and its removal must file a tombstone), but it reaches
+                --     the same conclusion without depending on Revocation at all; both are stated,
+                --     per the style note above. The owner-signed branch is deliberately unaffected,
+                --     so re-join stays owner-gated exactly as described.
+                --     What is NOT schema-verified is a STANDALONE tombstone (one with no
+                --     accompanying delete — see Revocation.Authorized): an owner can file one
+                --     naming an id that never existed and thereby permanently foreclose
+                --     consent-seating of that id — owner-only, the owner already controls invite
+                --     issuance, and unbound ids are 128 random bytes minted at redemption, so no
+                --     escalation (same reasoning as the pre-plant note above).
                 --     NOTE: like NotRevoked above, this is a write-time check against LOCALLY
                 --     VISIBLE rows — a node that has not yet converged on the Revocation row still
                 --     accepts the re-seat. Fails in the safe direction: the tombstone wins after
@@ -269,9 +277,10 @@ declare schema CadreControl {
         ),
         -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
         -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order.
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = old.StampId)
+            exists (select 1 from Revocation R where R.TableName = 'CadrePeer' and R.StampId = old.StampId and R.RowKey = old.PeerId)
         ),
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key, which vouches both membership and the
@@ -357,9 +366,10 @@ declare schema CadreControl {
         ),
         -- Retirement is MANDATORY: a delete must carry the matching Revocation row in the same
         -- transaction, or the stamp would free up again. Deferred (subquery), so the sibling
-        -- insert is visible at commit regardless of statement order.
+        -- insert is visible at commit regardless of statement order. The tombstone must also
+        -- name the removed ROW, not just its stamp — see Revocation.RowKey.
         constraint RevocationRecorded check on delete (
-            exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = old.StampId)
+            exists (select 1 from Revocation R where R.TableName = 'DeviceToken' and R.StampId = old.StampId and R.RowKey = old.PeerId)
         ),
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner key (membership vouch), exactly like CadrePeer.
@@ -560,6 +570,10 @@ declare schema CadreControl {
         TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken' (confined by RowIsGone below)
         RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
                                     -- CadrePeer.PeerId / DeviceToken.PeerId / Strand.Id
+                                    -- Every guarded table's RevocationRecorded CHECK requires the
+                                    -- accompanying tombstone to carry the removed row's key here, so
+                                    -- a REMOVAL cannot file a misnamed tombstone. A tombstone with no
+                                    -- accompanying delete is not covered by that (see Authorized).
         StampId text,               -- the retired nonce
         -- Keyed on the stamp, not the RowKey: stamps are unique per row incarnation, and one
         -- name may legitimately carry several tombstones over its life (seat -> delete ->
@@ -594,15 +608,19 @@ declare schema CadreControl {
         -- domain tag keeps it disjoint from every other rule — including the
         -- 'CadreControl.CadrePeer' 'remove' digest the same owner signs in the SAME
         -- transaction for the delete this tombstone accompanies.
-        -- RowKey is owner-ATTESTED, not schema-verified: positively binding it to the retired
-        -- row (e.g. requiring a committed.Strand row carrying the pair) would reject a
-        -- tombstone re-issued in a LATER transaction — which the delete-while-alone
-        -- durability path (docs/architecture.md) plans to do — and reject it outright on a
-        -- node that never converged on the removed row. Consequence: an owner can file a
-        -- tombstone naming an id that never existed and thereby permanently foreclose
-        -- CONSENT-seating of that id (Strand.AuthorizedInsert). Owner-only, the owner already
-        -- controls invite issuance, and unbound ids are 128 random bytes minted at redemption
-        -- — no escalation (same reasoning as the pre-plant note on RowIsGone).
+        -- RowKey is not cross-checked HERE against the retired row: positively binding it (e.g.
+        -- requiring a committed.Strand row carrying the pair) would reject a tombstone re-issued
+        -- in a LATER transaction — which the delete-while-alone durability path
+        -- (docs/architecture.md) plans to do — and reject it outright on a node that never
+        -- converged on the removed row. The binding lives on the other side instead: each
+        -- guarded table's RevocationRecorded requires the tombstone accompanying a DELETE to
+        -- name that row's key, which the re-issue path never trips (it files no delete).
+        -- Residual: a STANDALONE tombstone — owner-signed, naming a stamp no live row holds —
+        -- is still accepted, so an owner can name an id that never existed and thereby
+        -- permanently foreclose CONSENT-seating of that id (Strand.AuthorizedInsert).
+        -- Owner-only, the owner already controls invite issuance, and unbound ids are 128
+        -- random bytes minted at redemption — no escalation (same reasoning as the pre-plant
+        -- note on RowIsGone).
         -- Reads LIVE OwnerKey (like ValidationKey / Strand / CadrePeer / DeviceToken), not
         -- committed.OwnerKey. The one difference that makes: a founding transaction on an
         -- owner-less database could seat an owner key and file a tombstone in one go. An
