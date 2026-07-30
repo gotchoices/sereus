@@ -100,6 +100,64 @@ async function openStrand(type: 'o' | 'c'): Promise<Strand> {
   return strand;
 }
 
+/**
+ * Open a strand DB in bootstrap mode WITHOUT the founder bootstrap — no Header, no
+ * Member, no Manager. Used by the founding-order test below, which has to seed the
+ * `Header`/`Member`/`Manager` rows itself to vary their order; every other test wants
+ * the bootstrap already run and uses {@link openStrand}.
+ */
+async function openRawStrand(): Promise<Strand> {
+  const strandId = randomUUID();
+  const storage = new MemoryRawStorage();
+  const db = new Database();
+  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+  const strand: Strand = {
+    db,
+    strandId,
+    founder: freshKeyPair(), // unused — no bootstrap ran
+    shutdown: async () => {
+      await result.shutdown();
+      db.close();
+    },
+  };
+  opened.push(strand);
+  return strand;
+}
+
+/**
+ * Insert the singleton `Header` with the given Type. Every Header column is NOT NULL
+ * (Quereus defaults unqualified columns to NOT NULL), so all are supplied with
+ * placeholder values — only `Type` is load-bearing here.
+ */
+async function insertHeader(db: Database, type: 'o' | 'c'): Promise<void> {
+  await db.exec(
+    `insert into Strand.Header
+       (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
+       values (?, ?, ?, ?, ?, ?, ?, ?)`,
+    ['strand-id', type, 'sapp', '1.0.0', 'schema', 'sig', 'engine', '1.0.0'],
+  );
+}
+
+/** Raw `Member` insert with all-null context (the bootstrap-branch shape) and a fresh stamp. */
+async function rawInsertMember(db: Database, key: string): Promise<void> {
+  await db.exec(
+    `insert into Strand.Member (Key, StampId)
+       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
+       values (?, ?)`,
+    [key, generateStrandStampId()],
+  );
+}
+
+/** Raw founding `Manager` insert: all-null context, generation 0 — what the bootstrap writer emits. */
+async function rawInsertFoundingManager(db: Database, memberKey: string): Promise<void> {
+  await db.exec(
+    `insert into Strand.Manager (MemberKey, Generation, StampId)
+       with context ManagerKey = null, Signature = null
+       values (?, 0, ?)`,
+    [memberKey, generateStrandStampId()],
+  );
+}
+
 afterEach(async () => {
   while (opened.length > 0) {
     const strand = opened.pop()!;
@@ -688,6 +746,25 @@ describe('addManager', () => {
     expect(row?.MemberKey).toBe(second.publicKeyB64);
   }, 30_000);
 
+  it('rejects promoting a key that holds no Member row (Manager.MemberExists)', async () => {
+    const { db, founder } = await openStrand('c');
+    const stranger = freshKeyPair();
+
+    // Deliberately NO seatMembers: the promotion itself is well-formed — the founder is
+    // a committed manager at generation 0 signing the add-tagged digest for generation
+    // 1 — so Authorized passes and MemberExists is the only constraint that can reject.
+    // A manager IS a member: without the Member row this key could hold admin rights it
+    // could never exercise (every removal it filed would fail Revocation.Authorized,
+    // which verifies the filer against committed.Member).
+    await expect(
+      addManager(db, { byManagerKeyPair: founder, newManagerKey: stranger.publicKeyB64 }),
+    ).rejects.toThrow(/MemberExists/);
+
+    expect(await tableCount(db, 'Manager')).toBe(1); // only the founder
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [stranger.publicKeyB64])).toBeUndefined();
+    expect(await tableCount(db, 'Member')).toBe(1); // and no Member row was conjured either
+  }, 30_000);
+
   it('rejects an add whose signer is not a manager (no count<=1 shortcut once founder exists)', async () => {
     const { db, founder } = await openStrand('c');
     const notAManager = freshKeyPair();
@@ -765,6 +842,109 @@ describe('addManager', () => {
       addManager(db, { byManagerKeyPair: freshKeyPair(), newManagerKey: target.publicKeyB64 }),
     ).rejects.toThrow();
     expect(await tableCount(db, 'Manager')).toBe(0);
+  }, 30_000);
+
+  // The founding seat is the one Manager insert with no authorizing manager behind it,
+  // so it is where a Member-less Manager row would be easiest to slip in. MemberExists
+  // runs on EVERY insert, the founding one included.
+  it('the founding Manager still needs its Member row first (seeding order survives)', async () => {
+    // The real writer path, unchanged: bootstrapFounderMembership seats Header → Member
+    // → Manager in sequential auto-commits, so MemberExists sees a COMMITTED Member row
+    // by the time the Manager insert is checked.
+    const bootstrapped = await openStrand('c');
+    expect(await tableCount(bootstrapped.db, 'Member')).toBe(1);
+    expect(await tableCount(bootstrapped.db, 'Manager')).toBe(1);
+
+    // The reverse order, hand-seeded on a strand with no bootstrap: Header, then the
+    // founding Manager with no Member row yet. Rejection is over-determined BY DESIGN —
+    // MemberExists fires, and the bootstrap branch of Manager.Authorized carries its own
+    // belt-and-braces Member-exists test — so only the fact of a CHECK rejection is
+    // pinned, not a single constraint name.
+    const { db } = await openRawStrand();
+    await insertHeader(db, 'c');
+    const founder = freshKeyPair();
+
+    await expect(rawInsertFoundingManager(db, founder.publicKeyB64)).rejects.toThrow(/CHECK constraint failed/);
+    expect(await tableCount(db, 'Manager')).toBe(0);
+
+    // Positive control: the SAME founding insert, only now the Member row precedes it —
+    // proving the rejection above was the ordering and nothing else about the seed.
+    await rawInsertMember(db, founder.publicKeyB64);
+    await rawInsertFoundingManager(db, founder.publicKeyB64);
+    expect(await tableCount(db, 'Manager')).toBe(1);
+  }, 30_000);
+});
+
+describe('admitManager', () => {
+  it('seats Member + Manager in ONE transaction, and the new manager can then act', async () => {
+    const { db, founder } = await openStrand('c');
+    const admin = freshKeyPair();
+    const victim = freshKeyPair();
+    const peerHolder = freshKeyPair();
+    await seatMembers(db, founder, victim, peerHolder);
+    await registerMemberPeer(db, { memberKeyPair: peerHolder, peerId: 'peer-held' });
+
+    // Both halves land at ONE commit: Manager.MemberExists reads the LIVE Member table,
+    // so the sibling Member insert satisfies it without anything being waived (that
+    // insert is itself authorized by the founder at the same commit).
+    await admitManager(db, { byManagerKeyPair: founder, newManagerKey: admin.publicKeyB64 });
+    expect(await db.get('select Key from Strand.Member where Key = ?', [admin.publicKeyB64])).toBeTruthy();
+    expect(await managerGeneration(db, admin.publicKeyB64)).toBe(1);
+
+    // The payoff, and the reason the invariant exists: in LATER transactions the new
+    // manager does the three things a Member-less manager could NOT. Each files a
+    // Revocation tombstone, and Revocation.Authorized verifies the filer against
+    // committed.Member — the exact read a Manager row with no Member row fails.
+    await revokeMember(db, { managerKeyPair: admin, memberKey: victim.publicKeyB64 });
+    await removeMemberPeer(db, { managerKeyPair: admin, memberKey: peerHolder.publicKeyB64, peerId: 'peer-held' });
+    await removeManager(db, { byManagerKeyPair: admin, targetManagerKey: admin.publicKeyB64 });
+
+    expect(await db.get('select Key from Strand.Member where Key = ?', [victim.publicKeyB64])).toBeUndefined();
+    expect(await tableCount(db, 'MemberPeer')).toBe(0);
+    expect(await tableCount(db, 'Manager')).toBe(1); // the founder alone, after the resignation
+    // Resigning dropped only the Manager row — admin is still an ordinary member.
+    expect(await db.get('select Key from Strand.Member where Key = ?', [admin.publicKeyB64])).toBeTruthy();
+  }, 30_000);
+
+  it('a rejected admission leaves NEITHER row (all-or-nothing)', async () => {
+    const { db } = await openStrand('c');
+    const stranger = freshKeyPair(); // holds no Manager row
+    const newcomer = freshKeyPair();
+
+    // Member.Authorized rejects: its bootstrap branch is off (committed.Member is 1, not
+    // 0), the invite branch has no ConsumedInvite, and the direct-admit branch finds no
+    // committed.Manager for the stranger. MemberExists is NOT the rejector here — the
+    // sibling Member insert is live in the transaction, so it passes.
+    await expect(
+      admitManager(db, { byManagerKeyPair: stranger, newManagerKey: newcomer.publicKeyB64 }),
+    ).rejects.toThrow(/Authorized/);
+
+    expect(await tableCount(db, 'Member')).toBe(1);  // the founder — no orphan Member row
+    expect(await tableCount(db, 'Manager')).toBe(1); // the founder — and no Manager row
+    expect(await db.get('select Key from Strand.Member where Key = ?', [newcomer.publicKeyB64])).toBeUndefined();
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [newcomer.publicKeyB64])).toBeUndefined();
+  }, 30_000);
+
+  it('cannot be chained: a manager admitted in THIS transaction cannot admit the next', async () => {
+    const { db, founder } = await openStrand('c');
+    const a = freshKeyPair();
+    const b = freshKeyPair();
+
+    // A's Manager row is seated in this very transaction, so it is absent from
+    // committed.Manager — which is what Member.Authorized's direct-admit branch reads.
+    // A therefore cannot authorize B's ADMISSION. The PROMOTION half would have been
+    // fine on its own: a same-transaction promotion chain rooted at a pre-existing
+    // manager is accepted (see 'accepts a same-transaction chain rooted at a
+    // pre-existing manager' below) — it is the Member half that needs a committed
+    // authorizer.
+    await expect(inTransaction(db, async () => {
+      await admitManager(db, { byManagerKeyPair: founder, newManagerKey: a.publicKeyB64 });
+      await admitManager(db, { byManagerKeyPair: a, newManagerKey: b.publicKeyB64 });
+    })).rejects.toThrow(/Authorized/);
+
+    // Everything rolled back — not even A, whose own admission was well-formed.
+    expect(await tableCount(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(1);
   }, 30_000);
 });
 

@@ -731,6 +731,27 @@ describe('MinOneMember / NotAManager', () => {
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [manager.publicKeyB64])).toBeUndefined();
     expect(await tableCount(db, 'Manager')).toBe(1); // the founder
   }, 30_000);
+
+  it('accepts revoke + resign in one transaction too (statement order is irrelevant)', async () => {
+    const { db, founder } = await openStrand('c');
+    const manager = freshKeyPair();
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: manager.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: manager.publicKeyB64 });
+
+    // The mirror of the test above: the Member delete is issued FIRST, while the Manager
+    // row is still live. Being deferred, NotAManager is evaluated once at commit against
+    // the post-image — where neither row survives — so the issue order of the two
+    // statements changes nothing. This is the delete half of the manager-is-a-member
+    // invariant whose insert half is Manager.MemberExists.
+    await inTransaction(db, async () => {
+      await revokeMember(db, { managerKeyPair: founder, memberKey: manager.publicKeyB64 });
+      await removeManager(db, { byManagerKeyPair: manager, targetManagerKey: manager.publicKeyB64 });
+    });
+
+    expect(await isMemberRow(db, manager.publicKeyB64)).toBe(false);
+    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [manager.publicKeyB64])).toBeUndefined();
+    expect(await tableCount(db, 'Manager')).toBe(1); // the founder
+  }, 30_000);
 });
 
 // ── The committed.* pin: a same-transaction manager cannot authorize ──────────
