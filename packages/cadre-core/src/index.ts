@@ -138,6 +138,7 @@ export {
   listMemberPeers,
   removeMemberPeer,
   addManager,
+  admitManager,
   removeManager,
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
@@ -155,6 +156,7 @@ export {
   type RemoveMemberPeerByManagerParams,
   type RemoveMemberPeerParams,
   type AddManagerParams,
+  type AdmitManagerParams,
   type RemoveManagerParams
 } from './strand-membership-writer.js';
 

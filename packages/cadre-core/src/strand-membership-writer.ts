@@ -1228,7 +1228,8 @@ export interface AddManagerParams {
 }
 
 /**
- * Promote a member to `Manager` on the signature of an existing manager.
+ * Promote a key that is ALREADY a `Strand.Member` to `Manager` on the signature of
+ * an existing manager — use {@link admitManager} to admit and promote atomically.
  *
  * The promotion branch of `Manager.Authorized` requires the authorizer to be a
  * `Manager` row of STRICTLY SMALLER `Generation` than the new row, verifying
@@ -1256,7 +1257,9 @@ export interface AddManagerParams {
  *
  * @param db - The closed strand's database (founder manager already seated).
  * @param params - The authorizing manager's keypair and the new manager key.
- * @throws If `Manager.Authorized` rejects; the insert rolls back.
+ * @throws If `Manager.Authorized` rejects, or if `Manager.MemberExists` rejects because
+ *   `newManagerKey` holds no `Member` row (admit it first, or use
+ *   {@link admitManager}); the insert rolls back.
  */
 export async function addManager(db: Database, params: AddManagerParams): Promise<void> {
   const { byManagerKeyPair, newManagerKey } = params;
@@ -1279,6 +1282,48 @@ export async function addManager(db: Database, params: AddManagerParams): Promis
     [byManagerKeyPair.publicKeyB64, signature, newManagerKey, generation, stampId],
   );
   log('Added manager %s (generation %d) by %s', newManagerKey, generation, byManagerKeyPair.publicKeyB64);
+}
+
+/** Parameters for {@link admitManager} — the same shape as {@link AddManagerParams}. */
+export type AdmitManagerParams = AddManagerParams;
+
+/**
+ * Admit a key as a `Member` AND promote it to `Manager`, atomically — the one-step
+ * pair for a key that is not in the strand yet. {@link addManager} alone promotes a
+ * key that is already a member.
+ *
+ * ONE transaction, because `Manager.MemberExists` is a deferred check reading the LIVE
+ * `Member` table: the sibling `Member` insert satisfies it at the shared commit, and a
+ * rejection of either half rolls BOTH rows back — never a `Member` row seated by a
+ * failed promotion, nor a `Manager` row with no member behind it.
+ *
+ * NO new authority: both halves are signed by the SAME manager, over two distinct
+ * action-tagged digests — `digest('Strand.Member', 'add', …)` for the admission and
+ * `digest('Strand.Manager', 'add', …)` for the promotion — each bound to its own row's
+ * fresh stamp. This composes exactly the two approvals that manager could already
+ * issue separately.
+ *
+ * The promoting manager must be a PRE-transaction manager: the direct-admit branch of
+ * `Member.Authorized` reads `committed.Manager`, so `admitManager` cannot be chained —
+ * a manager seated by an `admitManager` earlier in the SAME transaction cannot admit
+ * the next one. (A same-transaction promotion CHAIN rooted at a pre-existing manager
+ * is fine; only the `Member` half needs the committed authorizer.)
+ *
+ * NOT insert-if-absent: a repeat call for a key that is already a member fails on the
+ * `Member` primary key, matching {@link addMemberByManager}'s unguarded shape.
+ *
+ * @param db - The closed strand's database (founder manager already seated).
+ * @param params - The authorizing manager's keypair and the key to admit + promote.
+ * @throws If either half is rejected (`Member.Authorized`, `Manager.Authorized`, a
+ *   duplicate `Member` key, …); the whole transaction rolls back, leaving neither row.
+ */
+export async function admitManager(db: Database, params: AdmitManagerParams): Promise<void> {
+  const { byManagerKeyPair, newManagerKey } = params;
+  await inStrandTransaction(db, async () => {
+    await addMemberByManager(db, { managerKeyPair: byManagerKeyPair, memberKey: newManagerKey });
+    await addManager(db, { byManagerKeyPair, newManagerKey });
+  });
+  log('Admitted + promoted manager %s by %s', newManagerKey, byManagerKeyPair.publicKeyB64);
 }
 
 /** Parameters for {@link removeManager}. */

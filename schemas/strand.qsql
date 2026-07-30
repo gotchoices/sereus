@@ -361,6 +361,24 @@ declare schema Strand {
         constraint OnlyClosed check (
             exists (select 1 from Header H where H.Type = 'c')
         ),
+        -- A manager IS a member: the table comment has always said so, and since the
+        -- single-use-approval work it is load-bearing — Revocation.Authorized verifies a
+        -- delete's tombstone against a committed Member row, so a manager with no Member
+        -- row cannot revoke, clear a peer binding, or even resign. Reads the LIVE Member
+        -- table, not committed.Member, so an admit-then-promote in ONE transaction passes
+        -- (the same shape ConsumedInvite.MemberExists allows for the invite join); the
+        -- sibling Member insert is authorized at that same commit, so nothing is waived.
+        -- Mask is explicit: a bare check defaults to insert|update, and update is
+        -- forbidden outright by NoUpdate below. Nothing is needed on DELETE — the other
+        -- half of the invariant is Member.NotAManager, which refuses to un-member a key
+        -- that still holds a Manager row.
+        -- NOTE: a per-transaction check against locally visible rows. Two partitioned nodes
+        -- — one promoting X, one removing X's Member and Manager rows — can each pass
+        -- locally and converge to a Manager row with no Member row. Same convergence class
+        -- as the MinOneMember / MinOneManager / NotRevoked notes; not solved here.
+        constraint MemberExists check on insert (
+            exists (select 1 from Member M where M.Key = new.MemberKey)
+        ),
         -- Rotation is insert + delete only. An update would let a resignation signature
         -- (which proves only that old.MemberKey consented) double as a hand-off: the
         -- former-manager branch would accept re-pointing the row at any new key.
@@ -386,7 +404,10 @@ declare schema Strand {
             -- state — at most one Member, and this manager IS that member. Deferred
             -- checks see post-image state, so an ungated count test is also true for a
             -- DELETE that drops the count to <= 1, and for the INSERT half of a
-            -- same-transaction swap of the sole manager.
+            -- same-transaction swap of the sole manager. The trailing Member-exists test
+            -- is belt-and-braces since MemberExists above enforces it on EVERY insert —
+            -- kept so this branch's own claim ("this manager IS that member") reads in
+            -- place rather than by cross-reference.
             (old.MemberKey is null
                 and new.Generation = 0
                 and (select count(1) from Manager) <= 1

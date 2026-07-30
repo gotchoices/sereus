@@ -14,6 +14,7 @@ import {
   listMemberPeers,
   removeMemberPeer,
   addManager,
+  admitManager,
   removeManager,
   signStrandApproval,
   generateStrandStampId,
@@ -604,14 +605,27 @@ async function addExtraManagers(db: Database, founder: Ed25519KeyPair, count: nu
   const extras: Ed25519KeyPair[] = [];
   for (let i = 0; i < count; i++) {
     const kp = freshKeyPair();
-    // Seat the Member row first (the real promotion flow — managers are members):
-    // removeManager files a Revocation tombstone signed by the acting manager, and
-    // Revocation.Authorized verifies that signer against committed.Member.
-    await addMemberByManager(db, { managerKeyPair: founder, memberKey: kp.publicKeyB64 });
-    await addManager(db, { byManagerKeyPair: founder, newManagerKey: kp.publicKeyB64 });
+    // admitManager seats the Member row and the Manager row in ONE transaction — the
+    // real flow, since managers ARE members (Manager.MemberExists), and removeManager
+    // files a Revocation tombstone signed by the acting manager which
+    // Revocation.Authorized verifies against committed.Member.
+    await admitManager(db, { byManagerKeyPair: founder, newManagerKey: kp.publicKeyB64 });
     extras.push(kp);
   }
   return extras;
+}
+
+/**
+ * Seat plain `Member` rows for `keys`, signed by the founder — the prerequisite
+ * `Manager.MemberExists` imposes on every promotion. Used where the promotion itself
+ * is the subject under test, so the admission stays visibly separate from it (and,
+ * in the negative tests, so `Manager.Authorized` remains the constraint that rejects
+ * rather than `MemberExists` firing first and hollowing out the pin).
+ */
+async function seatMembers(db: Database, founder: Ed25519KeyPair, ...keys: Ed25519KeyPair[]): Promise<void> {
+  for (const kp of keys) {
+    await addMemberByManager(db, { managerKeyPair: founder, memberKey: kp.publicKeyB64 });
+  }
 }
 
 /** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
@@ -661,6 +675,9 @@ describe('addManager', () => {
   it('an existing manager promotes a second manager (non-bootstrap signature branch)', async () => {
     const { db, founder } = await openStrand('c');
     const second = freshKeyPair();
+    // The admission is a separate, visible step: addManager promotes an EXISTING
+    // member, and Manager.MemberExists rejects it otherwise.
+    await seatMembers(db, founder, second);
 
     await addManager(db, { byManagerKeyPair: founder, newManagerKey: second.publicKeyB64 });
 
@@ -672,13 +689,16 @@ describe('addManager', () => {
   }, 30_000);
 
   it('rejects an add whose signer is not a manager (no count<=1 shortcut once founder exists)', async () => {
-    const { db } = await openStrand('c');
+    const { db, founder } = await openStrand('c');
     const notAManager = freshKeyPair();
     const target = freshKeyPair();
+    // target is a real member, so MemberExists is satisfied and Authorized is the only
+    // constraint left to reject — the signer simply holds no Manager row.
+    await seatMembers(db, founder, target);
 
     await expect(
       addManager(db, { byManagerKeyPair: notAManager, newManagerKey: target.publicKeyB64 }),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'Manager')).toBe(1); // only the founder
   }, 30_000);
 
@@ -686,6 +706,8 @@ describe('addManager', () => {
     const { db, founder } = await openStrand('c');
     const target = freshKeyPair();
     const someOtherKey = freshKeyPair().publicKeyB64;
+    // A member, so the rejection below is the signature binding and not MemberExists.
+    await seatMembers(db, founder, target);
 
     // A real manager (founder) signs a correctly-shaped add-tagged promotion digest,
     // but over a DIFFERENT key than the one being inserted, so the verify against
@@ -703,7 +725,7 @@ describe('addManager', () => {
            values (?, ?, ?)`,
         [founder.publicKeyB64, wrongSignature, target.publicKeyB64, 1, stampId],
       ),
-    ).rejects.toThrow();
+    ).rejects.toThrow(/Authorized/);
     expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
@@ -715,6 +737,10 @@ describe('addManager', () => {
   it('rejects a key promoting ITSELF (the row being inserted is not its own authorizer)', async () => {
     const { db, founder } = await openStrand('c');
     const attacker = freshKeyPair();
+    // A real MEMBER attempting self-promotion — the strongest form of this attack, and
+    // the one that reaches Authorized (a stranger would be turned away by MemberExists
+    // before the `<>` guard is ever consulted).
+    await seatMembers(db, founder, attacker);
 
     // A perfectly-formed self-authorization: the attacker signs its own key and binds
     // itself as context.ManagerKey. Only the `<>` guard stands between this and admin.
@@ -731,7 +757,10 @@ describe('addManager', () => {
     const { db } = await openStrand('o');
     const target = freshKeyPair();
 
-    // Open strands have no founding Manager and Manager is OnlyClosed; any add is rejected.
+    // Open strands have no founding Manager and Manager is OnlyClosed; any add is
+    // rejected. MemberExists cannot be satisfied either (an open strand has no Member
+    // rows — Member is OnlyClosed too), so the rejection is over-determined and only
+    // the fact of it is pinned.
     await expect(
       addManager(db, { byManagerKeyPair: freshKeyPair(), newManagerKey: target.publicKeyB64 }),
     ).rejects.toThrow();
@@ -986,6 +1015,10 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const x = freshKeyPair();
     const y = freshKeyPair();
+    // Both are real members, so Manager.MemberExists is satisfied for both rows and the
+    // generation ordering inside Authorized is the only thing that can reject. (Ordinary
+    // members colluding is also the realistic shape of this attack.)
+    await seatMembers(db, founder, x, y);
 
     // The exact measured takeover: each key binds the OTHER as its authorizer.
     // Whatever generations the attacker picks, the smaller one has no authorizer
@@ -1008,8 +1041,10 @@ describe('Manager.Generation ordering', () => {
     // (a "manager" in the post-image) deletes the founder. The delete's own branch
     // is even satisfiable here — the rejection comes from the promotion ordering.
     // X files the founder-stamp tombstone itself so RevocationRecorded cannot report
-    // first; X is no committed member, so Revocation.Authorized fails too — but that
-    // check shares the `Authorized` name, so the pin holds either way.
+    // first; X and Y are seated as real MEMBERS, so neither Manager.MemberExists nor
+    // Revocation.Authorized (which reads committed.Member) can fire — the promotion
+    // ordering inside Manager.Authorized is left as the sole rejector.
+    await seatMembers(db, founder, x, y);
     const founderStamp = await managerStamp(db, founder.publicKeyB64);
     await expect(inTransaction(db, async () => {
       await insertManagerRow(db, y, x.publicKeyB64, 5);
@@ -1034,10 +1069,11 @@ describe('Manager.Generation ordering', () => {
   }, 30_000);
 
   it('rejects a three-key mutual-vouching ring in one transaction', async () => {
-    const { db } = await openStrand('c');
+    const { db, founder } = await openStrand('c');
     const x = freshKeyPair();
     const y = freshKeyPair();
     const z = freshKeyPair();
+    await seatMembers(db, founder, x, y, z); // members, so Authorized is the rejector
 
     // A ring's minimum-generation row (X at 1) is authorized by Z at 3 — not
     // strictly smaller, so the ring has no root and the transaction fails.
@@ -1051,9 +1087,10 @@ describe('Manager.Generation ordering', () => {
   }, 30_000);
 
   it('rejects a mutual pair at EQUAL generations (the ordering is strict)', async () => {
-    const { db } = await openStrand('c');
+    const { db, founder } = await openStrand('c');
     const x = freshKeyPair();
     const y = freshKeyPair();
+    await seatMembers(db, founder, x, y); // members, so Authorized is the rejector
 
     await expect(inTransaction(db, async () => {
       await insertManagerRow(db, y, x.publicKeyB64, 1);
@@ -1064,9 +1101,10 @@ describe('Manager.Generation ordering', () => {
   }, 30_000);
 
   it('rejects a mutual pair using generations BELOW the founder\'s 0 (no ducking underneath)', async () => {
-    const { db } = await openStrand('c');
+    const { db, founder } = await openStrand('c');
     const x = freshKeyPair();
     const y = freshKeyPair();
+    await seatMembers(db, founder, x, y); // members, so Authorized is the rejector
 
     // Negative generations do sort below the founder, but the pair still needs
     // each generation strictly below the other's — the minimum (-2) has no
@@ -1082,9 +1120,12 @@ describe('Manager.Generation ordering', () => {
   it('rejects a stranger claiming generation 0 once the strand is bootstrapped', async () => {
     const { db, founder } = await openStrand('c');
     const attacker = freshKeyPair();
+    // A member, so MemberExists passes and Authorized is the rejector.
+    await seatMembers(db, founder, attacker);
 
-    // Generation 0 only helps in the FOUNDING state — the bootstrap branch also
-    // demands count(Manager) <= 1, and the post-image count here is 2.
+    // Generation 0 only helps in the FOUNDING state, and the bootstrap branch is now
+    // off on BOTH of its count gates: count(Manager) is 2 in the post-image, and
+    // count(Member) is 2 as well (the founder plus the attacker's own admission).
     await expect(
       db.exec(
         `insert into Strand.Manager (MemberKey, Generation, StampId)
@@ -1102,6 +1143,9 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const skipAhead = freshKeyPair();
     const tooLow = freshKeyPair();
+    // Both promotions target real members: the ACCEPT below needs MemberExists satisfied,
+    // and the REJECT below must still be reported by Authorized.
+    await seatMembers(db, founder, skipAhead, tooLow);
 
     // The founder (gen 0) seats a manager at gen 5 — a gap, not 0+1 — accepted:
     // only strict "authorizer below new" is enforced, never adjacency.
@@ -1117,6 +1161,9 @@ describe('Manager.Generation ordering', () => {
   it('binds the generation into the signed payload (a promotion cannot be replayed at another generation)', async () => {
     const { db, founder } = await openStrand('c');
     const target = freshKeyPair();
+    // A member: the replay below must fail on the digest binding (Authorized), and the
+    // positive control that follows must be accepted.
+    await seatMembers(db, founder, target);
 
     // A genuine founder signature over the add-tagged digest for generation 1
     // (a NUMBER — the digest is type-tagged) and ONE minted stamp, replayed for an
@@ -1154,6 +1201,7 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const a = freshKeyPair();
     const b = freshKeyPair();
+    await seatMembers(db, founder, a, b); // promotions need existing Member rows
 
     // Exercises addManager's generation LOOKUP with a non-founder authorizer:
     // A's own row (gen 1) is read back and B is seated at 2.
@@ -1170,6 +1218,9 @@ describe('Manager.Generation ordering', () => {
     const { db, founder } = await openStrand('c');
     const a = freshKeyPair();
     const b = freshKeyPair();
+    // Members seated BEFORE the transaction, so it contains promotions only — the shape
+    // under test is the chain, not the admissions.
+    await seatMembers(db, founder, a, b);
 
     // The mirror image of the rejected shapes: batching promotions in ONE
     // transaction is legitimate as long as the batch has a root outside it. The
@@ -1190,6 +1241,7 @@ describe('Manager.Generation ordering', () => {
   it('an "add X" signature cannot be replayed as "remove X" (the payloads differ)', async () => {
     const { db, founder } = await openStrand('c');
     const target = freshKeyPair();
+    await seatMembers(db, founder, target);
     await addManager(db, { byManagerKeyPair: founder, newManagerKey: target.publicKeyB64 }); // gen 1
 
     // The promotion approval is 'add'-tagged and carries the generation; the removal
@@ -1216,6 +1268,7 @@ describe('Manager.Generation ordering', () => {
     // And the converse: a removal-shaped ('remove'-tagged, generation-less) signature
     // over a fresh stamp cannot promote the key that insert carries the same stamp.
     const other = freshKeyPair();
+    await seatMembers(db, founder, other); // a member, so Authorized is the rejector below
     const freshStamp = generateStrandStampId();
     const removeShapedSignature = signStrandApproval(
       ['Strand.Manager', 'remove', other.publicKeyB64, freshStamp],
