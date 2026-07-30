@@ -10,7 +10,8 @@
  *   - IndexedDB-backed raw storage via `strand-storage.ts` (per-strand handles
  *     pre-opened before the synchronous cadre-core storage provider is hit).
  *   - Ed25519 identity + party id persisted in the control IndexedDB database
- *     across reloads.
+ *     across reloads, alongside the durable trusted-owner anchor and
+ *     bootstrap-peer store (`node-local-slots.ts`) — same database, shared fate.
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
  * The node self-seeds as its own owner (mirroring `cadre-cli start
@@ -30,6 +31,8 @@ import {
 	ed25519KeyPairFromLibp2p,
 	ControlFormationUsageRecorder,
 	generateStrandMemberKey,
+	PersistentTrustedOwnerStore,
+	PersistentBootstrapPeerStore,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -37,6 +40,8 @@ import type {
 	OpenInvitation,
 	FormStrandResult,
 	StrandFormationDisclosure,
+	TrustedOwnerStore,
+	BootstrapPeerStore,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
@@ -60,6 +65,7 @@ import {
 	getStoreStorage,
 	CONTROL_STORE_KEY,
 } from './strand-storage.js';
+import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, selectChatMessages } from './chat-dml.js';
 
@@ -162,6 +168,8 @@ let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
 let relayState: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+let trustedOwnerStore: TrustedOwnerStore | null = null;
+let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let solicitationReady = false;
 const formedStrands = new Map<string, FormedStrand>();
 
@@ -210,6 +218,16 @@ export function getOwnerState(): { state: OwnerState; error: string | null } {
 /** Relay-reservation posture (dialability for formation). */
 export function getRelayState(): RelayState {
 	return relayState;
+}
+
+/** Node-local trusted-owner anchor — durable across reload once `startCadre` resolves. */
+export function getTrustedOwnerStore(): TrustedOwnerStore | null {
+	return trustedOwnerStore;
+}
+
+/** Node-local bootstrap-peer store — durable across reload once `startCadre` resolves. */
+export function getBootstrapPeerStore(): BootstrapPeerStore | null {
+	return bootstrapPeerStore;
 }
 
 /** Strands joined this session via the consent/invitation formation flow. */
@@ -287,6 +305,23 @@ export async function startCadre(): Promise<CadreNode> {
 		error: null,
 	};
 
+	// Durable node-local records, in the same control IndexedDB database as the
+	// identity/party-id above (shared fate — see `node-local-slots.ts`). No
+	// migration: an existing install has no persisted anchor, so it cold-starts
+	// once — `runOwnerGenesis` below re-anchors this node's own key on every
+	// start, and an invited tab re-anchors on its next applied seed. A read
+	// failure here must propagate (fail the start), unlike the fail-soft
+	// `runOwnerGenesis`/`reserveRelay` below — an unreadable anchor is a refusal
+	// to start, not a silent downgrade to trusting nobody.
+	trustedOwnerStore = await PersistentTrustedOwnerStore.open(
+		kvSlot(controlHandle, TRUSTED_OWNERS_KV_KEY),
+		partyId,
+	);
+	bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
+		kvSlot(controlHandle, BOOTSTRAP_PEERS_KV_KEY),
+		partyId,
+	);
+
 	const config: CadreNodeConfig = {
 		privateKey,
 		controlNetwork: {
@@ -319,6 +354,8 @@ export async function startCadre(): Promise<CadreNode> {
 		},
 		strandFilter: { mode: 'all' },
 		hibernation: { enabled: false },
+		trustedOwners: { store: trustedOwnerStore },
+		bootstrapPeers: { store: bootstrapPeerStore },
 	};
 
 	node = new CadreNode(config);
@@ -758,6 +795,10 @@ export async function stopCadre(): Promise<void> {
 	relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 	solicitationReady = false;
 	formedStrands.clear();
+	// The slot closures captured `controlHandle`, now closed by `closeStores()`
+	// above — drop the references so nothing can write through a closed handle.
+	trustedOwnerStore = null;
+	bootstrapPeerStore = null;
 }
 
 // ── Formed-strand connectivity + DML (e2e formation→convergence hooks) ────────
