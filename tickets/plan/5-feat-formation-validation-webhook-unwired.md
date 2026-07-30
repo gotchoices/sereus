@@ -49,7 +49,10 @@ why.
   After `debt-formation-approval-signature-replayable` that is: the invitation token, a
   single-use nonce for this redemption, the network being joined, the joining peer, and the
   disclosure — minted/resolved by the responder *before* it calls the hook, and passed
-  unchanged into the redeeming write so the two agree.
+  unchanged into the redeeming write so the two agree. `formationVouchMessage` (exported from
+  `@serfab/cadre-core`) already builds the exact bytes an approver signs — the hook side should
+  call it rather than re-derive the digest, and `FormationSigner.signFormation`'s current
+  two-argument shape (`strand-solicitation.ts`) has to widen to take those fields.
 - That approval is threaded into the redemption write, so the control database's check passes
   for a legitimately-approved joiner.
 - A party has some way to enroll and remove approver keys — the database calls exist

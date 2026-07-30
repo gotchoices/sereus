@@ -61,3 +61,12 @@ formStrand(token: string, disclosure: object): { memberKey: string, invitePrivat
 ```ts
 validateStrandFormation(token string, disclosure: object): { validationKey: string; validationSignature: string };
 ```
+
+The returned signature authorizes **exactly one** redemption: it is made over
+`digest('CadreControl.FormationUsage', 'vouch', Token, UsageStampId, StrandId, PeerId, Disclosure)`
+(build it with `formationVouchMessage` from `@serfab/cadre-core`), which
+`FormationUsage.Authorized` re-verifies against the enrolled `ValidationKey` row. So the approver
+must be handed the redemption's single-use nonce, the strand being joined, and the joining peer as
+well as the token and disclosure — the two-argument shape above predates that binding and is not
+enough to produce a signature the control database will accept. Wiring the responder side up to
+call this is `tickets/plan/feat-formation-validation-webhook-unwired`.

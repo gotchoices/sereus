@@ -120,7 +120,17 @@ export interface StrandProvisioner {
 }
 
 /**
- * Interface for signing formation approvals
+ * Interface for signing formation approvals.
+ *
+ * No production implementation exists yet (only test doubles); the approval this returns is not
+ * carried to the control database by any code path today — see
+ * `tickets/plan/feat-formation-validation-webhook-unwired`.
+ *
+ * When one is built, these two arguments are NOT enough: `FormationUsage.Authorized` verifies the
+ * signature over `formationVouchMessage({ token, usageStampId, strandId, peerId, disclosure })`
+ * (`control-database.ts`), so the signer must also receive the redemption's single-use nonce, the
+ * strand being joined, and the joining peer — which means the redeeming side has to mint the nonce
+ * and know the strand id BEFORE it asks for the approval.
  */
 export interface FormationSigner {
   /**
