@@ -1310,8 +1310,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
   // Every test above writes its tombstone through this file's own signing helper. These
   // four drive the real removal APIs instead, so a mismatch between what the shipped code
   // signs and what the schema verifies fails here rather than in the field. Both
-  // encodings are covered: `deleteGuardedRow` signs raw canonical bytes, `removePeer`
-  // signs the base64url digest string.
+  // encodings are covered: `deleteStrand` / `deleteValidationKey` are handed signers over
+  // raw canonical bytes, `removePeer` hands one that signs the base64url digest string.
 
   it('removePeer retires the stamp end to end (raw-bytes and digest-string signers agree)', async () => {
     node.initializeSeedBootstrap(founder.privateKey);

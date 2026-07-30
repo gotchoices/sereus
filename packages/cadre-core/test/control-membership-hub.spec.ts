@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeAll, beforeEach, afterAll } from 'vitest';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
@@ -49,6 +49,8 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 	let db: ControlDatabase;
 	let service: SeedBootstrapService;
 	let captured: Notification[];
+	/** The owner identity behind `service`, for the tests that drive `db` directly. */
+	let owner: { publicKey: string; sign: (message: Uint8Array) => string };
 
 	/**
 	 * Record every notification, reading `CadrePeer` from inside the callback so the
@@ -64,6 +66,10 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 	beforeAll(async () => {
 		const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 		const ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		owner = {
+			publicKey: ownerPublicKey,
+			sign: (message) => cryptoSign(message, ownerPrivateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
+		};
 
 		node = new CadreNode({
 			controlNetwork: { partyId: 'membership-hub-' + Math.random().toString(36).slice(2), bootstrapNodes: [] },
@@ -133,6 +139,26 @@ describe('ControlDatabase — CadrePeer membership-change hub', () => {
 		await service.reauthorizePeer(peer.peerId, Date.now());
 
 		expect(captured).toEqual([]);
+	});
+
+	/**
+	 * The flip side of the test above, and the reason it can pass: the notify wrapper is
+	 * inside `deleteCadrePeer`, which fires whenever its body resolves — it cannot tell a
+	 * real removal from an absent-row no-op. So the "already absent" quiet in
+	 * `removePeer` comes from ITS stamp gate, not from the delete. Pin that here, or a
+	 * future reader may "simplify" the gate away on the belief the delete covers it.
+	 */
+	it('notifies even for an absent row when the delete is driven directly', async () => {
+		const peer = await freshPeer();
+		captureFor(peer.peerId);
+		// Earlier tests in this file retire stamps of their own, so compare counts.
+		const retiredBefore = (await db.queryRevokedStamps('CadrePeer')).size;
+
+		await db.deleteCadrePeer(peer.peerId, owner.publicKey, owner.sign);
+
+		expect(captured).toEqual([{ reason: 'peer-remove', rowPresent: false }]);
+		// No row existed, so nothing was retired either — the no-op is a true no-op on disk.
+		expect((await db.queryRevokedStamps('CadrePeer')).size).toBe(retiredBefore);
 	});
 
 	it('does not notify on a self-signed address refresh, the one carved-out mutator', async () => {

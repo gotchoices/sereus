@@ -190,8 +190,22 @@ interface OptimysticPluginResult {
 /** Runtime guard for the dynamic-`from` count, over the one table list. */
 const CONTROL_TABLE_SET: ReadonlySet<ControlTable> = new Set<ControlTable>(CONTROL_TABLES);
 
-/** Primary-key column of each {@link RevocableTable}, in that order. */
+/** Primary-key column of each {@link RevocableTable}. */
 type GuardedKeyColumn = 'Key' | 'Id' | 'PeerId';
+
+/**
+ * Which column identifies one row of each guarded table — the ONLY place that mapping
+ * lives, so a stamp read and the delete that binds to it can never disagree about it.
+ * Derived rather than passed: every guarded table has exactly one primary key, so a
+ * `(table, keyColumn)` pair on a signature is a mismatch waiting to happen.
+ */
+const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
+  OwnerKey: 'Key',
+  CadrePeer: 'PeerId',
+  ValidationKey: 'Key',
+  Strand: 'Id',
+  DeviceToken: 'PeerId',
+};
 
 /**
  * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
@@ -496,17 +510,16 @@ export class ControlDatabase {
    * exist). Every owner-signed delete / re-touch path must bind its signature to the
    * row's CURRENT nonce, so they all read through here first.
    *
-   * `table` / `keyColumn` are interpolated into the SQL, so both are typed as closed
-   * literal unions — no caller-supplied string can reach the statement (same
-   * injection-surface discipline as {@link countRows}'s `CONTROL_TABLE_SET` guard).
+   * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
+   * come from closed literal unions — no caller-supplied string can reach the statement
+   * (same injection-surface discipline as {@link countRows}'s `CONTROL_TABLE_SET` guard).
    */
   private async queryStampId(
     table: RevocableTable,
-    keyColumn: GuardedKeyColumn,
     keyValue: string
   ): Promise<string | null> {
     this.ensureInitialized();
-    const sql = `select StampId from CadreControl.${table} where ${keyColumn} = ?`;
+    const sql = `select StampId from CadreControl.${table} where ${GUARDED_KEY_COLUMN[table]} = ?`;
     for await (const row of this.db!.eval(sql, [keyValue])) {
       return (row.StampId as string | null) ?? null;
     }
@@ -516,30 +529,29 @@ export class ControlDatabase {
   /**
    * `CadrePeer` stamp nonce — bound into {@link cadrePeerVoucherDigest} by the owner
    * re-touch path, and read by {@link SeedBootstrapService.removePeer} as its
-   * row-present gate before it delegates to {@link deleteGuardedRow}.
+   * row-present gate before it delegates to {@link deleteCadrePeer}.
    */
   queryCadrePeerStampId(peerId: string): Promise<string | null> {
-    return this.queryStampId('CadrePeer', 'PeerId', peerId);
+    return this.queryStampId('CadrePeer', peerId);
   }
 
   /**
-   * `DeviceToken` stamp nonce. The delete path reads the stamp inside
-   * {@link deleteGuardedRow}, so this is the public reader for callers (tests, tooling)
-   * that need to observe a live row's nonce — the `DeviceToken` member of the same
-   * four-table set as {@link queryStrandStampId} / {@link queryValidationKeyStampId}.
+   * `DeviceToken` stamp nonce. {@link deleteDeviceToken} reads the stamp itself, so this
+   * is the reader for callers that need to observe a live row's nonce — asserting a token
+   * was seated, or that a removal retired the stamp it named.
    */
   queryDeviceTokenStampId(peerId: string): Promise<string | null> {
-    return this.queryStampId('DeviceToken', 'PeerId', peerId);
+    return this.queryStampId('DeviceToken', peerId);
   }
 
   /** `Strand` stamp nonce — bound into {@link deleteStrand}'s remove digest. */
   queryStrandStampId(strandId: string): Promise<string | null> {
-    return this.queryStampId('Strand', 'Id', strandId);
+    return this.queryStampId('Strand', strandId);
   }
 
   /** `ValidationKey` stamp nonce — bound into {@link deleteValidationKey}'s remove digest. */
   queryValidationKeyStampId(key: string): Promise<string | null> {
-    return this.queryStampId('ValidationKey', 'Key', key);
+    return this.queryStampId('ValidationKey', key);
   }
 
   /**
@@ -771,7 +783,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
-    return this.deleteGuardedRow('Strand', 'Id', strandId, ownerKey, signMessage);
+    return this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage);
   }
 
   /**
@@ -831,24 +843,73 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
-    return this.deleteGuardedRow('ValidationKey', 'Key', key, ownerKey, signMessage);
+    return this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage);
+  }
+
+  /**
+   * Owner-signed removal of one `CadrePeer` membership row, notifying the membership
+   * listener once it has committed.
+   *
+   * Mirrors {@link deleteStrand} for the membership table: the owner signs the DISTINCT
+   * `'remove'`-tagged digest over (PeerId, StampId), so the row's stored `VouchSig` can
+   * never be replayed to delete it, and the `Revocation` tombstone retiring the stamp
+   * lands in the SAME transaction — `CadrePeer.RevocationRecorded` refuses a bare delete,
+   * and without the tombstone the never-expiring admission approval (which the removed
+   * peer holds a copy of) could re-seat the row.
+   *
+   * The {@link mutateCadrePeer} wrapper lives here rather than in the caller so no
+   * `CadrePeer` remover can forget it. It notifies whenever the body resolves, including
+   * the absent-row no-op below — a caller that must not notify for an already-absent peer
+   * gates on {@link queryCadrePeerStampId} first (see
+   * {@link SeedBootstrapService.removePeer}).
+   *
+   * A no-op (no throw, no tombstone) when the row does not exist.
+   */
+  deleteCadrePeer(
+    peerId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    return this.mutateCadrePeer('peer-remove', () =>
+      this.deleteGuardedRow('CadrePeer', peerId, ownerKey, signMessage));
+  }
+
+  /**
+   * Owner-signed removal of one peer's `DeviceToken` row (logout / token invalidation).
+   *
+   * Mirrors {@link deleteStrand}: the owner signs the DISTINCT `'remove'`-tagged digest
+   * over (PeerId, StampId), so the insert approval can never be replayed to clear a token,
+   * and the `Revocation` tombstone retiring the stamp lands in the SAME transaction —
+   * `DeviceToken.RevocationRecorded` refuses a bare delete, and without the tombstone the
+   * never-expiring insert approval (which the cleared device holds a copy of) could
+   * re-seat the token.
+   *
+   * A no-op (no throw, no tombstone) when the row does not exist.
+   */
+  deleteDeviceToken(
+    peerId: string,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<void> {
+    return this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage);
   }
 
   /**
    * Owner-signed delete of one guarded row plus the `Revocation` tombstone retiring its
    * stamp, in ONE transaction. The single body behind EVERY guarded delete —
-   * {@link deleteStrand}, {@link deleteValidationKey}, and (via the same public entry
-   * point) {@link SeedBootstrapService.removePeer} /
-   * {@link SeedBootstrapService.deleteDeviceToken}; see any of them for the per-table
-   * security rationale. `OwnerKey` is excluded from `table`: it only ever takes a genesis
-   * insert, never a delete.
+   * {@link deleteStrand}, {@link deleteValidationKey}, {@link deleteCadrePeer},
+   * {@link deleteDeviceToken}; see any of them for the per-table security rationale. Each
+   * of those is a thin named wrapper, so callers never pass a table name and this
+   * generic shape stays off the public surface.
+   *
+   * `OwnerKey` is excluded from `table` only because no owner-key removal path exists in
+   * production yet — the schema has the `'remove'` branch (`OwnerKey.Authorized`, which
+   * requires a DIFFERENT owner as signer) and `control-revocation-replay.spec.ts` drives
+   * it with hand-rolled SQL. Widen this and add a wrapper when that path lands; the body
+   * needs no change.
    *
    * The row's CURRENT stamp is read first and signed over, so the remove digest binds to
    * this exact row instance. A no-op (no throw, no tombstone) when the row is absent.
-   *
-   * Public because `SeedBootstrapService` owns the `CadrePeer` / `DeviceToken` delete
-   * entry points (they carry the membership-notify wrapper and the owner-key
-   * precondition) but must not re-derive this body.
    *
    * NOTE: the stamp read is outside the transaction. A concurrent writer that removes
    * the row in between makes the signature bind a stamp that is no longer live; the
@@ -857,18 +918,17 @@ export class ControlDatabase {
    * fails rather than silently half-applying. If concurrent owner-device removals ever
    * become routine, fold the stamp read into the transaction instead.
    *
-   * `table` / `keyColumn` are interpolated into the SQL and typed as closed literal
-   * unions — no caller-supplied string reaches the statement.
+   * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
+   * come from closed literal unions — no caller-supplied string reaches the statement.
    */
-  async deleteGuardedRow(
+  private async deleteGuardedRow(
     table: Exclude<RevocableTable, 'OwnerKey'>,
-    keyColumn: GuardedKeyColumn,
     keyValue: string,
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<void> {
     this.ensureInitialized();
-    const stampId = await this.queryStampId(table, keyColumn, keyValue);
+    const stampId = await this.queryStampId(table, keyValue);
     if (stampId === null) {
       log('delete %s: no row for %s (already absent)', table, keyValue);
       return;
@@ -887,7 +947,7 @@ export class ControlDatabase {
       await this.db!.exec(`
         delete from CadreControl.${table}
           with context OwnerKey = ?, Signature = ?
-          where ${keyColumn} = ?
+          where ${GUARDED_KEY_COLUMN[table]} = ?
       `, [ownerKey, signature, keyValue]);
       await this.db!.exec(`
         insert into CadreControl.Revocation (TableName, RowKey, StampId)
@@ -912,9 +972,9 @@ export class ControlDatabase {
    * write nests this INSIDE {@link mutateCadrePeer}, never the reverse — see
    * {@link assertCommitBoundary}.
    *
-   * Private again now that every owner-signed delete/tombstone pair goes through
-   * {@link deleteGuardedRow}: no caller outside this class composes its own multi-statement
-   * control transaction, so re-widening this is a sign a writer belongs in here instead.
+   * Private: every multi-statement control write lives in this class (the owner-signed
+   * delete/tombstone pairs all go through {@link deleteGuardedRow}), so needing to widen
+   * this is a sign the writer that wants it belongs in here too.
    *
    * @param label - What the transaction was doing, for the rollback log line.
    */

@@ -213,6 +213,27 @@ describe('device-token registry (real control DB)', () => {
     expect(await node.resolveDeviceToken(peerId)).toBeNull();
   }, 60_000);
 
+  /**
+   * `CadreNode.clearDeviceToken` gates on its own row check, so the shared delete body's
+   * absent-row gate is only reached through the service (or `pruneDeviceTokens` over a
+   * peer that never published). Drive the service directly so a regression in that gate
+   * surfaces here rather than as a constraint failure in the field.
+   */
+  it('clearing a token that was never published is a no-op, with nothing retired', async () => {
+    const { node } = booted;
+    const drone = await generateKeyPair('Ed25519');
+    const dronePeerId = peerIdFromPrivateKey(drone).toString();
+    await node.authorizePeer(dronePeerId, []);
+
+    const db = node.getControlDatabase()!;
+    const retiredBefore = (await db.queryRevokedStamps('DeviceToken')).size;
+
+    await node.getSeedBootstrapService()!.deleteDeviceToken(dronePeerId);
+
+    expect(await db.queryDeviceTokenStampId(dronePeerId)).toBeNull();
+    expect((await db.queryRevokedStamps('DeviceToken')).size).toBe(retiredBefore);
+  }, 60_000);
+
   it('honors an explicit freshness ceiling (stale → null)', async () => {
     const { node, peerId } = booted;
     await node.registerDeviceToken('fcm', 'fresh');

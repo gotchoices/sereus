@@ -429,10 +429,10 @@ export class SeedBootstrapService {
    * that row, so it is an owner action in its own right.
    *
    * Both digests, the stamp read, and the transaction come from
-   * {@link ControlDatabase.deleteGuardedRow} — the one implementation of this shape,
-   * shared with `CadrePeer` / `Strand` / `ValidationKey`. A no-op when the row is
-   * already absent (that check lives in the helper; unlike {@link removePeer} nothing
-   * here rides on it).
+   * {@link ControlDatabase.deleteDeviceToken} — one shared implementation across
+   * `CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
+   * owner-key precondition; a no-op on an already-absent row is the shared body's
+   * behavior, and unlike {@link removePeer} nothing here rides on it.
    */
   async deleteDeviceToken(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE the DB read, so a non-owner gets the
@@ -441,9 +441,8 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    await this.controlDatabase.deleteGuardedRow(
-      'DeviceToken', 'PeerId', peerId, ownerKey,
-      message => this.signMessageBytes(message),
+    await this.controlDatabase.deleteDeviceToken(
+      peerId, ownerKey, message => this.signMessageBytes(message),
     );
   }
 
@@ -497,10 +496,10 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Adapt {@link ControlDatabase.deleteGuardedRow}'s raw-bytes `signMessage` callback to
-   * {@link signDigest}'s base64url-string form. Both encodings hash to the same signed
-   * bytes (`sign` decodes its base64url input), so a signature minted here satisfies the
-   * same schema CHECK as one from the callers that sign the bytes directly — see
+   * Adapt the control database's raw-bytes `signMessage` callback (every guarded delete
+   * takes one) to {@link signDigest}'s base64url-string form. Both encodings hash to the
+   * same signed bytes (`sign` decodes its base64url input), so a signature minted here
+   * satisfies the same schema CHECK as one from the callers that sign the bytes directly — see
    * `control-revocation-replay.spec.ts`'s "raw-bytes and digest-string signers agree".
    */
   private signMessageBytes(message: Uint8Array): string {
@@ -526,10 +525,10 @@ export class SeedBootstrapService {
    * the row, so it is an owner action in its own right, not a side effect the delete's
    * signature covers.
    *
-   * Both digests, the stamp read, and the transaction come from
-   * {@link ControlDatabase.deleteGuardedRow} — the one implementation of this shape,
-   * shared with `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
-   * membership wrapper and the absent-row gate it depends on (below).
+   * Both digests, the stamp read, the transaction, and the post-commit membership notify
+   * come from {@link ControlDatabase.deleteCadrePeer} — one shared implementation across
+   * `CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`. What stays here is the
+   * owner-key precondition and the absent-row gate the notify depends on (below).
    */
   async removePeer(peerId: string): Promise<void> {
     // Fail fast on a keyless service BEFORE any DB read: a non-owner cannot sign the
@@ -539,10 +538,13 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // This absent-row gate must stay OUTSIDE mutateCadrePeer, even though
-    // deleteGuardedRow repeats it internally: mutateCadrePeer notifies whenever its body
-    // resolves, with no idea whether the body wrote anything, so delegating an absent
-    // peer would fire a spurious membership notification.
+    // This absent-row gate must stay OUTSIDE the delete, even though the delete repeats it
+    // internally: deleteCadrePeer's membership notify fires whenever its body resolves,
+    // with no idea whether the body wrote anything, so delegating an absent peer would
+    // fire a spurious membership notification.
+    // NOTE: deleteCadrePeer re-reads the StampId, so a peer removed by another writer
+    // between the two reads no-ops silently yet still notifies. Narrow concurrent-removal
+    // window only — the common "already absent" case is caught here.
     const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
     if (stampId === null) {
       log('removePeer: no CadrePeer row for %s (already absent)', peerId);
@@ -551,18 +553,9 @@ export class SeedBootstrapService {
 
     log('Removing peer: %s', peerId);
 
-    const controlDatabase = this.controlDatabase;
-    // The transaction lives INSIDE the mutateCadrePeer body (deleteGuardedRow opens its
-    // own), so the membership notify lands strictly after commit() and a rolled-back
-    // removal throws out without notifying.
-    // NOTE: deleteGuardedRow re-reads the StampId, so a peer removed by another writer
-    // between the two reads no-ops silently yet still notifies. Narrow concurrent-removal
-    // window only — the common "already absent" case is caught by the gate above.
-    await controlDatabase.mutateCadrePeer('peer-remove', () =>
-      controlDatabase.deleteGuardedRow(
-        'CadrePeer', 'PeerId', peerId, ownerKey,
-        message => this.signMessageBytes(message),
-      ));
+    await this.controlDatabase.deleteCadrePeer(
+      peerId, ownerKey, message => this.signMessageBytes(message),
+    );
 
     log('Peer %s removed successfully (stamp retired)', peerId);
   }
