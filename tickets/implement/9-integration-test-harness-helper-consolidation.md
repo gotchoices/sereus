@@ -1,0 +1,215 @@
+description: Several integration-test scenario files copy the same setup boilerplate (network transports, node config, authority bootstrap, peer-connection helpers); pull the shared pieces into the test harness so there is one copy to maintain.
+prereq:
+files: packages/integration-tests/src/harness/test-network.ts, packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts, packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-auto-convergence.integration.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, packages/integration-tests/src/scenarios/rbac-signed-write.integration.ts, packages/integration-tests/src/scenarios/multi-party-workflows.integration.ts, packages/integration-tests/src/scenarios/strand-membership-closed-strand-e2e.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts
+difficulty: easy
+----
+
+## Design (resolved — implement as specified, no open questions)
+
+Add the following exports to `packages/integration-tests/src/harness/test-network.ts`
+(re-exported automatically through `harness/index.ts`'s existing `export * from
+'./test-network.js'`), placed near the existing `waitForCrossNodeControlSync` /
+`waitForCadrePeerConverged` free functions at the bottom of the file:
+
+```ts
+/** WebSocket + circuit-relay transports shared by every e2e/integration scenario. */
+export function wsTransports(): Transformer[] // (or whatever the real libp2p transport factory return type is — match the existing scenario signatures)
+
+/**
+ * A properly signed sApp config with a NON-realtime `latencyHint` (`'interactive'`) —
+ * realtime strands never hibernate, so any wake/hibernation scenario requires this.
+ */
+export function createSignedSAppConfig(schema: string, version: string): SAppConfig
+
+export interface ControlNodeOpts {
+  partyId: string;
+  privateKey?: PrivateKey;
+  bootstrapNodes?: string[];
+  profile?: 'storage' | 'transaction';
+  enableRelay?: boolean;
+  listenAddrs?: string[];
+  hibernation?: boolean;
+  /** Override the proactive control-cohort reconcile cadence (ms). */
+  reconcileMs?: number;
+}
+
+/** Build a `CadreNodeConfig` for one control-network test node. */
+export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig
+
+/**
+ * Make a freshly-started node its own control owner (genesis): enroll its derived
+ * public key in `OwnerKey` and wire seed-bootstrap with the matching private key, so
+ * it can owner-sign `CadrePeer` inserts (and mint seeds). Returns the owner PUBLIC key
+ * (base64url) — the key an enrollee pins into its node-local trusted-owner anchor
+ * (`trustOwnerKeys`) so this owner's membership vouchers pass its authorized-member
+ * predicate. Callers that don't need the anchor key (most current callers) simply
+ * discard the return value.
+ */
+export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<string>
+
+/** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
+export async function randomPeerId(): Promise<string>
+
+/**
+ * Establish a DIRECT control-network connection from `reader` to `writer` and wait
+ * until BOTH sides report it, SCOPED to this specific peer pair (so the recipe stays
+ * correct when several readers attach to one writer, e.g. a 3-node full-mesh
+ * scenario). This is the test-only stand-in for production control-cohort discovery.
+ * Both-sides confirmation is a hard precondition of a replicating write: only once
+ * each peer sees the connection can the control collection's cohort span them and a
+ * commit be non-local-only.
+ */
+export async function connectControlNodes(reader: CadreNode, writer: CadreNode): Promise<void>
+
+/**
+ * Boot node A (owner + writer, storage profile so it holds the CadrePeer blocks) and
+ * node B (a plain READER — deliberately NOT its own owner, so every row it observes
+ * must have arrived over the wire) on a fresh party, DISCONNECTED. A vouches B
+ * (`authorizePeer`) right after B starts, so A's inbound connection gate later admits
+ * B's dial. Caller owns shutdown (`A.stop()` / `B.stop()`) and owns connecting them.
+ *
+ * `partyId` is built as `${partyIdPrefix}-${tag}-<timestamp>`; pass `partyIdPrefix` to
+ * keep an existing scenario's party-id namespacing (default `'ctrl'`).
+ */
+export async function bootPair(
+  tag: string,
+  partyIdPrefix?: string,
+): Promise<{ A: CadreNode; B: CadreNode }>
+```
+
+These names/shapes are chosen to make each hoist a pure move with call-site parity —
+verify against the current per-file source before landing:
+
+- `wsTransports()` — byte-identical in all 10 scenario files listed above. Delete the
+  local copy in each and import from `../harness/index.js` (already imported in most
+  of these files for other harness helpers — extend the existing import).
+- `createSignedSAppConfig()` — byte-identical (modulo object-literal key order,
+  functionally identical) in `push-wake-e2e`, `strand-formation-e2e`,
+  `rbac-signed-write`, `multi-party-workflows`, `strand-membership-closed-strand-e2e`.
+  Delete local copies, import from harness. NOTE: `strand-formation-e2e.integration.ts`
+  also has `createUnsignedSAppConfig` / `createTamperedSAppConfig` /
+  `createWrongKeySAppConfig` — those are scenario-specific (deliberately-invalid
+  variants used nowhere else); leave them local, just delete the one function that
+  duplicates the harness version.
+- `controlNodeConfig()` / `ControlNodeOpts` — replaces the `nodeConfig()`/`NodeOpts`
+  pair in exactly 4 files: `push-wake-e2e`, `control-db-two-node-convergence`,
+  `control-write-while-alone-convergence`, `control-cohort-auto-convergence`. The
+  unified shape is push-wake's `NodeOpts` (superset: optional `privateKey`, optional
+  `hibernation`) plus `control-cohort-auto`'s `reconcileMs` knob. For the 3 files that
+  always pass `privateKey` and never set `hibernation`, the unified function produces
+  byte-identical `CadreNodeConfig` output (optional field defaults to the same
+  hardcoded value they use today — verify this explicitly for each call site, don't
+  just assume). Do NOT touch the differently-shaped `nodeConfig()` /
+  `createNodeConfig()` / `createTestNodeConfig()` helpers in `strand-formation-e2e`,
+  `rbac-signed-write`, `multi-party-workflows`, `strand-membership-closed-strand-e2e` —
+  those are a distinct (strand-scenario, not control-scenario) options shape and are
+  legitimately scenario-family-local; the plan ticket's duplication table does not
+  list them.
+- `makeOwnOwner()` — present (same name) in all 4 control files above. 3 of them
+  return `Promise<void>`; `push-wake-e2e`'s returns `Promise<string>` (the owner pub
+  key, needed for `trustOwnerKeys`). Hoist push-wake's richer version; the 3 callers
+  that don't need the return value just don't capture it — no call-site signature
+  change required beyond dropping the local function and importing the shared one.
+- `randomPeerId()` — byte-identical in `control-db-two-node-convergence`,
+  `control-write-while-alone-convergence`, `control-cohort-auto-convergence`. Not
+  present in push-wake (it derives peer ids from keys directly there) — no change
+  needed in that file for this helper.
+- `connectControlNodes()` — DIVERGED (see plan ticket problem statement): the
+  `push-wake-e2e` copy is pair-scoped (`getConnections().some(c =>
+  c.remotePeer.toString() === expectedPeerId)` on both sides); the
+  `control-db-two-node-convergence` and `control-write-while-alone-convergence`
+  copies just check `getConnections().length > 0` on both sides. Hoist the
+  PAIR-SCOPED (push-wake) version as the one shared implementation — it is strictly
+  more correct and behaves identically to the loose version in every CURRENT 2-node
+  call site (there is exactly one connection to check either way). `control-cohort-auto-convergence`
+  does not have this helper (it exercises the production auto-connect path with zero
+  manual dials) — no change needed there for this helper.
+- `bootPair()` — present in `control-db-two-node-convergence` (partyId prefix
+  `ctrl-`) and `control-write-while-alone-convergence` (partyId prefix `ctrl-alone-`);
+  otherwise byte-for-byte the same recipe. Hoist with a `partyIdPrefix` parameter
+  (default `'ctrl'`) so `control-db-two-node-convergence`'s call
+  (`bootPair('converge')`) and `control-write-while-alone-convergence`'s two calls
+  (`bootPair('cadrepeer', 'ctrl-alone')`, `bootPair('devtoken', 'ctrl-alone')`)
+  reproduce today's exact partyId strings (no behavioral change — party ids are
+  timestamp-suffixed and only need to stay non-colliding within a run, but keep the
+  prefix output identical anyway since it appears in debug logs).
+
+Helpers to explicitly LEAVE LOCAL (legitimately scenario-specific — do not hoist):
+`controlAddrs()`, `seedReceiverRecord()`, `bringUpHibernatingStrand()`,
+`RESERVATION_WAIT`, `SIMPLE_SCHEMA` and any other schema constant, all of
+`strand-formation-e2e`'s deliberately-invalid sApp config variants, and every
+strand-scenario-family `nodeConfig`-shaped helper called out above.
+
+## Imports the harness file will need to add
+
+`test-network.ts` currently imports from `debug`, `@noble/curves/ed25519.js`,
+`uint8arrays`, `@serfab/cadre-core`, and local harness modules. Adding the helpers
+above requires new imports for: `webSockets` (`@libp2p/websockets`),
+`circuitRelayTransport` (`@libp2p/circuit-relay-v2`), `generatePrivateKey` /
+`getPublicKey` (`@optimystic/quereus-plugin-crypto`), `signSchema` and `SAppConfig` /
+`CadreNodeConfig` types (`@serfab/cadre-core` — `signSchema` is new, the config types
+may already be imported), `MemoryRawStorage` (`@optimystic/db-p2p`),
+`generateKeyPair` (`@libp2p/crypto/keys`), `peerIdFromPrivateKey`
+(`@libp2p/peer-id`), and the `PrivateKey` type (`@libp2p/interface`). All of these
+packages are already dependencies of `@serfab/integration-tests` (see
+`packages/integration-tests/package.json`) — no `package.json` change needed.
+
+## Edge cases & interactions
+
+- **`connectControlNodes` reconciliation must not change observed behavior in the
+  2-node scenarios.** After swapping in the pair-scoped version, re-run
+  `control-db-two-node-convergence.integration.ts` and
+  `control-write-while-alone-convergence.integration.ts` — they are the landed
+  network-backing regression anchors; both must still pass with identical timing
+  characteristics (no new hangs, no timeout-window regressions).
+- **3-node full mesh (push-wake scenario 4) is the reason the pair-scoped version
+  exists** — confirm `push-wake-e2e.integration.ts`'s scenario 4 (`connectControlNodes(S,
+  A)`, `connectControlNodes(Rx, A)`, `connectControlNodes(Rx, S)`) still passes after
+  the hoist; this is the one call site where pair-scoping is load-bearing (three
+  distinct pairwise connections must each be independently confirmed, not just "any
+  connection exists").
+- **`makeOwnOwner`'s widened return type.** Changing 3 call sites from `Promise<void>`
+  to `Promise<string>` is source-compatible (unused return values are legal), but
+  confirm `noUnusedLocals`/lint does not flag an unused `await makeOwnOwner(...)`
+  expression-statement differently than before — it did not previously return a
+  value, so nothing was ever destructured; this should be a no-op for lint.
+- **`bootPair`'s default `partyIdPrefix`.** If a future call site passes no prefix, it
+  gets `'ctrl'` (control-db-two-node-convergence's existing behavior) — make sure the
+  default doesn't accidentally get applied to `control-write-while-alone-convergence`'s
+  two call sites (both must keep passing `'ctrl-alone'` explicitly).
+- **Import cycles / barrel re-export.** `harness/index.ts` re-exports `test-network.js`
+  via `export *` already — no index.ts change needed unless a naming collision surfaces
+  (e.g. another harness module already exports something named `wsTransports` or
+  `randomPeerId`); check `port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`,
+  `wait-utils.ts`, `types.ts` for name clashes before adding the new exports.
+- **`createSignedSAppConfig` argument/behavior parity.** Confirm every hoisted call
+  site still passes `(schema, version)` in that order and that none of the 5 source
+  copies had a subtly different `latencyHint` or omitted field — they were verified
+  byte-identical (mod key order) during planning, but diff each deleted block against
+  the shared version while editing, not just at the end.
+- **Scenario files that only use `wsTransports()`** (`convergence-stress.integration.ts`,
+  `websocket-chat.integration.ts`) still need the harness import added even though they
+  don't touch any other hoisted helper — don't skip them because the diff is small.
+
+## Acceptance / TODO
+
+- Add `wsTransports`, `createSignedSAppConfig`, `ControlNodeOpts`,
+  `controlNodeConfig`, `makeOwnOwner`, `randomPeerId`, `connectControlNodes`,
+  `bootPair` to `packages/integration-tests/src/harness/test-network.ts`.
+- Update all 12 scenario files listed in `files:` above to import the applicable
+  helpers from `../harness/index.js` and delete their local duplicate
+  definitions (per the file-by-file breakdown above — not every helper applies
+  to every file).
+- Reconcile `connectControlNodes` on the pair-scoped implementation everywhere.
+- Run `yarn workspace @serfab/integration-tests typecheck` and `yarn lint` —
+  both clean.
+- Run `yarn workspace @serfab/integration-tests test` (or at minimum the 12
+  touched scenario files) — full pass, no behavioral change. Pay particular
+  attention to `control-db-two-node-convergence.integration.ts` (the landed
+  network-backing regression anchor — re-run it explicitly to confirm it still
+  converges) and `push-wake-e2e.integration.ts` scenario 4 (the 3-node
+  full-mesh case that depends on pair-scoped `connectControlNodes`).
+- These are long-running real-libp2p integration tests; if the full suite risks
+  exceeding the runner's 10-minute idle timeout, stream output (`yarn ... 2>&1 |
+  tee`) and/or run the touched scenario files individually rather than the
+  whole package at once.
