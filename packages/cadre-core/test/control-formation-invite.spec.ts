@@ -8,7 +8,7 @@ import {
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { MissingHostStrandError, buildAuthorizationMessage } from '../src/control-database.js';
+import { MissingHostStrandError, formationVouchMessage, generateStampId } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
@@ -63,22 +63,39 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   }
 
   /**
-   * The bare `FormationUsage` insert `ControlDatabase.execFormationUsageInsert` writes,
-   * with `StrandStampId` under the caller's control so a wrong-stamp consent record can be
-   * attempted. `Now` goes through the same `canonicalDatetime` transform the writer uses.
+   * The bare `FormationUsage` insert `ControlDatabase.execFormationUsageInsert` writes, with
+   * every field the writer derives for itself — `StrandStampId`, the single-use `UsageStampId`
+   * nonce, the joining `PeerId`, and the approver sign-off — under the caller's control, so a
+   * wrong-stamp / replayed-nonce / re-filed-joiner consent record can be attempted. `Now` goes
+   * through the same `canonicalDatetime` transform the writer uses. Options object rather than
+   * positional args: the list is long enough that call sites would be unreadable, and most cases
+   * only care about one or two fields.
    */
-  async function rawInsertFormationUsage(
-    token: string,
-    useNumber: number,
-    strandId: string,
-    strandStampId: string,
-  ): Promise<void> {
+  async function rawInsertFormationUsage(opts: {
+    token: string;
+    useNumber: number;
+    strandId: string;
+    strandStampId: string;
+    /** Single-use nonce; a fresh unique one when absent. */
+    usageStampId?: string;
+    /** The joining peer; a fresh unique one when absent. */
+    peerId?: string;
+    disclosure?: string;
+    validationKey?: string;
+    validationSignature?: string;
+  }): Promise<void> {
     const now = await canonicalDatetime(rawDb, Date.now());
     await rawDb.exec(
-      `insert into CadreControl.FormationUsage (Token, UseNumber, Disclosure, StrandId, StrandStampId)
-         with context PeerId = ?, PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
-         values (?, ?, ?, ?, ?)`,
-      ['peer-raw', null, now, null, null, token, useNumber, '', strandId, strandStampId],
+      `insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerId, Disclosure, StrandId, StrandStampId)
+         with context PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
+         values (?, ?, ?, ?, ?, ?, ?)`,
+      [
+        null, now, opts.validationKey ?? null, opts.validationSignature ?? null,
+        opts.token, opts.useNumber,
+        opts.usageStampId ?? generateStampId('raw-insert-' + rand()),
+        opts.peerId ?? 'peer-raw-' + rand(),
+        opts.disclosure ?? '', opts.strandId, opts.strandStampId,
+      ],
     );
   }
 
@@ -149,7 +166,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await db.redeemInvitation({ token, strandId, disclosure: 'hello' });
+    await db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), disclosure: 'hello' });
 
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
@@ -177,7 +194,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const usageBefore = await usageCount();
 
     await expect(
-      db.redeemInvitation({ token: 'no-such-' + rand(), strandId: 'strand-' + rand() }),
+      db.redeemInvitation({
+        token: 'no-such-' + rand(), strandId: 'strand-' + rand(), peerId: 'peer-' + rand(),
+      }),
     ).rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
@@ -195,7 +214,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId })).rejects.toThrow();
+    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand() })).rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
     expect(await usageCount()).toBe(usageBefore);
@@ -216,7 +235,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await db.redeemInvitation({ token, strandId, nowMs: base });
+    await db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base });
 
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
@@ -234,7 +253,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId, nowMs: base })).rejects.toThrow();
+    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base }))
+      .rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
     expect(await usageCount()).toBe(usageBefore);
@@ -252,7 +272,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId, nowMs: base })).rejects.toThrow();
+    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base }))
+      .rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
     expect(await usageCount()).toBe(usageBefore);
@@ -265,8 +286,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // Strand created the normal way (owner signature), NOT via consent.
     await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
 
-    expect(await db.recordFormationUsage({ token, strandId })).toBe(1);
-    expect(await db.recordFormationUsage({ token, strandId })).toBe(2);
+    const peerId = 'peer-' + rand();
+    expect((await db.recordFormationUsage({ token, strandId, peerId })).useNumber).toBe(1);
+    expect((await db.recordFormationUsage({ token, strandId, peerId })).useNumber).toBe(2);
 
     const row = await rawDb.get(
       'select count(1) as c from CadreControl.FormationUsage where Token = ?',
@@ -297,7 +319,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // consent branch reads back — so a consent record can never be filed against a stamp of
     // the writer's choosing and held in reserve to re-seat the id after a removal.
     await expectConstraintFailure(
-      rawInsertFormationUsage(token, 1, strandId, 'not-the-live-stamp-' + rand()),
+      rawInsertFormationUsage({
+        token, useNumber: 1, strandId, strandStampId: 'not-the-live-stamp-' + rand(),
+      }),
       'StrandExists',
     );
     expect(await usageCount()).toBe(before);
@@ -306,7 +330,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // is about the stamp and nothing else.
     const liveStamp = await db.queryStrandStampId(strandId);
     expect(liveStamp).not.toBeNull();
-    await rawInsertFormationUsage(token, 1, strandId, liveStamp!);
+    await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: liveStamp! });
     expect(await usageCount()).toBe(before + 1);
   });
 
@@ -318,7 +342,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     await db.insertFormationInvite(token, 'sapp-nohost', ownerPublicKey, signMessage);
 
     const before = await usageCount();
-    await expect(db.recordFormationUsage({ token, strandId }))
+    await expect(db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() }))
       .rejects.toThrow(MissingHostStrandError);
     expect(await usageCount()).toBe(before);
   });
@@ -388,7 +412,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await expectConstraintFailure(
         inTransaction(async () => {
           await rawInsertStrandUnsigned(strandId, 'c', 'ATTACKER-KEY-' + strandId, stamp);
-          await rawInsertFormationUsage(token, 1, strandId, stamp);
+          await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: stamp });
         }),
         'AuthorizedInsert',
       );
@@ -402,7 +426,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const okStamp = freshStamp();
       await inTransaction(async () => {
         await rawInsertStrandUnsigned(okId, 'o', null, okStamp);
-        await rawInsertFormationUsage(token, 1, okId, okStamp);
+        await rawInsertFormationUsage({ token, useNumber: 1, strandId: okId, strandStampId: okStamp });
       });
       expect(await strandCount()).toBe(strandsBefore + 1);
       expect(await usageCount()).toBe(usageBefore + 1);
@@ -424,7 +448,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await expectConstraintFailure(
         inTransaction(async () => {
           await rawInsertStrandUnsigned(strandId, 'c', null, stamp);
-          await rawInsertFormationUsage(token, 1, strandId, stamp);
+          await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: stamp });
         }),
         'AuthorizedInsert',
       );
@@ -449,7 +473,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // the invite's own, and a bound invite may not seat a strand at all); the engine
       // reports the Strand-side AuthorizedInsert.
       await expectConstraintFailure(
-        db.redeemInvitation({ token, strandId: unrelated }),
+        db.redeemInvitation({ token, strandId: unrelated, peerId: 'peer-' + rand() }),
         'AuthorizedInsert',
       );
       expect(await strandCount()).toBe(strandsBefore);
@@ -478,7 +502,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // where it has not converged yet; resolveStrand instead reports 'missing' and the
       // formation manager rejects cleanly.
       await expectConstraintFailure(
-        db.redeemInvitation({ token, strandId: host }),
+        db.redeemInvitation({ token, strandId: host, peerId: 'peer-' + rand() }),
         'AuthorizedInsert',
       );
       expect(await strandCount()).toBe(strandsBefore);
@@ -502,7 +526,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // FormationUsage half of the narrowing, which any shape carrying a Strand insert
       // masks behind AuthorizedInsert.
       await expectConstraintFailure(
-        db.recordFormationUsage({ token, strandId: other }),
+        db.recordFormationUsage({ token, strandId: other, peerId: 'peer-' + rand() }),
         'Authorized',
       );
       expect(await usageCount()).toBe(usageBefore);
@@ -516,8 +540,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
       const first = 'strand-use1-' + rand();
       const second = 'strand-use2-' + rand();
-      await db.redeemInvitation({ token, strandId: first });
-      await db.redeemInvitation({ token, strandId: second });
+      await db.redeemInvitation({ token, strandId: first, peerId: 'peer-' + rand() });
+      await db.redeemInvitation({ token, strandId: second, peerId: 'peer-' + rand() });
 
       for (const id of [first, second]) {
         const row = await rawDb.get(
@@ -540,8 +564,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         totalUses: 3,
       });
 
-      expect(await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-a' })).toBe(1);
-      expect(await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-b' })).toBe(2);
+      expect((await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-a' })).useNumber).toBe(1);
+      expect((await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-b' })).useNumber).toBe(2);
 
       // Still exactly one Strand row for the host — joining by bound invite records
       // consent, it never seats anything.
@@ -598,22 +622,57 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     let validationPrivateKey: string;
     let validationPublicKey: string;
 
-    /** ed25519 sign-off over the same 'vouch' digest the SQL builds, from an arbitrary key. */
-    const vouch = (privateKey: string, token: string, disclosure: string): string =>
+    /**
+     * The five fields ONE approver sign-off is bound to. Named exactly like
+     * `recordFormationUsage`'s parameters so a case can spread a `Redemption` straight into
+     * the call — the redemption a key approved and the redemption that is attempted are then
+     * the same object, and a case that means to vary one field has to say so.
+     */
+    interface Redemption {
+      token: string;
+      strandId: string;
+      usageStampId: string;
+      peerId: string;
+      disclosure: string;
+    }
+
+    /**
+     * ed25519 sign-off over the same 'vouch' digest the SQL builds, from an arbitrary key.
+     * Built through `formationVouchMessage` rather than a hand-written field list, so the
+     * spec and the writer share ONE definition of what an approver signs: a field added to
+     * the digest on one side cannot silently keep passing on the other.
+     */
+    const vouch = (privateKey: string, fields: Redemption): string =>
       cryptoSign(
-        buildAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [token, disclosure]),
+        formationVouchMessage(fields),
         privateKey, 'ed25519', 'bytes', 'base64url', 'base64url',
       ) as string;
 
-    /** A `ValidationUrl` invite plus an owner-signed host strand to record consent against. */
-    async function validatingInvite(tag: string): Promise<{ token: string; strandId: string }> {
+    /**
+     * A `ValidationUrl` invite plus an owner-signed host strand to record consent against,
+     * returned as the complete `Redemption` an approval would cover: a freshly minted
+     * single-use nonce and a fresh joining peer alongside the token and strand. `bound` binds
+     * the invite to its own host strand (`FormationInvite.StrandId`); `totalUses` caps it.
+     */
+    async function validatingInvite(
+      tag: string,
+      options: { totalUses?: number; bound?: boolean } = {},
+    ): Promise<Redemption> {
       const token = `invite-${tag}-` + rand();
       const strandId = `strand-${tag}-` + rand();
       await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(token, 'sapp-' + tag, ownerPublicKey, signMessage, {
         validationUrl: `https://validate.example/${tag}`,
+        totalUses: options.totalUses,
+        ...(options.bound ? { strandId } : {}),
       });
-      return { token, strandId };
+      return {
+        token,
+        strandId,
+        usageStampId: generateStampId(`vouch-${tag}-` + rand()),
+        peerId: `peer-${tag}-` + rand(),
+        disclosure: `${tag}-disclosure`,
+      };
     }
 
     beforeAll(async () => {
@@ -625,19 +684,18 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     });
 
     it('rejects a rogue, unenrolled key that validly signed its own disclosure (pins the bug)', async () => {
-      const { token, strandId } = await validatingInvite('rogue');
+      const redemption = await validatingInvite('rogue');
       const roguePrivate = generatePrivateKey('ed25519', 'base64url') as string;
       const roguePublic = getPublicKey(roguePrivate, 'ed25519', 'base64url', 'base64url') as string;
-      const disclosure = 'rogue-disclosure';
 
       const before = await usageCount();
       // The signature IS valid over the right digest — it is the KEY that is not enrolled.
       // Pre-fix this landed, because the CHECK verified against the key on the insert.
       await expectConstraintFailure(
         db.recordFormationUsage({
-          token, strandId, disclosure,
+          ...redemption,
           validationKey: roguePublic,
-          validationSignature: vouch(roguePrivate, token, disclosure),
+          validationSignature: vouch(roguePrivate, redemption),
         }),
         'Authorized',
       );
@@ -645,42 +703,49 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     });
 
     it('rejects redemption of a ValidationUrl invite with no sign-off supplied at all', async () => {
-      const { token, strandId } = await validatingInvite('noapproval');
+      const redemption = await validatingInvite('noapproval');
 
       const before = await usageCount();
       await expectConstraintFailure(
-        db.recordFormationUsage({ token, strandId, disclosure: 'no-approval' }),
+        db.recordFormationUsage(redemption),
         'Authorized',
       );
       expect(await usageCount()).toBe(before);
     });
 
     it('admits redemption when an ENROLLED ValidationKey signed the vouch digest', async () => {
-      const { token, strandId } = await validatingInvite('enrolled');
-      const disclosure = 'enrolled-disclosure';
+      const redemption = await validatingInvite('enrolled');
 
       const before = await usageCount();
-      expect(await db.recordFormationUsage({
-        token, strandId, disclosure,
+      expect((await db.recordFormationUsage({
+        ...redemption,
         validationKey: validationPublicKey,
-        validationSignature: vouch(validationPrivateKey, token, disclosure),
-      })).toBe(1);
+        validationSignature: vouch(validationPrivateKey, redemption),
+      })).useNumber).toBe(1);
       expect(await usageCount()).toBe(before + 1);
+
+      // The row that landed carries the very nonce and joiner the approver signed over —
+      // the two fields that make one sign-off spendable once, for one peer.
+      const row = await rawDb.get(
+        'select UsageStampId, PeerId from CadreControl.FormationUsage where Token = ?',
+        [redemption.token],
+      );
+      expect(row?.UsageStampId).toBe(redemption.usageStampId);
+      expect(row?.PeerId).toBe(redemption.peerId);
     });
 
     it('rejects an enrolled key named alongside a signature from a DIFFERENT key', async () => {
-      const { token, strandId } = await validatingInvite('mismatch');
+      const redemption = await validatingInvite('mismatch');
       const otherPrivate = generatePrivateKey('ed25519', 'base64url') as string;
-      const disclosure = 'mismatch-disclosure';
 
       const before = await usageCount();
       // `context.ValidationKey` only SELECTS the enrolled row; the verify runs against the
       // stored `VK.Key`, so an enrolled name cannot launder a foreign signature.
       await expectConstraintFailure(
         db.recordFormationUsage({
-          token, strandId, disclosure,
+          ...redemption,
           validationKey: validationPublicKey,
-          validationSignature: vouch(otherPrivate, token, disclosure),
+          validationSignature: vouch(otherPrivate, redemption),
         }),
         'Authorized',
       );
@@ -688,20 +753,19 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     });
 
     it('rejects an enrolled key\'s signature presented under an unenrolled key name', async () => {
-      const { token, strandId } = await validatingInvite('unenrolled-name');
+      const redemption = await validatingInvite('unenrolled-name');
       const roguePublic = getPublicKey(
         generatePrivateKey('ed25519', 'base64url') as string, 'ed25519', 'base64url', 'base64url',
       ) as string;
-      const disclosure = 'unenrolled-name-disclosure';
 
       const before = await usageCount();
       // The mirror of the case above: a genuine approver signature, but the row lookup is on
       // the name presented, and no `ValidationKey` row matches it.
       await expectConstraintFailure(
         db.recordFormationUsage({
-          token, strandId, disclosure,
+          ...redemption,
           validationKey: roguePublic,
-          validationSignature: vouch(validationPrivateKey, token, disclosure),
+          validationSignature: vouch(validationPrivateKey, redemption),
         }),
         'Authorized',
       );
@@ -715,7 +779,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertFormationInvite(token, 'sapp-novalidation', ownerPublicKey, signMessage);
 
       const before = await usageCount();
-      expect(await db.recordFormationUsage({ token, strandId, disclosure: 'open' })).toBe(1);
+      expect((await db.recordFormationUsage({
+        token, strandId, peerId: 'peer-' + rand(), disclosure: 'open',
+      })).useNumber).toBe(1);
       expect(await usageCount()).toBe(before + 1);
     });
 
@@ -726,23 +792,22 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertValidationKey(retiredPublic, ownerPublicKey, signMessage);
 
       const approved = await validatingInvite('before-removal');
-      expect(await db.recordFormationUsage({
-        ...approved, disclosure: 'before-removal-disclosure',
+      expect((await db.recordFormationUsage({
+        ...approved,
         validationKey: retiredPublic,
-        validationSignature: vouch(retiredPrivate, approved.token, 'before-removal-disclosure'),
-      })).toBe(1);
+        validationSignature: vouch(retiredPrivate, approved),
+      })).useNumber).toBe(1);
 
       await db.deleteValidationKey(retiredPublic, ownerPublicKey, signMessage);
 
       // Future redemptions: the `exists` finds no row, so the same approver is now powerless.
       const later = await validatingInvite('after-removal');
-      const disclosure = 'after-removal-disclosure';
       const before = await usageCount();
       await expectConstraintFailure(
         db.recordFormationUsage({
-          ...later, disclosure,
+          ...later,
           validationKey: retiredPublic,
-          validationSignature: vouch(retiredPrivate, later.token, disclosure),
+          validationSignature: vouch(retiredPrivate, later),
         }),
         'Authorized',
       );
@@ -946,7 +1011,7 @@ describe('ControlDatabase.hasOutstandingFormationInvite (DB-wide redeemable scan
 
     // At T0 + 2min the previous test's invite is expired, so this one decides.
     expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(true);
-    await db.recordFormationUsage({ token, strandId });
+    await db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() });
     expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(false);
   });
 
