@@ -88,9 +88,13 @@ export interface FormationApprover {
 }
 
 /**
- * Why an approval could not be obtained. The four cases route differently: `refused` is a
+ * Why an approval could not be obtained. The cases route differently: `refused` is a
  * final answer, `unavailable` may succeed on a later attempt, and `malformed` /
- * `misconfigured` are operator errors that retrying never fixes.
+ * `unenrolled` / `misconfigured` are operator errors that retrying never fixes.
+ *
+ * `unenrolled` is thrown by the redeeming node's LOCAL enrollment pre-check (the recorder
+ * asking its control database whether the approval's key is an enrolled `ValidationKey`
+ * row), never by the HTTP client — a hook cannot know or report it.
  */
 export type FormationApprovalFailure =
   /** The hook answered, and the answer is no. */
@@ -99,6 +103,8 @@ export type FormationApprovalFailure =
   | 'unavailable'
   /** Got an answer that is not a usable approval (not JSON, missing/blank fields, oversized). */
   | 'malformed'
+  /** The approval's `validationKey` is not an enrolled `ValidationKey` row (local pre-check). */
+  | 'unenrolled'
   /** The `ValidationUrl` or the runtime is unusable (bad scheme, no `fetch`). */
   | 'misconfigured';
 

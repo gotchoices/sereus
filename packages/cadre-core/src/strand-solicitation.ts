@@ -46,10 +46,14 @@ export interface DisclosureValidator {
  *
  * Replaces the older `{ strandId, memberPrivateKey } | null` shape, which conflated `bound`
  * and `missing` (both produced a non-null result whenever the invite had a `StrandId`).
+ *
+ * `validationUrl` is the invite's `ValidationUrl` (the outside approval hook), surfaced on
+ * the two redeemable variants so the manager can see approval is required without a second
+ * invite read. `missing` omits it: that redemption is rejected before any hook contact.
  */
 export type ResolvedHostStrand =
-  | { kind: 'unbound' }
-  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
+  | { kind: 'unbound'; validationUrl: string | null }
+  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null; validationUrl: string | null }
   | { kind: 'missing'; strandId: string };
 
 /**
@@ -59,7 +63,14 @@ export interface FormationUsageRecorder {
   /**
    * Record that a formation invite was used
    */
-  recordUsage(token: string, initiatorKey: string, strandId: string): Promise<void>;
+  recordUsage(params: {
+    token: string;
+    /** The joining peer — written to `FormationUsage.PeerId` and inside the approval digest. */
+    peerId: string;
+    strandId: string;
+    /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
+    disclosure: string;
+  }): Promise<void>;
 
   /**
    * Check if a token has already been used (for single-use invites)
@@ -88,11 +99,14 @@ export interface FormationUsageRecorder {
    * path the schema's `Strand.AuthorizedInsert` `FormationUsage` branch authorizes. Returns the
    * minted strand id plus its membership key (null for an open responder-provisioned strand).
    */
-  provisionAndRecord?(
-    token: string,
-    initiatorKey: string,
-    sAppId: string
-  ): Promise<{ strandId: string; memberPrivateKey: string | null }>;
+  provisionAndRecord?(params: {
+    token: string;
+    /** The joining peer — written to `FormationUsage.PeerId` and inside the approval digest. */
+    peerId: string;
+    sAppId: string;
+    /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
+    disclosure: string;
+  }): Promise<{ strandId: string; memberPrivateKey: string | null }>;
 
   /**
    * Is ANY invitation this recorder knows about unexpired and not fully
@@ -391,11 +405,12 @@ export class StrandSolicitationService {
    */
   async recordFormationComplete(
     token: string,
-    initiatorKey: string,
-    strandId: string
+    peerId: string,
+    strandId: string,
+    disclosure = ''
   ): Promise<void> {
     if (this.formationUsageRecorder) {
-      await this.formationUsageRecorder.recordUsage(token, initiatorKey, strandId);
+      await this.formationUsageRecorder.recordUsage({ token, peerId, strandId, disclosure });
       log('Recorded formation usage: token=%s strand=%s', token, strandId);
     }
   }

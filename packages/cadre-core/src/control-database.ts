@@ -1177,6 +1177,20 @@ export class ControlDatabase {
   }
 
   /**
+   * Mint the single-use `UsageStampId` nonce for ONE redemption, from this database's own
+   * libp2p peer id ({@link generateStampId}). Exists so a caller obtaining an approver
+   * sign-off can mint the nonce BEFORE the hook is contacted — the approval is signed over
+   * it (see {@link formationVouchMessage}) and the identical value must then be passed to
+   * {@link redeemInvitation} / {@link recordFormationUsage} — without reaching for the peer
+   * id itself. Callers that skip the approval flow simply omit `usageStampId` and those
+   * methods mint their own.
+   */
+  mintUsageStampId(): string {
+    this.ensureInitialized();
+    return generateStampId(this.config.libp2pNode.peerId.toString());
+  }
+
+  /**
    * Redeem a `FormationInvite` by inserting the `Strand` row and a matching
    * `FormationUsage` row **atomically, in one transaction**.
    *
