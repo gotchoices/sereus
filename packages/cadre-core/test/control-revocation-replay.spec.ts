@@ -280,6 +280,19 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
   }
 
+  function rawInsertDeviceToken(
+    contextOwner: string | null,
+    signature: string | null,
+    row: DeviceTokenAuthorizedRow,
+  ): Promise<void> {
+    return rawDb.exec(
+      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
+         with context OwnerKey = ?, Signature = ?
+         values (?, ?, ?, ?, ?, ?)`,
+      [contextOwner, signature, row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
+    );
+  }
+
   /** A tombstone append under CALLER-CHOSEN authorization context — the `Authorized` probe. */
   function rawTombstone(
     contextOwner: string | null,
@@ -388,9 +401,13 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     return { stamp, addSig };
   }
 
-  /** Seat a DeviceToken row the legitimate (owner-signed) way — no CadrePeer row needed
-   * (DeviceToken carries no foreign key to it). */
-  async function seatDeviceToken(peerId: string): Promise<{ stamp: string }> {
+  /**
+   * Seat a DeviceToken row the legitimate (owner-signed) way — no CadrePeer row needed
+   * (DeviceToken carries no foreign key to it). `UpdatedAt`/`Sig` stay null: the row is
+   * only ever a tombstone target here, never resolved, and the owner insert branch does
+   * not require the peer's own self-sig to be present.
+   */
+  async function seatDeviceToken(peerId: string): Promise<{ stamp: string; addSig: string }> {
     const row: DeviceTokenAuthorizedRow = {
       peerId,
       platform: 'fcm',
@@ -400,13 +417,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
       stampId: freshStamp(),
     };
     const addSig = signB64(founder, deviceTokenAddDigest(row));
-    await rawDb.exec(
-      `insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
-         with context OwnerKey = ?, Signature = ?
-         values (?, ?, ?, ?, ?, ?)`,
-      [founder.publicKey, addSig, row.peerId, row.platform, row.token, row.updatedAt, row.sig, row.stampId],
-    );
-    return { stamp: row.stampId };
+    await rawInsertDeviceToken(founder.publicKey, addSig, row);
+    return { stamp: row.stampId, addSig };
   }
 
   /** The legitimate ValidationKey removal shape: signed delete + tombstone in ONE transaction. */

@@ -232,6 +232,16 @@ Strand lifecycle resource management in `@serfab/cadre-core`
     `CadrePeer`: self-published, monotonic `UpdatedAt`, self-`Sig` over `(PeerId|Platform|Token|UpdatedAt)`
     verified at resolve time against the bound `CadrePeer.PublicKey`. Insert/delete owner-gated; a
     member self-updates its own token (rotation / platform switch).
+  - Single-use approvals (`devicetoken-authority-antireplay`): the owner's insert approval covers the
+    WHOLE row ending in its one-off `StampId`, the delete approval covers `(PeerId, StampId)` only, and a
+    clear must retire the stamp into `Revocation` in the same transaction (`RevocationRecorded`) while an
+    insert refuses an already-retired stamp (`NotRevoked`). `resolveDeviceToken` also drops a live row
+    whose stamp is retired. The owner re-touch (`vouch`) update branch was removed — it rewrote the row
+    outside the monotonicity guard, so an owner correcting a token deletes and re-inserts it. Covered by
+    `control-devicetoken-stamp-constraint.spec.ts` (crypto-free truth table),
+    `control-authorization-domain-separation.spec.ts` (cross-domain replays),
+    `control-revocation-replay.spec.ts` (tombstone/`RowIsGone` branches), and
+    `device-token-registry.spec.ts` (clear → re-register mints a fresh stamp; retired-stamp read gate).
   - `device-token.ts` (`deviceTokenSignedPayload` / `signDeviceTokenRecord` / `verifyDeviceTokenSignature` /
     `isPushPlatform`) mirrors `peer-record.ts`. `CadreNode.registerDeviceToken(platform, token)` /
     `resolveDeviceToken(peerId)` (membership + binding + self-sig + freshness gated, `null` on any failure) /

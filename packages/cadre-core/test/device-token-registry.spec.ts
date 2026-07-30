@@ -227,6 +227,7 @@ describe('device-token registry (real control DB)', () => {
     const { node, peerId } = booted;
     await node.registerDeviceToken('fcm', 'to-be-cleared');
     expect(await node.resolveDeviceToken(peerId)).not.toBeNull();
+    const cleared = await node.getControlDatabase()!.queryDeviceToken(peerId);
 
     await node.clearDeviceToken();
     expect(await node.getControlDatabase()!.queryDeviceToken(peerId)).toBeNull();
@@ -243,6 +244,12 @@ describe('device-token registry (real control DB)', () => {
     const resolved = await node.resolveDeviceToken(peerId);
     expect(resolved).not.toBeNull();
     expect(resolved!.token).toBe('after-re-register');
+    // The stamp is what carries the anti-replay: the re-insert must carry a NEW one, not
+    // the retired one. Resolving at all already implies it (the retired stamp is also the
+    // read-side gate), but pin the mint explicitly so a future writer change cannot pass
+    // by reusing a stamp the local Revocation set happens not to hold.
+    const reinserted = await node.getControlDatabase()!.queryDeviceToken(peerId);
+    expect(reinserted!.stampId).not.toBe(cleared!.stampId);
   }, 60_000);
 
   it('resolves to null for a live row whose stamp is retired (simulated convergence race)', async () => {
@@ -259,7 +266,15 @@ describe('device-token registry (real control DB)', () => {
     const db = node.getControlDatabase()!;
     const stored = await db.queryDeviceToken(peerId);
     expect(stored).not.toBeNull();
+    // Pre-condition: the row resolves before the stamp is retired, so the null below is
+    // attributable to the stamp gate and not to some unrelated gate failing first.
+    expect(await node.resolveDeviceToken(peerId)).not.toBeNull();
 
+    // NOTE: this reassigns a prototype method on one live `ControlDatabase` instance and
+    // restores it in the `finally`. Fine while `queryRevokedStamps` stays an ordinary
+    // method; if `ControlDatabase` ever freezes its instances or turns this into a bound
+    // arrow-function class field, the assignment stops working and this test needs a seam
+    // (e.g. an injectable revoked-stamp reader) instead.
     const original = db.queryRevokedStamps.bind(db);
     db.queryRevokedStamps = async (tableName) => {
       const stamps = await original(tableName);
