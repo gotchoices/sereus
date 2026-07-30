@@ -294,7 +294,7 @@ export class StrandFormationManager {
     const recorder = this.formationUsageRecorder;
     const resolved: ResolvedHostStrand = recorder?.resolveStrand
       ? await recorder.resolveStrand(token)
-      : { kind: 'unbound', validationUrl: null };
+      : { kind: 'unbound' };
 
     try {
       switch (resolved.kind) {
@@ -324,11 +324,14 @@ export class StrandFormationManager {
         log('approval failed (%s) for token %s: %o', err.failure, token, err);
         return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
       }
-      // NOTE: an approval obtained before landing here is spent — its nonce was never
-      // inserted, and the `unique` UsageStampId column bars re-presenting it — so a retry
-      // after a lost `(Token, UseNumber)` race (or any unrelated write failure) needs a
-      // FRESH approval; for a manual review queue that means a second human review. No
-      // usage row is written on any of these paths, so the invite itself is not consumed.
+      // NOTE: an approval obtained before landing here is DISCARDED, because this path does
+      // not retry — not because the nonce is barred. Nothing was inserted, so the same
+      // `usageStampId` could legally be re-presented under a new use number (that is exactly
+      // what the free nonce in `FormationUsage.Authorized` is for); we simply reject and the
+      // joiner's next formation attempt mints a fresh one, costing a second human review
+      // where the hook is a review queue. Wiring the same-approval retry:
+      // tickets/backlog/debt-formation-approval-retry-lost-race.md. No usage row is written
+      // on any of these paths, so the invite itself is not consumed.
       log('provisionAsResponder failed for token %s: %o', token, err);
       return { approved: false, reason: 'Formation conflict, retry' };
     }

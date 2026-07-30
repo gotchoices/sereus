@@ -69,14 +69,12 @@ guarantee the nonce that was signed is the nonce that gets inserted.
 Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the transport),
 `signFormationApproval()` / `verifyFormationApproval()` (the digest helpers), and
 `FormationApprovalError` with a `failure` of `'refused' | 'unavailable' | 'malformed' |
-'misconfigured'`.
+'unenrolled' | 'misconfigured'`.
 
-> **Not yet contacted automatically.** The client exists and the contract below is settled, but
-> no redemption path calls it yet — a `ValidationUrl` on an invitation is currently only enforced
-> by the control database, which requires an approver signature the responder never asks for. So
-> an invitation with a `ValidationUrl` cannot be redeemed at all until the redemption path is
-> wired to this client. Stand a hook up against the contract by all means; expect it to sit idle
-> until then.
+`ControlFormationUsageRecorder` contacts the hook automatically on both redemption paths
+(`recordUsage` against an existing host strand, and `provisionAndRecord` for an unbound invite):
+it reads the invite's `ValidationUrl`, mints the nonce, calls the approver, and writes the
+sign-off with the usage row.
 
 ### Wire contract
 
@@ -106,7 +104,26 @@ Answer with `200` and:
 | `401` / `403` (whatever the body) | `refused` — a final no |
 | any other non-2xx, network error, timeout, redirect | `unavailable` — may succeed later |
 | `2xx` that is not JSON, is missing/blank a field, or exceeds 64 KiB | `malformed` |
+| `200`, signature verifies, but the signing key is not an enrolled `ValidationKey` | `unenrolled` |
 | `ValidationUrl` is not `http:`/`https:`, or the runtime has no `fetch` | `misconfigured` |
+
+The joiner never sees the failure category itself — the responder maps it to one of these
+rejection reasons on the formation result:
+
+| `failure` | Reason the joiner receives |
+| --- | --- |
+| `refused` | `Formation approval refused` |
+| `unavailable` | `Formation approval unavailable, retry` |
+| `malformed` | `Formation approval invalid` |
+| `unenrolled` | `Formation approval key is not enrolled` |
+| `misconfigured` | `Formation approval misconfigured` |
+
+None of these write a `FormationUsage` row, so a rejected redemption does not consume the
+invitation — the same token can be presented again.
+
+The `disclosure` field is capped at **8 KiB** of UTF-8 (a hook is never asked to review more
+than that; an over-size disclosure is rejected before the hook is contacted). Size a review UI
+against that number.
 
 Operational notes for hook authors: redirects are **not** followed (re-publish a moved
 `ValidationUrl` rather than redirecting at redemption time); the response body is capped at

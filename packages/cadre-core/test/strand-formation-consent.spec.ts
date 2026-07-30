@@ -499,6 +499,11 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
         reason: 'Formation approval unavailable, retry',
       },
       {
+        label: 'misconfigured',
+        approver: recordingApprover(() => { throw new FormationApprovalError('misconfigured', 'bad url'); }),
+        reason: 'Formation approval misconfigured',
+      },
+      {
         label: 'invalid signature (signed over tampered fields)',
         approver: recordingApprover((req) =>
           signFormationApproval({ ...req, peerId: 'tampered-' + req.peerId }, validationPublicKey, validationPrivateKey)),
@@ -527,7 +532,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       expect(await db.countFormationUsage(token), label).toBe(0);
     }
 
-    // The four failures burned nothing: the SAME single-use invite still redeems cleanly.
+    // The five failures burned nothing: the SAME single-use invite still redeems cleanly.
     const good = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
     const { invoke } = responder(good);

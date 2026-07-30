@@ -1225,16 +1225,15 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         kind: 'bound',
         strandId: hostStrand,
         memberPrivateKey: hostMemberKey,
-        validationUrl: null,
       });
 
       // Unbound invite (legacy/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
       await db.insertFormationInvite(unbound, 'sapp-unbound', ownerPublicKey, signMessage);
-      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound', validationUrl: null });
+      expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
 
       // Unknown token: no binding to act on → unbound.
-      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound', validationUrl: null });
+      expect(await recorder.resolveStrand('nope-' + rand())).toEqual({ kind: 'unbound' });
 
       // Bound but the named Strand row was NEVER inserted (unconverged host) → kind 'missing'.
       const missingStrand = 'strand-missing-' + rand();

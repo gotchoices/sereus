@@ -47,13 +47,13 @@ export interface DisclosureValidator {
  * Replaces the older `{ strandId, memberPrivateKey } | null` shape, which conflated `bound`
  * and `missing` (both produced a non-null result whenever the invite had a `StrandId`).
  *
- * `validationUrl` is the invite's `ValidationUrl` (the outside approval hook), surfaced on
- * the two redeemable variants so the manager can see approval is required without a second
- * invite read. `missing` omits it: that redemption is rejected before any hook contact.
+ * The invite's `ValidationUrl` (the outside approval hook) is deliberately NOT surfaced here:
+ * the recorder that performs the write reads it itself, so the choice of which hook to trust
+ * never travels through a caller.
  */
 export type ResolvedHostStrand =
-  | { kind: 'unbound'; validationUrl: string | null }
-  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null; validationUrl: string | null }
+  | { kind: 'unbound' }
+  | { kind: 'bound'; strandId: string; memberPrivateKey: string | null }
   | { kind: 'missing'; strandId: string };
 
 /**
@@ -402,6 +402,12 @@ export class StrandSolicitationService {
   /**
    * Record that a formation was completed successfully.
    * Called after strand provisioning to track usage.
+   *
+   * NOTE: this reaches `recordUsage` without passing through
+   * `StrandFormationManager.provisionAsResponder`, so `disclosure` skips that path's
+   * `MAX_DISCLOSURE_BYTES` cap. Harmless today — its only callers are integration-test mocks
+   * that all default to `''` — but if a production caller ever passes a real disclosure here,
+   * cap it too (the approver signs those bytes verbatim).
    */
   async recordFormationComplete(
     token: string,

@@ -170,6 +170,11 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   }): Promise<void> {
     const { token, peerId, strandId, disclosure } = params;
     const invite = await this.controlDatabase.queryFormationInvite(token);
+    // NOTE: a missing invite row reads as "no approval required" here and in
+    // `provisionAndRecord`, so an invite that vanished between `resolveStrand` and this read
+    // would be written unapproved. Safe only because the database's `FormationUsage.Authorized`
+    // CHECK demands a matching `FormationInvite` and rolls the write back regardless; if that
+    // CHECK ever loosens, reject on `invite === null` instead of defaulting to null.
     const approval = await this.obtainApproval({
       token, strandId, peerId, disclosure,
       validationUrl: invite?.validationUrl ?? null,
@@ -193,7 +198,7 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   async resolveStrand(token: string): Promise<ResolvedHostStrand> {
     const invite = await this.controlDatabase.queryFormationInvite(token);
     if (!invite || !invite.strandId) {
-      return { kind: 'unbound', validationUrl: invite?.validationUrl ?? null };
+      return { kind: 'unbound' };
     }
     const strand = await this.controlDatabase.queryStrand(invite.strandId);
     if (!strand) {
@@ -203,7 +208,6 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
       kind: 'bound',
       strandId: invite.strandId,
       memberPrivateKey: strand.MemberPrivateKey ?? null,
-      validationUrl: invite.validationUrl,
     };
   }
 
