@@ -169,7 +169,9 @@ The main entry point for cadre participation.
 | `getStrands()` | Get all active strand instances |
 | `getStrand(id)` | Get a specific strand instance |
 | `addStrand(row)` | Manually add a strand (testing/direct API) |
-| `removeStrand(id)` | Manually remove a strand |
+| `stopStrand(id)` | Stop a strand on this node only (the shared `Strand` row stays; rediscovered on restart) |
+| `publishStrand(id, type?, memberKey?)` | Owner-signed `Strand` row insert — makes the strand visible cadre-wide |
+| `unpublishStrand(id)` | Owner-signed party-wide removal — deletes this party's `Strand` row; every node stops the strand. Destroys a closed strand's `MemberPrivateKey` |
 | `getEnrollmentService()` | Access peer enrollment API |
 
 ### Events

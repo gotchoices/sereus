@@ -142,7 +142,7 @@ describe('CadreNode', () => {
       expect(node.getSAppConfig('manual-strand')).toBeDefined();
       expect(node.getSAppId('manual-strand')).toBe(authorPublicKey);
 
-      await node.removeStrand('manual-strand');
+      await node.stopStrand('manual-strand');
 
       expect(node.getStrand('manual-strand')).toBeUndefined();
       expect(node.getStrands().size).toBe(0);
@@ -231,7 +231,7 @@ describe('CadreNode', () => {
 
       await node.start();
       await node.addStrand(createStrandConfig('strand-to-stop'));
-      await node.removeStrand('strand-to-stop');
+      await node.stopStrand('strand-to-stop');
 
       expect(stoppedId).toBe('strand-to-stop');
 

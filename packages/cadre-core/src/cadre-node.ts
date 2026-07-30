@@ -2928,6 +2928,71 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Remove this party's `Strand` row from the shared control database — the owner-signed
+   * inverse of {@link publishStrand}.
+   *
+   * Party-wide, unlike {@link stopStrand}, which only stops the strand on THIS node: every
+   * cadre node watching the table sees the row vanish on its next poll (default 5 s) and
+   * stops its own instance. This node converges immediately — the method forces a watcher
+   * poll and stops any still-running local instance before resolving. Removing the row
+   * removes OUR party's participation only: other parties in the strand keep their own
+   * rows and the strand network carries on, so no cross-party sign-off is involved — this
+   * is an owner-signed control-plane write like every other, not "destroy the network".
+   *
+   * Irreversible for a closed strand (`Type='c'`): the row carries `MemberPrivateKey`,
+   * this party's membership secret for that network, and it is stored nowhere else.
+   * With it gone the party can never again admit a member to that closed strand, and a
+   * re-published row would carry a DIFFERENT key that does not match the membership
+   * already written into the strand's RBAC layer. The strand id itself is NOT
+   * blacklisted: a fresh owner-signed {@link publishStrand} re-seats it under a new
+   * stamp — only the unsigned consent re-seat is permanently foreclosed (the removal's
+   * `Revocation` tombstone names the id, which the consent branch of
+   * `Strand.AuthorizedInsert` refuses ever after). Outstanding `FormationInvite` rows
+   * bound to the removed strand are unredeemable while the row is absent (the formation
+   * recorder resolves the strand as missing and rejects cleanly).
+   *
+   * Convergence caveats, same class as {@link enrollValidationKey}'s: a sibling that has
+   * not yet synced keeps running the strand until its own watcher observes the missing
+   * row; and a removal committed while ALONE (0 control connections) is local-only and
+   * does not propagate when siblings return — a physical delete cannot be re-issued the
+   * way an insert can (logged loudly; see the delete-while-alone durability note in
+   * docs/architecture.md and control-delete-while-alone-tombstone).
+   *
+   * A no-op (no throw, no tombstone) when the row is already absent — but a
+   * locally-running instance of that id is still stopped.
+   *
+   * @param strandId - The `Strand` row id to remove (as passed to {@link publishStrand}).
+   * @throws if the node is not started, exposes no owner signing key, the id is blank, or
+   *   the signer is not an enrolled owner (the schema's `Strand.AuthorizedDelete` rejects
+   *   the write and the row survives).
+   */
+  async unpublishStrand(strandId: string): Promise<void> {
+    const signingKey = this.requireOwnerSigningKey(`unpublish strand ${strandId}`);
+    const trimmed = requireNonBlank(strandId, 'strand id');
+    await this.controlDatabase!.deleteStrand(
+      trimmed,
+      signingKey.publicKeyB64,
+      signMessageWith(signingKey.privateKeyB64)
+    );
+    if (this.committedAlone()) {
+      log('unpublishStrand(%s) committed while ALONE (0 control connections): the deletion is ' +
+        'local-only, so other nodes may keep running the strand until re-replication — and a ' +
+        'physical delete cannot be replayed without a schema tombstone — see ' +
+        'control-delete-while-alone-tombstone.', trimmed);
+    }
+    // Converge locally now rather than waiting up to a poll interval. The watcher fires
+    // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose
+    // strandFilter never admitted this strand (the watcher never knew it, so it will never
+    // fire). StrandInstanceManager.stopStrand no-ops on an unknown id, so the two paths
+    // cannot double-stop into an error.
+    await this.strandWatcher?.forcePoll();
+    if (this.strandManager.getInstance(trimmed)) {
+      await this.stopStrand(trimmed);
+    }
+    log('Unpublished strand %s from control DB under owner %s', trimmed, signingKey.publicKeyB64);
+  }
+
+  /**
    * Publish an owner-signed `FormationInvite` (open-invitation token) to the
    * shared control database, so a later {@link formStrand} redemption can be
    * validated against it (the consent branch of `Strand.AuthorizedInsert`).
@@ -3049,7 +3114,8 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Resolve the owner keypair every owner-signed control write needs — {@link publishStrand},
-   * {@link publishFormationInvite}, {@link enrollValidationKey}, {@link removeValidationKey}
+   * {@link unpublishStrand}, {@link publishFormationInvite}, {@link enrollValidationKey},
+   * {@link removeValidationKey}
    * — failing loudly in one two-part shape (not started / no signing key, naming owner
    * genesis as the fix). Narrows `controlDatabase` for the caller: a non-null return means
    * `this.controlDatabase` is non-null too.
@@ -3296,9 +3362,12 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Remove a strand
+   * Stop a strand on THIS node only: untrack it from hibernation, drop its sApp config,
+   * stop the local instance, and emit `strand:stopped`. The shared `Strand` row is left
+   * intact, so on the next node restart (or watcher poll) the strand is rediscovered and
+   * surfaces as `strand:discovered` again. Party-wide removal is {@link unpublishStrand}.
    */
-  async removeStrand(strandId: string): Promise<void> {
+  async stopStrand(strandId: string): Promise<void> {
     if (!this._running) {
       throw new Error('CadreNode not running');
     }
