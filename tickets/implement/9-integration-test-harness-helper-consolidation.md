@@ -5,39 +5,43 @@ difficulty: easy
 ----
 
 <!-- resume-note -->
-TWO prior implement runs have now read the harness file and all 12 scenario files in
+THREE prior implement runs have now read the harness file and all 12 scenario files in
 full and cross-checked the "## Verification (confirmed by prior session)" appendix
-below against actual source. Both hit the session's soft token budget before making
-any edits — **zero files have been changed by either run.** Start straight from that
-appendix (as amended by the correction below); do not re-read the 12 scenario files
-to re-derive the edit list, only to apply it.
+below against actual source. **All three hit the session's soft token budget before
+making any edits — zero files have been changed by any of the three runs.** The
+appendix is correct (verified byte-for-byte against live source three times, across
+three separate sessions, including the multi-party-workflows correction below) — the
+recurring failure is process, not content: serially re-reading all 13 files into one
+context before touching a single Edit call reliably exhausts the budget first.
 
-Session 2 finished the index.ts name-collision check the first run left open: grepped
-`port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`, `wait-utils.ts`, `types.ts`
-for `wsTransports|createSignedSAppConfig|ControlNodeOpts|controlNodeConfig|
-makeOwnOwner|randomPeerId|connectControlNodes|bootPair` — **zero matches, no
-collisions.** `harness/index.ts` needs no changes; adding the new exports to
-`test-network.ts` is safe as-is.
+**Session 4 strategy change — do not repeat the same failure mode.** Do NOT start by
+reading the harness file and 12 scenario files into your own context again. Instead:
 
-Session 2 then re-verified every per-file bullet in the appendix against live source
-(all 12 files read in full again) and found the appendix correct **except one bug**:
+1. Read `packages/integration-tests/src/harness/test-network.ts` yourself (one file)
+   and apply the 8 new exports (`wsTransports`, `createSignedSAppConfig`,
+   `ControlNodeOpts`, `controlNodeConfig`, `makeOwnOwner`, `randomPeerId`,
+   `connectControlNodes`, `bootPair`) per the "Design" section below — this is the
+   one file every scenario edit depends on, so land it first, directly, yourself.
+2. For the 12 scenario files, dispatch one `Agent` (general-purpose or
+   cavecrew-builder, your call) per file — in parallel batches of ~4-6 — each given
+   ONLY that file's path and its exact per-file bullet copied verbatim from the
+   "Verification" appendix below (plus the harness export signatures from "Design").
+   Each subagent reads its own single file fresh and applies its own edit; none of
+   them need the other 11 files or your context. This is what keeps your own context
+   small enough to reach the typecheck/lint/test step instead of dying on reads.
+3. After all subagents report back, run `yarn workspace @serfab/integration-tests
+   typecheck` and `yarn lint` yourself (their output tells you if any subagent
+   mis-transcribed an import), then run the tests per the Acceptance section.
 
-- **`multi-party-workflows.integration.ts` correction** — the appendix says (in its
-  own per-file bullet) to "Drop `generatePrivateKey`/`getPublicKey` (L30) entirely —
-  in this file they are ONLY used by the now-deleted `createSignedSAppConfig`." That
-  is WRONG for `generatePrivateKey`: it is called a SECOND time, standalone, at
-  `const aPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;` (~L235,
-  inside the "Party A generates its own member key for the strand" step, unrelated to
-  `createSignedSAppConfig`). Corrected instruction: **keep `generatePrivateKey` in
-  the `@optimystic/quereus-plugin-crypto` import; drop only `getPublicKey`** (which
-  really is used nowhere else in the file — confirmed by grep). Every other bullet in
-  the appendix (all 12 files) was re-verified line-by-line against current source
-  this session and needs no other correction.
-
-Next agent: apply the harness additions, then all 12 per-file edits from the appendix
-(using the corrected multi-party-workflows import list above), then
-`yarn workspace @serfab/integration-tests typecheck` and `yarn lint`, then tests. No
-further re-verification needed — go straight to editing.
+The appendix below is final — do not re-verify it against source again before
+editing; that re-verification is exactly what has burned three sessions' budget with
+zero edits landed. The one correction already folded in: **in
+`multi-party-workflows.integration.ts`, keep `generatePrivateKey` in the
+`@optimystic/quereus-plugin-crypto` import (it's also called standalone at ~L235 for
+Party A's strand member key, independent of the deleted `createSignedSAppConfig`) —
+drop only `getPublicKey`.** `harness/index.ts` needs no changes (checked for name
+collisions against `port-allocator.ts`, `test-party.ts`, `test-cadre-host.ts`,
+`wait-utils.ts`, `types.ts` — zero matches).
 <!-- /resume-note -->
 
 ## Design (resolved — implement as specified, no open questions)
