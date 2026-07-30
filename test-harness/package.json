@@ -1,0 +1,6 @@
+{
+  "name": "@serfab/test-harness",
+  "private": true,
+  "type": "module",
+  "description": "Repo-root test infrastructure shared by several packages' suites, imported by relative path rather than as a dependency. Deliberately NOT a yarn workspace (the root `workspaces` glob is `packages/*`) and deliberately not built: a compiled shared package would be consumed from its own `dist`, which is the exact staleness failure build-freshness.ts exists to catch. This manifest exists only to mark the directory as ES modules, which the root package.json does not."
+}

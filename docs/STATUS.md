@@ -390,12 +390,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   output — a spawned real `cadre-cli` child, or an in-process import of `@serfab/cadre-host` /
   `@serfab/cadre-core` from their `dist`. An edit to `src` with no following `yarn build` used to be
   invisible: the run silently exercised the previous build and surfaced as an unrelated 90s startup
-  timeout. `src/global-setup.ts` (wired as vitest `globalSetup`) now calls `assertCadreBuildFresh()`
+  timeout. `test/global-setup.ts` (wired as vitest `globalSetup`) now calls `assertBuildFresh(TARGETS)`
   once per suite, comparing each package's newest `src` mtime against the entry point the tests
   actually load (`dist/index.js` for cadre-core/cadre-host, `dist/bin/cadre.js` for cadre-cli), and
   fails the run up front naming every stale package plus its `yarn workspace <name> build` remedy.
   Test files (`*.test.ts`, `*.spec.ts`, `test/`, `__tests__/`) are excluded — they aren't build
-  inputs. The guard itself is unit-covered by `src/harness/build-freshness.spec.ts`.
+  inputs. The guard itself is unit-covered by `test-harness/build-freshness.spec.ts`.
 - [x] **Stale-build guard extended to the linked sibling workspaces.** The suite also runs compiled
   output from `../optimystic` and `../quereus`, which reach `node_modules` as symlinks via the root
   `package.json`'s `resolutions`. Those repos are developed concurrently, so the suite ran whatever
@@ -408,6 +408,18 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   rather than a symlink — i.e. installed from the registry — is **skipped**, never judged: its `src`
   and `dist` mtimes are packing artifacts (the copied `db-p2p-storage-fs` has `src` 13ms newer than
   `dist`) and would report a permanent, unfixable "stale".
+- [x] **Stale-build guard shared, and extended to `cadre-core`.** The same false-green happened in
+  `packages/cadre-core`'s own suite: `@serfab/quereus-plugin-sereus` resolves through a
+  `node_modules` symlink whose manifest points at `dist`, so a new control-database table added to
+  its `src` was silently absent from the database under test while 938 tests reported passing. The
+  guard therefore moved out of `integration-tests` to `test-harness/build-freshness.ts` at the repo
+  root, exporting `assertBuildFresh(targets)`; each consuming package owns its own target list in its
+  own vitest `globalSetup` file (`packages/integration-tests/test/global-setup.ts`,
+  `packages/cadre-core/test/global-setup.ts`). The module is imported by relative path, not as a
+  workspace package, and is never built — a compiled shared package would be consumed from its own
+  `dist` and so could be defeated by exactly the staleness it exists to catch. `test-harness/` is
+  marked ESM by its own `package.json` (the root manifest has no `"type"`) and is excluded from knip's
+  root workspace, since its `vitest` import belongs to the consuming packages.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level

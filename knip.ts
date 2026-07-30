@@ -26,11 +26,14 @@ const config: KnipConfig = {
 
 	workspaces: {
 		// Root workspace: ignore non-package trees. tess/ is the vendored ticket
-		// runner, ops/ is infra tooling, docs/ is documentation, and scripts/ are
-		// release helpers — none are part of the nine product workspaces this gate
+		// runner, ops/ is infra tooling, docs/ is documentation, scripts/ are
+		// release helpers, and test-harness/ is test infrastructure imported by
+		// relative path from several packages' vitest globalSetup files (its
+		// `vitest` import belongs to those consumers' devDependencies, not to the
+		// root manifest) — none are part of the nine product workspaces this gate
 		// guards.
 		'.': {
-			ignore: ['tess/**', 'ops/**', 'docs/**', 'scripts/**'],
+			ignore: ['tess/**', 'ops/**', 'docs/**', 'scripts/**', 'test-harness/**'],
 		},
 
 		'packages/cadre-cli': {},

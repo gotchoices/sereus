@@ -1,7 +1,12 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": ".",
+    // rootDir has to reach the repo root because test/global-setup.ts imports
+    // test-harness/build-freshness.ts by relative path; TypeScript reports TS6059
+    // for any program file above rootDir even under noEmit. Nothing is emitted
+    // from this config (tsconfig.build.json does that, and it only includes src),
+    // so rootDir only decides what is allowed in, not where output lands.
+    "rootDir": "../..",
     "noEmit": true
   },
   "include": [

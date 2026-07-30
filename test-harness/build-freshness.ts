@@ -1,28 +1,42 @@
 /**
  * Guards test runs that execute real compiled output.
  *
- * Integration scenarios either launch `@serfab/cadre-cli` as a genuine child
- * process or import `@serfab/cadre-host`/`@serfab/cadre-core` for their real,
- * non-mocked behaviour — and those in turn run the compiled output of the
- * `@optimystic/*` and `@quereus/*` packages. Either way the code that runs comes
- * from each package's built `dist`, not `src` — so an edit to `src` with no
- * following `yarn build` is silently invisible: the run exercises the *previous*
- * build and any resulting failure (a 90s startup timeout, a replication bug that
- * was in fact already fixed) looks like a real regression instead of a
- * stale-build mistake.
+ * A test suite reaches another package either by spawning it as a genuine child
+ * process (`@serfab/cadre-cli`) or by importing it for its real, non-mocked
+ * behaviour (`@serfab/cadre-host`, `@serfab/cadre-core`,
+ * `@serfab/quereus-plugin-sereus`) — and those in turn run the compiled output of
+ * the `@optimystic/*` and `@quereus/*` packages. Either way the code that runs
+ * comes from each package's built `dist`, not `src`: workspace and `link:`
+ * dependencies resolve through a `node_modules` symlink to the package
+ * directory, and the manifest there points at `dist`. So an edit to a
+ * dependency's `src` with no following `yarn build` is silently invisible — the
+ * run exercises the *previous* build, and the result is a false green (a schema
+ * change that never reached the database under test) or a false regression (a
+ * startup timeout, a bug that was in fact already fixed).
  *
- * `assertCadreBuildFresh()` fails the run up front, before any child is
- * spawned, when a package's `src` has been touched more recently than its
- * compiled output (or its entry point is missing outright). It runs
- * once per suite from `src/global-setup.ts`.
+ * `assertBuildFresh(targets)` fails the run up front, before any child is
+ * spawned, when one of `targets`' `src` has been touched more recently than its
+ * compiled output (or its entry point is missing outright). Each consuming
+ * package calls it once per suite from its own vitest `globalSetup` file, passing
+ * the list of packages *it* runs compiled code from:
+ *
+ *   - `packages/integration-tests/src/global-setup.ts`
+ *   - `packages/cadre-core/test/global-setup.ts`
  *
  * Two kinds of package are checked. A `workspace` target lives under this
  * repository's `packages/`. A `linked` target lives in a sibling repository
  * checked out beside this one (`../optimystic`, `../quereus`) and reaches
  * `node_modules` as a symlink, courtesy of the `link:` entries in the root
  * `package.json`'s `resolutions`. Those siblings are developed at the same time
- * as this repository, so what the suite runs is whatever they last *built* —
+ * as this repository, so what a suite runs is whatever they last *built* —
  * which is not necessarily what they last committed.
+ *
+ * This module lives at the repo root rather than inside a package, and consumers
+ * import it by relative path (as the schema-drift specs do with
+ * `schemas/strand.qsql`). That is deliberate: a shared *workspace* package would
+ * itself be consumed from its own `dist`, so the guard against stale builds could
+ * be defeated by its own stale build. Vitest transpiles this `.ts` file directly,
+ * so there is no build step anywhere in this loop.
  */
 
 import { lstatSync, readdirSync, readFileSync, readlinkSync, realpathSync, statSync, type Dirent, type Stats } from 'node:fs';
@@ -32,6 +46,19 @@ import { fileURLToPath } from 'node:url';
 /** Where a target's directory is found — see the module comment. */
 type TargetLocation = 'workspace' | 'linked';
 
+/**
+ * One package a suite ends up running compiled code from.
+ *
+ * `linked` entries are only checked when `node_modules` really holds a symlink
+ * into a sibling working copy; a registry-installed copy of the same package is
+ * skipped (see `checkLinkedTarget`).
+ *
+ * NOTE: callers write each `distEntry` out rather than having it read from the
+ * package's own `main`/`exports`. If a sibling ever renames its entry point, this
+ * reports "not built" and the remedy sends someone to run a build that won't
+ * help; if that happens, resolve `distEntry` from the target's `package.json`
+ * instead.
+ */
 export interface BuildTarget {
 	/** Package name as imported (its directory is located, not module-resolved). */
 	packageName: string;
@@ -39,35 +66,6 @@ export interface BuildTarget {
 	distEntry: string;
 	location: TargetLocation;
 }
-
-/**
- * Every package a scenario ends up running compiled code from.
- *
- * `linked` entries are only checked when `node_modules` really holds a symlink
- * into a sibling working copy; a registry-installed copy of the same package is
- * skipped (see `checkLinkedTarget`).
- *
- * NOTE: each `distEntry` is written out rather than read from the package's own
- * `main`/`exports`. If a sibling ever renames its entry point, this reports
- * "not built" and the remedy sends someone to run a build that won't help; if
- * that happens, resolve `distEntry` from the target's `package.json` instead.
- */
-const TARGETS: BuildTarget[] = [
-	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
-	{ packageName: '@serfab/cadre-cli', distEntry: 'dist/bin/cadre.js', location: 'workspace' },
-	{ packageName: '@serfab/cadre-host', distEntry: 'dist/index.js', location: 'workspace' },
-	// Not imported by a scenario directly, but loaded from `dist` on every run all
-	// the same: `cadre-core`'s entry point imports `quereus-plugin-sereus`, and
-	// `cadre-host`'s re-exports `cadre-provider`.
-	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
-	{ packageName: '@serfab/cadre-provider', distEntry: 'dist/index.js', location: 'workspace' },
-	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
-	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
-	{ packageName: '@optimystic/db-p2p-storage-fs', distEntry: 'dist/src/index.js', location: 'linked' },
-	{ packageName: '@optimystic/quereus-plugin-crypto', distEntry: 'dist/index.js', location: 'linked' },
-	{ packageName: '@optimystic/quereus-plugin-optimystic', distEntry: 'dist/index.js', location: 'linked' },
-	{ packageName: '@quereus/quereus', distEntry: 'dist/src/index.js', location: 'linked' },
-];
 
 /** Test files aren't part of the build output — a touched test shouldn't trip this. */
 const SOURCE_EXCLUDE = /\.(test|spec)\.tsx?$/;
@@ -86,10 +84,10 @@ export type LinkedPackage =
 	| { readonly status: 'unresolved'; readonly detail: string };
 
 /**
- * Throws with a clear build remedy if any package's build output predates its `src`.
+ * Throws with a clear build remedy if any of `targets`' build output predates its `src`.
  */
-export function assertCadreBuildFresh(): void {
-	const problems = TARGETS.flatMap((target) => {
+export function assertBuildFresh(targets: readonly BuildTarget[]): void {
+	const problems = targets.flatMap((target) => {
 		const problem = checkTarget(target);
 		return problem === undefined ? [] : [problem];
 	});
@@ -205,7 +203,7 @@ function linkedRemedy(packageName: string, packageRoot: string): string {
 /**
  * Compares the newest source mtime under `packageRoot/src` against the newest
  * mtime anywhere in the build output. Exported for unit tests —
- * `assertCadreBuildFresh()` is the caller everything else should use.
+ * `assertBuildFresh()` is the caller everything else should use.
  *
  * The comparison deliberately spans the whole output tree rather than
  * `distEntry` alone. Every target here is compiled by `tsc`, and the sibling
@@ -222,6 +220,12 @@ function linkedRemedy(packageName: string, packageRoot: string): string {
  * NOTE: an absent or unreadable `src` reports fresh. A package consumed
  * without its sources can't be shown stale, and a hard failure there would
  * break for a reason the caller can't act on.
+ *
+ * NOTE: this walks every target's whole `src` and output tree on every suite
+ * start-up — 6 packages for cadre-core, 11 for integration-tests, unmeasurable
+ * against those suites' runtimes today. If it ever shows up in start-up time,
+ * compare the newest `src` entry against `.tsbuildinfo` alone (it moves on every
+ * `tsc --incremental` run) instead of walking the output tree.
  */
 export function checkBuildFreshness(packageRoot: string, distEntry: string): StaleReason | undefined {
 	const entryMtime = mtimeMs(join(packageRoot, distEntry));

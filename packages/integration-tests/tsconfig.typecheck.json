@@ -2,10 +2,20 @@
   "extends": "./tsconfig.json",
   "compilerOptions": {
     "noEmit": true,
-    // Widen rootDir past src/ so vitest.config.ts is type-checked too — a
-    // removed/renamed vitest option (e.g. the Vitest 4 poolOptions removal)
-    // should fail `yarn typecheck`, not sit silently in an editor-only error.
-    "rootDir": "."
+    // Widen rootDir past src/ so vitest.config.ts, test/ and the repo-root
+    // test-harness/ are type-checked too — a removed/renamed vitest option (e.g.
+    // the Vitest 4 poolOptions removal) should fail `yarn typecheck`, not sit
+    // silently in an editor-only error. rootDir has to reach the repo root
+    // because test/global-setup.ts imports test-harness/build-freshness.ts by
+    // relative path; TypeScript reports TS6059 for any program file above
+    // rootDir even under noEmit. Nothing is emitted from this config, so rootDir
+    // only decides what is allowed in, not where output lands.
+    "rootDir": "../.."
   },
-  "include": ["src/**/*.ts", "vitest.config.ts"]
+  "include": [
+    "src/**/*.ts",
+    "test/**/*.ts",
+    "vitest.config.ts",
+    "../../test-harness/**/*.ts"
+  ]
 }

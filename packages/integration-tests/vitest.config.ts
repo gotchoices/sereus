@@ -4,10 +4,17 @@ export default defineConfig({
   test: {
     globals: true,
     environment: 'node',
-    include: ['src/**/*.spec.ts', 'src/**/*.integration.ts'],
+    include: [
+      'src/**/*.spec.ts',
+      'src/**/*.integration.ts',
+      // The stale-build guard lives at the repo root (shared with other packages'
+      // suites) and is outside every package's own test globs, so this suite —
+      // where it started life — keeps running its unit tests explicitly.
+      '../../test-harness/**/*.spec.ts',
+    ],
     // Fails the run immediately when a cadre package's dist predates its src,
-    // instead of testing a stale build — see src/global-setup.ts.
-    globalSetup: ['./src/global-setup.ts'],
+    // instead of testing a stale build — see test/global-setup.ts.
+    globalSetup: ['./test/global-setup.ts'],
     // Integration tests can be slow - give them time
     testTimeout: 60_000,
     hookTimeout: 30_000,
