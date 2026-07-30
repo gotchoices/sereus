@@ -751,6 +751,15 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   `backlog/debt-validation-url-redemption-e2e`. Enrollment also accepts any non-blank text as a
   key (no base64url/length check), so a typo enrolls silently — `backlog/debt-control-key-enrollment-accepts-malformed-keys`.
   Invitations without a `ValidationUrl` (every e2e above) are unaffected.
+- [x] **A party owner can now remove a shared strand party-wide (2026-07-30).**
+  `CadreNode.unpublishStrand` — the first caller of `ControlDatabase.deleteStrand` — deletes the
+  party's owner-signed `Strand` row (tombstoning its stamp), forces a watcher poll, and stops any
+  still-running local instance before resolving; sibling nodes stop theirs on their next watcher
+  poll. The old local-only `CadreNode.removeStrand` was renamed `stopStrand` (behaviour unchanged:
+  the row survives and the strand is rediscovered on restart). Unpublishing a closed strand
+  destroys its `MemberPrivateKey` irreversibly; the id itself is not blacklisted — an owner
+  re-publish re-seats it on a fresh stamp (`strand-unpublish.spec.ts`). The operator-facing
+  command lands in `feat-strand-removal-cli`.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic
