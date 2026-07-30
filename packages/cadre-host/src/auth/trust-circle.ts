@@ -42,10 +42,22 @@ export interface CadreNodeLike {
   acceptPhone(options: { phonePeerId: string; token?: string }, issuedInvite?: CadreInvite): Promise<void>;
   removePeer(peerId: string): Promise<void>;
   encodeInvite(invite: CadreInvite): string;
-  /** Enumerate the cadre's `CadrePeer` membership (over the admin channel). */
+  /**
+   * Enumerate the cadre's *addressable* peers (over the admin channel) —
+   * anyone with an address record, including devices no owner vouched for.
+   * Used only for {@link removeMember}, where "the row exists" is the point.
+   */
   listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
-  /** Probe whether a peer is a `CadrePeer` member (over the admin channel). */
+  /** Probe whether a peer is *addressable* (over the admin channel). See {@link listMembers}. */
   isMember(peerId: string): Promise<boolean>;
+  /**
+   * Enumerate the cadre's *authorized* membership (over the admin channel) —
+   * devices an owner key vouched for. Excludes the node's own self-published
+   * row. This is the real membership test the trust-circle listing shows.
+   */
+  listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>>;
+  /** Probe whether a peer is *authorized*. See {@link listAuthorizedMembers}. */
+  isAuthorizedMember(peerId: string): Promise<boolean>;
 }
 
 /**
@@ -240,10 +252,15 @@ export class TrustCircleService {
   }
 
   /**
-   * UI snapshot. Joins the canonical CadrePeer list (fetched over the admin
+   * UI snapshot. Joins the *authorized* membership (fetched over the admin
    * channel) with local labels; prunes any orphan labels (peer is no longer
-   * authorised). When the owner node is unreachable, degrades to the
-   * local labels file so listing keeps working while the node is down.
+   * authorised). Addressable-but-unauthorized peers — devices that merely
+   * published an address record without an owner voucher — are deliberately
+   * excluded; this is the listing an operator uses to decide who belongs.
+   * The node's own self-published row is spliced back in from the local
+   * label, since the authorized set excludes self by design. When the owner
+   * node is unreachable, degrades to the local labels file so listing keeps
+   * working while the node is down.
    */
   async list(): Promise<TrustCircleSnapshot> {
     const labels = new Map<string, Omit<TrustCircleMember, 'peerId'>>();
@@ -256,17 +273,17 @@ export class TrustCircleService {
     // Consult the control DB over the admin channel. A node-unavailable error
     // is non-fatal — fall back to the local labels rather than 503-ing a
     // read-only listing.
-    let controlMembers: Array<{ peerId: string }> | null;
+    let authorizedMembers: Array<{ peerId: string }> | null;
     try {
-      controlMembers = await this.cadreNode.listMembers();
+      authorizedMembers = await this.cadreNode.listAuthorizedMembers();
     } catch (err) {
       if (!(err instanceof OwnerNodeUnavailableError)) throw err;
-      controlMembers = null;
+      authorizedMembers = null;
     }
 
-    if (controlMembers) {
+    if (authorizedMembers) {
       const seenPeerIds = new Set<string>();
-      for (const { peerId } of controlMembers) {
+      for (const { peerId } of authorizedMembers) {
         seenPeerIds.add(peerId);
         const label = labels.get(peerId);
         members.push({
@@ -276,9 +293,17 @@ export class TrustCircleService {
           ...(label?.self ? { self: true } : {}),
         });
       }
-      // Prune labels for peers that no longer exist in CadrePeer. Only when we
-      // successfully consulted the node — otherwise a transient outage would
-      // wipe labels.
+      // The authorized set excludes the node's own self-published row —
+      // splice it back in from the local label rather than dropping it.
+      for (const [peerId, row] of labels) {
+        if (row.self && !seenPeerIds.has(peerId)) {
+          seenPeerIds.add(peerId);
+          members.push({ peerId, ...row });
+        }
+      }
+      // Prune labels for peers that are neither authorized nor self. Only
+      // when we successfully consulted the node — otherwise a transient
+      // outage would wipe labels.
       for (const peerId of labels.keys()) {
         if (!seenPeerIds.has(peerId)) {
           this.store.removeMember(peerId);

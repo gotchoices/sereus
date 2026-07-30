@@ -17,7 +17,15 @@ import { OwnerNodeUnavailableError } from '../../owner/owner-node-client.js';
  * real libp2p control network or admin channel.
  */
 class MockCadreNode implements CadreNodeLike {
+  /** CadrePeer rows — the real (authorized) membership test. */
   readonly authorizedPeers = new Set<string>();
+  /**
+   * Addressable-only rows — peers that published an address record without
+   * ever being vouched for. Models the "stranger writes its own row" bug:
+   * present in `listMembers`/`isMember` (addressable), absent from
+   * `listAuthorizedMembers`/`isAuthorizedMember` (authorized).
+   */
+  readonly unauthorizedAddressablePeers = new Set<string>();
   readonly issuedInvites: Array<{ token?: string; expiresIn?: number }> = [];
   readonly accepted: Array<{ phonePeerId: string; token?: string }> = [];
   readonly removed: string[] = [];
@@ -48,6 +56,7 @@ class MockCadreNode implements CadreNodeLike {
   async removePeer(peerId: string) {
     this.removed.push(peerId);
     this.authorizedPeers.delete(peerId);
+    this.unauthorizedAddressablePeers.delete(peerId);
   }
 
   encodeInvite(invite: CadreInvite): string {
@@ -56,10 +65,21 @@ class MockCadreNode implements CadreNodeLike {
 
   async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
     if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
-    return [...this.authorizedPeers].map((peerId) => ({ peerId, multiaddr: null }));
+    return [...this.authorizedPeers, ...this.unauthorizedAddressablePeers]
+      .map((peerId) => ({ peerId, multiaddr: null }));
   }
 
   async isMember(peerId: string): Promise<boolean> {
+    if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
+    return this.authorizedPeers.has(peerId) || this.unauthorizedAddressablePeers.has(peerId);
+  }
+
+  async listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+    if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
+    return [...this.authorizedPeers].map((peerId) => ({ peerId, multiaddr: null }));
+  }
+
+  async isAuthorizedMember(peerId: string): Promise<boolean> {
     if (!this.nodeAvailable) throw new OwnerNodeUnavailableError('node down');
     return this.authorizedPeers.has(peerId);
   }
@@ -372,6 +392,30 @@ describe('TrustCircleService.list', () => {
     const snap = await service.list();
     const entry = snap.members.find(m => m.peerId === 'unlabeled-peer');
     expect(entry?.label).toBe('unlabeled-peer');
+  });
+
+  it('excludes addressable-only peers nobody authorized', async () => {
+    cadreNode.authorizedPeers.add('invited-peer');
+    cadreNode.unauthorizedAddressablePeers.add('stranger-peer');
+
+    const snap = await service.list();
+
+    expect(snap.members.map(m => m.peerId)).toContain('invited-peer');
+    expect(snap.members.map(m => m.peerId)).not.toContain('stranger-peer');
+  });
+
+  it('keeps the self row even though the authorized set excludes self', async () => {
+    store.addMember({ peerId: 'self-peer', label: 'This device', addedAt: 't', self: true });
+    // Self is addressable (would show under listMembers) but never authorized.
+
+    const snap = await service.list();
+
+    const self = snap.members.find(m => m.peerId === 'self-peer');
+    expect(self).toBeDefined();
+    expect(self?.self).toBe(true);
+    expect(self?.label).toBe('This device');
+    // Not pruned as an orphan label despite being absent from the authorized set.
+    expect(store.getMember('self-peer')).toBeDefined();
   });
 });
 
