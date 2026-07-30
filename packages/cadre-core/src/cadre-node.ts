@@ -2760,6 +2760,15 @@ export class CadreNode implements SAppIdLookup {
     // shared circuit relay (github.com/gotchoices/sereus/issues/1). The
     // retained launch config carries this derived key, so hibernate → wake
     // (resumeStrand) reuses the same peerId.
+    //
+    // NOTE: derivation requires an Ed25519 identity key, so a node configured
+    // with some other key type now fails strand launch outright (surfaced as
+    // `strand:error` / a rejected addStrand) where it previously started the
+    // strand on that key. Ed25519 is already required for every control-DB
+    // signing path, so nothing reachable today hits this; if a non-Ed25519
+    // identity is ever supported, fall back to `undefined` here — libp2p then
+    // generates a random per-strand key, which still avoids the collision but
+    // gives up peerId stability across restarts.
     const transportKey = this.identityKey
       ? await strandTransportKey(this.identityKey, strand.Id)
       : undefined;
