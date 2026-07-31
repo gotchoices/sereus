@@ -198,11 +198,6 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 		}
 	});
 
-	// KNOWN INTERMITTENT FAILURE (~1 run in 10 on win32/Node 24): Node's fetch occasionally drops
-	// the abort that lands while a stalled body is being read, and the read then stays pending for
-	// undici's own 300s body timeout instead of the client's timeoutMs. That is a real defect in
-	// the client (its budget is only as good as fetch's abort handling), tracked as
-	// `fix/formation-approval-timeout-not-enforced` — do NOT skip or loosen this test to hide it.
 	it('times out a real socket that answers headers and then never sends a body', async () => {
 		const server = await startServer((_req, res) => {
 			res.writeHead(200, { 'content-type': 'application/json' });

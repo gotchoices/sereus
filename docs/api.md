@@ -149,7 +149,8 @@ against that number.
 
 Operational notes for hook authors: redirects are **not** followed (re-publish a moved
 `ValidationUrl` rather than redirecting at redemption time); the response body is capped at
-64 KiB; the request is aborted after 10 s by default; and `http:` is permitted (self-hosted LAN
+64 KiB; the whole exchange — headers and body read included — is abandoned after 10 s by default,
+whether or not the runtime honours the abort; and `http:` is permitted (self-hosted LAN
 approvers) but puts the disclosure text on the wire in clear.
 
 Note what a hook is trusted with. It sees the joiner's disclosure text, and it sees the

@@ -89,6 +89,17 @@ function readerlessResponse(text: string, extraHeaders: Record<string, string> =
   } as unknown as Response;
 }
 
+/** A 200 whose body stream never enqueues, never closes, and ignores every abort. */
+function stallingFetch(): typeof fetch {
+  return ((_input: RequestInfo | URL, _init?: RequestInit) =>
+    Promise.resolve(
+      new Response(new ReadableStream<Uint8Array>({ start() { /* never settles */ } }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' }
+      })
+    )) as unknown as typeof fetch;
+}
+
 /** A body that never ends, recording whether the client released it. */
 function endlessBody(): { stream: ReadableStream<Uint8Array>; cancelled: () => boolean } {
   let cancelled = false;
@@ -573,4 +584,56 @@ describe('createHttpFormationApprover', () => {
       vi.useRealTimers();
     }
   });
+
+  // The budget is the only thing bounding these: `stallingFetch()` returns a 200 whose body
+  // never enqueues, never closes, and ignores the abort entirely, so a client that still trusted
+  // `fetch` to reject on abort would hang until vitest's own suite timeout, not the asserted
+  // failure category alone.
+  it('bounds a stalled body read to timeoutMs even when the runtime ignores the abort', async () => {
+    const started = Date.now();
+
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl: stallingFetch(), timeoutMs: 50 }).requestApproval(baseRequest()),
+      'unavailable'
+    );
+
+    expect(error.message).toContain('50ms');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  }, 10_000);
+
+  it('bounds a stalled body read to the caller abort even when the runtime ignores it', async () => {
+    const started = Date.now();
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 25);
+
+    // A 30s client budget: a prompt rejection can only have come from the caller's abort, not
+    // the timer — proving the caller-cancellation bound is enforced independently of fetch.
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl: stallingFetch(), timeoutMs: 30_000 })
+        .requestApproval(baseRequest(), caller.signal),
+      'unavailable'
+    );
+
+    expect(error.message).toContain('cancelled');
+    expect(Date.now() - started).toBeLessThan(2_000);
+  }, 10_000);
+
+  it('settles on the budget expiring, not on a fetch that rejects synchronously from its own abort listener', async () => {
+    const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          reject(new Error('distinctive rejection from the fetch stub, not the budget'));
+        });
+      })) as unknown as typeof fetch;
+
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl, timeoutMs: 25 }).requestApproval(baseRequest()),
+      'unavailable'
+    );
+
+    // If `controller.abort()` ever fired before the deadline's own rejection, this fetch stub's
+    // synchronous-on-abort rejection would win the race and the caller would see "could not be
+    // reached" instead of the budget's own timeout wording.
+    expect(error.message).toContain('within 25ms');
+  }, 10_000);
 });
