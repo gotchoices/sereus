@@ -35,6 +35,15 @@ const log = debug('sereus:cadre:formation-proto');
 /** Protocol id for the native formation transport (parallel to `/sereus/seed/1.0.0`). */
 export const FORMATION_PROTOCOL = '/sereus/formation/1.0.0';
 
+/**
+ * Rejection reason for an invitation that cannot be redeemed at all — unknown, expired, or
+ * fully spent. Shared with `StrandFormationManager`, which reports an
+ * `InvitationExhaustedError` (an invite spent out from under a redemption already in flight)
+ * with this SAME wording on purpose: a joiner that lost the race must be indistinguishable
+ * from a non-racing latecomer, so the two sites must never drift apart.
+ */
+export const INVALID_TOKEN_REASON = 'Invalid token';
+
 /** Maximum formation message size (1MB). */
 const MAX_FORMATION_MSG_SIZE = 1024 * 1024;
 
@@ -540,7 +549,7 @@ export class FormationListener {
 
       const tokenResult = await this.options.validateToken(contact.token);
       if (!tokenResult.valid) {
-        send({ approved: false, reason: 'Invalid token' });
+        send({ approved: false, reason: INVALID_TOKEN_REASON });
         return;
       }
 

@@ -1,9 +1,0 @@
-
- RUN  v4.1.8 C:/projects/sereus/packages/cadre-core
-
-
- Test Files  3 passed (3)
-      Tests  31 passed (31)
-   Start at  08:52:48
-   Duration  25.05s (transform 16.95s, setup 0ms, import 23.17s, tests 19.83s, environment 0ms)
-

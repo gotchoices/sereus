@@ -22,6 +22,7 @@ import type {
 } from './strand-solicitation.js';
 import {
   FormationListener,
+  INVALID_TOKEN_REASON,
   dialFormation,
   isValidResponderCreatesResult,
   type FormationContactMessage,
@@ -279,12 +280,15 @@ export class StrandFormationManager {
    *   deferred `StrandExists` CHECK at commit and drop the frame.
    * - **unbound** (no binding): the responder-provisions fallback — see {@link provisionUnbound}.
    *
-   * Defense-in-depth: known provisioning/redeem failures (notably the concurrent
-   * `(Token, UseNumber)` PK collision when two redemptions of one unbound single-use invite
-   * race) are caught and mapped to a logged, retry-suggesting rejection rather than a thrown
-   * insert + a silently-closed stream. The LOG-before-reject keeps this a deliberate
-   * internal-error→protocol-rejection conversion (AGENTS.md: don't eat exceptions silently),
-   * not control-flow-by-exception.
+   * Defense-in-depth: known provisioning/redeem failures are caught and mapped to a logged
+   * protocol rejection rather than a thrown insert + a silently-closed stream. The mapping is
+   * per-failure, NOT blanket retry-suggesting: an exhausted invitation
+   * ({@link InvitationExhaustedError}, raised once `ControlDatabase`'s use-number retry finds
+   * no seat left) is reported as `'Invalid token'`, because retrying it can never succeed. The
+   * `(Token, UseNumber)` PK collision that concurrent redemptions of one invite used to
+   * surface here is now retried a layer down and no longer reaches this method. The
+   * LOG-before-reject keeps this a deliberate internal-error→protocol-rejection conversion
+   * (AGENTS.md: don't eat exceptions silently), not control-flow-by-exception.
    */
   private async provisionAsResponder(
     contact: FormationContactMessage,
@@ -343,24 +347,27 @@ export class StrandFormationManager {
         return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
       }
       if (err instanceof InvitationExhaustedError) {
-        // Reuses the same wording `strand-formation-protocol.ts` sends when the up-front
-        // `validateToken` finds the invite already used up, so the loser of the race that
-        // triggered this retry-then-exhaustion sees exactly what a non-racing latecomer sees.
-        // No new wire-visible distinction between "invalid" and "exhausted" — the operator
-        // signal lives in this log line instead.
+        // Shares `INVALID_TOKEN_REASON` with the up-front `validateToken` rejection so the loser
+        // of the race that triggered this retry-then-exhaustion sees exactly what a non-racing
+        // latecomer sees. No wire-visible distinction between "invalid" and "exhausted" — the
+        // operator signal lives in this log line instead.
+        // NOTE: if a joining client ever has to tell "never valid" from "used up" WITHOUT node
+        // logs, that is a new protocol reason string, not a local change here.
         log(
           'invitation exhausted for token %s: use #%d past limit of %d',
           err.token,
           err.useNumber,
           err.totalUses
         );
-        return { approved: false, reason: 'Invalid token' };
+        return { approved: false, reason: INVALID_TOKEN_REASON };
       }
       // An approval obtained before landing here is RETRIED, not discarded: the database
       // layer re-presents the same approver sign-off under a fresh use number when it loses
-      // the local use-number race (see `ControlDatabase.withUseNumberRetry`). Reaching this
-      // catch-all means either that retry ran out (surfaced above as
-      // `InvitationExhaustedError`) or the failure was never retryable to begin with.
+      // one to a writer its local write queue does not serialize — another node of the cadre,
+      // another `Database` handle over the same store (see
+      // `ControlDatabase.withUseNumberRetry`). Reaching this catch-all means either that retry
+      // ran out (surfaced above as `InvitationExhaustedError`) or the failure was never
+      // retryable to begin with.
       log('provisionAsResponder failed for token %s: %o', token, err);
       return { approved: false, reason: 'Formation conflict, retry' };
     }

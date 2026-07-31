@@ -172,10 +172,10 @@ joiner. Sign the `disclosure` bytes verbatim; do not re-serialize them.
 
 Notice `UseNumber` — the invitation's 1-based redemption sequence — is not one of the five signed
 fields. That is deliberate, and it is what backs the following guarantee: **a hook is contacted at
-most once per redemption, never once per write attempt.** If two joins of the same invitation race
-on the responding node, the loser's write is refused a use number the winner already took; the
-node retries with a fresh use number and re-presents the identical sign-off it already has,
-instead of asking the hook again. Only when the invitation has no seat left for a retry does the
+most once per redemption, never once per write attempt.** If two nodes redeem the same invitation
+at once, the loser's write is refused a use number the winner already took; the losing node
+retries with a fresh use number and re-presents the identical sign-off it already has, instead of
+asking the hook again. Only when the invitation has no seat left for a retry does the
 redemption fail — reported to the joiner the same way an already-fully-redeemed invitation is,
 never as a fresh retryable conflict.
 

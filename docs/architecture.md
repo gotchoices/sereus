@@ -531,13 +531,15 @@ Formation timeouts are **nested so every layer can fail and report before the la
 
 An overrunning provisioning is **aborted**, not merely abandoned: the work budget (`provisionTimeoutMs` minus the settle grace, which is carved **out** of the budget so the ladder above is untouched) expiring aborts the signal threaded through to the recorder, which checks it before issuing its `FormationUsage` insert and so **leaves the invite unspent** — the joiner can retry the same token. The grace covers the opposite case: work that had already written cannot be un-written (`FormationUsage` is append-only), so provisioning that settles inside the grace is **adopted** and reported as a real approval instead of a timeout over a spent invite. Because the default work budget (10s) now equals the approval hook's own 10s timeout, a dead hook races `'Formation approval unavailable, retry'` against `'Formation provisioning timed out'`; both are retryable and both leave the invite unspent, so the race is benign.
 
-A redemption that loses the **local** use-number race (two joins of the same invite landing on
-this node at once) is not sent back for a fresh approval: `ControlDatabase.withUseNumberRetry`
-re-presents the identical approver sign-off under a new use number, so the approval hook above is
-asked **once per join, never once per write attempt**. Only a retry that runs out — the invite has
-no seat left — reaches `StrandFormationManager.provisionAsResponder`'s catch-all as
-`InvitationExhaustedError`, reported to the joiner as the same `'Invalid token'` a spent invite
-would give.
+A redemption that loses the use-number race is not sent back for a fresh approval:
+`ControlDatabase.withUseNumberRetry` re-presents the identical approver sign-off under a new use
+number, so the approval hook above is asked **once per join, never once per write attempt**. Two
+joins landing on the *same* node never reach that retry — the local write queue serializes them
+and each reads a use number the other has already committed — so the retry exists for the writers
+that queue does not reach: another node of the cadre, or another `Database` handle over the same
+store. Only a retry that runs out — the invite has no seat left — reaches
+`StrandFormationManager.provisionAsResponder`'s catch-all as `InvitationExhaustedError`, reported
+to the joiner as the same `'Invalid token'` a spent invite would give.
 
 ```mermaid
 sequenceDiagram

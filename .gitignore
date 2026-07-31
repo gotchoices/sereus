@@ -8,6 +8,9 @@ tmp/
 *.tsbuildinfo
 .in-progress
 
+# Streamed build/lint/test output from ticket agents (`… | tee .tess-*.log`) — scratch, never source.
+.tess-*.log
+
 # Release-signing private keys — the cadre-host update secret is custodied
 # offline and must NEVER be committed (see docs/cadre-host.md → Release signing).
 *.key
