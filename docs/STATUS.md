@@ -369,8 +369,11 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   workdir on first spawn and re-launched with it (`orchestrator/node-identity.ts` →
   `--identity-protobuf`), so its peer id survives a restart and `cadre-cli start` opens the
   file-backed bootstrap-peer + trusted-owner stores beside it. `removeContainer` deletes the
-  workdir, so all of it dies with the loan. The same gap on the multi-tenant provider is open
-  (`tickets/backlog/bug-provider-container-identity-not-persisted.md`).
+  workdir, so all of it dies with the loan. The same gap on the multi-tenant provider has since
+  been closed: `DockerOrchestrator` mounts a per-container named Docker volume at `/data` and
+  `docker/entrypoint.sh` mints/exports the identity key into it on first boot, re-applying it
+  every start — see [Provider Integration](architecture.md#provider-integration) and the
+  "Cold-start bootstrap retries" bullet under [Control Network Seed](architecture.md#control-network-seed).
 - [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
   `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
 - [~] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
