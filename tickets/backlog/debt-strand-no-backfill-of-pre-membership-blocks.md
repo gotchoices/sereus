@@ -22,9 +22,10 @@ than a later sweep.
 
 The 9 blocks the joiner never received were all committed **before** the dial — the
 founder's bootstrap `Header` / `Member` / `Manager` data and index blocks, written while
-the cohort was one node. Nothing ever pushed them afterwards. (Two further blocks that
-also never match are node-local roots which carry a different block id on each node; those
-are by construction, not a gap.)
+the cohort was one node. Nothing ever pushed them afterwards. Two of those nine are not a
+gap at all: they are collection root blocks, and a root's identifier is a fresh random
+value minted locally, so each node's root for the same collection carries a different
+identifier and could never match. The remaining seven are the real gap.
 
 ## Why it matters
 

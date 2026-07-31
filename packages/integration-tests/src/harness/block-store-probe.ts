@@ -19,6 +19,11 @@
  * replication proof must write on the author and poll the other node's RAW STORE, never
  * its database. This module cannot enforce that; the test must.
  *
+ * That path is a reading of the code, not something this suite has demonstrated — in the
+ * closed-strand physical test the joiner's database is read repeatedly during bring-up and
+ * the blocks behind those reads stay absent from its raw store. Treat it as a caution that
+ * costs nothing to respect, not as measured behaviour.
+ *
  * SCOPE KEYS. `CadreNodeConfig.storage.provider` is a per-scope factory: cadre-core calls
  * it as `provider('control')` for the control database and as `provider(strandId)` for
  * each strand (`cadre-node.ts` → `buildControlNodeOptions`, `strand-instance-manager.ts` →

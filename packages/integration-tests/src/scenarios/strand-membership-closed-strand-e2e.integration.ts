@@ -813,27 +813,45 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//     below; 13 of those new or at a higher revision. All 13 were already in the
 	//     joiner's own store on the FIRST poll — 1 ms after the last write returned, so
 	//     the push happens as part of the commit, not on a later sweep.
-	//   • The 9 that never landed were all committed BEFORE the dial — the bootstrap
-	//     Header/Member/Manager data and index blocks, written to a cohort of one — plus
-	//     two node-local root blocks that carry a different block id on each node and so
-	//     could never match by construction. Nothing backfills a peer that joins the
-	//     cohort after a block was committed; the joiner reads those rows over the wire
-	//     from the founder instead, which is why the three visibility tests above pass.
-	//     Recorded as `backlog/debt-strand-no-backfill-of-pre-membership-blocks`.
+	//   • The 9 that never landed were all committed BEFORE the dial: the bootstrap
+	//     Header/Member/Manager data blocks and their `default/*/index/_uniq_*` index
+	//     blocks, written to a cohort of one, and two collection ROOT blocks that can
+	//     never match by construction — a root's id is a fresh 256-bit random value
+	//     (`db-core` → `blocks/structs.ts`, minted by `generateId()` in
+	//     `transactor/transactor-source.ts` whenever no id is supplied), so each node's
+	//     locally-created root carries a different id even for the same collection.
+	//     Nothing backfills a peer that joins the cohort after a block was committed; the
+	//     joiner reads those rows over the wire from the founder instead, which is why the
+	//     three visibility tests above pass. Recorded as
+	//     `backlog/debt-strand-no-backfill-of-pre-membership-blocks`.
 	// So this test proves ONGOING replication, not retroactive replication. Do not widen
 	// the comparison back to the whole store to "strengthen" it — it would fail on the
 	// pre-dial blocks and on the node-local roots, neither of which is this test's claim.
 	//
-	// ⚠ THE JOINER'S DATABASE IS OFF LIMITS IN THIS TEST — `joinerDb` is deliberately
-	// not destructured below, and no read of any kind may be issued against it. A read
-	// through the joiner can PUT the block there itself: `CoordinatorRepo.get` falls
-	// through to `restoreCorroborated` → `acquireBlockFromCohort` → `saveReplicatedBlock`,
-	// which persists the acquired block into the joiner's local storage. Probing after
-	// such a read would prove only "the bytes are here now", satisfying the probe for
-	// exactly the wrong reason. Every write below runs on `founderDb`; the joiner is
-	// observed only through its raw store, which no probe read can mutate. Adding a
-	// `joinerDb` read here silently converts this proof into a restatement of the
-	// visibility tests.
+	// NOTE: coverage has been complete on the FIRST poll every run so far, so the GATE
+	// budget below has never been exercised as a wait. A regression that made replication
+	// merely slow rather than absent would still pass here, indistinguishably. If strand
+	// replication ever grows an asynchronous path, this test needs a latency bound (assert
+	// the elapsed ms, not just eventual coverage) to keep saying anything about it.
+	//
+	// ⚠ THE JOINER'S DATABASE IS OFF LIMITS FROM HERE ON — `joinerDb` is deliberately not
+	// destructured below, and no read of any kind may be issued against it. A read through
+	// the joiner can PUT the block there itself: `CoordinatorRepo.get` falls through to
+	// `restoreCorroborated` → `acquireBlockFromCohort` → `saveReplicatedBlock`, which
+	// persists the acquired block into the joiner's local storage. Probing after such a
+	// read would prove only "the bytes are here now", satisfying the probe for exactly the
+	// wrong reason. Every write below runs on `founderDb`; the joiner is observed only
+	// through its raw store, which no probe read can mutate. Adding a `joinerDb` read here
+	// silently converts this proof into a restatement of the visibility tests.
+	//
+	// "From here on", precisely: `bringUpClosedStrand` DOES read `joinerDb` — its
+	// bootstrap-row gate counts Strand.Header/Member/Manager there. Every one of those
+	// reads precedes the founder-only writes below, so none of them can have pre-placed a
+	// block this test then credits to replication. (Empirically they backfill nothing at
+	// all: the pre-dial blocks those gates read stay absent from the joiner's raw store for
+	// the whole run — see the measurement above. The confound is a sound caution, not an
+	// observed behaviour.) The rule that is load-bearing is ordering: no `joinerDb` read at
+	// or after the writes.
 	it("replicates the founder's blocks PHYSICALLY into the joiner's own block store", async () => {
 		const {
 			founderNode, joinerNode, founderDb, founderKeyPair,
