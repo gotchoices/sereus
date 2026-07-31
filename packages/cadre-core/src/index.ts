@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener } from './control-database.js';
 
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';
@@ -202,8 +202,10 @@ export {
   cadrePeerRemoveDigest,
   deviceTokenAddDigest,
   deviceTokenRemoveDigest,
+  formationConsentDigest,
   verifyPeerAuthorization,
   verifyCadrePeerVoucher,
+  verifyFormationConsent,
   type DeviceTokenAuthorizedRow
 } from './peer-authorization.js';
 

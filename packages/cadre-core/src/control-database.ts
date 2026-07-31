@@ -187,6 +187,27 @@ export function formationVouchMessage(fields: {
 }
 
 /**
+ * The exact bytes the JOINING peer signs to consent to ONE redemption of a
+ * `FormationInvite` — the TS mirror of the `'consent'` digest in
+ * `FormationUsage.PeerConsented`, in the schema's field order.
+ *
+ * A sibling of {@link formationVouchMessage}, not a replacement: the approver's vouch
+ * says the redemption may proceed, this says the joiner itself agreed to it, and the
+ * two are signed by different keys over the same nonce so neither can stand in for
+ * the other.
+ */
+export function formationConsentMessage(fields: {
+  token: string;
+  usageStampId: string;
+  peerKey: string;
+  disclosure: string;
+}): Uint8Array {
+  return buildAuthorizationMessage('CadreControl.FormationUsage', 'consent', [
+    fields.token, fields.usageStampId, fields.peerKey, fields.disclosure,
+  ]);
+}
+
+/**
  * Minimal interface for the CollectionFactory returned by the optimystic plugin.
  * We only need the methods we actually use.
  */

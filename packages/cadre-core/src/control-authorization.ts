@@ -84,8 +84,12 @@ export type ControlDomain = `CadreControl.${ControlTable}` | 'Cadre.Enrollment';
  *  - `'publish'` — a peer self-signs its OWN record (the `CadrePeer` /
  *    `DeviceToken` self-update branches), with its own key rather than an
  *    owner key.
+ *  - `'consent'` — a peer self-signs its OWN `FormationUsage` redemption (the
+ *    joiner proving it agreed to join), with its own key. Distinct from the
+ *    approver's `'vouch'` over the same table so the two stored signatures are
+ *    never interchangeable.
  */
-export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish';
+export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent';
 
 /**
  * The full ordered field vector a control-plane signature covers. Digest this

@@ -219,3 +219,39 @@ export function verifyCadrePeerVoucher(
     return false;
   }
 }
+
+/**
+ * Canonical digest a JOINING peer signs to consent to ONE `FormationUsage`
+ * redemption — the read-side mirror of {@link formationConsentMessage} in
+ * control-database.ts, base64url-encoded instead of raw bytes (see
+ * {@link taggedDigest}).
+ */
+export function formationConsentDigest(
+  token: string, usageStampId: string, peerKey: string, disclosure: string
+): string {
+  return taggedDigest('CadreControl.FormationUsage', 'consent', [token, usageStampId, peerKey, disclosure]);
+}
+
+/**
+ * Verify that `row.peerSig` is a valid ed25519 signature over the joining peer's
+ * consent digest (see {@link formationConsentDigest}) — the row's OWN `peerKey`.
+ *
+ * Unlike {@link verifyCadrePeerVoucher} there is no separate enrolled/owner row to
+ * look up: the identity IS the key carried on the row, so a forged consent would
+ * need that joiner's own private key. Returns a boolean and never throws (same
+ * contract as the siblings above): malformed input or any crypto failure resolves
+ * to `false`, logged at debug.
+ */
+export function verifyFormationConsent(row: {
+  token: string; usageStampId: string; peerKey: string; disclosure: string; peerSig: string;
+}): boolean {
+  try {
+    return verify(
+      formationConsentDigest(row.token, row.usageStampId, row.peerKey, row.disclosure),
+      row.peerSig, row.peerKey, 'ed25519', 'base64url', 'base64url', 'base64url'
+    );
+  } catch (error) {
+    log('verifyFormationConsent failed: %o', error);
+    return false;
+  }
+}

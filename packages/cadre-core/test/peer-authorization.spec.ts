@@ -4,8 +4,11 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import {
   peerAuthorizationDigest,
-  verifyPeerAuthorization
+  verifyPeerAuthorization,
+  formationConsentDigest,
+  verifyFormationConsent
 } from '../src/peer-authorization.js';
+import { ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
 
 /**
  * Sign an enrollment vouch the way an owner tool does out-of-band (in-repo the
@@ -121,5 +124,32 @@ describe('verifyPeerAuthorization', () => {
       'base64url'
     ) as string;
     expect(verifyPeerAuthorization(peerId, ownerPublicKey, legacySig)).toBe(false);
+  });
+});
+
+describe('verifyFormationConsent', () => {
+  it('round-trips: the joiner signing over its own key verifies true, a different key false', () => {
+    const joinerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const joinerPublicKey = ed25519PublicKeyFromPrivate(joinerPrivateKey);
+    const row = {
+      token: 'invite-token',
+      usageStampId: 'stamp-1',
+      peerKey: joinerPublicKey,
+      disclosure: 'disclosure text'
+    };
+    const signature = sign(
+      formationConsentDigest(row.token, row.usageStampId, row.peerKey, row.disclosure),
+      joinerPrivateKey,
+      'ed25519',
+      'base64url',
+      'base64url',
+      'base64url'
+    ) as string;
+
+    expect(verifyFormationConsent({ ...row, peerSig: signature })).toBe(true);
+
+    const otherPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    const otherPublicKey = ed25519PublicKeyFromPrivate(otherPrivateKey);
+    expect(verifyFormationConsent({ ...row, peerKey: otherPublicKey, peerSig: signature })).toBe(false);
   });
 });
