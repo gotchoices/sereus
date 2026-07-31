@@ -10,8 +10,9 @@ export default defineConfig({
 	test: {
 		environment: 'node',
 		include: ['test/**/*.spec.ts'],
-		// Fails the run immediately when @serfab/cadre-core's dist predates its src,
-		// instead of testing a stale build — see test/global-setup.ts.
+		// Fails the run immediately when @serfab/cadre-core or its @optimystic/@quereus
+		// dependencies have a dist that predates their src, instead of testing a stale
+		// build — see test/global-setup.ts.
 		globalSetup: ['./test/global-setup.ts'],
 	},
 });
