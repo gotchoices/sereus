@@ -28,21 +28,37 @@
  * A naive three-node test proves nothing here: FRET's routing table stays cold
  * inside a test's lifetime, so real cohort discovery returns self-only cohorts
  * that never reach the super-majority branch. `forceFullCohort` (see
- * `harness/forced-cluster.ts`) replaces cohort DISCOVERY on all three nodes
- * with the full trio while leaving the real cluster clients, deadlines,
- * transports, and members in place — and its call counters back the
- * anti-vacuity assertions that each write really consulted a 3-peer cohort.
+ * `harness/forced-cluster.ts`) replaces cohort DISCOVERY — on the
+ * `Libp2pKeyPeerNetwork` prototype, so BOTH instances per node see it: the
+ * node-attached one that derives the consensus cohort, and the fresh one the
+ * quereus-plugin collection factory builds for the `NetworkTransactor` — with
+ * the full trio, while leaving the real cluster clients, deadlines,
+ * transports, and members in place. Its call counters back the anti-vacuity
+ * assertions that each write really consulted a 3-peer cohort.
  *
- * The batch COORDINATOR is pinned too (`pinCoordinator`, healthy nodes only).
- * Unpinned, FRET draws the coordinator by key-space proximity to the block id
- * — effectively a uniform draw across the trio — and the degraded cases go
- * nondeterministic: when the degraded node itself is drawn, the writer reaches
- * it over the (healthy) repo protocol and its own cluster vote is in-process,
- * so the write COMMITS fast (measured: ~0.5 s) instead of failing (~42 s).
- * That commit-through-the-degraded-coordinator branch is real availability,
- * not a defect — it is documented here and in `docs/architecture.md`, and the
- * pin exists so this suite deterministically measures the OTHER branch, the
- * one where the degradation actually bites.
+ * The batch COORDINATOR is pinned too (`pinCoordinator([A])` — the healthy
+ * owner/storage node). Unpinned, the transactor's own key-network instance
+ * assigns the coordinator (set cover over `findCluster`, key-proximity order),
+ * a draw the test does not control and one that STICKS for a whole suite: the
+ * hot control-tree block ids are stable and the instance caches per-key
+ * coordinators. When that draw lands on the degraded node itself, the writer
+ * reaches it over the (healthy) repo protocol, its own cluster vote is
+ * in-process, and its degraded INBOUND cluster handler never sees a stream —
+ * so the write COMMITS fast (measured: ~0.25–0.5 s) instead of failing
+ * (~42 s), and it does so for EVERY case in the run. That
+ * commit-through-the-degraded-coordinator branch is real availability, not a
+ * defect — it is documented here and in `docs/architecture.md`, and the pin
+ * exists so this suite deterministically measures the OTHER branch, the one
+ * where a healthy coordinator must RPC into the degraded member and the
+ * degradation actually bites.
+ *
+ * Why A and not B: `findCoordinator` is also the READ path's routing seam
+ * (`NetworkTransactor.batchesForPayload`), and only A holds the control trees'
+ * genesis-era blocks — A wrote them solo before B and C joined, so a read
+ * pinned to B fails with `Missing block`. Pinning to A keeps reads served from
+ * the node that has the data while still forcing every write down the
+ * degradation-exercising branch: coordinator A must dial INTO C's degraded
+ * cluster handler for its cluster vote.
  *
  * The degraded member is a full `CadreNode`: the under-the-deadline case needs
  * a real `ClusterMember` to validate and approve, and the transactor's retry
@@ -378,10 +394,13 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expect(node.getControlNode()!.getMultiaddrs().length, `${name} must listen`).toBeGreaterThan(0);
 		}
 
+		// Order matters: the pin wraps whatever `findCluster` the force installed.
 		forced = forceFullCohort([A, B, C]);
-		// Healthy candidates only: the degraded cases must exercise the branch
-		// where a healthy coordinator has to RPC the degraded member (see header).
-		pinned = pinCoordinator([A, B, C], [A, B]);
+		// Healthy candidate only, and it must be A: the degraded cases need a
+		// healthy coordinator that has to RPC the degraded member, and the READ
+		// path routes through the same seam — only A holds the genesis-era
+		// control blocks (see header).
+		pinned = pinCoordinator([A]);
 	}, 240_000);
 
 	afterAll(async () => {
