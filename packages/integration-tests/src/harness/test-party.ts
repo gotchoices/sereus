@@ -57,8 +57,8 @@ async function createTestNode(
     // creation (measured), so a write issued right after `createTestParty` resolves
     // can still see a self-only cohort — it races the ring, not a permanent gap.
     // Such a write commits on the writer's own vote under `allowClusterDownsize`.
-    // Scenarios that need a real multi-peer cohort must wait for it; see
-    // `debt-harness-control-cohort-observable-and-forced` for the wait helper.
+    // Scenarios that need a real multi-peer cohort must wait for it with
+    // `waitForControlCohort` (`harness/control-cohort.ts`).
     clusterPolicy: CONTROL_CLUSTER_POLICY,
     arachnode: { enableRingZulu: true }
   }) as Libp2pNodeWithRepo;

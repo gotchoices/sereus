@@ -47,16 +47,65 @@
  * Vitest isolates test files into their own workers, so the blast radius is
  * one suite; suites that create strand databases should not use these helpers
  * while strand traffic is live.
+ *
+ * RESTORE ORDERING. Three helpers now patch
+ * `Libp2pKeyPeerNetwork.prototype.findCluster`, and two of them (`pinCoordinator`
+ * here, `observeControlCohorts` in `control-cohort.ts`) WRAP whatever is
+ * installed when they are applied. The rule is therefore: restore in REVERSE
+ * order of application — last applied, first restored. A test that tears down
+ * out of order reinstates a stale method and leaves a patched prototype behind
+ * for the rest of the file.
  */
 
 import { toString as u8ToString } from 'uint8arrays';
-import type { PeerId } from '@libp2p/interface';
+import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { ClusterPeers } from '@optimystic/db-core';
 import { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import type { CadreNode } from '@serfab/cadre-core';
+import type { TestCadreNode } from './types.js';
 
 type FindCluster = Libp2pKeyPeerNetwork['findCluster'];
 type FindCoordinator = Libp2pKeyPeerNetwork['findCoordinator'];
+
+/**
+ * Anything these helpers can read a live control libp2p node out of: a
+ * `CadreNode` (the `cadre-core` class, whose control node is behind
+ * `getControlNode()`), a harness `TestCadreNode` (a bare node in a `TestParty`),
+ * or a started `Libp2p` directly.
+ */
+export type CohortNodeSource = CadreNode | TestCadreNode | Libp2p;
+
+/**
+ * Resolve `node` to its started control libp2p node, or throw naming `who` and
+ * the shape that was seen.
+ *
+ * The discrimination order below is unambiguous TODAY because `CadreNode`
+ * exposes no `libp2p` property (its control node is the private `controlNode`,
+ * reachable only via `getControlNode()`) and `TestCadreNode` has no
+ * `getControlNode`. Adding either field to the other type would silently
+ * re-route this resolver — so that has to be a conscious change, not a drive-by
+ * one.
+ */
+function resolveControlLibp2p(node: CohortNodeSource, who: string): Libp2p {
+	if (node === null || typeof node !== 'object') {
+		throw new Error(`${who}: expected a node object; got ${node === null ? 'null' : typeof node}`);
+	}
+	if ('getControlNode' in node) {
+		const controlNode = node.getControlNode();
+		if (!controlNode) throw new Error(`${who}: node has no started control node`);
+		return controlNode;
+	}
+	if ('libp2p' in node) {
+		return node.libp2p;
+	}
+	if (!('peerId' in node) || typeof node.getMultiaddrs !== 'function') {
+		throw new Error(
+			`${who}: unrecognised node shape — expected a CadreNode (getControlNode), a `
+			+ `TestCadreNode (libp2p) or a started Libp2p (peerId + getMultiaddrs); got keys `
+			+ `[${Object.keys(node).join(', ')}]`);
+	}
+	return node;
+}
 
 export interface ForcedCohortHandle {
 	/** Restore the real prototype `findCluster`. Idempotent. */
@@ -80,15 +129,14 @@ export interface ForcedCohortHandle {
  * addressless forced entry would surface as `no valid addresses` dial failures
  * downstream, which look exactly like the degradation such tests inject.
  */
-export function forceFullCohort(nodes: readonly CadreNode[]): ForcedCohortHandle {
+export function forceFullCohort(nodes: readonly CohortNodeSource[]): ForcedCohortHandle {
 	if (nodes.length === 0) throw new Error('forceFullCohort: empty node set');
 
 	// Build the shared cohort map from live node state, failing loudly on any
 	// entry that could not actually be dialled.
 	const cohort: ClusterPeers = {};
 	for (const node of nodes) {
-		const controlNode = node.getControlNode();
-		if (!controlNode) throw new Error('forceFullCohort: node has no started control node');
+		const controlNode = resolveControlLibp2p(node, 'forceFullCohort');
 		const peerIdStr = controlNode.peerId.toString();
 		const multiaddrs = controlNode.getMultiaddrs().map((ma) => ma.toString());
 		if (multiaddrs.length === 0) {
@@ -164,14 +212,11 @@ export interface PinnedCoordinatorHandle {
  * Use `candidates` = a healthy node to force a degradation scenario down its
  * worst-case branch deterministically (see the file header).
  */
-export function pinCoordinator(candidates: readonly CadreNode[]): PinnedCoordinatorHandle {
+export function pinCoordinator(candidates: readonly CohortNodeSource[]): PinnedCoordinatorHandle {
 	if (candidates.length === 0) throw new Error('pinCoordinator: empty candidate set');
 
-	const candidatePeerIds: PeerId[] = candidates.map((node) => {
-		const controlNode = node.getControlNode();
-		if (!controlNode) throw new Error('pinCoordinator: candidate has no started control node');
-		return controlNode.peerId;
-	});
+	const candidatePeerIds: PeerId[] = candidates.map(
+		(node) => resolveControlLibp2p(node, 'pinCoordinator').peerId);
 	const candidateIdStrs = candidatePeerIds.map((p) => p.toString());
 
 	let calls = 0;
