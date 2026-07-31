@@ -679,6 +679,20 @@ where local rows exist.
   circuit-relay transport variant. Shared harness with the solo spec:
   `test/control-db-node-helpers.ts`. WebRTC-in-the-transport-set is deferred — see backlog
   `debt-webrtc-transport-control-liveness-coverage`.
+- [x] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
+  — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
+  inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
+  being downsized out of it. Real three-node trio over localhost websockets, with cohort discovery
+  and coordinator assignment forced (`harness/forced-cluster.ts`) because FRET's routing table stays
+  cold inside a test's lifetime; degradation is injected by re-registering the third node's cluster
+  protocol handler behind a delay or a never-answer hold, so everything else about that node stays
+  honest. Covers the healthy trio, a 2 s per-RPC delay (commits, ~55 s — see `architecture.md` on
+  why a small per-RPC delay becomes a large per-write one), a never-answering member (clean named
+  super-majority failure, both write directions, neither queued for re-replication nor left
+  half-applied), and post-failure recovery. Latency figures and the uncovered
+  degraded-node-is-coordinator branch are in `architecture.md`. One case is a standing `it.fails`
+  reproducer for `fix/control-reads-blocked-by-stalled-write`: local control reads on the writing
+  node block behind an in-flight stalled write. Runtime ~185 s.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.

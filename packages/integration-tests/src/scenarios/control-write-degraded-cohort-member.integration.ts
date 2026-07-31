@@ -18,7 +18,7 @@
  * outcomes (single machine, localhost websockets; the wall-clock is logged on
  * every run, and the bounds in "Deadlines" below are sized off these):
  *
- *  - no degradation            → commits, ~0.8 s;
+ *  - no degradation            → commits, ~1 s;
  *  - 2 s delay (< 10 s bar)    → commits, ~55 s — the delay is paid serially
  *    across the ~27 inbound cluster RPCs one control write makes, so a small
  *    per-RPC delay becomes a large per-WRITE one;
@@ -44,11 +44,15 @@
  * not merely how deterministically. When the coordinator is the degraded node
  * itself, the writer reaches it over the (healthy) repo protocol, its own
  * cluster vote is in-process, and its degraded INBOUND cluster handler never
- * sees a stream — so the write COMMITS fast (measured: ~0.25–0.5 s) instead of
- * failing (~42 s). That branch is real availability, not a defect; it is
- * recorded in `docs/architecture.md` and is deliberately NOT covered here.
- * Pinning to a healthy node measures the other branch, the one where a healthy
- * coordinator must RPC into the degraded member and the degradation bites.
+ * sees a stream — so the write COMMITS fast (~0.25–0.5 s in an exploratory run)
+ * instead of failing (~42 s). That branch is real availability, not a defect.
+ * It is NOT covered here and cannot be, for the reason in the next paragraph:
+ * pinning the coordinator to C makes every case fail with `Missing block`
+ * before any degradation is reached, writes included (the write path reads
+ * through the same seam). `docs/architecture.md` therefore records that branch
+ * as observed-not-asserted. Pinning to a healthy node measures the other
+ * branch, the one where a healthy coordinator must RPC into the degraded member
+ * and the degradation bites.
  *
  * Why A and not B: `findCoordinator` is also the READ path's routing seam
  * (`NetworkTransactor.batchesForPayload`), and only A holds the control trees'
@@ -88,7 +92,7 @@ const log = debug('sereus:integration:degraded-cohort');
 // runs under the forced cohort + pinned coordinator, with ~2–3× headroom so a
 // slower CI box does not flake while a real regression still trips the bound:
 //
-//   healthy authorize+remove ......... ~0.5 s   (both writes, combined)
+//   healthy authorize+remove ......... ~1.2 s   (both writes, combined)
 //   2 s-delayed authorize / remove ... ~55 s    each
 //   never-answering member ........... ~20 s or ~40 s to the named failure
 //   recovery after a failed write .... ~0.9 s
