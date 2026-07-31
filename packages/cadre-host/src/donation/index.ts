@@ -40,6 +40,18 @@ export type {
   DonationPeerInfo,
   DonationServiceOptions,
 } from './donation-service.js';
+export {
+  DonationSupervisor,
+  DONATION_RESPAWN_BACKOFF_BASE_MS,
+  DONATION_RESPAWN_BACKOFF_MAX_MS,
+  DONATION_RESPAWN_MAX_ATTEMPTS,
+  DONATION_RESPAWN_HEALTHY_MS,
+  DONATION_RESPAWN_SWEEP_MS,
+} from './donation-supervisor.js';
+export type {
+  DonationSupervisorOptions,
+  SupervisedOrchestrator,
+} from './donation-supervisor.js';
 export type {
   Donation,
   DonationView,

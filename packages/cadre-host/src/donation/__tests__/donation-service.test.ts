@@ -17,72 +17,13 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import type {
-  Orchestrator,
-  OrchestratorCreateRequest,
-  OrchestratorCreateResult,
-  OrchestratorStats,
-} from '@serfab/cadre-provider';
-
 import { DonationService } from '../donation-service.js';
 import { DonationStore } from '../donation-store.js';
 import { GrantService } from '../grant-service.js';
 import { GrantStore } from '../grant-store.js';
 import type { Donation } from '../types.js';
 import { DonationError } from '../types.js';
-
-function sleep(ms: number): Promise<void> {
-  return new Promise((res) => setTimeout(res, ms));
-}
-
-/** Records every create/stop/remove; returns deterministic, unique spawn results. */
-class FakeOrchestrator implements Orchestrator {
-  createCalls: OrchestratorCreateRequest[] = [];
-  stopped: string[] = [];
-  removed: string[] = [];
-  failCreate = false;
-  createDelayMs = 0;
-  private counter = 0;
-
-  async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
-    this.createCalls.push(request);
-    if (this.createDelayMs) await sleep(this.createDelayMs);
-    if (this.failCreate) throw new Error('spawn boom');
-    const n = ++this.counter;
-    return {
-      dockerId: `dock_${n}`,
-      healthEndpoint: `http://127.0.0.1:${9000 + n}/health`,
-      metricsEndpoint: `http://127.0.0.1:${9000 + n}/metrics`,
-      seedEndpoint: `http://127.0.0.1:${9000 + n}/seed`,
-      seedToken: `seed-token-${n}`,
-      p2pPort: 4000 + n,
-    };
-  }
-
-  /** Observation hook — lets a test inspect the world as the stop happens. */
-  onStop?: (dockerId: string) => void;
-
-  async stopContainer(dockerId: string): Promise<void> {
-    this.onStop?.(dockerId);
-    this.stopped.push(dockerId);
-  }
-
-  async removeContainer(dockerId: string): Promise<void> {
-    this.removed.push(dockerId);
-  }
-
-  async getStats(): Promise<OrchestratorStats> {
-    return { cpuPercent: 0, memoryBytes: 0, networkRxBytes: 0, networkTxBytes: 0 };
-  }
-
-  async isRunning(): Promise<boolean> {
-    return true;
-  }
-
-  async getLogs(): Promise<string> {
-    return '';
-  }
-}
+import { FakeOrchestrator } from './fake-orchestrator.js';
 
 /** A store whose next `put` fails once — the post-spawn write-failure path. */
 class FlakyDonationStore extends DonationStore {

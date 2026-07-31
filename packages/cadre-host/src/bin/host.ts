@@ -39,6 +39,7 @@ import {
   GrantStore,
   DonationService,
   DonationStore,
+  DonationSupervisor,
   DONATION_AWAITING_SEED_TTL_MS,
   DONATION_REAP_SWEEP_MS,
 } from '../donation/index.js';
@@ -299,11 +300,23 @@ program
       // Donation lifecycle service — consumes a validated grant to actually
       // spawn a donated node into the requester's cadre. Drives the
       // grantee-facing `/grants` surface (mounted by createLocalUiServer below).
+      const donationStore = new DonationStore(cfg.dataDir);
       const donationService = new DonationService({
         orchestrator,
         grants: grantService,
-        store: new DonationStore(cfg.dataDir),
+        store: donationStore,
       });
+
+      // Respawn supervision — nothing else brings a donated node back. A crash,
+      // an OOM kill, or a reboot otherwise leaves the record reading `seeded`
+      // with no process behind it, costing the borrower a node and their grant a
+      // quota slot. Sweeps at startup, on every child exit, and on its own timer.
+      const donationSupervisor = new DonationSupervisor({
+        service: donationService,
+        store: donationStore,
+        orchestrator,
+      });
+      donationSupervisor.start();
 
       // Reap orphaned donations: a requester that provisioned a node but never
       // presented a seed leaves an `awaiting_seed` child holding host ports.
@@ -422,6 +435,7 @@ program
 
       await waitForTermination();
       clearInterval(reapTimer);
+      donationSupervisor.stop();
       try { await server.stop(); } catch { /* ignore */ }
       try { await natService?.stop(); } catch { /* ignore */ }
       try { await orchestrator.stopOwnerNode(); } catch { /* ignore */ }
