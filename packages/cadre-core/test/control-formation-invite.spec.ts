@@ -14,6 +14,7 @@ import type { ControlDatabase, FormationUsageResult } from '../src/control-datab
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { canonicalDatetime } from '../src/canonical-datetime.js';
 import { expectConstraintFailure, expectUniqueViolation } from './control-constraint-helpers.js';
+import { mintJoiner, mintConsent, signJoinerConsent } from './formation-consent-helper.js';
 
 const log = debug('sereus:cadre:test:formation-invite');
 
@@ -66,35 +67,41 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
   /**
    * The bare `FormationUsage` insert `ControlDatabase.execFormationUsageInsert` writes, with
    * every field the writer derives for itself — `StrandStampId`, the single-use `UsageStampId`
-   * nonce, the joining `PeerId`, and the approver sign-off — under the caller's control, so a
-   * wrong-stamp / replayed-nonce / re-filed-joiner consent record can be attempted. `Now` goes
-   * through the same `canonicalDatetime` transform the writer uses. Options object rather than
-   * positional args: the list is long enough that call sites would be unreadable, and most cases
-   * only care about one or two fields.
+   * nonce, the joining `PeerKey` + its consent signature, and the approver sign-off — under the
+   * caller's control, so a wrong-stamp / replayed-nonce / re-filed-joiner consent record can be
+   * attempted. `Now` goes through the same `canonicalDatetime` transform the writer uses.
+   * Options object rather than positional args: the list is long enough that call sites would
+   * be unreadable, and most cases only care about one or two fields. Raw inserts hit the
+   * `PeerConsented` CHECK like any other, so when none of the three consent fields is supplied
+   * a fresh joiner is minted and signs over exactly what the insert will carry.
    */
   async function rawInsertFormationUsage(opts: {
     token: string;
     useNumber: number;
     strandId: string;
     strandStampId: string;
-    /** Single-use nonce; a fresh unique one when absent. */
+    /** Single-use nonce; minted alongside a fresh consent when absent. */
     usageStampId?: string;
-    /** The joining peer; a fresh unique one when absent. */
-    peerId?: string;
+    /** The joining peer's key; a fresh consented joiner when absent. */
+    peerKey?: string;
+    /** The joiner's consent signature; minted with the key when absent. */
+    peerSignature?: string;
     disclosure?: string;
     validationKey?: string;
     validationSignature?: string;
   }): Promise<void> {
     const now = await canonicalDatetime(rawDb, Date.now());
+    const consent = opts.usageStampId !== undefined || opts.peerKey !== undefined || opts.peerSignature !== undefined
+      ? { usageStampId: opts.usageStampId!, peerKey: opts.peerKey!, peerSignature: opts.peerSignature! }
+      : mintConsent(opts.token, opts.disclosure ?? '');
     await rawDb.exec(
-      `insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerId, Disclosure, StrandId, StrandStampId)
-         with context PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
-         values (?, ?, ?, ?, ?, ?, ?)`,
+      `insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
+         with context Now = ?, ValidationKey = ?, ValidationSignature = ?
+         values (?, ?, ?, ?, ?, ?, ?, ?)`,
       [
-        null, now, opts.validationKey ?? null, opts.validationSignature ?? null,
+        now, opts.validationKey ?? null, opts.validationSignature ?? null,
         opts.token, opts.useNumber,
-        opts.usageStampId ?? generateStampId('raw-insert-' + rand()),
-        opts.peerId ?? 'peer-raw-' + rand(),
+        consent.usageStampId, consent.peerKey, consent.peerSignature,
         opts.disclosure ?? '', opts.strandId, opts.strandStampId,
       ],
     );
@@ -167,7 +174,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), disclosure: 'hello' });
+    await db.redeemInvitation({ token, strandId, ...mintConsent(token, 'hello'), disclosure: 'hello' });
 
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
@@ -194,10 +201,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
+    const token = 'no-such-' + rand();
     await expect(
-      db.redeemInvitation({
-        token: 'no-such-' + rand(), strandId: 'strand-' + rand(), peerId: 'peer-' + rand(),
-      }),
+      db.redeemInvitation({ token, strandId: 'strand-' + rand(), ...mintConsent(token) }),
     ).rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
@@ -215,7 +221,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand() })).rejects.toThrow();
+    await expect(db.redeemInvitation({ token, strandId, ...mintConsent(token) })).rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
     expect(await usageCount()).toBe(usageBefore);
@@ -236,7 +242,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base });
+    await db.redeemInvitation({ token, strandId, ...mintConsent(token), nowMs: base });
 
     expect(await strandCount()).toBe(strandsBefore + 1);
     expect(await usageCount()).toBe(usageBefore + 1);
@@ -254,7 +260,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base }))
+    await expect(db.redeemInvitation({ token, strandId, ...mintConsent(token), nowMs: base }))
       .rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
@@ -273,7 +279,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     const strandsBefore = await strandCount();
     const usageBefore = await usageCount();
 
-    await expect(db.redeemInvitation({ token, strandId, peerId: 'peer-' + rand(), nowMs: base }))
+    await expect(db.redeemInvitation({ token, strandId, ...mintConsent(token), nowMs: base }))
       .rejects.toThrow();
 
     expect(await strandCount()).toBe(strandsBefore);
@@ -287,9 +293,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // Strand created the normal way (owner signature), NOT via consent.
     await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
 
-    const peerId = 'peer-' + rand();
-    expect((await db.recordFormationUsage({ token, strandId, peerId })).useNumber).toBe(1);
-    expect((await db.recordFormationUsage({ token, strandId, peerId })).useNumber).toBe(2);
+    // The SAME joiner both times, on purpose: fresh consent (fresh nonce) per use, one key.
+    const joiner = mintJoiner();
+    expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token, '', joiner) })).useNumber).toBe(1);
+    expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token, '', joiner) })).useNumber).toBe(2);
 
     const row = await rawDb.get(
       'select count(1) as c from CadreControl.FormationUsage where Token = ?',
@@ -343,7 +350,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     await db.insertFormationInvite(token, 'sapp-nohost', ownerPublicKey, signMessage);
 
     const before = await usageCount();
-    await expect(db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() }))
+    await expect(db.recordFormationUsage({ token, strandId, ...mintConsent(token) }))
       .rejects.toThrow(MissingHostStrandError);
     expect(await usageCount()).toBe(before);
   });
@@ -376,7 +383,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const abandoned = db.redeemInvitation({
         token,
         strandId: 'strand-abandoned-' + rand(),
-        peerId: 'peer-' + rand(),
+        ...mintConsent(token),
         signal: controller.signal,
       });
       controller.abort();
@@ -388,7 +395,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await usageCount()).toBe(usageBefore);
 
       // The single use survived, so the joiner's retry against the same token still redeems.
-      await db.redeemInvitation({ token, strandId: 'strand-retry-' + rand(), peerId: 'peer-' + rand() });
+      await db.redeemInvitation({ token, strandId: 'strand-retry-' + rand(), ...mintConsent(token) });
       expect(await usageCount()).toBe(usageBefore + 1);
     });
 
@@ -404,7 +411,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const { release, held } = holdWriteLock();
       const controller = new AbortController();
       const abandoned = db.recordFormationUsage({
-        token, strandId, peerId: 'peer-' + rand(), signal: controller.signal,
+        token, strandId, ...mintConsent(token), signal: controller.signal,
       });
       controller.abort();
       release();
@@ -414,7 +421,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await usageCount()).toBe(usageBefore);
 
       // Use #1 is still free — the abandoned attempt consumed no use number.
-      expect((await db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() })).useNumber).toBe(1);
+      expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token) })).useNumber).toBe(1);
       expect(await usageCount()).toBe(usageBefore + 1);
     });
 
@@ -431,7 +438,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const queued = db.redeemInvitation({
         token,
         strandId: 'strand-queued-ok-' + rand(),
-        peerId: 'peer-' + rand(),
+        ...mintConsent(token),
         signal: new AbortController().signal,
       });
       release();
