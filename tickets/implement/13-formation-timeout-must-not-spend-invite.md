@@ -3,6 +3,70 @@ files: packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core
 difficulty: hard
 ----
 
+<!-- resume-note -->
+## Resume notes — prior run (investigation complete, NO code changed)
+
+A prior agent run hit its token budget after reading every relevant file but **before editing
+anything** — the working tree is untouched by that run. The design below was verified against
+the actual code; start implementing directly. Verified findings that refine the plan:
+
+- **`runSession` needs no change for adoption.** It already branches on the outcome object
+  (`strand-formation-protocol.ts:409-429`): returning the late-settled
+  `ResponderProvisionOutcome` from `provision()` makes an adopted approval flow through the
+  normal disclosure path, and a late rejection reuses the `!outcome.approved` branch. Only
+  `provision()` (`:355-380`) changes.
+- **`withDeadline` (control-stream.ts:79) exposes neither a timed-out flag nor the signal
+  outside `op`.** Two workable shapes: (a) capture the signal inside the op callback
+  (`let signal; withDeadline(ms, label, (s) => { signal = s; pending = provisionStrand(..., s); return pending; })`)
+  and treat `signal?.aborted` in the catch as "deadline fired" — sound because the controller
+  aborts only on the timeout path and `withTimeout` clears its timer in `.finally` (microtask)
+  before a queued timer macrotask can run; or (b) keep `withTimeout` + an own
+  `AbortController` with the existing `timedOut`-flag idiom, which is what `withDeadline`
+  does internally anyway. Either satisfies the ticket's intent; (b) is less clever.
+- **Grace clamp re-checked against all five existing timeout tests** (spec `:215-320`) with
+  `graceMs = min(2000, floor(provisionTimeoutMs/2))`, `workMs = provisionTimeoutMs - graceMs`:
+  pT 20 → 10/10 (never-settles test still replies 'timed out'); clamped 900 → 450/450 vs
+  950 ms hook → timed out; clamped 600 → 300/300 vs 700 ms hook → timed out; pT 200 →
+  work 100 vs 30 ms hook → approves; pT 0 → default 12 000 → work 10 000. No existing test
+  breaks.
+- **New corner worth one doc sentence:** default work budget (10 s) now EQUALS the approval
+  hook's own 10 s timeout, so a dead hook races 'Formation approval unavailable, retry'
+  against 'Formation provisioning timed out'. Both retryable and both now leave the invite
+  unspent (the caller-signal abort also cancels the outbound fetch); acceptable, but say so
+  where the ladder is documented.
+- **Manager catch order:** in `provisionAsResponder`'s catch (`strand-formation-manager.ts:322`),
+  rethrow `FormationAbortedError` BEFORE the `FormationApprovalError` mapping and the generic
+  'Formation conflict, retry' fallback. Import from `./control-database.js` — no cycle
+  (control-database does not import the manager; formation-approval already imports from it).
+- **DB check placement verified:** `recordFormationUsage`'s reads (`queryStrandStampId`,
+  `nextUseNumber`) run BEFORE the lock, so the signal check belongs inside the
+  `withWriteLock` callback immediately before `execFormationUsageInsert`
+  (`control-database.ts:1415`); for `redeemInvitation`, inside the lock before
+  `inTransaction('redemption', ...)` (`:1345`) — one check, never between the two inserts.
+  Export `FormationAbortedError` beside `MissingHostStrandError` (`:58`).
+- **Approver signature change is churn-free:** fakes implementing
+  `requestApproval(request)` remain structurally assignable once the interface gains an
+  optional second `signal` param. In the HTTP client (`formation-approval.ts:440-482`) add a
+  `callerAborted` flag next to the existing `timedOut` flag: pre-aborted signal → throw
+  'unavailable' before fetch; else `signal.addEventListener('abort', ..., { once: true })`
+  aborting the client's own controller, removed in the existing `finally`. Delete the stale
+  interface NOTE at `:83-87`.
+- **Recorder checks:** throw `FormationAbortedError` at entry of `recordUsage` /
+  `provisionAndRecord` (before `queryFormationInvite`) AND inside `obtainApproval`
+  immediately before `approver.requestApproval`; thread `signal` into both DB write calls.
+- **Test homes:** approval-client abort tests extend
+  `packages/cadre-core/test/formation-approval.spec.ts` (has `stubFetch` / `expectFailure`
+  helpers). No dedicated recorder spec exists (recorder is covered via
+  `strand-formation-consent.spec.ts`); the already-aborted pre-check test can drive
+  `ControlFormationUsageRecorder` with a stub/throwing `ControlDatabase` since the entry
+  check precedes any DB access.
+- **Test timings that clear CI jitter:** adoption regression — pT 400 (work 200 / grace 200),
+  hook sleeps 300 ms then increments its use counter → lands mid-grace with 100 ms margin
+  each side; "reply within pT" bound — pT 500 (work 250 / grace 250), signal-ignoring
+  never-settling hook, assert elapsed ≤ 700 ms (a grace-added-on-top bug would reply ~750 ms).
+
+Original ticket follows, unchanged.
+
 ## Confirmed reproduction
 
 Written against the existing `MockStream` harness in
