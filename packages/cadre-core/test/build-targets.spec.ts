@@ -6,32 +6,14 @@
  * the suite goes on passing while it runs that dependency's stale `dist`.
  */
 
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-
-import { distBackedDependencies, targetListProblems } from '../../../test-harness/build-targets.js';
+import { describeBuildTargets, packageRootFrom } from '../../../test-harness/build-targets-spec.js';
 import { TARGETS } from './global-setup.js';
 
-const packageDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-describe('cadre-core stale-build targets', () => {
-	it('cover every dependency this suite runs compiled code from', () => {
-		expect(targetListProblems(packageDir, TARGETS)).toEqual([]);
-	});
-
-	// Guards the guard: the assertion above passes trivially if the manifest scan
-	// comes back empty (a renamed field, a moved package root).
-	it('are checked against dependencies that were actually found', () => {
-		const found = distBackedDependencies(packageDir);
-
-		expect(found.get('@serfab/quereus-plugin-sereus')).toBe('workspace');
-		expect(found.get('@quereus/quereus')).toBe('linked');
-	});
-
-	it('name each package once', () => {
-		const names = TARGETS.map((target) => target.packageName);
-
-		expect(names).toEqual([...new Set(names)]);
-	});
+describeBuildTargets('cadre-core', {
+	packageDir: packageRootFrom(import.meta.url, '..'),
+	targets: TARGETS,
+	expectFound: {
+		'@serfab/quereus-plugin-sereus': 'workspace',
+		'@quereus/quereus': 'linked',
+	},
 });

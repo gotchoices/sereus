@@ -10,32 +10,14 @@
  * through `cadre-core`), so only missing entries fail — extra ones are the point.
  */
 
-import { dirname, join } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
-
-import { distBackedDependencies, targetListProblems } from '../../../test-harness/build-targets.js';
+import { describeBuildTargets, packageRootFrom } from '../../../test-harness/build-targets-spec.js';
 import { TARGETS } from './global-setup.js';
 
-const packageDir = join(dirname(fileURLToPath(import.meta.url)), '..');
-
-describe('cadre-cli stale-build targets', () => {
-  it('cover every dependency this suite runs compiled code from', () => {
-    expect(targetListProblems(packageDir, TARGETS)).toEqual([]);
-  });
-
-  // Guards the guard: the assertion above passes trivially if the manifest scan
-  // comes back empty (a renamed field, a moved package root).
-  it('are checked against dependencies that were actually found', () => {
-    const found = distBackedDependencies(packageDir);
-
-    expect(found.get('@serfab/cadre-core')).toBe('workspace');
-    expect(found.get('@optimystic/db-p2p')).toBe('linked');
-  });
-
-  it('name each package once', () => {
-    const names = TARGETS.map((target) => target.packageName);
-
-    expect(names).toEqual([...new Set(names)]);
-  });
+describeBuildTargets('cadre-cli', {
+  packageDir: packageRootFrom(import.meta.url, '..'),
+  targets: TARGETS,
+  expectFound: {
+    '@serfab/cadre-core': 'workspace',
+    '@optimystic/db-p2p': 'linked',
+  },
 });

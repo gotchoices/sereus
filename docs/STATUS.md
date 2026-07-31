@@ -499,6 +499,16 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   this way surfaced that its own `tsconfig.json` was the one package among these four still missing the
   `lib: ["ES2022", ...]` bump for `Error(message, { cause })` — added to match `cadre-core`/`cadre-cli`/
   `cadre-host`.
+- [x] **The per-package target-list spec is shared, not copied.** Wiring three more suites had turned one
+  ~40-line spec body into five verbatim copies differing only in the suite's name, its package root and
+  the two dependencies it pins. `test-harness/build-targets-spec.ts` now exports
+  `describeBuildTargets(suiteName, { packageDir, targets, expectFound })` plus a `packageRootFrom`
+  helper, and each package's `build-targets.spec.ts`/`.test.ts` is a doc comment and one call — the
+  comment still says why *that* list is wider than its own `dependencies`. `expectFound` takes a
+  name→origin map instead of two hand-written `expect`s, so a failed pin now names the package. Note the
+  one package with no guard at all: `cadre-provider` declares zero `workspace:`/`link:` dependencies, so
+  nothing here would flag its omission if it ever gains one — a `NOTE:` in its `vitest.config.ts` says
+  so at the site.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
