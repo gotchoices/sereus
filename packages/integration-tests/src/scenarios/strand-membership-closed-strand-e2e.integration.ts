@@ -44,15 +44,22 @@
  * The third test is JOINER-AUTHORED: the founder issues an invite, and the second
  * node then runs `consumeInvite` / `registerMemberPeer` / a signed `App.Items` write
  * against its OWN database, with each resulting row gated as visible from the
- * founder. That proves the deferred constraints resolve against founder-authored
- * rows read from the second node, and that a membership write authored there
- * converges back.
+ * founder. That proves a membership write authored on the second node converges back
+ * — and that the one deferred check with a genuine cross-node read (`ConsumedInvite`'s
+ * `InviteExists`/`ValidUsage`/`NotExpired`, all of which read the founder-authored
+ * `Strand.Invite` row) resolves from there. See that test's own comment for which of
+ * the join's other constraints are local rather than cross-node.
  *
  * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
- * probe in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
- * every convergence check in the third test all throw on timeout. The old
- * best-effort/observe-then-require paths are gone. A timeout here is a real
- * convergence defect; do NOT restore a skip branch.
+ * gate in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
+ * every convergence check in the third test all throw on timeout, all on the shared
+ * {@link GATE} budget. The old best-effort/observe-then-require paths are gone. A
+ * timeout here is a real convergence defect; do NOT restore a skip branch.
+ *
+ * NOTE: `waitUntil` swallows a throwing condition and retries, so a gate whose read
+ * ERRORS on every attempt still reports a plain timeout, indistinguishable from rows
+ * that simply never arrived. If one of these ever times out, check the harness debug
+ * log (`Wait condition threw: …`) before concluding it is a convergence failure.
  *
  * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in this file
  * proves a row is VISIBLE from the other node's database, not that its block lives
@@ -102,6 +109,15 @@ import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/inde
 import { loadSimpleSApp } from '../fixtures/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * The budget every cross-node convergence gate in this file waits on.
+ *
+ * Measured convergence is well under a second — ~1 s even with the box at 2×
+ * CPU oversubscription — so 15 s is a wide margin, not a hope. One constant so a
+ * future CI-driven bump happens once rather than at eight call sites.
+ */
+const GATE = { timeoutMs: 15_000, intervalMs: 250 } as const;
 
 /** Deterministic strand provisioner for test predictability. */
 function createMockProvisioner(prefix = 'closed'): StrandProvisioner {
@@ -318,14 +334,14 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		);
 
 		// ── GATE: the founder's bootstrap rows become visible to the joiner ──
-		// Throws on timeout. Measured convergence is sub-second, so a 15 s budget
-		// expiring is a real defect, not a slow machine — see the header.
+		// Throws on timeout. Expiring the GATE budget is a real defect, not a slow
+		// machine — see the header.
 		await waitUntil(
 			async () =>
 				(await strandCount(joinerDb, 'Header')) >= 1 &&
 				(await strandCount(joinerDb, 'Member')) >= 1 &&
 				(await strandCount(joinerDb, 'Manager')) >= 1,
-			{ timeoutMs: 15_000, intervalMs: 250, description: 'founder bootstrap rows replicate to joiner' },
+			{ ...GATE, description: 'founder bootstrap rows replicate to joiner' },
 		);
 		console.log(`[closed-strand:${label}] founder bootstrap rows visible on joiner (gated)`);
 
@@ -522,7 +538,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// there is no skip path (see the header — replication is gated everywhere).
 			await waitUntil(
 				async () => (await listMemberPeers(joinerDb, member.publicKeyB64)).length === 2,
-				{ timeoutMs: 15_000, intervalMs: 250, description: "M's two MemberPeer rows replicate to the joiner" },
+				{ ...GATE, description: "M's two MemberPeer rows replicate to the joiner" },
 			);
 
 			/**
@@ -538,7 +554,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 						const seen = (await listMemberPeers(joinerDb, member.publicKeyB64)).sort();
 						return JSON.stringify(seen) === JSON.stringify([...expected].sort());
 					},
-					{ timeoutMs: 15_000, intervalMs: 250, description: `joiner agrees: ${what}` },
+					{ ...GATE, description: `joiner agrees: ${what}` },
 				);
 			};
 
@@ -617,10 +633,18 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	// The other two tests are founder-authoritative (see the header): they buy
 	// accept/reject breadth against the bootstrap-seated rows. This one buys the
 	// opposite property — that the second node is a genuine participant, not a
-	// spectator. Every write below is issued against `joinerDb`, and its deferred
-	// constraints (`Member.Authorized`'s invite branch, `ConsumedInvite.ValidUsage` /
-	// `NotExpired` / `NotCancelled`, `MemberPeer.MemberExists`) must resolve against
-	// rows the FOUNDER authored and the joiner only sees over the network.
+	// spectator. The founder only ISSUES the invites; every membership and sApp write
+	// below is authored against `joinerDb`.
+	//
+	// Be precise about which deferred constraints this exercises ACROSS the network.
+	// `ConsumedInvite`'s `InviteExists` / `ValidUsage` / `NotExpired` each read the
+	// founder-authored `Strand.Invite` row, which the joiner has only over the wire —
+	// those are the cross-node reads. The join's other checks are local or negative by
+	// construction, and this test does NOT prove them networked: `Member.Authorized`'s
+	// invite branch wants a same-transaction `ConsumedInvite` plus that InviteKey's
+	// ABSENCE from `committed.ConsumedInvite`, `ConsumedInvite.NotCancelled` scans an
+	// empty `CancelledInvite`, and `MemberPeer.MemberExists` reads the `Member` row
+	// step 2 just authored on this very database.
 	//
 	// Step order is load-bearing: every accepted write comes first and the single
 	// rejected write is LAST, per this file's rejection floor.
@@ -640,7 +664,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// `ConsumedInvite.ValidUsage` at commit and read like an authorization bug.
 			await waitUntil(
 				async () => (await joinerDb.get('select Key from Strand.Invite where Key = ?', [inviteKey]))?.Key === inviteKey,
-				{ timeoutMs: 15_000, intervalMs: 250, description: 'the invite row becomes visible to the joiner' },
+				{ ...GATE, description: 'the invite row becomes visible to the joiner' },
 			);
 
 			// ── 2. The JOINER consumes it, against its OWN database ──────────────
@@ -664,7 +688,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 						=== joinerMember.publicKeyB64 &&
 					(await founderDb.get('select MemberKey from Strand.ConsumedInvite where InviteKey = ?', [inviteKey]))?.MemberKey
 						=== joinerMember.publicKeyB64,
-				{ timeoutMs: 15_000, intervalMs: 250, description: 'the joiner-authored Member + ConsumedInvite reach the founder' },
+				{ ...GATE, description: 'the joiner-authored Member + ConsumedInvite reach the founder' },
 			);
 
 			// ── 4. The new member binds its REAL node, from its own database ─────
@@ -672,7 +696,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			await registerMemberPeer(joinerDb, { memberKeyPair: joinerMember, peerId: joinerPeerId });
 			await waitUntil(
 				async () => (await listMemberPeers(founderDb, joinerMember.publicKeyB64)).includes(joinerPeerId),
-				{ timeoutMs: 15_000, intervalMs: 250, description: "the joiner's device record reaches the founder" },
+				{ ...GATE, description: "the joiner's device record reaches the founder" },
 			);
 
 			// ── 5. A signed sApp write, authored on the joiner ───────────────────
@@ -694,7 +718,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 					const row = await founderDb.get('select Name, Value, CreatedBy from App.Items where Id = ?', [itemId]);
 					return row?.Name === 'hello' && row?.Value === itemValue && row?.CreatedBy === joinerMember.publicKeyB64;
 				},
-				{ timeoutMs: 15_000, intervalMs: 250, description: 'the joiner-authored App.Items row reaches the founder' },
+				{ ...GATE, description: 'the joiner-authored App.Items row reaches the founder' },
 			);
 
 			// ── 6. LAST — a rejected join on the joiner's own database ───────────
@@ -704,7 +728,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			const { inviteKey: inviteKey2 } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
 			await waitUntil(
 				async () => (await joinerDb.get('select Key from Strand.Invite where Key = ?', [inviteKey2]))?.Key === inviteKey2,
-				{ timeoutMs: 15_000, intervalMs: 250, description: 'the second invite row becomes visible to the joiner' },
+				{ ...GATE, description: 'the second invite row becomes visible to the joiner' },
 			);
 			await expect(
 				consumeInvite(joinerDb, {
