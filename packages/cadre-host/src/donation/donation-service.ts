@@ -415,10 +415,18 @@ export class DonationService {
    * `terminated` record the loan is over and the workdir (identity key +
    * node-local stores) goes with it — which is what `terminate` intended.
    *
-   * `error` is the deliberate exception, matching `DonationSupervisor.giveUp`:
-   * that path keeps the workdir so a later `terminate` can still reclaim the
-   * same node. Defensive only — the supervisor serializes its passes, so
-   * `giveUp` cannot actually run concurrently with a respawn.
+   * `error` is the deliberate exception: `removeContainer` deletes the workdir,
+   * and `DonationSupervisor.giveUp` keeps it on purpose so the identity key the
+   * borrower's cadre approved survives. Since both spawns share one workdir
+   * (`<rootDir>/<containerId>`), reclaiming here would delete exactly what
+   * `giveUp` meant to keep.
+   *
+   * NOTE: that skipped reclaim leaks the new spawn's four ports — the record
+   * still names the *previous* `dockerId`, so a later `terminate` cleans up the
+   * old handle, not this one. Unreachable today (`giveUp` is only called from
+   * the supervisor's serialized pass, so it cannot overlap a respawn); if a
+   * second `respawn` caller ever appears, write the new `dockerId` onto the
+   * `error` record here so that later `terminate` reclaims the right child.
    */
   private async abandonRespawn(
     id: string,

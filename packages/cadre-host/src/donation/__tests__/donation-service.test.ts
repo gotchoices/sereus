@@ -417,6 +417,53 @@ describe('DonationService.respawn', () => {
     expect(orch.removed).toContain('dock_2');
     expect(store.liveNodeCount(token)).toBe(0);
   });
+
+  it('stops but does not reclaim the new child when the record goes error mid-spawn', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+
+    // A give-up write landing inside the spawn window. Both spawns share one
+    // workdir, so reclaiming here would delete the identity key `error`
+    // deliberately keeps.
+    orch.createDelayMs = 20;
+    orch.onCreate = () => {
+      store.put({ ...store.get(provisioned.id)!, status: 'error', error: 'gave up' });
+    };
+
+    const result = await svc.respawn(provisioned.id);
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'error' });
+    expect(orch.stopped).toContain('dock_2');
+    expect(orch.removed).toEqual([]);
+    const stored = store.get(provisioned.id)!;
+    expect(stored.status).toBe('error');
+    expect(stored.dockerId).toBe('dock_1');
+  });
+
+  it('abandons with no status when the record vanishes mid-spawn', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+
+    orch.createDelayMs = 20;
+    orch.onCreate = () => { store.remove(provisioned.id); };
+
+    const result = await svc.respawn(provisioned.id);
+
+    // No row to protect, so nothing is written back and the child is fully
+    // reclaimed rather than left holding ports and a workdir nothing names.
+    expect(result).toEqual({ outcome: 'abandoned' });
+    expect(store.get(provisioned.id)).toBeUndefined();
+    expect(orch.stopped).toContain('dock_2');
+    expect(orch.removed).toContain('dock_2');
+  });
 });
 
 describe('DonationService.terminate', () => {
