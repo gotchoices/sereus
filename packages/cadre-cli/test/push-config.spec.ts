@@ -41,7 +41,7 @@ describe('push config', () => {
     expect(merged.push).toEqual({ apns: APNS });
   });
 
-  it('treats an empty CADRE_PUSH (compose default) as undefined', () => {
+  it('leaves push unset when CADRE_PUSH is empty (compose default) and the file sets none', () => {
     expect(resolveFromEnv('')).toBeUndefined();
     expect(resolveFromEnv('   ')).toBeUndefined();
   });

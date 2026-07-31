@@ -61,6 +61,9 @@ export function applyEnvironmentOverrides(config: CliConfigFile): CliConfigFile 
 
 function parseEnvValue(envVar: string, value: string): unknown {
   // Handle array values (comma-separated)
+  // NOTE: a separators-only value (e.g. `,`) survives the loop's empty check but
+  // yields [], clobbering the file's list. If that shape ever shows up in a real
+  // launcher, treat an all-empty split as unspecified here too.
   if (envVar.endsWith('_NODES') || envVar.endsWith('_ADDRS')) {
     return value.split(',').map(s => s.trim()).filter(Boolean);
   }
@@ -140,18 +143,29 @@ function parseStrandFilterEnv(value: string): unknown {
   }
 }
 
+/**
+ * Write `value` at a dotted path, copying each intermediate object on the way
+ * down. {@link applyEnvironmentOverrides} only shallow-copies its input, so
+ * writing straight through would mutate the caller's own nested objects (e.g. a
+ * shared `network` block) rather than only the returned config.
+ */
 function setNestedValue(obj: Record<string, unknown>, pathStr: string, value: unknown): void {
   const parts = pathStr.split('.');
   let current: Record<string, unknown> = obj;
 
   for (let i = 0; i < parts.length - 1; i++) {
-    if (!(parts[i] in current) || typeof current[parts[i]] !== 'object') {
-      current[parts[i]] = {};
-    }
+    current[parts[i]] = cloneBranch(current[parts[i]]);
     current = current[parts[i]] as Record<string, unknown>;
   }
 
   current[parts[parts.length - 1]] = value;
+}
+
+/** Shallow-copy an intermediate config object, replacing any non-object with a fresh one. */
+function cloneBranch(existing: unknown): Record<string, unknown> {
+  return existing && typeof existing === 'object' && !Array.isArray(existing)
+    ? { ...existing as Record<string, unknown> }
+    : {};
 }
 
 /**

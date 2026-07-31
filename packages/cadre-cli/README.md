@@ -179,16 +179,26 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_BOOTSTRAP_NODES` | `controlNetwork.bootstrapNodes` | Comma-separated multiaddrs |
 | `CADRE_PROFILE` | `profile` | Node profile (transaction/storage) |
 | `CADRE_KEY_FILE` | `identity.keyFile` | Path to private key file |
+| `CADRE_IDENTITY_PROTOBUF` | `identity.protobufKeyFile` | Path to a libp2p protobuf-encoded private key (the `identity.key` written by `enroll create` / the host installer). Takes precedence over `CADRE_KEY_FILE` |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on |
+| `CADRE_ANNOUNCE_ADDRS` | `network.announceAddrs` | Comma-separated multiaddrs to advertise instead of `listenAddrs`. Accepted but **not yet applied** — the node warns at start and keeps advertising its listen/relay addresses |
+| `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server. Unset ⇒ profile default (on for storage, off for transaction) |
+| `CADRE_STRAND_FILTER` | `strandFilter` | `all`, `none`, or a JSON object — `{"sAppId":"myapp"}` / `{"strandId":"<id>"}`. A malformed value fails startup rather than degrading to `all` |
+| `CADRE_PUSH` | `push` | FCM/APNs credentials as a JSON object (e.g. `{"fcm":{…},"apns":{…}}`), injected per node by an orchestrator. A malformed or partial value fails startup |
 | `CADRE_RELAY_ADDRS` | `network.relayAddrs` | Comma-separated circuit-relay dial multiaddrs (each ending in the relay's peer id) to reserve a slot on, so peers can reach this node from behind NAT. Each becomes a `/p2p-circuit` listen address alongside `listenAddrs`; a malformed entry fails startup |
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
 | `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor |
 
-Environment variables override config file values.
+Environment variables override config file values. A variable that is **set but
+empty** (or whitespace-only) counts as unspecified and is ignored — this is what
+`docker-compose.yml`'s `${CADRE_ENABLE_RELAY:-}`-style defaults produce for an
+optional variable the operator never set, and it must not clobber what the
+config file says. To force a value off, set it explicitly (e.g.
+`CADRE_ENABLE_RELAY=false`).
 
 ## Linux Server Deployment
 

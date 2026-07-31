@@ -74,7 +74,7 @@ describe('CADRE_STRAND_FILTER env override', () => {
     expect(resolveFromEnv('None')).toEqual({ mode: 'none' });
   });
 
-  it('treats an empty value (docker-compose default) as all', () => {
+  it('falls back to all when the value is empty (compose default) and the file sets no filter', () => {
     expect(resolveFromEnv('')).toEqual({ mode: 'all' });
   });
 
