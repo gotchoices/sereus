@@ -82,6 +82,14 @@ export interface Container {
    * `Authorization: Bearer <seedToken>`; without it the container rejects the seed.
    */
   seedToken?: string;
+  /**
+   * libp2p peer id the node reported when it first came up healthy. Durable
+   * across restarts (the node keeps one identity for the life of its volume),
+   * so a tenant can be told which peer id is theirs without a live round-trip.
+   * Multiaddrs are NOT recorded here — those genuinely change, so
+   * `ContainerService.getPeerInfo` keeps reading them live.
+   */
+  peerId?: string;
 }
 
 /** Container status response */

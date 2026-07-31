@@ -178,20 +178,18 @@ export class ContainerService {
       const container = await this.store.getContainer(containerId);
       if (!container || container.status === 'error') return;
 
-      if (container.healthEndpoint) {
-        try {
-          const response = await fetch(container.healthEndpoint);
-          if (response.ok) {
-            const health = await response.json() as { status: string };
-            if (health.status === 'healthy') {
-              await this.updateStatus(containerId, 'running');
-              log('Container %s is now running', containerId);
-              return;
-            }
-          }
-        } catch {
-          // Health check failed, keep waiting
-        }
+      // Read `/status` rather than `/health`: it reports the same `status` field
+      // and additionally carries the node's `peerId`, which we record once here.
+      // `fetchContainerHealthStatus` swallows unreachable/non-OK responses, so a
+      // node that is still starting simply keeps the loop waiting.
+      const health = await fetchContainerHealthStatus(container);
+      if (health?.status === 'healthy') {
+        // peerId is durable for the life of the container's volume, so the
+        // first healthy report is authoritative; it is absent only if the node
+        // reports healthy before acquiring a libp2p identity.
+        await this.updateStatus(containerId, 'running', health.peerId ? { peerId: health.peerId } : undefined);
+        log('Container %s is now running (peer %s)', containerId, health.peerId ?? 'unknown');
+        return;
       }
 
       await new Promise(resolve => setTimeout(resolve, pollInterval));
@@ -200,10 +198,15 @@ export class ContainerService {
     log('Container %s enrollment timeout', containerId);
   }
 
-  /** Update container status */
-  private async updateStatus(id: string, status: ContainerStatus): Promise<void> {
+  /** Update container status, optionally stamping additional fields in the same save. */
+  private async updateStatus(
+    id: string,
+    status: ContainerStatus,
+    patch?: Partial<Container>
+  ): Promise<void> {
     const container = await this.store.getContainer(id);
     if (!container) return;
+    if (patch) Object.assign(container, patch);
     container.status = status;
     container.updatedAt = new Date();
     await this.store.saveContainer(container);

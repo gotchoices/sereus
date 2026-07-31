@@ -3,6 +3,7 @@ import type Docker from 'dockerode';
 import { DockerOrchestrator } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
+import { volumeStubs } from './fake-docker.js';
 
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_1',
@@ -30,6 +31,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         return { id: 'cid-ok', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
       }),
       getContainer: vi.fn(),
+      ...volumeStubs(),
     } as unknown as Docker;
 
     // Exactly 3 ports: a leak from the first attempt would exhaust the range.
@@ -55,6 +57,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         remove: removeSpy,
       })),
       getContainer: vi.fn(),
+      ...volumeStubs(),
     } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
@@ -71,7 +74,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
 
   it('releases partially-allocated ports when the range cannot satisfy the request', async () => {
     const createSpy = vi.fn();
-    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn() } as unknown as Docker;
+    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...volumeStubs() } as unknown as Docker;
 
     // Only 2 ports available, but createContainer needs 3.
     const orch = new DockerOrchestrator(config(10000, 10001), fakeDocker);
@@ -93,6 +96,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
         remove: removeSpy,
       })),
       getContainer: vi.fn(),
+      ...volumeStubs(),
     } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
@@ -113,7 +117,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
       start: vi.fn(async () => {}),
       remove: vi.fn(async () => {}),
     }));
-    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn() } as unknown as Docker;
+    const fakeDocker = { createContainer: createSpy, getContainer: vi.fn(), ...volumeStubs() } as unknown as Docker;
 
     const orch = new DockerOrchestrator(config(10000, 10002), fakeDocker);
     const result = await orch.createContainer(request);

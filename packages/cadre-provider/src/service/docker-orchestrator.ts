@@ -15,6 +15,25 @@ import type {
 
 const log = debug('cadre:provider:docker');
 
+/** Label carrying the provider's container id on both containers and volumes. */
+const CONTAINER_ID_LABEL = 'sereus.container-id';
+
+/** Path inside the image that holds all durable node-local state (see the Dockerfile's `DATA_DIR`). */
+const DATA_MOUNT_TARGET = '/data';
+
+/**
+ * Name of the durable per-container volume mounted at `/data`.
+ *
+ * Named (rather than the image's anonymous `VOLUME ["/data"]`) so the provider
+ * can find and delete it, and so recreating a container under the same provider
+ * container id — an image upgrade — re-attaches the same state and therefore
+ * the same libp2p identity. Provider container ids are `ctr_<nanoid16>` and
+ * nanoid's alphabet (`A-Za-z0-9_-`) is entirely legal in a Docker volume name.
+ */
+export function volumeNameFor(containerId: string): string {
+  return `cadre-${containerId}-data`;
+}
+
 /** Port allocation tracker */
 class PortAllocator {
   private usedPorts = new Set<number>();
@@ -77,6 +96,71 @@ export class DockerOrchestrator implements Orchestrator {
     this.portAllocator.release(ports.p2p);
   }
 
+  /**
+   * Ensure the durable `/data` volume for `containerId` exists.
+   *
+   * Returns `true` only when THIS call created it. A pre-existing volume is
+   * re-attached untouched and reported as not-ours, so the create failure path
+   * never destroys the state of a container being recreated (image upgrade).
+   * Any inspect error other than "not found" is rethrown rather than guessed
+   * at — provisioning failing is far cheaper than deleting a tenant's identity.
+   */
+  private async ensureVolume(containerId: string, partyId: string): Promise<boolean> {
+    const name = volumeNameFor(containerId);
+    try {
+      await this.docker.getVolume(name).inspect();
+      log('Reusing existing volume %s', name);
+      return false;
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode !== 404) throw err;
+    }
+
+    // Labelled so the volume is discoverable by label rather than by parsing names.
+    await this.docker.createVolume({
+      Name: name,
+      Labels: { [CONTAINER_ID_LABEL]: containerId, 'sereus.party-id': partyId },
+    });
+    log('Created volume %s', name);
+    return true;
+  }
+
+  /** Best-effort volume removal; a missing volume must never fail a termination. */
+  private async removeVolume(name: string): Promise<void> {
+    try {
+      await this.docker.getVolume(name).remove();
+      log('Removed volume %s', name);
+    } catch (err) {
+      log('Volume %s removal failed (continuing): %O', name, err);
+    }
+  }
+
+  /**
+   * Names of the durable volumes attached to a container, read from a live
+   * inspect *before* removal — the container's own record is the only
+   * authoritative source. Deliberately not an in-memory map: `containerPorts`
+   * already loses its contents across a provider restart, and volume cleanup
+   * must not inherit that weakness.
+   *
+   * Only the volume this orchestrator would itself have created for the
+   * container's own id is returned, so an operator-attached mount is never
+   * reaped. A container created before named volumes existed matches nothing
+   * here; its anonymous volume is reaped by `remove({ v: true })` instead.
+   */
+  private async durableVolumesOf(container: Docker.Container): Promise<string[]> {
+    try {
+      const info = await container.inspect();
+      const containerId = info.Config?.Labels?.[CONTAINER_ID_LABEL];
+      if (!containerId) return [];
+      const expected = volumeNameFor(containerId);
+      return (info.Mounts ?? [])
+        .filter(m => m.Type === 'volume' && m.Name === expected && m.Destination === DATA_MOUNT_TARGET)
+        .map(() => expected);
+    } catch (err) {
+      log('Could not inspect %s for volumes before removal: %O', container.id, err);
+      return [];
+    }
+  }
+
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     log('Creating container for %s', request.containerId);
 
@@ -98,10 +182,17 @@ export class DockerOrchestrator implements Orchestrator {
     const seedToken = randomBytes(32).toString('base64url');
 
     // Anything that throws between allocation and the successful record below
-    // must release the ports and best-effort remove a partially-created
-    // container — otherwise the bounded host-port range leaks permanently.
+    // must release the ports, best-effort remove a partially-created container,
+    // and drop a volume this attempt created — otherwise the bounded host-port
+    // range leaks permanently and a failed provision strands a volume.
     let container: Docker.Container | undefined;
+    let createdVolume = false;
     try {
+      // The node mints its own identity key into this volume on first start, so
+      // the key never crosses the provider/tenant boundary; the volume is what
+      // makes it survive a restart.
+      createdVolume = await this.ensureVolume(request.containerId, request.partyId);
+
       // Create container
       container = await this.docker.createContainer({
         name: `cadre-${request.containerId}`,
@@ -133,6 +224,13 @@ export class DockerOrchestrator implements Orchestrator {
             '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
             '4001/tcp': [{ HostPort: String(p2pPort) }],
           },
+          // Durable per-tenant state (identity key, generated config,
+          // bootstrap-peer store, trusted-owner anchor, storage) all live under
+          // /data. `Mounts` rather than `Binds`: no host path to configure and
+          // it works against a remote Docker daemon.
+          Mounts: [
+            { Type: 'volume', Source: volumeNameFor(request.containerId), Target: DATA_MOUNT_TARGET },
+          ],
           Memory: this.parseMemoryLimit(resources.memoryLimit),
           NanoCpus: this.parseCpuLimit(resources.cpuLimit),
           NetworkMode: this.config.network,
@@ -157,6 +255,9 @@ export class DockerOrchestrator implements Orchestrator {
           log('Cleanup of partial container failed: %O', rmErr);
         }
       }
+      // Only a volume THIS attempt created — a pre-existing one belongs to the
+      // container being recreated and still holds its identity.
+      if (createdVolume) await this.removeVolume(volumeNameFor(request.containerId));
       throw err;
     }
 
@@ -185,7 +286,16 @@ export class DockerOrchestrator implements Orchestrator {
   async removeContainer(dockerId: string): Promise<void> {
     log('Removing container %s', dockerId);
     const container = this.docker.getContainer(dockerId);
-    await container.remove({ force: true });
+
+    // Read the attached volumes while the container still exists — removal
+    // destroys the only authoritative record of what it was mounting.
+    const volumes = await this.durableVolumesOf(container);
+
+    // `v: true` reaps only ANONYMOUS volumes, which is exactly what containers
+    // created before named volumes existed have; our named volume needs the
+    // explicit removals below.
+    await container.remove({ force: true, v: true });
+    for (const name of volumes) await this.removeVolume(name);
 
     // Release ports
     const ports = this.containerPorts.get(dockerId);

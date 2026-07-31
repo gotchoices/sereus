@@ -6,7 +6,20 @@ set -e
 
 DATA_DIR="${DATA_DIR:-/data}"
 CADRE_CONFIG_FILE="${CADRE_CONFIG_FILE:-$DATA_DIR/cadre.yaml}"
-CADRE_KEY_FILE="${CADRE_KEY_FILE:-$DATA_DIR/cadre-peer.key}"
+
+# These two MUST be exported, not merely assigned: POSIX `sh` does not export a
+# variable that was not already in the environment, so a plain assignment is
+# invisible to the `exec node ... start` child below. The CLI reads both through
+# ENV_MAPPINGS (CADRE_KEY_FILE -> identity.keyFile, CADRE_NODE_STATE_DIR ->
+# nodeState.dir), and applyEnvironmentOverrides re-applies them over the loaded
+# config on EVERY start — which makes the env value the authoritative source and
+# also repairs containers whose cadre.yaml was generated before the identity
+# block was written. Without the export the node silently generates a fresh
+# libp2p keypair on every restart and its cadre stops recognising it.
+export CADRE_KEY_FILE="${CADRE_KEY_FILE:-$DATA_DIR/cadre-peer.key}"
+# Node-local stores (bootstrap-peer store, trusted-owner anchor) stay on the
+# durable volume even if an operator points CADRE_CONFIG_FILE elsewhere.
+export CADRE_NODE_STATE_DIR="${CADRE_NODE_STATE_DIR:-$DATA_DIR}"
 
 log() {
   echo "[entrypoint] $1"
@@ -102,7 +115,11 @@ EOF
     echo "strandFilter: $CADRE_STRAND_FILTER" >> "$CADRE_CONFIG_FILE"
   fi
 
-  # Add identity section if key file exists or is specified
+  # Mirror the identity into the config for debugging. `create_identity` runs
+  # BEFORE this function, so the key file exists by now; the exported
+  # CADRE_KEY_FILE env var above remains the authoritative source at startup
+  # (the CLI re-applies it over the loaded config), so this block only records
+  # the effective value.
   if [ -f "$CADRE_KEY_FILE" ]; then
     cat >> "$CADRE_CONFIG_FILE" << EOF
 
@@ -131,17 +148,24 @@ create_identity() {
 mkdir -p "$DATA_DIR"
 mkdir -p "${CADRE_STORAGE_PATH:-$DATA_DIR/storage}"
 
+# Create the identity BEFORE generating the config: generate_config writes the
+# `identity:` block only when the key file already exists, and it runs at most
+# once (guarded on the config being absent), so a config generated ahead of the
+# key would never gain the block on any later start.
+create_identity
+
 # Generate config if it doesn't exist
 if [ ! -f "$CADRE_CONFIG_FILE" ]; then
   generate_config
 fi
 
-# Create identity if needed
-create_identity
-
 # Handle commands
 case "$1" in
   start)
+    # Surfaced in `docker logs` so a regression in the identity wiring is
+    # visible rather than silent (a node that re-keys on restart loses its
+    # place in its cadre).
+    log "Identity key: $CADRE_KEY_FILE; node state dir: $CADRE_NODE_STATE_DIR"
     log "Starting cadre node..."
     exec node /app/packages/cadre-cli/dist/bin/cadre.js start \
       -c "$CADRE_CONFIG_FILE" \
