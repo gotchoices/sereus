@@ -593,6 +593,14 @@ auto-fixable subset.
   mechanical backlog for these was burned down in `lint-cleanup-mechanical`; `preserve-caught-error`'s
   `new Error(msg, { cause })` fix required bumping `lib` to `ES2022` (target unchanged at `ES2020`) in
   `cadre-core`/`cadre-host` tsconfigs.
+- **Project-specific invariant rule:** `no-restricted-syntax` flags a literal `insert into` /
+  `update` / `delete from` against `CadreControl.CadrePeer` outside `control-database.ts`. Every
+  membership write must run through `ControlDatabase.mutateCadrePeer` (which refreshes the
+  authorized-member snapshot the control-stream gate reads); raw SQL skips it silently, a mistake
+  made twice before the writers were consolidated. Matches both plain-string and template SQL;
+  SQL assembled from variables is out of reach by design. Exempt: `control-database.ts` (the
+  destination) and the two constraint fixtures that drive raw SQL at a bare database
+  (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`).
 - Rules at **`warn`**: none. The lint-cleanup epic (`lint-cleanup-mechanical` → `lint-cleanup-no-explicit-any`
   → `lint-cleanup-svelte`) is complete; there is no remaining `warn` backlog and `yarn lint` exits 0 with
   **0 warnings, 0 errors**. Every rule the config encodes is now a hard `error` gate.

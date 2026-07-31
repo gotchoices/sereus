@@ -23,7 +23,7 @@ import type {
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
-import { cadrePeerVoucherDigest, deviceTokenAddDigest } from './peer-authorization.js';
+import { deviceTokenAddDigest } from './peer-authorization.js';
 import {
   type SeedTrustPolicy,
   type SeedTrustDecision,
@@ -345,31 +345,20 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Shared owner-signed `CadrePeer` INSERT. Mints a fresh single-use `StampId`
-   * and signs the voucher digest `digest('CadreControl.CadrePeer', 'vouch', peerId, stampId)`
-   * ({@link cadrePeerVoucherDigest})
-   * with the owner key (satisfying `AuthorizedInsert`), then writes the full record
-   * row with the vouching (owner, signature) persisted into VouchOwner/VouchSig.
-   * The owner signature does NOT cover the address columns — those are vouched only
-   * as far as the owner asserts them, and a peer's own `Sig` (when present) is what
-   * makes the row resolvable.
+   * Shared owner-signed `CadrePeer` INSERT — the row fields and the owner-key
+   * precondition; the stamp mint, voucher signature, write lock, existence check and
+   * membership notify are all {@link ControlDatabase.insertCadrePeer}'s (see there for
+   * the anti-replay and insert-race rationale). No `CadrePeer` write may bypass that
+   * method: the write is what admits the peer's traffic.
    *
-   * Wrapped in {@link ControlDatabase.mutateCadrePeer} so the admitted peer's traffic is
-   * let in by the write itself — see that method for why the seam lives on the control DB.
+   * The DB check precedes the owner-key check here, matching the order this method has
+   * always surfaced them (the owner-key error used to come out of the signer, after the
+   * DB check).
    *
-   * Idempotent on an already-present row: two writers can legitimately race the SAME
-   * peer's first row — the node's own background self-publish ({@link CadreNode.registerSelf})
-   * against a foreground {@link authorizePeer} of that node's id — and the write lock only
-   * serializes them; the loser would hit the `CadrePeer.PeerId` UNIQUE constraint. The
-   * existence check runs INSIDE the locked body, so it sees the winner's committed row
-   * (a pre-lock check would re-open the read-then-insert window). The existing row —
-   * voucher, addresses, self-`Sig` — is left untouched; re-touching a live row is
-   * {@link reauthorizePeer}'s job.
-   *
-   * @returns `true` when this call performed the INSERT, `false` when the in-lock
-   *   existence check found the row already seated. The loser needs to know: an
-   *   authorize seats a row with a null `Sig`, so a self-publish that lost the race
-   *   must fall through to a self-update or its record never lands.
+   * @returns `true` when this call performed the INSERT, `false` when the row was
+   *   already seated by a concurrent writer. The loser needs to know: an authorize seats
+   *   a row with a null `Sig`, so a self-publish that lost the race must fall through to
+   *   a self-update or its record never lands.
    */
   private async insertCadrePeerRow(row: {
     peerId: string;
@@ -381,29 +370,10 @@ export class SeedBootstrapService {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // Fresh single-use nonce; the voucher signs the 'vouch'-tagged digest over
-    // (peerId, stampId) so a captured insert can't be replayed — live rows via the
-    // unique column, removed rows via Revocation retirement (CadrePeer.NotRevoked) —
-    // and can't be repurposed as a delete (which signs a distinct 'remove'-tagged digest).
-    const stampId = generateStampId(row.peerId);
-    const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
-    const db = this.controlDatabase.getDatabase();
-    const controlDatabase = this.controlDatabase;
-    return await controlDatabase.mutateCadrePeer('peer-insert', async () => {
-      if (await controlDatabase.queryCadrePeerStampId(row.peerId) !== null) {
-        log('CadrePeer row already present for %s; insert skipped (already a member)', row.peerId);
-        return false;
-      }
-      // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
-      // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
-      // reader can later re-check the voucher against its node-local trusted-owner anchor.
-      await db.exec(`
-        insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
-          with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?, ?, ?, ?, ?, ?)
-      `, [this.ownerPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.ownerPublicKey, signature]);
-      return true;
-    });
+    const ownerKey = this.requireOwnerPublicKey();
+    return await this.controlDatabase.insertCadrePeer(
+      row, ownerKey, message => this.signMessageBytes(message),
+    );
   }
 
   /**
@@ -505,8 +475,8 @@ export class SeedBootstrapService {
   /**
    * Sign a base64url digest with the owner key (ed25519). The single place the
    * owner private key is applied; callers pass the canonical domain-tagged digest for
-   * the specific action ({@link cadrePeerVoucherDigest} / {@link deviceTokenAddDigest}),
-   * or the raw-bytes form via {@link signMessageBytes}. Throws if no owner key is set.
+   * the specific action ({@link deviceTokenAddDigest}), or the raw-bytes form via
+   * {@link signMessageBytes}. Throws if no owner key is set.
    */
   private signDigest(digestB64url: string): string {
     return sign(
@@ -585,22 +555,17 @@ export class SeedBootstrapService {
   }
 
   /**
-   * Owner "re-touch" of an existing `CadrePeer` membership row: bump
-   * `UpdatedAt` under the owner branch of `CadrePeer.AuthorizedUpdate` (a
-   * signature over the voucher digest {@link cadrePeerVoucherDigest} — the same
-   * construction the insert uses) so the row is re-emitted as a fresh,
-   * broadcasting transaction.
+   * Owner "re-touch" of an existing `CadrePeer` membership row: bump `UpdatedAt` and
+   * re-vouch the row so it is re-emitted as a fresh, broadcasting transaction. This is
+   * the write-while-alone re-replication primitive (`control-write-ensure-replicated`):
+   * a membership row that committed local-only (its block's cluster ≤1 at insert) is
+   * pushed to the cohort once it grows.
    *
-   * This is the write-while-alone re-replication primitive
-   * (`control-write-ensure-replicated`): a membership row that committed
-   * local-only (its block's cluster ≤1 at insert) is pushed to the cohort once it
-   * grows, by re-issuing this monotonic bump. It is an UPDATE (not the original
-   * INSERT) because the row already exists locally; a re-INSERT would hit the
-   * `PeerId` PK. Only the freshness stamp changes — `PublicKey` / `Multiaddr` /
-   * `Sig` are left intact — so it is safe over a row whose peer has not
-   * self-published (`Sig` null); the caller must skip a row that already carries a
-   * self-`Sig` (that row is the owning peer's to refresh, and bumping `UpdatedAt`
-   * without re-signing would invalidate its self-signature).
+   * The stamp read, the voucher signature, the write lock and the membership notify are
+   * {@link ControlDatabase.reauthorizeCadrePeer}'s — including the caveat that it rebinds
+   * `VouchOwner` to this node's owner key. What stays here is the owner-key precondition.
+   *
+   * A no-op (no throw, no notify) when the row does not exist.
    *
    * @param peerId - the membership row to re-touch.
    * @param updatedAt - the strictly-increasing freshness stamp to write.
@@ -610,41 +575,17 @@ export class SeedBootstrapService {
   async reauthorizePeer(peerId: string, updatedAt: number): Promise<void> {
     // Fail fast on a keyless service before any DB read (see removePeer): a non-owner
     // cannot re-sign the voucher, and must not silently no-op on an absent row.
-    this.requireOwnerPrivateKey();
+    const ownerKey = this.requireOwnerPublicKey();
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
-    // The owner branch of AuthorizedUpdate verifies a voucher over the 'vouch'-tagged
-    // digest (PeerId, StampId) and re-binds VouchOwner/VouchSig. Sign over the row's CURRENT StampId
-    // (unchanged by this re-touch) and re-set the voucher columns so the branch passes.
-    // NOTE: this rebinds VouchOwner to THIS node's owner key, and the authorized-membership
-    // predicate (`CadreNode.listAuthorizedMembers`) now judges rows by that column against
-    // each reader's node-local anchor. Benign today because the only caller — the
-    // write-while-alone drain — re-touches solely rows this node itself authored
-    // (`pendingPeerWrites`), so the voucher is rewritten to the key that already signed it.
-    // If a future path ever lets one owner re-touch a row a DIFFERENT owner vouched, the
-    // voucher silently flips: readers that anchor the original owner but not this one would
-    // drop a legitimate member. Such a path must re-vouch deliberately (or preserve the
-    // existing VouchOwner/VouchSig) rather than inherit this rebinding.
-    const stampId = await this.controlDatabase.queryCadrePeerStampId(peerId);
-    if (stampId === null) {
+    const retouched = await this.controlDatabase.reauthorizeCadrePeer(
+      peerId, updatedAt, ownerKey, message => this.signMessageBytes(message),
+    );
+    if (!retouched) {
       log('reauthorizePeer: no CadrePeer row for %s (nothing to re-touch)', peerId);
       return;
     }
-    const signature = this.signDigest(cadrePeerVoucherDigest(peerId, stampId));
-    const db = this.controlDatabase.getDatabase();
-    // Notifies like the insert/remove paths even though this is "only" a re-touch: it
-    // rewrites VouchOwner/VouchSig, which the authorized-membership predicate judges on, so
-    // it CAN change the member set. Keeping the rule uniform ("every CadrePeer mutator
-    // notifies") beats a per-method exception the next reader has to relearn.
-    await this.controlDatabase.mutateCadrePeer('peer-reauthorize', async () => {
-      await db.exec(`
-        update CadreControl.CadrePeer
-          with context OwnerKey = ?, Signature = ?
-          set UpdatedAt = ?, VouchOwner = ?, VouchSig = ?
-          where PeerId = ?
-      `, [this.ownerPublicKey, signature, updatedAt, this.ownerPublicKey, signature, peerId]);
-    });
     log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
   }
 

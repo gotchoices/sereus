@@ -110,6 +110,50 @@ export default tseslint.config(
 		},
 	},
 
+	// ---- `CadreControl.CadrePeer` writes must go through ControlDatabase ----
+	// Every write to the party-membership table has to refresh the in-memory snapshot of
+	// approved members, or the node starts denying control traffic from the member it just
+	// approved. `ControlDatabase.mutateCadrePeer` is what triggers that refresh, and the
+	// three public methods below are the only writers that wrap it. A raw
+	// `getDatabase().exec('insert into CadreControl.CadrePeer …')` compiles and runs
+	// happily while skipping the refresh — a mistake that has been made twice — so flag
+	// the SQL itself.
+	//
+	// Literal SQL only: a statement assembled from variables slips through. That is
+	// deliberate — this targets the copy-paste mistake, not a determined bypass.
+	{
+		files: ['**/*.{ts,tsx,mts,cts}'],
+		rules: {
+			'no-restricted-syntax': ['error',
+				{
+					// Plain-string SQL (the form the specs use).
+					selector: "Literal[value=/insert\\s+into\\s+CadreControl\\.CadrePeer|update\\s+CadreControl\\.CadrePeer|delete\\s+from\\s+CadreControl\\.CadrePeer/i]",
+					message: 'Write CadreControl.CadrePeer through ControlDatabase.insertCadrePeer / reauthorizeCadrePeer / deleteCadrePeer — they wrap mutateCadrePeer, which refreshes the party-membership snapshot the control-traffic gate reads. Direct SQL skips that refresh.',
+				},
+				{
+					// Backtick SQL (the form the sources use).
+					selector: "TemplateElement[value.raw=/insert\\s+into\\s+CadreControl\\.CadrePeer|update\\s+CadreControl\\.CadrePeer|delete\\s+from\\s+CadreControl\\.CadrePeer/i]",
+					message: 'Write CadreControl.CadrePeer through ControlDatabase.insertCadrePeer / reauthorizeCadrePeer / deleteCadrePeer — they wrap mutateCadrePeer, which refreshes the party-membership snapshot the control-traffic gate reads. Direct SQL skips that refresh.',
+				},
+			],
+		},
+	},
+	{
+		// The exemptions (flat config: a later entry wins, so this must follow the rule).
+		files: [
+			// The destination itself — these ARE the wrapped writers.
+			'packages/cadre-core/src/control-database.ts',
+			// Constraint fixtures: both drive raw SQL at a bare Quereus database on purpose,
+			// to test the schema's authorization/revocation CHECKs. No membership snapshot
+			// exists in either — there is no ControlDatabase in the picture at all.
+			'packages/cadre-core/test/control-authorization-domain-separation.spec.ts',
+			'packages/cadre-core/test/control-revocation-replay.spec.ts',
+		],
+		rules: {
+			'no-restricted-syntax': 'off',
+		},
+	},
+
 	// ---- Type-aware rules (node/library src only) ----
 	// `no-floating-promises` needs type information. Scope it to package `src/` trees
 	// whose tsconfig.json resolves cleanly under NodeNext; the bundler/expo apps

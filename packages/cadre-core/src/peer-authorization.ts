@@ -185,8 +185,8 @@ export function verifyPeerAuthorization(
 /**
  * Verify that `signature` is a valid owner ed25519 signature over the
  * `CadrePeer` voucher digest for (`peerId`, `stampId`) — the read-side mirror
- * of the voucher {@link SeedBootstrapService.insertCadrePeerRow} signs and
- * persists into `VouchOwner`/`VouchSig` (see {@link cadrePeerVoucherDigest}).
+ * of the voucher {@link ControlDatabase.insertCadrePeer} signs and persists into
+ * `VouchOwner`/`VouchSig` (see {@link cadrePeerVoucherDigest}).
  *
  * A `true` result means the holder of `ownerPublicKey` vouched THIS membership
  * row (the peer id bound to the row's single-use `StampId` nonce). It says
