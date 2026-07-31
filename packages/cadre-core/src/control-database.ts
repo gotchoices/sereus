@@ -114,6 +114,21 @@ export class InvitationExhaustedError extends Error {
 }
 
 /**
+ * Attempts allowed per redemption: the first, plus two retries of a use number another
+ * writer took. Bounded so sustained contention terminates in a clean rejection rather than
+ * spinning; two retries is enough for the realistic case (a handful of nodes redeeming one
+ * multi-use token at once) without holding the write lock hostage.
+ *
+ * NOTE: the attempts fire back-to-back, with no backoff and no jitter — each one only takes
+ * and releases the write lock. Fine while cross-node contention on a single token is a
+ * handful of writers; if one hot multi-use token ever draws sustained concurrent redemption
+ * (a broadcast invite, a bulk onboarding run), all three attempts can burn against the same
+ * competitor and the caller gets the engine's error. Add a short randomised delay between
+ * attempts then — NOT a longer attempt budget, which would hold the write queue.
+ */
+const USE_NUMBER_ATTEMPTS = 3;
+
+/**
  * The two error messages that mean "another writer took the `UseNumber` we picked", and
  * nothing else.
  *
@@ -130,15 +145,14 @@ export class InvitationExhaustedError extends Error {
  * CHECK other than `Monotonic`. `Authorized` in particular renders with the same
  * `CHECK constraint failed:` prefix, so the constraint NAME is anchored with `\b` exactly as
  * `expectConstraintFailure` does rather than matched by prefix.
+ *
+ * NOTE: a CHECK failure names only the CONSTRAINT, never its table, and `Monotonic` is a
+ * generic enough name that a second table could plausibly claim it. Today it is unique across
+ * `schemas/control.qsql`, so the pattern cannot mis-fire; if another table ever declares a
+ * `Monotonic` constraint, a failure of THAT constraint would be read here as a lost use-number
+ * race and pointlessly retried up to {@link USE_NUMBER_ATTEMPTS} times. Rename the other
+ * constraint (cheapest) rather than trying to recover the table from the message.
  */
-/**
- * Attempts allowed per redemption: the first, plus two retries of a use number another
- * writer took. Bounded so sustained contention terminates in a clean rejection rather than
- * spinning; two retries is enough for the realistic case (a handful of nodes redeeming one
- * multi-use token at once) without holding the write lock hostage.
- */
-const USE_NUMBER_ATTEMPTS = 3;
-
 const LOST_USE_NUMBER_PATTERNS = [
   /UNIQUE constraint failed: FormationUsage\.Token, FormationUsage\.UseNumber/i,
   /CHECK constraint failed: Monotonic\b/,
@@ -1542,9 +1556,9 @@ export class ControlDatabase {
     validationSignature?: string;
     /**
      * Aborted when the caller has given up. Checked once PER ATTEMPT, inside the write lock,
-     * immediately before that attempt's insert is issued, throwing
-     * {@link FormationAbortedError} with the invite unspent. Never checked once an insert has
-     * been issued.
+     * at the top of the attempt — before it reads a use number and before its insert is
+     * issued — throwing {@link FormationAbortedError} with the invite unspent. Never checked
+     * once an insert has been issued.
      */
     signal?: AbortSignal;
   }): Promise<FormationUsageResult> {
@@ -1656,7 +1670,12 @@ export class ControlDatabase {
   private async assertSeatRemains(token: string, useNumber: number): Promise<void> {
     const invite = await this.queryFormationInvite(token);
     // A missing invite is left to `Authorized` — it is not an exhaustion, and the CHECK's
-    // rejection is already the right, non-retryable answer for it.
+    // rejection is already the right, non-retryable answer for it. That fallback is also what
+    // makes this read's failure mode safe: it is a full-primary-key point lookup
+    // (`FormationInvite where Token = ?`), the shape whose reliability on a networked strand
+    // is still open (tracked by `debt-composite-pk-point-lookup-unreliable-untracked`). A
+    // spurious empty result only costs the retry its NAMED exhaustion error, reverting it to
+    // today's generic `Authorized` refusal — never a seat the invite does not have.
     if (invite?.totalUses != null && useNumber > invite.totalUses) {
       throw new InvitationExhaustedError(token, useNumber, invite.totalUses);
     }

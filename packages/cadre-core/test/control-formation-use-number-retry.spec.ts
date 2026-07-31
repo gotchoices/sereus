@@ -396,6 +396,24 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       expect(Number(strands?.c ?? 0)).toBe(1);
     });
 
+    it('retries a COMMIT-time loss on the bare-insert record path too', async () => {
+      // The commit-time surface is covered above only for `redeemInvitation`, which wraps its
+      // two inserts in an explicit `begin … commit`. The record-only path issues ONE insert and
+      // lets it auto-commit, so the deferred `Monotonic` check fires on the statement's own
+      // implicit commit rather than on an explicit one — a different moment, and the path
+      // production actually races on (bound invites redeem here). Uncapped invite and no row at
+      // #7, so `Monotonic` at commit is the ONLY thing that can refuse attempt 1: neither
+      // `Authorized`'s seat clause nor a `(Token, UseNumber)` collision is reachable.
+      const { token, strandId } = await boundInvite('deferred-record');
+      await withStubbed(db, 'nextUseNumber', staleOnce(db, token, 7), async () => {
+        expect((await db.recordFormationUsage({
+          token, strandId, ...toConsent(redemption(token, strandId)),
+        })).useNumber).toBe(1);
+      });
+
+      expect(await useNumbersFor(token)).toEqual([1]);
+    });
+
     it('gives up after a bounded number of attempts instead of spinning', async () => {
       const { token, strandId } = await boundInvite('exhaust-attempts', { totalUses: 5 });
       const lostRace = await realLostRaceError();
@@ -443,9 +461,17 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       // generic `Authorized` failure, which the manager reports as `Formation conflict, retry`
       // — sending the joiner around a loop that can never close.
       await withStubbed(db, 'nextUseNumber', staleOnce(db, token, 1), async () => {
-        await expect(
+        const error = await captureError(
           db.recordFormationUsage({ token, strandId, ...toConsent(redemption(token, strandId)) }),
-        ).rejects.toBeInstanceOf(InvitationExhaustedError);
+        );
+        expect(error).toBeInstanceOf(InvitationExhaustedError);
+        // The three fields are the operator signal `provisionAsResponder` will log when it maps
+        // this to a rejection (`debt-formation-approval-retry-wiring`), so they are part of the
+        // contract, not incidental message text.
+        const exhausted = error as InvitationExhaustedError;
+        expect(exhausted.token).toBe(token);
+        expect(exhausted.useNumber).toBe(2);
+        expect(exhausted.totalUses).toBe(1);
       });
 
       expect(await useNumbersFor(token)).toEqual([1]);
