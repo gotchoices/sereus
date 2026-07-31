@@ -4,6 +4,12 @@
 		"rootDir": "src",
 		"module": "NodeNext",
 		"target": "ES2020",
+		// Emit stays ES2020; `lib` is bumped to ES2022 so the type-checker knows the
+		// ES2022 `Error(message, { cause })` overload (used by the shared
+		// test-harness/build-targets.ts this package's tests import, and enforced by
+		// `preserve-caught-error`). Superset of the ES2020-target default lib (which
+		// already included DOM/DOM.Iterable), so it drops no existing types.
+		"lib": ["ES2022", "DOM", "DOM.Iterable"],
 		"moduleResolution": "NodeNext",
 		"declaration": true,
 		"sourceMap": true,

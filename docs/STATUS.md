@@ -477,6 +477,28 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   (`packages/*/test/build-targets.spec.ts`), so drift fails that package's own `yarn test`. A list may
   be *wider* than its `dependencies` — `integration-tests` guards `cadre-cli`, `cadre-provider` and
   `quereus-plugin-sereus`, which it reaches transitively — so coverage is checked, not equality.
+- [x] **Stale-build guard wired into `quereus-plugin-sereus`, `cadre-cli`, `cadre-host`.** The same
+  `test/global-setup.ts` + `build-targets.spec.ts` pair now guards these three suites too, each with its
+  own target list built by `distBackedDependencies`/`targetListProblems`, same as `cadre-core` and
+  `integration-tests` above. `quereus-plugin-sereus` has no `@serfab/*` dependency of its own, so its
+  list is linked-only (`@optimystic/*`, `@quereus/quereus`); it is wired into **both** its `unit` and
+  `e2e` `vitest.config.ts` project blocks, since Vitest 4.1.8 does not run a project-array-sibling's
+  `globalSetup` unless each project block sets it itself. `cadre-cli` pins `@serfab/cadre-core` (real,
+  non-mocked symbols land in its specs) plus the linked siblings `cadre-core` already guards. `cadre-host`
+  reaches `@serfab/cadre-cli`, `@serfab/cadre-core`, `@serfab/cadre-provider` and
+  `@serfab/quereus-plugin-sereus` only through `workspace:` ranges (no `link:` entry of its own — the
+  `@optimystic`/`@quereus` packages arrive transitively through `cadre-core`), and its guard files live
+  beside its tests under `src/__tests__/` rather than a package-root `test/`, since that is where
+  `cadre-host`'s specs already live. `cadre-provider` was evaluated and deliberately left unwired: it has
+  zero `workspace:`/`link:` dependencies of its own, so there is nothing for the guard to check. Each of
+  the three new packages' `tsconfig.typecheck.json` gained the same `rootDir: "../.."` already carried by
+  `cadre-core`'s (TS6059 otherwise, since the new files import `test-harness/` above the package root);
+  `cadre-host`'s `tsconfig.build.json` additionally excludes `src/__tests__/global-setup.ts`, the only one
+  of the three whose test setup lives under `src` where the build's own `include` would otherwise sweep
+  it into `dist`. Pulling `test-harness/build-targets.ts` into `quereus-plugin-sereus`'s typecheck program
+  this way surfaced that its own `tsconfig.json` was the one package among these four still missing the
+  `lib: ["ES2022", ...]` bump for `Error(message, { cause })` — added to match `cadre-core`/`cadre-cli`/
+  `cadre-host`.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
