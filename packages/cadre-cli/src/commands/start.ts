@@ -295,7 +295,7 @@ export const startCommand = new Command('start')
         const selfRegMessage: Record<typeof selfReg, string> = {
           inserted: '✓ Owner self-registered into CadrePeer (row inserted)',
           refreshed: '✓ Owner CadrePeer record refreshed',
-          skipped: '• Owner self-registration skipped (no self-signing key available)',
+          skipped: '• Owner self-registration skipped (see logs for the reason; the heartbeat retries)',
         };
         console.log(selfRegMessage[selfReg]);
       }

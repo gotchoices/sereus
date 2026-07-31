@@ -68,6 +68,28 @@ async function insertForeignMember(
   return { peerId, record };
 }
 
+/**
+ * Hook `publishSelfRecord`'s reads of the node's OWN row so a test can wedge a
+ * concurrent writer into its read-then-insert window deterministically, instead of
+ * hoping for timing luck. `hook(readIndex, read)` returns what that read should hand
+ * back, and decides for itself whether its writes land before or after `read()` —
+ * the two orderings mean very different things to the publish. `reads()` is there so
+ * a test can assert the wedge fired at all; a refactor that stops reading through
+ * this method would otherwise make the test pass silently.
+ */
+function hookSelfReads(
+  node: CadreNode,
+  peerId: string,
+  hook: (readIndex: number, read: () => Promise<PeerAddressRecord | null>) => Promise<PeerAddressRecord | null>
+): { reads: () => number; restore: () => void } {
+  const db = node.getControlDatabase()!;
+  const original = db.queryPeerRecord.bind(db);
+  let reads = 0;
+  db.queryPeerRecord = (pid: string): Promise<PeerAddressRecord | null> =>
+    pid === peerId ? hook(++reads, () => original(pid)) : original(pid);
+  return { reads: () => reads, restore: () => { db.queryPeerRecord = original; } };
+}
+
 describe('peer-record resolution layer (real control DB)', () => {
   let booted: BootedNode;
 
@@ -146,24 +168,19 @@ describe('peer-record resolution layer (real control DB)', () => {
     // idempotent, so the authorize's null-Sig row wins the seat and the publish
     // must notice and self-update — otherwise the row never resolves until the
     // next heartbeat.
-    const db = node.getControlDatabase()!;
-    const original = db.queryPeerRecord.bind(db);
-    let wedged = false;
-    db.queryPeerRecord = async (pid: string): Promise<PeerAddressRecord | null> => {
-      const result = await original(pid);
-      if (!wedged && pid === peerId && result === null) {
-        wedged = true;
-        await node.authorizePeer(peerId, []);
-      }
+    const wedge = hookSelfReads(node, peerId, async (index, read) => {
+      const result = await read();
+      if (index === 1) await node.authorizePeer(peerId, []);
       return result;
-    };
+    });
 
     const outcome = await node.registerSelf();
-    expect(wedged).toBe(true);
-
     // Restore before asserting so a later read cannot re-trigger the wedge.
-    db.queryPeerRecord = original;
-    const stored = await db.queryPeerRecord(peerId);
+    wedge.restore();
+    // The pre-race read plus the fall-through's re-read of the row that landed.
+    expect(wedge.reads()).toBe(2);
+
+    const stored = await node.getControlDatabase()!.queryPeerRecord(peerId);
     expect(verifyPeerRecordSignature(stored!)).toBe(true);
     expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
     // The write that landed was an UPDATE of the authorize's row.
@@ -182,6 +199,32 @@ describe('peer-record resolution layer (real control DB)', () => {
     const stored = await node.getControlDatabase()!.queryPeerRecord(peerId);
     expect(verifyPeerRecordSignature(stored!)).toBe(true);
     expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
+  }, 60_000);
+
+  it('skips rather than self-updating a row that was removed mid-publish', async () => {
+    const { node, peerId } = booted;
+    node.setInviteAddresses([circuitAddr(peerId), '/ip4/1.2.3.4/tcp/4001']);
+
+    // Two writers wedged into one publish: the authorize takes the seat (so the
+    // INSERT no-ops and the publish falls through), then the row is removed before
+    // the fall-through re-read — so there is nothing left to sign against.
+    const wedge = hookSelfReads(node, peerId, async (index, read) => {
+      if (index === 1) {
+        const result = await read();
+        await node.authorizePeer(peerId, []);
+        return result;
+      }
+      if (index === 2) await node.removePeer(peerId);
+      return read();
+    });
+
+    const outcome = await node.registerSelf();
+    wedge.restore();
+
+    expect(wedge.reads()).toBe(2);
+    expect(outcome).toBe('skipped');
+    // No phantom row: the publish must not have re-inserted or updated anything.
+    expect(await node.getControlDatabase()!.queryPeerRecord(peerId)).toBeNull();
   }, 60_000);
 
   it('rejects a self-update whose UpdatedAt does not strictly increase (replay guard)', async () => {

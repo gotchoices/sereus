@@ -1334,23 +1334,25 @@ export class CadreNode implements SAppIdLookup {
         log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', record.updatedAt, addrs.length);
         return 'inserted';
       }
-      // An owner authorize of this node's OWN peer id seated the row inside the
-      // read-then-insert window. That insert is idempotent, so it left the
-      // authorize's null Sig in place and the row would not resolve until the
-      // next heartbeat. Fall through to the self-update path below, which
-      // re-reads and re-signs against the row that actually landed — the stamp
-      // read above is not that row's, and the self-update rule demands a
-      // strictly greater one.
+      // An owner authorize of this node's OWN peer id seated the row (null `Sig`)
+      // inside the read-then-insert window, so the idempotent insert no-op'd. Fall
+      // through to the self-update path, which re-signs against the row that landed.
       //
-      // NOTE: the raced path reports 'refreshed' (honest about the write, which really
-      // was an UPDATE) even though the caller's intent was a first publish. No caller
-      // branches on 'inserted' today — only the CLI's log line distinguishes them. If a
-      // caller ever needs "this was the row's first publish", add a fourth
-      // SelfRegistrationOutcome rather than re-labelling this one.
+      // NOTE: this path reports 'refreshed' — honest about the write, which really was
+      // an UPDATE, though the caller's intent was a first publish. No caller branches on
+      // 'inserted' today (the CLI only logs it); if one ever needs "this was the row's
+      // first publish", add a fourth SelfRegistrationOutcome rather than re-labelling.
       log('registerSelf: own CadrePeer row appeared mid-publish (concurrent authorize); self-updating to carry the signature');
     }
 
-    // `existing` is the pre-race read on the fall-through path, so re-read there.
+    // Null only on the fall-through above, where the pre-race read missed the row a
+    // concurrent authorize then seated — so re-read to get that row's `UpdatedAt`, which
+    // the strictly-greater self-update rule is measured against.
+    //
+    // NOTE: when `existing` is set it predates this publish, so a removePeer(self) racing
+    // in would leave the UPDATE below matching no rows while still reporting 'refreshed'.
+    // Closing that needs updateSelfPeerRecord to report rows-affected — only worth doing
+    // if removing self ever becomes something that happens concurrently in practice.
     const current = existing ?? await this.controlDatabase.queryPeerRecord(peerId);
     if (!current) {
       log('registerSelf: own CadrePeer row vanished mid-publish; skipping (next refresh re-inserts)');
@@ -2398,6 +2400,13 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     if (this.seedBootstrapService) {
+      // NOTE: the `CadrePeer` twin of this read-then-insert needed race recovery because an
+      // owner `authorizePeer` can seat a peer's row for it. Nothing seats a `DeviceToken`
+      // row on a peer's behalf, and this insert has no in-lock existence check, so a lost
+      // race would THROW rather than silently drop the record. If an owner-driven
+      // device-token seeding path is ever added, or two first-publishes can run
+      // concurrently (this method has no single-flight guard, unlike `registerSelf`),
+      // revisit — see `publishSelfRecord`'s fall-through.
       await this.seedBootstrapService.insertSelfDeviceToken(record);
       if (this.committedAlone()) this.pendingSelfDeviceWrite = true;
       log('registerDeviceToken: inserted own DeviceToken (owner-signed, platform=%s, updatedAt=%d)', platform, updatedAt);

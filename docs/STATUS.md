@@ -718,7 +718,9 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
 - That race spec pins the lock/uniqueness contract only. Recovery from a LOST race — the
   self-publish seeing the authorize's `Sig`-null row and falling through to a self-UPDATE instead
   of waiting a heartbeat — is covered end-to-end in
-  `packages/cadre-core/test/peer-record-resolution.spec.ts` (both orderings).
+  `packages/cadre-core/test/peer-record-resolution.spec.ts`: both orderings, plus the row being
+  REMOVED between the lost insert and the fall-through's re-read (the publish reports `skipped`
+  rather than signing against a row that is no longer there).
 - The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
   own: control writes are fast in-memory statements and Quereus serializes each one internally
   (`Database._withMutex`), so a unit-scale race between two of them completes the first before the
