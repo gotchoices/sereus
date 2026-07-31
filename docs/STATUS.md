@@ -939,8 +939,12 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   each stream `read()`, and the readerless-path `text()`), while still aborting to hand the socket
   back where that works. Covered deterministically in `formation-approval.spec.ts` by a stub whose
   body never settles and ignores aborts.
-  **Still unexercised end-to-end:** no test redeems a `ValidationUrl` invitation through a real
-  node over a real network — tracked as `plan/debt-validation-url-redemption-e2e`. Enrollment also accepts any non-blank text as a
+  The full path now runs end to end (2026-07-31): `strand-formation-e2e.integration.ts` Phase 5
+  redeems a `ValidationUrl` invitation over real libp2p against a real `node:http` approval hook
+  (`harness/fixtures/approval-hook-server.ts`) through the recorder's DEFAULT HTTP approver — happy
+  path (including that the hook is posted the five signed fields and nothing else), hook refusal
+  with the seat provably still spendable, an unenrolled approver key, a key removed after the
+  invitation went out, and a replayed sign-off. Enrollment also accepts any non-blank text as a
   key (no base64url/length check), so a typo enrolls silently — `backlog/debt-control-key-enrollment-accepts-malformed-keys`.
   Invitations without a `ValidationUrl` (every e2e above) are unaffected.
 - [x] **A party owner can now remove a shared strand party-wide (2026-07-30).**
