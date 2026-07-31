@@ -86,12 +86,10 @@ describe('SCRATCH delete-while-alone v2', () => {
 			A.initializeSeedBootstrap(privateKeyB64);
 			// A must still hold X locally (storage survived the restart).
 			expect(await A.isMember(xPeerId)).toBe(true);
-			// eslint-disable-next-line no-console
 			console.log('[scratch] after restart: A conns=%d', conns(A));
 
 			// ── Phase 3: the write under test — remove X while truly alone ───────
 			await A.removePeer(xPeerId);
-			// eslint-disable-next-line no-console
 			console.log('[scratch] post-remove: A conns=%d isMember(X)=%s', conns(A), await A.isMember(xPeerId));
 			expect(await A.isMember(xPeerId)).toBe(false);
 
@@ -107,7 +105,6 @@ describe('SCRATCH delete-while-alone v2', () => {
 				await waitUntil(dropped, { timeoutMs: 20_000, intervalMs: 500, description: 'B drops X on reconnect' });
 				droppedOnReconnect = true;
 			} catch { /* recorded below */ }
-			// eslint-disable-next-line no-console
 			console.log('[scratch] RESULT droppedOnReconnect=%s', droppedOnReconnect);
 
 			let droppedAfterBroadcast = droppedOnReconnect;
@@ -119,12 +116,9 @@ describe('SCRATCH delete-while-alone v2', () => {
 					await waitUntil(dropped, { timeoutMs: 20_000, intervalMs: 500, description: 'B drops X after broadcast' });
 					droppedAfterBroadcast = true;
 				} catch { /* recorded below */ }
-				// eslint-disable-next-line no-console
 				console.log('[scratch] Y converged on B=%s', await B.isMember(yPeerId));
 			}
-			// eslint-disable-next-line no-console
 			console.log('[scratch] RESULT droppedAfterBroadcast=%s', droppedAfterBroadcast);
-			// eslint-disable-next-line no-console
 			console.log('[scratch] B revoked CadrePeer stamps=%d',
 				(await B.getControlDatabase()!.queryRevokedStamps('CadrePeer')).size);
 		} finally {

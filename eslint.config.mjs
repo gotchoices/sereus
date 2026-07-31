@@ -119,8 +119,9 @@ export default tseslint.config(
 	// happily while skipping the refresh — a mistake that has been made twice — so flag
 	// the SQL itself.
 	//
-	// Literal SQL only: a statement assembled from variables slips through. That is
-	// deliberate — this targets the copy-paste mistake, not a determined bypass.
+	// Literal SQL only: a statement assembled from variables slips through, as does an
+	// unqualified `insert into CadrePeer` (every control statement in the tree names the
+	// schema). Deliberate — this targets the copy-paste mistake, not a determined bypass.
 	{
 		files: ['**/*.{ts,tsx,mts,cts}'],
 		rules: {

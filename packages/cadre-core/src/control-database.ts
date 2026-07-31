@@ -1115,6 +1115,14 @@ export class ControlDatabase {
    * is taken. An absent row returns `false` WITHOUT notifying: nothing was written, so the
    * membership snapshot cannot have changed.
    *
+   * NOTE: that stamp read is outside the lock, same as {@link deleteGuardedRow}'s. A writer
+   * that removes the row in between makes the `update` match nothing, and this still returns
+   * `true` and notifies — harmless today (the sole caller, the write-while-alone drain, only
+   * logs the result, and a spurious notify just re-reads the member set), and a remove-then-
+   * re-add in the same window fails loudly instead, since the signature binds the retired
+   * stamp. If a caller ever acts on `true` as proof the row was written, fold the stamp read
+   * into the locked body.
+   *
    * Notifies like the insert/remove paths even though this is "only" a re-touch: it rewrites
    * VouchOwner/VouchSig, which the authorized-membership predicate judges on, so it CAN
    * change the member set. Keeping the rule uniform ("every CadrePeer mutator notifies")
