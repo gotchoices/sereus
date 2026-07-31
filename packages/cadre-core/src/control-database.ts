@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
-import { Database, registerPlugin } from '@quereus/quereus';
+import { Database, registerPlugin, unwrapError } from '@quereus/quereus';
 import type { VTablePluginInfo, FunctionPluginInfo, SqlParameters } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
@@ -85,6 +85,88 @@ export class FormationAbortedError extends Error {
     super(`Formation ${operation} for token ${token} was aborted before its write was issued`, options);
     this.name = 'FormationAbortedError';
   }
+}
+
+/**
+ * A redemption could not be given a `UseNumber` within the invite's seat budget: the use
+ * number the writer would have to take is past `FormationInvite.TotalUses`, so the
+ * invitation is spent.
+ *
+ * Raised only on a RETRY inside {@link ControlDatabase.redeemInvitation} /
+ * {@link ControlDatabase.recordFormationUsage} — the first attempt leaves the check to
+ * `FormationUsage.Authorized`'s own `FI.TotalUses >= new.UseNumber` clause, since
+ * `StrandFormationManager.validateToken` already gated on the token being unused. Without
+ * this the retry would fail as a generic `CHECK constraint failed: Authorized`, which the
+ * manager reports as a retryable `Formation conflict, retry` — telling the joiner to retry
+ * something that can never succeed.
+ */
+export class InvitationExhaustedError extends Error {
+  constructor(
+    readonly token: string,
+    readonly useNumber: number,
+    readonly totalUses: number,
+  ) {
+    super(
+      `Invitation ${token} is exhausted: use #${useNumber} is past its limit of ${totalUses} use(s)`
+    );
+    this.name = 'InvitationExhaustedError';
+  }
+}
+
+/**
+ * The two error messages that mean "another writer took the `UseNumber` we picked", and
+ * nothing else.
+ *
+ * - the `(Token, UseNumber)` primary-key collision, which the optimystic vtab reports on the
+ *   insert itself (`uniqueConstraintMessage` renders the columns table-qualified, no schema
+ *   prefix);
+ * - `CHECK constraint failed: Monotonic` — `FormationUsage.Monotonic` contains a subquery, so
+ *   Quereus defers it to commit where it reads `committed.FormationUsage`. A concurrent row
+ *   that our insert's key probe did not see still trips it there. Same meaning, different
+ *   surface.
+ *
+ * Deliberately NOT matched: `FormationUsage.UsageStampId`'s `unique` (a repeated nonce is
+ * replay, never a race — retrying it would re-present a spent approval), and every named
+ * CHECK other than `Monotonic`. `Authorized` in particular renders with the same
+ * `CHECK constraint failed:` prefix, so the constraint NAME is anchored with `\b` exactly as
+ * `expectConstraintFailure` does rather than matched by prefix.
+ */
+/**
+ * Attempts allowed per redemption: the first, plus two retries of a use number another
+ * writer took. Bounded so sustained contention terminates in a clean rejection rather than
+ * spinning; two retries is enough for the realistic case (a handful of nodes redeeming one
+ * multi-use token at once) without holding the write lock hostage.
+ */
+const USE_NUMBER_ATTEMPTS = 3;
+
+const LOST_USE_NUMBER_PATTERNS = [
+  /UNIQUE constraint failed: FormationUsage\.Token, FormationUsage\.UseNumber/i,
+  /CHECK constraint failed: Monotonic\b/,
+];
+
+/**
+ * Did this write fail purely because another writer took the `UseNumber` it picked — i.e. is
+ * re-presenting the SAME approval under the next free use number the right response?
+ *
+ * Classifies by MESSAGE, walking the `cause` chain with Quereus' own {@link unwrapError}:
+ * neither surface can be recognised by type. The deferred `Monotonic` failure is thrown as a
+ * bare `QuereusError`, not a `ConstraintError` (see
+ * `quereus/src/runtime/deferred-constraint-queue.ts`), so an `instanceof ConstraintError` gate
+ * would silently drop the branch this retry exists for. Messages also carry an
+ * ` (at line N, column M)` suffix and arrive wrapped when the write ran inside a transaction,
+ * so the match is a substring test rather than an equality one.
+ *
+ * NOTE: this is the one piece of the retry that depends on engine error TEXT. Its own test
+ * (`control-formation-use-number-retry.spec.ts`) produces all three messages from the real
+ * engine rather than from string literals, so a reworded storage-layer error fails that spec
+ * instead of silently disabling the retry.
+ */
+export function isLostUseNumberRace(error: unknown): boolean {
+  if (!(error instanceof Error)) {
+    return false;
+  }
+  return unwrapError(error).some(({ message }) =>
+    LOST_USE_NUMBER_PATTERNS.some(pattern => pattern.test(message)));
 }
 
 /**
@@ -1353,10 +1435,12 @@ export class ControlDatabase {
    * redemption.
    *
    * `UseNumber` is computed as `max(UseNumber)+1` for the token (the `Monotonic`
-   * constraint); callers redeeming concurrently against the same token must
-   * serialise, since the next use number is read before the insert. A caller that already
-   * holds an approver sign-off should retry a lost race with the SAME `usageStampId` — the
-   * approval is bound to the nonce, not to the use number, so it survives the retry.
+   * constraint), inside the write lock and re-read per attempt by
+   * {@link withUseNumberRetry} — so concurrent redemptions of one token no longer need
+   * the caller to serialise them, and a use number lost to another writer is retried here
+   * with the caller's parameters passed through UNCHANGED. That is what makes the retry
+   * safe: the approval is bound to the nonce, not to the use number, so re-presenting it
+   * cannot drift, and no second trip through the approval hook is possible from in here.
    */
   async redeemInvitation(params: {
     token: string;
@@ -1372,8 +1456,8 @@ export class ControlDatabase {
     validationKey?: string;
     validationSignature?: string;
     /**
-     * Aborted when the caller has given up. Checked ONCE, inside the write lock, before the
-     * transaction is opened — never between the two inserts — throwing
+     * Aborted when the caller has given up. Checked once PER ATTEMPT, inside the write lock,
+     * before that attempt's transaction is opened — never between the two inserts — throwing
      * {@link FormationAbortedError} with the invite unspent.
      */
     signal?: AbortSignal;
@@ -1387,16 +1471,13 @@ export class ControlDatabase {
     log('Redeeming invitation %s -> strand %s', token, strandId);
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
+    // Minted ONCE, outside the loop: a failed attempt rolls its whole transaction back, so
+    // nothing was ever persisted under this stamp, and it is deliberately not part of the
+    // approver's signed digest. Re-minting per attempt would only churn.
     const strandStampId = generateStampId(localPeerId);
-    const useNumber = await this.nextUseNumber(token);
 
-    await this.withWriteLock(() => {
-      // Inside the lock: a redemption still parked behind another writer when the caller's
-      // budget expired is abandoned rather than executed.
-      if (signal?.aborted) {
-        throw new FormationAbortedError(token, 'redemption');
-      }
-      return this.inTransaction('redemption', async () => {
+    const useNumber = await this.withUseNumberRetry(token, 'redemption', signal, attemptUseNumber =>
+      this.inTransaction('redemption', async () => {
         // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
         //    still carrying a fresh unique StampId for the anti-replay column.
         //    Hard-coded open + keyless: the consent branch admits no other shape.
@@ -1409,12 +1490,11 @@ export class ControlDatabase {
         // 2. FormationUsage row — authorised by the matching FormationInvite, and
         //    carrying the strand's stamp so it authorizes THIS row and no other.
         await this.execFormationUsageInsert({
-          token, useNumber, usageStampId, disclosure, strandId, strandStampId,
+          token, useNumber: attemptUseNumber, usageStampId, disclosure, strandId, strandStampId,
           peerKey, peerSignature, nowMs: nowMs ?? Date.now(),
           validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
         });
-      });
-    });
+      }));
 
     log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId };
@@ -1439,6 +1519,13 @@ export class ControlDatabase {
    * ordinary "host strand has not converged yet" case is already reported as `missing`
    * by {@link ControlFormationUsageRecorder.resolveStrand}, so an absent row at this
    * point is a genuine race and deserves a named error, not a silent rollback.
+   *
+   * `UseNumber` is read inside the write lock and re-read per attempt by
+   * {@link withUseNumberRetry}: this is the path production actually races on (a bound
+   * invite published by `cadre-web` / `cadre-phone` is always record-only), and a use number
+   * lost to another writer is retried here with the caller's parameters — nonce, approver
+   * sign-off, strand, peer key, disclosure — passed through UNCHANGED, so a granted approval
+   * is never thrown away for a second trip through the approval hook.
    */
   async recordFormationUsage(params: {
     token: string;
@@ -1454,9 +1541,10 @@ export class ControlDatabase {
     validationKey?: string;
     validationSignature?: string;
     /**
-     * Aborted when the caller has given up. Checked inside the write lock, immediately
-     * before the insert is issued, throwing {@link FormationAbortedError} with the invite
-     * unspent. Never checked once the insert has been issued.
+     * Aborted when the caller has given up. Checked once PER ATTEMPT, inside the write lock,
+     * immediately before that attempt's insert is issued, throwing
+     * {@link FormationAbortedError} with the invite unspent. Never checked once an insert has
+     * been issued.
      */
     signal?: AbortSignal;
   }): Promise<FormationUsageResult> {
@@ -1466,27 +1554,112 @@ export class ControlDatabase {
       peerKey, peerSignature, usageStampId, nowMs, validationKey, validationSignature, signal,
     } = params;
 
+    // Read ONCE, outside the loop: the host strand is pre-existing and owner-signed, and a
+    // retry changes which use number we take, never which strand row we name.
     const strandStampId = await this.queryStrandStampId(strandId);
     if (strandStampId === null) {
       throw new MissingHostStrandError(strandId, token);
     }
-    const useNumber = await this.nextUseNumber(token);
 
-    await this.withWriteLock(() => {
-      // Inside the lock: a write still queued behind another writer when the caller's
-      // budget expired is abandoned rather than executed.
-      if (signal?.aborted) {
-        throw new FormationAbortedError(token, 'usage recording');
-      }
-      return this.execFormationUsageInsert({
-        token, useNumber, usageStampId, disclosure, strandId, strandStampId,
+    const useNumber = await this.withUseNumberRetry(token, 'usage recording', signal, attemptUseNumber =>
+      this.execFormationUsageInsert({
+        token, useNumber: attemptUseNumber, usageStampId, disclosure, strandId, strandStampId,
         peerKey, peerSignature, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
-      });
-    });
+      }));
 
     log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId };
+  }
+
+  /**
+   * Assign a `UseNumber` and run `write` under it, re-picking and retrying when another
+   * writer took that number first.
+   *
+   * Each attempt takes {@link withWriteLock} and, inside it, reads {@link nextUseNumber}
+   * afresh. Reading under the lock is the whole fix for the common case: two redemptions of
+   * one token on the SAME node are serialized by the local write queue, so each computes a
+   * number the other has already committed and neither collides. The retry covers the writers
+   * this lock does not reach — another node of the cadre, another `Database` handle over the
+   * same store — which can still take the number between our read and our commit.
+   *
+   * `write` receives ONLY the use number; every other parameter of the redemption (the nonce,
+   * the approver's signature, the strand, the joining peer key, the disclosure) is closed over
+   * by the caller and passed through untouched. So by construction a retry re-presents the
+   * IDENTICAL approval and the four non-nonce fields inside the approver's signed digest
+   * cannot drift. No second call to the approval hook is reachable from in here either:
+   * `obtainApproval` lives a layer up in `ControlFormationUsageRecorder` and is never
+   * re-entered.
+   *
+   * `write` must be a BARE private body ({@link inTransaction} /
+   * {@link execFormationUsageInsert}) — {@link withWriteLock} is not re-entrant and a `write`
+   * that called another locked public method would hang silently and strand the write queue.
+   *
+   * A failed attempt has written nothing (a bare insert never landed; a transactional one
+   * rolled back), so the abort check at the top of each attempt stays inside
+   * {@link FormationAbortedError}'s contract — it is only ever thrown before this attempt's
+   * write is issued.
+   *
+   * @param operation - `'redemption'` | `'usage recording'`, for the abort error's text.
+   * @returns The `UseNumber` the successful attempt wrote under.
+   */
+  private async withUseNumberRetry(
+    token: string,
+    operation: string,
+    signal: AbortSignal | undefined,
+    write: (useNumber: number) => Promise<void>,
+  ): Promise<number> {
+    let lastError: unknown;
+    for (let attempt = 1; attempt <= USE_NUMBER_ATTEMPTS; attempt++) {
+      try {
+        return await this.withWriteLock(async () => {
+          // Inside the lock: a write still parked behind another writer when the caller's
+          // budget expired is abandoned rather than executed.
+          if (signal?.aborted) {
+            throw new FormationAbortedError(token, operation);
+          }
+          const useNumber = await this.nextUseNumber(token);
+          if (attempt > 1) {
+            await this.assertSeatRemains(token, useNumber);
+          }
+          await write(useNumber);
+          return useNumber;
+        });
+      } catch (error) {
+        if (!isLostUseNumberRace(error)) {
+          throw error;
+        }
+        lastError = error;
+        log('Use number for token %s was taken by another writer (attempt %d/%d): %s',
+          token, attempt, USE_NUMBER_ATTEMPTS, error);
+      }
+    }
+    // Out of attempts under sustained contention. Rethrowing the engine's own error keeps
+    // today's behaviour: `StrandFormationManager.provisionAsResponder`'s catch-all maps it to
+    // `Formation conflict, retry` and the joiner starts over with a fresh nonce.
+    throw lastError;
+  }
+
+  /**
+   * Refuse a RETRY that would consume a seat the invite does not have.
+   *
+   * `FormationUsage.Authorized` already enforces `FI.TotalUses is null or FI.TotalUses >=
+   * new.UseNumber`, so an over-limit write fails at the database anyway — but it fails as a
+   * generic `CHECK constraint failed: Authorized`, which the manager reports as a retryable
+   * conflict. Catching it here as {@link InvitationExhaustedError} lets the joiner be told the
+   * invitation is spent instead of being sent around a loop that can never close.
+   *
+   * Only retries pay for this read: the first attempt is already gated by
+   * `StrandFormationManager.validateToken`'s `isTokenUsed` check, and re-reading the invite on
+   * the common path would cost every redemption a read for nothing.
+   */
+  private async assertSeatRemains(token: string, useNumber: number): Promise<void> {
+    const invite = await this.queryFormationInvite(token);
+    // A missing invite is left to `Authorized` — it is not an exhaustion, and the CHECK's
+    // rejection is already the right, non-retryable answer for it.
+    if (invite?.totalUses != null && useNumber > invite.totalUses) {
+      throw new InvitationExhaustedError(token, useNumber, invite.totalUses);
+    }
   }
 
   /** Parameterised `FormationUsage` insert shared by redeem + record paths. */
@@ -1620,7 +1793,13 @@ export class ControlDatabase {
     return false;
   }
 
-  /** Next `UseNumber` for a token = max(existing)+1, per the `Monotonic` constraint. */
+  /**
+   * Next `UseNumber` for a token = max(existing)+1, per the `Monotonic` constraint.
+   *
+   * Called only from inside {@link withUseNumberRetry}'s locked body — a read takes no
+   * transaction of its own, so it is safe there, and reading it under the lock is what stops
+   * two local redemptions of one token from picking the same number.
+   */
   private async nextUseNumber(token: string): Promise<number> {
     for await (const row of this.db!.eval(
       'select coalesce(max(UseNumber), 0) as MaxUse from CadreControl.FormationUsage where Token = ?',
