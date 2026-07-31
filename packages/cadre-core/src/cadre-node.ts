@@ -1346,7 +1346,7 @@ export class CadreNode implements SAppIdLookup {
       const record = this.signSelfRecord(peerId, signingKey, addrs, null);
       if (await this.seedBootstrapService.insertSelfPeerRecord(record)) {
         if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-        log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', record.updatedAt, addrs.length);
+        log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
         return 'inserted';
       }
       // An owner authorize of this node's OWN peer id seated the row (null `Sig`)
@@ -1376,7 +1376,7 @@ export class CadreNode implements SAppIdLookup {
     const record = this.signSelfRecord(peerId, signingKey, addrs, current);
     await this.controlDatabase.updateSelfPeerRecord(record);
     if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-    log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', record.updatedAt, addrs.length);
+    log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs, sig=%s…)', record.updatedAt, addrs.length, record.sig.slice(0, 16));
     return 'refreshed';
   }
 
@@ -1590,7 +1590,12 @@ export class CadreNode implements SAppIdLookup {
 
     // Self-signature over (peerId, addrs, updatedAt).
     if (!verifyPeerRecordSignature(record)) {
-      log('resolvePeerAddrs: signature verification failed for %s', peerId);
+      // Field detail distinguishes "holding the owner-vouch revision (Sig null,
+      // no addrs — a not-yet-self-published row)" from a genuinely corrupt or
+      // mixed-revision row. Sig/addrs are public replicated data.
+      log('resolvePeerAddrs: signature verification failed for %s (updatedAt=%d, addrs=%o, sig=%s)',
+        peerId, record.updatedAt, record.addrs,
+        record.sig ? `${record.sig.slice(0, 16)}…` : '(empty)');
       return [];
     }
 
