@@ -1,7 +1,10 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "rootDir": ".",
+    // Has to reach the repo root: src/__tests__/global-setup.ts imports
+    // test-harness/build-freshness.ts by relative path, and TypeScript reports
+    // TS6059 for any program file above rootDir even under noEmit.
+    "rootDir": "../..",
     "noEmit": true
   },
   "include": [

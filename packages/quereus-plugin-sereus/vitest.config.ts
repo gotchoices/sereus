@@ -13,6 +13,7 @@ export default defineConfig({
 					environment: 'node',
 					include: ['test/**/*.spec.ts'],
 					exclude: ['test/e2e/**'],
+					globalSetup: ['./test/global-setup.ts'],
 				},
 			},
 			{
@@ -22,6 +23,7 @@ export default defineConfig({
 					environment: 'node',
 					include: ['test/e2e/**/*.spec.ts'],
 					testTimeout: 60_000,
+					globalSetup: ['./test/global-setup.ts'],
 				},
 			},
 		],
