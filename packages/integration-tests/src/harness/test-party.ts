@@ -53,11 +53,12 @@ async function createTestNode(
     // The same policy object production runs — see CONTROL_CLUSTER_POLICY for why it is
     // shared rather than copied. `basic-connectivity.integration.ts` asserts the threshold
     // a live harness node resolves from it.
-    // NOTE: harness control cohorts are self-only today, so a multi-peer approval bug
-    // would still not be caught here — measured 213/213 single-peer cohorts across a
-    // `happy-path` run, because FRET's `assembleCohort` returns no non-self candidates
-    // within a test's lifetime. Tracked as
-    // `backlog/debt-harness-control-cohort-never-multi-peer`.
+    // NOTE: the owner's FRET ring reaches all party members within ~5s of party
+    // creation (measured), so a write issued right after `createTestParty` resolves
+    // can still see a self-only cohort — it races the ring, not a permanent gap.
+    // Such a write commits on the writer's own vote under `allowClusterDownsize`.
+    // Scenarios that need a real multi-peer cohort must wait for it; see
+    // `debt-harness-control-cohort-observable-and-forced` for the wait helper.
     clusterPolicy: CONTROL_CLUSTER_POLICY,
     arachnode: { enableRingZulu: true }
   }) as Libp2pNodeWithRepo;
@@ -120,6 +121,10 @@ export async function createTestParty(options: CreatePartyOptions): Promise<Test
   const bootstrapAddrs = ownerNode.multiaddrs;
   
   // Create drone nodes if requested
+  // NOTE: drones only ever dial the owner (bootstrapAddrs), never each other, so a
+  // drone never gains an address or connection to a sibling drone. FRET can only
+  // classify a peer it can reach, so a drone's cohort stabilizes at 2 (self + owner)
+  // permanently — not a convergence delay. Only the owner sees all party members.
   const droneNodes: TestCadreNode[] = [];
   for (let i = 0; i < droneCount; i++) {
     log('Creating drone node %d/%d for party %s', i + 1, droneCount, name);
