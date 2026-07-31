@@ -759,7 +759,14 @@ describe('E2E Strand Formation', () => {
 			return (message) => signMessageEd25519(message, party.ownerPrivateKey);
 		}
 
-		/** A responder solicitation service wired to the party's REAL DB-backed recorder. */
+		/**
+		 * A responder solicitation service wired to the party's REAL DB-backed recorder.
+		 *
+		 * NOTE: callers unregister at the END of the case rather than in a `finally`, so a failing
+		 * assertion leaves the handler registered. Harmless while every case creates its own
+		 * parties (the leak dies with `network.shutdown()`); if a case ever shares a party with
+		 * another, move the unregister into a `finally`.
+		 */
 		function responderService(party: TestParty): StrandSolicitationService {
 			const service = new StrandSolicitationService({
 				partyId: party.partyId,
@@ -799,11 +806,11 @@ describe('E2E Strand Formation', () => {
 				[token],
 			)) {
 				return {
-					token: row['Token'] as string,
-					usageStampId: row['UsageStampId'] as string,
-					peerKey: row['PeerKey'] as string,
-					disclosure: row['Disclosure'] as string,
-					peerSig: row['PeerSig'] as string,
+					token: row.Token as string,
+					usageStampId: row.UsageStampId as string,
+					peerKey: row.PeerKey as string,
+					disclosure: row.Disclosure as string,
+					peerSig: row.PeerSig as string,
 				};
 			}
 			return null;
@@ -914,6 +921,10 @@ describe('E2E Strand Formation', () => {
 				bob.ownerNode.libp2p,
 			);
 			expect(result.strandId).toBeDefined();
+
+			// Pins the single-row premise {@link readFormationUsage}'s scan-order NOTE rests on,
+			// so a future multi-use case fails here rather than silently asserting the wrong row.
+			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
 
 			const row = await readFormationUsage(alice, token);
 			expect(row).not.toBeNull();

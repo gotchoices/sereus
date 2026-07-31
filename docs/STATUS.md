@@ -822,8 +822,8 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
     accept/reject, and Phase 4 consent enforcement all green.
 - [x] **An operator can now enroll the approver key a `ValidationUrl` invitation needs (2026-07-30).**
   The redemption side was already wired and unit-tested: `ControlFormationUsageRecorder` reads the
-  invite's `ValidationUrl`, mints the redemption nonce, calls the approval hook, and writes the
-  sign-off with the `FormationUsage` row on both redemption paths; failures map to distinct
+  invite's `ValidationUrl`, calls the approval hook with the redemption nonce the joiner minted,
+  and writes the sign-off with the `FormationUsage` row on both redemption paths; failures map to distinct
   joiner-visible rejection reasons and consume nothing (`strand-formation-consent.spec.ts` cases
   (h)–(k)). The missing other half — the control database only accepts a sign-off from a key
   present in the `ValidationKey` table — landed as `feat-validation-key-enrollment`:

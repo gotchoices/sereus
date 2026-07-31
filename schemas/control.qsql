@@ -479,9 +479,12 @@ declare schema CadreControl {
     table FormationUsage (
         Token text,
         UseNumber int,
-        UsageStampId text not null unique,  -- single-use nonce for THIS redemption. The redeeming node mints it
-                                        -- BEFORE it asks the approver, and it is bound into the 'vouch' digest
-                                        -- below, so one sign-off is spendable exactly once.
+        UsageStampId text not null unique,  -- single-use nonce for THIS redemption. The JOINING peer mints it and
+                                        -- sends it in its contact message, having signed it into its own 'consent'
+                                        -- digest (PeerConsented below); the responder inserts that same value and
+                                        -- asks the approver about it, so it is bound into the 'vouch' digest below
+                                        -- too and one sign-off is spendable exactly once. Neither side can swap it:
+                                        -- a substituted nonce fails the joiner's consent signature.
                                         -- Unlike every other StampId in this schema, this table is append-only
                                         -- (InsertOnly below), so the nonce is never freed by a delete: `unique`
                                         -- alone makes it permanent and there is deliberately NO NotRevoked /

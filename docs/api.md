@@ -108,6 +108,12 @@ hook that wants to check a signature has the key it needs. It is what lands in
 (`FormationUsage.PeerSig`) — so the peer named in the body provably asked to join, rather than
 merely being named by whoever is redeeming.
 
+It is the joiner's **strand-membership** key, though — `formStrand` generates a fresh keypair per
+formation — so it is the key behind the `partyId` inside `disclosure`, not the joiner's long-lived
+control-network peer id, and it is different for every strand the same joiner forms. A hook that
+keeps an allow-list therefore has to key it off something the joiner disclosed, not off `peerKey`;
+what `peerKey` gets you is that the disclosed identity is the one that actually signed.
+
 Answer with `200` and:
 
 ```json
