@@ -558,7 +558,20 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
   (`ProjectConfig`), which is where the `poolOptions` precedent lived.
-  Nothing *enforces* the invariant for a package added later — see `debt-guard-vitest-config-typechecked`.
+  Enforced going forward by `scripts/check-vitest-typecheck-coverage.mjs` (`yarn check:vitest-typecheck-coverage`,
+  chained into root `yarn typecheck`): for every `packages/*` with a `vitest.config.ts`, it reads that
+  package's `typecheck` script, asks the TypeScript compiler API which files the tsconfig(s) it invokes
+  actually resolve to (`ts.getParsedCommandLineOfConfigFile`, which follows `extends` and expands
+  `include`/`exclude` — robust against `include` reaching the file by directory, glob, or not at all),
+  and fails naming the package if `vitest.config.ts` is absent from that resolved file list. Silent
+  about packages with no `vitest.config.ts`. `scripts/check-vitest-typecheck-coverage.test.mjs`
+  (`yarn test:vitest-typecheck-coverage`, chained into root `yarn test`) proves the guard actually
+  catches drift — not just that it passes today — via fixtures covering: the config file dropped from
+  `include`, a `typecheck` script repointed at a build config that omits it (the second regression
+  mode above), a bare `tsc --noEmit` defaulting to `./tsconfig.json`, a `-p` flag in either position,
+  a glob `include` that reaches the file implicitly, a non-`tsc` `typecheck` script, and a `typecheck`
+  script pointing at a missing config — each against a throwaway fixture workspace, not this repo's
+  own packages.
 - Per-package scope:
   - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
