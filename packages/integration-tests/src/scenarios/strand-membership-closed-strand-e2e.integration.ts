@@ -61,14 +61,16 @@
  * that simply never arrived. If one of these ever times out, check the harness debug
  * log (`Wait condition threw: …`) before concluding it is a convergence failure.
  *
- * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in this file
- * proves a row is VISIBLE from the other node's database, not that its block lives
- * there. A read on either node resolves one coordinator peer per block; when that
- * resolves to the authoring node, the other node's `select` is a remote call against
- * the author's storage and nothing needs to live locally. Visibility is the property
- * an application actually observes, and it is what this file asserts. Proving
- * physical replication needs a different technique (stop the authoring node first) —
- * parked as `backlog/debt-strand-replication-vs-visibility-proof`.
+ * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the first
+ * three tests proves a row is VISIBLE from the other node's database, not that its
+ * block lives there. A read on either node resolves one coordinator peer per block;
+ * when that resolves to the authoring node, the other node's `select` is a remote call
+ * against the author's storage and nothing needs to live locally. Visibility is the
+ * property an application actually observes, and it is what those three assert.
+ * Physical replication is proven separately by the FOURTH test, which writes only on
+ * the founder and then reads the joiner's raw block store directly, never its database.
+ * Its own comment states exactly which blocks that claim covers (post-dial ones) and
+ * which measurably never arrive.
  *
  * Rejection floor: per the optimystic deferred-constraint-rollback gap (backlog),
  * rejected writes assert via `rejects.toThrow()` ("throws" is the floor) and do NOT
@@ -114,6 +116,7 @@ import {
 	blockCoverageIsComplete,
 	formatBlockCoverageGap,
 	readBlockIndex,
+	newOrAdvancedSince,
 	type RawStorageCapture,
 } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
@@ -595,7 +598,9 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			 * failure that matters: a delete that lands on the founder and never propagates.
 			 *
 			 * NOTE: this proves the removal is VISIBLE from the second node's database, not
-			 * that the block replicated to it — see the visibility caveat in the header.
+			 * that the block replicated to it — see the visibility caveat in the header. The
+			 * physical property is proven by this file's fourth test, which polls the joiner's
+			 * raw block store instead of its database.
 			 */
 			const requireJoinerAgrees = async (expected: string[], what: string): Promise<void> => {
 				await waitUntil(
@@ -800,6 +805,25 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	// from its own storage. This test closes that gap by looking directly inside the
 	// joiner's strand-scoped raw block store.
 	//
+	// ── WHAT IS AND IS NOT CLAIMED (measured, not assumed) ────────────────────
+	// The claim is scoped to blocks the founder authored or advanced AFTER the two
+	// strand nodes were dialled together. It is not a whole-store claim, because a
+	// measured run showed the founder's store is NOT a subset of the joiner's:
+	//   • 18 blocks in the founder's store when the dial completed; 27 after the writes
+	//     below; 13 of those new or at a higher revision. All 13 were already in the
+	//     joiner's own store on the FIRST poll — 1 ms after the last write returned, so
+	//     the push happens as part of the commit, not on a later sweep.
+	//   • The 9 that never landed were all committed BEFORE the dial — the bootstrap
+	//     Header/Member/Manager data and index blocks, written to a cohort of one — plus
+	//     two node-local root blocks that carry a different block id on each node and so
+	//     could never match by construction. Nothing backfills a peer that joins the
+	//     cohort after a block was committed; the joiner reads those rows over the wire
+	//     from the founder instead, which is why the three visibility tests above pass.
+	//     Recorded as `backlog/debt-strand-no-backfill-of-pre-membership-blocks`.
+	// So this test proves ONGOING replication, not retroactive replication. Do not widen
+	// the comparison back to the whole store to "strengthen" it — it would fail on the
+	// pre-dial blocks and on the node-local roots, neither of which is this test's claim.
+	//
 	// ⚠ THE JOINER'S DATABASE IS OFF LIMITS IN THIS TEST — `joinerDb` is deliberately
 	// not destructured below, and no read of any kind may be issued against it. A read
 	// through the joiner can PUT the block there itself: `CoordinatorRepo.get` falls
@@ -831,6 +855,12 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				expect(capture.scopes(), `${who} provider scopes`).toContain(strandId);
 			}
 
+			// ── The baseline: what the founder already held when the dial completed ──
+			// See WHAT IS AND IS NOT CLAIMED above. Measured here: 18 blocks.
+			const baseline = await readBlockIndex(founderStore);
+			expect(baseline.size).toBeGreaterThanOrEqual(2);
+			const authoredSinceDial = newOrAdvancedSince(baseline);
+
 			// ── Founder-only writes: membership blocks AND an application block ───
 			const newMember = freshKeyPair();
 			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
@@ -846,42 +876,49 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				[newMember.publicKeyB64, writeSig, itemId, 'hello', itemValue, newMember.publicKeyB64],
 			);
 
-			// ── Anti-vacuity floor C: the founder actually holds blocks ───────────
-			// An empty source index makes coverage trivially satisfied, so this is asserted
-			// separately from — and before — the coverage gate. The floor is deliberately
-			// far below the observed count (see the log line below) so it pins "not empty,
-			// and not one stray block" without pinning the storage layout.
+			// ── Anti-vacuity floor C: the writes above really produced blocks ─────
+			// An empty compared-set makes coverage trivially satisfied, so the size of the
+			// post-dial set is asserted separately from — and before — the coverage gate.
+			// Observed: 27 founder blocks total, of which 13 are new-or-advanced since the
+			// baseline (9 new — Invite/ConsumedInvite/Items and their index and data blocks —
+			// plus 4 pre-existing blocks pushed to a higher revision). The floor sits at 6, so
+			// it pins "more than one table's worth of work" without pinning the storage layout.
 			const founderIndex = await readBlockIndex(founderStore);
-			expect(founderIndex.size).toBeGreaterThanOrEqual(2);
+			const authored = new Map([...founderIndex].filter(([id, rev]) => authoredSinceDial(id, rev)));
+			expect(authored.size).toBeGreaterThanOrEqual(6);
 
-			// ── THE PROOF: poll the joiner's RAW STORE until it covers the founder ──
+			// ── THE PROOF: poll the joiner's RAW STORE until it covers those blocks ──
 			// One-directional coverage, at a revision no older than the founder's, with
-			// content bytes actually present — never set equality (the joiner may hold
-			// blocks of its own) and never revision equality (it may be ahead).
+			// content bytes actually present — never set equality (the joiner holds blocks of
+			// its own, including node-local roots the founder will never have) and never
+			// revision equality (it may be ahead).
 			// Source and target are read INSIDE each iteration, so a founder that gains a
-			// block mid-poll is compared against a joiner snapshot from the same moment.
+			// block mid-poll is compared against a joiner snapshot from the same moment — and
+			// `authoredSinceDial` re-evaluates against that fresh read, so a block first
+			// written mid-poll is included rather than skipped.
 			const startedAt = Date.now();
+			const coverage = { include: authoredSinceDial };
 			try {
 				await waitUntil(
-					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
-					{ ...GATE, description: "the founder's blocks land physically in the joiner's block store" },
+					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore, coverage)),
+					{ ...GATE, description: "the founder's post-dial blocks land physically in the joiner's block store" },
 				);
 			} catch (timeout) {
 				// `waitUntil` swallows a throwing condition (header note), so a probe that
 				// ERRORED every attempt would otherwise report a bare timeout. Re-running the
 				// comparison outside the wait either rethrows that real error or names the
 				// exact block ids the joiner never got.
-				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
+				const finalGap = await compareBlockCoverage(founderStore, joinerStore, coverage);
 				throw new Error(
-					`joiner's block store never covered the founder's within ${GATE.timeoutMs}ms — ` +
+					`joiner's block store never covered the founder's post-dial blocks within ${GATE.timeoutMs}ms — ` +
 					formatBlockCoverageGap(finalGap),
 					{ cause: timeout },
 				);
 			}
 			console.log(
-				`[closed-strand:physical] founder holds ${founderIndex.size} committed blocks; ` +
-				`joiner's own store covered them in ${Date.now() - startedAt}ms ` +
-				`(joiner store holds ${(await readBlockIndex(joinerStore)).size})`,
+				`[closed-strand:physical] founder holds ${founderIndex.size} committed blocks, ` +
+				`${authored.size} of them authored or advanced since the dial; joiner's own store ` +
+				`covered those in ${Date.now() - startedAt}ms (joiner store holds ${(await readBlockIndex(joinerStore)).size})`,
 			);
 		} finally {
 			await stopBoth(founderNode, joinerNode);

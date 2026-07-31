@@ -134,6 +134,32 @@ export async function readBlockIndex(storage: IRawStorage): Promise<Map<BlockId,
 	return index;
 }
 
+/**
+ * A predicate accepting only blocks that are NEW or have ADVANCED since `baseline`.
+ *
+ * Pass as {@link BlockCoverageOptions.include} to compare a node against only the work
+ * done after some moment — the blocks a peer authored after another peer joined its
+ * cohort, say — rather than against everything it has ever held.
+ */
+export function newOrAdvancedSince(
+	baseline: ReadonlyMap<BlockId, ActionRev>,
+): (blockId: BlockId, sourceRev: ActionRev) => boolean {
+	return (blockId, sourceRev) => {
+		const before = baseline.get(blockId);
+		return before === undefined || sourceRev.rev > before.rev;
+	};
+}
+
+/** How to narrow a {@link compareBlockCoverage} run. */
+export interface BlockCoverageOptions {
+	/**
+	 * Restrict the comparison to the subset of `source`'s blocks this accepts. Omitted,
+	 * every block `source` holds must be covered. See {@link newOrAdvancedSince} for the
+	 * "only what was authored after moment X" narrowing.
+	 */
+	include?: (blockId: BlockId, sourceRev: ActionRev) => boolean;
+}
+
 /** What `target` is missing relative to `source`; every field empty means full coverage. */
 export interface BlockCoverageGap {
 	/** Block ids present in source, absent from target. */
@@ -154,11 +180,16 @@ export interface BlockCoverageGap {
  * REPORTS, never asserts — a caller turning a gap into a failure can then name the
  * offending block ids, which a bare boolean could not.
  */
-export async function compareBlockCoverage(source: IRawStorage, target: IRawStorage): Promise<BlockCoverageGap> {
+export async function compareBlockCoverage(
+	source: IRawStorage,
+	target: IRawStorage,
+	options: BlockCoverageOptions = {},
+): Promise<BlockCoverageGap> {
 	const [sourceIndex, targetIndex] = await Promise.all([readBlockIndex(source), readBlockIndex(target)]);
 	const gap: BlockCoverageGap = { absent: [], behind: [], metadataOnly: [] };
 
 	for (const [blockId, sourceRev] of sourceIndex) {
+		if (options.include && !options.include(blockId, sourceRev)) continue;
 		const targetRev = targetIndex.get(blockId);
 		if (!targetRev) {
 			gap.absent.push(blockId);

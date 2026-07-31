@@ -168,13 +168,22 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			const bobRow = await bobDb.get(`select Value from App.Items where Id = 'item-1'`);
 
 			// Cross-node replication is a BEST-EFFORT observation here, NOT a gating
-			// assertion: it only happens once the strand runs in `networked` mode, which
-			// depends on cohort/control-sync wiring owned by ticket
-			// `2-integration-tests-real-control-sync-and-scenario-honesty`. Until that lands
-			// the strand runs in `bootstrap` (local) mode and writes stay node-local — the
-			// same reason strand-formation-e2e Phase 2 is pre-existing-red. The RBAC
-			// accept/reject assertions in this test are local to the writer and are the
-			// actual deliverable; they do not depend on replication.
+			// assertion, and it is EXPECTED to be false. This test passes no `mode` to
+			// `addStrand`, so cadre-core infers one from the cohort
+			// (`selectStrandMode(explicitMode, seed.hasOtherPeers)` in `cadre-node.ts`):
+			// with no CadrePeer rows naming another peer, that resolves to `bootstrap`,
+			// whose transactor is purely local, so writes stay node-local no matter how many
+			// strand-level libp2p connections exist. The mode is logged below rather than
+			// asserted — it is `StrandInstance.mode`, read-only reporting, and pinning it
+			// here would make this RBAC test fail on an unrelated cohort-seeding change.
+			//
+			// A strand that DOES replicate is covered elsewhere:
+			// `strand-membership-closed-strand-e2e.integration.ts` forces `mode:'networked'`
+			// on both nodes, gates every cross-node read, and its fourth test proves blocks
+			// land PHYSICALLY in the second node's own raw store. Nothing is owed here.
+			//
+			// The RBAC accept/reject assertions in this test are local to the writer and are
+			// the actual deliverable; they do not depend on replication.
 			let replicated = bobRow?.Value === 'hello';
 			if (!replicated) {
 				try {
@@ -191,8 +200,9 @@ describe('sApp signed-write RBAC (real strand)', () => {
 				}
 			}
 			console.log(
-				`[rbac] App.Items schema applied on Bob; cross-node replication observed=${replicated} ` +
-				`(bootstrap mode → expected false until networked/control-sync wiring lands; owned by ticket 2)`,
+				`[rbac] App.Items schema applied on Bob; strand mode alice=${aliceStrand.mode} bob=${bobStrand.mode}; ` +
+				`cross-node replication observed=${replicated} ` +
+				`(false is expected under an inferred bootstrap mode — see the note above)`,
 			);
 
 			// ── 2. Authorized update accepted (fresh signature) ──────────────
