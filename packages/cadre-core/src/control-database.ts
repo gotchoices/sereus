@@ -63,6 +63,26 @@ export class MissingHostStrandError extends Error {
 }
 
 /**
+ * A formation write was abandoned because the caller's `AbortSignal` fired BEFORE the
+ * `FormationUsage` insert was issued — the invite's single use is NOT spent.
+ *
+ * Thrown by the formation write paths ({@link ControlDatabase.recordFormationUsage},
+ * {@link ControlDatabase.redeemInvitation}) and by `ControlFormationUsageRecorder`'s
+ * pre-approval checks when the responder's provisioning budget expires while the work is
+ * still queued (e.g. behind the write lock) or still asking the approval hook. Never
+ * thrown once the insert has been issued: a half-issued write must be allowed to land,
+ * and the formation listener's settle grace then adopts it as a successful join. The
+ * manager rethrows this error instead of mapping it to a retryable conflict — the
+ * listener's timeout path owns the reply.
+ */
+export class FormationAbortedError extends Error {
+  constructor(readonly token: string, operation: string) {
+    super(`Formation ${operation} for token ${token} was aborted before its write was issued`);
+    this.name = 'FormationAbortedError';
+  }
+}
+
+/**
  * What a recorded `FormationUsage` row came out as.
  *
  * `usageStampId` is echoed back so a caller that obtained an approver sign-off can prove the
