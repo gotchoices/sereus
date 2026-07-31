@@ -432,7 +432,7 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   output — a spawned real `cadre-cli` child, or an in-process import of `@serfab/cadre-host` /
   `@serfab/cadre-core` from their `dist`. An edit to `src` with no following `yarn build` used to be
   invisible: the run silently exercised the previous build and surfaced as an unrelated 90s startup
-  timeout. `test/global-setup.ts` (wired as vitest `globalSetup`) now calls `assertBuildFresh(TARGETS)`
+  timeout. `test/global-setup.ts` (wired as vitest `globalSetup`) now calls `assertBuildFresh(TARGETS, import.meta.url)`
   once per suite, comparing each package's newest `src` mtime against the entry point the tests
   actually load (`dist/index.js` for cadre-core/cadre-host, `dist/bin/cadre.js` for cadre-cli), and
   fails the run up front naming every stale package plus its `yarn workspace <name> build` remedy.
@@ -455,7 +455,7 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `node_modules` symlink whose manifest points at `dist`, so a new control-database table added to
   its `src` was silently absent from the database under test while 938 tests reported passing. The
   guard therefore moved out of `integration-tests` to `test-harness/build-freshness.ts` at the repo
-  root, exporting `assertBuildFresh(targets)`; each consuming package owns its own target list in its
+  root, exporting `assertBuildFresh(targets, setupUrl)`; each consuming package owns its own target list in its
   own vitest `globalSetup` file (`packages/integration-tests/test/global-setup.ts`,
   `packages/cadre-core/test/global-setup.ts`, `packages/reference-app-web/test/global-setup.ts`). The
   web app's list is a single entry (`@serfab/cadre-core`) and it has no `build-targets.spec.ts`: that

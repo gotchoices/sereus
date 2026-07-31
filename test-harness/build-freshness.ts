@@ -14,7 +14,7 @@
  * change that never reached the database under test) or a false regression (a
  * startup timeout, a bug that was in fact already fixed).
  *
- * `assertBuildFresh(targets)` fails the run up front, before any child is
+ * `assertBuildFresh(targets, setupUrl)` fails the run up front, before any child is
  * spawned, when one of `targets`' `src` has been touched more recently than its
  * compiled output (or its entry point is missing outright). Each consuming
  * package calls it once per suite from its own vitest `globalSetup` file, passing
@@ -202,8 +202,14 @@ export function resolveLinkedPackage(nodeModulesDir: string, packageName: string
 	let entryStat: Stats;
 	try {
 		entryStat = lstatSync(entry);
-	} catch {
-		return { status: 'absent' };
+	} catch (error) {
+		// Only "nothing here" continues the walk. A directory that exists but
+		// can't be read is reported: swallowing it would carry on to an ancestor
+		// and judge a copy this suite does not load, which is the whole failure
+		// this walk exists to avoid.
+		const code = errorCode(error);
+		if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'absent' };
+		return { status: 'unresolved', detail: `${entry} could not be read (${code ?? 'unknown error'})` };
 	}
 	if (!entryStat.isSymbolicLink()) return { status: 'not-linked' };
 
@@ -266,6 +272,11 @@ function nodeModulesChain(fromDir: string): string[] {
 		if (parent === dir) return dirs;
 		dir = parent;
 	}
+}
+
+/** A thrown value's `errno` code, when it carries one. */
+function errorCode(error: unknown): string | undefined {
+	return error instanceof Error && 'code' in error && typeof error.code === 'string' ? error.code : undefined;
 }
 
 /** The raw symlink target, for a message about a link that can't be followed. */

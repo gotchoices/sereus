@@ -21,7 +21,7 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, resolveLinkedPackage, resolveLinkedPackageFrom, type BuildTarget } from './build-freshness.js';
+import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, findWorkspaceRoot, resolveLinkedPackage, resolveLinkedPackageFrom, type BuildTarget } from './build-freshness.js';
 
 const DIST_ENTRY = 'dist/index.js';
 /** Seconds since epoch; `dist` sits between OLD and NEW so either side can win. */
@@ -202,6 +202,13 @@ describe('assertBuildFresh', () => {
  * what it takes — and reaches `<tmp>/node_modules` by walking, exactly as it does
  * in a real suite. `resolveLinkedPackage` is given the `node_modules` directory
  * itself, since it classifies one directory and does no walking.
+ *
+ * NOTE: no ancestor of `<tmp>` declares `workspaces`, so the walk here is
+ * unbounded and runs to the filesystem root. Harmless because the fixture uses a
+ * name (`@sibling/pkg`) no real install produces. If a case here ever needs a
+ * name that could exist above the temp directory, bound it the way the
+ * `node_modules chain` fixture below does — with a `package.json` declaring
+ * `workspaces`. Not done here: the `not in a workspace` case needs the opposite.
  */
 const SIBLING_ENTRY = 'dist/src/index.js';
 const LINKED_TARGET: BuildTarget = {
@@ -271,6 +278,15 @@ describe('linked sibling packages', () => {
 
 		it('reports absent when there is nothing at that path, so the walk can continue', () => {
 			expect(resolveLinkedPackage(nodeModules, '@sibling/pkg')).toEqual({ status: 'absent' });
+		});
+
+		it('reports absent when the node_modules directory itself is not a directory', () => {
+			// A file standing where a `node_modules` should be fails `lstat` with
+			// ENOTDIR (ENOENT on Windows). Either way it means "nothing here".
+			const notADirectory = join(tmp, 'a-file');
+			writeFileSync(notADirectory, '');
+
+			expect(resolveLinkedPackage(notADirectory, '@sibling/pkg')).toEqual({ status: 'absent' });
 		});
 
 		it('reports unresolved when the symlink points somewhere that no longer exists', () => {
@@ -476,5 +492,42 @@ describe('node_modules chain', () => {
 		expect(problem).toContain('dist is stale');
 		expect(problem).toContain(local);
 		expect(problem).not.toContain(hoisted);
+	});
+});
+
+/**
+ * The same walk against this checkout rather than a temp-dir fixture. Every case
+ * above builds its own layout, which pins the algorithm but not that a real
+ * `yarn install` produces the layout the algorithm was written for — and the
+ * layout is the thing that changed underneath the old repo-root-only lookup.
+ *
+ * `reference-app-web` sets `installConfig.hoistingLimits: "workspaces"`, so it
+ * has a `node_modules` of its own, and both directions have to work from there:
+ * a sibling it carries locally, and one it does not.
+ */
+describe('node_modules chain, on this checkout', () => {
+	const repoRoot = findWorkspaceRoot(dirname(fileURLToPath(import.meta.url)));
+	if (repoRoot === undefined) throw new Error('build-freshness.spec.ts is not inside the monorepo');
+
+	const webSuite = join(repoRoot, 'packages', 'reference-app-web', 'test');
+	const linkedAt = (...segments: string[]): string => realpathSync(join(...segments));
+
+	it('resolves a sibling the app keeps in its own node_modules', () => {
+		// Both this and the repo root link to the same working copy, so the root
+		// alone does not say which directory won — what it does exercise is the
+		// real junction yarn wrote, from the real suite directory.
+		const local = linkedAt(repoRoot, 'packages', 'reference-app-web', 'node_modules', '@optimystic', 'db-core');
+
+		expect(resolveLinkedPackageFrom(webSuite, '@optimystic/db-core')).toEqual({ status: 'linked', root: local });
+	});
+
+	it('carries on to the repo root for a sibling the app does not keep locally', () => {
+		// `@optimystic/quereus-plugin-crypto` is linked at the root and absent from
+		// the app's own `node_modules` today. If that stops being true this fails;
+		// the fix is another root-only sibling — the case is about the walk.
+		const hoisted = linkedAt(repoRoot, 'node_modules', '@optimystic', 'quereus-plugin-crypto');
+
+		expect(resolveLinkedPackageFrom(webSuite, '@optimystic/quereus-plugin-crypto'))
+			.toEqual({ status: 'linked', root: hoisted });
 	});
 });
