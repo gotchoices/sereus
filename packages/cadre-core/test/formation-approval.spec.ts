@@ -89,15 +89,23 @@ function readerlessResponse(text: string, extraHeaders: Record<string, string> =
   } as unknown as Response;
 }
 
-/** A 200 whose body stream never enqueues, never closes, and ignores every abort. */
-function stallingFetch(): typeof fetch {
-  return ((_input: RequestInfo | URL, _init?: RequestInit) =>
+/**
+ * A 200 whose body stream never enqueues, never closes, and ignores every abort, reporting
+ * whether the client released the stalled body on its way out.
+ */
+function stallingFetch(): { fetchImpl: typeof fetch; cancelled: () => boolean } {
+  let cancelled = false;
+  const fetchImpl = ((_input: RequestInfo | URL, _init?: RequestInit) =>
     Promise.resolve(
-      new Response(new ReadableStream<Uint8Array>({ start() { /* never settles */ } }), {
-        status: 200,
-        headers: { 'content-type': 'application/json' }
-      })
+      new Response(
+        new ReadableStream<Uint8Array>({
+          start() { /* never settles */ },
+          cancel() { cancelled = true; }
+        }),
+        { status: 200, headers: { 'content-type': 'application/json' } }
+      )
     )) as unknown as typeof fetch;
+  return { fetchImpl, cancelled: () => cancelled };
 }
 
 /** A body that never ends, recording whether the client released it. */
@@ -585,37 +593,44 @@ describe('createHttpFormationApprover', () => {
     }
   });
 
-  // The budget is the only thing bounding these: `stallingFetch()` returns a 200 whose body
+  // The budget is the only thing bounding these: `stallingFetch()` answers with a 200 whose body
   // never enqueues, never closes, and ignores the abort entirely, so a client that still trusted
   // `fetch` to reject on abort would hang until vitest's own suite timeout, not the asserted
   // failure category alone.
   it('bounds a stalled body read to timeoutMs even when the runtime ignores the abort', async () => {
     const started = Date.now();
+    const { fetchImpl, cancelled } = stallingFetch();
 
     const error = await expectFailure(
-      createHttpFormationApprover({ fetchImpl: stallingFetch(), timeoutMs: 50 }).requestApproval(baseRequest()),
+      createHttpFormationApprover({ fetchImpl, timeoutMs: 50 }).requestApproval(baseRequest()),
       'unavailable'
     );
 
     expect(error.message).toContain('50ms');
     expect(Date.now() - started).toBeLessThan(2_000);
+    // Giving up is only half of it: the stalled body has to be released too, or a node asking a
+    // silent hook once per redemption leaks a connection each time.
+    expect(cancelled()).toBe(true);
   }, 10_000);
 
   it('bounds a stalled body read to the caller abort even when the runtime ignores it', async () => {
     const started = Date.now();
     const caller = new AbortController();
-    setTimeout(() => caller.abort(), 25);
+    const abortAt = setTimeout(() => caller.abort(), 25);
+    const { fetchImpl, cancelled } = stallingFetch();
 
     // A 30s client budget: a prompt rejection can only have come from the caller's abort, not
     // the timer — proving the caller-cancellation bound is enforced independently of fetch.
     const error = await expectFailure(
-      createHttpFormationApprover({ fetchImpl: stallingFetch(), timeoutMs: 30_000 })
+      createHttpFormationApprover({ fetchImpl, timeoutMs: 30_000 })
         .requestApproval(baseRequest(), caller.signal),
       'unavailable'
     );
+    clearTimeout(abortAt);
 
     expect(error.message).toContain('cancelled');
     expect(Date.now() - started).toBeLessThan(2_000);
+    expect(cancelled()).toBe(true);
   }, 10_000);
 
   it('settles on the budget expiring, not on a fetch that rejects synchronously from its own abort listener', async () => {
@@ -635,5 +650,23 @@ describe('createHttpFormationApprover', () => {
     // synchronous-on-abort rejection would win the race and the caller would see "could not be
     // reached" instead of the budget's own timeout wording.
     expect(error.message).toContain('within 25ms');
+  }, 10_000);
+
+  it('discards the body of a response that arrives after the budget already expired', async () => {
+    const { stream, cancelled } = endlessBody();
+    let deliver!: (response: Response) => void;
+    const late = new Promise<Response>((resolve) => { deliver = resolve; });
+    const fetchImpl = (() => late) as unknown as typeof fetch;
+
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl, timeoutMs: 25 }).requestApproval(baseRequest()),
+      'unavailable'
+    );
+    expect(error.message).toContain('within 25ms');
+
+    // A fetch that ignored the abort still delivers eventually, and nobody is left to read what
+    // it delivers — so the abandoned response's body has to be released, not left checked out.
+    deliver(new Response(stream, { status: 200, headers: { 'content-type': 'application/json' } }));
+    await vi.waitFor(() => { expect(cancelled()).toBe(true); });
   }, 10_000);
 });

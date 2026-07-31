@@ -321,6 +321,12 @@ async function readCappedStream(
  * socket checked out until GC — a node that asks a flapping hook once per redemption would
  * accumulate them. Skips a body already locked by {@link readCappedStream}, which cancels its
  * own reader.
+ *
+ * NOTE: awaited by `readApproval`, so it sits OUTSIDE the budget — a runtime whose `cancel()`
+ * never settles would hold the caller past `timeoutMs` even though the deadline already fired.
+ * Every runtime this ships on settles it promptly. If a request is ever seen outliving its budget
+ * despite the budget firing, stop awaiting this; the two tests that assert the body is released
+ * by the time the rejection surfaces would then have to poll instead.
  */
 async function discardBody(response: Response): Promise<void> {
   const body = response.body;

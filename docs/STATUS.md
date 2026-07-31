@@ -932,9 +932,13 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   (integration-tests, 2026-07-31) drives `createHttpFormationApprover()` with the real
   `globalThis.fetch` against a throwaway `node:http` hook — approval, refusal, 5xx, redirect,
   connection failure, caller abort, mid-body timeout, and the 64 KiB streaming cap. That run
-  surfaced a real defect: Node's `fetch` sometimes drops the client's abort mid-body-read, so a
-  silent hook can hold a responder ~5 minutes on a 10 s budget — `fix/formation-approval-timeout-not-enforced`,
-  and its test case fails ~1 run in 10 until that lands (recorded in `tickets/.pre-existing-known.md`).
+  surfaced a real defect, **since fixed (2026-07-31)**: Node's `fetch` sometimes drops the client's
+  abort mid-body-read, so a silent hook could hold a responder ~5 minutes on a 10 s budget. The
+  client no longer relies on the abort alone — one per-request budget (`startBudget` in
+  `formation-approval.ts`) races a deadline against every await that can outlive it (the `fetch`,
+  each stream `read()`, and the readerless-path `text()`), while still aborting to hand the socket
+  back where that works. Covered deterministically in `formation-approval.spec.ts` by a stub whose
+  body never settles and ignores aborts.
   **Still unexercised end-to-end:** no test redeems a `ValidationUrl` invitation through a real
   node over a real network — tracked as `plan/debt-validation-url-redemption-e2e`. Enrollment also accepts any non-blank text as a
   key (no base64url/length check), so a typo enrolls silently — `backlog/debt-control-key-enrollment-accepts-malformed-keys`.
