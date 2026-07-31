@@ -371,6 +371,31 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       expect(Number(strands?.c ?? 0)).toBe(1);
     });
 
+    it('retries a use number lost at COMMIT time, not only one lost on the insert', async () => {
+      // The two lost-race surfaces fail at different MOMENTS, and only the primary-key one is
+      // covered above. `Monotonic` carries a subquery, so Quereus defers it to `commit()` —
+      // the surface a concurrent row the insert's key probe never saw arrives on, i.e. exactly
+      // the cross-node race this retry exists for. It matters because the failure lands on the
+      // commit rather than on a statement: `inTransaction`'s rollback must still have cleaned
+      // the attempt's `Strand` row up, or the retry's strand insert collides and can never land.
+      const token = 'invite-deferred-retry-' + rand();
+      await db.insertFormationInvite(token, 'sapp-deferred-retry', ownerPublicKey, signMessage, {});
+
+      const strandId = 'strand-deferred-' + rand();
+      const consent = mintConsent(token);
+      // Skipping ahead of max+1 fails `Monotonic` and nothing else (the invite is uncapped, so
+      // `Authorized`'s seat clause cannot be what answers).
+      await withStubbed(db, 'nextUseNumber', staleOnce(db, token, 7), async () => {
+        expect((await db.redeemInvitation({ token, strandId, ...consent })).useNumber).toBe(1);
+      });
+
+      expect(await useNumbersFor(token)).toEqual([1]);
+      const strands = await rawDb.get(
+        'select count(1) as c from CadreControl.Strand where Id = ?', [strandId],
+      );
+      expect(Number(strands?.c ?? 0)).toBe(1);
+    });
+
     it('gives up after a bounded number of attempts instead of spinning', async () => {
       const { token, strandId } = await boundInvite('exhaust-attempts', { totalUses: 5 });
       const lostRace = await realLostRaceError();

@@ -1244,6 +1244,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         // the digest would send the loser of a race back for a SECOND approval — another trip
         // through whatever manual review the ValidationUrl fronts. Binding a nonce the
         // redeeming node mints itself is just as single-use and survives the retry.
+        // Not a duplicate of `control-formation-use-number-retry.spec.ts`: this case drives the
+        // retry BY HAND (raw insert, then a second `recordFormationUsage`) to pin the nonce
+        // design itself; that spec covers `withUseNumberRetry` re-presenting the approval
+        // automatically. Either could pass while the other fails.
         const joinerA = await validatingInvite('race', { totalUses: 3, bound: true });
         const joinerB = sibling(joinerA, 'race-b');
         const approvalA = vouch(validationPrivateKey, joinerA);

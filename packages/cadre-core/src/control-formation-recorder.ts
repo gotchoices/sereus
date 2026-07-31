@@ -264,9 +264,16 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * key — so the returned `memberPrivateKey` is null. `sAppId` is accepted for parity/future
    * use; `redeemInvitation` does not currently thread it into the `Strand` row.
    *
-   * A concurrent redemption of the same single-use invite collides on the
-   * `(Token, UseNumber)` PK and this call THROWS for the loser — the manager maps that to a
-   * clean protocol rejection (it never lets the dropped insert close the stream silently).
+   * A concurrent redemption of the same single-use invite still THROWS for the loser — the
+   * manager maps that to a clean protocol rejection (it never lets the dropped insert close
+   * the stream silently) — but no longer via a `(Token, UseNumber)` primary-key collision on
+   * this node: `redeemInvitation` reads the use number INSIDE the write lock, so two local
+   * redemptions serialize and the second one reads the number the first already committed.
+   * It is then refused because that number is past the invite's seat budget — by
+   * `FormationUsage.Authorized`'s `TotalUses >= UseNumber` clause on a first attempt, or by
+   * `InvitationExhaustedError` when a genuine lost race (another node, another `Database`
+   * handle) sent it around the retry loop first. A PK collision is still what a cross-node
+   * race surfaces as, and that one IS retried under a fresh use number rather than thrown.
    */
   async provisionAndRecord(params: {
     token: string;
