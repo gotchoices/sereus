@@ -95,6 +95,9 @@ function runEntrypointStart(): { status: number | null; stdout: string; stderr: 
   return { status: result.status, stdout: result.stdout, stderr: result.stderr };
 }
 
+// NOTE: a runner without `sh` skips this suite silently rather than failing, so the
+// entrypoint's identity wiring would go unguarded there. If CI ever moves to a shell-less
+// (plain Windows) runner, make the skip loud — assert `sh` is present on Linux runners.
 describe.skipIf(!shAvailable())('cadre-cli docker entrypoint identity wiring', () => {
   it('creates the identity before the config, exports it to the started child, and records it in cadre.yaml', () => {
     const result = runEntrypointStart();
@@ -123,8 +126,31 @@ describe.skipIf(!shAvailable())('cadre-cli docker entrypoint identity wiring', (
     const second = runEntrypointStart();
     expect(second.status, `entrypoint failed: ${second.stderr}`).toBe(0);
     expect(second.stdout).toContain('Using existing peer identity');
+    // The export must survive the config-already-exists path too — generate_config
+    // is skipped on every start after the first, so this is the steady state.
+    expect(second.stdout).toContain(`CHILD_KEY_FILE=${toPosixPath(join(tmpRoot, 'data'))}/cadre-peer.key`);
 
     const after = readFileSync(keyFile);
     expect(after).toEqual(before);
+  });
+
+  // A container provisioned before the identity wiring landed has a cadre.yaml with
+  // no `identity:` block, and generate_config never runs again to add one. The env
+  // export is the whole repair: it must reach the child regardless of the config.
+  it('exports the identity to the child even when a pre-fix cadre.yaml (no identity block) exists', () => {
+    const dataDir = join(tmpRoot, 'data');
+    mkdirSync(dataDir, { recursive: true });
+    const staleConfig = 'controlNetwork:\n  partyId: "party-1"\n  bootstrapNodes: []\n';
+    writeFileSync(join(dataDir, 'cadre.yaml'), staleConfig, 'utf8');
+
+    const result = runEntrypointStart();
+    expect(result.status, `entrypoint failed: ${result.stderr}`).toBe(0);
+
+    const dataPosix = toPosixPath(dataDir);
+    expect(result.stdout).toContain(`CHILD_KEY_FILE=${dataPosix}/cadre-peer.key`);
+    expect(result.stdout).toContain(`CHILD_STATE_DIR=${dataPosix}`);
+    // Key minted despite the config being present, and the stale config left as-is.
+    expect(readFileSync(join(dataDir, 'cadre-peer.key'), 'utf8')).toBe('stub-key-material\n');
+    expect(readFileSync(join(dataDir, 'cadre.yaml'), 'utf8')).toBe(staleConfig);
   });
 });

@@ -3,7 +3,7 @@ import type Docker from 'dockerode';
 import { DockerOrchestrator, volumeNameFor } from '../docker-orchestrator.js';
 import type { DockerConfig } from '../../config/types.js';
 import type { OrchestratorCreateRequest } from '../orchestrator.js';
-import { volumeStubs } from './fake-docker.js';
+import { volumeStubs, type VolumeStubs } from './fake-docker.js';
 
 const request: OrchestratorCreateRequest = {
   containerId: 'ctr_vol',
@@ -11,6 +11,8 @@ const request: OrchestratorCreateRequest = {
   bootstrapNodes: [],
   profile: 'storage',
 };
+
+const volumeName = volumeNameFor(request.containerId);
 
 function config(): DockerConfig {
   return { image: 'test-image', portRange: { start: 13000, end: 13099 } };
@@ -21,10 +23,11 @@ function config(): DockerConfig {
 function fakeContainerHandle(opts: {
   labels?: Record<string, string>;
   mounts?: Array<{ Type: string; Name?: string; Destination: string }>;
+  inspect?: ReturnType<typeof vi.fn>;
   remove?: ReturnType<typeof vi.fn>;
 } = {}) {
   return {
-    inspect: vi.fn(async () => ({
+    inspect: opts.inspect ?? vi.fn(async () => ({
       Config: { Labels: opts.labels ?? {} },
       Mounts: opts.mounts ?? [],
     })),
@@ -34,6 +37,26 @@ function fakeContainerHandle(opts: {
   };
 }
 
+/** Handle a successful `createContainer` resolves to — only `id`/`start` are exercised. */
+function createdContainer(id: string) {
+  return { id, start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
+}
+
+/** Orchestrator over a fake daemon carrying `vol`'s volume surface plus the given container calls. */
+function orchestratorOver(
+  vol: VolumeStubs,
+  calls: { createContainer?: unknown; getContainer?: unknown } = {}
+): DockerOrchestrator {
+  const docker = {
+    createContainer: calls.createContainer ?? vi.fn(),
+    getContainer: calls.getContainer ?? vi.fn(),
+    ...vol,
+  } as unknown as Docker;
+  return new DockerOrchestrator(config(), docker);
+}
+
+const createFails = () => vi.fn(async () => { throw new Error('boom'); });
+
 describe('DockerOrchestrator durable volume wiring', () => {
   it('mounts a fresh named volume at /data and labels it on create', async () => {
     const vol = volumeStubs();
@@ -41,110 +64,118 @@ describe('DockerOrchestrator durable volume wiring', () => {
       HostConfig: { Mounts: Array<{ Type: string; Source: string; Target: string }> };
     }) => {
       void spec;
-      return { id: 'cid-1', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) };
+      return createdContainer('cid-1');
     });
-    const fakeDocker = { createContainer, getContainer: vi.fn(), ...vol } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
 
-    await orch.createContainer(request);
+    await orchestratorOver(vol, { createContainer }).createContainer(request);
 
-    const expectedName = volumeNameFor(request.containerId);
     expect(vol.createVolume).toHaveBeenCalledWith({
-      Name: expectedName,
+      Name: volumeName,
       Labels: { 'sereus.container-id': request.containerId, 'sereus.party-id': request.partyId },
     });
 
     const opts = createContainer.mock.calls[0]![0];
-    expect(opts.HostConfig.Mounts).toEqual([{ Type: 'volume', Source: expectedName, Target: '/data' }]);
+    expect(opts.HostConfig.Mounts).toEqual([{ Type: 'volume', Source: volumeName, Target: '/data' }]);
   });
 
   it('reuses a pre-existing volume instead of creating one', async () => {
-    const expectedName = volumeNameFor(request.containerId);
-    const vol = volumeStubs([expectedName]);
-    const fakeDocker = {
-      createContainer: vi.fn(async () => ({ id: 'cid-2', start: vi.fn(async () => {}), remove: vi.fn(async () => {}) })),
-      getContainer: vi.fn(),
-      ...vol,
-    } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
+    const vol = volumeStubs([volumeName]);
+    const createContainer = vi.fn(async () => createdContainer('cid-2'));
 
-    await orch.createContainer(request);
+    await orchestratorOver(vol, { createContainer }).createContainer(request);
 
     expect(vol.createVolume).not.toHaveBeenCalled();
   });
 
+  // An inspect that fails for any reason OTHER than 404 must not be read as
+  // "absent": creating over a volume that does exist, or deleting on the failure
+  // path below, would destroy a tenant's identity. Failing the provision is the
+  // cheap outcome, so the error propagates untouched.
+  it('aborts the provision when the volume inspect fails for a non-404 reason', async () => {
+    const vol = volumeStubs([volumeName]);
+    vol.getVolume.mockImplementation(() => ({
+      inspect: async () => { throw Object.assign(new Error('daemon unreachable'), { statusCode: 500 }); },
+    }));
+    const createContainer = vi.fn(async () => createdContainer('cid-3'));
+
+    await expect(orchestratorOver(vol, { createContainer }).createContainer(request))
+      .rejects.toThrow('daemon unreachable');
+
+    expect(vol.createVolume).not.toHaveBeenCalled();
+    expect(createContainer).not.toHaveBeenCalled();
+    expect(vol.volumes.has(volumeName)).toBe(true);
+    expect(vol.removed).toEqual([]);
+  });
+
   it('removes the volume it created when the create attempt fails', async () => {
     const vol = volumeStubs();
-    const fakeDocker = {
-      createContainer: vi.fn(async () => { throw new Error('boom'); }),
-      getContainer: vi.fn(),
-      ...vol,
-    } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
 
-    await expect(orch.createContainer(request)).rejects.toThrow('boom');
+    await expect(orchestratorOver(vol, { createContainer: createFails() }).createContainer(request))
+      .rejects.toThrow('boom');
 
-    const expectedName = volumeNameFor(request.containerId);
-    expect(vol.volumes.has(expectedName)).toBe(false);
-    expect(vol.removed).toContain(expectedName);
+    expect(vol.volumes.has(volumeName)).toBe(false);
+    expect(vol.removed).toContain(volumeName);
   });
 
   it('leaves a pre-existing volume alone when a recreate attempt fails (image-upgrade case)', async () => {
-    const expectedName = volumeNameFor(request.containerId);
-    const vol = volumeStubs([expectedName]);
-    const fakeDocker = {
-      createContainer: vi.fn(async () => { throw new Error('boom'); }),
-      getContainer: vi.fn(),
-      ...vol,
-    } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
+    const vol = volumeStubs([volumeName]);
 
-    await expect(orch.createContainer(request)).rejects.toThrow('boom');
+    await expect(orchestratorOver(vol, { createContainer: createFails() }).createContainer(request))
+      .rejects.toThrow('boom');
 
-    expect(vol.volumes.has(expectedName)).toBe(true);
-    expect(vol.removed).not.toContain(expectedName);
+    expect(vol.volumes.has(volumeName)).toBe(true);
+    expect(vol.removed).not.toContain(volumeName);
   });
 
   it('removeContainer reads Mounts via inspect, force-removes, then removes the named volume', async () => {
-    const expectedName = volumeNameFor(request.containerId);
-    const vol = volumeStubs([expectedName]);
+    const vol = volumeStubs([volumeName]);
     const removeSpy = vi.fn(async () => {});
     const handle = fakeContainerHandle({
       labels: { 'sereus.container-id': request.containerId },
-      mounts: [{ Type: 'volume', Name: expectedName, Destination: '/data' }],
+      mounts: [{ Type: 'volume', Name: volumeName, Destination: '/data' }],
       remove: removeSpy,
     });
-    const fakeDocker = { createContainer: vi.fn(), getContainer: vi.fn(() => handle), ...vol } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
 
-    await orch.removeContainer('docker-id-1');
+    await orchestratorOver(vol, { getContainer: vi.fn(() => handle) }).removeContainer('docker-id-1');
 
     expect(handle.inspect).toHaveBeenCalled();
     expect(removeSpy).toHaveBeenCalledWith({ force: true, v: true });
-    expect(vol.removed).toContain(expectedName);
+    expect(vol.removed).toContain(volumeName);
   });
 
   it('terminates cleanly when the volume is already gone', async () => {
-    const expectedName = volumeNameFor(request.containerId);
     const vol = volumeStubs(); // not seeded — getVolume().remove() throws a 404
     const handle = fakeContainerHandle({
       labels: { 'sereus.container-id': request.containerId },
-      mounts: [{ Type: 'volume', Name: expectedName, Destination: '/data' }],
+      mounts: [{ Type: 'volume', Name: volumeName, Destination: '/data' }],
     });
-    const fakeDocker = { createContainer: vi.fn(), getContainer: vi.fn(() => handle), ...vol } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
 
-    await expect(orch.removeContainer('docker-id-2')).resolves.toBeUndefined();
+    await expect(orchestratorOver(vol, { getContainer: vi.fn(() => handle) }).removeContainer('docker-id-2'))
+      .resolves.toBeUndefined();
   });
 
   it('removes no named volume for a legacy container with no matching label/mount', async () => {
     const vol = volumeStubs();
     const handle = fakeContainerHandle({ labels: {}, mounts: [] });
-    const fakeDocker = { createContainer: vi.fn(), getContainer: vi.fn(() => handle), ...vol } as unknown as Docker;
-    const orch = new DockerOrchestrator(config(), fakeDocker);
 
-    await orch.removeContainer('docker-id-3');
+    await orchestratorOver(vol, { getContainer: vi.fn(() => handle) }).removeContainer('docker-id-3');
 
+    expect(vol.removed).toEqual([]);
+  });
+
+  // An unreadable container must still be reaped: the volume name is unknown, so it
+  // is left behind rather than guessed at, but the container removal proceeds.
+  it('still force-removes the container when the pre-removal inspect fails', async () => {
+    const vol = volumeStubs([volumeName]);
+    const removeSpy = vi.fn(async () => {});
+    const handle = fakeContainerHandle({
+      inspect: vi.fn(async () => { throw new Error('no such container'); }),
+      remove: removeSpy,
+    });
+
+    await orchestratorOver(vol, { getContainer: vi.fn(() => handle) }).removeContainer('docker-id-4');
+
+    expect(removeSpy).toHaveBeenCalledWith({ force: true, v: true });
     expect(vol.removed).toEqual([]);
   });
 });

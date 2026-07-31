@@ -58,7 +58,7 @@ profile: ${CADRE_PROFILE:-storage}
 
 storage:
   type: ${CADRE_STORAGE_TYPE:-file}
-  path: ${CADRE_STORAGE_PATH:-/data/storage}
+  path: ${CADRE_STORAGE_PATH:-$DATA_DIR/storage}
 EOF
 
   # Add quota if specified

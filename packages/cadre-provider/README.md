@@ -200,9 +200,21 @@ docker build -t cadre-provider .
 docker run -p 3000:3000 -v /var/run/docker.sock:/var/run/docker.sock cadre-provider
 ```
 
+### Per-tenant durable state
+
+Each container gets a named Docker volume of its own, `cadre-<containerId>-data`, mounted at `/data`.
+The node mints its libp2p identity key into it on first boot (the provider never sees the key) and
+keeps its config, bootstrap-peer store and trusted-owner anchor there, so **the container keeps the
+same peer id across restarts and image upgrades** — without it, a restarted node is a stranger to the
+cadre that authorized it. The volume is created on first provision, re-attached (never recreated) when
+a container is recreated under the same id, and deleted along with the container on terminate. Nothing
+in `/data` survives termination, by design.
+
 ### Kubernetes
 
 For Kubernetes deployments, implement a custom orchestrator or use the Docker orchestrator with Docker-in-Docker.
+A custom orchestrator **must** give each container durable per-tenant storage at `/data` (a PVC, say) and
+delete it on terminate — see the volume contract above.
 
 ### One-shot mode
 

@@ -187,6 +187,9 @@ export class ContainerService {
         // peerId is durable for the life of the container's volume, so the
         // first healthy report is authoritative; it is absent only if the node
         // reports healthy before acquiring a libp2p identity.
+        // NOTE: nothing backfills it afterwards. Harmless while every consumer of
+        // peerId reads live `/status` (`getPeerInfo`); if the stored field ever
+        // becomes a read path of its own, add a backfill on the next status read.
         await this.updateStatus(containerId, 'running', health.peerId ? { peerId: health.peerId } : undefined);
         log('Container %s is now running (peer %s)', containerId, health.peerId ?? 'unknown');
         return;

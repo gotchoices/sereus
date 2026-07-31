@@ -41,22 +41,31 @@ describe('resolveConfig identity.keyFile', () => {
   const tmpDirs: string[] = [];
 
   afterEach(() => {
+    delete process.env.CADRE_KEY_FILE;
     for (const d of tmpDirs) {
       try { rmSync(d, { recursive: true, force: true }); } catch { /* ignore */ }
     }
     tmpDirs.length = 0;
   });
 
-  /** Write a minimal valid config that points `identity.keyFile` at `keyFile`. */
-  function writeConfig(dir: string, keyFile: string): string {
+  /** Write a minimal valid config, pointing `identity.keyFile` at `keyFile` when given. */
+  function writeConfig(dir: string, keyFile?: string): string {
     const configPath = join(dir, 'cadre.json');
     writeFileSync(configPath, JSON.stringify({
-      identity: { keyFile },
+      ...(keyFile ? { identity: { keyFile } } : {}),
       controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
       profile: 'storage',
       storage: { type: 'memory' },
     }));
     return configPath;
+  }
+
+  /** Hex-encoded protobuf key, exactly what `cadre enroll create` (and the docker entrypoint) writes. */
+  async function writeEnrolledKey(dir: string, name: string) {
+    const key = await generateKeyPair('Ed25519');
+    const keyFile = join(dir, name);
+    writeFileSync(keyFile, uint8ArrayToString(privateKeyToProtobuf(key), 'hex'));
+    return { key, keyFile };
   }
 
   // Regression: `cadre enroll create` writes the *protobuf* private key as hex
@@ -67,9 +76,7 @@ describe('resolveConfig identity.keyFile', () => {
     const dir = mkdtempSync(join(tmpdir(), 'cadre-enroll-'));
     tmpDirs.push(dir);
 
-    const original = await generateKeyPair('Ed25519');
-    const keyFile = join(dir, 'node.key');
-    writeFileSync(keyFile, uint8ArrayToString(privateKeyToProtobuf(original), 'hex'));
+    const { key: original, keyFile } = await writeEnrolledKey(dir, 'node.key');
 
     const resolved = await resolveConfig(writeConfig(dir, keyFile));
 
@@ -108,6 +115,38 @@ describe('resolveConfig identity.keyFile', () => {
     const resolved = await resolveConfig(writeConfig(dir, keyFile));
 
     expect(resolved.nodeStateDir).toBe(resolve(dir));
+  });
+
+  // The docker entrypoint exports CADRE_KEY_FILE on every start precisely so a
+  // container whose cadre.yaml predates the identity wiring still comes up on its
+  // durable key instead of silently generating a fresh one. That repair only works
+  // if the env var supplies the identity a config file never mentions.
+  it('adopts CADRE_KEY_FILE when the config file has no identity block', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-key-env-'));
+    tmpDirs.push(dir);
+    const { key: original, keyFile } = await writeEnrolledKey(dir, 'cadre-peer.key');
+    process.env.CADRE_KEY_FILE = keyFile;
+
+    const resolved = await resolveConfig(writeConfig(dir));
+
+    expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
+      .toBe(peerIdFromPrivateKey(original).toString());
+  });
+
+  // ...and the env value must WIN over a file value, not merely fill a gap: the
+  // entrypoint mirrors the key path into cadre.yaml for debugging, so a stale
+  // mirrored path must never outrank the mount the orchestrator actually attached.
+  it('lets CADRE_KEY_FILE override an explicit identity.keyFile', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-key-env-both-'));
+    tmpDirs.push(dir);
+    const fromFile = await writeEnrolledKey(dir, 'from-file.key');
+    const fromEnv = await writeEnrolledKey(dir, 'from-env.key');
+    process.env.CADRE_KEY_FILE = fromEnv.keyFile;
+
+    const resolved = await resolveConfig(writeConfig(dir, fromFile.keyFile));
+
+    expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
+      .toBe(peerIdFromPrivateKey(fromEnv.key).toString());
   });
 });
 

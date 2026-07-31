@@ -56,19 +56,32 @@ function stubOrchestrator(): { orchestrator: Orchestrator; createContainer: Retu
 const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
 
+/** Service over a fresh memory store already holding one pending container. */
+async function provisionable() {
+  const store = new MemoryStore();
+  const container = pendingContainer();
+  await store.saveContainer(container);
+  const { orchestrator } = stubOrchestrator();
+  const service = new ContainerService({ store, orchestrator }) as unknown as ProvisionInternal;
+  return {
+    store,
+    provision: () => service.provisionContainer(container, provisionRequest),
+  };
+}
+
+/** Install a `fetch` that answers every `/status` poll with `payload`. */
+function stubStatus(payload: Record<string, unknown>): ReturnType<typeof vi.fn> {
+  const fetchMock = vi.fn(async () => ({ ok: true, json: async () => payload }) as unknown as Response);
+  globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
+  return fetchMock;
+}
+
 describe('ContainerService.provisionContainer peerId recording', () => {
   it('stamps peerId on the record and reaches running when /status reports healthy with a peerId', async () => {
-    const store = new MemoryStore();
-    const container = pendingContainer();
-    await store.saveContainer(container);
-    const { orchestrator } = stubOrchestrator();
-    const service = new ContainerService({ store, orchestrator });
+    const { store, provision } = await provisionable();
+    stubStatus({ status: 'healthy', peerId: '12D3KooWabc' });
 
-    globalThis.fetch = vi.fn(async () =>
-      ({ ok: true, json: async () => ({ status: 'healthy', peerId: '12D3KooWabc' }) }) as unknown as Response,
-    ) as typeof globalThis.fetch;
-
-    await (service as unknown as ProvisionInternal).provisionContainer(container, provisionRequest);
+    await provision();
 
     const stored = await store.getContainer('ctr_1');
     expect(stored?.status).toBe('running');
@@ -76,17 +89,10 @@ describe('ContainerService.provisionContainer peerId recording', () => {
   });
 
   it('reaches running with peerId left unset when /status reports healthy but peerId is null', async () => {
-    const store = new MemoryStore();
-    const container = pendingContainer();
-    await store.saveContainer(container);
-    const { orchestrator } = stubOrchestrator();
-    const service = new ContainerService({ store, orchestrator });
+    const { store, provision } = await provisionable();
+    stubStatus({ status: 'healthy', peerId: null });
 
-    globalThis.fetch = vi.fn(async () =>
-      ({ ok: true, json: async () => ({ status: 'healthy', peerId: null }) }) as unknown as Response,
-    ) as typeof globalThis.fetch;
-
-    await (service as unknown as ProvisionInternal).provisionContainer(container, provisionRequest);
+    await provision();
 
     const stored = await store.getContainer('ctr_1');
     expect(stored?.status).toBe('running');
@@ -94,19 +100,30 @@ describe('ContainerService.provisionContainer peerId recording', () => {
   });
 
   it('polls the derived /status URL, not /health', async () => {
-    const store = new MemoryStore();
-    const container = pendingContainer();
-    await store.saveContainer(container);
-    const { orchestrator } = stubOrchestrator();
-    const service = new ContainerService({ store, orchestrator });
+    const { provision } = await provisionable();
+    const fetchMock = stubStatus({ status: 'healthy', peerId: '12D3KooWxyz' });
 
-    const fetchMock = vi.fn(async () =>
-      ({ ok: true, json: async () => ({ status: 'healthy', peerId: '12D3KooWxyz' }) }) as unknown as Response,
-    );
-    globalThis.fetch = fetchMock as unknown as typeof globalThis.fetch;
-
-    await (service as unknown as ProvisionInternal).provisionContainer(container, provisionRequest);
+    await provision();
 
     expect(fetchMock).toHaveBeenCalledWith('http://localhost:18080/status');
+  });
+
+  // The orchestrator's endpoints land on the record before the poll loop starts, so a
+  // provision that reaches `running` must carry the whole set — a missing seedEndpoint
+  // or seedToken silently breaks seed delivery long after provisioning "succeeded".
+  it('records the orchestrator endpoints and seed token alongside the peerId', async () => {
+    const { store, provision } = await provisionable();
+    stubStatus({ status: 'healthy', peerId: '12D3KooWabc' });
+
+    await provision();
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored).toMatchObject({
+      dockerId: createResult.dockerId,
+      healthEndpoint: createResult.healthEndpoint,
+      metricsEndpoint: createResult.metricsEndpoint,
+      seedEndpoint: createResult.seedEndpoint,
+      seedToken: createResult.seedToken,
+    });
   });
 });

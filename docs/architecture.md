@@ -730,6 +730,29 @@ sequenceDiagram
 
 Provider only sees: container ID, network traffic, opaque seed. Provider never has: owner keys, strand data.
 
+### Durable Container Identity
+
+A hosted node's peer id must survive a container restart — a re-keyed node is a stranger to the cadre
+that authorized it, and its owner has to re-authorize it by hand. `DockerOrchestrator` therefore gives
+each container a **named** Docker volume of its own (`cadre-<containerId>-data`) mounted at `/data`,
+rather than the image's anonymous `VOLUME ["/data"]`:
+
+- **Created once, reused after.** `ensureVolume` inspects before creating, so recreating a container
+  under the same provider container id — an image upgrade — re-attaches the same state and therefore
+  the same identity. Only a volume the failing attempt itself created is rolled back; a pre-existing
+  one is left alone rather than destroyed.
+- **The node mints its own key inside it.** `docker/entrypoint.sh` runs `enroll create` into `/data`
+  before generating `cadre.yaml`, and exports `CADRE_KEY_FILE` / `CADRE_NODE_STATE_DIR` to the started
+  child. The env values are re-applied over the loaded config on every start, so they stay
+  authoritative and repair a container whose `cadre.yaml` was generated before this wiring existed.
+  The key never crosses the provider/tenant boundary.
+- **Node-local stores ride along.** `CADRE_NODE_STATE_DIR` defaults to the same `/data` mount, so the
+  bootstrap-peer store and the trusted-owner anchor persist on the identical volume — see
+  [Control Network Seed](#control-network-seed) → "Cold-start bootstrap retries".
+- **It dies with the lease.** `removeContainer` reads the container's mounts from a live inspect,
+  force-removes the container, then removes that named volume — matching how `cadre-host` deletes a
+  donated node's workdir on termination.
+
 ### Relay Integration
 
 For NAT'd nodes to be reachable, they include circuit relay addresses in seeds:

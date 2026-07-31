@@ -372,7 +372,7 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   workdir, so all of it dies with the loan. The same gap on the multi-tenant provider has since
   been closed: `DockerOrchestrator` mounts a per-container named Docker volume at `/data` and
   `docker/entrypoint.sh` mints/exports the identity key into it on first boot, re-applying it
-  every start — see [Provider Integration](architecture.md#provider-integration) and the
+  every start — see [Durable Container Identity](architecture.md#durable-container-identity) and the
   "Cold-start bootstrap retries" bullet under [Control Network Seed](architecture.md#control-network-seed).
 - [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
   `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
