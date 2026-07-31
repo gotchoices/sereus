@@ -16,7 +16,20 @@
  * own-property override of `findCluster` on that instance substitutes cohort
  * *discovery* only. The real `ClusterClient` (with its production dial/response
  * deadlines), the real libp2p transports, and the real `ClusterMember` on every
- * peer all stay in place. `findCoordinator` is intentionally left unpatched.
+ * peer all stay in place.
+ *
+ * `pinCoordinator` (below) is the sibling seam for `findCoordinator`. Left
+ * unpinned, FRET picks the batch coordinator by key-space proximity to the
+ * block id — effectively uniformly among the connected trio — and a scenario
+ * that degrades one member becomes nondeterministic: when the DEGRADED node is
+ * chosen as coordinator, the writer reaches it over the repo protocol (not the
+ * degraded cluster protocol) and the degraded node's own cluster vote is
+ * in-process, so the write legitimately commits fast; when a healthy node
+ * coordinates, it must RPC the degraded member's cluster handler and the
+ * degradation bites. Measured on this suite: the SAME stalled-member write
+ * committed in ~0.5 s on one run and failed in ~42 s on another, purely by
+ * coordinator draw. Pinning the candidate set to the healthy nodes forces the
+ * worst-case (degradation-exercising) branch deterministically.
  *
  * The patch must be applied to EVERY node in the cohort, not only the writer:
  * each member independently re-derives its own view through the same
@@ -27,12 +40,14 @@
  */
 
 import { toString as u8ToString } from 'uint8arrays';
+import type { PeerId } from '@libp2p/interface';
 import type { ClusterPeers } from '@optimystic/db-core';
 import type { CadreNode } from '@serfab/cadre-core';
 
 /** The seam this helper patches on each control node's key network. */
 interface PatchableKeyNetwork {
 	findCluster(key: Uint8Array): Promise<ClusterPeers>;
+	findCoordinator(key: Uint8Array, options?: { excludedPeers?: PeerId[] }): Promise<PeerId>;
 }
 
 export interface ForcedCohortHandle {
@@ -111,5 +126,61 @@ export function forceFullCohort(nodes: readonly CadreNode[]): ForcedCohortHandle
 		},
 		callCount: () => calls,
 		cohortSizes: () => [...sizes]
+	};
+}
+
+export interface PinnedCoordinatorHandle {
+	/** Remove the override from every patched node. Idempotent. */
+	restore(): void;
+	/** Total pinned `findCoordinator` calls across all patched nodes since pinning. */
+	callCount(): number;
+}
+
+/**
+ * Replace `findCoordinator` on EVERY node in `nodes` so the batch coordinator
+ * is always drawn — in order — from `candidates`, skipping any the caller's
+ * `excludedPeers` names. Preserves the transactor's re-coordination semantics
+ * (a failed coordinator is excluded on retry, so the next candidate serves);
+ * when every candidate is excluded it throws, which the transactor treats the
+ * same as FRET running out of coordinators — the original first-attempt error
+ * stays authoritative.
+ *
+ * Use with `candidates` = the healthy nodes to force a degradation scenario
+ * down its worst-case branch deterministically (see the header note).
+ */
+export function pinCoordinator(nodes: readonly CadreNode[], candidates: readonly CadreNode[]): PinnedCoordinatorHandle {
+	if (nodes.length === 0 || candidates.length === 0) throw new Error('pinCoordinator: empty node or candidate set');
+
+	const candidatePeerIds: PeerId[] = candidates.map((node) => {
+		const controlNode = node.getControlNode();
+		if (!controlNode) throw new Error('pinCoordinator: candidate has no started control node');
+		return controlNode.peerId;
+	});
+
+	let calls = 0;
+	const patched: PatchableKeyNetwork[] = [];
+	for (const node of nodes) {
+		const keyNetwork = (node.getControlNode() as unknown as { keyNetwork?: PatchableKeyNetwork }).keyNetwork;
+		if (!keyNetwork) throw new Error('pinCoordinator: control node exposes no keyNetwork');
+		keyNetwork.findCoordinator = async (_key: Uint8Array, options?: { excludedPeers?: PeerId[] }): Promise<PeerId> => {
+			calls++;
+			const excluded = new Set((options?.excludedPeers ?? []).map((p) => p.toString()));
+			const pick = candidatePeerIds.find((p) => !excluded.has(p.toString()));
+			if (!pick) throw new Error('pinCoordinator: every pinned coordinator candidate is excluded');
+			return pick;
+		};
+		patched.push(keyNetwork);
+	}
+
+	let restored = false;
+	return {
+		restore(): void {
+			if (restored) return;
+			restored = true;
+			for (const keyNetwork of patched) {
+				delete (keyNetwork as { findCoordinator?: unknown }).findCoordinator;
+			}
+		},
+		callCount: () => calls
 	};
 }

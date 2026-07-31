@@ -1,4 +1,4 @@
-description: When one machine in a group is connected but slow or unresponsive, shared-settings changes made on another machine can now be blocked by it. A test that measures what actually happens is now written; this ticket's remaining work is to run it, record the measured timings, and finish the handoff.
+description: When one machine in a group is connected but slow or unresponsive, shared-settings changes made on another machine can be blocked by it. The measurement test now exists and has produced real numbers, but the outcome turned out to depend on which machine happens to coordinate the write — the remaining work is to make the test deterministic, finalize the measured timing bounds, and finish the handoff.
 prereq:
 files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/integration-tests/src/harness/index.ts, docs/architecture.md
 difficulty: hard
@@ -10,8 +10,8 @@ The control database (shared settings + membership) replicates every block to th
 (`CONTROL_REPLICATION_BREADTH` = 16, effectively "everyone"). A control write commits only when a
 super-majority of the **cohort** — the peers the block was offered to — approves. Because the
 cohort is now the whole party, a member that is *connected but degraded* (slow, packet-losing,
-mid-relay-reconnect) sits inside the cohort and counts against the bar. Nobody has measured what
-that costs. This ticket is the measurement.
+mid-relay-reconnect) sits inside the cohort and counts against the bar. This ticket is the
+measurement.
 
 **Not the same as `debt-control-db-offline-peer-no-hang-coverage` (complete).** That covers members
 that are *unreachable* — they never enter the cohort. This one is about members that *do* enter it.
@@ -22,114 +22,105 @@ Paths below live in the sibling reference workspace `../optimystic` unless prefi
 
 1. **No phase-level timeout in the coordinator.** `ClusterCoordinator.collectPromises`
    (`packages/db-p2p/src/repo/cluster-coordinator.ts:460`) does a bare `Promise.all` over the
-   cohort; per-peer failures become `null`, but a never-settling peer would hang the phase.
+   cohort; per-peer failures become `null`.
 2. **The per-RPC deadline bounds a silent peer:** `DEFAULT_DIAL_TIMEOUT_MS` = 3000,
-   `DEFAULT_RESPONSE_TIMEOUT_MS` = 10000 (`packages/db-p2p/src/rpc-deadline.ts`), genuinely
-   aborting the stream.
+   `DEFAULT_RESPONSE_TIMEOUT_MS` = 10000 (`packages/db-p2p/src/rpc-deadline.ts`).
 3. **Two attempts per remote peer** (`promiseImmediateRetries` default 1); local peer invoked once.
-4. **The bar at three nodes is unanimity:** `ceil(3 × 0.75) = 3`; failure throws exactly
-   `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`
-   (`cluster-coordinator.ts:374` — verified this session).
-5. **30 s transaction budget above it; super-majority failures ARE retried inside it** via
-   batch-coordinator re-coordination excluding the failed coordinator; when candidates exhaust, the
-   original first-attempt error stays authoritative.
-6. **Caller sees** `Some peers did not complete: …; root: <first super-majority error>`, possibly
-   wrapped further by Quereus — assert by walking the `.cause` chain.
-
-### Prediction the test must confirm or refute
-
-| Case | Predicted outcome |
-| --- | --- |
-| No degradation | Write commits. |
-| Degraded under the 10 s response deadline (2 s) | Write commits, delay paid as latency. |
-| Degraded past the deadline (never answers) | Named failure, elapsed ≥ ~20 s and ≤ ~35 s, message above. |
-
-**Known hole in the failure prediction — measure, don't assume:** batch-coordinator retry may
-re-coordinate through the DEGRADED node C, whose repo protocol is NOT degraded and whose own
-cluster vote is local — the write may then legitimately **commit** at ~20–35 s. That is
-*availability, not a defect*: record it and adjust the test to assert the measured reality.
-Mitigating factor: `findCoordinator` is deliberately NOT patched and cold FRET likely selects self.
-
-**If instead it hangs**, that is a defect this ticket found, not a test bug: keep the test as the
-reproducer, file a `fix/` ticket naming the exact frozen operation, elapsed time, and which layer's
-deadline failed to fire.
+4. **The bar at three nodes is unanimity:** `ceil(3 × 0.75) = 3`; failure message is exactly
+   `Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)`.
+5. **30 s transaction budget above it**, with batch-coordinator re-coordination retry excluding the
+   failed coordinator.
+6. **Caller sees** `Some peers did not complete: …` — assert by flattening the message text plus
+   the `.cause` chain (the super-majority text appears INLINE in the per-peer list, root cause is
+   `The stream has been reset` when a held stream is aborted).
 
 <!-- resume-note -->
-## State: code COMPLETE, typecheck green — execution NOT started
+## State after run 3 (2026-07-30): code complete, MEASURED — but outcome is coordinator-dependent
 
-A prior run wrote all the code below and verified `yarn typecheck` passes in
-`packages/integration-tests`. Nothing has been executed yet; `yarn lint` has not been run. Working
-tree contains only these changes:
+Two prior runs wrote the suite; this run executed it repeatedly. All code is committed at
+`590ada2` except the CURRENT WORKING TREE which additionally contains (uncommitted):
 
-- **`packages/integration-tests/src/harness/forced-cluster.ts` (new).** `forceFullCohort(nodes)`
-  patches `findCluster` as an own-property override on every node's
-  `getControlNode().keyNetwork`, returning a handle `{ restore(), callCount(), cohortSizes() }`
-  (counters back the anti-vacuity assertions). Entries built from live
-  `controlNode.getMultiaddrs()` + `peerId.publicKey.raw` base64url; throws on any addressless or
-  keyless entry; fresh copy per call; `restore()` deletes the own property. Exported from
-  `harness/index.ts`.
-- **`packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
-  (new).** All six cases from the spec, in one `describe` sharing a single trio boot
-  (`beforeAll`, 240 s timeout; per-`it` timeouts 120–150 s):
-  1. healthy commit (authorize + remove, anti-vacuity anchor, no queue entry);
-  2. 2 s-delayed commit (both directions, ceiling `DELAYED_COMMIT_CEILING_MS` = 30 s, wrapper
-     intercepted-stream count asserted non-zero);
-  3. never-answering member → named super-majority failure, `.cause`-chain regex, no
-     `membership-not-admitted`, elapsed within [`FAILURE_FLOOR_MS` = 15 s, `FAILURE_CEILING_MS`
-     = 45 s], rollback asserted, no queue entry;
-  4. reads answer locally under 15 s deadlines while a write stalls (write captured
-     `.then(null, e)` immediately, settlement joined before handler restore);
-  5. recovery write commits after restore;
-  6. failed DELETE (removePeer against stalled member) neither queues in `pendingPeerWrites` nor
-     rolls the victim out.
-  Local helpers: `within` (labelled deadline: `degraded-cohort control op <label> timed out after
-  <ms>ms`), `timedSettle`, `errorChainText` (cause-chain flattener), `degradeClusterHandler(node,
-  partyId, delayMs)` — registrar `getHandler`/`unhandle`/`handle` swap on
-  `/optimystic/control-<partyId>/cluster/1.0.0` via the control node's `components.registrar`,
-  abortable (`Infinity` = hold stream until teardown then abort it), tolerates concurrent stalled
-  streams, `restore()` idempotent and awaited in every case's `finally`; `afterAll` restores any
-  active degradation, restores the forced cohort, stops C/B/A log-and-continue.
-  Boot: all three listen on `/ip4/127.0.0.1/tcp/0/ws`; A owner/storage + `makeOwnOwner`; vouch+seed
-  B then C (`joinMember`); `registerSelf() === 'refreshed'` polled on B and C; cross-resolution
-  both ways; `B.reconcileControlCohort()` driven until a B↔C connection; multiaddrs asserted
-  non-empty; then `forceFullCohort([A, B, C])`. All writes issue from A.
-  Every case `console.log`s `[measured] …` lines with wall-clock + error text — those lines ARE the
-  deliverable numbers.
+- `forced-cluster.ts`: new `pinCoordinator(nodes, candidates)` helper — patches `findCoordinator`
+  (own-property, same seam as `forceFullCohort`'s `findCluster` patch), picks the first candidate
+  not in the caller's `excludedPeers`, throws when all excluded (transactor treats that as
+  candidates-exhausted). Header comment documents why. Exported via `harness/index.ts` (`export *`).
+- Scenario: imports + wires `pinCoordinator([A, B, C], [A, B])` after `forceFullCohort` in
+  `beforeAll`, `pinned?.restore()` in `afterAll`; header comment updated.
+- Scenario constants TEMPORARILY raised for measurement (must be tightened to final values):
+  `WRITE_TIMEOUT_MS` 60_000→240_000, `STALLED_WRITE_TIMEOUT_MS` 90_000→240_000,
+  `FAILURE_CEILING_MS` 45_000→200_000, `DELAYED_COMMIT_CEILING_MS` 30_000→200_000, several per-`it`
+  timeouts →300_000.
 
-### Mechanics already verified against code (trust, don't re-derive)
+`yarn lint`: 0 errors. (6 warnings exist in `zz-scratch-delete-alone.integration.ts` — that file
+belongs to ticket `control-delete-while-alone-tombstone`, commit `4548349`, NOT this ticket.)
 
-- Registrar: control node's `components.registrar`; `getHandler(protocol)` →
-  `{ handler, options }`; handler signature is positional `(stream, connection)`; the captured
-  handler contains the inbound-authorization gate.
-- `authorizePeer` awaits the write BEFORE `noteControlWrite` (`cadre-node.ts:3979-3988`), so a
-  throw provably never queues — case 6 asserts the absence.
-- `membershipAdmissionFraction` default 0.75; with all three nodes patched the admission gate is a
-  no-op (symmetric diff 0) under either FRET-confidence branch.
-- Vitest config: `src/**/*.integration.ts`, pool forks, `fileParallelism: false`; default timeouts
-  too small, hence the explicit per-hook/per-it timeouts already in the file.
+### Measured results (the deliverable numbers so far — all single-machine, localhost websockets)
+
+| Run | Setup | Outcome |
+| --- | --- | --- |
+| 1 full suite, unpinned | healthy case | commit, 359 ms ✓ |
+| 2 isolated, unpinned | 2 s-delayed member | **commits, 55.0 s and 55.1 s per write** — the 2 s delay is paid serially by ~27 cluster RPCs per write |
+| 3 isolated, unpinned | never-answering member | **clean failure at 42.1 s**, message contains the exact super-majority text, root cause `The stream has been reset`; rollback + not-queued assertions passed |
+| 5 isolated, unpinned | SAME never-answering case | **committed in 504 ms** |
+| 4 isolated, unpinned | reads-during-stall | write committed in 2.6 s (degradation never engaged), reads trivially fine |
+| 6 full suite, pinned to [A, B] | all degraded cases | degradation NEVER engages: zero streams hit the delay/stall wrapper, every write commits in ~250–500 ms; the three "must fail / must be delayed" cases fail their assertions |
+
+**Interpretation so far:** the outcome depends on which node the transactor's `findCoordinator`
+draw picks per block (cold FRET ≈ proximity to block id ≈ uniform across the trio):
+
+- Coordinator = the DEGRADED node C → writer reaches C over the repo protocol (healthy), C's own
+  cluster vote is in-process → fast commit. Real availability, matches the ticket's "known hole".
+- Coordinator = healthy remote (B) → B's cluster fan-out must RPC C's degraded cluster-protocol
+  handler → degradation bites (55 s delayed commit / 42 s failure).
+- Coordinator = the WRITER ITSELF (A, what the pin forces) → **open mystery**: writes commit fast
+  and C's cluster handler never receives a stream, yet the healthy case's forced-cohort
+  anti-vacuity assertions pass (cohort of 3 consulted). Budget ran out mid-code-read here.
+
+### Where the mystery investigation stopped (continue here, don't restart)
+
+Verified: `getRepo(selfPeer)` returns the node's `coordinatedRepo` (a `CoordinatorRepo` wrapping
+`StorageRepo`) — see `../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts:183`
+and node wiring in `../optimystic/packages/db-p2p/src/libp2p-node-base.ts:868`. So self-coordination
+is SUPPOSED to run cluster consensus. Next read was `CoordinatorRepo.pend`
+(`../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts:644`) to find where the A-self path
+avoids dialing C. Candidate explanations to check in code, in order:
+- a policy/size trim (`clusterSize`, `clusterSizeTolerance`, `allowDownsize`) shrinking the
+  effective consensus set on the self path;
+- `ClusterClient` reusing an existing open stream to C (handler swap only affects NEW inbound
+  streams) — note run 2 contradicts naive stream-reuse: every RPC there paid the 2 s delay;
+- the anti-vacuity `findCluster` counter being satisfied by the REPLICATION path (breadth-16
+  fan-out) rather than by consensus, letting consensus quietly run against a smaller set.
+
+If the self path genuinely commits without consulting the cohort, that is a CONSISTENCY question
+(one node can commit a control write alone whenever it self-coordinates) — file a `fix/` or
+`blocked/` ticket for it with the evidence above; do not silently absorb it into this coverage
+ticket.
 
 ## TODO (remaining)
 
-### Phase 3 — validate and record
+- Resolve the self-coordination mystery above (code reading in `../optimystic`, then targeted runs).
+- Make the suite deterministic. Likely correct pin: `pinCoordinator([A, B, C], [B])` — forcing the
+  healthy REMOTE node to coordinate is the branch where degradation provably bites (runs 2 and 3).
+  Keep the pin-to-writer branch's fast-commit observation documented in the scenario header either
+  way.
+- Re-run the full suite (twice+) under the deterministic pin; set FINAL constants with honest slack
+  around the measured values (delayed commit ~55 s; stall failure ~42 s; keep the commit-case
+  ceiling below the failure-case floor) and restore tight `within` deadlines and per-`it` timeouts.
+- Re-check the two run-1 red flags under the deterministic setup (they were contaminated by an
+  abandoned in-flight write in run 1 and have NOT been cleanly reproduced):
+  - control READS hung ≥ 15 s while a write was stalled (`hasOwnerKey` timeout);
+  - after a failed write, LATER writes failed instantly still naming the failed write's block id
+    (`in-flight` + stream reset) — i.e. one failed control write may poison all subsequent ones.
+  Each, if cleanly reproduced, is a real defect: keep the test as reproducer, file a `fix/` ticket.
+- Run `yarn lint` again over the touched files.
+- Update `docs/architecture.md` → "Replication cluster size" with one or two sentences on the
+  measured cost: one degraded member turns a sub-second control write into ~55 s (slow member) or a
+  ~42 s failure (silent member), EXCEPT when the degraded node itself coordinates, in which case the
+  write commits fast.
+- Write the review/ handoff (honest: single-machine timings; forced cohort replaces discovery;
+  pinned coordinator replaces FRET's draw; the fast-commit-via-degraded-coordinator branch is
+  documented, not asserted) and delete this ticket.
 
-- Run `yarn lint` (repo root) — not yet run; fix anything it flags in the two new files.
-- Run the scenario, streaming output so the runner's 10-minute idle timer never expires:
-  `cd packages/integration-tests && yarn vitest run src/scenarios/control-write-degraded-cohort-member.integration.ts --reporter=verbose 2>&1 | tee <scratchpad>/degraded.log`
-  (the suite's global setup fails fast if any cadre dist is stale — `yarn build` at root first if
-  it complains). Run it **more than once** — the timing assertions are the point.
-- The three timing constants (`FAILURE_FLOOR_MS` 15 s / `FAILURE_CEILING_MS` 45 s /
-  `DELAYED_COMMIT_CEILING_MS` 30 s) are provisional predictions: adjust to the measured reality
-  with honest slack, keeping the commit-case ceiling below the failure-case floor.
-- If the failure case instead COMMITS through the degraded node (the known hole above): that is
-  availability, not a defect — flip that case's assertions to the measured outcome and say so in
-  the handoff. If anything HANGS: keep the test as reproducer and file the `fix/` ticket per the
-  "If instead it hangs" paragraph.
-- Watch for: B/C heartbeat `registerSelf` fires 7.5 min after their start — if the whole suite ever
-  runs that long, a heartbeat write can land mid-stall (slows the heartbeat, should not touch
-  assertions; note it if seen in the log).
-- Record the **measured** wall-clock and error text for the past-deadline case in the review
-  handoff, alongside the prediction, and say plainly whether they matched.
-- Update `docs/architecture.md` → "Replication cluster size" with one or two sentences stating the
-  measured write-availability cost of whole-party control replication.
-- Write the review/ handoff ticket (honest about gaps — e.g. single-machine timings, the forced
-  cohort substituting discovery) and delete this ticket.
+Measurement logs from this run (may not survive the session):
+`C:\Users\n8ers\AppData\Local\Temp\claude\C--projects-sereus\d7bc0f30-411c-4187-9f66-8ad4c594d4ef\scratchpad\degraded-run*.log`
+— all `[measured]` lines are reproduced in the table above.
