@@ -47,7 +47,10 @@ export function applyEnvironmentOverrides(config: CliConfigFile): CliConfigFile 
 
   for (const [envVar, configPath] of Object.entries(ENV_MAPPINGS)) {
     const value = process.env[envVar];
-    if (value === undefined) continue;
+    // An empty value means "not specified" — a docker-compose default like
+    // `${CADRE_ENABLE_RELAY:-}` must leave the config file's value (or the
+    // profile default) alone rather than forcing false / [] / etc.
+    if (value === undefined || value.trim() === '') continue;
 
     log('Applying env override: %s=%s', envVar, value);
     setNestedValue(result, configPath, parseEnvValue(envVar, value));
@@ -82,15 +85,13 @@ function parseEnvValue(envVar: string, value: string): unknown {
 /**
  * Parse the `CADRE_PUSH` environment value into a `PushCredentials` object.
  *
- * The value MUST be a JSON object (e.g. `{"fcm":{...},"apns":{...}}`). An empty
- * value (the `CADRE_PUSH=` default a docker-compose may pass) yields `undefined`
- * so the node simply runs without push. A non-empty value that fails to parse
- * throws — a misconfigured push block must fail loudly at start, not silently
- * disable wake delivery.
+ * The value MUST be a JSON object (e.g. `{"fcm":{...},"apns":{...}}`) — the
+ * override loop already skips empty values, so a call here is always
+ * non-empty. A value that fails to parse throws — a misconfigured push block
+ * must fail loudly at start, not silently disable wake delivery.
  */
 function parsePushEnv(value: string): unknown {
   const trimmed = value.trim();
-  if (trimmed === '') return undefined;
   let parsed: unknown;
   try {
     parsed = JSON.parse(trimmed);
@@ -108,20 +109,18 @@ function parsePushEnv(value: string): unknown {
 
 /**
  * Parse the `CADRE_STRAND_FILTER` environment value into the shape
- * {@link parseStrandFilter} expects.
+ * {@link parseStrandFilter} expects. The override loop already skips empty
+ * values, so a call here is always non-empty.
  *
- * Bare `all`/`none` (case-insensitive, trimmed) are kept as scalar strings. An
- * empty value (e.g. the `CADRE_STRAND_FILTER=` default that docker-compose
- * passes) is treated as `all`. Object filters must be supplied as **JSON** —
- * e.g. `{"sAppId":"myapp"}` or `{"strandId":"<id>"}` — mirroring the explicit
- * encoding precedent of the `_NODES`/`_ADDRS` vars. A `{`-leading value that
- * fails to parse throws, rather than degrading to a raw string that
- * {@link parseStrandFilter} would later reject.
+ * Bare `all`/`none` (case-insensitive, trimmed) are kept as scalar strings.
+ * Object filters must be supplied as **JSON** — e.g. `{"sAppId":"myapp"}` or
+ * `{"strandId":"<id>"}` — mirroring the explicit encoding precedent of the
+ * `_NODES`/`_ADDRS` vars. A `{`-leading value that fails to parse throws,
+ * rather than degrading to a raw string that {@link parseStrandFilter} would
+ * later reject.
  */
 function parseStrandFilterEnv(value: string): unknown {
   const trimmed = value.trim();
-  if (trimmed === '') return 'all';
-
   const lower = trimmed.toLowerCase();
   if (lower === 'all' || lower === 'none') return lower;
 
