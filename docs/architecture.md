@@ -832,7 +832,7 @@ interface CadreNodeConfig {
   // Network configuration
   network: {
     listenAddrs?: string[];       // Addresses to listen on
-    announceAddrs?: string[];     // Addresses to advertise
+    announceAddrs?: string[];     // Addresses to advertise — accepted but NOT YET APPLIED (no upstream db-p2p option; warns at start)
     // Circuit relays to reserve a slot on, as `<dial addr>/p2p/<relayPeerId>`.
     // Sugar for a `/p2p-circuit` entry in listenAddrs: `relay-addrs.ts` resolves the
     // two into one listen list (adding `/ip4/0.0.0.0/tcp/0` when listenAddrs is unset),

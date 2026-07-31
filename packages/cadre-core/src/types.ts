@@ -141,6 +141,25 @@ export interface StorageConfig {
  */
 export interface NetworkConfig {
   listenAddrs?: string[];
+  /**
+   * Addresses to advertise to peers instead of `listenAddrs` — for a node behind
+   * NAT or a reverse proxy that is reachable at a different address than it binds
+   * (e.g. `mynode.example.com:4001` in front of a `0.0.0.0:4001` listener).
+   *
+   * Accepted (settable in `cadre.yaml`, via `CADRE_ANNOUNCE_ADDRS`, and through the
+   * Docker entrypoint) but **not yet applied**: libp2p only takes announce addresses
+   * at construction (`addresses.announce` / `addresses.appendAnnounce`), and
+   * `@optimystic/db-p2p`'s `NodeOptions` has no field for either — there is nothing
+   * in this repo to wire this into. `CadreNode.start()` warns when this is set,
+   * rather than pretending it works. Tracked by `implement/14.1-cadre-announce-addrs-upstream`
+   * pending an upstream `db-p2p` change.
+   *
+   * Use {@link relayAddrs} for reachability behind NAT today (a reserved relay slot
+   * gives the node a real dialable circuit address), or `inviteAddressResolver` to
+   * substitute a reachable address into invite payloads specifically — neither
+   * changes what this node advertises on the wire, but both cover the operator need
+   * this field cannot yet.
+   */
   announceAddrs?: string[];
   /**
    * Circuit-relay servers this node reserves a slot on, so peers can reach it

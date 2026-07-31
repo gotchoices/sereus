@@ -545,6 +545,13 @@ export class CadreNode implements SAppIdLookup {
 
     log('Starting CadreNode for party: %s', this.config.controlNetwork.partyId);
 
+    if (this.config.network?.announceAddrs && this.config.network.announceAddrs.length > 0) {
+      console.warn(
+        'network.announceAddrs is set but not yet supported (no upstream db-p2p option to apply it) ' +
+        '— this node will keep advertising its listen/relay addresses instead.'
+      );
+    }
+
     try {
       const tTotal = performance.now();
 
