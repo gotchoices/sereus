@@ -207,3 +207,78 @@ live and what stops a new one appearing elsewhere.
   `2>&1 | tee` so the runner's idle timer does not expire.
 - Hand off to `review/` noting whether the lint rule was verified to fire on a
   deliberately misplaced statement.
+
+## Discovery notes (prior run stopped on budget before editing)
+
+An earlier agent run read the code but wrote **nothing** — the working tree is clean of
+this ticket's work, every TODO above is still open. What it found, so the next run does
+not pay for the same reading:
+
+### Exact current locations (verified)
+
+| what | where |
+| --- | --- |
+| `insertCadrePeerRow` (the INSERT that moves) | `packages/cadre-core/src/seed-bootstrap.ts:374-407` |
+| `reauthorizePeer` (the UPDATE that moves) | `packages/cadre-core/src/seed-bootstrap.ts:610-649` |
+| `removePeer` (unchanged; already delegates) | `packages/cadre-core/src/seed-bootstrap.ts:557-585` |
+| `deleteCadrePeer` — put the two new methods beside it | `packages/cadre-core/src/control-database.ts:1043-1050` |
+| `insertStrand` — the owner-signed-insert shape to copy | `packages/cadre-core/src/control-database.ts:907-934` |
+| `queryStampId` (private) / `queryCadrePeerStampId` | `packages/cadre-core/src/control-database.ts:689-708` |
+| `buildAuthorizationMessage` | `packages/cadre-core/src/control-database.ts:250-256` |
+| `mutateCadrePeer` / `withWriteLock` / `execWrite` | `packages/cadre-core/src/control-database.ts:1222`, `1262`, `1279` |
+
+`generateStampId` is already exported from `control-database.ts:28`, so the new methods
+need no new import for it.
+
+### Import fallout in `seed-bootstrap.ts` (will fail lint if missed)
+
+- `cadrePeerVoucherDigest` (imported at line 26) is used ONLY by the two moving bodies
+  (lines 389, 634). After the move it is an unused import — drop it from the
+  `peer-authorization.js` import (keep `deviceTokenAddDigest`, still used at line 428).
+  Three doc comments `{@link cadrePeerVoucherDigest}` (lines 350, 508, 590) then link to
+  a symbol the file no longer imports — reword to plain backticks or name the new
+  `ControlDatabase` method.
+- `generateStampId` (line 24) STAYS: `insertSelfDeviceToken` still uses it at line 427.
+- `getDatabase()` STAYS in the file: line 1013 is a `select … from CadreControl.CadrePeer`
+  read. The lint rule matches insert/update/delete only, so it will not fire there.
+
+### Test coverage that constrains the change
+
+- `test/control-membership-hub.spec.ts:105-244` pins the notify contract. The reason
+  labels `'peer-insert'` / `'peer-reauthorize'` / `'peer-remove'` are asserted verbatim —
+  do not rename them. Line 134-142 is exactly the "absent row on re-touch must not
+  notify" case the ticket calls out; it drives `service.reauthorizePeer`, so it keeps
+  covering the delegated path.
+- `test/membership-gate-helpers.ts:89` declares `mutateCadrePeer` structurally on a fake —
+  another reason it stays public.
+- `test/seed-bootstrap.spec.ts:991-1003` is the ONLY existing error-precedence test, and
+  it covers `removePeer` alone. The ticket's "one test per method" for
+  `insertCadrePeerRow` / `reauthorizePeer` precedence is **new coverage to write**, not
+  existing coverage to keep green.
+- `test/seed-bootstrap.spec.ts:1026-1090` is the authorize→remove→re-authorize round trip
+  against a real control DB. Insert-race orderings live in
+  `test/control-write-lock.spec.ts:146-190`, not in `seed-bootstrap.spec.ts` as the
+  ticket body implies — run both.
+
+### Lint exemption list (verified by grep — these are ALL the raw `CadrePeer` write sites)
+
+- `packages/cadre-core/test/control-authorization-domain-separation.spec.ts` lines 144,
+  289, 322 (inserts) and 339 (delete).
+- `packages/cadre-core/test/control-revocation-replay.spec.ts` lines 187 (insert), 209
+  (update), 223 (delete).
+- Nothing else. `packages/cadre-host/src/auth/__tests__/trust-circle-integration.test.ts:146`
+  is a `select` and needs no exemption.
+
+In `eslint.config.mjs`, the TS rules block is lines 83-111; the exemption override must
+come AFTER whichever block declares the rule (flat config: later entry wins).
+
+### Doc sites to update (Phase 4)
+
+- `docs/architecture.md:47` — "`SeedBootstrapService`'s direct SQL goes through the same
+  seam" goes stale: after this ticket the only direct SQL left there is a read.
+- `docs/architecture.md:202` — names `SeedBootstrapService.reauthorizePeer` as the
+  owner-signed `UpdatedAt` bump.
+- `packages/cadre-core/src/peer-authorization.ts:188` — the
+  `{@link SeedBootstrapService.insertCadrePeerRow}` reference.
+- `docs/STATUS.md:952` describes the digests, not the write's home; re-read before
+  editing — it may need no change.
