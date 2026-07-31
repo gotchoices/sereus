@@ -37,6 +37,7 @@ and are re-exported through `packages/integration-tests/src/harness/index.ts`:
 | `control-cohort-three-node-isolation` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `connectionsTo`, `hasOutboundTo` |
 | `control-cohort-cold-start-retry` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `randomPeerId`, `connectionsTo` |
 | `control-stream-authz` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `waitForConnection` |
+| `control-write-degraded-cohort-member` | `nodeConfig` only (added after this ticket was filed; its `makeOwnOwner`/`randomPeerId`/`wsTransports` copies were already folded back into the harness during that ticket's review) |
 
 `createSignedSAppConfig`, `makeOwnOwner`, `randomPeerId`, `connectControlNodes` and
 `wsTransports` are character-identical to the shared versions (modulo `makeOwnOwner`'s

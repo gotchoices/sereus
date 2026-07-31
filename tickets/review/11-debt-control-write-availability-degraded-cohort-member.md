@@ -1,155 +1,103 @@
-description: Review a new integration test suite that measures how much a slow or unresponsive machine in a group slows down (or blocks) shared-settings changes made on another machine.
+description: Finish the review of the test suite that measures how much a slow or unresponsive machine slows down shared-settings changes made on another machine — the code review is done and its fixes are applied, but the suite has not been re-run since.
 prereq:
-files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/integration-tests/src/harness/index.ts, docs/architecture.md, tickets/fix/control-reads-blocked-by-stalled-write.md
+files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, docs/architecture.md, tickets/fix/transactor-key-network-ignores-network-scoping.md, tickets/plan/10-integration-test-harness-helper-consolidation-remaining-files.md
 difficulty: medium
 ----
 
-# Review: control-write availability with a degraded party member
+# Review continuation: degraded-cohort-member scenario
 
-## What this is
+The adversarial read-through is **done** and its inline fixes are **applied**; the run ended on
+a token budget warning before the suite could be re-run. What remains is validation plus one
+open coverage decision. Everything already established is recorded below so the next pass does
+not repeat it.
 
-The control database (a party's shared settings + membership list) replicates every block to
-the **whole party**, and a write commits only when a super-majority of the block's cohort
-approves. At three nodes that bar is `ceil(3 × 0.75) = 3` — unanimity — so a member that is
-*connected but degraded* (slow, or silently never answering) sits inside the cohort and counts
-against the bar. Nothing measured that before. This work adds the measurement: a six-case
-integration scenario plus two harness helpers that make it deterministic, and a docs section
-recording the numbers.
+## Already done in this review
 
-**Result in one line:** a degraded member costs latency and availability but not consistency —
-a healthy trio writes in ~0.5 s, a 2 s-delayed member turns that into ~55 s, a silent member
-turns it into a clean ~20 s failure that rolls back and is not queued for retry, and the next
-write commits normally.
+### Read and checked
 
-## Current state — the suite is green and reproducible
+The full implement diff (`git diff c29b8fc..HEAD`): the scenario file, `harness/forced-cluster.ts`,
+the harness barrel export, the `docs/architecture.md` bullets, and the spawned
+`fix/control-reads-blocked-by-stalled-write` ticket. Also cross-read `harness/node-fixtures.ts`,
+`plan/13-debt-harness-control-cohort-never-multi-peer`,
+`plan/10-integration-test-harness-helper-consolidation-remaining-files`, and the relevant
+optimystic sources (`libp2p-key-network.ts`, `libp2p-node-base.ts`, the Quereus collection
+factory) to verify the diff's own claims about them.
 
-```
-cd packages/integration-tests
-yarn vitest run src/scenarios/control-write-degraded-cohort-member.integration.ts --reporter=verbose
-```
+### Fixed inline (all in the scenario file unless noted)
 
-Last two full runs (both after the code below was final; ~180–200 s wall clock each):
+- **A doomed write leaked into the next case.** In the expected-failure case ("a control read
+  answers locally while a write is stalled"), the stalled `authorizePeer` was joined at the
+  *end* of the `try` — a line the currently-expected failure path never reaches, so the write
+  was still in flight (holding the control write lock) when the next case started. The write
+  is now started outside the `try` and drained in the `finally`, after `restore()` aborts the
+  held streams so it settles promptly.
+- **The healthy baseline case was the one case with no proof the trio was real.** A self-only
+  cohort also commits sub-second, so `forced.callCount()` alone could not distinguish them.
+  Added `observeClusterHandler` — the existing degradation wrapper at zero delay, i.e. a pure
+  counter — and the case now asserts C actually received inbound cluster RPCs. It also logs
+  its measured elapsed time, which `docs/architecture.md` cites (~0.5 s) but nothing emitted.
+- **Duplicated harness helpers.** The file re-implemented `makeOwnOwner`, `wsTransports` and
+  `randomPeerId` (as `freshTargetPeerId`), all of which already live in
+  `harness/node-fixtures.ts` — the exact class of duplication that
+  `plan/10-integration-test-harness-helper-consolidation-remaining-files` exists to remove.
+  Swapped to the shared versions. The local `nodeConfig` stays, because folding it in needs the
+  `trustedOwners` option that ticket 10 flags as an open decision; a comment now says so, and
+  ticket 10's table gained a row for this file.
+- **Header comment duplicated `forced-cluster.ts`.** Trimmed the restated
+  two-key-network-instances explanation down to a pointer, keeping the parts unique to the
+  scenario (why the coordinator pin changes *which* branch is measured, and why A not B).
+- Added a failure message to the previously bare cohort-size assertion.
 
-| Case | Run A | Run B |
-| --- | --- | --- |
-| healthy trio (authorize + remove) | ✓ 459 ms | ✓ 1099 ms |
-| 2 s-delayed member (authorize / remove) | ✓ 54.6 s / 54.9 s | ✓ 54.6 s / 54.8 s |
-| never-answering member (authorize) | ✗ *see below* 40.4 s | ✓ 20.2 s |
-| **reads during a stalled write** | **expected-fail** 15.3 s | **expected-fail** 15.3 s |
-| recovery after restore | ✓ 906 ms | ✓ 1245 ms |
-| failed DELETE not queued | ✓ 20.2 s | ✓ 20.2 s |
+### Filed as a new ticket
 
-Run B is the final state: **5 passed + 1 expected fail, exit 0**. Run A is included on purpose
-— it is the run that exposed the nondeterminism described under "Things a reviewer should push
-on" and drove the last assertion change.
+`fix/transactor-key-network-ignores-network-scoping` — the production concern the implement
+ticket raised. Verified: optimystic's Quereus collection factory builds the transactor's key
+network as `new Libp2pKeyPeerNetwork(libp2pNode)` with **no arguments**, one line before
+computing the correct protocol prefix for `RepoClient`. Consequences confirmed by reading the
+constructor: no network scoping on `findCluster`/`findCoordinator`, and `clusterSize` defaults
+to 16 — harmless for control (Cadre configures 16 anyway) but wrong for strands
+(`DEFAULT_STRAND_CLUSTER_SIZE = 2`).
 
-Also clean: `yarn tsc --noEmit` in `packages/integration-tests`, and `yarn eslint` over both
-touched files.
+### Checked and found fine
 
-**Prerequisite gotcha:** the run aborts with `Stale build detected` if the linked
-`../quereus` workspace has been edited since its last build. Fix is
-`cd ../quereus && yarn workspace @quereus/quereus build`. That was needed for this run and is
-not a defect in this work.
+- Restore ordering (`pinned` before `forced`, degradation before `node.stop()`), the abort
+  plumbing in `delayOrAbort`/`untilAbort`, the no-unhandled-rejection handling in the degraded
+  wrapper, and `afterAll` tolerating a `beforeAll` that threw part-way.
+- The expected-failure case is `it.fails`, not `it.skip`, with unweakened assertions — correct
+  per the pre-existing-failures rule, and it turns red if the defect is ever fixed.
+- The relaxation of the approval count to `\d+/3` is right: the round count genuinely varies,
+  and the parts that carry the claim (cohort of 3, `needed 3`, **0 rejections**) are still
+  pinned literally.
 
-## The expected failure is a real defect, deliberately left failing
+### Validated after the edits
 
-The case `a control read answers locally while a write is stalled` is marked `it.fails` with a
-comment naming `tickets/fix/control-reads-blocked-by-stalled-write`. Its assertions are the
-real ones — nothing was weakened and nothing was skipped. `it.fails` was chosen over `it.skip`
-specifically because vitest **runs the body and fails the suite if it ever passes**, so the day
-that fix lands, this turns red and forces whoever landed it to promote the case back to a plain
-`it` (the fix ticket's "done means" says so).
+`tsc --noEmit -p tsconfig.typecheck.json` in `packages/integration-tests`: clean.
+`npx eslint` over both touched files: clean.
 
-The defect: on the writing node, a plain local read (`ControlDatabase.hasOwnerKey()`) does not
-answer within 15 s while a stalled write is in flight; it answers only once the write settles.
-Already ruled out in the fix ticket: cadre-core's write queue (reads take no lock there) and
-the harness's coordinator pin (the same hang predates the pin).
+## What remains
 
-## What the harness helpers do — the part most worth reviewing
-
-Both live in `harness/forced-cluster.ts` and both patch `Libp2pKeyPeerNetwork.prototype`, not
-node instances. They replace **discovery and coordinator selection only**; the real cluster
-clients, response deadlines, transports, and every peer's real `ClusterMember` stay in place.
-
-- `forceFullCohort(nodes)` — makes `findCluster` return the forced trio. Needed because FRET's
-  routing table never warms up inside a test's lifetime, so real discovery returns self-only
-  cohorts that never reach the super-majority branch at all. Without it the whole scenario is
-  vacuous.
-- `pinCoordinator(candidates)` — pins who coordinates a write batch. Two seams, because the
-  transactor picks a coordinator two ways: `findCoordinator` (fallback/retry/read) and
-  `findCluster` (the primary write seam — `NetworkTransactor.consolidateCoordinators` does
-  greedy set cover over per-block `findCluster` results and only calls `findCoordinator` when
-  those throw). The pin re-keys the cohort candidates-first without changing membership.
-
-**The two-key-network-instances discovery — flag this for a production decision, not just a
-test one.** Every node has *two* `Libp2pKeyPeerNetwork` instances over the same libp2p node:
-the node-attached one (`node.keyNetwork`, used for consensus cohort derivation and admission)
-and a **fresh default-args one** that the quereus-plugin collection factory builds for the
-`NetworkTransactor` — every transactor-level `findCluster`/`findCoordinator` goes through that
-second one. This is what made every earlier instance-level patch silently ineffective. The
-production question the reviewer should weigh: that fresh instance is built with **default
-args**, so it skips both the node's configured `clusterSize` and its network-scoping
-`protocolPrefix`. That is a real production concern about the collection factory reusing
-`node.keyNetwork`, not merely a test seam.
-
-## Things a reviewer should push on
-
-- **The pin does NOT make the failure latency deterministic, contrary to what the implement
-  ticket claimed.** Run A settled the never-answering authorize in 40.4 s reporting `0/3
-  approvals`; run B settled the same case in 20.2 s reporting `2/3 approvals`. ~20 s is one
-  pend round (two 10 s `ClusterClient` response-deadline attempts against the silent member);
-  ~40 s is two rounds. The assertion was therefore relaxed from the literal `2/3` to `\d+/3`,
-  keeping the parts that are the actual claim: super-majority failure, cohort of 3, `needed 3`,
-  and **0 rejections** (the write failed on silence, not on a no-vote). Judge whether that
-  relaxation is right or whether the round count should instead be pinned down.
-- **The second round reports 0 approvals *and* 0 rejections even though A and B are healthy.**
-  A retried control write appears to hear nothing from the healthy members either. It is benign
-  for the assertion (the write must fail either way) and was not chased inside this ticket. It
-  is recorded as a `NOTE:` at the assertion site. If a reviewer thinks this is a defect rather
-  than a budget artifact, it deserves its own ticket.
-- **All timings are single-machine, localhost websockets.** The bounds carry ~2–3× headroom off
-  measurement, but they are still wall-clock assertions in an integration suite; the ~10 s
-  pieces are fixed timers rather than CPU-bound work, which is what makes that headroom
-  plausible on slower hardware. Nobody has run this on CI.
-- **`pinCoordinator` depends on an optimystic internal:** greedy set cover keeps the
-  first-inserted peer among coverage ties. Documented in the function header. If that tie-break
-  ever changes, the pin stops biting — and the failure is loud, not silent: the must-fail cases
-  start committing fast, because a write coordinated *by* the degraded node commits (its own
-  vote is in-process, its degraded inbound handler is never dialled).
-- **The pin is `[A]`, and A is also where reads must go.** `findCoordinator` is the read path's
-  routing seam too, and only A holds the control trees' genesis-era blocks (it wrote them solo
-  before B and C joined) — pinning to B made every case fail instantly with `Missing block`.
-  So the pin choice is load-bearing for reasons unrelated to degradation. Worth a sanity check
-  that this does not weaken what the cases claim to measure.
-- **Prototype patches are process-wide.** Vitest's per-file worker isolation contains the blast
-  radius to one suite; noted in the harness header. A suite that ran strand traffic alongside
-  these helpers would be affected.
-- **`forced.callCount()` alone does not prove consensus fan-out** — it proves discovery was
-  consulted. The cases pair it with `interceptedStreams()` (the degraded node really saw
-  inbound streams) and elapsed-time bounds. Check that pairing holds in every case that claims
-  anti-vacuity.
-- **Tripwire, not a ticket:** an early exploratory run (pre-pin) once showed a write *after* a
-  failed write also failing — a failed write possibly poisoning later ones. It has not
-  reproduced since; the recovery case commits in ~1 s every run. Parked as a `NOTE:` on the
-  recovery case saying where to look if it returns.
-
-## Use cases the suite covers
-
-- Party of three, one member connected and healthy → membership writes commit sub-second.
-- One member slow (2 s per inbound cluster RPC) → writes still commit, paying ~55 s. The
-  amplification is the point: one control write makes ~27 inbound cluster RPCs and pays the
-  delay serially on each, so a small per-RPC latency becomes a large per-write one.
-- One member silent → writes fail cleanly with a named super-majority error, roll back locally,
-  and are **not** placed in the write-while-alone re-replication queue (asserted for both
-  directions — INSERT via `authorizePeer` and stamp-retiring DELETE via `removePeer`; the
-  DELETE direction had been missed once before by an earlier review).
-- Recovery: once the member is restored, the next write commits normally, so neither the
-  coordinator nor the transaction state store is left wedged by the failures.
-- Reads during a stalled write → currently blocked; standing reproducer for the open fix.
-
-## Docs
-
-`docs/architecture.md` → "Replication cluster size" gained two bullets: the degraded-member
-latency/availability numbers (including the exception — a write coordinated *by* the degraded
-node commits fast, so the cost depends on who coordinates), and one bullet pointing at the
-reads-blocked-by-stalled-write defect and its ticket.
+- **Re-run the suite.** It has NOT been run since the inline fixes. Expect ~180–200 s.
+  ```
+  cd packages/integration-tests
+  yarn vitest run src/scenarios/control-write-degraded-cohort-member.integration.ts --reporter=verbose
+  ```
+  Expected outcome: **5 passed + 1 expected fail, exit 0**. The three edits that could plausibly
+  move behaviour are the zero-delay observer wrapper on the healthy case (adds one macrotask per
+  inbound RPC), the drain in the expected-failure case's `finally`, and the shared-helper swap
+  (`makeOwnOwner` now returns the owner public key rather than the scenario deriving it
+  separately — same value, different call site).
+  If the run trips `Stale build detected`, rebuild the linked workspace first:
+  `cd ../quereus && yarn workspace @quereus/quereus build`.
+- **Decide on the uncovered coordinator branch.** `docs/architecture.md` now states that a write
+  coordinated *by* the degraded node commits fast. Nothing asserts this — the coordinator pin
+  deliberately excludes that branch, and the implement notes say pinning to a non-A node makes
+  reads fail with `Missing block` because only A holds the genesis-era control blocks. So the
+  claim is documented on the strength of a pre-pin observation. Either add a case that pins the
+  coordinator to C and asserts the fast commit (if the `Missing block` problem can be worked
+  around for a write-only case), or file a coverage ticket, or soften the docs bullet to say it
+  is observed-not-asserted. Pick one and say which in the completion ticket.
+- **Write the `complete/` ticket** with a `## Review findings` section covering everything above
+  plus the run result. Note explicitly that no tripwires beyond the two the implementer already
+  parked (the second-round zero-approvals `NOTE:` and the failed-write-poisoning `NOTE:`) were
+  added, and that both were checked and judged correctly placed as code comments rather than
+  tickets.

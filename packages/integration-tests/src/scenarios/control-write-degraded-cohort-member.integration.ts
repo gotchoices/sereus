@@ -33,30 +33,22 @@
  *
  * A naive three-node test proves nothing here: FRET's routing table stays cold
  * inside a test's lifetime, so real cohort discovery returns self-only cohorts
- * that never reach the super-majority branch. `forceFullCohort` (see
- * `harness/forced-cluster.ts`) replaces cohort DISCOVERY — on the
- * `Libp2pKeyPeerNetwork` prototype, so BOTH instances per node see it: the
- * node-attached one that derives the consensus cohort, and the fresh one the
- * quereus-plugin collection factory builds for the `NetworkTransactor` — with
- * the full trio, while leaving the real cluster clients, deadlines,
- * transports, and members in place. Its call counters back the anti-vacuity
- * assertions that each write really consulted a 3-peer cohort.
+ * that never reach the super-majority branch. `forceFullCohort` and
+ * `pinCoordinator` (see `harness/forced-cluster.ts` for what they patch and
+ * why) replace cohort DISCOVERY and coordinator ASSIGNMENT only — the real
+ * cluster clients, response deadlines, transports and `ClusterMember`s all stay
+ * in place. Their call counters back the anti-vacuity assertions that each write
+ * really consulted a 3-peer cohort.
  *
- * The batch COORDINATOR is pinned too (`pinCoordinator([A])` — the healthy
- * owner/storage node). Unpinned, the transactor's own key-network instance
- * assigns the coordinator (set cover over `findCluster`, key-proximity order),
- * a draw the test does not control and one that STICKS for a whole suite: the
- * hot control-tree block ids are stable and the instance caches per-key
- * coordinators. When that draw lands on the degraded node itself, the writer
- * reaches it over the (healthy) repo protocol, its own cluster vote is
- * in-process, and its degraded INBOUND cluster handler never sees a stream —
- * so the write COMMITS fast (measured: ~0.25–0.5 s) instead of failing
- * (~42 s), and it does so for EVERY case in the run. That
- * commit-through-the-degraded-coordinator branch is real availability, not a
- * defect — it is documented here and in `docs/architecture.md`, and the pin
- * exists so this suite deterministically measures the OTHER branch, the one
- * where a healthy coordinator must RPC into the degraded member and the
- * degradation actually bites.
+ * The coordinator pin (`pinCoordinator([A])`) decides WHICH branch is measured,
+ * not merely how deterministically. When the coordinator is the degraded node
+ * itself, the writer reaches it over the (healthy) repo protocol, its own
+ * cluster vote is in-process, and its degraded INBOUND cluster handler never
+ * sees a stream — so the write COMMITS fast (measured: ~0.25–0.5 s) instead of
+ * failing (~42 s). That branch is real availability, not a defect; it is
+ * recorded in `docs/architecture.md` and is deliberately NOT covered here.
+ * Pinning to a healthy node measures the other branch, the one where a healthy
+ * coordinator must RPC into the degraded member and the degradation bites.
  *
  * Why A and not B: `findCoordinator` is also the READ path's routing seam
  * (`NetworkTransactor.batchesForPayload`), and only A holds the control trees'
@@ -76,16 +68,16 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import debug from 'debug';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import type { Stream, Connection } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
+import { CadreNode } from '@serfab/cadre-core';
 import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { waitUntil, sleep, forceFullCohort, pinCoordinator } from '../harness/index.js';
+import {
+	waitUntil, sleep, forceFullCohort, pinCoordinator, wsTransports, makeOwnOwner, randomPeerId
+} from '../harness/index.js';
 import type { ForcedCohortHandle, PinnedCoordinatorHandle } from '../harness/index.js';
 
 const log = debug('sereus:integration:degraded-cohort');
@@ -291,8 +283,24 @@ async function degradeClusterHandler(node: CadreNode, partyId: string, delayMs: 
 	};
 }
 
+/**
+ * The same wrapper with NO degradation — a pure counter of inbound cluster RPCs.
+ * The healthy case needs it: a self-only cohort would also commit sub-second, so
+ * `forced.callCount()` alone (discovery was consulted) cannot tell the two apart;
+ * a non-zero count on the third node proves consensus really fanned out to it.
+ */
+function observeClusterHandler(node: CadreNode, partyId: string): Promise<DegradedHandle> {
+	return degradeClusterHandler(node, partyId, 0);
+}
+
 // ── Trio boot ─────────────────────────────────────────────────────────────────
 
+/**
+ * Local because the shared `controlNodeConfig` has no `trustedOwners` option yet —
+ * the one open decision in `plan/10-integration-test-harness-helper-consolidation-
+ * remaining-files`, which tracks folding this builder (and the isolation scenario's
+ * identical copy) into the harness. Everything else here comes from the harness.
+ */
 function nodeConfig(opts: {
 	partyId: string;
 	privateKey: PrivateKey;
@@ -306,7 +314,7 @@ function nodeConfig(opts: {
 		storage: { provider: () => new MemoryRawStorage() },
 		privateKey: opts.privateKey,
 		network: {
-			transports: [webSockets(), circuitRelayTransport()],
+			transports: wsTransports(),
 			// Unlike the isolation scenario, ALL THREE nodes listen: cluster fan-out
 			// must be able to dial every cohort member directly.
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws']
@@ -314,15 +322,6 @@ function nodeConfig(opts: {
 		...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
 		hibernation: { enabled: false }
 	};
-}
-
-/** Genesis: enroll the node's derived key in `OwnerKey` and wire seed bootstrap. */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
 }
 
 /** Does this node hold an OPEN control connection to `remotePeerId`? */
@@ -367,11 +366,10 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const cKey = await generateKeyPair('Ed25519');
 		const bPeerId = peerIdFromPrivateKey(bKey).toString();
 		const cPeerId = peerIdFromPrivateKey(cKey).toString();
-		const { publicKeyB64: aOwnerKey } = ed25519KeyPairFromLibp2p(aKey);
 
 		A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
 		await A.start();
-		await makeOwnOwner(A, aKey);
+		const aOwnerKey = await makeOwnOwner(A, aKey);
 		const aPeerId = A.peerId!.toString();
 
 		// A's self-publish rides the ~1 s start timer; the seeds minted below are
@@ -451,36 +449,45 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		}
 	}, 90_000);
 
-	/** Fresh member key for a case's write target, so cases stay order-tolerant. */
-	async function freshTargetPeerId(): Promise<string> {
-		return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-	}
-
 	/** Assert every forced-cohort consultation since `baseline` saw all three peers. */
 	function expectThreePeerCohortConsulted(baseline: number): void {
 		expect(forced!.callCount(), 'the forced cohort was never consulted — the write bypassed cluster discovery').toBeGreaterThan(baseline);
-		expect(forced!.cohortSizes().slice(baseline).every((n) => n === 3)).toBe(true);
+		expect(forced!.cohortSizes().slice(baseline).every((n) => n === 3),
+			'a cohort consultation returned other than 3 peers').toBe(true);
 	}
 
 	it('commits with a healthy three-member cohort (authorize AND remove)', async () => {
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		const baseline = forced!.callCount();
+		// Counts C's inbound cluster RPCs without degrading them — this is the
+		// baseline case, so it is the one that must prove the trio is real.
+		const observer = await observeClusterHandler(C, partyId);
+		activeDegradation = observer;
+		const t0 = Date.now();
+		try {
+			await within(`authorizePeer(${target.slice(-8)}) healthy`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
+			// Read-back is a SEPARATE assertion from the write resolving.
+			expect(await within('isMember (post-authorize)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 
-		await within(`authorizePeer(${target.slice(-8)}) healthy`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
-		// Read-back is a SEPARATE assertion from the write resolving.
-		expect(await within('isMember (post-authorize)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
+			await within(`removePeer(${target.slice(-8)}) healthy`, WRITE_TIMEOUT_MS, () => A.removePeer(target));
+			expect(await within('isMember (post-remove)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
+			console.log(`[measured] healthy trio authorize+remove: ${Date.now() - t0}ms`);
 
-		await within(`removePeer(${target.slice(-8)}) healthy`, WRITE_TIMEOUT_MS, () => A.removePeer(target));
-		expect(await within('isMember (post-remove)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
-
-		// Anti-vacuity anchor: these writes consulted a genuinely 3-peer cohort.
-		expectThreePeerCohortConsulted(baseline);
-		// With a live cohort the write did NOT commit alone, so nothing queued.
-		expect(pendingPeerWrites(A).has(target)).toBe(false);
+			// Anti-vacuity anchors: discovery returned a genuinely 3-peer cohort, AND
+			// the consensus fan-out actually reached the third node.
+			expectThreePeerCohortConsulted(baseline);
+			expect(observer.interceptedStreams(),
+				'no inbound cluster RPC reached C — the write committed on a narrower cohort').toBeGreaterThan(0);
+			// With a live cohort the write did NOT commit alone, so nothing queued.
+			expect(pendingPeerWrites(A).has(target)).toBe(false);
+		} finally {
+			await observer.restore();
+			activeDegradation = null;
+		}
 	}, 120_000);
 
 	it('commits with a member delayed under the response deadline', async () => {
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		const baseline = forced!.callCount();
 		activeDegradation = await degradeClusterHandler(C, partyId, UNDER_DEADLINE_DELAY_MS);
 		try {
@@ -510,7 +517,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	}, 300_000);
 
 	it('fails with a named super-majority error when a member stalls past the response deadline', async () => {
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		const baseline = forced!.callCount();
 		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
 		try {
@@ -565,13 +572,14 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	 * nothing here is weakened to manufacture the failure.
 	 */
 	it.fails('a control read answers locally while a write is stalled', async () => {
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		const bPeerId = B.peerId!.toString();
 		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		// Kick the doomed write off UNAWAITED, capturing settlement immediately so it
+		// can neither become an unhandled rejection nor race teardown. Declared
+		// outside the `try` so the `finally` can always drain it.
+		const settled = A.authorizePeer(target).then(() => null, (e: unknown) => e);
 		try {
-			// Kick the doomed write off UNAWAITED, capturing settlement immediately so
-			// it can neither become an unhandled rejection nor race teardown.
-			const settled = A.authorizePeer(target).then(() => null, (e: unknown) => e);
 			await sleep(250); // let the write engage the stalled promise phase
 
 			const db = A.getControlDatabase()!;
@@ -590,8 +598,13 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// Read-back mirrors whichever way the degraded write settled.
 			expect(await within('isMember(target) (post-settle)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(error === null);
 		} finally {
+			// Restore FIRST (it aborts the held streams, so the doomed write settles
+			// promptly), then join it. On the currently-expected failure path the join
+			// above is never reached, and without this the write would still be in
+			// flight — holding the control write lock — when the next case starts.
 			await activeDegradation.restore();
 			activeDegradation = null;
+			await settled;
 		}
 	}, 240_000);
 
@@ -604,7 +617,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// later ones. It has not reproduced since — this case commits in ~1 s every run.
 		// If a post-failure write ever starts failing here, that old observation is back
 		// and the transaction state store, not the degradation, is the place to look.
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		await within(`authorizePeer(${target.slice(-8)}) recovered`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
 		expect(await within('isMember (post-recovery authorize)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 		await within(`removePeer(${target.slice(-8)}) recovered`, WRITE_TIMEOUT_MS, () => A.removePeer(target));
@@ -615,7 +628,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// The other write direction: a stamp-retiring DELETE (removePeer), which the
 		// offline-peer review found had been missed once already. Authorize the
 		// victim while healthy, then fail its removal against a silent member.
-		const target = await freshTargetPeerId();
+		const target = await randomPeerId();
 		await within(`authorizePeer(${target.slice(-8)}) setup`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
 		expect(await within('isMember (setup)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 
