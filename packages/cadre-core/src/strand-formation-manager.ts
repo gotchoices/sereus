@@ -11,7 +11,7 @@ import {
   type FormationApprovalFailure
 } from './formation-approval.js';
 // control-database does not import this manager, so this import introduces no cycle.
-import { FormationAbortedError } from './control-database.js';
+import { FormationAbortedError, InvitationExhaustedError } from './control-database.js';
 import { canonicalJson } from './canonical-json.js';
 import type {
   DisclosureValidator,
@@ -342,14 +342,25 @@ export class StrandFormationManager {
         log('approval failed (%s) for token %s: %o', err.failure, token, err);
         return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
       }
-      // NOTE: an approval obtained before landing here is DISCARDED, because this path does
-      // not retry — not because the nonce is barred. Nothing was inserted, so the same
-      // `usageStampId` could legally be re-presented under a new use number (that is exactly
-      // what the free nonce in `FormationUsage.Authorized` is for); we simply reject and the
-      // joiner's next formation attempt mints a fresh one, costing a second human review
-      // where the hook is a review queue. Wiring the same-approval retry:
-      // tickets/backlog/debt-formation-approval-retry-lost-race.md. No usage row is written
-      // on any of these paths, so the invite itself is not consumed.
+      if (err instanceof InvitationExhaustedError) {
+        // Reuses the same wording `strand-formation-protocol.ts` sends when the up-front
+        // `validateToken` finds the invite already used up, so the loser of the race that
+        // triggered this retry-then-exhaustion sees exactly what a non-racing latecomer sees.
+        // No new wire-visible distinction between "invalid" and "exhausted" — the operator
+        // signal lives in this log line instead.
+        log(
+          'invitation exhausted for token %s: use #%d past limit of %d',
+          err.token,
+          err.useNumber,
+          err.totalUses
+        );
+        return { approved: false, reason: 'Invalid token' };
+      }
+      // An approval obtained before landing here is RETRIED, not discarded: the database
+      // layer re-presents the same approver sign-off under a fresh use number when it loses
+      // the local use-number race (see `ControlDatabase.withUseNumberRetry`). Reaching this
+      // catch-all means either that retry ran out (surfaced above as
+      // `InvitationExhaustedError`) or the failure was never retryable to begin with.
       log('provisionAsResponder failed for token %s: %o', token, err);
       return { approved: false, reason: 'Formation conflict, retry' };
     }

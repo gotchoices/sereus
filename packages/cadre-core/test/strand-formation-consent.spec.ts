@@ -8,7 +8,9 @@ import type { Database } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { InvitationExhaustedError } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import type { FormationUsageRecorder } from '../src/strand-solicitation.js';
 import {
   FormationApprovalError,
   signFormationApproval,
@@ -61,7 +63,12 @@ import type { StrandFormationDisclosure } from '../src/types.js';
  *      nothing, and does NOT burn the invite (a good approver redeems it afterwards),
  *  (k) an invite with no `ValidationUrl` never contacts the approver at all,
  *  (l) an oversized disclosure is rejected before the approver or the DB is touched,
- *  (m) a slow (6 s) approver still succeeds inside the 12 s default provisioning budget.
+ *  (m) a slow (6 s) approver still succeeds inside the 12 s default provisioning budget,
+ *  (n) invalid joiner consent is rejected without burning the invite,
+ *  (o) a reused joiner nonce is a retryable conflict, and a fresh nonce then succeeds,
+ *  (p) a recorder-thrown `InvitationExhaustedError` — unit-level, an in-memory fake standing in
+ *      for a retry the database layer ran out of — maps to the same `'Invalid token'` a spent
+ *      invite gives, not a retryable conflict.
  */
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
@@ -692,5 +699,36 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     await invoke(third);
     expect(decodeFirstFrame<FormationResultMessage>(third.sent).approved).toBe(true);
     expect(await db.countFormationUsage(token)).toBe(2);
+  });
+
+  it('(p) an InvitationExhaustedError from the recorder maps to the same "Invalid token" a spent invite gives', async () => {
+    // Unit-level, not DB-driven (the recorder interface is deliberately "unit-testable with an
+    // in-memory fake" — see FormationUsageRecorder's doc comment): a fake recorder that raises
+    // InvitationExhaustedError stands in for a real retry-exhausted redemption
+    // (control-formation-use-number-retry.spec.ts covers the database layer actually raising it).
+    // This asserts only the manager's mapping, which that spec explicitly leaves untested.
+    const token = 'invite-exhausted-' + rand();
+    const fakeRecorder: FormationUsageRecorder = {
+      isTokenValid: async () => ({ valid: true }),
+      isTokenUsed: async () => false,
+      recordUsage: async () => { throw new InvitationExhaustedError(token, 4, 3); },
+      provisionAndRecord: async () => { throw new InvitationExhaustedError(token, 4, 3); },
+    };
+    const manager = new StrandFormationManager({
+      formationUsageRecorder: fakeRecorder,
+      partyId: HOST_PARTY,
+      cadrePeerAddrs: HOST_CADRE,
+    });
+    const { node: mock, invoke } = captureHandler();
+    manager.registerResponder(mock);
+
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
+    await invoke(stream);
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Invalid token');
+    expect(result.partyId).toBeUndefined();
+    expect(result.provisionResult).toBeUndefined();
   });
 });

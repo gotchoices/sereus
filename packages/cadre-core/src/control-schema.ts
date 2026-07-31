@@ -531,6 +531,11 @@ declare schema CadreControl {
             -- UseNumber = max+1 unsatisfiable. committed.* excludes the in-flight row,
             -- giving sequential 1,2,3... per token (cross-transaction; concurrent
             -- redemptions of the same token collide on the (Token, UseNumber) PK).
+            -- ControlDatabase's use-number retry (withUseNumberRetry) is what resolves
+            -- that collision, by re-presenting the same approval under a fresh use
+            -- number. The deferred check above is the other surface the same race can
+            -- take: a concurrent row the inserting transaction's key probe did not yet
+            -- see trips this Monotonic CHECK at commit instead of the PK.
             new.UseNumber = coalesce((select max(UseNumber) from committed.FormationUsage U where U.Token = new.Token), 0) + 1
         ),
         constraint Authorized check on insert (
