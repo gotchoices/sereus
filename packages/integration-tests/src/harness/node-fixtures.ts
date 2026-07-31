@@ -10,8 +10,8 @@
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
+import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
+import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
@@ -45,6 +45,15 @@ export interface ControlNodeOpts {
   hibernation?: boolean;
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
+  /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
+  pinnedOwnerKeys?: string[];
+  /**
+   * Test-supplied libp2p connection gater. On the control node it is composed
+   * under the built-in membership admission gate, which preserves every hook
+   * except `denyInboundEncryptedConnection` — so a test's outbound-deny hooks
+   * (`denyDialPeer` etc.) are honored unchanged.
+   */
+  connectionGater?: ConnectionGater;
 }
 
 /** Build a `CadreNodeConfig` for one control-network test node. */
@@ -59,8 +68,10 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       transports: wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
       ...(opts.enableRelay ? { enableRelay: true } : {}),
-      ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {})
+      ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),
+      ...(opts.connectionGater ? { connectionGater: opts.connectionGater } : {})
     },
+    ...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
     hibernation: { enabled: opts.hibernation ?? false },
   };
 }
@@ -86,6 +97,36 @@ export async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<st
 /** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
 export async function randomPeerId(): Promise<string> {
   return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+}
+
+/** This node's live connections to `remotePeerId`, on the control network. */
+export function connectionsTo(node: CadreNode, remotePeerId: string) {
+  return (node.getControlNode()?.getConnections() ?? [])
+    .filter((c) => c.remotePeer.toString() === remotePeerId);
+}
+
+/** Does this node hold an OPEN, OUTBOUND control connection to `remotePeerId`? */
+export function hasOutboundTo(node: CadreNode, remotePeerId: string): boolean {
+  return connectionsTo(node, remotePeerId)
+    .some((c) => c.direction === 'outbound' && c.status === 'open');
+}
+
+/**
+ * The libp2p peerStore multiaddrs this node holds for `remotePeerId` — the
+ * cold-start fallback source `resolveControlDialAddrs` uses when the signed
+ * `CadrePeer` record does not resolve. A missing entry is an empty list; any
+ * other failure is rethrown rather than swallowed into a false "empty".
+ */
+export async function peerStoreAddrsFor(node: CadreNode, remotePeerId: string): Promise<string[]> {
+  const controlNode = node.getControlNode();
+  if (!controlNode) return [];
+  try {
+    const peer = await controlNode.peerStore.get(peerIdFromString(remotePeerId));
+    return peer.addresses.map((a) => a.multiaddr.toString());
+  } catch (error) {
+    if ((error as { name?: string }).name === 'NotFoundError') return [];
+    throw error;
+  }
 }
 
 /** Wait until `node`'s control libp2p reports an open connection to `peerId`. */

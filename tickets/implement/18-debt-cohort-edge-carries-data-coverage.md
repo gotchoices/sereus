@@ -1,7 +1,7 @@
 ----
 description: Add an integration test proving that when a device automatically opens a connection to another member of its party, real data actually travels over that new connection — today we only prove the connection appears.
 prereq:
-files: packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/integration-tests/src/harness/node-fixtures.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/integration-tests/src/harness/control-cohort.ts, packages/integration-tests/src/harness/index.ts, packages/cadre-core/src/cadre-node.ts, packages/cadre-core/src/membership-connection-gater.ts, packages/quereus-plugin-sereus/src/cluster-size.ts
+files: packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts, packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/harness/node-fixtures.ts, packages/integration-tests/src/harness/index.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/integration-tests/src/harness/control-cohort.ts, packages/cadre-core/src/cadre-node.ts
 difficulty: hard
 ----
 
@@ -121,22 +121,9 @@ pin being active during the negative window is safe.
 B's config takes `network.connectionGater` (`packages/cadre-core/src/types.ts`),
 and `createMembershipConnectionGater` spreads the caller's gater, preserving every
 hook except `denyInboundEncryptedConnection`. So a test gater's outbound hooks are
-honoured unchanged. Build a small local helper:
-
-```ts
-interface SeverableGater {
-	gater: ConnectionGater;
-	/** Deny every future dial to the target peer. Idempotent. */
-	sever(): void;
-}
-
-function severableDialGater(deniedPeerId: string): SeverableGater;
-```
-
-Implement `denyDialPeer`, `denyDialMultiaddr` (via `ma.getPeerId()`) and
+honoured unchanged. Implement `denyDialPeer`, `denyDialMultiaddr` and
 `denyOutboundConnection` — libp2p's dial queue consults `denyDialPeer` on the
-peer-id path and `denyDialMultiaddr` on the per-address path
-(`node_modules/libp2p/dist/src/connection-manager/dial-queue.js`), and the third is
+peer-id path and `denyDialMultiaddr` on the per-address path, and the third is
 belt-and-braces.
 
 `reconcileControlCohort` dials the owner/backbone member (A) before the non-owner
@@ -144,181 +131,124 @@ fill (C), so B's step-7 pass WILL hit the denial first. That is fine and worth a
 comment: `dialControlSibling` logs and swallows per-peer failures, naming
 "connection-gater denial" among them, so one denied sibling never aborts the pass.
 
-## Shared boot helper
-
-The boot ordering is subtle and is the same one the isolation scenario proves out.
-Do NOT copy it into the new file, and do NOT edit the isolation scenario (a
-separate ticket, `integration-test-harness-helper-consolidation-remaining-files`,
-owns de-duplicating that file's private helpers — leave it alone here).
-
-Instead add `packages/integration-tests/src/harness/control-trio.ts`, re-exported
-from `harness/index.ts`, holding an assertion-free `bootControlTrio`:
-
-```ts
-export interface ControlTrioOptions {
-	/** B's `network.controlCohort.reconcileMs`. */
-	reconcileMsB: number;
-	/** Filled in as each node boots so a caller's `finally` can stop partial state. */
-	handles: ControlTrioHandles;
-	/** Test-supplied gater for B (composed under the membership gate). */
-	gaterB?: ConnectionGater;
-}
-
-export interface ControlTrioHandles { A?: CadreNode; B?: CadreNode; C?: CadreNode; }
-
-export interface ControlTrio {
-	A: CadreNode; B: CadreNode; C: CadreNode;
-	aPeerId: string; bPeerId: string; cPeerId: string;
-}
-
-export function bootControlTrio(options: ControlTrioOptions): Promise<ControlTrio>;
-export function stopControlTrio(handles: ControlTrioHandles): Promise<void>;
-```
-
-Harness modules in this package do not import `vitest`; keep that. Port the
-isolation scenario's boot steps 1–6 verbatim in meaning, turning each `expect(...)`
-into an explicit `throw new Error('<what was violated>')`. Every ordering
-checkpoint must survive the move — they are the proof, not decoration:
-
-- A self-registers a `CadrePeer` row with addresses before any seed is minted.
-- B is vouched BEFORE it starts, and A's seed for B provably cannot name C.
-- B's ONE start-time eager reconcile pass is drained (self-registration lands,
-  then `sleep(1_000)`, then `await B.reconcileControlCohort()`) **before C
-  starts**, so that pass can never be what forms B↔C.
-- At C's start: B has zero connections to C and zero peerStore addresses for C.
-- A vouches C, C applies its seed, C reaches A, C self-publishes (polled
-  `registerSelf() === 'refreshed'`), and C's record becomes resolvable on B.
-
-Reuse whatever of `wsTransports` / `makeOwnOwner` / `connectionsTo` /
-`hasOutboundTo` already lives in `harness/node-fixtures.ts`; add
-`peerStoreAddrsFor` there or to `control-trio.ts` if it is not already shared.
-
 ## Edge cases & interactions
 
-- **Step 6 write never commits.** If `readCohort(C)` unexpectedly contains B, the
-  write needs unanimity and B is unreachable. Assert that precondition before the
-  write so the failure names the cause instead of burning a 60s timeout.
-- **Pin silently no-ops.** `pinCoordinator` returns a handle; assert
-  `callCount() > 0` at the end. A pin that never fired means the whole
-  coordinator argument above did not apply to this run.
-- **Patch restore ordering.** `pinCoordinator` patches
-  `Libp2pKeyPeerNetwork.prototype`; restore it in a `finally`, and restore in
-  reverse order of application if anything else patches (nothing else should
-  here). `key-network-patch.ts` throws on out-of-order teardown.
-- **Teardown on a mid-test throw.** Fill `handles` as each node boots; the test's
-  `finally` must stop whatever came up (newest first) and swallow+log individual
-  stop failures, so one failed stop neither leaks the other two nodes' listeners
-  nor masks the original failure.
-- **B auto-redialling A.** libp2p's connection manager may try to restore a
-  connection to A; the gater must deny it. The step-5/8 per-iteration assertions
-  are what catch a leak here, so keep them inside the loops, not just at the end.
-- **A dialling B.** A cannot (B has no listen addresses). Assert
-  `(await A.resolvePeerAddrs(bPeerId)).length === 0` once, and poll
-  `connectionsTo(A, bPeerId)` empty during the negative window. Do NOT assert on
-  A's raw peerStore contents for B — that is not a guaranteed-empty observable.
-- **`self:peer:update`-triggered reconcile on B.** `startRecordRefresh` wires a
-  reconcile pass on that event, independent of the 10-minute cadence. B listens on
-  nothing, so its address set should never change — but if the negative window
-  ever fails, this is the first suspect (same NOTE the isolation scenario carries).
-  Diagnose with `DEBUG='sereus:cadre:node'`.
-- **Unanimity churn on polled writes.** Every control write in a 3-member cohort
-  is effectively unanimous, so a single stream reset fails the commit outright.
-  Poll `registerSelf()` with `waitUntil` exactly as the isolation scenario does —
-  never call it once. (The underlying divergence is tracked separately; do not
-  chase it here.)
-- **Test duration.** Budget a 120s `it` timeout like the isolation scenario, and
-  keep the file to a single `it` so the suite's serial runtime stays sane.
+(All preserved from the original ticket; the scenario file's comments restate
+each at its site.)
 
-## TODO
-
-- Add `packages/integration-tests/src/harness/control-trio.ts` with
-  `bootControlTrio` / `stopControlTrio` / the trio types, assertion-free (explicit
-  throws, no `vitest` import), porting the isolation scenario's boot ordering
-  including every checkpoint listed above; accept an optional `gaterB`.
-- Re-export it from `packages/integration-tests/src/harness/index.ts`.
-- Add `peerStoreAddrsFor` to the harness if it is not already shared.
-- Write `packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts`
-  implementing steps 1–9 above, with a file header that states plainly what this
-  proves that the isolation scenario does not.
-- Add the `severableDialGater` helper (local to the new scenario file — it is
-  scenario-specific).
-- Do not touch `control-cohort-three-node-isolation.integration.ts`.
-- Run the new scenario:
-  `yarn workspace @serfab/integration-tests test 2>&1 | tee /tmp/edge-carries.log`
-  (stream it — never silently redirect). Then re-run the isolation scenario to
-  confirm it is unchanged and still green.
-- `yarn lint` and `yarn typecheck` clean.
-- Hand off to `review/` honest about what the scenario does and does not prove —
-  in particular that carriage is demonstrated in the **read** direction (B pulls
-  R1 across the edge); the write direction (B promising a C-coordinated write over
-  the same edge) is implied by cohort seating but not separately asserted.
+- **Step 6 write never commits** → precondition assert on `readCohort(C)`.
+- **Pin silently no-ops** → `pin.callCount() > 0` at the end.
+- **Patch restore ordering** → restore pin in `finally` (nothing else patches).
+- **Teardown on a mid-test throw** → `handles` filled per-boot; stop newest first.
+- **B auto-redialling A** → gater denies; per-iteration asserts catch leaks.
+- **A dialling B** → impossible (no listen addrs); assert
+  `A.resolvePeerAddrs(bPeerId)` empty; poll `connectionsTo(A, bPeerId)` empty.
+- **`self:peer:update`-triggered reconcile on B** → first suspect if the window
+  fails; diagnose with `DEBUG='sereus:cadre:node'`.
+- **Unanimity churn on polled writes** → poll `registerSelf()` with `waitUntil`.
+- **Test duration** → 120s `it` timeout, single `it`.
 
 <!-- resume-note -->
-## Resume note (run interrupted by BUDGET_WARNING, 2026-07-31)
+## Resume note 2 (run interrupted by BUDGET_WARNING, 2026-07-31, second run)
 
-A prior agent run spent its budget on research only. **No code was written; the
-working tree has no changes from that run.** All TODO items above remain. The
-findings below were verified against the codebase so the next run can start
-implementing immediately instead of re-discovering.
+**All code is written and `yarn lint` + `yarn typecheck` are clean.** The first
+test run FAILED ~13s in — one diagnosable defect in the scenario's read
+patterns, not in the harness or the design. The isolation scenario was NOT
+edited and has not been re-run. Remaining work: fix the failing read(s), get
+the new scenario green, re-run the isolation scenario, hand off to `review/`.
 
-### Verified facts (with locations)
+### What exists in the working tree (uncommitted, from this run)
 
-- **Isolation scenario helpers to port** (do not edit that file):
-  `bootTrio` is at `control-cohort-three-node-isolation.integration.ts:181-320`;
-  its private helpers (`wsTransports`, `nodeConfig`, `makeOwnOwner`,
-  `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`, `stopTrio`) at lines
-  63-163. The boot ordering and every checkpoint listed in "Shared boot helper"
-  above match that file exactly as described.
-- **Harness gaps**: `harness/node-fixtures.ts` exports `wsTransports`,
-  `makeOwnOwner` (returns the owner public key b64 — richer than the scenario's
-  local void copy; use the harness one), and `controlNodeConfig`. BUT
-  `ControlNodeOpts`/`controlNodeConfig` support neither `pinnedOwnerKeys` nor a
-  caller `connectionGater` — either extend them or build the config inside
-  `control-trio.ts` (the scenario's local `nodeConfig` shows the shape,
-  including the `trustedOwners: { pinnedKeys }` seam). `connectionsTo`,
-  `hasOutboundTo`, `peerStoreAddrsFor` are NOT in the harness — add them
-  (`node-fixtures.ts` or `control-trio.ts`) per the TODO.
-- **CadreNode API** (`packages/cadre-core/src/cadre-node.ts`):
-  `reconcileControlCohort()` public, single-flight, returns the in-flight pass
-  (line 1672); `registerSelf()` returns `'inserted' | 'refreshed' | 'skipped'`
-  (1306); `resolvePeerAddrs` (1573); `getControlNode()` (3655);
-  `getControlDatabase()` (3662); `authorizePeer` (4051).
-- **`self:peer:update` wiring confirmed**: `startRecordRefresh` (1490-1494)
-  fires BOTH `registerSelf` and `reconcileControlCohort` on that event — the
-  edge case named above is real; the 10-minute `reconcileMs` does not suppress it.
-- **Gater denial is survivable, as the ticket claims**: `dialControlSibling`
-  (1780-1798) logs and swallows per-peer dial failures; owner/backbone members
-  are dialed before non-owner fill via `selectControlCohortDials` (1744), so
-  B's step-7 pass hits the denied A dial first, then proceeds to C.
-- **Gater composition confirmed**: `createMembershipConnectionGater`
-  (`membership-connection-gater.ts:157-177`) spreads the base gater and only
-  wraps `denyInboundEncryptedConnection` — a test gater's `denyDialPeer` /
-  `denyDialMultiaddr` / `denyOutboundConnection` pass through unchanged. Config
-  seam is `network.connectionGater` (`types.ts:231`);
-  `network.controlCohort.reconcileMs` at `types.ts:251`.
-- **`queryPeerRecord`** (`control-database.ts:763`) returns
-  `PeerAddressRecord | null` with `updatedAt: number` (0 when null in row) —
-  the `r0`/`r1` comparisons in steps 3/6/8 work directly on `updatedAt`.
-- **`hangUp`** on the libp2p node takes a `PeerId` object, not a string — use
-  `peerIdFromString(aPeerId)` (already imported by the isolation scenario).
-- **Coordinator-pin argument confirmed**: `CONTROL_CLUSTER_POLICY`
-  (`cluster-size.ts:76`) omits `superMajorityThreshold` → Optimystic default
-  0.75 → 3-member cohort needs all 3. `pinCoordinator` (`forced-cluster.ts:218`)
-  patches BOTH `findCoordinator` and `findCluster` (reorders candidates first);
-  its `restore()` already handles reverse-order internally; restore it in the
-  test's `finally`. `readCohort` (`control-cohort.ts:120`) takes a `Libp2p` —
-  pass `X.getControlNode()!`.
-- **`waitUntil`** (`harness/wait-utils.ts`) swallows a throwing condition as
-  "not yet" (logs under `sereus:integration:wait`); defaults 10s/100ms — pass
-  explicit timeouts as the plan's steps specify.
-- **Test command**: `yarn workspace @serfab/integration-tests test` runs vitest
-  (`vitest run --reporter=verbose`). `vitest.config.ts` exists at the package
-  root but was not yet read — check its include pattern/serialization before
-  assuming the new `*.integration.ts` file is picked up (the isolation scenario's
-  naming suggests it is).
+- `packages/integration-tests/src/harness/control-trio.ts` — NEW. Assertion-free
+  `bootControlTrio` / `stopControlTrio` / trio types; faithful port of the
+  isolation scenario's `bootTrio` (every `expect` → explicit `throw`, no vitest
+  import, all ordering checkpoints preserved). Accepts optional `gaterB`
+  threaded into B's config; returns all three nodes + all three peer ids.
+- `packages/integration-tests/src/harness/node-fixtures.ts` — EXTENDED.
+  `ControlNodeOpts` gained `pinnedOwnerKeys` (→ `trustedOwners.pinnedKeys`) and
+  `connectionGater` (→ `network.connectionGater`); added shared `connectionsTo`,
+  `hasOutboundTo`, `peerStoreAddrsFor` (ports of the isolation scenario's
+  private helpers — that file deliberately keeps its own copies, untouched).
+- `packages/integration-tests/src/harness/index.ts` — re-exports control-trio.
+- `packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts`
+  — NEW. Implements steps 1–9 with two documented deviations:
+  1. **Baseline `r0` is read BEFORE `pinCoordinator([C])`** (ticket ordered pin
+     first). Reason: live reads refresh from the network via the pinned
+     coordinator, and B cannot reach C at baseline time. Commented in the file.
+  2. **`severableDialGater()` takes the denied peer id at `sever(peerId)` time**,
+     not construction — A's peer id does not exist until A boots, but the gater
+     must exist before `bootControlTrio` is called.
+  Also: `@libp2p/interface` nests `@multiformats/multiaddr` v13, which has **no
+  `getPeerId()`** — the gater's `denyDialMultiaddr` uses
+  `ma.getComponents().filter(c => c.name === 'p2p').pop()?.value` instead.
 
-### Not yet done (everything)
+### The failure (exact, from the one run)
 
-All TODO items above. Suggested order: `control-trio.ts` port first (it is the
-bulk), then harness re-export + `peerStoreAddrsFor`, then the scenario file with
-`severableDialGater`, then test/lint/typecheck runs, then the `review/` handoff.
+Command: `yarn workspace @serfab/integration-tests test src/scenarios/control-cohort-edge-carries-data.integration.ts`
+
+```
+QuereusError: Error during query on table 'CadrePeer': Query failed: Some peers
+did not complete: 12D3KooWHgks…[block:hBUz…](in-flight) cause=The stream has
+been reset; root: The stream has been reset
+  ❯ ControlDatabase.queryPeerRecord  control-database.ts:765
+  ❯ CadreNode.resolvePeerAddrs       cadre-node.ts:1578
+```
+
+Test duration 13.13s — i.e. just after the sever (boot alone takes ~10–13s).
+The throw escaped a **direct, unpolled** `resolvePeerAddrs` call. Only two
+exist, both post-sever:
+
+- `expect(await A.resolvePeerAddrs(bPeerId)).toHaveLength(0)` — right after the
+  sever wait; **most likely culprit**: A's read touches cluster state that (from
+  A's view) still involves B, whose streams the hangUp just reset — matching
+  "(in-flight) … stream has been reset" exactly.
+- The negative window's first-iteration `B.resolvePeerAddrs(cPeerId)`.
+
+### Root-cause knowledge for the next agent (verified in source this run)
+
+**Optimystic live reads are NOT local-only.** Every live table scan runs
+`OptimysticVirtualTable.runQuery → resolveMainRead → collection.update()`
+(`../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts:486-559`),
+and `Collection.update()` (`../optimystic/packages/db-core/src/collection/collection.ts:116-146`)
+syncs the collection log from the network through the transactor before serving
+the read. Consequences:
+
+- A direct read issued moments after a hangUp can ride a resetting stream and
+  throw. Reads that must survive churn must be polled (`waitUntil` swallows a
+  throwing condition as "not yet") or moved to a quiet moment.
+- **Open question to answer empirically:** can B-side reads complete at all
+  while B is fully isolated (the pin routes B's coordinator to C, which B
+  cannot dial)? If yes (e.g. the log sync finds nothing new / degrades
+  gracefully), the negative window's per-checkpoint
+  `B.resolvePeerAddrs(cPeerId)` non-empty assertion stands as designed. If no,
+  that assertion can NEVER pass while isolated; then bracket resolvability
+  instead — assert non-empty immediately BEFORE the sever and keep the
+  peerStore-empty + zero-connection checks inside the window — and state the
+  weakening honestly in the review handoff. Do NOT silently drop the
+  checkpoint: it is the "nothing to dial vs nothing dialled" half of the proof.
+
+### Suggested fix order
+
+- Move the `A.resolvePeerAddrs(bPeerId)` emptiness check to BEFORE the sever
+  (the property — B's row never carries addresses — is time-independent), or
+  poll it via `waitUntil`.
+- Re-run; if the window's `B.resolvePeerAddrs` also throws, resolve the open
+  question above and restructure the window accordingly.
+- Watch step 9's `pin.callCount() > 0` on the first green run: `findCoordinator`
+  is the read/fallback seam, `findCluster` the write seam — if nothing consults
+  `findCoordinator`, the assertion needs rethinking rather than deleting.
+- Then: re-run the isolation scenario unchanged
+  (`yarn workspace @serfab/integration-tests test src/scenarios/control-cohort-three-node-isolation.integration.ts`),
+  re-run `yarn lint` + `yarn typecheck` (both clean as of this note), write the
+  `review/` handoff (honest scope: carriage proven in the READ direction only;
+  write direction implied by cohort seating, not separately asserted), and
+  delete this ticket.
+
+### Prior resume-note facts still valid
+
+All API locations from the first resume note were re-verified where used:
+`reconcileControlCohort` single-flight, `registerSelf` return values, `hangUp`
+takes a `PeerId` (`peerIdFromString`), `readCohort` takes a `Libp2p`,
+`pinCoordinator` patches both seams and restores in reverse internally,
+`waitUntil` defaults 10s/100ms and swallows throwing conditions, vitest picks up
+`src/**/*.integration.ts`, membership gater preserves caller outbound hooks.
