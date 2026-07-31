@@ -49,6 +49,7 @@ import {
   GrantStore,
   DonationService,
   DonationStore,
+  type DonationSeedResult,
   type OwnerSpawnConfig,
 } from '@serfab/cadre-host';
 
@@ -212,16 +213,16 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
     expect(encodedSeed.length).toBeGreaterThan(0);
 
     // applySeed may briefly race the node's seed-route readiness — poll until it
-    // reports success. A cold node WITHOUT the pinned owner key returns
-    // success:false, so this (correctly) times out if the pin wiring is broken.
-    let result: { success: boolean; peersAdded?: number } | undefined;
+    // reports `seeded`. A cold node WITHOUT the pinned owner key comes back
+    // `rejected`, so this (correctly) times out if the pin wiring is broken.
+    let result: DonationSeedResult | undefined;
     await waitUntil(async () => {
       result = await donationService.applySeed(donationId, encodedSeed);
-      return result.success === true;
+      return result.outcome === 'seeded';
     }, { timeoutMs: OP_MS, intervalMs: 1_000, description: 'donated node accepts seed' });
 
-    expect(result?.success).toBe(true);
-    expect(result?.peersAdded ?? 0).toBeGreaterThanOrEqual(1);
+    expect(result?.outcome).toBe('seeded');
+    expect(result?.outcome === 'seeded' ? result.peersAdded : 0).toBeGreaterThanOrEqual(1);
     expect(donationService.get(donationId)?.status).toBe('seeded');
   }, OP_MS + 10_000);
 

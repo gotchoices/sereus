@@ -55,6 +55,7 @@ let tmpRoot: string;
 let app: ReturnType<typeof Fastify>;
 let grants: GrantService;
 let token: string;
+const originalFetch = globalThis.fetch;
 
 const body = {
   partyId: 'party-P',
@@ -79,6 +80,7 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  globalThis.fetch = originalFetch;
   await app.close();
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
@@ -172,6 +174,29 @@ describe('PUT /grants/:id/seed validation', () => {
     const res = await app.inject({ method: 'PUT', url: `/grants/${id}/seed`, headers: bearer(token), payload: {} });
     expect(res.statusCode).toBe(400);
     expect((res.json() as { error: { code: string } }).error.code).toBe('invalid_request');
+  });
+
+  it('answers 409 invalid_state when the loan ends while the seed is in flight', async () => {
+    const created = await app.inject({ method: 'POST', url: '/grants', headers: bearer(token), payload: body });
+    const id = (created.json() as { data: { donation: { id: string } } }).data.donation.id;
+
+    // The borrower's DELETE lands inside the seed window: the node accepts the
+    // seed, but by the time it answers the loan is over. The ending wins, so the
+    // route must NOT report a 200 that implies a live, freshly seeded node.
+    globalThis.fetch = (async () => {
+      await app.inject({ method: 'DELETE', url: `/grants/${id}`, headers: bearer(token) });
+      return { ok: true, json: async () => ({ success: true, peersAdded: 2 }) } as unknown as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await app.inject({
+      method: 'PUT', url: `/grants/${id}/seed`, headers: bearer(token), payload: { seed: 'encoded-seed' },
+    });
+
+    expect(res.statusCode).toBe(409);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('invalid_state');
+    const after = await app.inject({ method: 'GET', url: `/grants/${id}`, headers: bearer(token) });
+    expect((after.json() as { data: { donation: { status: string } } }).data.donation.status)
+      .toBe('terminated');
   });
 });
 

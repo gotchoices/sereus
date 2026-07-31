@@ -169,10 +169,24 @@ export function registerGrantsRoutes(app: FastifyInstance, opts: GrantsRoutesOpt
       return errorResponse(reply, 'invalid_request', 'seed is required', 400);
     }
     const result = await donations.applySeed(request.params.id, body.seed);
-    if (!result.success) {
-      return errorResponse(reply, 'seed_failed', result.error ?? 'Node rejected the seed', 502);
+    switch (result.outcome) {
+      case 'rejected':
+        return errorResponse(reply, 'seed_failed', result.error ?? 'Node rejected the seed', 502);
+      // The loan ended while the seed was in flight. The ending won, so the
+      // caller is told the record it seeded is no longer seedable (409) — or is
+      // gone entirely (404) — rather than a 200 that implies a live node.
+      case 'abandoned':
+        return result.status
+          ? errorResponse(
+              reply,
+              'invalid_state',
+              `Donation ${request.params.id} ended (${result.status}) while the seed was in flight`,
+              409,
+            )
+          : errorResponse(reply, 'not_found', `No such donation: ${request.params.id}`, 404);
+      case 'seeded':
+        return reply.send({ ok: true, data: { peersAdded: result.peersAdded } });
     }
-    return reply.send({ ok: true, data: { peersAdded: result.peersAdded ?? 0 } });
   });
 
   // DELETE /grants/:id — terminate the donated node.

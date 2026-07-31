@@ -5,11 +5,19 @@
  *
  * Covers: provision → awaiting_seed (pinned keys threaded, seedToken persisted +
  * redacted), seedToken survival across a store reconstruct, per-grant quota-race
- * serialization, reclaim-on-post-spawn-failure, and the stale-awaiting_seed reap.
+ * serialization, reclaim-on-post-spawn-failure, seeding, respawn, terminate, and
+ * the stale-awaiting_seed reap.
  *
- * getPeer / applySeed do real `fetch` to a live node, so their happy paths live
- * in the cross-package integration scenario (`cadre-host-node-donation`), not
- * here.
+ * A recurring theme: **an ending that lands mid-operation wins.** `provision`,
+ * `applySeed`, and `respawn` each hold an entry-time copy of the record across a
+ * slow `await`, and `DonationStore.put` replaces the whole row — so each must
+ * re-read before writing or it resurrects a loan the borrower just ended. The
+ * three suites drive that race through `FakeOrchestrator.onCreate` (spawn window)
+ * and a stubbed `globalThis.fetch` (seed window) respectively.
+ *
+ * `applySeed` is exercised here against that `fetch` stub. `getPeer` still does a
+ * real `fetch` to a live node, so its happy path lives in the cross-package
+ * integration scenario (`cadre-host-node-donation`), not here.
  */
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
@@ -39,14 +47,31 @@ class FlakyDonationStore extends DonationStore {
 }
 
 let tmpRoot: string;
+const originalFetch = globalThis.fetch;
 
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-donation-svc-'));
 });
 
 afterEach(() => {
+  globalThis.fetch = originalFetch;
   try { rmSync(tmpRoot, { recursive: true, force: true }); } catch { /* ignore */ }
 });
+
+/**
+ * Stub the donated node's `POST /seed` with `body`. `duringRequest` — when given
+ * — runs exactly once and is awaited before the response resolves, so whatever
+ * it starts lands *inside* the seed window. It is the `fetch` analogue of
+ * `FakeOrchestrator.onCreate`.
+ */
+function stubSeedFetch(body: unknown, duringRequest?: () => unknown): void {
+  let ran: Promise<unknown> | undefined;
+  globalThis.fetch = (async () => {
+    ran ??= (async () => duringRequest?.())();
+    await ran;
+    return { ok: true, json: async () => body } as unknown as Response;
+  }) as typeof globalThis.fetch;
+}
 
 function makeGrants(opts?: { maxNodes?: number }): { grants: GrantService; token: string } {
   const grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
@@ -117,6 +142,71 @@ describe('DonationService.provision', () => {
     await expect(svc.provision(baseRequest('not-a-real-token')))
       .rejects.toMatchObject({ code: 'unauthorized' });
     expect(orch.createCalls).toHaveLength(0);
+  });
+
+  it('lets a borrower terminate that lands mid-spawn win, and reclaims the new child', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    // The borrower's DELETE lands inside the spawn window. The record names no
+    // dockerId yet, so terminate's own cleanup branch finds nothing to stop —
+    // the abandon path here is the only thing that can reclaim this child.
+    orch.createDelayMs = 20;
+    let terminated: Promise<void> | undefined;
+    orch.onCreate = (request) => { terminated ??= svc.terminate(request.containerId); };
+
+    await expect(svc.provision(baseRequest(token))).rejects.toMatchObject({ code: 'invalid_state' });
+    await terminated;
+
+    const stored = store.list().find((d) => d.grantToken === token)!;
+    expect(stored.status).toBe('terminated');
+    expect(stored.dockerId).toBeUndefined();
+    expect(orch.removed).toEqual(['dock_1']);
+    // The ended loan no longer holds a quota slot.
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('does not rewrite a terminated record as error when the spawn then fails', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    // Ending first, host fault second: the borrower's `terminated` must survive
+    // — a host-side error is not allowed to overwrite the borrower's own ending.
+    orch.createDelayMs = 20;
+    orch.failCreate = true;
+    let terminated: Promise<void> | undefined;
+    orch.onCreate = (request) => { terminated ??= svc.terminate(request.containerId); };
+
+    await expect(svc.provision(baseRequest(token)))
+      .rejects.toMatchObject({ code: 'orchestrator_error' });
+    await terminated;
+
+    const stored = store.list().find((d) => d.grantToken === token)!;
+    expect(stored.status).toBe('terminated');
+    expect(stored.error).toBeUndefined();
+    expect(orch.removed).toEqual([]);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('reclaims the new child and recreates nothing when the record vanishes mid-spawn', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    orch.createDelayMs = 20;
+    orch.onCreate = (request) => { store.remove(request.containerId); };
+
+    await expect(svc.provision(baseRequest(token))).rejects.toMatchObject({ code: 'not_found' });
+
+    // No row to protect, so none is written back and the child is fully
+    // reclaimed rather than left holding ports and a workdir nothing names.
+    expect(store.list()).toEqual([]);
+    expect(orch.removed).toEqual(['dock_1']);
   });
 });
 
@@ -203,6 +293,133 @@ describe('DonationService reclaim-on-failure', () => {
     expect(orch.removed).toEqual([]);
     expect(store.list().find((d) => d.grantToken === token)?.status).toBe('error');
     expect(store.liveNodeCount(token)).toBe(0);
+  });
+});
+
+describe('DonationService.applySeed', () => {
+  it('marks the record seeded and reports the peers the node added', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    stubSeedFetch({ success: true, peersAdded: 2 });
+
+    const result = await svc.applySeed(provisioned.id, 'encoded-seed');
+
+    expect(result).toEqual({ outcome: 'seeded', peersAdded: 2 });
+    expect(store.get(provisioned.id)?.status).toBe('seeded');
+  });
+
+  it('reports a node that refuses the seed, and writes nothing', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    const before = store.get(provisioned.id)!;
+    stubSeedFetch({ success: false, error: 'seed signer is not a trusted owner' });
+
+    const result = await svc.applySeed(provisioned.id, 'encoded-seed');
+
+    expect(result).toEqual({ outcome: 'rejected', error: 'seed signer is not a trusted owner' });
+    // The node's own policy call is not our business to record.
+    expect(store.get(provisioned.id)).toEqual(before);
+  });
+
+  it('lets a borrower terminate that lands mid-seed win', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    // The borrower's DELETE lands inside the seed window: the node accepts the
+    // seed, but by the time it answers the loan is over.
+    let terminated: Promise<void> | undefined;
+    stubSeedFetch({ success: true, peersAdded: 2 }, () => {
+      terminated = svc.terminate(provisioned.id);
+      return terminated;
+    });
+
+    const result = await svc.applySeed(provisioned.id, 'encoded-seed');
+    await terminated;
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'terminated' });
+    const stored = store.get(provisioned.id)!;
+    expect(stored.status).toBe('terminated');
+    expect(stored.dockerId).toBe('dock_1');
+    // Unlike an abandoned respawn there is nothing left for us to clean up: the
+    // record named its dockerId throughout, so the ending stopped + reclaimed
+    // the child itself, and no live record remains for a supervisor to respawn.
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual(['dock_1']);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('lets a stale-seed reap that lands mid-seed win without restarting the TTL clock', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    const provisioned = await svc.provision(baseRequest(token));
+
+    // Past the awaiting_seed TTL, so the sweep collects this record.
+    clock = new Date(clock.getTime() + DONATION_AWAITING_SEED_TTL_MS + 60_000);
+    const reapAtIso = clock.toISOString();
+    let reaped: Promise<string[]> | undefined;
+    stubSeedFetch({ success: true, peersAdded: 2 }, () => {
+      // Move the clock on once the reap's terminal write has landed, so a seed
+      // write that overwrote it would show up as a *later* updatedAt.
+      reaped = svc.reapStaleAwaitingSeed().then((ids) => {
+        clock = new Date(clock.getTime() + 1_000);
+        return ids;
+      });
+      return reaped;
+    });
+
+    const result = await svc.applySeed(provisioned.id, 'encoded-seed');
+    await expect(reaped).resolves.toEqual([provisioned.id]);
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'terminated' });
+    const stored = store.get(provisioned.id)!;
+    expect(stored.status).toBe('terminated');
+    // The reap's own "now" — a seed write here would restart the TTL clock.
+    expect(stored.updatedAt).toBe(reapAtIso);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('abandons with no status when the record vanishes mid-seed', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    stubSeedFetch({ success: true, peersAdded: 2 }, () => { store.remove(provisioned.id); });
+
+    const result = await svc.applySeed(provisioned.id, 'encoded-seed');
+
+    expect(result).toEqual({ outcome: 'abandoned' });
+    expect(store.get(provisioned.id)).toBeUndefined();
+  });
+
+  it('refuses to seed a terminated loan on entry', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    await svc.terminate(provisioned.id);
+    stubSeedFetch({ success: true, peersAdded: 2 });
+
+    await expect(svc.applySeed(provisioned.id, 'encoded-seed'))
+      .rejects.toMatchObject({ code: 'invalid_state' });
   });
 });
 

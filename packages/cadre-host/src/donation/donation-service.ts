@@ -1,7 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
-import type { Orchestrator } from '@serfab/cadre-provider';
+import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provider';
 
 import type { DonationStore } from './donation-store.js';
 import type {
@@ -26,6 +26,22 @@ const log = debug('cadre:host:donation-service');
  * the spawn — so the "may this loan come back" rule is stated exactly once.
  */
 const RESPAWNABLE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
+  'awaiting_seed',
+  'seeded',
+]);
+
+/**
+ * The only statuses a record may be marked `seeded` from. A different question
+ * from {@link RESPAWNABLE_STATUSES} — "may this record accept a seed result"
+ * rather than "may this loan come back" — so it is stated separately even though
+ * the two sets happen to coincide today. Re-seeding an already-`seeded` record is
+ * allowed (the borrower may present a fresh seed); `terminated` / `error` /
+ * `provisioning` may not be written over.
+ *
+ * Checked twice in {@link DonationService.applySeed} — once on entry, once after
+ * the node's round-trip — so the rule is stated exactly once.
+ */
+const SEEDABLE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
   'awaiting_seed',
   'seeded',
 ]);
@@ -64,12 +80,31 @@ export interface DonationProvisionRequest {
   profile?: 'storage' | 'transaction';
 }
 
-/** Result of presenting a seed to a donated node's `POST /seed`. */
-export interface DonationSeedResult {
+/**
+ * The donated node's `POST /seed` response body. Module-private: this is the
+ * wire shape we parse, not the outcome we report ({@link DonationSeedResult}).
+ */
+interface NodeSeedResponse {
   success: boolean;
   peersAdded?: number;
   error?: string;
 }
+
+/**
+ * Outcome of {@link DonationService.applySeed}.
+ *
+ * - `seeded` — the node accepted the seed and the record now says so.
+ * - `rejected` — the node refused the seed (its own seed-trust policy). Nothing
+ *   written.
+ * - `abandoned` — the seed reached the node, but the loan ended while the
+ *   request was in flight. The ending wins: the record is left exactly as the
+ *   ending wrote it. `status` is the status that won, absent when the row is
+ *   gone entirely.
+ */
+export type DonationSeedResult =
+  | { outcome: 'seeded'; peersAdded: number }
+  | { outcome: 'rejected'; error?: string }
+  | { outcome: 'abandoned'; status?: DonationStatus };
 
 /** Live peer identity of a donated node. */
 export interface DonationPeerInfo {
@@ -184,43 +219,97 @@ export class DonationService {
     };
     this.store.put(record);
 
-    // Once the orchestrator returns a dockerId this service owns cleanup of
-    // those (bounded host port) resources on every non-success exit.
-    let dockerId: string | undefined;
+    // The spawn is the only step that can fail before anything is allocated, so
+    // it gets a `try` of its own — a wider one would swallow the abandon
+    // decision below and mark a borrower's own ending as a host-side `error`.
+    let result: OrchestratorCreateResult;
     try {
-      const result = await this.orchestrator.createContainer({
+      result = await this.orchestrator.createContainer({
         containerId: id,
         partyId: request.partyId,
         bootstrapNodes: request.bootstrapNodes,
         profile,
         pinnedOwnerKeys: request.ownerKeys,
       });
-      dockerId = result.dockerId;
-
-      const provisioned: Donation = {
-        ...record,
-        dockerId: result.dockerId,
-        seedEndpoint: result.seedEndpoint,
-        // Persisted so a host restart in the request→seed gap can still present
-        // the seed. NEVER returned to the grantee (stripped by `DonationView`).
-        seedToken: result.seedToken,
-        status: 'awaiting_seed',
-        updatedAt: this.now().toISOString(),
-      };
-      this.store.put(provisioned);
-      log('provisioned donation %s (party=%s) → awaiting_seed', id, request.partyId);
-      return redact(provisioned);
     } catch (err) {
       const message = errorMessage(err);
       log('provision of donation %s failed: %s', id, message);
-      if (dockerId) await this.safeReclaim(dockerId);
+      this.markProvisionFailed(id, message);
+      throw new DonationError('orchestrator_error', `Failed to provision donated node: ${message}`);
+    }
+
+    // Re-read: `record` predates the orchestrator round-trip (seconds of wall
+    // clock) and `store.put` replaces the whole row, so writing that copy back
+    // would undo a `terminate` — or a delete — that landed while the spawn was
+    // in flight, resurrecting a loan the borrower just ended. The store is
+    // synchronous, so this read-decide-write is atomic against the event loop
+    // only as long as no `await` sneaks in between.
+    const current = this.store.get(id);
+    if (!current || current.status !== 'provisioning') {
+      // The ending cleaned up nothing: the record named no `dockerId` yet, so
+      // `terminate`'s cleanup branch never ran and this child is the only thing
+      // holding the spawn's ports and workdir. Reclaim (not merely stop) — the
+      // workdir was created by this very spawn, so there is nothing to preserve.
+      log(
+        'donation %s went %s during provision — abandoning new child %s',
+        id,
+        current?.status ?? 'missing',
+        result.dockerId,
+      );
+      await this.safeReclaim(result.dockerId);
+      throw current
+        ? new DonationError(
+            'invalid_state',
+            `Donation ${id} was ${current.status} before it finished provisioning`,
+          )
+        : new DonationError('not_found', `No such donation: ${id}`);
+    }
+
+    const provisioned: Donation = {
+      ...current,
+      dockerId: result.dockerId,
+      seedEndpoint: result.seedEndpoint,
+      // Persisted so a host restart in the request→seed gap can still present
+      // the seed. NEVER returned to the grantee (stripped by `DonationView`).
+      seedToken: result.seedToken,
+      status: 'awaiting_seed',
+      updatedAt: this.now().toISOString(),
+    };
+    try {
+      this.store.put(provisioned);
+    } catch (err) {
+      const message = errorMessage(err);
+      log('provision of donation %s failed: %s', id, message);
+      await this.safeReclaim(result.dockerId);
+      this.markProvisionFailed(id, message);
+      throw new DonationError('orchestrator_error', `Failed to provision donated node: ${message}`);
+    }
+    log('provisioned donation %s (party=%s) → awaiting_seed', id, request.partyId);
+    return redact(provisioned);
+  }
+
+  /**
+   * Mark a still-`provisioning` record as failed — and ONLY such a record. A row
+   * that went `terminated` while the spawn was in flight is the borrower's own
+   * ending and must not be rewritten as a host fault; a row that vanished must
+   * not be recreated.
+   *
+   * Best-effort (mirroring {@link storeAttempt}): we are already unwinding a
+   * provision failure, and a store error here must not mask the error being
+   * reported to the caller.
+   */
+  private markProvisionFailed(id: string, message: string): void {
+    try {
+      const current = this.store.get(id);
+      if (current?.status !== 'provisioning') return;
       this.store.put({
-        ...record,
+        ...current,
         status: 'error',
         error: message,
         updatedAt: this.now().toISOString(),
       });
-      throw new DonationError('orchestrator_error', `Failed to provision donated node: ${message}`);
+    } catch (err) {
+      log('failed to mark donation %s as errored: %s', id, errorMessage(err));
     }
   }
 
@@ -257,11 +346,18 @@ export class DonationService {
    * Present the requester's phone-signed seed to the donated node's `POST /seed`,
    * authenticated with the host↔node `seedToken`. On success the donation moves
    * to `seeded`. The node still enforces its own seed-trust policy, so a seed
-   * signed by a key the node did not pin is rejected here (`success: false`).
+   * signed by a key the node did not pin comes back `rejected`.
+   *
+   * **An ending that lands mid-seed wins.** The record is re-read after the node
+   * answers; if the loan ended (or the row vanished) while the request was in
+   * flight, that write stands and we report `abandoned` rather than marking a
+   * dead loan `seeded`. Unlike an abandoned respawn there is nothing to clean up
+   * — the record named its `dockerId` the whole time, so the ending's own
+   * `terminate` already stopped and reclaimed the child.
    */
   async applySeed(id: string, encodedSeed: string): Promise<DonationSeedResult> {
     const donation = this.requireDonation(id);
-    if (donation.status !== 'awaiting_seed' && donation.status !== 'seeded') {
+    if (!SEEDABLE_STATUSES.has(donation.status)) {
       throw new DonationError(
         'invalid_state',
         `Donation ${id} cannot be seeded in status ${donation.status}`,
@@ -294,12 +390,39 @@ export class DonationService {
       throw new DonationError('seed_failed', `Donated node /seed returned ${res.status}: ${body}`);
     }
 
-    const result = (await res.json()) as DonationSeedResult;
-    if (result.success) {
-      this.store.put({ ...donation, status: 'seeded', updatedAt: this.now().toISOString() });
-      log('donation %s seeded (peersAdded=%d)', id, result.peersAdded ?? 0);
+    const result = (await res.json()) as NodeSeedResponse;
+    if (!result.success) {
+      log('donation %s rejected the seed: %s', id, result.error ?? 'no reason given');
+      return result.error === undefined
+        ? { outcome: 'rejected' }
+        : { outcome: 'rejected', error: result.error };
     }
-    return result;
+
+    // Re-read: `donation` predates the node round-trip and `store.put` replaces
+    // the whole row, so writing that copy back would undo a `terminate` — or a
+    // reap — that landed while the seed was in flight, resurrecting an ended
+    // loan. The store is synchronous, so this read-decide-write is atomic
+    // against the event loop only as long as no `await` sneaks in between.
+    //
+    // NOTE: a concurrent `respawn` also passes this check — it leaves the status
+    // alone but swaps `seedEndpoint`/`seedToken`, so we would mark `seeded` a
+    // record whose live child is the new one while the seed went to the old
+    // endpoint. Harmless today (respawn only fires when the supervisor believes
+    // the child is down, in which case our `fetch` would have failed; and both
+    // spawns share one workdir, so the seed the old child persisted is on disk
+    // for the new one). If a second `respawn` caller appears, or respawn ever
+    // stops sharing the workdir, compare `current.seedEndpoint`/`seedToken`
+    // against the ones we actually seeded and report `abandoned` on a mismatch.
+    const current = this.store.get(id);
+    if (!current || !SEEDABLE_STATUSES.has(current.status)) {
+      log('donation %s went %s during seed — the ending wins', id, current?.status ?? 'missing');
+      return current ? { outcome: 'abandoned', status: current.status } : { outcome: 'abandoned' };
+    }
+
+    // Merge only the status transition onto the on-disk row.
+    this.store.put({ ...current, status: 'seeded', updatedAt: this.now().toISOString() });
+    log('donation %s seeded (peersAdded=%d)', id, result.peersAdded ?? 0);
+    return { outcome: 'seeded', peersAdded: result.peersAdded ?? 0 };
   }
 
   /**
