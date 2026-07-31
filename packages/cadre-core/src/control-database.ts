@@ -188,13 +188,23 @@ export function formationVouchMessage(fields: {
 
 /**
  * The exact bytes the JOINING peer signs to consent to ONE redemption of a
- * `FormationInvite` — the TS mirror of the `'consent'` digest in
- * `FormationUsage.PeerConsented`, in the schema's field order.
+ * `FormationInvite` — the TS mirror of the `'consent'` digest in the schema's
+ * `FormationUsage.PeerConsented` constraint, in its field order. The helpers here
+ * land ahead of that constraint and of every caller (`debt-formation-consent-core`
+ * wires both), so nothing signs or checks these bytes yet.
  *
  * A sibling of {@link formationVouchMessage}, not a replacement: the approver's vouch
  * says the redemption may proceed, this says the joiner itself agreed to it, and the
  * two are signed by different keys over the same nonce so neither can stand in for
- * the other.
+ * the other. Verify the result with `peer-authorization.ts`'s
+ * `verifyFormationConsent`, whose `formationConsentDigest` is the base64url twin of
+ * this vector — the two must stay in lockstep.
+ *
+ * `strandId` is deliberately absent, unlike its vouch sibling: the joiner cannot know
+ * the strand when it signs (a bound invite's host strand arrives only in the result
+ * frame; an unbound strand is minted by the responder). The responder cannot
+ * substitute one anyway — a bound invite is pinned to its own strand by `Authorized`,
+ * and an unbound redemption mints a fresh strand, so there is no victim to name.
  */
 export function formationConsentMessage(fields: {
   token: string;

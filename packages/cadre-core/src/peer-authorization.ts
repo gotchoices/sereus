@@ -222,9 +222,11 @@ export function verifyCadrePeerVoucher(
 
 /**
  * Canonical digest a JOINING peer signs to consent to ONE `FormationUsage`
- * redemption — the read-side mirror of {@link formationConsentMessage} in
+ * redemption — the read-side mirror of `formationConsentMessage` in
  * control-database.ts, base64url-encoded instead of raw bytes (see
- * {@link taggedDigest}).
+ * {@link taggedDigest}). That doc comment carries the field-vector rationale
+ * (notably why `strandId` is not signed); the two vectors must not drift, which
+ * peer-authorization.spec.ts pins by signing one form and verifying the other.
  */
 export function formationConsentDigest(
   token: string, usageStampId: string, peerKey: string, disclosure: string

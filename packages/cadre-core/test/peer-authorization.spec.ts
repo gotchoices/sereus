@@ -8,6 +8,7 @@ import {
   formationConsentDigest,
   verifyFormationConsent
 } from '../src/peer-authorization.js';
+import { formationConsentMessage, formationVouchMessage } from '../src/control-database.js';
 import { ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
 
 /**
@@ -128,28 +129,105 @@ describe('verifyPeerAuthorization', () => {
 });
 
 describe('verifyFormationConsent', () => {
-  it('round-trips: the joiner signing over its own key verifies true, a different key false', () => {
-    const joinerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    const joinerPublicKey = ed25519PublicKeyFromPrivate(joinerPrivateKey);
-    const row = {
-      token: 'invite-token',
-      usageStampId: 'stamp-1',
-      peerKey: joinerPublicKey,
-      disclosure: 'disclosure text'
-    };
-    const signature = sign(
-      formationConsentDigest(row.token, row.usageStampId, row.peerKey, row.disclosure),
-      joinerPrivateKey,
+  /** The four signed fields of a consent row, before the signature is attached. */
+  type ConsentFields = { token: string; usageStampId: string; peerKey: string; disclosure: string };
+
+  let joinerPrivateKey: string;
+  let row: ConsentFields;
+
+  /** Sign the base64url digest form — what a joiner does via `formationConsentDigest`. */
+  function signConsentDigest(fields: ConsentFields, privateKey: string): string {
+    return sign(
+      formationConsentDigest(fields.token, fields.usageStampId, fields.peerKey, fields.disclosure),
+      privateKey,
       'ed25519',
       'base64url',
       'base64url',
       'base64url'
     ) as string;
+  }
 
-    expect(verifyFormationConsent({ ...row, peerSig: signature })).toBe(true);
+  beforeEach(() => {
+    joinerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    row = {
+      token: 'invite-token',
+      usageStampId: 'stamp-1',
+      peerKey: ed25519PublicKeyFromPrivate(joinerPrivateKey),
+      disclosure: 'disclosure text'
+    };
+  });
 
-    const otherPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    const otherPublicKey = ed25519PublicKeyFromPrivate(otherPrivateKey);
-    expect(verifyFormationConsent({ ...row, peerKey: otherPublicKey, peerSig: signature })).toBe(false);
+  it('round-trips: the joiner signing over its own key verifies true', () => {
+    const peerSig = signConsentDigest(row, joinerPrivateKey);
+    expect(verifyFormationConsent({ ...row, peerSig })).toBe(true);
+  });
+
+  it('rejects a signature checked against a different peer key', () => {
+    // The identity IS the key on the row, so swapping it is both "wrong key" and
+    // "claiming to be someone else" — one check covers both.
+    const peerSig = signConsentDigest(row, joinerPrivateKey);
+    const otherPublicKey = ed25519PublicKeyFromPrivate(generatePrivateKey('ed25519', 'base64url') as string);
+    expect(verifyFormationConsent({ ...row, peerKey: otherPublicKey, peerSig })).toBe(false);
+  });
+
+  it.each(['token', 'usageStampId', 'disclosure'] as const)(
+    'rejects consent lifted onto a row with a different %s',
+    (field) => {
+      // Every signed field is bound, so one joiner's consent cannot be re-filed under
+      // another invitation, another redemption nonce, or other disclosure text.
+      const peerSig = signConsentDigest(row, joinerPrivateKey);
+      expect(verifyFormationConsent({ ...row, [field]: 'something-else', peerSig })).toBe(false);
+    }
+  );
+
+  it('rejects a tampered signature', () => {
+    const peerSig = signConsentDigest(row, joinerPrivateKey);
+    const tampered = (peerSig[0] === 'A' ? 'B' : 'A') + peerSig.slice(1);
+    expect(verifyFormationConsent({ ...row, peerSig: tampered })).toBe(false);
+  });
+
+  it('rejects an approver vouch signature presented as joiner consent', () => {
+    // The action tag is the whole point of a separate `'consent'` digest: an approver's
+    // sign-off over the same table must never double as the joiner's agreement to join.
+    const vouchSig = sign(
+      formationVouchMessage({
+        token: row.token,
+        usageStampId: row.usageStampId,
+        strandId: 'strand-1',
+        peerId: row.peerKey,
+        disclosure: row.disclosure
+      }),
+      joinerPrivateKey,
+      'ed25519',
+      'bytes',
+      'base64url',
+      'base64url'
+    ) as string;
+    expect(verifyFormationConsent({ ...row, peerSig: vouchSig })).toBe(false);
+  });
+
+  it('returns false (does not throw) on malformed input', () => {
+    const peerSig = signConsentDigest(row, joinerPrivateKey);
+    expect(() => {
+      expect(verifyFormationConsent({ ...row, peerSig: 'not valid base64url!!! ***' })).toBe(false);
+      expect(verifyFormationConsent({ ...row, peerSig: '' })).toBe(false);
+      expect(verifyFormationConsent({ ...row, peerKey: 'garbage-key-not-32-bytes', peerSig })).toBe(false);
+    }).not.toThrow();
+  });
+
+  it('agrees with formationConsentMessage: signing the raw bytes verifies via the digest', () => {
+    // The joiner signs `formationConsentMessage` (raw bytes, control-database.ts) while
+    // this verifier rebuilds the vector through `formationConsentDigest` (base64url,
+    // peer-authorization.ts). Two mirrors of one field vector in two modules: if either
+    // drifts, every real consent fails closed without throwing, so pin them together.
+    const peerSig = sign(
+      formationConsentMessage(row),
+      joinerPrivateKey,
+      'ed25519',
+      'bytes',
+      'base64url',
+      'base64url'
+    ) as string;
+    expect(verifyFormationConsent({ ...row, peerSig })).toBe(true);
   });
 });
