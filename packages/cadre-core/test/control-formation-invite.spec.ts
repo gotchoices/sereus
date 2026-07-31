@@ -575,7 +575,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // the invite's own, and a bound invite may not seat a strand at all); the engine
       // reports the Strand-side AuthorizedInsert.
       await expectConstraintFailure(
-        db.redeemInvitation({ token, strandId: unrelated, peerId: 'peer-' + rand() }),
+        db.redeemInvitation({ token, strandId: unrelated, ...mintConsent(token) }),
         'AuthorizedInsert',
       );
       expect(await strandCount()).toBe(strandsBefore);
@@ -604,7 +604,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // where it has not converged yet; resolveStrand instead reports 'missing' and the
       // formation manager rejects cleanly.
       await expectConstraintFailure(
-        db.redeemInvitation({ token, strandId: host, peerId: 'peer-' + rand() }),
+        db.redeemInvitation({ token, strandId: host, ...mintConsent(token) }),
         'AuthorizedInsert',
       );
       expect(await strandCount()).toBe(strandsBefore);
@@ -628,7 +628,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // FormationUsage half of the narrowing, which any shape carrying a Strand insert
       // masks behind AuthorizedInsert.
       await expectConstraintFailure(
-        db.recordFormationUsage({ token, strandId: other, peerId: 'peer-' + rand() }),
+        db.recordFormationUsage({ token, strandId: other, ...mintConsent(token) }),
         'Authorized',
       );
       expect(await usageCount()).toBe(usageBefore);
@@ -642,8 +642,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
       const first = 'strand-use1-' + rand();
       const second = 'strand-use2-' + rand();
-      await db.redeemInvitation({ token, strandId: first, peerId: 'peer-' + rand() });
-      await db.redeemInvitation({ token, strandId: second, peerId: 'peer-' + rand() });
+      await db.redeemInvitation({ token, strandId: first, ...mintConsent(token) });
+      await db.redeemInvitation({ token, strandId: second, ...mintConsent(token) });
 
       for (const id of [first, second]) {
         const row = await rawDb.get(
@@ -666,8 +666,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         totalUses: 3,
       });
 
-      expect((await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-a' })).useNumber).toBe(1);
-      expect((await db.recordFormationUsage({ token, strandId: host, peerId: 'peer-b' })).useNumber).toBe(2);
+      expect((await db.recordFormationUsage({ token, strandId: host, ...mintConsent(token) })).useNumber).toBe(1);
+      expect((await db.recordFormationUsage({ token, strandId: host, ...mintConsent(token) })).useNumber).toBe(2);
 
       // Still exactly one Strand row for the host — joining by bound invite records
       // consent, it never seats anything.
@@ -727,18 +727,30 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     let validationPublicKey: string;
 
     /**
-     * The five fields ONE approver sign-off is bound to. Named exactly like
-     * `recordFormationUsage`'s parameters so a case can spread a `Redemption` straight into
-     * the call — the redemption a key approved and the redemption that is attempted are then
-     * the same object, and a case that means to vary one field has to say so.
+     * The five fields ONE approver sign-off is bound to (token, strandId, usageStampId,
+     * peerKey, disclosure), plus the joiner's own consent over its subset of them. Named
+     * exactly like `recordFormationUsage`'s parameters so a case can spread a `Redemption`
+     * straight into the call — the redemption a key approved and the redemption that is
+     * attempted are then the same object, and a case that means to vary one field has to
+     * say so (and `reconsent` if the varied field sits inside the consent digest too).
      */
     interface Redemption {
       token: string;
       strandId: string;
       usageStampId: string;
-      peerId: string;
+      peerKey: string;
       disclosure: string;
+      /** Joiner's consent signature over (token, usageStampId, peerKey, disclosure). */
+      peerSignature: string;
+      /** Joiner's seed, kept so cases varying a consent-digest field can re-sign. */
+      peerPrivateKey: string;
     }
+
+    /** Recompute peerSignature from the redemption's OWN current fields. */
+    const reconsent = (r: Redemption): Redemption => ({
+      ...r,
+      peerSignature: signJoinerConsent({ privateKey: r.peerPrivateKey, peerKey: r.peerKey }, r),
+    });
 
     /**
      * ed25519 sign-off over the same 'vouch' digest the SQL builds, from an arbitrary key.
@@ -761,11 +773,15 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * exactly what a second invitee's approval covers — and, presented with the FIRST
      * invitee's signature, exactly what a cross-joiner replay looks like.
      */
-    const sibling = (redemption: Redemption, tag: string): Redemption => ({
-      ...redemption,
-      usageStampId: generateStampId(`vouch-${tag}-` + rand()),
-      peerId: `peer-${tag}-` + rand(),
-    });
+    const sibling = (redemption: Redemption, tag: string): Redemption => {
+      const joiner = mintJoiner();
+      return reconsent({
+        ...redemption,
+        usageStampId: generateStampId(`vouch-${tag}-` + rand()),
+        peerKey: joiner.peerKey,
+        peerPrivateKey: joiner.privateKey,
+      });
+    };
 
     /**
      * A `ValidationUrl` invite plus an owner-signed host strand to record consent against,
@@ -785,12 +801,14 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         totalUses: options.totalUses,
         ...(options.bound ? { strandId } : {}),
       });
+      const joiner = mintJoiner();
+      const usageStampId = generateStampId(`vouch-${tag}-` + rand());
+      const disclosure = `${tag}-disclosure`;
       return {
-        token,
-        strandId,
-        usageStampId: generateStampId(`vouch-${tag}-` + rand()),
-        peerId: `peer-${tag}-` + rand(),
-        disclosure: `${tag}-disclosure`,
+        token, strandId, usageStampId, disclosure,
+        peerKey: joiner.peerKey,
+        peerPrivateKey: joiner.privateKey,
+        peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure }),
       };
     }
 
@@ -846,30 +864,33 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // The row that landed carries the very nonce and joiner the approver signed over —
       // the two fields that make one sign-off spendable once, for one peer.
       const row = await rawDb.get(
-        'select UsageStampId, PeerId from CadreControl.FormationUsage where Token = ?',
+        'select UsageStampId, PeerKey from CadreControl.FormationUsage where Token = ?',
         [redemption.token],
       );
       expect(row?.UsageStampId).toBe(redemption.usageStampId);
-      expect(row?.PeerId).toBe(redemption.peerId);
+      expect(row?.PeerKey).toBe(redemption.peerKey);
     });
 
     it('admits a CONSENT-SEATING redemption (redeemInvitation) under an approver sign-off', async () => {
       // Every other case here uses `recordFormationUsage` against a strand that already exists.
       // That leaves the path a stranger actually joins by — `redeemInvitation`, which seats the
       // strand and its usage row in ONE transaction — never exercised under an approval at all.
-      // It mints its own `usageStampId` when the caller supplies none, so a regression that
-      // stopped threading the caller's nonce through would be invisible to the record-only
-      // cases: the approver signs one nonce and a different one reaches the digest.
+      // The seating transaction threads the caller's nonce through, so a regression that
+      // stopped doing so would be invisible to the record-only cases: the approver signs
+      // one nonce and a different one reaches the digest.
       const token = 'invite-seating-' + rand();
       const strandId = 'strand-seating-' + rand();  // deliberately NOT inserted: consent seats it
       await db.insertFormationInvite(token, 'sapp-seating', ownerPublicKey, signMessage, {
         validationUrl: 'https://validate.example/seating',
       });
+      const joiner = mintJoiner();
+      const usageStampId = generateStampId('vouch-seating-' + rand());
       const redemption: Redemption = {
-        token, strandId,
-        usageStampId: generateStampId('vouch-seating-' + rand()),
-        peerId: 'peer-seating-' + rand(),
+        token, strandId, usageStampId,
+        peerKey: joiner.peerKey,
+        peerPrivateKey: joiner.privateKey,
         disclosure: 'seating-disclosure',
+        peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure: 'seating-disclosure' }),
       };
 
       const landed = await db.redeemInvitation({
@@ -883,11 +904,11 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       // The nonce the approver signed is the nonce on the row, and the strand it authorized
       // came into existence unsigned off the back of that same row.
       const row = await rawDb.get(
-        'select UsageStampId, PeerId, StrandId from CadreControl.FormationUsage where Token = ?',
+        'select UsageStampId, PeerKey, StrandId from CadreControl.FormationUsage where Token = ?',
         [token],
       );
       expect(row?.UsageStampId).toBe(redemption.usageStampId);
-      expect(row?.PeerId).toBe(redemption.peerId);
+      expect(row?.PeerKey).toBe(redemption.peerKey);
       expect(row?.StrandId).toBe(strandId);
       expect(await rawDb.get(
         'select Type from CadreControl.Strand where Id = ?', [strandId],
@@ -938,21 +959,21 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(token, 'sapp-novalidation', ownerPublicKey, signMessage);
 
-      const peerId = 'peer-' + rand();
+      const consent = mintConsent(token, 'open');
       const before = await usageCount();
-      const landed = await db.recordFormationUsage({ token, strandId, peerId, disclosure: 'open' });
+      const landed = await db.recordFormationUsage({ token, strandId, ...consent, disclosure: 'open' });
       expect(landed.useNumber).toBe(1);
       expect(await usageCount()).toBe(before + 1);
 
-      // With no approval to bind it to, the writer mints the nonce itself — and echoes back
-      // the one that actually landed, which is what lets a caller that DOES hold a sign-off
-      // check the two agree rather than discovering the mismatch as a CHECK failure.
+      // The writer threads the consent's nonce through and echoes back the one that
+      // actually landed, which is what lets a caller that DOES hold a sign-off check
+      // the two agree rather than discovering the mismatch as a CHECK failure.
       const row = await rawDb.get(
-        'select UsageStampId, PeerId from CadreControl.FormationUsage where Token = ?',
+        'select UsageStampId, PeerKey from CadreControl.FormationUsage where Token = ?',
         [token],
       );
       expect(row?.UsageStampId).toBe(landed.usageStampId);
-      expect(row?.PeerId).toBe(peerId);
+      expect(row?.PeerKey).toBe(consent.peerKey);
     });
 
     it('stops approving once the key is removed, without unwinding what it already approved', async () => {
@@ -1011,9 +1032,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * varied two fields stays green when the weaker of the pair is dropped. The cross-joiner
      * case immediately below is the deliberate exception — it models the real attack (a SPENT
      * approval re-filed under another name), which cannot help but carry a fresh nonce too, or
-     * `unique` answers before the digest does — so it is PAIRED with a single-field PeerId case
-     * on an unspent approval. Verified by mutation, not by reading: dropping PeerId reddens only
-     * the PeerId case, dropping UsageStampId only the fresh-nonce case.
+     * `unique` answers before the digest does — so it is PAIRED with a single-field PeerKey case
+     * on an unspent approval. Verified by mutation, not by reading: dropping PeerKey reddens only
+     * the PeerKey case, dropping UsageStampId only the fresh-nonce case.
      *
      * NOTE: the race case pins the (Token, UseNumber) primary-key collision because the vtab
      * enforces the key on the insert, ahead of the deferred `Monotonic` CHECK; were that
@@ -1033,7 +1054,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         })).useNumber).toBe(1);
 
         // A's sign-off, re-filed under B's name. The nonce is FRESH, so the column's `unique`
-        // cannot be what refuses this — the digest's PeerId and UsageStampId are.
+        // cannot be what refuses this — the digest's PeerKey and UsageStampId are.
         const stolen = sibling(joinerA, 'stolen');
         const before = await usageCount();
         await expectConstraintFailure(
@@ -1045,7 +1066,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expect(await usageCount()).toBe(before);
 
         // B is not collateral damage: the same enrolled approver signs over B's own nonce and
-        // peer id, and that redemption lands as the invite's second use.
+        // peer key, and that redemption lands as the invite's second use.
         const joinerB = sibling(joinerA, 'joiner-b');
         expect((await db.recordFormationUsage({
           ...joinerB,
@@ -1090,8 +1111,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         const before = await usageCount();
         await expectConstraintFailure(
           db.recordFormationUsage({
-            ...approved,
-            usageStampId: generateStampId('nonce-swap-fresh-' + rand()),
+            ...reconsent({ ...approved, usageStampId: generateStampId('nonce-swap-fresh-' + rand()) }),
             validationKey: validationPublicKey, validationSignature: approval,
           }),
           'Authorized',
@@ -1110,19 +1130,20 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expect(await usageCount()).toBe(before + 1);
       });
 
-      it('refuses an UNSPENT approval presented for a different joiner (PeerId alone)', async () => {
+      it('refuses an UNSPENT approval presented for a different joiner (PeerKey alone)', async () => {
         // The cross-joiner case above necessarily varies the nonce too: a SPENT approval must
-        // carry a fresh one or `unique` answers before the digest does. So it cannot pin PeerId
+        // carry a fresh one or `unique` answers before the digest does. So it cannot pin PeerKey
         // by itself. Here the approval has never landed, its nonce is still free, and the
         // joining peer is the single field that differs — the exact "approval copied and
         // re-presented for a different person" claim, isolated.
         const approved = await validatingInvite('peer-swap');
         const approval = vouch(validationPrivateKey, approved);
+        const j = mintJoiner();
 
         const before = await usageCount();
         await expectConstraintFailure(
           db.recordFormationUsage({
-            ...approved, peerId: 'peer-peer-swap-other-' + rand(),
+            ...reconsent({ ...approved, peerKey: j.peerKey, peerPrivateKey: j.privateKey }),
             validationKey: validationPublicKey, validationSignature: approval,
           }),
           'Authorized',
@@ -1199,7 +1220,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         const before = await usageCount();
         await expectConstraintFailure(
           db.recordFormationUsage({
-            ...approved, disclosure: approved.disclosure + ' — and one more thing',
+            ...reconsent({ ...approved, disclosure: approved.disclosure + ' — and one more thing' }),
             validationKey: validationPublicKey, validationSignature: approval,
           }),
           'Authorized',
@@ -1266,6 +1287,78 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     });
   });
 
+  /**
+   * `FormationUsage.PeerConsented`: every usage row must carry the JOINER's own signature
+   * over the consent digest (Token, UsageStampId, PeerKey, Disclosure), verified against
+   * the row's `PeerKey`. Approver-free invites throughout, so `Authorized`'s validation
+   * branch cannot fire and each refusal is a single-constraint assertion.
+   */
+  describe('FormationUsage.PeerConsented joiner-consent branch', () => {
+    it('lands a consent whose signature matches the presented joiner key, and stores both', async () => {
+      const token = 'invite-consent-ok-' + rand();
+      const strandId = 'strand-consent-ok-' + rand();
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(token, 'sapp-consent-ok', ownerPublicKey, signMessage);
+
+      const consent = mintConsent(token);
+      expect((await db.recordFormationUsage({ token, strandId, ...consent })).useNumber).toBe(1);
+
+      const row = await rawDb.get(
+        'select PeerKey, PeerSig from CadreControl.FormationUsage where Token = ?',
+        [token],
+      );
+      expect(row?.PeerKey).toBe(consent.peerKey);
+      expect(row?.PeerSig).toBe(consent.peerSignature);
+    });
+
+    it('refuses a consent signed by a DIFFERENT joiner than the key presented', async () => {
+      const token = 'invite-consent-forged-' + rand();
+      const strandId = 'strand-consent-forged-' + rand();
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(token, 'sapp-consent-forged', ownerPublicKey, signMessage);
+
+      const presented = mintConsent(token);
+      const before = await usageCount();
+      // A perfectly valid signature — from the WRONG key: a second joiner signs over the
+      // same token and nonce, and its consent is filed under the first joiner's PeerKey.
+      // The pre-existing owner-signed strand keeps StrandExists and Authorized satisfied,
+      // so PeerConsented is the single rejector.
+      await expectConstraintFailure(
+        db.recordFormationUsage({
+          token, strandId,
+          peerKey: presented.peerKey,
+          usageStampId: presented.usageStampId,
+          peerSignature: signJoinerConsent(mintJoiner(), { token, usageStampId: presented.usageStampId }),
+        }),
+        'PeerConsented',
+      );
+      expect(await usageCount()).toBe(before);
+    });
+
+    it('rolls back the whole consent-seating transaction when the joiner signature fails', async () => {
+      const token = 'invite-consent-seatfail-' + rand();
+      await db.insertFormationInvite(token, 'sapp-consent-seatfail', ownerPublicKey, signMessage);
+
+      const presented = mintConsent(token);
+      const strandsBefore = await strandCount();
+      const usageBefore = await usageCount();
+      // Same wrong-key shape on an unbound invite with NO strand pre-inserted.
+      // PeerConsented is check-on-insert: it fires at the usage insert inside the seating
+      // transaction, and the strand insert that preceded it rolls back with it.
+      await expectConstraintFailure(
+        db.redeemInvitation({
+          token, strandId: 'strand-consent-seatfail-' + rand(),
+          peerKey: presented.peerKey,
+          usageStampId: presented.usageStampId,
+          peerSignature: signJoinerConsent(mintJoiner(), { token, usageStampId: presented.usageStampId }),
+        }),
+        'PeerConsented',
+      );
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await usageCount()).toBe(usageBefore);
+    });
+  });
+
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
     it('isTokenValid: true for a known unexpired token, false for unknown or expired', async () => {
       const recorder = new ControlFormationUsageRecorder(db);
@@ -1298,7 +1391,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await db.insertStrand(singleStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(single, 'sapp-su', ownerPublicKey, signMessage, { totalUses: 1 });
       expect(await recorder.isTokenUsed(single)).toBe(false);
-      await recorder.recordUsage({ token: single, peerId: 'peer-x', strandId: singleStrand, disclosure: '' });
+      await recorder.recordUsage({ token: single, ...mintConsent(single), strandId: singleStrand, disclosure: '' });
       expect(await recorder.isTokenUsed(single)).toBe(true);
 
       // Unlimited invite (null TotalUses): never "used up".
@@ -1306,7 +1399,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const unlimitedStrand = 'strand-unl-' + rand();
       await db.insertStrand(unlimitedStrand, 'o', ownerPublicKey, signMessage);
       await db.insertFormationInvite(unlimited, 'sapp-unl', ownerPublicKey, signMessage);
-      await recorder.recordUsage({ token: unlimited, peerId: 'peer-y', strandId: unlimitedStrand, disclosure: '' });
+      await recorder.recordUsage({ token: unlimited, ...mintConsent(unlimited), strandId: unlimitedStrand, disclosure: '' });
       expect(await recorder.isTokenUsed(unlimited)).toBe(false);
     });
 
@@ -1366,7 +1459,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expiresAtMs: Date.now() + 60_000,
       });
 
-      const out = await recorder.provisionAndRecord({ token, peerId: 'peer-par', sAppId: 'sapp-par', disclosure: '' });
+      const out = await recorder.provisionAndRecord({ token, ...mintConsent(token), sAppId: 'sapp-par', disclosure: '' });
       expect(out.strandId.length).toBeGreaterThan('strand-'.length);
       // An unbound responder-provisioned strand is open → no membership key.
       expect(out.memberPrivateKey).toBeNull();
@@ -1456,7 +1549,7 @@ describe('ControlDatabase.hasOutstandingFormationInvite (DB-wide redeemable scan
 
     // At T0 + 2min the previous test's invite is expired, so this one decides.
     expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(true);
-    await db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() });
+    await db.recordFormationUsage({ token, strandId, ...mintConsent(token) });
     expect(await db.hasOutstandingFormationInvite(T0 + 2 * MINUTE)).toBe(false);
   });
 

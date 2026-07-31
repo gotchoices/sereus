@@ -56,18 +56,22 @@ function approvalDemandingDatabase(onInviteRead?: () => void): ControlDatabase {
         validationUrl: 'https://hook.example/approve', strandId: null,
       };
     },
-    mintUsageStampId: () => 'stamp-1',
     recordFormationUsage: async () => { throw new Error('recordFormationUsage must not be reached'); },
   } as unknown as ControlDatabase;
 }
 
-const REDEMPTION = { token: 'invite-abc', peerId: '12D3KooWJoiner', strandId: 'strand-1', disclosure: '{}' };
+const REDEMPTION = {
+  token: 'invite-abc', peerKey: 'joiner-pub-key', peerSignature: 'joiner-consent-sig',
+  usageStampId: 'stamp-1', strandId: 'strand-1', disclosure: '{}',
+};
 
 describe('ControlFormationUsageRecorder abort plumbing', () => {
   it('recordUsage rejects a pre-aborted signal before reading the invite', async () => {
     const error = await recorder().recordUsage({
       token: 'invite-abc',
-      peerId: '12D3KooWJoiner',
+      peerKey: 'joiner-pub-key',
+      peerSignature: 'joiner-consent-sig',
+      usageStampId: 'stamp-1',
       strandId: 'strand-1',
       disclosure: '{}',
       signal: abortedSignal()
@@ -84,7 +88,9 @@ describe('ControlFormationUsageRecorder abort plumbing', () => {
   it('provisionAndRecord rejects a pre-aborted signal before minting a strand id', async () => {
     const error = await recorder().provisionAndRecord({
       token: 'invite-abc',
-      peerId: '12D3KooWJoiner',
+      peerKey: 'joiner-pub-key',
+      peerSignature: 'joiner-consent-sig',
+      usageStampId: 'stamp-1',
       sAppId: 'sapp-1',
       disclosure: '{}',
       signal: abortedSignal()
@@ -104,7 +110,9 @@ describe('ControlFormationUsageRecorder abort plumbing', () => {
     const controller = new AbortController();
     await expect(recorder().recordUsage({
       token: 'invite-abc',
-      peerId: '12D3KooWJoiner',
+      peerKey: 'joiner-pub-key',
+      peerSignature: 'joiner-consent-sig',
+      usageStampId: 'stamp-1',
       strandId: 'strand-1',
       disclosure: '{}',
       signal: controller.signal

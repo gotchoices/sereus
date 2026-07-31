@@ -15,6 +15,7 @@ import type { ControlDatabase } from '../src/control-database.js';
 import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest } from '../src/peer-authorization.js';
 import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
 import { expectConstraintFailure } from './control-constraint-helpers.js';
+import { mintConsent } from './formation-consent-helper.js';
 
 /**
  * Remove-then-replay resurrection coverage for `CadreControl.Revocation`, plus the
@@ -699,7 +700,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const id = 'strand-consent-del-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-consent-del', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId: id, peerId: 'peer-' + id });
+    await db.redeemInvitation({ token, strandId: id, ...mintConsent(token) });
 
     const stamp = String((await strandRow(id))?.StampId);
     await expectConstraintFailure(
@@ -729,7 +730,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const id = 'strand-consent-replay-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-consent-replay', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token, strandId: id, peerId: 'peer-' + id });
+    await db.redeemInvitation({ token, strandId: id, ...mintConsent(token) });
 
     const stamp = String((await strandRow(id))?.StampId);
     await removeStrand(id, stamp);
@@ -768,7 +769,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const id = 'strand-spare-use-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(token, 'sapp-spare-use', founder.publicKey,
       message => signAs(founder, message), { totalUses: 2 });
-    await db.redeemInvitation({ token, strandId: id, peerId: 'peer-' + id });
+    await db.redeemInvitation({ token, strandId: id, ...mintConsent(token) });
 
     const stamp = String((await strandRow(id))?.StampId);
     await removeStrand(id, stamp);
@@ -777,7 +778,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     // The spare use mints a NEW stamp, so `NotRevoked` passes; the invite is valid, so the
     // usage row's `Authorized` passes; only the Strand consent branch can reject.
     await expectConstraintFailure(
-      db.redeemInvitation({ token, strandId: id, peerId: 'peer-spare-' + id }),
+      db.redeemInvitation({ token, strandId: id, ...mintConsent(token) }),
       'AuthorizedInsert',
     );
     expect(await strandRow(id)).toBeUndefined();
@@ -794,7 +795,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const first = 'fi-rejoin-a-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(first, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
-    await db.redeemInvitation({ token: first, strandId: id, peerId: 'peer-rejoin-' + id });
+    await db.redeemInvitation({ token: first, strandId: id, ...mintConsent(first) });
 
     const firstStamp = String((await strandRow(id))?.StampId);
     await removeStrand(id, firstStamp);
@@ -806,7 +807,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.insertFormationInvite(second, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
     await expectConstraintFailure(
-      db.redeemInvitation({ token: second, strandId: id, peerId: 'peer-rejoin2-' + id }),
+      db.redeemInvitation({ token: second, strandId: id, ...mintConsent(second) }),
       'AuthorizedInsert',
     );
     expect(await strandRow(id)).toBeUndefined();
@@ -822,7 +823,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.insertFormationInvite(bound, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1, strandId: id });
     expect((await db.recordFormationUsage({
-      token: bound, strandId: id, peerId: 'peer-rejoin3-' + id,
+      token: bound, strandId: id, ...mintConsent(bound),
     })).useNumber).toBe(1);
   }, 60_000);
 
@@ -843,7 +844,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.insertFormationInvite(token, 'sapp-owner-only-removed', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1 });
     await expectConstraintFailure(
-      db.redeemInvitation({ token, strandId: id, peerId: 'peer-owner-only-' + id }),
+      db.redeemInvitation({ token, strandId: id, ...mintConsent(token) }),
       'AuthorizedInsert',
     );
     expect(await strandRow(id)).toBeUndefined();
@@ -860,7 +861,7 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await db.insertFormationInvite(bound, 'sapp-owner-only-removed', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1, strandId: id });
     expect((await db.recordFormationUsage({
-      token: bound, strandId: id, peerId: 'peer-owner-only-rejoin-' + id,
+      token: bound, strandId: id, ...mintConsent(bound),
     })).useNumber).toBe(1);
   }, 60_000);
 
