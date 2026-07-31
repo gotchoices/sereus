@@ -178,6 +178,13 @@ describe('FormationUsage joiner-consent signature matrix', () => {
    * exactly one of these red — a suite whose cases each varied two fields would stay green
    * when the weaker of the pair was dropped.
    *
+   * Mutation-verified, not merely argued: dropping `Token`, then `UsageStampId`, then
+   * `Disclosure` from both sides of the digest each turned exactly ONE case in this block
+   * red (`DIFFERENT token`, `SIGNED nonce`, `DIFFERENT disclosure text` respectively) and
+   * left the other three green. `PeerKey` is the fourth digest field and is deliberately
+   * NOT claimed here — nothing can pin it; see the note in the `verifyFormationConsent`
+   * block below for why.
+   *
    * The nonce appears TWICE below, refused by two INDEPENDENT mechanisms: a nonce SIGNED but
    * not presented fails `PeerConsented`, while a nonce presented a second time VERBATIM is
    * refused by `UsageStampId`'s `unique` before any digest is consulted. Keeping those
@@ -579,7 +586,18 @@ describe('FormationUsage joiner-consent signature matrix', () => {
       const stored = await landAndReadBack('recheck-mutate', 'joining a household');
       expect(verifyFormationConsent(stored)).toBe(true);
 
-      // One field at a time, so a digest that stopped covering a field turns exactly one red.
+      // One field at a time, so a digest that stopped covering a field turns exactly one red —
+      // with ONE exception, confirmed by mutation: removing `peerKey` from the digest breaks
+      // NOTHING here or in peer-authorization.spec.ts. It cannot: `verify` checks the signature
+      // against the row's own `peerKey`, so swapping that field swaps the VERIFYING key and the
+      // check fails whether or not the digest also covers it. The digest's copy of `peerKey` is
+      // redundant belt-and-braces today and is unpinnable by construction.
+      // NOTE: it stops being redundant the moment any caller verifies a consent against a key
+      // that is NOT the row's `peerKey` (e.g. a key resolved from a peer id or an enrolled row);
+      // at that point add a case that pins the binding, because none exists.
+      // Pure-unit siblings of these mutations — synthetic rows, no database — are in
+      // peer-authorization.spec.ts → `verifyFormationConsent`; this block exists to catch the
+      // SQL-digest ⇄ TypeScript-digest drift those cannot see.
       expect(verifyFormationConsent({ ...stored, token: stored.token + '-other' })).toBe(false);
       expect(verifyFormationConsent({ ...stored, usageStampId: generateStampId('recheck-other-' + rand()) })).toBe(false);
       expect(verifyFormationConsent({ ...stored, peerKey: mintJoiner().peerKey })).toBe(false);
