@@ -1002,6 +1002,22 @@ describe('SeedBootstrapService Helper Methods', () => {
     });
   });
 
+  describe('authorizePeer', () => {
+    it('checks the control database before the owner key', async () => {
+      const service = new SeedBootstrapService({ partyId, ownerPrivateKey });
+      await expect(service.authorizePeer({ peerId: '12D3KooWTestPeer' }))
+        .rejects.toThrow('Control database not initialized');
+    });
+  });
+
+  describe('reauthorizePeer', () => {
+    it('requires an owner private key even with no control database attached', async () => {
+      const service = new SeedBootstrapService({ partyId });
+      await expect(service.reauthorizePeer('12D3KooWTestPeer', Date.now()))
+        .rejects.toThrow('Owner private key required');
+    });
+  });
+
   async function readCadrePeer(
     node: CadreNode,
     peerId: string
