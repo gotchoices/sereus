@@ -51,8 +51,24 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
  *
  * The 3 s margin between responder provisioning and initiator await-response is the wire
  * latency budget for the result frame to travel back.
+ *
+ * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is a settle grace, so the
+ * default WORK budget (12 s − 2 s = 10 s) EQUALS the approval hook's own 10 s timeout: a
+ * dead hook races 'Formation approval unavailable, retry' against 'Formation provisioning
+ * timed out'. Both are retryable and both leave the invite unspent, so the race is benign.
  */
 const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
+/**
+ * Settle grace (ms), carved OUT of `provisionTimeoutMs` — never added on top, so the budget
+ * ladder above is untouched. The listener aborts the provisioning hook when the remaining
+ * work budget (`provisionTimeoutMs - grace`, floored at half the budget for tiny configured
+ * values) expires, then waits up to this grace for the aborted work to settle anyway: once
+ * the `FormationUsage` insert has been issued nothing can un-spend it (the table is
+ * append-only), so a provisioning that lands late is ADOPTED and reported as a real
+ * approval rather than lying "timed out" over a spent invite. A hook that observes the
+ * abort before writing leaves the invite unspent.
+ */
+const PROVISION_SETTLE_GRACE_MS = 2_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
 const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = 15_000;
 /**
