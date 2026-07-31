@@ -11,10 +11,11 @@
  * this module is for.
  *
  * WAITING IS THE DEFAULT TOOL. The owner's FRET peer ring does reach every party
- * member, measured within about five seconds of `createTestParty` resolving. A
- * single-member cohort right after party creation is a START-UP RACE, not a permanent
- * gap, so {@link waitForControlCohort} — not a forced substitution — is the right
- * instrument for almost every scenario.
+ * member within a few seconds of `createTestParty` resolving (measured: sub-second for a
+ * three-node party, about five seconds worst observed). A single-member cohort right
+ * after party creation is a START-UP RACE, not a permanent gap, so
+ * {@link waitForControlCohort} — not a forced substitution — is the right instrument for
+ * almost every scenario.
  *
  * FORCING IS A STOPGAP. `forceFullCohort` in `forced-cluster.ts` substitutes a
  * constant cohort. It buys determinism, and it is the ONLY way to reach a case a wait
@@ -37,8 +38,10 @@
  * RESTORE ORDERING. {@link observeControlCohorts} patches
  * `Libp2pKeyPeerNetwork.prototype.findCluster`, wrapping whatever is installed at the
  * time — as do `forceFullCohort` and `pinCoordinator`. All three must be restored in
- * REVERSE order of application (last applied, first restored); a test that tears down
- * out of order leaves a patched prototype behind for the rest of the file.
+ * REVERSE order of application (last applied, first restored). All three go through
+ * `key-network-patch.ts`, which throws naming the rule rather than leaving a patched
+ * prototype behind for the rest of the file; the throw does not latch, so a `finally`
+ * that unwinds the later patch can then restore the earlier one normally.
  *
  * PROCESS-WIDE CAVEAT. A prototype patch hits every `Libp2pKeyPeerNetwork` in the
  * process, including any strand-network instance a test creates. Vitest isolates test
@@ -52,15 +55,14 @@
  */
 
 import debug from 'debug';
-import { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
+import type { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import type { ClusterPeers } from '@optimystic/db-core';
 import { waitUntil } from './wait-utils.js';
 import type { WaitOptions } from './wait-utils.js';
 import type { TestParty, TestCadreNode } from './types.js';
+import { patchKeyNetwork } from './key-network-patch.js';
 
 const log = debug('sereus:integration:cohort');
-
-type FindCluster = Libp2pKeyPeerNetwork['findCluster'];
 
 /**
  * The key every probe in this module asks about. See the file header for why the
@@ -70,7 +72,7 @@ type FindCluster = Libp2pKeyPeerNetwork['findCluster'];
 export const CONTROL_COHORT_PROBE_KEY: Uint8Array =
 	new TextEncoder().encode('sereus-control-cohort-probe');
 
-/** ≈3× the measured ~5 s ring convergence. */
+/** A generous multiple of the measured ring convergence (see the file header). */
 const DEFAULT_COHORT_TIMEOUT_MS = 15_000;
 const DEFAULT_COHORT_INTERVAL_MS = 250;
 
@@ -110,9 +112,14 @@ function resolveKeyNetwork(node: TestCadreNode): Libp2pKeyPeerNetwork {
 export async function readControlCohort(
 	party: TestParty, node: TestCadreNode = party.ownerNode
 ): Promise<string[]> {
-	const members = Object.keys(await resolveKeyNetwork(node).findCluster(CONTROL_COHORT_PROBE_KEY));
+	const members = await probeCohort(resolveKeyNetwork(node));
 	log('party %s node %s cohort=%d %o', party.name, node.peerId, members.length, members);
 	return members;
+}
+
+/** The one place {@link CONTROL_COHORT_PROBE_KEY} is asked about. */
+async function probeCohort(keyNetwork: Libp2pKeyPeerNetwork): Promise<string[]> {
+	return Object.keys(await keyNetwork.findCluster(CONTROL_COHORT_PROBE_KEY));
 }
 
 /**
@@ -138,6 +145,11 @@ export async function waitForControlCohort(
 			`waitForControlCohort: minPeers must be an integer >= 1 ("at least N members" has no `
 			+ `meaning at zero); party ${party.name} was asked for ${minPeers}`);
 	}
+	// NOTE: this cap assumes the cohort can never exceed the party, which holds because
+	// `findCluster` admits only peers serving THIS network's protocol and the party's
+	// control network is named `control-<partyId>`. If a scenario ever puts a node into a
+	// party's control network without listing it in `TestParty`, a legitimate wait would
+	// throw here — take the count from the network rather than the party at that point.
 	if (minPeers > partyNodeCount) {
 		throw new Error(
 			`waitForControlCohort: party ${party.name} has ${partyNodeCount} node(s) `
@@ -154,10 +166,20 @@ export async function waitForControlCohort(
 	} = options;
 
 	let observed: string[] = [];
+	// `waitUntil` swallows a throwing condition as "not yet" and reports only a generic
+	// timeout, so a `findCluster` that fails EVERY poll would otherwise be reported as a
+	// network that never converged. Carry the last failure into the message and the cause.
+	let lastError: unknown;
 	const startedAt = Date.now();
 	try {
 		await waitUntil(async () => {
-			observed = Object.keys(await keyNetwork.findCluster(CONTROL_COHORT_PROBE_KEY));
+			try {
+				observed = await probeCohort(keyNetwork);
+			} catch (error) {
+				lastError = error;
+				return false;
+			}
+			lastError = undefined;
 			return observed.length >= minPeers;
 		}, { timeoutMs, intervalMs, description });
 	} catch (error) {
@@ -165,7 +187,8 @@ export async function waitForControlCohort(
 		throw new Error(
 			`waitForControlCohort: party ${party.name} node ${node.peerId} saw a cohort of `
 			+ `${observed.length} (members: ${observed.join(', ') || 'none'}) after `
-			+ `${Date.now() - startedAt}ms, needed ${minPeers} (budget ${timeoutMs}ms)`,
+			+ `${Date.now() - startedAt}ms, needed ${minPeers} (budget ${timeoutMs}ms)`
+			+ (lastError ? `; every poll FAILED, last error: ${String(lastError)}` : ''),
 			{ cause: error });
 	}
 	return observed;
@@ -198,21 +221,16 @@ export function observeControlCohorts(): ControlCohortObserverHandle {
 	let calls = 0;
 	const sizes: number[] = [];
 
-	const inner: FindCluster = Libp2pKeyPeerNetwork.prototype.findCluster;
-	Libp2pKeyPeerNetwork.prototype.findCluster = async function (key: Uint8Array): Promise<ClusterPeers> {
-		calls++;
-		const found = await inner.call(this, key);
-		sizes.push(Object.keys(found).length);
-		return found;
-	};
+	const patch = patchKeyNetwork('observeControlCohorts', 'findCluster', (inner) =>
+		async function (this: Libp2pKeyPeerNetwork, key: Uint8Array): Promise<ClusterPeers> {
+			calls++;
+			const found = await inner.call(this, key);
+			sizes.push(Object.keys(found).length);
+			return found;
+		});
 
-	let restored = false;
 	return {
-		restore(): void {
-			if (restored) return;
-			restored = true;
-			Libp2pKeyPeerNetwork.prototype.findCluster = inner;
-		},
+		restore: () => patch.restore(),
 		callCount: () => calls,
 		cohortSizes: () => [...sizes]
 	};

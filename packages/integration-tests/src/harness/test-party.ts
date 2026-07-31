@@ -53,8 +53,9 @@ async function createTestNode(
     // The same policy object production runs — see CONTROL_CLUSTER_POLICY for why it is
     // shared rather than copied. `basic-connectivity.integration.ts` asserts the threshold
     // a live harness node resolves from it.
-    // NOTE: the owner's FRET ring reaches all party members within ~5s of party
-    // creation (measured), so a write issued right after `createTestParty` resolves
+    // NOTE: the owner's FRET ring reaches all party members within a few seconds of
+    // party creation (measured: sub-second for a three-node party, ~5s worst
+    // observed), so a write issued right after `createTestParty` resolves
     // can still see a self-only cohort — it races the ring, not a permanent gap.
     // Such a write commits on the writer's own vote under `allowClusterDownsize`.
     // Scenarios that need a real multi-peer cohort must wait for it with

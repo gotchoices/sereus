@@ -14,11 +14,12 @@
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
+import type { Libp2p } from '@libp2p/interface';
 import {
 	createTestParty, shutdownTestParty, readControlCohort, waitForControlCohort,
 	observeControlCohorts, forceFullCohort
 } from '../harness/index.js';
-import type { TestParty } from '../harness/index.js';
+import type { TestParty, TestCadreNode, CohortNodeSource } from '../harness/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -129,5 +130,58 @@ describe('control-cohort harness helpers', () => {
 		const afterRestore = forced.callCount();
 		await readControlCohort(trio);
 		expect(forced.callCount()).toBe(afterRestore);
+	}, 30_000);
+
+	it('accepts a bare started Libp2p as a cohort source', async () => {
+		// The third `resolveControlLibp2p` branch — neither a CadreNode nor a
+		// TestCadreNode, just the node itself.
+		const forced = forceFullCohort([solo.ownerNode.libp2p]);
+		try {
+			expect(await readControlCohort(solo)).toEqual([solo.ownerNode.peerId]);
+			expect(forced.cohortSizes()).toContain(1);
+		} finally {
+			forced.restore();
+		}
+	}, 30_000);
+
+	it('names the shape it could not recognise rather than forcing an empty cohort', () => {
+		expect(() => forceFullCohort([{ notANode: true } as unknown as CohortNodeSource]))
+			.toThrow(/unrecognised node shape.*notANode/s);
+	});
+
+	it('refuses a node listed twice, which would force a cohort smaller than asked for', () => {
+		// Same libp2p node reached through two different source shapes: the entries
+		// would collapse to one key and `cohortSizes()` would report 1, not 2.
+		expect(() => forceFullCohort([solo.ownerNode, solo.ownerNode.libp2p]))
+			.toThrow(/was listed twice/);
+	});
+
+	it('blames the wiring, not the network, when a node carries no attached key network', async () => {
+		const unattached: TestCadreNode = { ...solo.ownerNode, libp2p: {} as unknown as Libp2p };
+		// Must be a named throw rather than a poll to the 15 s timeout blaming FRET.
+		await expect(readControlCohort(solo, unattached))
+			.rejects.toThrow(/exposes no attached keyNetwork/);
+		await expect(waitForControlCohort(solo, 1, { node: unattached }))
+			.rejects.toThrow(/exposes no attached keyNetwork/);
+	}, 30_000);
+
+	it('refuses an out-of-order restore instead of reinstating a stale findCluster', async () => {
+		const forced = forceFullCohort([solo.ownerNode]);
+		const observer = observeControlCohorts();
+		try {
+			// The observer wraps the forcer, so the forcer is no longer the top of the
+			// stack: un-forcing here would drop the observer's wrapper on the floor.
+			expect(() => forced.restore()).toThrow(/reverse order of application/);
+		} finally {
+			observer.restore();
+			// The throw does not latch — with the observer gone this now succeeds.
+			forced.restore();
+		}
+		// Both really are off: the real method answers and neither handle counts.
+		const forcedCalls = forced.callCount();
+		const observedCalls = observer.callCount();
+		await readControlCohort(solo);
+		expect(forced.callCount()).toBe(forcedCalls);
+		expect(observer.callCount()).toBe(observedCalls);
 	}, 30_000);
 });

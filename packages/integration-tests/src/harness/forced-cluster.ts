@@ -52,19 +52,20 @@
  * `Libp2pKeyPeerNetwork.prototype.findCluster`, and two of them (`pinCoordinator`
  * here, `observeControlCohorts` in `control-cohort.ts`) WRAP whatever is
  * installed when they are applied. The rule is therefore: restore in REVERSE
- * order of application — last applied, first restored. A test that tears down
- * out of order reinstates a stale method and leaves a patched prototype behind
- * for the rest of the file.
+ * order of application — last applied, first restored. Both helpers here patch
+ * through `key-network-patch.ts`, so an out-of-order teardown throws naming the
+ * rule rather than silently leaving a patched prototype behind for the rest of
+ * the file.
  */
 
 import { toString as u8ToString } from 'uint8arrays';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { ClusterPeers } from '@optimystic/db-core';
-import { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
+import type { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import type { CadreNode } from '@serfab/cadre-core';
 import type { TestCadreNode } from './types.js';
+import { patchKeyNetwork } from './key-network-patch.js';
 
-type FindCluster = Libp2pKeyPeerNetwork['findCluster'];
 type FindCoordinator = Libp2pKeyPeerNetwork['findCoordinator'];
 
 /**
@@ -138,6 +139,12 @@ export function forceFullCohort(nodes: readonly CohortNodeSource[]): ForcedCohor
 	for (const node of nodes) {
 		const controlNode = resolveControlLibp2p(node, 'forceFullCohort');
 		const peerIdStr = controlNode.peerId.toString();
+		// Two sources resolving to the same libp2p node would collapse into one cohort
+		// entry, so the forced cohort would be SMALLER than the caller listed — exactly
+		// the vacuous-consensus shape these helpers exist to rule out.
+		if (peerIdStr in cohort) {
+			throw new Error(`forceFullCohort: node ${peerIdStr} was listed twice — the forced cohort would be smaller than the node set`);
+		}
 		const multiaddrs = controlNode.getMultiaddrs().map((ma) => ma.toString());
 		if (multiaddrs.length === 0) {
 			throw new Error(`forceFullCohort: node ${peerIdStr} has no control multiaddrs — a forced addressless entry would masquerade as a dial failure`);
@@ -152,22 +159,18 @@ export function forceFullCohort(nodes: readonly CohortNodeSource[]): ForcedCohor
 	let calls = 0;
 	const sizes: number[] = [];
 
-	const original: FindCluster = Libp2pKeyPeerNetwork.prototype.findCluster;
-	Libp2pKeyPeerNetwork.prototype.findCluster = async function (_key: Uint8Array): Promise<ClusterPeers> {
-		calls++;
-		sizes.push(Object.keys(cohort).length);
-		// Fresh copy per call: callers may mutate the returned map.
-		return Object.fromEntries(Object.entries(cohort).map(([id, p]) =>
-			[id, { multiaddrs: [...p.multiaddrs], publicKey: p.publicKey }]));
-	};
+	// Substitutes rather than wraps, so the installed `findCluster` is deliberately unused.
+	const patch = patchKeyNetwork('forceFullCohort', 'findCluster', () =>
+		async function (_key: Uint8Array): Promise<ClusterPeers> {
+			calls++;
+			sizes.push(Object.keys(cohort).length);
+			// Fresh copy per call: callers may mutate the returned map.
+			return Object.fromEntries(Object.entries(cohort).map(([id, p]) =>
+				[id, { multiaddrs: [...p.multiaddrs], publicKey: p.publicKey }]));
+		});
 
-	let restored = false;
 	return {
-		restore(): void {
-			if (restored) return;
-			restored = true;
-			Libp2pKeyPeerNetwork.prototype.findCluster = original;
-		},
+		restore: () => patch.restore(),
 		callCount: () => calls,
 		cohortSizes: () => [...sizes]
 	};
@@ -221,38 +224,35 @@ export function pinCoordinator(candidates: readonly CohortNodeSource[]): PinnedC
 
 	let calls = 0;
 
-	const originalFindCoordinator: FindCoordinator = Libp2pKeyPeerNetwork.prototype.findCoordinator;
-	Libp2pKeyPeerNetwork.prototype.findCoordinator = async function (
-		_key: Uint8Array, options?: Parameters<FindCoordinator>[1]
-	): Promise<PeerId> {
-		calls++;
-		const excluded = new Set((options?.excludedPeers ?? []).map((p) => p.toString()));
-		const pick = candidatePeerIds.find((p) => !excluded.has(p.toString()));
-		if (!pick) throw new Error('pinCoordinator: every pinned coordinator candidate is excluded');
-		return pick;
-	};
+	const coordinatorPatch = patchKeyNetwork('pinCoordinator', 'findCoordinator', () =>
+		async function (_key: Uint8Array, options?: Parameters<FindCoordinator>[1]): Promise<PeerId> {
+			calls++;
+			const excluded = new Set((options?.excludedPeers ?? []).map((p) => p.toString()));
+			const pick = candidatePeerIds.find((p) => !excluded.has(p.toString()));
+			if (!pick) throw new Error('pinCoordinator: every pinned coordinator candidate is excluded');
+			return pick;
+		});
 
-	const innerFindCluster: FindCluster = Libp2pKeyPeerNetwork.prototype.findCluster;
-	Libp2pKeyPeerNetwork.prototype.findCluster = async function (key: Uint8Array): Promise<ClusterPeers> {
-		const found = await innerFindCluster.call(this, key);
-		// Same members, candidates keyed first — steers set-cover assignment only.
-		const reordered: ClusterPeers = {};
-		for (const id of candidateIdStrs) {
-			if (found[id]) reordered[id] = found[id];
-		}
-		for (const [id, peer] of Object.entries(found)) {
-			if (!(id in reordered)) reordered[id] = peer;
-		}
-		return reordered;
-	};
+	const clusterPatch = patchKeyNetwork('pinCoordinator', 'findCluster', (inner) =>
+		async function (this: Libp2pKeyPeerNetwork, key: Uint8Array): Promise<ClusterPeers> {
+			const found = await inner.call(this, key);
+			// Same members, candidates keyed first — steers set-cover assignment only.
+			const reordered: ClusterPeers = {};
+			for (const id of candidateIdStrs) {
+				const peer = found[id];
+				if (peer) reordered[id] = peer;
+			}
+			for (const [id, peer] of Object.entries(found)) {
+				if (!(id in reordered)) reordered[id] = peer;
+			}
+			return reordered;
+		});
 
-	let restored = false;
 	return {
 		restore(): void {
-			if (restored) return;
-			restored = true;
-			Libp2pKeyPeerNetwork.prototype.findCoordinator = originalFindCoordinator;
-			Libp2pKeyPeerNetwork.prototype.findCluster = innerFindCluster;
+			// Reverse order of application, the rule `key-network-patch.ts` enforces.
+			clusterPatch.restore();
+			coordinatorPatch.restore();
 		},
 		callCount: () => calls
 	};
