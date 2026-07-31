@@ -420,6 +420,11 @@ describe('strand sizes under the default breadth', () => {
 		// The stopped peer may still be selected into the cohort (its advertised protocols
 		// linger in the peerStore), in which case the coordinator waits out its dial before
 		// counting 3 of 4. That wait is why this test's budget is generous.
+		//
+		// NOTE: measured 43-48 s wall-clock across three runs on a win32 dev box, so the
+		// 120 s budget carries roughly 2.5x headroom and the second insert is the bulk of
+		// it. If a slower machine starts tripping the budget, raise it — the claim is that
+		// the write COMMITS with a holder gone, not that it commits quickly.
 		await author.db.exec(`insert into App.Msg(Id, Body) values (2, 'one-holder-down')`);
 
 		const rows = await selectAll<{ Id: number; Body: string }>(author.db, 'select Id, Body from App.Msg order by Id');
