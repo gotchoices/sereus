@@ -252,3 +252,73 @@ Reuse whatever of `wsTransports` / `makeOwnOwner` / `connectionsTo` /
   in particular that carriage is demonstrated in the **read** direction (B pulls
   R1 across the edge); the write direction (B promising a C-coordinated write over
   the same edge) is implied by cohort seating but not separately asserted.
+
+<!-- resume-note -->
+## Resume note (run interrupted by BUDGET_WARNING, 2026-07-31)
+
+A prior agent run spent its budget on research only. **No code was written; the
+working tree has no changes from that run.** All TODO items above remain. The
+findings below were verified against the codebase so the next run can start
+implementing immediately instead of re-discovering.
+
+### Verified facts (with locations)
+
+- **Isolation scenario helpers to port** (do not edit that file):
+  `bootTrio` is at `control-cohort-three-node-isolation.integration.ts:181-320`;
+  its private helpers (`wsTransports`, `nodeConfig`, `makeOwnOwner`,
+  `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`, `stopTrio`) at lines
+  63-163. The boot ordering and every checkpoint listed in "Shared boot helper"
+  above match that file exactly as described.
+- **Harness gaps**: `harness/node-fixtures.ts` exports `wsTransports`,
+  `makeOwnOwner` (returns the owner public key b64 — richer than the scenario's
+  local void copy; use the harness one), and `controlNodeConfig`. BUT
+  `ControlNodeOpts`/`controlNodeConfig` support neither `pinnedOwnerKeys` nor a
+  caller `connectionGater` — either extend them or build the config inside
+  `control-trio.ts` (the scenario's local `nodeConfig` shows the shape,
+  including the `trustedOwners: { pinnedKeys }` seam). `connectionsTo`,
+  `hasOutboundTo`, `peerStoreAddrsFor` are NOT in the harness — add them
+  (`node-fixtures.ts` or `control-trio.ts`) per the TODO.
+- **CadreNode API** (`packages/cadre-core/src/cadre-node.ts`):
+  `reconcileControlCohort()` public, single-flight, returns the in-flight pass
+  (line 1672); `registerSelf()` returns `'inserted' | 'refreshed' | 'skipped'`
+  (1306); `resolvePeerAddrs` (1573); `getControlNode()` (3655);
+  `getControlDatabase()` (3662); `authorizePeer` (4051).
+- **`self:peer:update` wiring confirmed**: `startRecordRefresh` (1490-1494)
+  fires BOTH `registerSelf` and `reconcileControlCohort` on that event — the
+  edge case named above is real; the 10-minute `reconcileMs` does not suppress it.
+- **Gater denial is survivable, as the ticket claims**: `dialControlSibling`
+  (1780-1798) logs and swallows per-peer dial failures; owner/backbone members
+  are dialed before non-owner fill via `selectControlCohortDials` (1744), so
+  B's step-7 pass hits the denied A dial first, then proceeds to C.
+- **Gater composition confirmed**: `createMembershipConnectionGater`
+  (`membership-connection-gater.ts:157-177`) spreads the base gater and only
+  wraps `denyInboundEncryptedConnection` — a test gater's `denyDialPeer` /
+  `denyDialMultiaddr` / `denyOutboundConnection` pass through unchanged. Config
+  seam is `network.connectionGater` (`types.ts:231`);
+  `network.controlCohort.reconcileMs` at `types.ts:251`.
+- **`queryPeerRecord`** (`control-database.ts:763`) returns
+  `PeerAddressRecord | null` with `updatedAt: number` (0 when null in row) —
+  the `r0`/`r1` comparisons in steps 3/6/8 work directly on `updatedAt`.
+- **`hangUp`** on the libp2p node takes a `PeerId` object, not a string — use
+  `peerIdFromString(aPeerId)` (already imported by the isolation scenario).
+- **Coordinator-pin argument confirmed**: `CONTROL_CLUSTER_POLICY`
+  (`cluster-size.ts:76`) omits `superMajorityThreshold` → Optimystic default
+  0.75 → 3-member cohort needs all 3. `pinCoordinator` (`forced-cluster.ts:218`)
+  patches BOTH `findCoordinator` and `findCluster` (reorders candidates first);
+  its `restore()` already handles reverse-order internally; restore it in the
+  test's `finally`. `readCohort` (`control-cohort.ts:120`) takes a `Libp2p` —
+  pass `X.getControlNode()!`.
+- **`waitUntil`** (`harness/wait-utils.ts`) swallows a throwing condition as
+  "not yet" (logs under `sereus:integration:wait`); defaults 10s/100ms — pass
+  explicit timeouts as the plan's steps specify.
+- **Test command**: `yarn workspace @serfab/integration-tests test` runs vitest
+  (`vitest run --reporter=verbose`). `vitest.config.ts` exists at the package
+  root but was not yet read — check its include pattern/serialization before
+  assuming the new `*.integration.ts` file is picked up (the isolation scenario's
+  naming suggests it is).
+
+### Not yet done (everything)
+
+All TODO items above. Suggested order: `control-trio.ts` port first (it is the
+bulk), then harness re-export + `peerStoreAddrsFor`, then the scenario file with
+`severableDialGater`, then test/lint/typecheck runs, then the `review/` handoff.
