@@ -36,6 +36,10 @@ export class FakeOrchestrator implements Orchestrator {
   createDelayMs = 0;
   /** Observation hook — lets a test inspect the world as the stop happens. */
   onStop?: (dockerId: string) => void;
+  /** Observation hook — fires before the spawn resolves or fails. */
+  onCreate?: (request: OrchestratorCreateRequest) => void;
+  /** Observation hook — fires before the liveness answer is computed. */
+  onIsRunning?: (dockerId: string) => void;
 
   private readonly children = new Map<string, FakeChild>();
   private readonly listeners = new Set<NodeStateListener>();
@@ -43,6 +47,7 @@ export class FakeOrchestrator implements Orchestrator {
 
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
     this.createCalls.push(request);
+    this.onCreate?.(request);
     if (this.createDelayMs) await sleep(this.createDelayMs);
     if (this.failCreate) throw new Error('spawn boom');
     const n = ++this.counter;
@@ -80,6 +85,7 @@ export class FakeOrchestrator implements Orchestrator {
 
   /** Unknown handles read as not running, matching the real orchestrator. */
   async isRunning(dockerId: string): Promise<boolean> {
+    this.onIsRunning?.(dockerId);
     return this.children.get(dockerId)?.running ?? false;
   }
 

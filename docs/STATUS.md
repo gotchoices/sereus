@@ -400,7 +400,9 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   1-minute periodic sweep, with exponential backoff and a give-up-to-`error` path after 5 attempts —
   and is wired into `bin/host.ts` (see docs/cadre-host.md § Respawn). Exercised only against a fake
   orchestrator; a real respawned child rejoining the borrower's cadre is not yet covered by the
-  cross-package integration scenario below.
+  cross-package integration scenario below. Known gap: a `terminate` that lands while a respawn's
+  spawn is in flight can be overwritten by the respawn's success write, resurrecting an ended loan
+  and orphaning the new child — `tickets/fix/respawn-succeeds-after-loan-terminated.md`.
 - [ ] WAN reachability for the request surface and per-donated-node NAT/relay mapping — deferred
   (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`); v1 donation is loopback-only.
 - [x] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —

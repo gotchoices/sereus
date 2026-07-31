@@ -431,13 +431,21 @@ export class DonationService {
   }
 
   /**
-   * Persist a failed respawn's attempt counters. Best-effort: we are already
-   * unwinding an orchestrator failure, and a store error here must not mask it.
-   * Losing the counter only costs the caller one extra attempt before backoff.
+   * Persist a failed respawn's attempt counters — and ONLY those. The caller's
+   * copy predates the orchestrator round-trip and `store.put` replaces the whole
+   * row, so writing it back wholesale would undo a `terminate` that landed while
+   * the spawn was in flight and resurrect a loan the borrower just ended. Merge
+   * the counters onto whatever is on disk now instead.
+   *
+   * Best-effort: we are already unwinding an orchestrator failure, and a store
+   * error here must not mask it. Losing the counter only costs the caller one
+   * extra attempt before backoff.
    */
   private storeAttempt(donation: Donation): void {
     try {
-      this.store.put(donation);
+      const current = this.store.get(donation.id);
+      if (!current || !donation.respawn) return;
+      this.store.put({ ...current, respawn: donation.respawn });
     } catch (err) {
       log('failed to record respawn attempt for %s: %s', donation.id, errorMessage(err));
     }

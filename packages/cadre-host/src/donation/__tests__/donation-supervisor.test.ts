@@ -28,6 +28,7 @@ import {
 import { GrantService } from '../grant-service.js';
 import { GrantStore } from '../grant-store.js';
 import type { Donation, DonationView } from '../types.js';
+import { DonationError } from '../types.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
 
 let tmpRoot: string;
@@ -101,6 +102,13 @@ function dockerIdOf(donation: { dockerId?: string }): string {
 /** Let queued fire-and-forget passes run. */
 function flush(): Promise<void> {
   return new Promise((res) => setTimeout(res, 5));
+}
+
+/** A store whose every read fails — a malformed `donations.json` on disk. */
+class UnreadableDonationStore extends DonationStore {
+  override list(): Donation[] {
+    throw new DonationError('storage_error', 'donations file is not valid JSON');
+  }
 }
 
 describe('DonationSupervisor.reconcile', () => {
@@ -255,6 +263,28 @@ describe('DonationSupervisor.reconcile', () => {
     expect(legacy.respawn).toBeUndefined();
   });
 
+  it('leaves a still-provisioning record alone — provision owns that child', async () => {
+    const h = makeHarness();
+    // A handle written by a provision that has not yet flipped to awaiting_seed.
+    // Respawning it here would race that provision and strand the record.
+    h.store.put({
+      id: 'grn_inflight',
+      grantToken: 'tok',
+      partyId: 'party-P',
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      ownerKeys: ['k'],
+      profile: 'storage',
+      status: 'provisioning',
+      dockerId: 'dock_inflight',
+      createdAt: new Date(START_MS).toISOString(),
+      updatedAt: new Date(START_MS).toISOString(),
+    });
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+    expect(h.orch.createCalls).toEqual([]);
+    expect(requireDonation(h.store, 'grn_inflight').status).toBe('provisioning');
+  });
+
   it('skips a record that has no orchestrator handle yet', async () => {
     const h = makeHarness();
     h.store.put({
@@ -271,6 +301,75 @@ describe('DonationSupervisor.reconcile', () => {
 
     await expect(h.supervisor.reconcile()).resolves.toEqual([]);
     expect(h.orch.createCalls).toEqual([]);
+  });
+
+  it('does not undo a seed that lands while the pass is mid-flight', async () => {
+    const h = makeHarness();
+    const view = await h.provision();
+    const provisioned = requireDonation(h.store, view.id);
+    h.store.put({
+      ...provisioned,
+      respawn: { attempts: 3, lastAttemptAt: new Date(h.nowMs()).toISOString() },
+    });
+    h.advance(DONATION_RESPAWN_HEALTHY_MS + 1_000);
+
+    // The borrower's seed lands between the pass's store snapshot and the
+    // budget-refill write — the refill must merge, not replay a stale row.
+    h.orch.onIsRunning = () => {
+      h.orch.onIsRunning = undefined;
+      h.store.put({
+        ...requireDonation(h.store, view.id),
+        status: 'seeded',
+        updatedAt: new Date(h.nowMs()).toISOString(),
+      });
+    };
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+    const stored = requireDonation(h.store, view.id);
+    expect(stored.status).toBe('seeded');
+    expect(stored.respawn?.attempts).toBe(0);
+  });
+
+  it('leaves a record that went terminal mid-attempt alone instead of marking it error', async () => {
+    const h = makeHarness();
+    const view = await h.provision();
+    h.store.put({
+      ...requireDonation(h.store, view.id),
+      status: 'seeded',
+      // Already at the cap, and long past the longest backoff — so the next
+      // failure lands straight in the give-up path.
+      respawn: {
+        attempts: DONATION_RESPAWN_MAX_ATTEMPTS,
+        lastAttemptAt: new Date(h.nowMs() - 10 * 60_000).toISOString(),
+      },
+    });
+    h.orch.crash(dockerIdOf(view));
+    h.orch.failCreate = true;
+    // The reap terminates the loan while the respawn's spawn is in flight.
+    h.orch.onCreate = () => {
+      h.store.put({ ...requireDonation(h.store, view.id), status: 'terminated' });
+    };
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+
+    const stored = requireDonation(h.store, view.id);
+    // The borrower ended this loan — a host give-up must not rewrite that.
+    expect(stored.status).toBe('terminated');
+    expect(stored.error).toBeUndefined();
+    // The attempt counter is the one thing the failed attempt may still record.
+    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS + 1);
+    expect(h.orch.stopped).toEqual([]);
+  });
+
+  it('survives a pass over a store it cannot read', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new UnreadableDonationStore(join(tmpRoot, 'donations'));
+    const grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
+    const service = new DonationService({ orchestrator: orch, grants, store });
+    const supervisor = new DonationSupervisor({ service, store, orchestrator: orch });
+
+    await expect(supervisor.reconcile()).resolves.toEqual([]);
+    expect(orch.createCalls).toEqual([]);
   });
 
   it('serializes overlapping passes so one id is never double-spawned', async () => {

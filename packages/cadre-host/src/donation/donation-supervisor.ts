@@ -10,13 +10,23 @@ import type { Donation, DonationStatus } from './types.js';
 const log = debug('cadre:host:donation-supervisor');
 
 /**
- * Wait before the *first* retry of a failed respawn; doubles per consecutive
- * attempt (`base * 2^attempts`) up to {@link DONATION_RESPAWN_BACKOFF_MAX_MS}.
- * A node with no recorded attempt is respawned immediately.
+ * Unit of the doubling respawn backoff: the wait after `n` consecutive failed
+ * attempts is `base * 2^n`, capped at {@link DONATION_RESPAWN_BACKOFF_MAX_MS}.
+ * So the first retry waits 10s (one attempt is already recorded by then), the
+ * second 20s, and so on. A node with no recorded attempt is respawned
+ * immediately.
  */
 export const DONATION_RESPAWN_BACKOFF_BASE_MS = 5_000;
 
-/** Ceiling on the doubling respawn backoff. 5 minutes. */
+/**
+ * Ceiling on the doubling respawn backoff. 5 minutes.
+ *
+ * NOTE: not reachable at the current {@link DONATION_RESPAWN_MAX_ATTEMPTS} of 5
+ * — the longest wait actually served is the one before the 5th attempt,
+ * `5s * 2^4` = 80s, and the 5th failure gives up. The cap only starts clamping
+ * once a record can reach 6 recorded attempts (`5s * 2^6` = 320s), so raising
+ * the attempt cap without revisiting this one changes nothing.
+ */
 export const DONATION_RESPAWN_BACKOFF_MAX_MS = 5 * 60_000;
 
 /**
@@ -255,18 +265,33 @@ export class DonationSupervisor {
    * reap measures, and a liveness observation is not borrower activity.
    */
   private refillBudgetIfHealthy(donation: Donation): void {
-    const respawn = donation.respawn;
-    if (!respawn || respawn.attempts === 0) return;
-    const last = Date.parse(respawn.lastAttemptAt);
-    if (Number.isNaN(last)) return;
-    if (this.now().getTime() - last <= DONATION_RESPAWN_HEALTHY_MS) return;
+    if (!this.budgetRefillDue(donation)) return;
+    // Re-read before writing: `donation` comes from the snapshot this pass
+    // started from, which can be several awaits old, and `store.put` replaces
+    // the whole row — writing the stale copy back would undo a concurrent seed
+    // or terminate that landed mid-pass.
+    const current = this.store.get(donation.id);
+    if (!current?.respawn || !this.budgetRefillDue(current)) return;
     try {
-      this.store.put({ ...donation, respawn: { ...respawn, attempts: 0 } });
+      this.store.put({ ...current, respawn: { ...current.respawn, attempts: 0 } });
       log('donation %s is healthy again — respawn budget refilled', donation.id);
     } catch (err) {
       // Costs one attempt off the next crash's budget, nothing more.
       log('failed to refill respawn budget for %s: %s', donation.id, errorMessage(err));
     }
+  }
+
+  /**
+   * Whether a record carries a crash-loop count old enough to clear. An
+   * unparsable timestamp is treated as not-due — unlike the backoff check,
+   * being wrong here would erase real attempt history rather than free a node.
+   */
+  private budgetRefillDue(donation: Donation): boolean {
+    const respawn = donation.respawn;
+    if (!respawn || respawn.attempts === 0) return false;
+    const last = Date.parse(respawn.lastAttemptAt);
+    if (Number.isNaN(last)) return false;
+    return this.now().getTime() - last > DONATION_RESPAWN_HEALTHY_MS;
   }
 
   /** One respawn attempt, with the give-up check on failure. */
@@ -316,6 +341,14 @@ export class DonationSupervisor {
   private async giveUp(id: string, attempts: number, lastError: string): Promise<void> {
     const donation = this.store.get(id);
     if (!donation) return;
+    // The record may have gone terminal while the failing attempt was in flight
+    // — a `terminate` mid-pass is exactly why `respawn` threw. Overwriting that
+    // with `error` would rewrite the borrower's own ending as a host fault, and
+    // the stop below would fire against a child `terminate` already reclaimed.
+    if (!SUPERVISED_STATUSES.has(donation.status)) {
+      log('donation %s went %s before give-up — leaving it alone', id, donation.status);
+      return;
+    }
     this.store.put({
       ...donation,
       status: 'error',
