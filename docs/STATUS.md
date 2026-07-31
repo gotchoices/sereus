@@ -720,6 +720,20 @@ where local rows exist.
   degraded-node-is-coordinator branch are in `architecture.md`. One case is a standing `it.fails`
   reproducer for `fix/control-reads-blocked-by-stalled-write`: local control reads on the writing
   node block behind an in-flight stalled write. Runtime ~185 s.
+- [x] `packages/integration-tests/src/scenarios/harness-party-control-cohort.integration.ts` — the
+  counterpart that uses **real** cohort discovery instead of forcing it: it proves a control write
+  was offered to more than the machine that issued it. A control write that merely passes cannot
+  tell "three machines agreed" from "one machine wrote to itself" (a one-member cohort commits on
+  the writer's own vote), so every claim of multi-machine consensus has to establish the cohort
+  size separately — `harness/control-cohort.ts` (`waitForControlCohort`, `observeControlCohorts`).
+  Three cases over owner-plus-two-drone parties: the owner's peer ring reaches all three machines
+  while a **drone's caps at two forever** (drones dial only the owner, never each other, so no
+  amount of waiting adds the third — asserted on the observed size, not merely on "it threw"); a
+  real `createStrand` into a *waited* three-machine cohort (commits, ~0.7–1.0 s, read back by
+  strand id); and the same write into a *forced* cohort (~0.2–0.4 s). Healthy three-machine writes
+  clear the unanimity bar comfortably every run — `debt-control-write-unanimity-at-three-nodes` is
+  about a member that is slow or silent, which is the file above, not about three healthy machines.
+  Runtime ~24 s.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.

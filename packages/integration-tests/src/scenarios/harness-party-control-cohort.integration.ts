@@ -40,13 +40,14 @@
  * buys, so the multi-machine claim lives here and `happy-path` only carries a comment
  * saying what it does and does not exercise.
  *
- * MEASURED OUTCOMES (single machine, localhost websockets; five consecutive runs,
- * recorded so a future change of behaviour shows up as a change of these numbers):
- *   - case 1, drone cap ........... 5/5 as described, ~8.4–8.7 s (the failing probe's
- *     own 8 s budget dominates; the two waits before it resolve in well under a second)
- *   - case 2, waited real cohort .. 5/5 COMMITTED, 875–987 ms
- *   - case 3, forced cohort ....... 5/5 COMMITTED, 283–374 ms
- *   - whole file .................. ~23 s
+ * MEASURED OUTCOMES (single machine, localhost websockets; several consecutive runs of
+ * this file alone, recorded so a future change of behaviour shows up as a change of
+ * these numbers — treat them as the observed spread, not as bounds anything asserts):
+ *   - case 1, drone cap ........... as described every run, ~8.4–8.7 s (the failing
+ *     probe's own 8 s budget dominates; the two waits before it resolve well under 1 s)
+ *   - case 2, waited real cohort .. COMMITTED every run, ~0.7–1.0 s
+ *   - case 3, forced cohort ....... COMMITTED every run, ~0.2–0.4 s
+ *   - whole file .................. ~23–25 s
  *
  * A three-machine cohort of HEALTHY machines therefore clears the unanimity bar
  * comfortably: `debt-control-write-unanimity-at-three-nodes` is about what happens
@@ -65,7 +66,7 @@ import {
 	TestCadreNetwork, waitForControlCohort, observeControlCohorts, forceFullCohort, pinCoordinator
 } from '../harness/index.js';
 import type {
-	TestParty, ControlCohortObserverHandle, ForcedCohortHandle, PinnedCoordinatorHandle
+	TestParty, TestStrand, ControlCohortObserverHandle, ForcedCohortHandle, PinnedCoordinatorHandle
 } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
@@ -88,19 +89,29 @@ const DRONE_CAP_PROBE_TIMEOUT_MS = 8_000;
 
 // ── Local helpers ─────────────────────────────────────────────────────────────
 
+/** How an awaited operation settled: its value on success, its error on failure. */
+interface Settled<T> {
+	/** Defined only when {@link Settled.error} is null. */
+	value: T | undefined;
+	error: unknown | null;
+	elapsedMs: number;
+}
+
 /**
  * Await `op`, capturing how it settled and how long it took instead of throwing, so
- * the outcome can be logged before it is asserted.
+ * the outcome can be logged before it is asserted. The value is carried through so a
+ * read-back can assert the exact row the write created, not merely that a row exists.
  *
  * NOTE: `control-write-degraded-cohort-member.integration.ts` carries its own copy of
  * this and of {@link errorChainText}. Two small copies in two scenario files is
  * cheaper than a harness module nobody else imports; if a THIRD file needs them,
  * extract all three into `harness/` at that point rather than adding another copy.
  */
-async function settle(op: () => Promise<unknown>): Promise<{ error: unknown | null; elapsedMs: number }> {
+async function settle<T>(op: () => Promise<T>): Promise<Settled<T>> {
 	const startedAt = Date.now();
-	const error = await op().then(() => null, (e: unknown) => e);
-	return { error, elapsedMs: Date.now() - startedAt };
+	let value: T | undefined;
+	const error = await op().then((result) => { value = result; return null; }, (e: unknown) => e);
+	return { value, error, elapsedMs: Date.now() - startedAt };
 }
 
 /**
@@ -194,7 +205,12 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 			capped.error === null ? 'RESOLVED (unexpected)' : errorChainText(capped.error));
 		expect(capped.error, "a drone reached a three-member cohort — the sibling-drone cap is gone, "
 			+ 'and this file\'s reason for forcing case 3 with it').not.toBeNull();
-		expect(errorChainText(capped.error)).toMatch(/saw a cohort of 2 .*needed 3/s);
+		// `[12]`, not a literal 2: the drone's converged view is 2 and that is what every
+		// run has reported, but FRET can transiently drop a classification, and a probe
+		// that happened to time out at 1 would still be the cap this case asserts. What
+		// must never match is a 3 — and that the two-member view is a REAL cohort rather
+		// than a node that never converged is already established by the wait above.
+		expect(errorChainText(capped.error)).toMatch(/saw a cohort of [12] .*needed 3/s);
 	}, 90_000);
 
 	// ── Case 2 ────────────────────────────────────────────────────────────────────
@@ -215,7 +231,7 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 		const callBaseline = observer.callCount();
 		const sizeBaseline = observer.cohortSizes().length;
 
-		let outcome: { error: unknown | null; elapsedMs: number };
+		let outcome: Settled<TestStrand>;
 		let sizesDuringWrite: number[];
 		try {
 			// The same write path `happy-path` uses, so it goes through the real
@@ -247,9 +263,11 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 
 		expect(outcome.error, 'the write into a three-machine cohort failed').toBeNull();
 
-		// Read the row back: the write resolving and the row existing are separate claims.
+		// Read the row back BY ID: the write resolving and the row landing are separate
+		// claims, and a bare "some row exists" would also pass against a stale or foreign
+		// row if this party ever stopped being single-write.
 		const strands = await waitedParty.controlDatabase.queryStrands();
-		expect(strands.length).toBeGreaterThanOrEqual(1);
+		expect(strands.map((s) => s.Id)).toContain(outcome.value!.strandId);
 	}, 180_000);
 
 	// ── Case 3 ────────────────────────────────────────────────────────────────────
@@ -266,7 +284,7 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 		const callBaseline = forced.callCount();
 		const sizeBaseline = forced.cohortSizes().length;
 
-		let outcome: { error: unknown | null; elapsedMs: number };
+		let outcome: Settled<TestStrand>;
 		let sizesDuringWrite: number[];
 		try {
 			outcome = await settle(() => network.createStrand(forcedParty, { schema, type: 'o' }));
@@ -297,6 +315,6 @@ describe('control writes into a real multi-machine cohort (harness party)', () =
 		expect(outcome.error, 'the write into the forced three-machine cohort failed').toBeNull();
 
 		const strands = await forcedParty.controlDatabase.queryStrands();
-		expect(strands.length).toBeGreaterThanOrEqual(1);
+		expect(strands.map((s) => s.Id)).toContain(outcome.value!.strandId);
 	}, 180_000);
 });

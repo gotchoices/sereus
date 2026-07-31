@@ -26,7 +26,9 @@
  * machines took part. Bob's party is a single machine, so his cohort genuinely is one.
  * Alice's two drones do connect, but her control writes race the peer-discovery ring
  * that is still warming up (it reaches every party member within about five seconds),
- * so hers may be offered to one, two or three machines from run to run. Nothing in
+ * so hers may be offered to one, two or three machines from run to run. The same race
+ * applies to the one-drone parties in the second case (Carol and Dave), whose writes
+ * may reach one machine or two. Nothing in
  * this file asserts a cohort size, and nothing should: this is the suite's broad smoke
  * test, and binding it to a three-machine cohort would bind it to the unanimity bar
  * that applies there (every machine must approve), a known fragility tracked as
