@@ -3,6 +3,16 @@ files: packages/integration-tests/src/scenarios/strand-formation-e2e.integration
 difficulty: medium
 ----
 
+<!-- resume-note -->
+**A prior run was interrupted by a budget warning before writing any code.** No files were
+created or edited — the working tree is untouched. That run spent its budget reading the
+source files, so everything it learned is written down in "Research findings (verified)"
+below. **Read that section first and trust it** — it removes the need to re-read
+`control-database.ts` (~2000 lines), `formation-approval.ts`, `control-formation-recorder.ts`,
+and `schemas/control.qsql`. The only files the next run should need to open are the two it
+edits (`strand-formation-e2e.integration.ts`, `harness/index.ts`) and the fixture it creates.
+<!-- /resume-note -->
+
 # End-to-end test: redeeming an invitation that needs outside approval
 
 ## Background in plain terms
@@ -26,28 +36,113 @@ caller abort. **Do not re-test transport behaviour.** This ticket covers the sea
 does a real approval, obtained over a real socket, actually let a real joiner through the
 real formation protocol and land a valid `FormationUsage` row?
 
+## Research findings (verified — do not re-derive)
+
+Everything below was read out of the source, not guessed.
+
+### Exact API signatures needed
+
+```ts
+// @serfab/cadre-core — all exported from the package root (index.ts)
+signFormationApproval(fields: FormationVouchFields, validationKey: string, privateKeyB64: string): FormationApproval
+ed25519PublicKeyFromPrivate(privateKeyB64: string): string
+ed25519PublicKeyB64FromPeerId(peerId: string): string
+verifyFormationConsent(row: { token; usageStampId; peerKey; disclosure; peerSig }): boolean
+type FormationVouchFields = { token; usageStampId; strandId; peerKey; disclosure }  // all string
+type FormationApproval  = { validationKey: string; validationSignature: string }
+
+// @optimystic/quereus-plugin-crypto
+generatePrivateKey('ed25519', 'base64url') as string
+
+// ControlDatabase (packages/cadre-core/src/control-database.ts)
+insertValidationKey(key: string, ownerKey: string, signMessage: (m: Uint8Array) => string): Promise<void>
+deleteValidationKey(key: string, ownerKey: string, signMessage: (m: Uint8Array) => string): Promise<boolean>
+insertFormationInvite(
+  token: string, sAppId: string, ownerKey: string, signMessage: (m: Uint8Array) => string,
+  options?: { expiresAtMs?: number; totalUses?: number; validationUrl?: string; strandId?: string }
+): Promise<void>
+countFormationUsage(token: string): Promise<number>
+queryValidationKeyStampId(key: string): Promise<string | null>
+```
+
+`deleteValidationKey` returns `true` only when a row was actually removed (it is a silent
+no-op returning `false` when absent) — that is why case (iv) must assert it.
+
+### Confirmed behaviours
+
+- `ControlFormationUsageRecorder`'s constructor is
+  `(controlDatabase, options?: { approver?: FormationApprover })` and defaults `approver` to
+  `createHttpFormationApprover()`. Phase 4's existing `responderService(party)` passes **no**
+  options, so it already uses the real HTTP client — no change needed there.
+- The unbound path (`provisionAndRecord`) mints `strand-${randomBytes(128,'hex')}`, reads the
+  invite for its `ValidationUrl`, calls `obtainApproval`, then `redeemInvitation`.
+  `redeemInvitation` / `recordFormationUsage` both accept optional
+  `validationKey` / `validationSignature` params, which the recorder spreads in.
+- `obtainApproval` runs two local pre-checks in this order:
+  1. `verifyFormationApproval(fullRequest, approval)` → throws `FormationApprovalError('malformed', …)`
+  2. `queryValidationKeyStampId(approval.validationKey) === null` → throws `…('unenrolled', …)`
+  So a **replayed** approval fails at step 1 (`malformed`), before the enrollment check and
+  before any write — the `FormationUsage.UsageStampId unique` column never fires.
+- `APPROVAL_REJECTION_REASONS` (`strand-formation-manager.ts:50`) is exactly:
+  `refused: 'Formation approval refused'`, `unavailable: 'Formation approval unavailable, retry'`,
+  `malformed: 'Formation approval invalid'`, `unenrolled: 'Formation approval key is not enrolled'`,
+  `misconfigured: 'Formation approval misconfigured'`.
+  `formStrand` surfaces these as a thrown `Formation rejected: <reason>`.
+- `schemas/control.qsql` `FormationUsage.Authorized` verifies the sign-off against the
+  **stored** `ValidationKey.Key` row, using `context.ValidationKey` only to select which
+  enrolled row is claimed. `ValidationKey.AuthorizedInsert` / `AuthorizedDelete` verify
+  distinct `'add'` / `'remove'`-tagged digests over `(Key, StampId)`;
+  `RevocationRecorded` forces the delete + tombstone into one transaction. All of this is
+  already handled inside `insertValidationKey` / `deleteValidationKey` — the test just calls them.
+- `packages/integration-tests/vitest.config.ts` excludes `**/fixtures/**` from coverage and
+  sets `fileParallelism: false`, `testTimeout: 60_000`.
+- The sibling fixture `harness/fixtures/manifest-server.ts` is imported **directly**
+  (`../harness/fixtures/manifest-server.js`) by `cadre-host-update-notify.integration.ts`,
+  not via `harness/index.ts`. The ticket still asks for the re-export from `harness/index.ts`
+  (which uses `export *`); do both — re-export it and import it from `../harness/index.js`.
+
+### Docs: current state
+
+- `docs/api.md` §"Validate Strand Formation (approval hook)" (starts line 59) already
+  documents the wire contract accurately: five posted fields, `200` +
+  `{validationKey, validationSignature}`, `401`/`403` = refusal, and the full
+  `failure` → joiner-visible-reason table. **Confirm the fixture matches it; a correction is
+  likely unnecessary.** If it all matches, add nothing there except (optionally) a pointer to
+  the new Phase 5 block as the executable check of the contract.
+- `docs/STATUS.md` lines 942–945 contain the gap entry to replace:
+  > **Still unexercised end-to-end:** no test redeems a `ValidationUrl` invitation through a real
+  > node over a real network — tracked as `plan/debt-validation-url-redemption-e2e`. …
+  Replace only the first sentence with what is now covered (naming the Phase 5 block and the
+  fixture). **Leave the two sentences after it intact** — they track a *different*, still-open
+  issue (`backlog/debt-control-key-enrollment-accepts-malformed-keys`).
+
 ## Design (settled — build this)
 
 ### Where the test goes
 
 A new **Phase 5** `describe` block appended to
 `packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts`, alongside the
-existing Phase 4 ("Responder consent enforcement (real recorder)").
+existing Phase 4 ("Responder consent enforcement (real recorder)", starts line 748).
 
-Phase 4 is the template. Reuse its helpers verbatim — they are already in that file:
+Phase 4 is the template. Reuse its helpers verbatim — they are already in that file at these
+lines, all currently nested INSIDE the Phase 4 `describe`:
 
-- `responderService(party)` — a `StrandSolicitationService` wired to
-  `new ControlFormationUsageRecorder(party.controlDatabase)`.
-  **Critically: pass no `approver` option.** The recorder's constructor then defaults to
-  `createHttpFormationApprover()`, i.e. the real HTTP client. That default is the entire
-  point of this test; injecting a fake would void it.
-- `ownerSigner(party)` — signs control-row authorization bytes with the party's owner key.
-- `invitationFor(token, sAppId, party)` — builds the `OpenInvitation` envelope.
-- `readFormationUsage(party, token)` — reads back the single recorded usage row.
+- `ownerSigner(party)` (line 764) — signs control-row authorization bytes with the owner key.
+- `responderService(party)` (line 776) — a `StrandSolicitationService` wired to
+  `new ControlFormationUsageRecorder(party.controlDatabase)`. **Passes no `approver` option**,
+  so the real HTTP client is used. That default is the entire point of this test; injecting a
+  fake would void it.
+- `invitationFor(token, sAppId, party)` (line 787) — builds the `OpenInvitation` envelope.
+- `readFormationUsage(party, token)` (line 806) — reads back the single recorded usage row.
+
+Lift all four to module scope (a new `── Consent-path helpers (Phases 4 & 5) ──` section near
+the other helpers, after `createTestNodeConfig`) rather than copying them. Every symbol they
+need — `StrandSolicitationService`, `ControlFormationUsageRecorder`, `signMessageEd25519`,
+`TestParty`, `OpenInvitation` — is already imported at the top of the file. Phase 4's
+behaviour must be unchanged.
 
 Phase 5 needs its own `describe` with its own `TestCadreNetwork` + `beforeAll`/`afterAll`,
-matching Phase 4's shape. Lift `responderService` / `ownerSigner` / `invitationFor` /
-`readFormationUsage` to a scope both phases share rather than copying them.
+matching Phase 4's shape (`new TestCadreNetwork({ verbose: true, defaultTimeoutMs: 20_000 })`).
 
 ### The approval-hook fixture
 
@@ -90,9 +185,14 @@ export interface ApprovalHookOptions {
 export function startApprovalHook(options?: ApprovalHookOptions): Promise<ApprovalHookServer>;
 ```
 
+`requestCount` / `lastRequest` are mutable state behind `readonly` members — return an object
+literal with **getters** over closure variables, not a frozen snapshot.
+
+`lastRequest` must be the object `JSON.parse(body)` produced, stored **verbatim**, so case (i)
+can assert its key set. Do not rebuild it field-by-field, and do not re-serialize `disclosure`.
+
 Generate the approver keypair with `generatePrivateKey('ed25519', 'base64url')` and derive
-the public half with `ed25519PublicKeyFromPrivate` (both already used by the real-fetch spec).
-Sign with `signFormationApproval` from `@serfab/cadre-core`.
+the public half with `ed25519PublicKeyFromPrivate`. Sign with `signFormationApproval`.
 
 Wrap the handler body in a `.catch()` that answers `500` — a throw inside the handler is
 otherwise an unhandled rejection and the client hangs to its own 10s timeout, reporting
@@ -100,9 +200,6 @@ otherwise an unhandled rejection and the client hangs to its own 10s timeout, re
 
 Re-export the fixture from `packages/integration-tests/src/harness/index.ts` so scenarios
 import it the same way they import `waitUntil` / `createSignedSAppConfig`.
-
-Note `vitest.config.ts` excludes `**/fixtures/**` from coverage — correct for this file, and
-the sibling `harness/fixtures/manifest-server.ts` is the precedent for the location.
 
 ### Enrolling and un-enrolling the approver key
 
@@ -143,10 +240,7 @@ committed `FormationUsage` row carrying a `ValidationKey` + `ValidationSignature
 
 ### The rejection reason strings
 
-`StrandFormationManager` maps each `FormationApprovalFailure` to a distinct wire reason
-(`APPROVAL_REJECTION_REASONS`, `packages/cadre-core/src/strand-formation-manager.ts:50`), and
-`formStrand` surfaces it as a thrown `Formation rejected: <reason>`. Assert on these exact
-strings — a distinct reason per category is a property worth pinning:
+Assert on these exact strings — a distinct reason per category is a property worth pinning:
 
 | case | failure category | thrown message contains |
 | --- | --- | --- |
@@ -156,26 +250,45 @@ strings — a distinct reason per category is a property worth pinning:
 | replayed sign-off | `malformed` | `Formation approval invalid` |
 
 The `unenrolled` category comes from the recorder's **local** pre-check
-(`ControlDatabase.queryValidationKeyStampId` returning null), never from the HTTP client — see
-`formation-approval.ts`'s `FormationApprovalFailure` docs.
+(`queryValidationKeyStampId` returning null), never from the HTTP client.
 
 ### Why the replay case lands on `malformed`, not on a database `unique` violation
 
 The approver's digest covers `(token, usageStampId, strandId, peerKey, disclosure)`. A second
 newcomer mints its own `usageStampId` and has its own `peerKey`, so an approval replayed
-verbatim from the first redemption fails
-`verifyFormationApproval` — the recorder's local pre-check — **before** any write is
-attempted. `FormationUsage.UsageStampId`'s `unique` column is the second, independent guard
-and is not what fires here.
+verbatim from the first redemption fails `verifyFormationApproval` — the recorder's local
+pre-check, which runs BEFORE the enrollment check and before any write is attempted.
+`FormationUsage.UsageStampId`'s `unique` column is the second, independent guard and is not
+what fires here.
 
 Assert the reason string (`Formation approval invalid`) and add a comment saying which of the
 two guards fired and why, so a future change that reorders the pre-checks fails loudly instead
 of quietly passing on the other mechanism.
 
-To build the replay: run one successful redemption while capturing the hook's issued approval,
-then restart (or reconfigure) the hook with `decide: () => capturedApproval` and redeem with a
-second joiner party. A fresh invite token is needed for the second attempt, since the first
-invite is single-use — publish a second `totalUses: 1` invite naming the same hook.
+Build the replay with ONE hook whose `decide` both signs and captures, plus a flag —
+no restart, and the `ValidationUrl` in the second invite stays valid:
+
+```ts
+const approverPrivate = generatePrivateKey('ed25519', 'base64url') as string;
+const approverPublic = ed25519PublicKeyFromPrivate(approverPrivate);
+let issued: FormationApproval | null = null;
+let replay = false;
+const hook = await startApprovalHook({
+	privateKeyB64: approverPrivate,
+	decide: (fields) => {
+		if (replay) { return issued!; }        // hand back the FIRST joiner's sign-off verbatim
+		issued = signFormationApproval(fields, approverPublic, approverPrivate);
+		return issued;
+	},
+});
+```
+
+A fresh invite token is needed for the second attempt, since the first invite is single-use —
+publish a second `totalUses: 1` invite naming the same hook, and redeem it with a second
+joiner party.
+
+Case (ii) uses the same mutable-closure trick to flip refuse → approve without changing the URL:
+`let verdict: 'approve' | 'refuse' = 'refuse'; startApprovalHook({ decide: () => verdict })`.
 
 ## Test list (Phase 5)
 
@@ -185,8 +298,8 @@ failure cannot leak state into the next, and follow Phase 4's convention of
 
 - **(i) happy path.** Hook approves. Assert: `formStrand` resolves with a `strandId`;
   `countFormationUsage(token) === 1`; `hook.requestCount === 1`; the hook's `lastRequest`
-  carries the same `token` / `strandId` / `peerKey` the recorded row does; the recorded row's
-  `PeerKey` matches `ed25519PublicKeyB64FromPeerId(result.memberKey)`; and
+  carries the same `token` / `strandId` / `usageStampId` / `peerKey` the recorded row does;
+  the recorded row's `PeerKey` matches `ed25519PublicKeyB64FromPeerId(result.memberKey)`; and
   `verifyFormationConsent(row)` is true (the joiner's own consent signature still re-verifies
   alongside the approval).
   Also assert the hook was posted **exactly the five signed fields and nothing else** —
@@ -249,15 +362,6 @@ The implementer must cover or consciously dismiss each of these; the reviewer wi
 - **Nothing leaks into Phase 4.** Phase 5 must not enroll a validation key on a party any
   other phase reuses; every phase-5 case creates its own parties.
 
-## Docs to update when the test lands
-
-- `docs/api.md` — the approval hook's request/response contract. Confirm what is written
-  there matches what the fixture actually implements (five fields posted; `200` +
-  `{validationKey, validationSignature}`; `401`/`403` = refusal). Correct the doc if it drifts;
-  it is the contract a third-party hook operator builds against.
-- `docs/STATUS.md` — the formation-approval section records this end-to-end gap. Replace the
-  gap entry with what is now covered, naming the Phase 5 block.
-
 ## Note
 
 This is coverage for behaviour believed to work, not a known defect. If the test turns up a
@@ -275,8 +379,7 @@ Phase A — fixture
 Phase B — tests
 
 - Lift `responderService` / `ownerSigner` / `invitationFor` / `readFormationUsage` out of the
-  Phase 4 `describe` into a scope Phase 4 and Phase 5 share, leaving Phase 4 unchanged in
-  behaviour.
+  Phase 4 `describe` (lines 764–823) to module scope, leaving Phase 4 unchanged in behaviour.
 - Add the Phase 5 `describe` with its own `TestCadreNetwork` + `beforeAll`/`afterAll`.
 - Write case (i) happy path, including the five-fields-and-nothing-else assertion.
 - Write cases (ii) refused, (iii) never enrolled, (iv) removed after issue, (v) replayed.
@@ -286,8 +389,8 @@ Phase B — tests
 Phase C — validate + document
 
 - `yarn lint` and `yarn typecheck` clean.
-- Run the scenario file streamed to a log:
-  `yarn workspace @serfab/integration-tests test 2>&1 | tee /tmp/formation-approval-e2e.log`
-  (or vitest with the single file). Never redirect silently — the runner's idle timer needs
-  output.
-- Update `docs/api.md` and `docs/STATUS.md` per the section above.
+- Run the scenario file streamed to a log — never redirect silently, the runner's idle timer
+  needs output. Prefer the single file so the whole integration suite is not re-run:
+  `yarn workspace @serfab/integration-tests test src/scenarios/strand-formation-e2e.integration.ts 2>&1 | tee /tmp/formation-approval-e2e.log`
+- Update `docs/STATUS.md` (lines 942–945; replace only the first sentence — see
+  "Docs: current state") and confirm/adjust `docs/api.md` §"Validate Strand Formation".
