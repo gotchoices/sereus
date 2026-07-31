@@ -12,6 +12,7 @@ import {
 } from './formation-approval.js';
 // control-database does not import this manager, so this import introduces no cycle.
 import { FormationAbortedError } from './control-database.js';
+import { canonicalJson } from './canonical-json.js';
 import type {
   DisclosureValidator,
   FormationUsageRecorder,
@@ -133,8 +134,8 @@ export class StrandFormationManager {
     this.listener = new FormationListener({
       validateToken: (token) => this.validateToken(token),
       validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
-      provisionStrand: (token, initiatorPartyId, disclosure, signal) =>
-        this.provisionAsResponder(token, initiatorPartyId, disclosure, signal),
+      provisionStrand: (contact, signal) =>
+        this.provisionAsResponder(contact, signal),
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
@@ -175,12 +176,15 @@ export class StrandFormationManager {
    * Form a strand with a responder via an open invitation (initiator side).
    *
    * Builds a contact message carrying the real token + disclosure + this party's
-   * real cadre addresses, dials the responder over the native protocol, and
-   * validates the responder's result before returning.
+   * real cadre addresses + the joiner's consent (minted and signed by the
+   * solicitation layer — this manager only places it on the contact), dials the
+   * responder over the native protocol, and validates the responder's result
+   * before returning.
    */
   async formStrand(
     invitation: OpenInvitation,
     disclosure: StrandFormationDisclosure,
+    consent: { peerKey: string; usageStampId: string; peerSignature: string },
     node: Libp2p
   ): Promise<FormStrandResult> {
     log('Forming strand with invitation token: %s', invitation.token);
@@ -188,6 +192,9 @@ export class StrandFormationManager {
     const contact: FormationContactMessage = {
       token: invitation.token,
       partyId: disclosure.partyId ?? this.partyId,
+      peerKey: consent.peerKey,
+      usageStampId: consent.usageStampId,
+      peerSignature: consent.peerSignature,
       disclosure,
       cadrePeerAddrs: this.cadrePeerAddrs
     };
@@ -280,15 +287,15 @@ export class StrandFormationManager {
    * not control-flow-by-exception.
    */
   private async provisionAsResponder(
-    token: string,
-    initiatorPartyId: string,
-    disclosure: StrandFormationDisclosure,
+    contact: FormationContactMessage,
     signal?: AbortSignal
   ): Promise<ResponderProvisionOutcome> {
-    // Serialized ONCE, here: this exact string is what the approver signs and what the
-    // recorder writes to `FormationUsage.Disclosure` — a re-serialization anywhere below
-    // would break the signature-over-stored-bytes invariant.
-    const disclosureText = JSON.stringify(disclosure);
+    const token = contact.token;
+    // CANONICALLY serialized — both sides derive the identical string: this is the exact
+    // text the joiner signed (consent), the approver signs (vouch), and the recorder writes
+    // to `FormationUsage.Disclosure` — a re-serialization anywhere below would break the
+    // signature-over-stored-bytes invariant.
+    const disclosureText = canonicalJson(contact.disclosure);
     if (uint8ArrayFromString(disclosureText, 'utf8').byteLength > MAX_DISCLOSURE_BYTES) {
       log('Disclosure over %d bytes; rejecting token %s', MAX_DISCLOSURE_BYTES, token);
       return { approved: false, reason: 'Disclosure too large' };
@@ -305,7 +312,9 @@ export class StrandFormationManager {
           // recorder is guaranteed non-null here: only resolveStrand can yield 'bound'.
           await recorder!.recordUsage({
             token,
-            peerId: initiatorPartyId,
+            peerKey: contact.peerKey,
+            peerSignature: contact.peerSignature,
+            usageStampId: contact.usageStampId,
             strandId: resolved.strandId,
             disclosure: disclosureText,
             signal
@@ -321,7 +330,7 @@ export class StrandFormationManager {
           return { approved: false, reason: 'Host strand not yet available on this responder' };
         }
         case 'unbound':
-          return await this.provisionUnbound(token, initiatorPartyId, disclosureText, signal);
+          return await this.provisionUnbound(contact, disclosureText, signal);
       }
     } catch (err) {
       if (err instanceof FormationAbortedError) {
@@ -368,17 +377,19 @@ export class StrandFormationManager {
    * at all?" question lives in backlog `formation-initiatorcreates-cover-or-remove`.
    */
   private async provisionUnbound(
-    token: string,
-    initiatorPartyId: string,
+    contact: FormationContactMessage,
     disclosureText: string,
     signal?: AbortSignal
   ): Promise<ResponderProvisionOutcome> {
+    const token = contact.token;
     const recorder = this.formationUsageRecorder;
     if (recorder?.provisionAndRecord) {
       const sAppId = await this.resolveInviteSAppId(token);
       const provisioned = await recorder.provisionAndRecord({
         token,
-        peerId: initiatorPartyId,
+        peerKey: contact.peerKey,
+        peerSignature: contact.peerSignature,
+        usageStampId: contact.usageStampId,
         sAppId,
         disclosure: disclosureText,
         signal
@@ -392,7 +403,7 @@ export class StrandFormationManager {
 
     if (this.strandProvisioner) {
       const sAppId = await this.resolveInviteSAppId(token);
-      const result = await this.strandProvisioner.provisionStrand(sAppId, initiatorPartyId, this.partyId);
+      const result = await this.strandProvisioner.provisionStrand(sAppId, contact.partyId, this.partyId);
       return this.approve({
         strand: { strandId: result.strandId, createdBy: 'responder' },
         dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }

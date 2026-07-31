@@ -23,6 +23,12 @@ import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from '@libp2p/interface';
 import type { StrandFormationDisclosure } from './types.js';
 import { type ControlStream, writeFrame, withTimeout } from './control-stream.js';
+import { canonicalJson } from './canonical-json.js';
+import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { verifyFormationConsent } from './peer-authorization.js';
+// seed-bootstrap imports neither this protocol nor the manager/solicitation layers,
+// so this import introduces no cycle.
+import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 
 const log = debug('sereus:cadre:formation-proto');
 
@@ -125,8 +131,20 @@ export type ResponderProvisionOutcome =
 export interface FormationContactMessage {
   /** The real invitation token. */
   token: string;
-  /** Initiator's member key (peer id). */
+  /** Initiator's member key (peer id) — human-facing identity in logs and `FormStrandResult.memberKey`. */
   partyId: string;
+  /**
+   * Initiator's base64url ed25519 public key — the key behind `partyId`, written to
+   * `FormationUsage.PeerKey` and covered by BOTH signed digests.
+   */
+  peerKey: string;
+  /** Joiner-minted single-use nonce for THIS redemption; both signed digests cover it. */
+  usageStampId: string;
+  /**
+   * The joiner's signature over the `'consent'` digest (see `formationConsentMessage`
+   * in control-database.ts) — proof the named peer agreed to this redemption.
+   */
+  peerSignature: string;
   /** The real disclosure, carried verbatim. */
   disclosure: StrandFormationDisclosure;
   /** Initiator's real multiaddrs. */
@@ -282,8 +300,9 @@ export interface FormationListenerOptions {
   validateDisclosure(token: string, disclosure: StrandFormationDisclosure): Promise<boolean>;
   /**
    * Provision (or, for provision-then-record, resolve + record consent against) the
-   * strand (`responderCreates`) for the given initiator. The REAL token is threaded
-   * in so the hook can map it to the bound host strand and its membership key.
+   * strand (`responderCreates`) for the given initiator. The WHOLE contact message is
+   * threaded in: the hook needs the REAL token to map the bound host strand, and the
+   * joiner's `peerKey`/`usageStampId`/`peerSignature` to write the consent columns.
    *
    * Returns a {@link ResponderProvisionOutcome}: the hook may REJECT post-validation
    * (e.g. an unconverged host strand) and the listener turns that into a clean,
@@ -293,7 +312,7 @@ export interface FormationListenerOptions {
    * BEFORE writing abandons the redemption and leaves the invite unspent. Optional so
    * signal-unaware hooks (tests, mocks) stay assignable.
    */
-  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure, signal?: AbortSignal): Promise<ResponderProvisionOutcome>;
+  provisionStrand(contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
   sessionTimeoutMs?: number;
@@ -395,7 +414,7 @@ export class FormationListener {
   private async provision(id: number, contact: FormationContactMessage): Promise<ResponderProvisionOutcome | undefined> {
     const controller = new AbortController();
     let timedOut = false;
-    const pending = this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure, controller.signal);
+    const pending = this.options.provisionStrand(contact, controller.signal);
     try {
       return await withTimeout(
         this.provisionWorkMs,
@@ -458,6 +477,47 @@ export class FormationListener {
     }
   }
 
+  /**
+   * Joiner-consent pre-check — the legibility twin of the schema's
+   * `FormationUsage.PeerConsented` CHECK, exactly as `verifyFormationApproval` is for the
+   * approver's vouch. The database constraint stays the authority; this turns a bad consent
+   * into a clean 'Invalid joiner consent' rejection instead of an opaque CHECK failure at
+   * commit. Runs BEFORE token/disclosure validation: it is the cheapest check (pure local
+   * crypto, no DB read) and a rejection discloses nothing.
+   *
+   * Also pins `partyId` to `peerKey`: an ed25519 peer id is an identity multihash of the
+   * very key, and this is the ONLY layer that can check the match — SQL cannot unwrap a
+   * multihash, and `partyId` itself is never stored.
+   */
+  private isJoinerConsentValid(id: number, contact: FormationContactMessage): boolean {
+    try {
+      requireEd25519PublicKeyB64(contact.peerKey, 'joiner peer key');
+    } catch {
+      // Deliberately not rethrown or echoed: the helper's error message embeds the whole
+      // rejected value, and this one arrived from a remote peer (the cap-the-echo case its
+      // own NOTE warns about). Log without the raw value instead.
+      log('formation session #%d: joiner peer key is not a base64url ed25519 public key', id);
+      return false;
+    }
+    const embedded = ed25519PublicKeyB64FromPeerId(contact.partyId);
+    if (!embedded || embedded !== contact.peerKey) {
+      log('formation session #%d: partyId does not embed the presented peer key', id);
+      return false;
+    }
+    const consentOk = verifyFormationConsent({
+      token: contact.token,
+      usageStampId: contact.usageStampId,
+      peerKey: contact.peerKey,
+      disclosure: canonicalJson(contact.disclosure),
+      peerSig: contact.peerSignature
+    });
+    if (!consentOk) {
+      log('formation session #%d: joiner consent signature failed verification', id);
+      return false;
+    }
+    return true;
+  }
+
   private async runSession(id: number, stream: ControlStream): Promise<void> {
     // Track whether ANY frame has been written so the catch below can convert an
     // unexpected internal error into a non-disclosing rejection ONLY when nothing has
@@ -472,6 +532,11 @@ export class FormationListener {
       const reader = new FrameReader(stream);
       const contact = await withTimeout(this.stepTimeoutMs, `Formation await-contact#${id}`, () => reader.read<FormationContactMessage>());
       log('formation session #%d contact: token=%s party=%s', id, contact.token, contact.partyId);
+
+      if (!this.isJoinerConsentValid(id, contact)) {
+        send({ approved: false, reason: 'Invalid joiner consent' });
+        return;
+      }
 
       const tokenResult = await this.options.validateToken(contact.token);
       if (!tokenResult.valid) {

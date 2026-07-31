@@ -3,11 +3,16 @@ import { toString as uint8ArrayToString } from 'uint8arrays';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Libp2p } from '@libp2p/interface';
+import { sign } from '@optimystic/quereus-plugin-crypto';
 import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure
 } from './types.js';
+// control-database does not import this service, so these imports introduce no cycle.
+import { generateStampId, formationConsentMessage } from './control-database.js';
+import { canonicalJson } from './canonical-json.js';
+import { ed25519KeyPairFromLibp2p } from './ed25519-key.js';
 import {
   StrandFormationManager,
   type StrandFormationManagerConfig
@@ -308,9 +313,29 @@ export class StrandSolicitationService {
     // If we have a full invitation and a node, use the real protocol
     if (typeof invitation !== 'string' && node) {
       log('Using native cadre-core formation transport');
+      const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
+      const usageStampId = generateStampId(memberKey);
+      // Built ONCE, AFTER the partyId override: this exact object travels to the
+      // responder, and its canonical serialization is the disclosure text the consent
+      // signature covers and the responder writes to `FormationUsage.Disclosure`.
+      const fullDisclosure = { ...disclosure, partyId: memberKey };
+      const peerSignature = sign(
+        formationConsentMessage({
+          token,
+          usageStampId,
+          peerKey: publicKeyB64,
+          disclosure: canonicalJson(fullDisclosure)
+        }),
+        privateKeyB64,
+        'ed25519',
+        'bytes',
+        'base64url',
+        'base64url'
+      ) as string;
       const result = await this.getFormationManager().formStrand(
         invitation,
-        { ...disclosure, partyId: memberKey },
+        fullDisclosure,
+        { peerKey: publicKeyB64, usageStampId, peerSignature },
         node
       );
       return {
@@ -415,6 +440,9 @@ export class StrandSolicitationService {
    * Record that a formation was completed successfully.
    * Called after strand provisioning to track usage.
    *
+   * `consent` carries the joiner-signed fields `recordUsage` now requires
+   * (see {@link FormationUsageRecorder.recordUsage}); this helper only passes them through.
+   *
    * NOTE: this reaches `recordUsage` without passing through
    * `StrandFormationManager.provisionAsResponder`, so `disclosure` skips that path's
    * `MAX_DISCLOSURE_BYTES` cap. Harmless today — its only callers are integration-test mocks
@@ -423,12 +451,20 @@ export class StrandSolicitationService {
    */
   async recordFormationComplete(
     token: string,
-    peerId: string,
+    peerKey: string,
     strandId: string,
+    consent: { usageStampId: string; peerSignature: string },
     disclosure = ''
   ): Promise<void> {
     if (this.formationUsageRecorder) {
-      await this.formationUsageRecorder.recordUsage({ token, peerId, strandId, disclosure });
+      await this.formationUsageRecorder.recordUsage({
+        token,
+        peerKey,
+        peerSignature: consent.peerSignature,
+        usageStampId: consent.usageStampId,
+        strandId,
+        disclosure
+      });
       log('Recorded formation usage: token=%s strand=%s', token, strandId);
     }
   }
