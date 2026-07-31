@@ -4,6 +4,11 @@
  * `global-setup.ts`'s `TARGETS` is hand-written. Without this, adding a workspace
  * or linked dependency to `package.json` leaves it unguarded and says nothing —
  * the suite goes on passing while it runs that dependency's stale `dist`.
+ *
+ * The list is deliberately wider than `dependencies` (it also covers
+ * `quereus-plugin-sereus` and the two `@optimystic/quereus-plugin-*` packages,
+ * reached transitively through `cadre-core`), so only missing entries fail —
+ * extra ones are the point.
  */
 
 import { describeBuildTargets, packageRootFrom } from '../../../test-harness/build-targets-spec.js';

@@ -26,6 +26,13 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
  * Exported so `build-targets.spec.ts` can hold it against this package's actual
  * `dependencies` — a hand-written list rots silently otherwise.
  *
+ * Wider than those `dependencies`, deliberately: importing `@serfab/cadre-core`'s
+ * entry point evaluates `cadre-node.js`, `control-database.js` and
+ * `strand-database.js`, which statically import `@serfab/quereus-plugin-sereus`
+ * and the two `@optimystic/quereus-plugin-*` packages. This suite therefore runs
+ * their compiled output too, without declaring any of them — the same transitive
+ * reach `cadre-cli` and `cadre-host` list for.
+ *
  * `@optimystic/db-p2p-storage-web` is listed even though `node-local-slots.spec.ts`
  * imports it only as a type, which erases at runtime and never loads its `dist`:
  * it is a declared, link-resolved dependency the app itself runs, and the drift
@@ -35,9 +42,12 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
  */
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
+	{ packageName: '@serfab/quereus-plugin-sereus', distEntry: 'dist/index.js', location: 'workspace' },
 	{ packageName: '@optimystic/db-core', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p', distEntry: 'dist/src/index.js', location: 'linked' },
 	{ packageName: '@optimystic/db-p2p-storage-web', distEntry: 'dist/src/index.js', location: 'linked' },
+	{ packageName: '@optimystic/quereus-plugin-crypto', distEntry: 'dist/index.js', location: 'linked' },
+	{ packageName: '@optimystic/quereus-plugin-optimystic', distEntry: 'dist/index.js', location: 'linked' },
 	{ packageName: '@quereus/quereus', distEntry: 'dist/src/index.js', location: 'linked' },
 ];
 

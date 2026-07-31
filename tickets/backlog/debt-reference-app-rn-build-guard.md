@@ -45,10 +45,21 @@ build command to run — the same message every other suite already produces.
 - The vitest config declares **two** projects (`node`, `react`). Vitest 4 does not
   inherit a sibling project's `globalSetup`; each project block must set it
   itself. `packages/quereus-plugin-sereus/vitest.config.ts` is the precedent.
-- Whether the target list should also cover the `@optimystic`/`@quereus` siblings
-  reached transitively through `cadre-core` is a judgement call for that ticket —
-  `reference-app-web` is going through the same question in
-  `debt-web-app-build-guard-targets`, so land that one first and copy its answer.
+- Yes, the target list should also cover the `@optimystic`/`@quereus` packages
+  reached transitively through `cadre-core` — `debt-web-app-build-guard-targets`
+  has landed and settled this. Importing `@serfab/cadre-core`'s entry point
+  evaluates modules that statically import `@serfab/quereus-plugin-sereus`,
+  `@optimystic/quereus-plugin-crypto` and `@optimystic/quereus-plugin-optimystic`,
+  so a suite loading any real `cadre-core` symbol runs their compiled output too.
+  Copy `packages/reference-app-web/test/global-setup.ts`'s list, swapping
+  `@optimystic/db-p2p-storage-web` for this app's `db-p2p-storage-rn`. Keep
+  `@optimystic/db-core` even though this package does not declare it — `cadre-core`
+  does, and it resolves fine through the repository root's `node_modules`.
+- `packages/reference-app-rn/package.json` already declares
+  `"@serfab/cadre-core": "workspace:^"`. Keep it that way: the manifest cross-check
+  can only classify a dependency written as a `workspace:` range, and web's was
+  `"*"` — which yarn silently satisfied from the workspace while the cross-check
+  saw nothing to check.
 - `test-harness/build-targets-spec.ts` provides the shared `describeBuildTargets`
   helper if a manifest cross-check spec is wanted alongside.
 - `reference-app-ns` has the same exposure but no unit-test harness at all; that

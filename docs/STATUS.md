@@ -457,11 +457,7 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   guard therefore moved out of `integration-tests` to `test-harness/build-freshness.ts` at the repo
   root, exporting `assertBuildFresh(targets, setupUrl)`; each consuming package owns its own target list in its
   own vitest `globalSetup` file (`packages/integration-tests/test/global-setup.ts`,
-  `packages/cadre-core/test/global-setup.ts`, `packages/reference-app-web/test/global-setup.ts`). The
-  web app's list is a single entry (`@serfab/cadre-core`) and it has no `build-targets.spec.ts`: that
-  package sets `installConfig.hoistingLimits: "workspaces"`, so its `@optimystic/*` / `@quereus/*`
-  copies live in its own `node_modules`, and expanding its list is tracked separately — see backlog
-  `debt-web-app-build-guard-targets`. The guard caught a real
+  `packages/cadre-core/test/global-setup.ts`, `packages/reference-app-web/test/global-setup.ts`). The guard caught a real
   stale `cadre-core` dist the first time it ran there. The module is imported by relative path, not as a
   workspace package, and is never built — a compiled shared package would be consumed from its own
   `dist` and so could be defeated by exactly the staleness it exists to catch. `test-harness/` is
@@ -522,6 +518,20 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   names every directory searched. `assertBuildFresh(targets, setupUrl)` therefore takes the caller's
   `import.meta.url` as a **required** second argument — a default would silently reinstate the blind
   spot — and all six call sites pass it.
+- [x] **`reference-app-web`'s target list completed and pinned.** It had been a single entry
+  (`@serfab/cadre-core`) with no `build-targets.spec.ts`, because until the `node_modules` walk above
+  landed the guard could not see that package's own hoisting-limited copies of the linked siblings. It
+  now lists all eight packages its suite runs compiled code from: the `@optimystic/*` and
+  `@quereus/quereus` siblings it declares, plus `@serfab/quereus-plugin-sereus` and the two
+  `@optimystic/quereus-plugin-*` packages it never declares but loads anyway — importing `cadre-core`'s
+  entry point evaluates `cadre-node.js`/`control-database.js`/`strand-database.js`, which import them
+  statically. Its `@serfab/cadre-core` range moved from `*` (an npm range yarn happened to satisfy from
+  the workspace) to `workspace:^`, without which `distBackedDependencies` cannot classify it and the
+  drift spec would pass having checked nothing. `@optimystic/db-p2p-storage-web` is guarded even though
+  the current specs import it only as a type: it is a declared, link-resolved dependency the app itself
+  runs, and the drift spec checks the manifest, not the import graph. `reference-app-rn` remains the one
+  app with no guard at all, despite its `node-local-slots.spec.ts` importing real `cadre-core` symbols —
+  see backlog `debt-reference-app-rn-build-guard`.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
