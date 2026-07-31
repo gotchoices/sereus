@@ -76,8 +76,12 @@ export class MissingHostStrandError extends Error {
  * listener's timeout path owns the reply.
  */
 export class FormationAbortedError extends Error {
-  constructor(readonly token: string, operation: string) {
-    super(`Formation ${operation} for token ${token} was aborted before its write was issued`);
+  constructor(
+    readonly token: string,
+    operation: string,
+    options?: { cause?: unknown }
+  ) {
+    super(`Formation ${operation} for token ${token} was aborted before its write was issued`, options);
     this.name = 'FormationAbortedError';
   }
 }

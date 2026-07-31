@@ -52,8 +52,8 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
  * The 3 s margin between responder provisioning and initiator await-response is the wire
  * latency budget for the result frame to travel back.
  *
- * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is a settle grace, so the
- * default WORK budget (12 s − 2 s = 10 s) EQUALS the approval hook's own 10 s timeout: a
+ * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is to become a settle grace (not
+ * wired yet), so the default WORK budget (12 s − 2 s = 10 s) will EQUAL the hook's 10 s: a
  * dead hook races 'Formation approval unavailable, retry' against 'Formation provisioning
  * timed out'. Both are retryable and both leave the invite unspent, so the race is benign.
  */
@@ -67,6 +67,11 @@ const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
  * append-only), so a provisioning that lands late is ADOPTED and reported as a real
  * approval rather than lying "timed out" over a spent invite. A hook that observes the
  * abort before writing leaves the invite unspent.
+ *
+ * NOT YET WIRED: {@link FormationListener.provision} still runs the hook under the whole
+ * `provisionTimeoutMs` and passes no signal, so today this constant only documents the
+ * intended split (see `tickets/implement/13.5-formation-settle-grace-listener.md`). Exported
+ * so that ticket's listener and tests share one definition.
  */
 export const PROVISION_SETTLE_GRACE_MS = 2_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */

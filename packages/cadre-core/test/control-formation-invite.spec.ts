@@ -8,7 +8,7 @@ import {
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { MissingHostStrandError, generateStampId } from '../src/control-database.js';
+import { FormationAbortedError, MissingHostStrandError, generateStampId } from '../src/control-database.js';
 import { signFormationApproval } from '../src/formation-approval.js';
 import type { ControlDatabase, FormationUsageResult } from '../src/control-database.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
@@ -346,6 +346,100 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     await expect(db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() }))
       .rejects.toThrow(MissingHostStrandError);
     expect(await usageCount()).toBe(before);
+  });
+
+  /**
+   * The abort check both write paths take INSIDE `withWriteLock`: a write still parked behind
+   * another writer when its caller gave up is abandoned rather than executed. Each case parks
+   * a writer of its own ahead of the call, aborts while the write is queued, and then proves
+   * the single use was not spent — the whole point of threading the signal this deep.
+   */
+  describe('abandons a write whose caller aborted while it was queued behind another writer', () => {
+    /** Occupies the write lock until `release` is called; `held` settles once it lets go. */
+    function holdWriteLock(): { release: () => void; held: Promise<void> } {
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => { release = resolve; });
+      return { release, held: db.withWriteLock(() => gate) };
+    }
+
+    it('redeemInvitation writes neither row and leaves the invite spendable', async () => {
+      const token = 'invite-abort-redeem-' + rand();
+      await db.insertFormationInvite(token, 'sapp-abort-redeem', ownerPublicKey, signMessage, {
+        totalUses: 1,
+        expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+      });
+      const strandsBefore = await strandCount();
+      const usageBefore = await usageCount();
+
+      const { release, held } = holdWriteLock();
+      const controller = new AbortController();
+      const abandoned = db.redeemInvitation({
+        token,
+        strandId: 'strand-abandoned-' + rand(),
+        peerId: 'peer-' + rand(),
+        signal: controller.signal,
+      });
+      controller.abort();
+      release();
+      await held;
+
+      await expect(abandoned).rejects.toThrow(FormationAbortedError);
+      expect(await strandCount()).toBe(strandsBefore);
+      expect(await usageCount()).toBe(usageBefore);
+
+      // The single use survived, so the joiner's retry against the same token still redeems.
+      await db.redeemInvitation({ token, strandId: 'strand-retry-' + rand(), peerId: 'peer-' + rand() });
+      expect(await usageCount()).toBe(usageBefore + 1);
+    });
+
+    it('recordFormationUsage writes no usage row and leaves the invite spendable', async () => {
+      const token = 'invite-abort-record-' + rand();
+      const strandId = 'strand-abort-record-' + rand();
+      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
+      await db.insertFormationInvite(token, 'sapp-abort-record', ownerPublicKey, signMessage, {
+        totalUses: 1,
+      });
+      const usageBefore = await usageCount();
+
+      const { release, held } = holdWriteLock();
+      const controller = new AbortController();
+      const abandoned = db.recordFormationUsage({
+        token, strandId, peerId: 'peer-' + rand(), signal: controller.signal,
+      });
+      controller.abort();
+      release();
+      await held;
+
+      await expect(abandoned).rejects.toThrow(FormationAbortedError);
+      expect(await usageCount()).toBe(usageBefore);
+
+      // Use #1 is still free — the abandoned attempt consumed no use number.
+      expect((await db.recordFormationUsage({ token, strandId, peerId: 'peer-' + rand() })).useNumber).toBe(1);
+      expect(await usageCount()).toBe(usageBefore + 1);
+    });
+
+    it('runs the queued write untouched when the caller never aborts', async () => {
+      // Guard on the guard: the same parked-behind-a-writer shape lands normally, so the two
+      // cases above fail for the abort and not for the queueing.
+      const token = 'invite-queued-ok-' + rand();
+      await db.insertFormationInvite(token, 'sapp-queued-ok', ownerPublicKey, signMessage, {
+        totalUses: 1,
+      });
+      const usageBefore = await usageCount();
+
+      const { release, held } = holdWriteLock();
+      const queued = db.redeemInvitation({
+        token,
+        strandId: 'strand-queued-ok-' + rand(),
+        peerId: 'peer-' + rand(),
+        signal: new AbortController().signal,
+      });
+      release();
+      await held;
+
+      expect((await queued).useNumber).toBe(1);
+      expect(await usageCount()).toBe(usageBefore + 1);
+    });
   });
 
   /**

@@ -6,6 +6,7 @@ import {
   verifyFormationApproval,
   FormationApprovalError,
   type FormationApprover,
+  type FormationApproval,
   type FormationApprovalRequest
 } from './formation-approval.js';
 import type { FormationUsageRecorder, ResolvedHostStrand } from './strand-solicitation.js';
@@ -130,12 +131,12 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     if (validationUrl === null) {
       return {};
     }
-    const usageStampId = this.controlDatabase.mintUsageStampId();
-    const fullRequest: FormationApprovalRequest = { ...fields, usageStampId, validationUrl };
     if (signal?.aborted) {
       throw new FormationAbortedError(fields.token, 'approval');
     }
-    const approval = await this.approver.requestApproval(fullRequest, signal);
+    const usageStampId = this.controlDatabase.mintUsageStampId();
+    const fullRequest: FormationApprovalRequest = { ...fields, usageStampId, validationUrl };
+    const approval = await this.askApprover(fullRequest, signal);
     if (!verifyFormationApproval(fullRequest, approval)) {
       throw new FormationApprovalError(
         'malformed',
@@ -149,6 +150,30 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
       );
     }
     return { usageStampId, ...approval };
+  }
+
+  /**
+   * Ask the approver, re-labelling a caller-abort as a {@link FormationAbortedError}.
+   *
+   * The HTTP client relays a caller-abort onto its own request and reports it as an
+   * `unavailable` {@link FormationApprovalError} — which the manager cannot tell from a
+   * genuinely dead hook, and so maps to a rejection reason and RETURNS. Every other abort on
+   * this path THROWS, which is what makes the manager rethrow and leave the reply to the
+   * listener's timeout path; a mid-hook abort belongs in the same class. The approval error
+   * is kept as `cause` so the transport-level detail is not lost.
+   */
+  private async askApprover(
+    request: FormationApprovalRequest,
+    signal?: AbortSignal
+  ): Promise<FormationApproval> {
+    try {
+      return await this.approver.requestApproval(request, signal);
+    } catch (err) {
+      if (signal?.aborted) {
+        throw new FormationAbortedError(request.token, 'approval', { cause: err });
+      }
+      throw err;
+    }
   }
 
   /**
