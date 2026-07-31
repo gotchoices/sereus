@@ -143,6 +143,93 @@ test('glob include (e.g. **/*.ts) covering the root config file counts as covere
 	assert.equal(result.status, 0);
 });
 
+test('vitest.config.mts is checked too (renaming the config must not bypass the gate)', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: 'tsc -p tsconfig.json --noEmit' } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {}, include: ['src'] }),
+			'src/index.ts': SRC_FILE,
+			'vitest.config.mts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /vitest\.config\.mts is not in the type-check program/);
+});
+
+test('vitest.config.mts inside the program passes', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: 'tsc -p tsconfig.json --noEmit' } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {}, include: ['src', 'vitest.config.mts'] }),
+			'src/index.ts': SRC_FILE,
+			'vitest.config.mts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 0);
+});
+
+test('long-form `--project` flag is honored, not silently defaulted to ./tsconfig.json', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			// tsconfig.json *would* cover the file; the script points elsewhere, so this must fail.
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: 'tsc --project tsconfig.build.json --noEmit' } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {}, include: ['src', 'vitest.config.ts'] }),
+			'tsconfig.build.json': JSON.stringify({ extends: './tsconfig.json', include: ['src'] }),
+			'src/index.ts': SRC_FILE,
+			'vitest.config.ts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /not in the type-check program/);
+	assert.match(result.stderr, /tsconfig\.build\.json/);
+});
+
+test('with two -p flags, coverage by either one passes', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: 'tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.typecheck.json --noEmit' } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {} }),
+			'tsconfig.build.json': JSON.stringify({ extends: './tsconfig.json', include: ['src'] }),
+			'tsconfig.typecheck.json': JSON.stringify({ extends: './tsconfig.json', include: ['src', 'vitest.config.ts'] }),
+			'src/index.ts': SRC_FILE,
+			'vitest.config.ts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 0);
+});
+
+test('with two -p flags, coverage by neither fails', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: 'tsc -p tsconfig.build.json --noEmit && tsc -p tsconfig.other.json --noEmit' } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {} }),
+			'tsconfig.build.json': JSON.stringify({ extends: './tsconfig.json', include: ['src'] }),
+			'tsconfig.other.json': JSON.stringify({ extends: './tsconfig.json', include: ['src'] }),
+			'src/index.ts': SRC_FILE,
+			'vitest.config.ts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /not in the type-check program/);
+});
+
+test('package with no typecheck script at all fails rather than being skipped', () => {
+	const root = makeFixture({
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { test: 'vitest run' } }),
+			'vitest.config.ts': VITEST_CONFIG,
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /no tsc-based `typecheck` script/);
+});
+
 test('vitest.config.ts present but typecheck script is not tsc-based fails with a readable reason', () => {
 	const root = makeFixture({
 		'pkg-a': {

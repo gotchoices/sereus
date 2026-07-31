@@ -12,7 +12,7 @@
  * docs/STATUS.md "Type-check coverage".
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, basename, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import ts from 'typescript';
 
@@ -33,6 +33,16 @@ function readJson(path) {
 	return JSON.parse(readFileSync(path, 'utf8'));
 }
 
+// Vitest resolves any of these; a package that renames its config to `.mts` must not slip past the
+// gate just because the filename changed.
+const VITEST_CONFIG_NAMES = ['vitest.config.ts', 'vitest.config.mts', 'vitest.config.cts'];
+
+function vitestConfigPaths(packageDir) {
+	return VITEST_CONFIG_NAMES.map((name) => join(packageDir, name)).filter((path) => existsSync(path));
+}
+
+// NOTE: mirrors the root package.json `workspaces` field (`packages/*`). If workspaces ever grow a
+// second root (e.g. `apps/*`), teach this function about it or those packages go unchecked silently.
 function workspacePackageDirs(root) {
 	const packagesDir = join(root, 'packages');
 	if (!existsSync(packagesDir)) {
@@ -44,13 +54,18 @@ function workspacePackageDirs(root) {
 		.filter((dir) => existsSync(join(dir, 'package.json')));
 }
 
-// A `typecheck` script may invoke `tsc` with one or more `-p <config>` flags (e.g.
+// A `typecheck` script may invoke `tsc` with one or more `-p`/`--project <config>` flags (e.g.
 // `tsc -p tsconfig.typecheck.json --noEmit`), or with none at all — `tsc --noEmit` alone
-// resolves `./tsconfig.json` by tsc's own default. Extracting the literal `-p` args (rather than
+// resolves `./tsconfig.json` by tsc's own default. Extracting the literal project args (rather than
 // assuming a fixed filename) is what lets this catch "someone repoints typecheck at
 // tsconfig.build.json", not just "the file forgot vitest.config.ts".
+// NOTE: flag scraping, not shell parsing — every package invokes plain `tsc` today. If a package
+// ever type-checks through a wrapper (`node tools/typecheck.mjs`) the `tsc` sniff below still
+// accepts it and this falls back to `./tsconfig.json`, which may be the wrong program.
+const PROJECT_FLAG = /(?:^|\s)(?:-p|--project)[\s=]+(\S+)/g;
+
 function tsconfigPathsForTypecheckScript(packageDir, script) {
-	const explicit = [...script.matchAll(/-p\s+(\S+)/g)].map((match) => join(packageDir, match[1]));
+	const explicit = [...script.matchAll(PROJECT_FLAG)].map((match) => join(packageDir, match[1]));
 	return explicit.length > 0 ? explicit : [join(packageDir, 'tsconfig.json')];
 }
 
@@ -70,30 +85,31 @@ function resolvedProgramFiles(tsconfigPath) {
 }
 
 function checkPackage(packageDir) {
-	const vitestConfigPath = join(packageDir, 'vitest.config.ts');
-	if (!existsSync(vitestConfigPath)) {
+	const configPaths = vitestConfigPaths(packageDir);
+	if (configPaths.length === 0) {
 		return null;
 	}
 	const manifest = readJson(join(packageDir, 'package.json'));
+	const configNames = configPaths.map((path) => basename(path)).join(', ');
+	const fail = (reason) => ({ packageName: manifest.name, packageDir, reason });
+
 	const typecheckScript = manifest.scripts?.typecheck;
 	if (!typecheckScript?.includes('tsc')) {
-		return { packageName: manifest.name, packageDir, reason: 'has vitest.config.ts but no tsc-based `typecheck` script, so it is never type-checked' };
+		return fail(`has ${configNames} but no tsc-based \`typecheck\` script, so it is never type-checked`);
 	}
 
-	const resolvedVitestConfigPath = resolve(vitestConfigPath);
 	const tsconfigPaths = tsconfigPathsForTypecheckScript(packageDir, typecheckScript);
 	const missingConfigs = tsconfigPaths.filter((tsconfigPath) => !existsSync(tsconfigPath));
 	if (missingConfigs.length > 0) {
-		return { packageName: manifest.name, packageDir, reason: `typecheck script "${typecheckScript}" points at missing config(s): ${missingConfigs.join(', ')}` };
+		return fail(`typecheck script "${typecheckScript}" points at missing config(s): ${missingConfigs.join(', ')}`);
 	}
 
-	const covered = tsconfigPaths.some((tsconfigPath) => resolvedProgramFiles(tsconfigPath).has(resolvedVitestConfigPath));
-	if (!covered) {
-		return {
-			packageName: manifest.name,
-			packageDir,
-			reason: `vitest.config.ts is not in the type-check program resolved from ${tsconfigPaths.join(', ')} (typecheck script: "${typecheckScript}")`,
-		};
+	// A package covered by any one of its typecheck programs is covered; parse them all up front so
+	// each uncovered config file can be named in one message.
+	const programs = tsconfigPaths.map((tsconfigPath) => resolvedProgramFiles(tsconfigPath));
+	const uncovered = configPaths.filter((path) => !programs.some((files) => files.has(resolve(path))));
+	if (uncovered.length > 0) {
+		return fail(`${uncovered.map((path) => basename(path)).join(', ')} is not in the type-check program resolved from ${tsconfigPaths.join(', ')} (typecheck script: "${typecheckScript}")`);
 	}
 	return null;
 }
