@@ -65,12 +65,26 @@ async function selectAll<T>(db: Database, sql: string): Promise<T[]> {
 	return rows;
 }
 
-function pickLocalAddr(node: Libp2p): string {
-	const addrs = node.getMultiaddrs().map(ma => ma.toString());
-	const local = addrs.find(a => a.startsWith('/ip4/127.0.0.1/tcp/') && a.includes('/p2p/'))
-		?? addrs.find(a => a.includes('/tcp/') && a.includes('/p2p/'));
+/**
+ * The loopback TCP multiaddr a peer can be dialled on, preferred over any other interface
+ * the node happens to be listening on (a dev box with a LAN or VPN adapter advertises
+ * several, and `getMultiaddrs()[0]` is not guaranteed to be the loopback one).
+ */
+// Taken off `getMultiaddrs` rather than imported from `@multiformats/multiaddr`, so the type
+// is always the one this libp2p's `dial` accepts even if two copies of that package resolve.
+type NodeMultiaddr = ReturnType<Libp2p['getMultiaddrs']>[number];
+
+function pickLocalMultiaddr(node: Libp2p): NodeMultiaddr {
+	const addrs = node.getMultiaddrs();
+	const local = addrs.find(ma => ma.toString().startsWith('/ip4/127.0.0.1/tcp/') && ma.toString().includes('/p2p/'))
+		?? addrs.find(ma => ma.toString().includes('/tcp/') && ma.toString().includes('/p2p/'));
 	if (!local) throw new Error(`No usable TCP multiaddr on node; have: ${addrs.join(', ')}`);
 	return local;
+}
+
+/** {@link pickLocalMultiaddr} as the string form `bootstrapNodes` expects. */
+function pickLocalAddr(node: Libp2p): string {
+	return pickLocalMultiaddr(node).toString();
 }
 
 async function makeDir(label: string): Promise<string> {
@@ -357,17 +371,24 @@ describe('strand sizes under the default breadth', () => {
 			peers.push(await startPeer(strandId, TEST_SCHEMA, [bootstrapAddr], await makeDir(`mesh${i}`)));
 		}
 
+		// j starts at 1: every peer already reaches peer 0 through the bootstrap above.
 		for (let i = 1; i < count; i++) {
 			for (let j = 1; j < i; j++) {
-				await peers[i]!.node.dial(peers[j]!.node.getMultiaddrs()[0]!);
+				await peers[i]!.node.dial(pickLocalMultiaddr(peers[j]!.node));
 			}
 		}
 
+		// NOTE: this gate proves the TCP mesh formed, not that FRET has classified every
+		// peer as serving the strand — the cohort could still be narrower than the mesh
+		// for a moment after it passes. Sufficient on loopback at 1-4 peers; if these
+		// tests turn flaky on slower hardware or at larger sizes, replace it with a wait
+		// on the node's own cohort (`keyNetwork.findCluster`, as the integration-tests
+		// harness does in `readCohort`) rather than lengthening the timeout.
 		await waitUntil(
 			() => peers.every(p => p.node.getConnections().length >= count - 1),
 			{ timeoutMs: 20_000, description: `all ${count} peers to see ${count - 1} connections each` },
 		);
-		return peers;
+		return [...peers];
 	}
 
 	async function countRows(peer: PeerHandle): Promise<number> {
@@ -384,14 +405,24 @@ describe('strand sizes under the default breadth', () => {
 			const mesh = await startMesh(size);
 			const author = mesh[0]!;
 
+			// The commit assertion is the `exec` itself — a cohort that failed to reach its
+			// super-majority rejects here rather than returning.
 			await author.db.exec(`insert into App.Msg(Id, Body) values (1, 'small-strand')`);
 
+			// Every peer, not only the author: a strand at or below the breadth-4 target puts
+			// all of its peers in every cohort, so the row must be visible from each. This is
+			// the "more parties means more copies" half of raising the default, and it is what
+			// would fail if the cohort silently narrowed. It reads rather than inspecting local
+			// storage, so a peer that fetched the block on demand also passes — the assertion
+			// is availability from every member, not proof of a local copy.
 			await waitUntil(
-				async () => await countRows(author) === 1,
-				{ description: `the ${size}-node strand to commit its write` },
+				async () => (await Promise.all(mesh.map(countRows))).every(c => c === 1),
+				{ timeoutMs: 20_000, description: `all ${size} peer(s) to observe the committed write` },
 			);
-			const rows = await selectAll<{ Id: number; Body: string }>(author.db, 'select Id, Body from App.Msg');
-			expect(rows).toEqual([{ Id: 1, Body: 'small-strand' }]);
+			for (const peer of mesh) {
+				const rows = await selectAll<{ Id: number; Body: string }>(peer.db, 'select Id, Body from App.Msg');
+				expect(rows).toEqual([{ Id: 1, Body: 'small-strand' }]);
+			}
 		}, 60_000);
 	}
 

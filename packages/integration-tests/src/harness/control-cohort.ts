@@ -55,6 +55,7 @@
  */
 
 import debug from 'debug';
+import type { Libp2p } from '@libp2p/interface';
 import type { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import type { ClusterPeers } from '@optimystic/db-core';
 import { waitUntil } from './wait-utils.js';
@@ -95,8 +96,8 @@ interface NodeWithKeyNetwork {
  * would make {@link waitForControlCohort} poll to its timeout and then blame the
  * network for a wiring fault.
  */
-function resolveKeyNetwork(libp2p: unknown, label: string): Libp2pKeyPeerNetwork {
-	const attached = (libp2p as NodeWithKeyNetwork).keyNetwork;
+function resolveKeyNetwork(libp2p: Libp2p, label: string): Libp2pKeyPeerNetwork {
+	const attached = (libp2p as Libp2p & NodeWithKeyNetwork).keyNetwork;
 	if (!attached) {
 		throw new Error(
 			`control-cohort: ${label} exposes no attached keyNetwork — `
@@ -116,7 +117,7 @@ function resolveKeyNetwork(libp2p: unknown, label: string): Libp2pKeyPeerNetwork
  * `DEFAULT_STRAND_CLUSTER_SIZE` (4) that set is every peer FRET has classified as serving
  * the strand, whatever key is asked about.
  */
-export async function readCohort(libp2p: unknown, label = 'node'): Promise<string[]> {
+export async function readCohort(libp2p: Libp2p, label = 'node'): Promise<string[]> {
 	const members = await probeCohort(resolveKeyNetwork(libp2p, label));
 	log('%s cohort=%d %o', label, members.length, members);
 	return members;

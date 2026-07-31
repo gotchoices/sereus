@@ -8,7 +8,10 @@ An initial attempt at a strand negotiation (“strand initialization”) protoco
 - **node**: a device/process that runs libp2p, identified by a **Peer ID**.
 - **cadre**: one or more nodes representing a single party within a strand.
 - **strand**: a logical network over which participating parties transact data and share a database.
-- **cohort**: the set of nodes participating in a strand (union of all cadres).
+- **cohort**: the set of nodes participating in a strand (union of all cadres). Optimystic uses
+  the same word for a narrower thing — the nodes a single *block* is replicated to, sized by
+  `DEFAULT_STRAND_CLUSTER_SIZE`. Code comments and [`architecture.md` → Replication cluster
+  size](architecture.md#replication-cluster-size) mean Optimystic's sense unless they say otherwise.
 
 Networking terms:
 - **Peer ID**: a cryptographic identity for a libp2p node, derived from a private key.

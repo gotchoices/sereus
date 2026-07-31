@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
-import type { IRepo } from '@optimystic/db-core';
+import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
@@ -387,10 +387,11 @@ describe('resolveStrandClusterSize', () => {
 });
 
 describe('DEFAULT_STRAND_CLUSTER_SIZE', () => {
-	// Optimystic's `DEFAULT_SUPER_MAJORITY_THRESHOLD`, which Cadre selects by naming no
-	// `superMajorityThreshold` at all. Approvals needed is `ceil(cohort * threshold)`.
-	const SUPER_MAJORITY_THRESHOLD = 0.75;
-	const approvalsNeeded = (cohort: number) => Math.ceil(cohort * SUPER_MAJORITY_THRESHOLD);
+	// Imported, not the literal 0.75: Cadre selects this threshold by naming no
+	// `superMajorityThreshold` at all, so the number that decides whether 4 is the right
+	// breadth lives upstream. Reading it here makes an upstream change to it fail these
+	// assertions instead of silently invalidating the reasoning behind the default.
+	const approvalsNeeded = (cohort: number) => Math.ceil(cohort * DEFAULT_SUPER_MAJORITY_THRESHOLD);
 
 	it('is the smallest breadth whose super-majority still commits with one holder offline', () => {
 		// The whole justification for the number: at 2 and 3 every holder must be awake
