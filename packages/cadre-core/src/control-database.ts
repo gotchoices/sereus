@@ -165,24 +165,25 @@ export function buildAuthorizationMessage(
  * `FormationUsage.Authorized`, in the schema's field order.
  *
  * The approval covers the whole redemption: the invitation (`token`), the single-use nonce
- * the redeeming node minted for THIS redemption (`usageStampId`), the network being joined
- * (`strandId`), the joining peer (`peerId`), and the disclosure text. That makes it
- * non-transferable — an approval cannot be re-presented for another use of the same
- * invitation, another network, or another joiner — and the nonce's `unique` column makes a
- * verbatim re-presentation a duplicate-row rejection. Mint the nonce first
- * ({@link generateStampId}), sign these bytes, then pass BOTH the same `usageStampId` and the
- * signature to {@link ControlDatabase.redeemInvitation} / {@link ControlDatabase.recordFormationUsage}:
+ * the JOINING peer minted for THIS redemption (`usageStampId`), the network being joined
+ * (`strandId`), the joining peer's own ed25519 public key (`peerKey`), and the disclosure
+ * text. That makes it non-transferable — an approval cannot be re-presented for another use
+ * of the same invitation, another network, or another joiner — and the nonce's `unique`
+ * column makes a verbatim re-presentation a duplicate-row rejection. The joiner mints the
+ * nonce ({@link generateStampId}) and sends it in its contact message; sign these bytes over
+ * that same nonce, then pass BOTH the nonce and the signature to
+ * {@link ControlDatabase.redeemInvitation} / {@link ControlDatabase.recordFormationUsage}:
  * signing one nonce and inserting another fails the CHECK.
  */
 export function formationVouchMessage(fields: {
   token: string;
   usageStampId: string;
   strandId: string;
-  peerId: string;
+  peerKey: string;
   disclosure: string;
 }): Uint8Array {
   return buildAuthorizationMessage('CadreControl.FormationUsage', 'vouch', [
-    fields.token, fields.usageStampId, fields.strandId, fields.peerId, fields.disclosure,
+    fields.token, fields.usageStampId, fields.strandId, fields.peerKey, fields.disclosure,
   ]);
 }
 
@@ -1329,20 +1330,6 @@ export class ControlDatabase {
   }
 
   /**
-   * Mint the single-use `UsageStampId` nonce for ONE redemption, from this database's own
-   * libp2p peer id ({@link generateStampId}). Exists so a caller obtaining an approver
-   * sign-off can mint the nonce BEFORE the hook is contacted — the approval is signed over
-   * it (see {@link formationVouchMessage}) and the identical value must then be passed to
-   * {@link redeemInvitation} / {@link recordFormationUsage} — without reaching for the peer
-   * id itself. Callers that skip the approval flow simply omit `usageStampId` and those
-   * methods mint their own.
-   */
-  mintUsageStampId(): string {
-    this.ensureInitialized();
-    return generateStampId(this.config.libp2pNode.peerId.toString());
-  }
-
-  /**
    * Redeem a `FormationInvite` by inserting the `Strand` row and a matching
    * `FormationUsage` row **atomically, in one transaction**.
    *
@@ -1376,12 +1363,13 @@ export class ControlDatabase {
   async redeemInvitation(params: {
     token: string;
     strandId: string;
-    /** The joining peer. Required: it is inside the approver's signed digest (see {@link formationVouchMessage}). */
-    peerId: string;
+    /** The joining peer's own ed25519 public key. Required: it is inside BOTH signed digests (see {@link formationVouchMessage} / {@link formationConsentMessage}). */
+    peerKey: string;
     disclosure?: string;
-    /** Single-use nonce for this redemption; supply the one the approval was signed over. Minted fresh when absent. */
-    usageStampId?: string;
-    peerSignature?: string;
+    /** Single-use nonce for this redemption, minted by the JOINER; both signed digests cover it. */
+    usageStampId: string;
+    /** The joiner's signature over the `'consent'` digest — verified by the `PeerConsented` CHECK. */
+    peerSignature: string;
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
@@ -1395,14 +1383,13 @@ export class ControlDatabase {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
-      peerId, peerSignature, usageStampId,
+      peerKey, peerSignature, usageStampId,
       nowMs, validationKey, validationSignature, signal,
     } = params;
     log('Redeeming invitation %s -> strand %s', token, strandId);
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
     const strandStampId = generateStampId(localPeerId);
-    const stampId = usageStampId ?? generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
     await this.withWriteLock(() => {
@@ -1424,15 +1411,15 @@ export class ControlDatabase {
         // 2. FormationUsage row — authorised by the matching FormationInvite, and
         //    carrying the strand's stamp so it authorizes THIS row and no other.
         await this.execFormationUsageInsert({
-          token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
-          peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+          token, useNumber, usageStampId, disclosure, strandId, strandStampId,
+          peerKey, peerSignature, nowMs: nowMs ?? Date.now(),
           validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
         });
       });
     });
 
     log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
-    return { useNumber, usageStampId: stampId };
+    return { useNumber, usageStampId };
   }
 
   /**
@@ -1458,12 +1445,13 @@ export class ControlDatabase {
   async recordFormationUsage(params: {
     token: string;
     strandId: string;
-    /** The joining peer. Required: it is inside the approver's signed digest (see {@link formationVouchMessage}). */
-    peerId: string;
+    /** The joining peer's own ed25519 public key. Required: it is inside BOTH signed digests (see {@link formationVouchMessage} / {@link formationConsentMessage}). */
+    peerKey: string;
     disclosure?: string;
-    /** Single-use nonce for this redemption; supply the one the approval was signed over. Minted fresh when absent. */
-    usageStampId?: string;
-    peerSignature?: string;
+    /** Single-use nonce for this redemption, minted by the JOINER; both signed digests cover it. */
+    usageStampId: string;
+    /** The joiner's signature over the `'consent'` digest — verified by the `PeerConsented` CHECK. */
+    peerSignature: string;
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
@@ -1477,11 +1465,9 @@ export class ControlDatabase {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
-      peerId, peerSignature, usageStampId, nowMs, validationKey, validationSignature, signal,
+      peerKey, peerSignature, usageStampId, nowMs, validationKey, validationSignature, signal,
     } = params;
 
-    const localPeerId = this.config.libp2pNode.peerId.toString();
-    const stampId = usageStampId ?? generateStampId(localPeerId);
     const strandStampId = await this.queryStrandStampId(strandId);
     if (strandStampId === null) {
       throw new MissingHostStrandError(strandId, token);
@@ -1495,14 +1481,14 @@ export class ControlDatabase {
         throw new FormationAbortedError(token, 'usage recording');
       }
       return this.execFormationUsageInsert({
-        token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
-        peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+        token, useNumber, usageStampId, disclosure, strandId, strandStampId,
+        peerKey, peerSignature, nowMs: nowMs ?? Date.now(),
         validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
       });
     });
 
     log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
-    return { useNumber, usageStampId: stampId };
+    return { useNumber, usageStampId };
   }
 
   /** Parameterised `FormationUsage` insert shared by redeem + record paths. */
@@ -1515,8 +1501,8 @@ export class ControlDatabase {
     strandId: string;
     /** The live `Strand.StampId` this consent record authorizes (`StrandExists` matches the pair). */
     strandStampId: string;
-    peerId: string;
-    peerSignature: string | null;
+    peerKey: string;
+    peerSignature: string;
     nowMs: number;
     validationKey: string | null;
     validationSignature: string | null;
@@ -1531,14 +1517,13 @@ export class ControlDatabase {
     // not a fix for an observable mis-ordering.
     const nowCanonical = await canonicalDatetime(this.db!, opts.nowMs);
     await this.db!.exec(`
-      insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerId, Disclosure, StrandId, StrandStampId)
-        with context PeerSignature = ?, Now = ?, ValidationKey = ?, ValidationSignature = ?
-        values (?, ?, ?, ?, ?, ?, ?)
+      insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
+        with context Now = ?, ValidationKey = ?, ValidationSignature = ?
+        values (?, ?, ?, ?, ?, ?, ?, ?)
     `, [
-      opts.peerSignature, nowCanonical,
-      opts.validationKey, opts.validationSignature,
-      opts.token, opts.useNumber, opts.usageStampId, opts.peerId,
-      opts.disclosure, opts.strandId, opts.strandStampId,
+      nowCanonical, opts.validationKey, opts.validationSignature,
+      opts.token, opts.useNumber, opts.usageStampId, opts.peerKey,
+      opts.peerSignature, opts.disclosure, opts.strandId, opts.strandStampId,
     ]);
   }
 

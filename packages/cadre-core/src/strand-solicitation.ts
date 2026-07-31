@@ -65,10 +65,14 @@ export interface FormationUsageRecorder {
    */
   recordUsage(params: {
     token: string;
-    /** The joining peer — written to `FormationUsage.PeerId` and inside the approval digest. */
-    peerId: string;
+    /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
+    peerKey: string;
+    /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
+    peerSignature: string;
+    /** Joiner-minted single-use nonce; both signed digests cover it. */
+    usageStampId: string;
     strandId: string;
-    /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
+    /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
     disclosure: string;
     /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
     signal?: AbortSignal;
@@ -103,10 +107,14 @@ export interface FormationUsageRecorder {
    */
   provisionAndRecord?(params: {
     token: string;
-    /** The joining peer — written to `FormationUsage.PeerId` and inside the approval digest. */
-    peerId: string;
+    /** The joining peer's own ed25519 public key — written to `FormationUsage.PeerKey` and inside BOTH signed digests. */
+    peerKey: string;
+    /** The joiner's signature over the `'consent'` digest — written to `FormationUsage.PeerSig`. */
+    peerSignature: string;
+    /** Joiner-minted single-use nonce; both signed digests cover it. */
+    usageStampId: string;
     sAppId: string;
-    /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
+    /** Exact text to write to `FormationUsage.Disclosure`; joiner and approver both sign these bytes. */
     disclosure: string;
     /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
     signal?: AbortSignal;

@@ -492,12 +492,14 @@ declare schema CadreControl {
                                         -- on OwnerKey / Strand / ValidationKey; the digest binding still holds on
                                         -- both nodes, so the outcome is a duplicated audit row, never a join
                                         -- nobody approved.
-        PeerId text not null,           -- the joining peer this redemption is for, bound into the 'vouch' digest
-                                        -- below so an approval cannot be re-filed under a different joiner's name.
-                                        -- Writer-asserted: context.PeerSignature is declared but no constraint
-                                        -- verifies it, so this records who the approval NAMES, not proof that the
-                                        -- named peer consented — see
-                                        -- tickets/backlog/debt-formation-usage-peer-signature-unverified.md.
+        PeerKey text not null,          -- the joining peer's own ed25519 public key (base64url, 32 bytes), bound
+                                        -- into BOTH the approver's 'vouch' digest and the joiner's 'consent'
+                                        -- digest below, so an approval cannot be re-filed under a different
+                                        -- joiner's name and the named joiner provably agreed (PeerConsented).
+                                        -- The key IS the joiner's identity — its libp2p peer id is derivable
+                                        -- (identity multihash of these bytes), never stored here.
+        PeerSig text not null,          -- the joining peer's signature over the 'consent' digest — see
+                                        -- PeerConsented below for what it proves and why it is stored on the row.
         Disclosure text,
         StrandId text,
         StrandStampId text not null,   -- the Strand.StampId this consent record authorizes. Consent is
@@ -539,7 +541,7 @@ declare schema CadreControl {
                         -- FUTURE redemptions, it is not a retroactive revocation of past ones.
                         --
                         -- What ONE sign-off buys: exactly ONE row. The digest covers
-                        -- (Token, UsageStampId, StrandId, PeerId, Disclosure), so an approval is NOT
+                        -- (Token, UsageStampId, StrandId, PeerKey, Disclosure), so an approval is NOT
                         -- transferable across invitations, redemptions, networks, joiners, or disclosure
                         -- text. Replay is closed twice over, by two independent mechanisms: presenting an
                         -- approval VERBATIM repeats its UsageStampId and is refused by that column's
@@ -559,7 +561,7 @@ declare schema CadreControl {
                         and (FI.ValidationUrl is null or exists (
                             select 1 from ValidationKey VK
                                 where VK.Key = context.ValidationKey
-                                    and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.UsageStampId, new.StrandId, new.PeerId, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
+                                    and verify(digest('CadreControl.FormationUsage', 'vouch', new.Token, new.UsageStampId, new.StrandId, new.PeerKey, new.Disclosure), context.ValidationSignature, VK.Key, 'ed25519')))
                         -- A bound invite (non-null StrandId) may only ever name its own host strand:
                         -- without this, any holder of a bound token could record consent against an
                         -- arbitrary strand id — annotating an unrelated strand, or (before
@@ -579,10 +581,28 @@ declare schema CadreControl {
         -- can never be filed against a stamp of the writer's choosing and held in reserve to
         -- re-seat the id after a removal.
         constraint StrandExists check (exists (select 1 from Strand S where S.Id = new.StrandId and S.StampId = new.StrandStampId)),
-    -- context.PeerSignature is declared but NO constraint reads it (the joining peer's signature is
-    -- not carried over the formation protocol yet); the joiner itself is the PeerId COLUMN above, so
-    -- the vouch digest is built from new.* only, like every other authorization rule here.
-    ) with context (PeerSignature text, Now datetime, ValidationKey text null, ValidationSignature text null);
+        -- The JOINING peer proves it consented to this redemption: PeerKey is its own ed25519
+        -- public key and PeerSig is its signature over the 'consent'-tagged digest below.
+        -- Unlike the approver's sign-off (context.ValidationSignature, checked against a STORED
+        -- ValidationKey row), the identity here IS the key, so there is no enrolled row to look
+        -- up and nothing for a writer to substitute: a forged joiner would need that joiner's
+        -- private key. Stored rather than passed in context so any later reader can re-check it
+        -- (verifyFormationConsent); the 'consent' action tag keeps this replicated signature
+        -- useless against every other rule in this schema (notably the approver's 'vouch'
+        -- digest over the same table).
+        -- NOTE: StrandId is deliberately NOT in this digest — the joiner cannot know it when it
+        -- signs (a bound invite's host strand arrives only in the result frame; an unbound
+        -- strand is responder-minted). The responder cannot substitute a strand anyway: bound
+        -- invites are pinned by Authorized's FI.StrandId check, unbound invites mint fresh.
+        constraint PeerConsented check on insert (
+            verify(digest('CadreControl.FormationUsage', 'consent',
+                          new.Token, new.UsageStampId, new.PeerKey, new.Disclosure),
+                   new.PeerSig, new.PeerKey, 'ed25519')
+        ),
+    -- Context here is only what the approver-side rules read: Now for expiry, and the
+    -- ValidationKey/ValidationSignature pair for the 'vouch' check in Authorized. The joiner's
+    -- signature is NOT context — it lives on the row (PeerSig, verified by PeerConsented above).
+    ) with context (Now datetime, ValidationKey text null, ValidationSignature text null);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
     -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add

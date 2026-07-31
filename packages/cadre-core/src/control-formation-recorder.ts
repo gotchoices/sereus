@@ -110,10 +110,10 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
   /**
    * Obtain the approval material for ONE redemption, when the invite demands it.
    *
-   * `validationUrl === null` → `{}`: no approval required, and the database mints its own
-   * nonce (unchanged behaviour). Otherwise mint the `usageStampId` nonce FIRST
-   * ({@link ControlDatabase.mintUsageStampId}), ask the approver to sign over it, and run two
-   * local pre-checks before anything is written:
+   * `validationUrl === null` → `{}`: no approval required. The `usageStampId` nonce is
+   * ALWAYS supplied by the caller — the JOINER mints it, signs its own consent over it, and
+   * sends it in the contact message — so the approver signs over the identical nonce in both
+   * paths. Two local pre-checks run before anything is written:
    *
    * - {@link verifyFormationApproval} — did the hook sign the exact fields we hold?
    * - {@link ControlDatabase.queryValidationKeyStampId} — is the approval's key enrolled?
@@ -124,9 +124,9 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * the security authority; do not "simplify" the database check away in favour of these.
    */
   private async obtainApproval(
-    request: Omit<FormationApprovalRequest, 'usageStampId' | 'validationUrl'> & { validationUrl: string | null },
+    request: Omit<FormationApprovalRequest, 'validationUrl'> & { validationUrl: string | null },
     signal?: AbortSignal
-  ): Promise<{ usageStampId?: string; validationKey?: string; validationSignature?: string }> {
+  ): Promise<{ validationKey?: string; validationSignature?: string }> {
     const { validationUrl, ...fields } = request;
     if (validationUrl === null) {
       return {};
@@ -134,8 +134,7 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     if (signal?.aborted) {
       throw new FormationAbortedError(fields.token, 'approval');
     }
-    const usageStampId = this.controlDatabase.mintUsageStampId();
-    const fullRequest: FormationApprovalRequest = { ...fields, usageStampId, validationUrl };
+    const fullRequest: FormationApprovalRequest = { ...fields, validationUrl };
     const approval = await this.askApprover(fullRequest, signal);
     if (!verifyFormationApproval(fullRequest, approval)) {
       throw new FormationApprovalError(
@@ -149,7 +148,7 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
         'Approval is signed by a key that is not an enrolled ValidationKey'
       );
     }
-    return { usageStampId, ...approval };
+    return approval;
   }
 
   /**
@@ -181,11 +180,11 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * single `FormationUsage` insert auto-commits and the deferred `StrandExists`
    * CHECK is satisfied by the pre-existing strand. This is the provision-then-record
    * commitment — the strand was minted owner-signed up front, so we do NOT
-   * re-insert it (which would double-insert the same PK). `peerId` is written as the
-   * usage `PeerId`, which an approver sign-off is SIGNED OVER when the invite carries a
-   * `ValidationUrl` — so it is the joiner an approval is spent on, not a free-text note. It
-   * is still writer-asserted (nothing here verifies the joiner's own signature; see
-   * tickets/backlog/debt-formation-usage-peer-signature-unverified.md). Use
+   * re-insert it (which would double-insert the same PK). `peerKey` is written as the
+   * usage `PeerKey`, which BOTH signed digests cover: the joiner's own consent signature
+   * (`peerSignature`, verified by the schema's `PeerConsented` CHECK) and — when the invite
+   * carries a `ValidationUrl` — the approver's sign-off, so it is the joiner an approval is
+   * spent on AND provably the joiner that agreed. Use
    * {@link ControlDatabase.redeemInvitation} for the consent-creates-strand path instead.
    *
    * Reads the invite first (one extra read per redemption) to learn its `ValidationUrl`, and
@@ -193,12 +192,14 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    */
   async recordUsage(params: {
     token: string;
-    peerId: string;
+    peerKey: string;
+    peerSignature: string;
+    usageStampId: string;
     strandId: string;
     disclosure: string;
     signal?: AbortSignal;
   }): Promise<void> {
-    const { token, peerId, strandId, disclosure, signal } = params;
+    const { token, peerKey, peerSignature, usageStampId, strandId, disclosure, signal } = params;
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'usage recording');
     }
@@ -209,10 +210,12 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     // CHECK demands a matching `FormationInvite` and rolls the write back regardless; if that
     // CHECK ever loosens, reject on `invite === null` instead of defaulting to null.
     const approval = await this.obtainApproval({
-      token, strandId, peerId, disclosure,
+      token, usageStampId, strandId, peerKey, disclosure,
       validationUrl: invite?.validationUrl ?? null,
     }, signal);
-    await this.controlDatabase.recordFormationUsage({ token, strandId, peerId, disclosure, signal, ...approval });
+    await this.controlDatabase.recordFormationUsage({
+      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal, ...approval,
+    });
     log('Recorded formation usage: token=%s strand=%s', token, strandId);
   }
 
@@ -267,22 +270,26 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    */
   async provisionAndRecord(params: {
     token: string;
-    peerId: string;
+    peerKey: string;
+    peerSignature: string;
+    usageStampId: string;
     sAppId: string;
     disclosure: string;
     signal?: AbortSignal;
   }): Promise<{ strandId: string; memberPrivateKey: string | null }> {
-    const { token, peerId, disclosure, signal } = params;
+    const { token, peerKey, peerSignature, usageStampId, disclosure, signal } = params;
     if (signal?.aborted) {
       throw new FormationAbortedError(token, 'redemption');
     }
     const strandId = `strand-${randomBytes(128, 'hex') as string}`;
     const invite = await this.controlDatabase.queryFormationInvite(token);
     const approval = await this.obtainApproval({
-      token, strandId, peerId, disclosure,
+      token, usageStampId, strandId, peerKey, disclosure,
       validationUrl: invite?.validationUrl ?? null,
     }, signal);
-    await this.controlDatabase.redeemInvitation({ token, strandId, peerId, disclosure, signal, ...approval });
+    await this.controlDatabase.redeemInvitation({
+      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal, ...approval,
+    });
     log('Provisioned + recorded unbound strand: token=%s strand=%s', token, strandId);
     return { strandId, memberPrivateKey: null };
   }

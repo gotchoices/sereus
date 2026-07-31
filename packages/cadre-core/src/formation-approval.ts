@@ -23,20 +23,21 @@ const MAX_RESPONSE_BYTES = 64 * 1024;
  * Everything ONE approval is bound to — the five fields inside the approver's signed digest
  * (see `formationVouchMessage`), plus the hook to ask.
  *
- * Every field is fixed BEFORE the hook is contacted: the redeeming node mints the nonce and
- * knows the strand, the peer, and the disclosure text it is about to write. That ordering is
+ * Every field is fixed BEFORE the hook is contacted: the JOINER mints the nonce (and signs its
+ * own consent over it) before its contact message is sent, and the redeeming node knows the
+ * strand, the joiner's key, and the disclosure text it is about to write. That ordering is
  * what makes the resulting signature usable — an approval signed over a nonce the node did not
  * insert fails `FormationUsage.Authorized` at commit.
  */
 export interface FormationApprovalRequest {
   /** Invitation token being redeemed. */
   token: string;
-  /** Single-use nonce for THIS redemption, already minted by the redeeming node. */
+  /** Single-use nonce for THIS redemption, already minted by the JOINING peer. */
   usageStampId: string;
   /** The strand (network) being joined. */
   strandId: string;
-  /** The joining peer (written to `FormationUsage.PeerId`). */
-  peerId: string;
+  /** The joining peer's own ed25519 public key (written to `FormationUsage.PeerKey`). */
+  peerKey: string;
   /**
    * The EXACT text that will be written to `FormationUsage.Disclosure`. The approver signs
    * these bytes verbatim and MUST NOT re-serialize them — the redeeming node computes this
@@ -131,8 +132,8 @@ export class FormationApprovalError extends Error {
  * field the digest does not cover — in particular the `validationUrl`.
  */
 function vouchFields(request: FormationApprovalRequest): FormationVouchFields {
-  const { token, usageStampId, strandId, peerId, disclosure } = request;
-  return { token, usageStampId, strandId, peerId, disclosure };
+  const { token, usageStampId, strandId, peerKey, disclosure } = request;
+  return { token, usageStampId, strandId, peerKey, disclosure };
 }
 
 /**
@@ -410,7 +411,7 @@ async function readApproval(response: Response, origin: string): Promise<Formati
  * Wire contract (documented for hook operators in `docs/api.md`):
  *
  * - `POST <ValidationUrl>`, `content-type: application/json`, `accept: application/json`.
- * - Body is exactly the five signed fields — `{ token, usageStampId, strandId, peerId,
+ * - Body is exactly the five signed fields — `{ token, usageStampId, strandId, peerKey,
  *   disclosure }` — and nothing else. No owner keys, no bootstrap addresses, no membership
  *   keys ever reach the hook.
  * - `200` with `{ "validationKey": "...", "validationSignature": "..." }` is an approval.
