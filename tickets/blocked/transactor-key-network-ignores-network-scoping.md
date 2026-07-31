@@ -1,7 +1,7 @@
 ----
 description: The database layer built a second, unconfigured copy of the peer-discovery component, so writes forgot which network they were on and how many machines to replicate to. That fix is written and unit-proven, but it exposed a latent bug in the sibling optimystic repo — a node that starts before connecting to anyone elects itself as data coordinator and remembers that for 30 minutes, serving stale reads — which makes one three-node integration scenario fail. Blocked until the optimystic fix lands.
 prereq:
-files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts, ../optimystic/packages/quereus-plugin-optimystic/test/collection-factory-key-network.spec.ts, ../optimystic/packages/db-p2p/src/libp2p-key-network.ts, packages/cadre-core/src/cadre-node.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, docs/architecture.md
+files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts, ../optimystic/packages/quereus-plugin-optimystic/test/collection-factory-key-network.spec.ts, ../optimystic/packages/db-p2p/src/libp2p-key-network.ts, packages/cadre-core/src/cadre-node.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/quereus-plugin-sereus/src/cluster-size.ts, docs/architecture.md
 difficulty: medium
 ----
 
@@ -110,12 +110,61 @@ Look for `findCoordinator:done … source=fret` with `connected=[]` on B during 
 `source=cache` on the same key during the step-6 window, and the instrumented
 `signature verification failed … addrs=[], sig=(empty)` line.
 
+## Run 4 (triage pass, 2026-07-31): the same gate now fails in a SECOND suite
+
+`control-write-degraded-cohort-member.integration.ts` was recorded as green in run 1. It
+is not any more — its `beforeAll` trips the identical gate, so all 6 of its tests are
+reported skipped:
+
+```
+Error: Timeout waiting for B resolves C's signed address record after 45000ms
+ ❯ src/scenarios/control-write-degraded-cohort-member.integration.ts:406:3
+```
+
+Same mechanism, same fingerprint as the three-node suite — with
+`DEBUG='sereus:cadre:node'` B polls C's row for the full 45 s and every read returns the
+owner-vouch revision:
+
+```
+resolvePeerAddrs: signature verification failed for 12D3KooWE91… (updatedAt=1785517012806, addrs=[], sig=(empty))
+```
+
+while C's own `registerSelf` logs `refreshed` with 1 addr against a strictly later
+`updatedAt`. Failed 2 runs out of 2 without the debug namespaces; PASSED the gate on the
+run with `DEBUG='optimystic:db-p2p:libp2p-key-network,…' OPTIMYSTIC_VERBOSE=1` — the extra
+logging widens the boot window, which is the flakiness signature this ticket already
+describes (self-pick vs first-dial race), not a second cause.
+
+Note this suite's B is NOT addressless (default `listenAddrs`), so the poisoned cache is
+doing the whole job here: C's self-update commits on the {A, C} cohort (B and C are not
+connected yet at that point — closing the triangle is a LATER step in the same
+`beforeAll`), and B's reads never leave B.
+
+**A second, distinct symptom in the same suite** — visible only on the run that got past
+`beforeAll`, so it was previously masked: with the forced 3-peer cohort, writes fail
+`Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)`. Final tally that
+run: `2 failed | 3 passed | 1 expected fail (6)` — `commits with a healthy three-member
+cohort (authorize AND remove)` and `commits with a member delayed under the response
+deadline` both fail that way. Cause NOT established. Worth knowing before assuming it is
+the same bug: `../optimystic` currently carries uncommitted in-flight edits from its own
+runner across `db-core/src/transaction/coordinator.ts`,
+`db-core/src/transactor/network-transactor.ts`, `db-p2p/src/repo/cluster-coordinator.ts`
+and `db-p2p/src/repo/coordinator-repo.ts` (the `split-admission-floor-from-replication-factor`
+/ `corroboration-floor-uses-assumed-cluster-size` line of work), and those ARE built into
+the dist sereus consumes. Re-measure this symptom only after the unblock rebuild; do not
+chase it against a half-edited sibling tree.
+
+Both suites are now listed in `tickets/.pre-existing-known.md` against this ticket.
+
 ## Remaining work after unblock (move back to implement/, then:)
 
 - Confirm the optimystic fix landed and rebuild `../optimystic` (at minimum db-p2p and
   the quereus-plugin-optimystic dist chain), then re-run the three-node suite ~3 times —
   it was flaky-failing, so one green run is weak evidence.
-- Re-run all six control suites green, plus `happy-path`.
+- Re-run all six control suites green, plus `happy-path`. `control-write-degraded-cohort-member`
+  needs the same ~3-run treatment as the three-node suite (see run 4) — it regressed to the
+  same boot race, and its forced-3-cohort super-majority symptom must be re-measured against
+  a rebuilt, settled `../optimystic`.
 - Strand cohort-width coverage: a strand network configured at
   `DEFAULT_STRAND_CLUSTER_SIZE` (2) should assemble a 2-wide cohort, not 16. The
   unit-level shape exists in the new optimystic spec; run 1 leaned toward a Sereus-level
