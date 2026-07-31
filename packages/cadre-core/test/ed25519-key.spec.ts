@@ -82,6 +82,16 @@ describe('requireEd25519PublicKeyB64', () => {
     );
   });
 
+  it('keeps the decoder failure as the cause rather than swallowing it', () => {
+    let caught: unknown;
+    try {
+      requireEd25519PublicKeyB64('not valid!!', 'validation key');
+    } catch (error) {
+      caught = error;
+    }
+    expect((caught as Error).cause).toBeInstanceOf(Error);
+  });
+
   it('rejects a value that decodes to the wrong byte length', () => {
     const tooShort = u8ToString(new Uint8Array(16), 'base64url');
     expect(() => requireEd25519PublicKeyB64(tooShort, 'validation key')).toThrow(

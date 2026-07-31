@@ -14,7 +14,7 @@ export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, for
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';
 
 // Ed25519 key bridge (libp2p Ed25519 -> base64url keypair)
-export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
+export { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 
 // Pluggable key store (backend-agnostic identity/owner key material seam).
 // Dependency-free: the interface, error, default slot id, and in-memory backend

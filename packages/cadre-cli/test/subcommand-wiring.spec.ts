@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
-import { fromString as uint8ArrayFromString } from 'uint8arrays';
+import { requireEd25519PublicKeyB64 } from '@serfab/cadre-core';
 import type { CadreNode, StrandRow } from '@serfab/cadre-core';
 
 /**
@@ -49,18 +49,9 @@ function fakeNode(rows: StrandRow[] = [], keys: string[] = []): FakeNode {
 		getStrands: () => new Map(),
 		listValidationKeys: async () => [...enrolled].sort(),
 		enrollValidationKey: async (key: string) => {
-			// Mirrors `CadreNode.enrollValidationKey`'s `requireEd25519PublicKeyB64` guard, so this
-			// fake exercises the same refusal shape the CLI sees from a real node.
-			const trimmed = key.trim();
-			let decoded: Uint8Array;
-			try {
-				decoded = uint8ArrayFromString(trimmed, 'base64url');
-			} catch {
-				throw new Error(`A validation key must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`);
-			}
-			if (decoded.length !== 32) {
-				throw new Error(`A validation key must be a base64url-encoded 32-byte Ed25519 public key (decoded to ${decoded.length} bytes)`);
-			}
+			// The same guard `CadreNode.enrollValidationKey` runs before its write, called here
+			// rather than restated, so this fake refuses exactly what a real node refuses.
+			const trimmed = requireEd25519PublicKeyB64(key, 'validation key');
 			writes.push(`enroll-key:${trimmed}`);
 			enrolled.add(trimmed);
 		},

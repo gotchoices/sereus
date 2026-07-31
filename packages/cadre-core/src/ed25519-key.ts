@@ -91,8 +91,14 @@ export function requireEd25519PublicKeyB64(value: string, label: string): string
   let decoded: Uint8Array;
   try {
     decoded = uint8ArrayFromString(trimmed, 'base64url');
-  } catch {
-    throw new Error(`A ${label} must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`);
+  } catch (error) {
+    // NOTE: echoes the whole rejected value so an operator can see their typo. Every caller
+    // today is a key typed or pasted at a terminal; if one ever takes the value from a remote
+    // peer, cap the echo so a megabyte of junk cannot become a megabyte of log line.
+    throw new Error(
+      `A ${label} must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`,
+      { cause: error },
+    );
   }
 
   if (decoded.length !== 32) {
