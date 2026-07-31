@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-07-31T01:37:22.768Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\10-integration-test-harness-helper-consolidation-remaining-files.plan.2026-07-31T01-37-22-768Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Five more integration-test scenario files still keep their own private copies of the same test setup code that was just moved into the shared test harness, so the cleanup is only half done.
 prereq:
 files: packages/integration-tests/src/harness/node-fixtures.ts, packages/integration-tests/src/scenarios/membership-connection-gater.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts, packages/integration-tests/src/scenarios/control-stream-authz.integration.ts
