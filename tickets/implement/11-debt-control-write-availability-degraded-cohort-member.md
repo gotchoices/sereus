@@ -298,3 +298,86 @@ the RPC deadline is not covering some path. That is a defect, not a test bug:
 - Update `docs/architecture.md` → "Replication cluster size" with one or two sentences stating the
   measured write-availability cost of whole-party control replication, so the number lives with the
   decision it justifies rather than only in a spec file.
+
+<!-- resume-note -->
+## Resume notes (prior run: research complete, NO code written yet)
+
+A prior agent run hit its token budget after finishing the code-reading phase and before creating
+any files. Nothing in the working tree was touched. Everything below was verified against the
+actual code this session — start at Phase 1 of the TODO and trust these findings.
+
+### Mechanics verified (exact seams for the two injection helpers)
+
+- **Registrar access for `degradeClusterHandler`:** the libp2p node's `components` property is a
+  plain public assignment (`node_modules/libp2p/dist/src/libp2p.js:59`), so
+  `(node.getControlNode() as any).components.registrar` works. The `Registrar` interface
+  (`@libp2p/interface-internal`, `registrar.d.ts:43`) provides `getHandler(protocol)` returning
+  `{ handler, options }`, plus `handle(protocol, handler, options)` and `unhandle(protocol)` —
+  swap = `getHandler` → `unhandle` → `handle(wrapped, sameOptions)`; restore = reverse.
+- **StreamHandler signature (libp2p v3):** `(stream: Stream, connection: Connection): void |
+  Promise<void>` — positional args, not the old `{ stream, connection }` object.
+- **The registered cluster handler already contains the authorization gate.** `ClusterService`
+  registers `handleIncomingStream.bind(this)` at `(prefix)/cluster/1.0.0`
+  (`../optimystic/packages/db-p2p/src/cluster/service.ts:74,154`) and its inbound-stream
+  authorization runs inside that bound method — so delegating to the captured handler preserves
+  the full production path.
+- **`forceFullCohort` details:** `keyNetwork` sits on the control libp2p node
+  (`libp2p-node-base.ts:1301`); `CadreNode.getControlNode(): Libp2p | null` is public
+  (`packages/cadre-core/src/cadre-node.ts:3583`). `findCluster` is a *prototype* method — patch by
+  assigning an own property on the instance, restore by `delete`-ing the own property (do NOT
+  reassign the unbound original). Build each entry from `controlNode.getMultiaddrs()` and
+  `controlNode.peerId.publicKey.raw` encoded `base64url` via `uint8arrays`' `toString`. The
+  return type `ClusterPeers` is importable from `@optimystic/db-core` (integration-tests already
+  depends on it). Return a fresh copy per call — callers may mutate. Prefer returning a small
+  handle object `{ restore(), callCount(), cohortSizes() }` over the bare restore function in the
+  ticket sketch; the anti-vacuity assertions need the counters.
+
+### Behavioral findings that shape assertions
+
+- **Failed writes provably never queue:** `CadreNode.authorizePeer` awaits
+  `seedBootstrapService.authorizePeer` *before* `noteControlWrite` (`cadre-node.ts:3985-3987`), so
+  a throw skips the queue entirely; additionally `committedAlone()` is false with live
+  connections. Test case 6 asserts the absence.
+- **Super-majority failure text confirmed** at `cluster-coordinator.ts:374`, exactly as predicted
+  in this ticket. `updateMember`'s local branch (`:133-135`) bypasses the ClusterClient — the
+  basis of the hazard below.
+- **⚠ The failure-case prediction has a known hole — measure, don't assume.** The
+  batch-coordinator retry excludes only the *failed coordinator* and re-coordinates through
+  another peer. If it ever selects the DEGRADED node C as coordinator, C's repo protocol (not
+  degraded) accepts the pend, and C's own cluster vote is local (bypasses the stalled cluster
+  handler), while A and B answer normally ⇒ the write may legitimately **commit** at ~20-35 s
+  instead of failing. Mitigating factor: coordinator selection goes through
+  `keyNetwork.findCoordinator` (NOT patched by `forceFullCohort`), and with cold FRET it likely
+  returns self (A) and then finds no alternate candidate — which reproduces the predicted
+  failure. If the measured outcome is a slow commit through C, that is *availability, not a
+  defect* — record it and adjust the test to assert the measured reality, per the "measured
+  numbers are the deliverable" rule.
+- **Error-chain matching:** Quereus may wrap the transactor error, so assert by walking the
+  `.cause` chain and aggregating messages before regex-matching the super-majority string and the
+  `membership-not-admitted` absence.
+- **Per-RPC deadlines confirmed:** `DEFAULT_DIAL_TIMEOUT_MS` 3000 / `DEFAULT_RESPONSE_TIMEOUT_MS`
+  10000 (`rpc-deadline.ts`).
+- **Timing caution for the 2 s-delay case:** each cluster transaction pays the delay per phase
+  (promise, commit-collect, commit-broadcast), and a control write runs pend + commit at the
+  transactor level — plausibly ~6 RPC rounds to the delayed member ⇒ ~12 s+ total. Do not assert
+  "< 15 s" a priori; measure first, then fix bounds with honest slack while keeping the
+  commit-case ceiling below the failure-case floor.
+
+### Structure decisions (settled this session)
+
+- Vitest picks up `src/**/*.integration.ts`; pool `forks`, `fileParallelism: false`. Default
+  `testTimeout` 60 s and `hookTimeout` 30 s are both too small — pass explicit per-`it` timeouts
+  (120 s) and an explicit `beforeAll` timeout (~180 s).
+- Boot the trio ONCE in `beforeAll` and share across the six sequential `it`s (a trio boot is the
+  dominant cost; six boots would flirt with the runner's 10-minute window). Restore
+  degradation/patches at the end of every case so cases stay order-tolerant; case 6 issues its own
+  failing write rather than depending on case 3's.
+- Unlike the isolation scenario, **all three nodes listen** on `/ip4/127.0.0.1/tcp/0/ws` (B must
+  be dialable for cluster fan-out). Boot sequence: A owner/storage + `makeOwnOwner`; vouch+seed B;
+  vouch+seed C; wait `registerSelf() === 'refreshed'` on B and C; wait cross-resolution
+  (`B.resolvePeerAddrs(C)` non-empty and vice versa); drive `B.reconcileControlCohort()` until a
+  B↔C connection exists; assert every node's `getControlNode()!.getMultiaddrs()` non-empty; then
+  `forceFullCohort([A, B, C])`. All writes issue from A (only A holds seed bootstrap).
+- Case 4's unawaited stalled write: capture `.catch(e => e)` immediately and await its settlement
+  (under a labelled deadline) before restoring the handler, to avoid an unhandled rejection and a
+  teardown race.
