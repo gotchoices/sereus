@@ -1,4 +1,4 @@
-import { toString as uint8ArrayToString } from 'uint8arrays';
+import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import { getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { PrivateKey } from '@libp2p/interface';
 
@@ -66,4 +66,38 @@ export function ed25519KeyPairFromLibp2p(privateKey: PrivateKey): Ed25519KeyPair
  */
 export function ed25519PublicKeyFromPrivate(privateKeyB64: string): string {
   return getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
+}
+
+/**
+ * Reject a value that isn't shaped like a base64url-encoded 32-byte Ed25519 public key
+ * before it reaches the control database, where a malformed key would otherwise sit
+ * indistinguishable from a real one until some later, unrelated signature check fails.
+ *
+ * Trims first, reusing the blank-value message for an empty result so that case keeps its
+ * existing wording instead of a confusing base64url error. Does not check the decoded bytes
+ * are a valid point on the Ed25519 curve — a well-formed-but-off-curve key still fails
+ * signature verification later exactly like any other wrong key.
+ *
+ * @param value - Candidate base64url-encoded Ed25519 public key.
+ * @param label - Human-readable name of the field, used in error messages.
+ * @returns The trimmed value, so callers write the same bytes they validated.
+ */
+export function requireEd25519PublicKeyB64(value: string, label: string): string {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new Error(`A ${label} is required (received an empty or whitespace-only value)`);
+  }
+
+  let decoded: Uint8Array;
+  try {
+    decoded = uint8ArrayFromString(trimmed, 'base64url');
+  } catch {
+    throw new Error(`A ${label} must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`);
+  }
+
+  if (decoded.length !== 32) {
+    throw new Error(`A ${label} must be a base64url-encoded 32-byte Ed25519 public key (decoded to ${decoded.length} bytes)`);
+  }
+
+  return trimmed;
 }

@@ -54,4 +54,26 @@ describe('ControlDatabase genesis (ensureOwnerKey)', () => {
       await node.stop();
     }
   }, 60_000);
+
+  it('rejects a malformed owner key with a clear message instead of an opaque constraint error', async () => {
+    const node = new CadreNode({
+      controlNetwork: {
+        partyId: 'genesis-test-' + Math.random().toString(36).slice(2),
+        bootstrapNodes: [],
+      },
+      profile: 'transaction',
+    });
+
+    try {
+      await node.start();
+      const db = node.getControlDatabase()!;
+
+      await expect(db.ensureOwnerKey('not-a-real-key')).rejects.toThrow(
+        /owner key must be a base64url-encoded (Ed25519 public key|32-byte Ed25519 public key)/i,
+      );
+      expect(await db.hasOwnerKey()).toBe(false);
+    } finally {
+      await node.stop();
+    }
+  }, 60_000);
 });

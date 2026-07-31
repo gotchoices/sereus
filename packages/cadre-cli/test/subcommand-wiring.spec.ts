@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { CadreNode, StrandRow } from '@serfab/cadre-core';
 
 /**
@@ -47,6 +48,22 @@ function fakeNode(rows: StrandRow[] = [], keys: string[] = []): FakeNode {
 		forceStrandPoll: async () => { /* nothing to reconcile in the fake */ },
 		getStrands: () => new Map(),
 		listValidationKeys: async () => [...enrolled].sort(),
+		enrollValidationKey: async (key: string) => {
+			// Mirrors `CadreNode.enrollValidationKey`'s `requireEd25519PublicKeyB64` guard, so this
+			// fake exercises the same refusal shape the CLI sees from a real node.
+			const trimmed = key.trim();
+			let decoded: Uint8Array;
+			try {
+				decoded = uint8ArrayFromString(trimmed, 'base64url');
+			} catch {
+				throw new Error(`A validation key must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`);
+			}
+			if (decoded.length !== 32) {
+				throw new Error(`A validation key must be a base64url-encoded 32-byte Ed25519 public key (decoded to ${decoded.length} bytes)`);
+			}
+			writes.push(`enroll-key:${trimmed}`);
+			enrolled.add(trimmed);
+		},
 		removeValidationKey: async (key: string) => {
 			writes.push(`remove-key:${key}`);
 			enrolled.delete(key);
@@ -186,6 +203,16 @@ describe('the `strands` invocation the group replaced', () => {
 });
 
 describe('cadre validation-key over the shared scaffolding', () => {
+	it('exits non-zero and leaves the enrolled set unchanged when the key is malformed', async () => {
+		const fake = fakeNode([], []);
+		session.node = fake.node;
+		const result = await run(validationKeyCommand, ['add', 'not-a-real-key']);
+		expect(result.exit).toBe(1);
+		expect(result.stderr).toMatch(/base64url-encoded/i);
+		expect(fake.writes).toEqual([]);
+		expect(await fake.node.listValidationKeys()).toEqual([]);
+	});
+
 	it('exits 0 and reports the emptied set after removing the last key', async () => {
 		const fake = fakeNode([], ['key-a']);
 		session.node = fake.node;

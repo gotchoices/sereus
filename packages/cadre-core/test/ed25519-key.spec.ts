@@ -2,7 +2,7 @@ import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { toString as u8ToString } from 'uint8arrays';
 import { getPublicKey, generatePrivateKey, digest, sign, verify } from '@optimystic/quereus-plugin-crypto';
-import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64 } from '../src/ed25519-key.js';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-owner-store.js';
@@ -56,6 +56,42 @@ describe('ed25519PublicKeyFromPrivate', () => {
     const signature = sign(msgDigest, privateKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
 
     expect(verify(msgDigest, signature, publicKeyB64, 'ed25519', 'base64url', 'base64url', 'base64url')).toBe(true);
+  });
+});
+
+describe('requireEd25519PublicKeyB64', () => {
+  it('accepts a valid base64url-encoded 32-byte key and returns it trimmed', () => {
+    const publicKeyB64 = ed25519PublicKeyFromPrivate(generatePrivateKey('ed25519', 'base64url') as string);
+    expect(requireEd25519PublicKeyB64(`  ${publicKeyB64}\n`, 'validation key')).toBe(publicKeyB64);
+  });
+
+  it('rejects an empty or whitespace-only value with the blank-value message', () => {
+    for (const blank of ['', '   ', '\t\n']) {
+      expect(() => requireEd25519PublicKeyB64(blank, 'validation key')).toThrow(
+        /A validation key is required \(received an empty or whitespace-only value\)/,
+      );
+    }
+  });
+
+  it('rejects a value with invalid base64url characters', () => {
+    expect(() => requireEd25519PublicKeyB64('not valid!!', 'validation key')).toThrow(
+      /A validation key must be a base64url-encoded Ed25519 public key \(could not decode/,
+    );
+    expect(() => requireEd25519PublicKeyB64('has+slash/and=pad', 'validation key')).toThrow(
+      /A validation key must be a base64url-encoded Ed25519 public key \(could not decode/,
+    );
+  });
+
+  it('rejects a value that decodes to the wrong byte length', () => {
+    const tooShort = u8ToString(new Uint8Array(16), 'base64url');
+    expect(() => requireEd25519PublicKeyB64(tooShort, 'validation key')).toThrow(
+      /A validation key must be a base64url-encoded 32-byte Ed25519 public key \(decoded to 16 bytes\)/,
+    );
+  });
+
+  it('accepts a well-formed but off-curve 32-byte value (curve validation is out of scope)', () => {
+    const offCurve = u8ToString(new Uint8Array(32).fill(0), 'base64url');
+    expect(requireEd25519PublicKeyB64(offCurve, 'validation key')).toBe(offCurve);
   });
 });
 

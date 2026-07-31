@@ -208,6 +208,16 @@ describe('CadreNode validation-key enrollment', () => {
     expect((await db.queryRevokedStamps('ValidationKey')).size).toBe(0);
   }, 60_000);
 
+  it('rejects a malformed (non-base64url or wrong-length) key before any write', async () => {
+    node = await startSelfOwnerNode();
+
+    await expect(node.enrollValidationKey('not-a-real-key')).rejects.toThrow(
+      /validation key must be a base64url-encoded (Ed25519 public key|32-byte Ed25519 public key)/i,
+    );
+
+    expect(await node.listValidationKeys()).toEqual([]);
+  }, 60_000);
+
   it('rejects when the node is not an enrolled owner (constraint propagates, nothing lands)', async () => {
     // Self-signing key present (past the "no signing key" guard) but not in OwnerKey, so
     // ValidationKey.AuthorizedInsert rejects the write.

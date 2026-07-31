@@ -37,7 +37,7 @@ import type {
 } from './types.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
-import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, type Ed25519KeyPair } from './ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
@@ -3147,7 +3147,7 @@ export class CadreNode implements SAppIdLookup {
    */
   async enrollValidationKey(key: string): Promise<void> {
     const signingKey = this.requireOwnerSigningKey('enroll a validation key');
-    const trimmed = requireNonBlank(key, 'validation key');
+    const trimmed = requireEd25519PublicKeyB64(key, 'validation key');
     await this.controlDatabase!.insertValidationKey(
       trimmed,
       signingKey.publicKeyB64,

@@ -12,6 +12,7 @@ import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
+import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -486,11 +487,12 @@ export class ControlDatabase {
    */
   async ensureOwnerKey(key: string): Promise<boolean> {
     this.ensureInitialized();
+    const trimmed = requireEd25519PublicKeyB64(key, 'owner key');
     if (await this.hasOwnerKey()) {
       log('Owner key already present; skipping genesis insert');
       return false;
     }
-    await this.insertOwnerKey(key);
+    await this.insertOwnerKey(trimmed);
     return true;
   }
 
