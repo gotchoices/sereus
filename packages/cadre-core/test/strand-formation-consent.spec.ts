@@ -19,7 +19,7 @@ import {
 import { canonicalJson } from '../src/canonical-json.js';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
-import { mintContactJoiner, mintContactConsent } from './formation-consent-helper.js';
+import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 import type {
   FormationContactMessage,
   FormationResultMessage,
@@ -645,13 +645,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const { invoke } = responder();
 
     const good = await contactFor(token);
-    const otherJoiner = await mintContactJoiner();
-    const badContacts: Array<[string, FormationContactMessage]> = [
-      ['tampered peerSignature', { ...good, peerSignature: (good.peerSignature[0] === 'A' ? 'B' : 'A') + good.peerSignature.slice(1) }],
-      ['partyId of a different joiner', { ...good, partyId: otherJoiner.partyId }],
-      ['garbage peerKey', { ...good, peerKey: 'garbage-not-32-bytes' }],
-    ];
-    for (const [label, bad] of badContacts) {
+    for (const [label, bad] of await invalidConsentContacts(good)) {
       const stream = new MockStream([encodeFrame(bad)]);
       await invoke(stream);
       const result = decodeFirstFrame<FormationResultMessage>(stream.sent);

@@ -11,7 +11,7 @@ import {
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
-import { mintContactJoiner, mintContactConsent } from './formation-consent-helper.js';
+import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
 
@@ -513,13 +513,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
 describe('FormationListener joiner-consent pre-check', () => {
   it('rejects tampered/mismatched/malformed consent before validating the token', async () => {
-    const otherJoiner = await mintContactJoiner();
-    const cases: Array<[string, FormationContactMessage]> = [
-      ['tampered peerSignature', { ...contact, peerSignature: (contact.peerSignature[0] === 'A' ? 'B' : 'A') + contact.peerSignature.slice(1) }],
-      ['partyId not embedding peerKey', { ...contact, partyId: otherJoiner.partyId }],
-      ['malformed peerKey', { ...contact, peerKey: 'garbage-not-32-bytes' }],
-    ];
-    for (const [label, bad] of cases) {
+    for (const [label, bad] of await invalidConsentContacts(contact)) {
       let tokenChecks = 0;
       const { options, identityDisclosed } = baseOptions({
         validateToken: async () => { tokenChecks++; return { valid: true }; }
@@ -539,6 +533,28 @@ describe('FormationListener joiner-consent pre-check', () => {
       expect(identityDisclosed(), label).toBe(false);
       expect(tokenChecks, label).toBe(0);
     }
+  });
+
+  it('accepts a disclosure whose keys arrive in another order — the CANONICAL form is signed', async () => {
+    // Nothing on the wire preserves key order, so the joiner signs canonicalJson(disclosure)
+    // and the responder recomputes it. A responder comparing raw JSON text would reject this.
+    const reordered: FormationContactMessage = {
+      ...contact,
+      disclosure: { purpose: realDisclosure.purpose, partyId: realDisclosure.partyId }
+    };
+    let tokenChecks = 0;
+    const { options } = baseOptions({
+      validateToken: async () => { tokenChecks++; return { valid: true }; }
+    });
+    const listener = new FormationListener(options);
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(reordered)]);
+    await invoke(stream);
+
+    expect(decodeFirstFrame<FormationResultMessage>(stream.sent).approved).toBe(true);
+    expect(tokenChecks).toBe(1);
   });
 });
 

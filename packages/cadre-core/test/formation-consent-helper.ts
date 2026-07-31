@@ -4,6 +4,7 @@ import { generatePrivateKey, sign } from '@optimystic/quereus-plugin-crypto';
 import { canonicalJson } from '../src/canonical-json.js';
 import { generateStampId, formationConsentMessage } from '../src/control-database.js';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
+import type { FormationContactMessage } from '../src/strand-formation-protocol.js';
 
 /** A throwaway joining peer: base64url ed25519 seed + its public key. */
 export interface TestJoiner {
@@ -66,4 +67,29 @@ export function mintContactConsent(joiner: TestContactJoiner, token: string, dis
     usageStampId,
     peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure: canonicalJson(disclosure) }),
   };
+}
+
+/** Corrupt the leading base64url character — enough to break any signature. */
+function flipFirstChar(text: string): string {
+  return (text[0] === 'A' ? 'B' : 'A') + text.slice(1);
+}
+
+/**
+ * Every way a contact's joiner consent can fail, derived from one good contact —
+ * shared so the protocol-layer pre-check and the recorder-backed responder assert the
+ * SAME matrix. Each entry keeps the signature intact and moves one signed input, so a
+ * responder that skipped any field of the `'consent'` digest fails exactly one case.
+ */
+export async function invalidConsentContacts(
+  good: FormationContactMessage,
+): Promise<Array<[string, FormationContactMessage]>> {
+  const other = await mintContactJoiner();
+  return [
+    ['tampered peerSignature', { ...good, peerSignature: flipFirstChar(good.peerSignature) }],
+    ['partyId of a different joiner', { ...good, partyId: other.partyId }],
+    ['garbage peerKey', { ...good, peerKey: 'garbage-not-32-bytes' }],
+    ['consent minted for another token', { ...good, token: `${good.token}-other` }],
+    ['disclosure swapped after signing', { ...good, disclosure: { ...good.disclosure, purpose: 'swapped' } }],
+    ['nonce swapped after signing', { ...good, usageStampId: generateStampId('swapped-nonce') }],
+  ];
 }

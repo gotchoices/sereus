@@ -200,9 +200,14 @@ export class TestCadreNetwork {
     // (Token, UsageStampId, PeerKey, Disclosure) — fixture strings won't pass. Mint a
     // throwaway ed25519 identity here: the harness joins at the consent layer directly
     // (no formation protocol run), so no other component needs this key again.
+    // NOTE: the row therefore names a key belonging to nobody, not the joining party. Fine
+    // while no scenario reads FormationUsage.PeerKey; if one ever asserts the joiner's
+    // identity from that row, sign here with the joining party's own identity key instead.
     const joinerSecretKey = ed25519.utils.randomSecretKey();
     const peerKey = uint8ArrayToString(ed25519.getPublicKey(joinerSecretKey), 'base64url');
-    const usageStampId = `stamp-${invitation.token}-${Date.now()}`;
+    // Keyed on the throwaway key, not a clock: two joins of one multi-use invite in the
+    // same millisecond would otherwise collide on the unique UsageStampId.
+    const usageStampId = `stamp-${peerKey}`;
     const peerSignature = uint8ArrayToString(
       ed25519.sign(
         formationConsentMessage({ token: invitation.token, usageStampId, peerKey, disclosure: '' }),
