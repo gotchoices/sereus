@@ -200,7 +200,7 @@ describe('createHttpFormationApprover', () => {
     // The body is the signed field set and nothing more — no validationUrl, no keys.
     const sent = JSON.parse(String(init?.body)) as Record<string, unknown>;
     expect(Object.keys(sent).sort()).toEqual(
-      ['disclosure', 'peerId', 'strandId', 'token', 'usageStampId']
+      ['disclosure', 'peerKey', 'strandId', 'token', 'usageStampId']
     );
     // Byte-identical disclosure: the transport must not reformat or re-encode it.
     expect(sent['disclosure']).toBe(AWKWARD_DISCLOSURE);

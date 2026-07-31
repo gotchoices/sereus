@@ -8,6 +8,7 @@
 import debug from 'debug';
 import { ed25519 } from '@noble/curves/ed25519.js';
 import { toString as uint8ArrayToString } from 'uint8arrays';
+import { formationConsentMessage } from '@serfab/cadre-core';
 import type { ControlDatabase, ControlTable } from '@serfab/cadre-core';
 import { createTestParty, shutdownTestParty } from './test-party.js';
 import { releaseAllPorts } from './port-allocator.js';
@@ -195,10 +196,26 @@ export class TestCadreNetwork {
     if (!inviter) {
       throw new Error(`Inviting party ${strand.inviterPartyId} not found for strand ${invitation.strandId}`);
     }
+    // The schema's `PeerConsented` CHECK verifies a genuine joiner signature over
+    // (Token, UsageStampId, PeerKey, Disclosure) — fixture strings won't pass. Mint a
+    // throwaway ed25519 identity here: the harness joins at the consent layer directly
+    // (no formation protocol run), so no other component needs this key again.
+    const joinerSecretKey = ed25519.utils.randomSecretKey();
+    const peerKey = uint8ArrayToString(ed25519.getPublicKey(joinerSecretKey), 'base64url');
+    const usageStampId = `stamp-${invitation.token}-${Date.now()}`;
+    const peerSignature = uint8ArrayToString(
+      ed25519.sign(
+        formationConsentMessage({ token: invitation.token, usageStampId, peerKey, disclosure: '' }),
+        joinerSecretKey
+      ),
+      'base64url'
+    );
     await inviter.controlDatabase.recordFormationUsage({
       token: invitation.token,
       strandId: invitation.strandId,
-      peerId: joiner.partyId,
+      peerKey,
+      usageStampId,
+      peerSignature,
     });
 
     log('Party %s joined strand %s', joiner.name, invitation.strandId);
