@@ -233,8 +233,12 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   });
 
   it('reports a timed-out provisionStrand as a retryable rejection, not a dropped stream', async () => {
+    let capturedSignal: AbortSignal | undefined;
     const { options, identityDisclosed } = baseOptions({
-      provisionStrand: (): Promise<ResponderProvisionOutcome> => new Promise(() => { /* never settles */ })
+      provisionStrand: (_t, _p, _d, signal): Promise<ResponderProvisionOutcome> => {
+        capturedSignal = signal;
+        return new Promise(() => { /* never settles */ });
+      }
     });
     const listener = new FormationListener({ ...options, provisionTimeoutMs: 20 });
     const { node, invoke } = captureHandler();
@@ -250,6 +254,8 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     expect(stream.closed).toBe(true);
+    // The abandoned hook must have been CANCELLED, not merely left running.
+    expect(capturedSignal?.aborted).toBe(true);
   });
 
   it('clamps provisionTimeoutMs when it would outlive the session, so a slow hook still gets a reply', async () => {
@@ -317,6 +323,116 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
     expect(result.approved).toBe(true);
     expect(result.provisionResult?.strand.strandId).toBe('strand-default-budget');
+  });
+
+  it('adopts a provisioning that lands inside the settle grace instead of replying "timed out"', async () => {
+    // Regression: the work budget expiring must NOT report a timeout over an invite the hook
+    // has in fact spent. provisionTimeoutMs 400 → work 200 + grace 200; the hook writes at
+    // 300ms — after the abort but inside the grace — so its approval is adopted.
+    let uses = 0;
+    const { options, identityDisclosed } = baseOptions({
+      validateToken: async () => ({ valid: uses < 1 }),
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        uses++; // stands in for the append-only FormationUsage insert: ignores the abort
+        return {
+          approved: true,
+          result: {
+            strand: { strandId: 'strand-late-but-landed', createdBy: 'responder' },
+            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+          }
+        };
+      }
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const first = new MockStream([encodeFrame(contact)]);
+    await invoke(first);
+
+    const firstResult = decodeFirstFrame<FormationResultMessage>(first.sent);
+    expect(firstResult.approved).toBe(true);
+    expect(firstResult.reason).toBeUndefined();
+    expect(firstResult.provisionResult?.strand.strandId).toBe('strand-late-but-landed');
+    expect(firstResult.partyId).toBe(RESPONDER_IDENTITY.partyId);
+    expect(identityDisclosed()).toBe(true);
+    expect(uses).toBe(1);
+
+    // The spend now belongs to a join the joiner was TOLD succeeded, so refusing a second
+    // presentation of the same token is honest — not a silently lost invitation.
+    const second = new MockStream([encodeFrame(contact)]);
+    await invoke(second);
+    expect(decodeFirstFrame<FormationResultMessage>(second.sent).reason).toBe('Invalid token');
+  });
+
+  it('leaves the invite unspent when the hook observes its abort, so the same token retries', async () => {
+    // The other half of the fix: a hook that honours the signal BEFORE writing abandons the
+    // redemption. Session 1 gets a timeout with nothing spent; session 2 re-presents the SAME
+    // contact frame and forms the strand.
+    let uses = 0;
+    let calls = 0;
+    const { options } = baseOptions({
+      validateToken: async () => ({ valid: uses < 1 }),
+      provisionStrand: (_token, _partyId, _disclosure, signal): Promise<ResponderProvisionOutcome> => {
+        if (++calls === 1) {
+          // Writes nothing and rejects the moment the work budget aborts it — what
+          // ControlFormationUsageRecorder does via FormationAbortedError.
+          return new Promise((_resolve, reject) => {
+            signal?.addEventListener(
+              'abort',
+              () => reject(new Error('Formation aborted before usage recording')),
+              { once: true }
+            );
+          });
+        }
+        uses++;
+        return Promise.resolve({
+          approved: true,
+          result: {
+            strand: { strandId: 'strand-retry-ok', createdBy: 'responder' },
+            dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+          }
+        });
+      }
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 100 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const first = new MockStream([encodeFrame(contact)]);
+    await invoke(first);
+    const firstResult = decodeFirstFrame<FormationResultMessage>(first.sent);
+    expect(firstResult.approved).toBe(false);
+    expect(firstResult.reason).toBe('Formation provisioning timed out');
+    expect(uses).toBe(0);
+
+    const second = new MockStream([encodeFrame(contact)]);
+    await invoke(second);
+    const secondResult = decodeFirstFrame<FormationResultMessage>(second.sent);
+    expect(secondResult.approved).toBe(true);
+    expect(secondResult.provisionResult?.strand.strandId).toBe('strand-retry-ok');
+    expect(uses).toBe(1);
+  });
+
+  it('carves the settle grace OUT of provisionTimeoutMs rather than adding it on top', async () => {
+    // provisionTimeoutMs 500 → work 250 + grace 250, so a signal-ignoring never-settling hook
+    // must be answered by ~500ms, not ~750ms. Adding the grace on top would push provisioning
+    // past the initiator's await-response budget and break the nested timeout ladder.
+    const { options } = baseOptions({
+      provisionStrand: (): Promise<ResponderProvisionOutcome> => new Promise(() => { /* ignores the signal */ })
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 500 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const started = Date.now();
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+    const elapsed = Date.now() - started;
+
+    expect(decodeFirstFrame<FormationResultMessage>(stream.sent).reason).toBe('Formation provisioning timed out');
+    expect(elapsed).toBeLessThanOrEqual(700);
   });
 
   it('converts an unexpected provisioning throw into a non-disclosing internal-error frame', async () => {

@@ -52,10 +52,10 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
  * The 3 s margin between responder provisioning and initiator await-response is the wire
  * latency budget for the result frame to travel back.
  *
- * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is to become a settle grace (not
- * wired yet), so the default WORK budget (12 s − 2 s = 10 s) will EQUAL the hook's 10 s: a
- * dead hook races 'Formation approval unavailable, retry' against 'Formation provisioning
- * timed out'. Both are retryable and both leave the invite unspent, so the race is benign.
+ * The last {@link PROVISION_SETTLE_GRACE_MS} of this budget is a settle grace, so the default
+ * WORK budget (12 s − 2 s = 10 s) EQUALS the hook's own 10 s: a dead hook races 'Formation
+ * approval unavailable, retry' against 'Formation provisioning timed out'. Both are retryable
+ * and both leave the invite unspent, so the race is benign.
  */
 const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
 /**
@@ -68,10 +68,7 @@ const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
  * approval rather than lying "timed out" over a spent invite. A hook that observes the
  * abort before writing leaves the invite unspent.
  *
- * NOT YET WIRED: {@link FormationListener.provision} still runs the hook under the whole
- * `provisionTimeoutMs` and passes no signal, so today this constant only documents the
- * intended split (see `tickets/implement/13.5-formation-settle-grace-listener.md`). Exported
- * so that ticket's listener and tests share one definition.
+ * Exported so the listener and its tests share one definition of the split.
  */
 export const PROVISION_SETTLE_GRACE_MS = 2_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
@@ -373,32 +370,82 @@ export class FormationListener {
   }
 
   /**
-   * Run the provisioning hook under {@link provisionTimeoutMs}, distinguishing a timeout
-   * (`undefined`) from every other failure (rethrown) — the caller turns the former into a
-   * retryable rejection frame and lets the latter reach the internal-error path.
+   * Run the provisioning hook under {@link provisionTimeoutMs}, split into a WORK budget and
+   * a trailing {@link PROVISION_SETTLE_GRACE_MS} settle grace (see that constant — the grace
+   * is carved out of the budget, never added on top, so the nested timeout ladder holds).
+   *
+   * When the work budget expires the hook's signal is aborted, then
+   * {@link settleWithinGrace} waits out the grace for the aborted work to settle anyway.
+   * Returns `undefined` for "timed out" — which the caller turns into a retryable rejection
+   * frame — and rethrows every other failure so it reaches the internal-error path.
+   *
+   * Deliberately not `withDeadline`: that exposes neither the timed-out flag nor the signal
+   * outside its `op`, and both are needed here.
    */
   private async provision(id: number, contact: FormationContactMessage): Promise<ResponderProvisionOutcome | undefined> {
+    const graceMs = Math.min(PROVISION_SETTLE_GRACE_MS, Math.floor(this.provisionTimeoutMs / 2));
+    const workMs = Math.max(1, this.provisionTimeoutMs - graceMs);
+    const controller = new AbortController();
     let timedOut = false;
-    const pending = this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure);
+    const pending = this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure, controller.signal);
     try {
       return await withTimeout(
-        this.provisionTimeoutMs,
+        workMs,
         `Formation provisioning#${id}`,
         () => pending,
-        () => { timedOut = true; }
+        () => { timedOut = true; controller.abort(); }
       );
     } catch (err) {
       if (!timedOut) throw err;
-      log('formation session #%d provisioning timed out after %dms', id, this.provisionTimeoutMs);
-      // NOTE: provisionStrand is not cancelled on timeout — its write (FormationUsage /
-      // Strand row, or invite-use record) may still land after the timeout reply is sent, so
-      // the invite's single use may still be spent even though the initiator sees a timeout.
-      // Pre-existing race (a joiner timeout has always been able to race a commit); this
-      // budget only narrows the window, it does not close it. Log how it eventually settled
-      // so a late failure is not swallowed by the abandoned `withTimeout`.
+      log(
+        'formation session #%d provisioning work budget expired after %dms; aborted, settling up to %dms',
+        id, workMs, graceMs
+      );
+      return await this.settleWithinGrace(id, pending, graceMs);
+    }
+  }
+
+  /**
+   * Wait out the settle grace for an ABORTED provisioning, adopting a late success.
+   *
+   * A hook that observed the abort before issuing its `FormationUsage` insert rejects (with
+   * `FormationAbortedError`) and leaves the invite unspent → reported as a timeout. A hook
+   * that had already written cannot be un-written (the table is append-only), so if it lands
+   * inside the grace its outcome is ADOPTED — the joiner is told the truth (approved, or the
+   * hook's own rejection reason) rather than "timed out" over a spent invite.
+   *
+   * NOTE: one window stays open — a work budget that expires after the `FormationUsage`
+   * insert was issued AND a commit that outlasts the grace. The joiner is told 'timed out'
+   * while its one-time invite is in fact spent, and since every retry mints a fresh keypair
+   * no recovery path can match it. Nothing can un-spend an append-only row, so the late-settle
+   * logging below is the observability for it; widen the grace only if it is seen in the wild.
+   */
+  private async settleWithinGrace(
+    id: number,
+    pending: Promise<ResponderProvisionOutcome>,
+    graceMs: number
+  ): Promise<ResponderProvisionOutcome | undefined> {
+    let stillPending = false;
+    try {
+      const outcome = await withTimeout(
+        graceMs,
+        `Formation settle#${id}`,
+        () => pending,
+        () => { stillPending = true; }
+      );
+      log('formation session #%d provisioning settled within its grace: approved=%s — adopting', id, outcome.approved);
+      return outcome;
+    } catch (err) {
+      if (!stillPending) {
+        log('formation session #%d provisioning failed after its abort: %o', id, err);
+        return undefined;
+      }
+      log('formation session #%d provisioning still pending after its %dms grace', id, graceMs);
+      // Log how it eventually settled so a late failure is not swallowed by the two
+      // abandoned `withTimeout` calls.
       void pending.then(
-        (late) => log('formation session #%d provisioning settled after its timeout: approved=%s', id, late.approved),
-        (err2) => log('formation session #%d provisioning failed after its timeout: %o', id, err2)
+        (late) => log('formation session #%d provisioning settled after its grace: approved=%s', id, late.approved),
+        (err2) => log('formation session #%d provisioning failed after its grace: %o', id, err2)
       );
       return undefined;
     }
