@@ -1,9 +1,20 @@
-description: When someone joins one of a party's networks, the record of that join names who joined, but nobody checks that the named person actually agreed to it. Make the joiner sign its own join, carry that signature over the wire, and refuse the record without it.
-files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/control-formation-recorder.ts, packages/cadre-core/src/formation-approval.ts, packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core/src/strand-formation-manager.ts, packages/cadre-core/src/strand-solicitation.ts, packages/cadre-core/src/peer-authorization.ts, packages/cadre-core/test/control-formation-invite.spec.ts, packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts, docs/api.md
+description: When someone joins one of a party's networks, the record of that join names who joined, but nobody checks that the named person actually agreed to it. Make the joiner sign its own join, carry that signature over the wire, and refuse the record without it. This ticket is the core implementation (schema, write paths, protocol); a follow-up ticket covers the remaining test matrix and docs.
+files: schemas/control.qsql, packages/cadre-core/src/control-schema.ts, packages/cadre-core/src/control-database.ts, packages/cadre-core/src/control-formation-recorder.ts, packages/cadre-core/src/formation-approval.ts, packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core/src/strand-formation-manager.ts, packages/cadre-core/src/strand-solicitation.ts, packages/cadre-core/src/peer-authorization.ts, packages/cadre-core/src/control-authorization.ts, packages/cadre-core/src/ed25519-key.ts, packages/cadre-core/src/canonical-json.ts, packages/cadre-core/test/control-formation-invite.spec.ts
 difficulty: hard
 ----
 
-# The joining peer signs its own formation record
+# The joining peer signs its own formation record — core implementation
+
+Continuation of `debt-formation-usage-peer-signature-unverified` (a prior implement run was
+stopped by its token budget during code reading; NO code changes were made — the working
+tree is untouched by that run). The full settled design from the plan stage is reproduced
+below, followed by findings from the interrupted run's code reading. A second ticket
+(`debt-formation-consent-tests-docs`, prereq on this one) carries the exhaustive negative-test
+matrix and doc updates; THIS ticket must still leave `yarn build`, `yarn lint`, the
+cadre-core unit suite, and the formation integration scenarios green — which means updating
+every existing test the change breaks (notably `control-formation-invite.spec.ts`, which
+issues the raw `insert … with context PeerSignature = ?` and must be rewritten), plus at
+least one positive-path schema test and the e2e re-verification.
 
 ## Today
 
@@ -114,7 +125,7 @@ not read the missing `StrandId` as an oversight.
 Add a **`PeerSig`** column (base64url ed25519). `context.PeerSignature` is **removed** from
 the table's context declaration entirely.
 
-Why stored: the ticket's audit requirement — a reader must be able to re-check the record
+Why stored: the audit requirement — a reader must be able to re-check the record
 after the fact, exactly as `CadrePeer.VouchOwner`/`VouchSig` allow. `FormationUsage` is
 append-only (`InsertOnly check on update, delete (false)`), so a stored signature can never
 be tampered with after the fact — a stronger position than `CadrePeer`, whose row is
@@ -160,9 +171,9 @@ DB read or hook contact.
 `FormationApprovalRequest` / `FormationVouchFields` (`formation-approval.ts`) and
 `formationVouchMessage` (`control-database.ts`) carry `peerId`; the approver's digest binds
 it. That field becomes `peerKey` and carries the public key. `docs/api.md` documents the
-POST body (`{ token, usageStampId, strandId, peerId, disclosure }`) — update it, and note
-that the value is now the joiner's Ed25519 public key, with the libp2p peer id derivable
-from it. Per AGENTS.md there is no backwards-compat obligation.
+POST body (`{ token, usageStampId, strandId, peerId, disclosure }`) — updating the doc is
+in the follow-up ticket; the CODE rename is here. Per AGENTS.md there is no backwards-compat
+obligation.
 
 ## Wire format
 
@@ -230,14 +241,7 @@ Export both from `index.ts`.
 - **Approval + consent both required.** A `ValidationUrl` invite now needs the approver's
   `'vouch'` signature *and* the joiner's `'consent'` signature. Both cover
   `(Token, UsageStampId, Disclosure)`; both must be over the *same* canonical disclosure
-  bytes and the *same* nonce. A test must assert that a mismatch in either fails.
-- **Cross-signature substitution.** Assert explicitly that the joiner's `'consent'`
-  signature does not satisfy the approver's `'vouch'` check and vice versa, and that a
-  `'consent'` signature cannot satisfy any other table's rule (the reason for the action
-  tag).
-- **Lifting consent onto another row.** Same key, same token, *different* nonce → verify
-  fails. Same nonce → `unique` refuses. Different disclosure text → verify fails. Cover all
-  three.
+  bytes and the *same* nonce.
 - **`redeemInvitation` (unbound) vs `recordFormationUsage` (bound).** Both write paths must
   thread `peerKey` / `peerSignature` / joiner-supplied `usageStampId`. `redeemInvitation`
   writes `Strand` + `FormationUsage` in one transaction with deferred CHECKs — confirm the
@@ -266,31 +270,66 @@ Export both from `index.ts`.
   but the listener's pre-check runs regardless, so their tests must still send a
   well-formed contact message.
 
-## Key tests (TDD — write these first)
+## Findings from the interrupted run's code reading (verified against source)
 
-Schema-level (`packages/cadre-core/test/control-formation-invite.spec.ts`, which already
-issues the raw `insert … with context PeerSignature = ?` and must be rewritten):
-
-- insert with a valid `(PeerKey, PeerSig)` pair → accepted.
-- insert with `PeerSig` signed by a *different* key → `CHECK constraint failed: PeerConsented`.
-- insert with a signature valid over a *different* `(Token | UsageStampId | Disclosure)` →
-  rejected.
-- insert reusing a spent `UsageStampId` → rejected by `unique`, not by `PeerConsented`.
-- the approver's `'vouch'` signature presented as `PeerSig` → rejected (tag disjointness).
-- `verifyFormationConsent` returns `true` for a row read back out of the table, `false`
-  after mutating any signed field, and `false` (never throws) on garbage input.
-
-Protocol/manager-level:
-
-- responder rejects `approved: false` with `'Invalid joiner consent'` when `peerKey`
-  disagrees with `partyId`, when the signature is bad, and when `peerKey` is malformed —
-  and **discloses no responder identity or cadre addrs** in that reply.
-- rejection happens before `provisionStrand` is called (assert the hook is never invoked)
-  and leaves the invite unspent (`countFormationUsage` unchanged).
-
-End-to-end (`strand-formation-e2e.integration.ts`): a real two-party formation writes a row
-whose stored `PeerSig` re-verifies via `verifyFormationConsent` against the `PeerKey` the
-joiner actually used, and whose `PeerKey` matches the joiner's returned `memberKey`.
+- `schemas/control.qsql` — `FormationUsage` is lines ~479-585. Stale comments to rewrite:
+  the `PeerId` column comment (~495-500) and the trailing context-declaration comment
+  (~582-584); both point at the old backlog ticket slug. The `'vouch'` digest naming
+  `new.PeerId` is at ~562. The context list to edit is line ~585. Mirror ALL of it into
+  `packages/cadre-core/src/control-schema.ts` (embedded copy of the same schema text).
+- `control-database.ts` — `formationVouchMessage` at ~177 (rename field `peerId` →
+  `peerKey`). `redeemInvitation` ~1345 and `recordFormationUsage` ~1427 both do
+  `usageStampId ?? generateStampId(localPeerId)` — delete the fallback, make the param
+  required. Shared insert body `execFormationUsageInsert` ~1478 binds
+  `context.PeerSignature` and column `PeerId` — becomes stored `PeerKey`/`PeerSig`
+  columns, context binding removed. `mintUsageStampId` ~1309 loses its recorder caller
+  (joiner now mints) — check remaining callers before removing it; `generateStampId` is
+  already exported, so the joiner side (`strand-solicitation.ts`) can mint with it (no
+  import cycle: solicitation → manager → control-database already exists).
+- `control-formation-recorder.ts` — `obtainApproval` ~126: currently mints via
+  `this.controlDatabase.mintUsageStampId()` and returns `{}` when `validationUrl === null`;
+  it must take the joiner's nonce from its caller in BOTH cases. `recordUsage` ~194 and
+  `provisionAndRecord` ~268 gain `peerKey` / `peerSignature` / `usageStampId` params. Their
+  param shapes come from the `FormationUsageRecorder` interface in
+  `strand-solicitation.ts` (~62-123) — extend the interface too. Stale
+  ticket-slug references in comments at recorder ~188 and schema — rewrite.
+- `strand-formation-protocol.ts` — `FormationContactMessage` at ~125.
+  `FormationListenerOptions.provisionStrand` (~296) takes
+  `(token, initiatorPartyId, disclosure, signal)`; the manager's hook
+  (`provisionAsResponder`, manager ~282) will need the contact's new fields threaded
+  through — either widen the hook signature or pass the whole contact. The consent
+  pre-check goes in `runSession` (~461) after the contact read and before
+  `this.provision(...)` (~488); on failure `send({ approved: false, reason: 'Invalid
+  joiner consent' })`. NOTE: the pre-check must verify the signature over the SAME
+  canonical disclosure text the responder will write — serialize the parsed wire
+  `disclosure` with `canonicalJson` for the local verify (canonical form makes
+  parse→re-serialize stable).
+- `strand-formation-manager.ts` — `provisionAsResponder` ~282: `JSON.stringify(disclosure)`
+  at ~291 becomes `canonicalJson(disclosure)`; comment update per design §5. It currently
+  receives `initiatorPartyId` and passes it as `peerId` to `recordUsage` /
+  `provisionAndRecord` (~306, ~379) — becomes `peerKey` + `peerSignature` +
+  `usageStampId` from the contact.
+- `strand-solicitation.ts` — `formStrand` ~281: mints via
+  `generateKeyPair('Ed25519')` + `peerIdFromPrivateKey`; add
+  `ed25519KeyPairFromLibp2p(privateKey)` for `{ privateKeyB64, publicKeyB64 }`, mint the
+  nonce, canonicalize the disclosure (`{ ...disclosure, partyId: memberKey }` — canonicalize
+  AFTER the partyId override, since that object is what the responder receives and writes),
+  sign `formationConsentMessage`, put `peerKey`/`usageStampId`/`peerSignature` on the
+  contact. The no-node placeholder fallback (~319) performs no formation write — no signing
+  needed there. `recordFormationComplete` (~416) calls `recordUsage` with the old shape and
+  is used only by integration-test mocks — update signature or its callers to satisfy the
+  widened interface.
+- `formation-approval.ts` — `FormationApprovalRequest` field `peerId` at ~39; `vouchFields`
+  destructure ~133; `signFormationApproval` / `verifyFormationApproval` are field-name
+  agnostic beyond the type. Wire body to the hook is `JSON.stringify(vouchFields(request))`
+  (~476) so the POST body field renames automatically with the type.
+- NOT yet read by the interrupted run (verify shapes before use):
+  `peer-authorization.ts` (`verifyCadrePeerVoucher` shape to mirror), `ed25519-key.ts`
+  (`ed25519KeyPairFromLibp2p`, `requireEd25519PublicKeyB64`), `seed-bootstrap.ts`
+  (`ed25519PublicKeyB64FromPeerId`), `canonical-json.ts` (`canonicalJson`),
+  `control-authorization.ts` (`ControlAction` union), the existing tests
+  (`control-formation-invite.spec.ts`, formation unit/integration suites), and `index.ts`
+  exports.
 
 ## TODO
 
@@ -301,8 +340,7 @@ Phase 1 — digests and schema
 - Add `verifyFormationConsent` to `peer-authorization.ts`; export both from `index.ts`.
 - In `schemas/control.qsql` `FormationUsage`: rename `PeerId` → `PeerKey`, add `PeerSig text
   not null`, add the `PeerConsented` constraint, drop `PeerSignature` from the `with
-  context` list, and rewrite the stale comments on `PeerId` and the context declaration that
-  point at this ticket.
+  context` list, and rewrite the stale comments on `PeerId` and the context declaration.
 - Update the `FormationUsage.Authorized` `'vouch'` digest to name `new.PeerKey`.
 - Mirror the whole schema change into `packages/cadre-core/src/control-schema.ts`.
 
@@ -328,12 +366,14 @@ Phase 3 — protocol and initiator
   mint the nonce, canonicalize the disclosure, sign `formationConsentMessage`, and put
   `peerKey` / `usageStampId` / `peerSignature` on the contact message.
 
-Phase 4 — tests and docs
+Phase 4 — keep the suite green
 
-- Write the schema-level, protocol-level, and end-to-end tests above.
-- Update `docs/api.md`'s approval-hook wire contract (`peerId` → `peerKey`, meaning, and
-  the joiner-minted nonce).
-- Update `docs/strands.md` / `docs/architecture.md` where formation is described, if they
-  state that the joiner contributes no signature.
-- Run `yarn build`, `yarn lint`, the `cadre-core` unit suite, and the formation
-  integration scenarios; stream output with `tee`.
+- Rewrite `control-formation-invite.spec.ts`'s raw inserts to supply valid
+  `(PeerKey, PeerSig)` pairs and the new column names; add at least the positive-path
+  consent test (valid pair accepted, wrong-key pair rejected).
+- Update every unit/integration test the interface changes break (direct
+  `StrandFormationManager` drivers must supply real key material; mock recorders must
+  accept the widened params).
+- Run `yarn build`, `yarn lint`, the cadre-core unit suite, and the formation integration
+  scenarios; stream output with `tee`. The exhaustive negative-test matrix and doc updates
+  are the follow-up ticket — flag any gaps honestly in the review handoff.
