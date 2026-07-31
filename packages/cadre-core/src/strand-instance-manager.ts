@@ -17,6 +17,7 @@ import type {
   Libp2pNodeWithRepo
 } from './types.js';
 import { resolveStrandClusterSize } from './types.js';
+import { resolveListenAddrs } from './relay-addrs.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -261,6 +262,7 @@ export class StrandInstanceManager {
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes.
     const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
+    const listenAddrs = resolveListenAddrs(config.network);
 
     try {
       let t0 = performance.now();
@@ -287,7 +289,7 @@ export class StrandInstanceManager {
         },
         ...(config.privateKey && { privateKey: config.privateKey }),
         ...(config.network?.transports && { transports: config.network.transports }),
-        // NOTE: strand nodes receive the same `network.listenAddrs` as the
+        // NOTE: strand nodes receive the same RESOLVED listen addrs as the
         // control node. A fixed-port listen addr (e.g. cadre-cli's example
         // `/ip4/0.0.0.0/tcp/4001`) would have control + strand nodes racing to
         // bind one port — EADDRINUSE. Unverified; if a deployment configures a
@@ -295,8 +297,10 @@ export class StrandInstanceManager {
         // An inherited `/p2p-circuit` addr, by contrast, is deliberate — it is
         // what gives a NAT'd strand node a reachable relay slot — and works
         // because the launch path announces this strand's derived peerId to
-        // the relay first (delegate admission; see cadre-node.ts).
-        ...(config.network?.listenAddrs && { listenAddrs: config.network.listenAddrs }),
+        // the relay first (delegate admission; see cadre-node.ts). Those circuit
+        // entries come either from a hand-written `network.listenAddrs` or from
+        // `network.relayAddrs`, which `resolveListenAddrs` folds into the same list.
+        ...(listenAddrs && { listenAddrs }),
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));

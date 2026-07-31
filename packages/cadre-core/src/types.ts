@@ -142,6 +142,26 @@ export interface StorageConfig {
 export interface NetworkConfig {
   listenAddrs?: string[];
   announceAddrs?: string[];
+  /**
+   * Circuit-relay servers this node reserves a slot on, so peers can reach it
+   * from behind NAT. Each entry is the relay's DIRECT dial multiaddr ending in
+   * its peerId — `/dns4/relay.example.com/tcp/4001/p2p/12D3KooW…` — with no
+   * `/p2p-circuit` suffix (one is appended for you; an entry that already has
+   * one is passed through unchanged).
+   *
+   * This is sugar for a circuit entry in {@link listenAddrs}: `relay-addrs.ts`
+   * resolves the two into one listen list, and listening on a relay's circuit
+   * addr is what makes libp2p dial it and hold the reservation. A relay named
+   * here therefore also becomes a delegate-announce target, so this node's
+   * strand nodes may reserve on it too (see `delegate-admission.ts`).
+   *
+   * Setting this gives the node a listener even when `listenAddrs` is `[]` —
+   * that is the point of naming a relay, but note that React Native hosts
+   * (`reference-app-rn`'s `cadre-phone.ts`) deliberately do NOT listen, and
+   * must not acquire a listener by accident.
+   *
+   * A malformed entry throws at node start rather than being silently dropped.
+   */
   relayAddrs?: string[];
   /**
    * Enable circuit relay server - allows this node to relay connections for other peers.

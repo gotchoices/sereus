@@ -89,6 +89,7 @@ import {
   peerStrandKey,
   type CircuitRelayTarget
 } from './delegate-admission.js';
+import { resolveListenAddrs } from './relay-addrs.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
@@ -920,6 +921,7 @@ export class CadreNode implements SAppIdLookup {
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
     const { controlNetwork, network, storage, profile } = this.config;
     const identityKey = this.identityKey;
+    const listenAddrs = resolveListenAddrs(network);
 
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes (better connectivity/uptime)
@@ -950,7 +952,9 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
-      ...(network?.listenAddrs && { listenAddrs: network.listenAddrs }),
+      // Configured `listenAddrs`, plus a `/p2p-circuit` listener for every
+      // `network.relayAddrs` entry — that listener is what reserves the relay slot.
+      ...(listenAddrs && { listenAddrs }),
       // The CONTROL node composes the membership admission gate onto any
       // caller-supplied gater (deny from either wins on inbound; all other
       // hooks pass through). Strand cohort nodes keep the raw configured gater
@@ -3317,9 +3321,11 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The circuit relays this node's strand nodes would reserve through: the
-   * union of the configured `network.listenAddrs` circuits (the strand node
-   * inherits these verbatim) and the control node's own live `/p2p-circuit`
-   * multiaddrs (a reservation this node discovered rather than configured).
+   * union of the RESOLVED listen addrs' circuits — a hand-written
+   * `network.listenAddrs` circuit entry or a `network.relayAddrs` entry, which
+   * the strand node inherits verbatim either way — and the control node's own
+   * live `/p2p-circuit` multiaddrs (a reservation this node discovered rather
+   * than configured).
    *
    * NOTE: a relay the STRAND node discovers on its own (autorelay — in neither
    * source) gets no announcement, and a membership-gated one will deny it; fine
@@ -3327,7 +3333,7 @@ export class CadreNode implements SAppIdLookup {
    */
   private circuitRelayTargets(): CircuitRelayTarget[] {
     return extractCircuitRelayTargets([
-      ...(this.config.network?.listenAddrs ?? []),
+      ...(resolveListenAddrs(this.config.network) ?? []),
       ...(this.controlNode?.getMultiaddrs().map(String) ?? [])
     ]);
   }

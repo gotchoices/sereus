@@ -1,7 +1,9 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
@@ -22,10 +24,9 @@ import type { CadreNodeConfig } from '../src/types.js';
  * `cadre-node-identity.spec.ts` and are not repeated here — this file only
  * asks whether the resolved key (or its absence) reaches the node options.
  *
- * The dead `NetworkConfig.announceAddrs` / `relayAddrs` fields are
- * deliberately left unasserted — nothing forwards them today, and pinning
- * "ignored" here would cement the bug. Tracked by
- * `backlog/bug-cadre-network-announce-relay-addrs-ignored`.
+ * `NetworkConfig.announceAddrs` is still forwarded by nobody and is left
+ * unasserted here — pinning "ignored" would cement the bug. Tracked by
+ * `implement/cadre-announce-addrs-upstream`.
  */
 
 function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
@@ -48,6 +49,24 @@ function controlOptions(node: CadreNode): Parameters<typeof createLibp2pNode>[0]
 function resolveIdentity(node: CadreNode): Promise<void> {
   return (node as unknown as { resolveIdentityKey(): Promise<void> }).resolveIdentityKey();
 }
+
+/**
+ * `circuitRelayTargets` is likewise private and likewise pure on a bare node — with no
+ * started control node it reads only `this.config.network`, so it costs no more than
+ * `buildControlNodeOptions` above.
+ */
+function circuitRelayTargets(node: CadreNode): CircuitRelayTarget[] {
+  return (node as unknown as { circuitRelayTargets(): CircuitRelayTarget[] }).circuitRelayTargets();
+}
+
+/** A real peerId, since the relay-addr resolution validates the one it is given. */
+let RELAY_PEER_ID: string;
+let RELAY_ADDR: string;
+
+beforeAll(async () => {
+  RELAY_PEER_ID = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+  RELAY_ADDR = `/dns4/relay.example.com/tcp/4001/p2p/${RELAY_PEER_ID}`;
+});
 
 describe('CadreNode control-network node options', () => {
   /**
@@ -228,6 +247,40 @@ describe('CadreNode control-network node options', () => {
       expect(options.relay).toBe(false);
       expect(options.connectionGater).toBeDefined();
       expect(options.authorizeInboundStream).toBeInstanceOf(Function);
+    });
+  });
+
+  /**
+   * `relayAddrs` was settable in `cadre.yaml`, via `CADRE_RELAY_ADDRS`, and through the
+   * Docker entrypoint while being read by nobody — a node told to use a relay quietly
+   * kept no reservation and stayed unreachable behind NAT. The listen addr IS the
+   * reservation, so these two assertions are the ones that would have caught it; the
+   * resolution rules themselves are owned by `relay-addrs.spec.ts`.
+   */
+  describe('relayAddrs', () => {
+    it('reaches listenAddrs as a circuit addr, alongside the configured listen addrs', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], relayAddrs: [RELAY_ADDR] }
+      })));
+
+      expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', `${RELAY_ADDR}/p2p-circuit`]);
+    });
+
+    it('becomes a delegate-announce target, so this node\'s strand nodes may reserve on it too', () => {
+      const node = new CadreNode(createConfig({ network: { relayAddrs: [RELAY_ADDR] } }));
+
+      // Without this, a configured relay would hold the CONTROL node's reservation but
+      // deny the strand node's — the strand runs as a derived transport peerId the
+      // relay's membership gate does not know (see delegate-admission.ts).
+      expect(circuitRelayTargets(node)).toEqual([
+        { relayPeerId: RELAY_PEER_ID, relayAddr: RELAY_ADDR }
+      ]);
+    });
+
+    it('is not required — a node with no relayAddrs announces to no relays', () => {
+      const node = new CadreNode(createConfig({ network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] } }));
+
+      expect(circuitRelayTargets(node)).toEqual([]);
     });
   });
 

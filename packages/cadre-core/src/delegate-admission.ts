@@ -246,24 +246,35 @@ export function pruneStoppedStrandAnnounces(
   }
 }
 
+/**
+ * The circuit relay named by `addr`, throwing when `addr` is unparsable or names
+ * no relay. The throwing form exists for CONFIG-facing callers (`relay-addrs.ts`),
+ * where a typo must fail loudly rather than cost the node its reachability;
+ * {@link extractCircuitRelayTargets} reads runtime-discovered addrs instead and
+ * logs-and-skips.
+ */
+export function circuitRelayTargetOrThrow(addr: string): CircuitRelayTarget {
+  const ma = multiaddr(addr);
+  const components = ma.getComponents();
+  const circuitIdx = components.findIndex((c) => c.name === 'p2p-circuit');
+  if (circuitIdx < 1) {
+    throw new Error(`Multiaddr names no circuit relay (expected …/p2p/<relayPeerId>/p2p-circuit): ${addr}`);
+  }
+  const relay = components[circuitIdx - 1];
+  if (relay.name !== 'p2p' || !relay.value) {
+    throw new Error(`Multiaddr's /p2p-circuit is not preceded by a relay peerId: ${addr}`);
+  }
+  peerIdFromString(relay.value); // validate; throws on garbage
+  return {
+    relayPeerId: relay.value,
+    relayAddr: ma.decapsulate('/p2p-circuit').toString()
+  };
+}
+
 /** One-addr body of {@link extractCircuitRelayTargets}; null when `addr` names no relay. */
 function circuitRelayTarget(addr: string): CircuitRelayTarget | null {
   try {
-    const ma = multiaddr(addr);
-    const components = ma.getComponents();
-    const circuitIdx = components.findIndex((c) => c.name === 'p2p-circuit');
-    if (circuitIdx < 1) {
-      return null;
-    }
-    const relay = components[circuitIdx - 1];
-    if (relay.name !== 'p2p' || !relay.value) {
-      return null;
-    }
-    peerIdFromString(relay.value); // validate; throws on garbage
-    return {
-      relayPeerId: relay.value,
-      relayAddr: ma.decapsulate('/p2p-circuit').toString()
-    };
+    return circuitRelayTargetOrThrow(addr);
   } catch (err) {
     log('Skipping unparsable relay addr %s: %o', addr, err);
     return null;

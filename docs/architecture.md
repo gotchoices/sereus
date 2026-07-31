@@ -833,7 +833,13 @@ interface CadreNodeConfig {
   network: {
     listenAddrs?: string[];       // Addresses to listen on
     announceAddrs?: string[];     // Addresses to advertise
-    relayAddrs?: string[];        // Relay servers to connect through
+    // Circuit relays to reserve a slot on, as `<dial addr>/p2p/<relayPeerId>`.
+    // Sugar for a `/p2p-circuit` entry in listenAddrs: `relay-addrs.ts` resolves the
+    // two into one listen list (adding `/ip4/0.0.0.0/tcp/0` when listenAddrs is unset),
+    // which is what makes libp2p dial the relay and hold the reservation. A relay named
+    // here also becomes a delegate-announce target, so this node's strand nodes can
+    // reserve on it too. A malformed entry throws at start.
+    relayAddrs?: string[];
     enableRelay?: boolean;        // Enable circuit relay (default: true for storage profile)
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)
   };

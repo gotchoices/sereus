@@ -48,7 +48,11 @@ network:
   # Addresses to announce (if behind NAT/proxy)
   # announceAddrs:
   #   - "/dns4/mynode.example.com/tcp/4001"
-  # Relay servers for NAT traversal
+  # Circuit-relay servers to reserve a slot on, so peers can reach this node from
+  # behind NAT. Give each relay's direct dial address ending in its peerId — the
+  # "/p2p-circuit" suffix is appended for you and added to listenAddrs. A relay
+  # named here also relays for this node's strand nodes. A malformed entry fails
+  # startup rather than being silently ignored.
   # relayAddrs:
   #   - "/dns4/relay.example.com/tcp/4001/p2p/12D3KooW..."
   # Enable circuit relay server - allows this node to relay connections for other peers.
