@@ -38,5 +38,5 @@ export const TARGETS: BuildTarget[] = [
 ];
 
 export default function setup(): void {
-  assertBuildFresh(TARGETS);
+  assertBuildFresh(TARGETS, import.meta.url);
 }

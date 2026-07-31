@@ -460,9 +460,8 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `packages/cadre-core/test/global-setup.ts`, `packages/reference-app-web/test/global-setup.ts`). The
   web app's list is a single entry (`@serfab/cadre-core`) and it has no `build-targets.spec.ts`: that
   package sets `installConfig.hoistingLimits: "workspaces"`, so its `@optimystic/*` / `@quereus/*`
-  copies live in its own `node_modules` while `checkLinkedTarget` resolves `linked` targets from the
-  repo root's — the manifest cross-check would demand entries the guard then reports as "not
-  installed". See backlog `debt-stale-build-guard-hoisting-limited-packages`. The guard caught a real
+  copies live in its own `node_modules`, and expanding its list is tracked separately — see backlog
+  `debt-web-app-build-guard-targets`. The guard caught a real
   stale `cadre-core` dist the first time it ran there. The module is imported by relative path, not as a
   workspace package, and is never built — a compiled shared package would be consumed from its own
   `dist` and so could be defeated by exactly the staleness it exists to catch. `test-harness/` is
@@ -509,6 +508,20 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   one package with no guard at all: `cadre-provider` declares zero `workspace:`/`link:` dependencies, so
   nothing here would flag its omission if it ever gains one — a `NOTE:` in its `vitest.config.ts` says
   so at the site.
+- [x] **`linked` targets resolve through the real `node_modules` chain.** The guard used to look for a
+  linked sibling in the repo root's `node_modules` and nowhere else, which goes blind for any package
+  that keeps its own copies: the reference apps set `installConfig.hoistingLimits: "workspaces"`, so
+  yarn installs their `@optimystic/*` / `@quereus/*` into `packages/<app>/node_modules`, and that is
+  what their suites load. `resolveLinkedPackageFrom(fromDir, packageName)` now walks `<dir>/node_modules`
+  from the calling `global-setup` module's directory up to the monorepo root **inclusive** (a
+  `node_modules` above the root is never consulted), and the first directory holding an entry wins
+  whatever that entry is — a registry copy or a dangling link ends the walk rather than "recovering" to
+  the root, because Node would load the near copy and judging the far one reports on code that never
+  runs. `resolveLinkedPackage` classifies a single directory and gained an `absent` state so the walker
+  can tell *keep looking* from *found and unusable*; when the whole chain comes up empty the message
+  names every directory searched. `assertBuildFresh(targets, setupUrl)` therefore takes the caller's
+  `import.meta.url` as a **required** second argument — a default would silently reinstate the blind
+  spot — and all six call sites pass it.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level

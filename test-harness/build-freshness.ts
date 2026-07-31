@@ -35,6 +35,16 @@
  * as this repository, so what a suite runs is whatever they last *built* —
  * which is not necessarily what they last committed.
  *
+ * A `linked` target is located the way Node itself would locate it: by walking
+ * the `node_modules` chain up from the calling setup module's own directory,
+ * as far as the monorepo root. It cannot be assumed to sit in the root
+ * `node_modules` — packages declaring `installConfig.hoistingLimits:
+ * "workspaces"` (the reference apps) get their dependencies installed into
+ * their own `packages/<app>/node_modules` instead, and that package-local copy
+ * is the one their suites actually load. Whichever directory in the chain has
+ * an entry first wins, whatever that entry turns out to be; searching past it
+ * would judge a copy that never runs.
+ *
  * This module lives at the repo root rather than inside a package, and consumers
  * import it by relative path (as the schema-drift specs do with
  * `schemas/strand.qsql`). That is deliberate: a shared *workspace* package would
@@ -78,21 +88,38 @@ const SOURCE_EXCLUDE_DIRS = new Set(['test', '__tests__']);
 /** Why a package's compiled output can't be trusted; `undefined` means it's fresh. */
 export type StaleReason = 'unresolved' | 'missing' | 'stale';
 
-/** What a `node_modules` entry turned out to be. */
+/** What `node_modules/<pkg>` turned out to be, once one was found. */
 export type LinkedPackage =
 	/** A symlink into a working copy at `root`, which is therefore worth checking. */
 	| { readonly status: 'linked'; readonly root: string }
 	/** A real directory — installed from the registry, so its mtimes mean nothing. */
 	| { readonly status: 'not-linked' }
-	/** Absent, or a symlink whose target is gone. `detail` says which. */
+	/** Nowhere in the chain, or a symlink whose target is gone. `detail` says which. */
 	| { readonly status: 'unresolved'; readonly detail: string };
+
+/** Adds the one state only a single-directory lookup can report. */
+export type NodeModulesEntry =
+	| LinkedPackage
+	/** Nothing at this path — the walk should continue to the next ancestor. */
+	| { readonly status: 'absent' };
 
 /**
  * Throws with a clear build remedy if any of `targets`' build output predates its `src`.
+ *
+ * `setupUrl` is the calling setup module's own `import.meta.url`: `linked`
+ * targets are resolved through the `node_modules` chain above that module's
+ * directory, so a package-local install is found before the hoisted one. It is
+ * required rather than defaulting to the repo root, because a default would
+ * silently look in the wrong place for exactly the packages that have their own
+ * `node_modules`.
  */
-export function assertBuildFresh(targets: readonly BuildTarget[]): void {
+export function assertBuildFresh(targets: readonly BuildTarget[], setupUrl: string): void {
+	// Eager, and deliberately unguarded: a call site passing a plain path rather
+	// than a URL should fail here and loudly, not resolve somewhere plausible.
+	const fromDir = dirname(fileURLToPath(setupUrl));
+
 	const problems = targets.flatMap((target) => {
-		const problem = checkTarget(target);
+		const problem = checkTarget(fromDir, target);
 		return problem === undefined ? [] : [problem];
 	});
 	if (problems.length === 0) return;
@@ -104,10 +131,10 @@ export function assertBuildFresh(targets: readonly BuildTarget[]): void {
 }
 
 /** The problem with `target`'s build, as a ready-to-print line; `undefined` when fine. */
-function checkTarget(target: BuildTarget): string | undefined {
+function checkTarget(fromDir: string, target: BuildTarget): string | undefined {
 	return target.location === 'workspace'
 		? checkWorkspaceTarget(target)
-		: checkLinkedTarget(repoNodeModules(), target);
+		: checkLinkedTarget(fromDir, target);
 }
 
 function checkWorkspaceTarget(target: BuildTarget): string | undefined {
@@ -135,9 +162,12 @@ function checkWorkspaceTarget(target: BuildTarget): string | undefined {
  * *more* recent of the two. The accepted cost is that a sibling repo's own
  * automation editing mid-run aborts this suite, with a message naming exactly
  * which sibling to rebuild and where.
+ *
+ * `fromDir` is the consuming suite's directory — where the `node_modules` walk
+ * starts — not a `node_modules` path.
  */
-export function checkLinkedTarget(nodeModulesDir: string, target: BuildTarget): string | undefined {
-	const resolved = resolveLinkedPackage(nodeModulesDir, target.packageName);
+export function checkLinkedTarget(fromDir: string, target: BuildTarget): string | undefined {
+	const resolved = resolveLinkedPackageFrom(fromDir, target.packageName);
 
 	// A registry-installed copy is skipped, never judged: its `src` and `dist`
 	// mtimes are whatever packing happened to record — for the copied
@@ -155,21 +185,25 @@ export function checkLinkedTarget(nodeModulesDir: string, target: BuildTarget): 
 
 /**
  * Classify `nodeModulesDir/<packageName>`: symlink into a working copy, real
- * directory, or neither.
+ * directory, or nothing there at all.
  *
  * Linkedness is decided by `lstat`, not by package name — which of these
  * dependencies are linked changes with the contents of `resolutions` and with
  * whoever last ran `yarn install`. Windows junctions, which is what yarn writes
  * for a `link:` dependency there, also report as symbolic links.
+ *
+ * This looks at one directory only. `absent` is its answer for "not here",
+ * which is what lets `resolveLinkedPackageFrom` tell *keep walking* from
+ * *found, and unusable*.
  */
-export function resolveLinkedPackage(nodeModulesDir: string, packageName: string): LinkedPackage {
+export function resolveLinkedPackage(nodeModulesDir: string, packageName: string): NodeModulesEntry {
 	const entry = join(nodeModulesDir, packageName);
 
 	let entryStat: Stats;
 	try {
 		entryStat = lstatSync(entry);
 	} catch {
-		return { status: 'unresolved', detail: `not installed (${entry} is missing)` };
+		return { status: 'absent' };
 	}
 	if (!entryStat.isSymbolicLink()) return { status: 'not-linked' };
 
@@ -180,6 +214,57 @@ export function resolveLinkedPackage(nodeModulesDir: string, packageName: string
 		return { status: 'linked', root: realpathSync(entry) };
 	} catch {
 		return { status: 'unresolved', detail: `links to ${linkTarget(entry)}, which no longer exists` };
+	}
+}
+
+/**
+ * Walks the `node_modules` chain above `fromDir` and classifies the first hit.
+ *
+ * The first directory holding an entry wins, whatever that entry is: it is the
+ * copy Node itself would load, so it is the one whose freshness matters. A
+ * package-local install that turns out to be a registry copy, or a link that
+ * dangles, therefore ends the walk — "recovering" by carrying on to the root
+ * would judge a copy the suite never runs.
+ */
+export function resolveLinkedPackageFrom(fromDir: string, packageName: string): LinkedPackage {
+	const searched = nodeModulesChain(fromDir);
+	for (const nodeModulesDir of searched) {
+		const entry = resolveLinkedPackage(nodeModulesDir, packageName);
+		if (entry.status !== 'absent') return entry;
+	}
+	return { status: 'unresolved', detail: `not installed (looked in ${searched.join(', ')})` };
+}
+
+/**
+ * The `node_modules` directories Node would consult from `fromDir`, nearest
+ * first, bounded above by the monorepo root (inclusive) so a `node_modules`
+ * outside the repository is never consulted.
+ *
+ * When no ancestor declares `workspaces` — only reachable from temp-dir
+ * fixtures — the walk runs to the filesystem root instead of throwing: a guard
+ * that crashes on an odd layout is worse than one that searches a little far.
+ *
+ * NOTE: unlike Node's own algorithm this does not skip ancestors already named
+ * `node_modules`, so a `fromDir` *inside* `node_modules` would yield candidates
+ * like `.../node_modules/<pkg>/node_modules`. Harmless — no setup module lives
+ * there, and such a directory would have to exist to be hit. If one ever does,
+ * skip ancestors whose basename is `node_modules`.
+ *
+ * NOTE: this runs per linked target per suite start-up — a handful of `lstat`
+ * calls against at most ~11 targets, unmeasurable today. If it ever shows up,
+ * cache the chain per `fromDir`; it cannot change during a run.
+ */
+function nodeModulesChain(fromDir: string): string[] {
+	const stopAt = findWorkspaceRoot(fromDir);
+
+	const dirs: string[] = [];
+	let dir = fromDir;
+	for (;;) {
+		dirs.push(join(dir, 'node_modules'));
+		if (dir === stopAt) return dirs;
+		const parent = dirname(dir);
+		if (parent === dir) return dirs;
+		dir = parent;
 	}
 }
 
@@ -272,8 +357,8 @@ let cachedRoots: Map<string, string> | undefined;
  * through Vite (which is how vitest loads its global setup). `node_modules/@serfab/*`
  * are symlinks back to these same directories, so the workspace copy *is* the
  * one the tests load. Linked siblings can't be found this way at all — they live
- * outside this repository — so they go through `resolveLinkedPackage` instead,
- * which reads the same kind of symlink from the other end.
+ * outside this repository — so they go through `resolveLinkedPackageFrom`
+ * instead, which reads the same kind of symlink from the other end.
  */
 function workspacePackageRoots(): Map<string, string> {
 	if (cachedRoots !== undefined) return cachedRoots;
@@ -286,16 +371,6 @@ function workspacePackageRoots(): Map<string, string> {
 		if (pkg?.name !== undefined) cachedRoots.set(pkg.name, join(packagesDir, entry.name));
 	}
 	return cachedRoots;
-}
-
-/**
- * NOTE: linked dependencies are looked for only in the repo-root `node_modules`,
- * which is where yarn hoists a `link:` resolution's single instance. If a future
- * install ever placed one in a package-local `node_modules` instead, that target
- * would report `unresolved`; search the package-local directory first if so.
- */
-function repoNodeModules(): string {
-	return join(findRepoRoot(), 'node_modules');
 }
 
 let cachedRepoRoot: string | undefined;

@@ -9,14 +9,19 @@
  * silent: judging a package that was installed from the registry rather than
  * symlinked into a working copy reports a permanent "stale" nobody can fix. Both
  * directions are pinned here too.
+ *
+ * The third failure mode is looking in the wrong `node_modules` — a package with
+ * its own installs resolves its siblings locally, not from the repo root, so the
+ * chain walk and its bounds get their own fixture at the bottom of this file.
  */
 
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
-import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, resolveLinkedPackage, type BuildTarget } from './build-freshness.js';
+import { assertBuildFresh, checkBuildFreshness, checkLinkedTarget, resolveLinkedPackage, resolveLinkedPackageFrom, type BuildTarget } from './build-freshness.js';
 
 const DIST_ENTRY = 'dist/index.js';
 /** Seconds since epoch; `dist` sits between OLD and NEW so either side can win. */
@@ -149,35 +154,40 @@ describe('checkBuildFreshness', () => {
 
 /**
  * `assertBuildFresh` resolves against the real repository — a workspace target is
- * looked up under `packages/`, a linked one in the root `node_modules` — so these
- * cases use names no install can produce rather than temp-dir fixtures. What is
- * pinned is the contract every caller depends on: silence when there is nothing to
- * report, and one throw naming *every* problem at once, because a run aborted over
- * the first stale package sends someone back for a second build.
+ * looked up under `packages/`, a linked one through the `node_modules` chain above
+ * the calling setup module — so these cases use names no install can produce
+ * rather than temp-dir fixtures. What is pinned is the contract every caller
+ * depends on: silence when there is nothing to report, and one throw naming
+ * *every* problem at once, because a run aborted over the first stale package
+ * sends someone back for a second build.
  */
 describe('assertBuildFresh', () => {
 	const absent = (packageName: string, location: BuildTarget['location']): BuildTarget =>
 		({ packageName, distEntry: DIST_ENTRY, location });
 
 	it('passes an empty target list', () => {
-		expect(() => assertBuildFresh([])).not.toThrow();
+		expect(() => assertBuildFresh([], import.meta.url)).not.toThrow();
 	});
 
 	it('throws when a workspace target names no package under packages/', () => {
-		expect(() => assertBuildFresh([absent('@serfab/not-a-package', 'workspace')]))
+		expect(() => assertBuildFresh([absent('@serfab/not-a-package', 'workspace')], import.meta.url))
 			.toThrow(/@serfab\/not-a-package: no workspace under packages\/ declares this name\. Run: yarn install/);
 	});
 
 	it('throws when a linked target is not installed', () => {
-		expect(() => assertBuildFresh([absent('@nobody/not-installed', 'linked')]))
+		expect(() => assertBuildFresh([absent('@nobody/not-installed', 'linked')], import.meta.url))
 			.toThrow(/@nobody\/not-installed: not installed .*\. Run: yarn install/);
 	});
 
 	it('reports every problem in one throw, one per line', () => {
 		const problems = [absent('@serfab/not-a-package', 'workspace'), absent('@nobody/not-installed', 'linked')];
 
-		expect(() => assertBuildFresh(problems)).toThrow(/@serfab\/not-a-package[\s\S]*@nobody\/not-installed/);
-		expect(() => assertBuildFresh(problems)).toThrow(/Stale build detected/);
+		expect(() => assertBuildFresh(problems, import.meta.url)).toThrow(/@serfab\/not-a-package[\s\S]*@nobody\/not-installed/);
+		expect(() => assertBuildFresh(problems, import.meta.url)).toThrow(/Stale build detected/);
+	});
+
+	it('rejects a plain directory where a module URL belongs', () => {
+		expect(() => assertBuildFresh([], dirname(fileURLToPath(import.meta.url)))).toThrow();
 	});
 });
 
@@ -187,6 +197,11 @@ describe('assertBuildFresh', () => {
  *   <tmp>/node_modules/@sibling/pkg  ->  <tmp>/sibling-repo/packages/pkg
  *   <tmp>/sibling-repo/package.json      (declares `workspaces`, so it is the
  *                                         checkout named in the remedy)
+ *
+ * `checkLinkedTarget` is given `<tmp>` — a consuming suite's directory, which is
+ * what it takes — and reaches `<tmp>/node_modules` by walking, exactly as it does
+ * in a real suite. `resolveLinkedPackage` is given the `node_modules` directory
+ * itself, since it classifies one directory and does no walking.
  */
 const SIBLING_ENTRY = 'dist/src/index.js';
 const LINKED_TARGET: BuildTarget = {
@@ -254,11 +269,8 @@ describe('linked sibling packages', () => {
 			expect(resolveLinkedPackage(nodeModules, '@sibling/pkg')).toEqual({ status: 'not-linked' });
 		});
 
-		it('reports unresolved when the dependency is not installed at all', () => {
-			const resolved = resolveLinkedPackage(nodeModules, '@sibling/pkg');
-
-			expect(resolved.status).toBe('unresolved');
-			expect(resolved).toHaveProperty('detail', expect.stringContaining('not installed'));
+		it('reports absent when there is nothing at that path, so the walk can continue', () => {
+			expect(resolveLinkedPackage(nodeModules, '@sibling/pkg')).toEqual({ status: 'absent' });
 		});
 
 		it('reports unresolved when the symlink points somewhere that no longer exists', () => {
@@ -278,7 +290,7 @@ describe('linked sibling packages', () => {
 			editSibling(OLD);
 			buildSibling();
 
-			expect(checkLinkedTarget(nodeModules, LINKED_TARGET)).toBeUndefined();
+			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toBeUndefined();
 		});
 
 		it('reports a linked sibling edited after its last build, naming its own checkout', () => {
@@ -286,7 +298,7 @@ describe('linked sibling packages', () => {
 			buildSibling();
 			editSibling(NEW);
 
-			const problem = checkLinkedTarget(nodeModules, LINKED_TARGET);
+			const problem = checkLinkedTarget(tmp, LINKED_TARGET);
 
 			expect(problem).toContain('dist is stale');
 			expect(problem).toContain(`Run in ${siblingRepo}: yarn workspace @sibling/pkg build`);
@@ -296,7 +308,7 @@ describe('linked sibling packages', () => {
 			linkSibling();
 			editSibling(OLD);
 
-			const problem = checkLinkedTarget(nodeModules, LINKED_TARGET);
+			const problem = checkLinkedTarget(tmp, LINKED_TARGET);
 
 			expect(problem).toContain(`not built (missing ${SIBLING_ENTRY})`);
 			expect(problem).toContain(`Run in ${siblingRepo}: yarn workspace @sibling/pkg build`);
@@ -308,7 +320,7 @@ describe('linked sibling packages', () => {
 			writeFixture(join(lonely, 'src', 'index.ts'), NEW);
 			symlinkSync(lonely, installedAt, 'junction');
 
-			expect(checkLinkedTarget(nodeModules, LINKED_TARGET)).toContain(`Run in ${lonely}: yarn build`);
+			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toContain(`Run in ${lonely}: yarn build`);
 		});
 
 		it('skips a registry-installed copy even when packing left src newer than dist', () => {
@@ -317,7 +329,7 @@ describe('linked sibling packages', () => {
 			// judging it would report a "stale" build that nobody can make fresh.
 			installCopy(BUILT + 1, BUILT);
 
-			expect(checkLinkedTarget(nodeModules, LINKED_TARGET)).toBeUndefined();
+			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toBeUndefined();
 		});
 
 		it('reports a dangling symlink as an install problem', () => {
@@ -325,14 +337,144 @@ describe('linked sibling packages', () => {
 			buildSibling();
 			rmSync(siblingRepo, { recursive: true, force: true });
 
-			const problem = checkLinkedTarget(nodeModules, LINKED_TARGET);
+			const problem = checkLinkedTarget(tmp, LINKED_TARGET);
 
 			expect(problem).toContain('no longer exists');
 			expect(problem).toContain('Run: yarn install');
 		});
 
 		it('reports a dependency that is not installed at all', () => {
-			expect(checkLinkedTarget(nodeModules, LINKED_TARGET)).toContain('not installed');
+			expect(checkLinkedTarget(tmp, LINKED_TARGET)).toContain('not installed');
 		});
+	});
+});
+
+/**
+ * The `node_modules` walk, on the layout that made it necessary: a package
+ * declaring `installConfig.hoistingLimits: "workspaces"` (the reference apps)
+ * gets its dependencies installed into its *own* `node_modules`, so the copy its
+ * suite loads is not the one at the repo root — and judging the root's copy would
+ * report on code that never runs.
+ *
+ *   <tmp>/node_modules/@sibling/pkg                   -> above the repo root; never consulted
+ *   <tmp>/repo/package.json                              (declares `workspaces` — the walk's bound)
+ *   <tmp>/repo/node_modules/@sibling/pkg              -> <tmp>/hoisted
+ *   <tmp>/repo/packages/app/node_modules/@sibling/pkg -> <tmp>/local
+ *   <tmp>/repo/packages/app/test                         (the `fromDir`)
+ *
+ * The two link targets are *different* working copies on purpose: a fixture where
+ * both point at the same directory cannot tell which one the walk picked.
+ */
+describe('node_modules chain', () => {
+	let tmp: string;
+	let repo: string;
+	let fromDir: string;
+	/** `node_modules` directories, nearest first plus the one out of bounds. */
+	let appNodeModules: string;
+	let repoNodeModules: string;
+	let outsideNodeModules: string;
+	/** Working copies the links point at, one per `node_modules` in the chain. */
+	let local: string;
+	let hoisted: string;
+	let outside: string;
+
+	beforeEach(() => {
+		tmp = realpathSync(mkdtempSync(join(tmpdir(), 'chain-freshness-')));
+		repo = join(tmp, 'repo');
+		const app = join(repo, 'packages', 'app');
+		fromDir = join(app, 'test');
+		appNodeModules = join(app, 'node_modules');
+		repoNodeModules = join(repo, 'node_modules');
+		outsideNodeModules = join(tmp, 'node_modules');
+		local = join(tmp, 'local');
+		hoisted = join(tmp, 'hoisted');
+		outside = join(tmp, 'outside');
+
+		mkdirSync(fromDir, { recursive: true });
+		writeFileSync(join(repo, 'package.json'), '{"name":"repo","workspaces":["packages/*"]}\n');
+	});
+
+	afterEach(() => {
+		rmSync(tmp, { recursive: true, force: true });
+	});
+
+	/** A built, up-to-date working copy at `root`. */
+	function workingCopy(root: string): string {
+		writeFixture(join(root, 'src', 'index.ts'), OLD);
+		writeFixture(join(root, SIBLING_ENTRY), BUILT);
+		return root;
+	}
+
+	/** What `yarn install` leaves in `nodeModulesDir` for a `link:` resolution. */
+	function link(nodeModulesDir: string, target: string): void {
+		mkdirSync(join(nodeModulesDir, '@sibling'), { recursive: true });
+		symlinkSync(target, join(nodeModulesDir, '@sibling', 'pkg'), 'junction');
+	}
+
+	/** What `yarn install` leaves in `nodeModulesDir` for a registry dependency. */
+	function installCopy(nodeModulesDir: string): void {
+		writeFixture(join(nodeModulesDir, '@sibling', 'pkg', SIBLING_ENTRY), BUILT);
+	}
+
+	it('prefers the package-local install over the one at the repo root', () => {
+		link(appNodeModules, workingCopy(local));
+		link(repoNodeModules, workingCopy(hoisted));
+
+		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg')).toEqual({ status: 'linked', root: local });
+	});
+
+	it('walks on to the repo root when the package has no local install', () => {
+		link(repoNodeModules, workingCopy(hoisted));
+
+		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg')).toEqual({ status: 'linked', root: hoisted });
+	});
+
+	it('stops at a package-local registry copy rather than recovering to the root link', () => {
+		installCopy(appNodeModules);
+		link(repoNodeModules, workingCopy(hoisted));
+
+		// Node would load the local copy, so the root's link is not what runs.
+		expect(resolveLinkedPackageFrom(fromDir, '@sibling/pkg')).toEqual({ status: 'not-linked' });
+	});
+
+	it('stops at a dangling package-local link rather than falling through to the root', () => {
+		link(appNodeModules, workingCopy(local));
+		rmSync(local, { recursive: true, force: true });
+		link(repoNodeModules, workingCopy(hoisted));
+
+		const resolved = resolveLinkedPackageFrom(fromDir, '@sibling/pkg');
+
+		expect(resolved.status).toBe('unresolved');
+		expect(resolved).toHaveProperty('detail', expect.stringContaining('no longer exists'));
+	});
+
+	it('reports every directory it searched when the package is nowhere in the chain', () => {
+		const resolved = resolveLinkedPackageFrom(fromDir, '@sibling/pkg');
+
+		expect(resolved.status).toBe('unresolved');
+		expect(resolved).toHaveProperty('detail', expect.stringContaining('not installed'));
+		expect(resolved).toHaveProperty('detail', expect.stringContaining(appNodeModules));
+		expect(resolved).toHaveProperty('detail', expect.stringContaining(repoNodeModules));
+	});
+
+	it('does not consult a node_modules above the monorepo root', () => {
+		link(outsideNodeModules, workingCopy(outside));
+
+		const resolved = resolveLinkedPackageFrom(fromDir, '@sibling/pkg');
+
+		expect(resolved.status).toBe('unresolved');
+		expect(resolved).toHaveProperty('detail', expect.not.stringContaining(outsideNodeModules));
+	});
+
+	it('judges the package-local working copy, not the hoisted one', () => {
+		link(appNodeModules, workingCopy(local));
+		link(repoNodeModules, workingCopy(hoisted));
+		writeFixture(join(local, 'src', 'index.ts'), NEW);
+
+		const problem = checkLinkedTarget(fromDir, LINKED_TARGET);
+
+		expect(problem).toContain('dist is stale');
+		expect(problem).toContain(local);
+		expect(problem).not.toContain(hoisted);
 	});
 });

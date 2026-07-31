@@ -14,18 +14,19 @@ import { assertBuildFresh, type BuildTarget } from '../../../test-harness/build-
 
 /**
  * The one package this suite runs compiled code from directly. The `@optimystic/*`
- * and `@quereus/*` siblings that cadre-core pulls in transitively are NOT listed:
- * this package sets `installConfig.hoistingLimits: "workspaces"`, so its copies of
- * them live in its own `node_modules`, while the guard resolves `linked` targets
- * from the repo root's — see the backlog ticket
- * `debt-stale-build-guard-hoisting-limited-packages`. The same reason there is no
- * `build-targets.spec.ts` here: the manifest cross-check would demand exactly
- * those entries.
+ * and `@quereus/*` siblings that cadre-core pulls in transitively are not listed
+ * yet, and there is no `build-targets.spec.ts` here to demand them — completing
+ * the list is `debt-web-app-build-guard-targets`.
+ *
+ * They *can* be listed now: this package sets `installConfig.hoistingLimits:
+ * "workspaces"`, so its copies of them live in its own `node_modules`, and the
+ * guard resolves `linked` targets by walking the `node_modules` chain up from
+ * this file's directory — reaching those local copies before the repo root's.
  */
 export const TARGETS: BuildTarget[] = [
 	{ packageName: '@serfab/cadre-core', distEntry: 'dist/index.js', location: 'workspace' },
 ];
 
 export default function setup(): void {
-	assertBuildFresh(TARGETS);
+	assertBuildFresh(TARGETS, import.meta.url);
 }
