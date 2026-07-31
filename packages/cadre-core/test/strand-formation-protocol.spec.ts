@@ -366,6 +366,54 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(decodeFirstFrame<FormationResultMessage>(second.sent).reason).toBe('Invalid token');
   });
 
+  it('adopts a REJECTION that lands inside the settle grace, reporting its reason non-disclosingly', async () => {
+    // The other adoption branch: a hook that answers `approved: false` after the abort has its
+    // own reason relayed — not overwritten with the generic 'Formation provisioning timed out',
+    // which would tell the joiner to retry a formation the responder deliberately refused.
+    const { options, identityDisclosed } = baseOptions({
+      provisionStrand: async (): Promise<ResponderProvisionOutcome> => {
+        await new Promise((resolve) => setTimeout(resolve, 300));
+        return { approved: false, reason: 'Host strand not yet available on this responder' };
+      }
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+    expect(result.approved).toBe(false);
+    expect(result.reason).toBe('Host strand not yet available on this responder');
+    // A post-validation rejection still discloses nothing, adopted or not.
+    expect(result.partyId).toBeUndefined();
+    expect(result.cadrePeerAddrs).toBeUndefined();
+    expect(identityDisclosed()).toBe(false);
+  });
+
+  it('does not abort provisioning that finishes inside its work budget', async () => {
+    // The abort must fire only on overrun; a listener that aborted unconditionally would
+    // still pass every timeout test above while cancelling healthy redemptions.
+    let capturedSignal: AbortSignal | undefined;
+    const { options } = baseOptions({
+      provisionStrand: (_t, _p, _d, signal): Promise<ResponderProvisionOutcome> => {
+        capturedSignal = signal;
+        return slowProvision(20, 'strand-in-budget')();
+      }
+    });
+    const listener = new FormationListener({ ...options, provisionTimeoutMs: 400 });
+    const { node, invoke } = captureHandler();
+    listener.register(node);
+
+    const stream = new MockStream([encodeFrame(contact)]);
+    await invoke(stream);
+
+    expect(decodeFirstFrame<FormationResultMessage>(stream.sent).approved).toBe(true);
+    expect(capturedSignal).toBeDefined();
+    expect(capturedSignal?.aborted).toBe(false);
+  });
+
   it('leaves the invite unspent when the hook observes its abort, so the same token retries', async () => {
     // The other half of the fix: a hook that honours the signal BEFORE writing abandons the
     // redemption. Session 1 gets a timeout with nothing spent; session 2 re-presents the SAME

@@ -60,17 +60,14 @@ const DEFAULT_STEP_TIMEOUT_MS = 5_000;
 const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
 /**
  * Settle grace (ms), carved OUT of `provisionTimeoutMs` — never added on top, so the budget
- * ladder above is untouched. The listener aborts the provisioning hook when the remaining
- * work budget (`provisionTimeoutMs - grace`, floored at half the budget for tiny configured
- * values) expires, then waits up to this grace for the aborted work to settle anyway: once
- * the `FormationUsage` insert has been issued nothing can un-spend it (the table is
- * append-only), so a provisioning that lands late is ADOPTED and reported as a real
+ * ladder above is untouched. The listener aborts the provisioning hook when the work budget
+ * ({@link splitProvisionBudget}) expires, then waits up to this grace for the work to settle
+ * anyway: once the `FormationUsage` insert has been issued nothing can un-spend it (the table
+ * is append-only), so a provisioning that lands late is ADOPTED and reported as a real
  * approval rather than lying "timed out" over a spent invite. A hook that observes the
  * abort before writing leaves the invite unspent.
- *
- * Exported so the listener and its tests share one definition of the split.
  */
-export const PROVISION_SETTLE_GRACE_MS = 2_000;
+const PROVISION_SETTLE_GRACE_MS = 2_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
 const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = 15_000;
 /**
@@ -265,6 +262,17 @@ function resolveProvisionTimeoutMs(
   return requested;
 }
 
+/**
+ * Split a resolved provisioning budget into the WORK budget and the trailing settle grace.
+ *
+ * The grace is carved OUT of the budget (see {@link PROVISION_SETTLE_GRACE_MS}), and capped at
+ * half of it so a small configured budget still spends at least half its time doing work.
+ */
+function splitProvisionBudget(provisionTimeoutMs: number): { workMs: number; graceMs: number } {
+  const graceMs = Math.min(PROVISION_SETTLE_GRACE_MS, Math.floor(provisionTimeoutMs / 2));
+  return { workMs: provisionTimeoutMs - graceMs, graceMs };
+}
+
 // ── Responder (listener) ─────────────────────────────────────────────────────
 
 export interface FormationListenerOptions {
@@ -309,7 +317,8 @@ export class FormationListener {
   private readonly options: FormationListenerOptions;
   private readonly sessionTimeoutMs: number;
   private readonly stepTimeoutMs: number;
-  private readonly provisionTimeoutMs: number;
+  private readonly provisionWorkMs: number;
+  private readonly provisionGraceMs: number;
   private readonly maxConcurrentSessions: number;
   private readonly registered = new Set<Libp2p>();
   private activeSessions = 0;
@@ -319,10 +328,12 @@ export class FormationListener {
     this.options = options;
     this.sessionTimeoutMs = options.sessionTimeoutMs ?? DEFAULT_SESSION_TIMEOUT_MS;
     this.stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
-    this.provisionTimeoutMs = resolveProvisionTimeoutMs(
+    const split = splitProvisionBudget(resolveProvisionTimeoutMs(
       options.provisionTimeoutMs, DEFAULT_PROVISION_TIMEOUT_MS,
       this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener'
-    );
+    ));
+    this.provisionWorkMs = split.workMs;
+    this.provisionGraceMs = split.graceMs;
     this.maxConcurrentSessions = options.maxConcurrentSessions ?? DEFAULT_MAX_CONCURRENT_SESSIONS;
   }
 
@@ -370,9 +381,8 @@ export class FormationListener {
   }
 
   /**
-   * Run the provisioning hook under {@link provisionTimeoutMs}, split into a WORK budget and
-   * a trailing {@link PROVISION_SETTLE_GRACE_MS} settle grace (see that constant — the grace
-   * is carved out of the budget, never added on top, so the nested timeout ladder holds).
+   * Run the provisioning hook under its WORK budget — the configured provisioning budget minus
+   * the trailing settle grace ({@link splitProvisionBudget}, {@link PROVISION_SETTLE_GRACE_MS}).
    *
    * When the work budget expires the hook's signal is aborted, then
    * {@link settleWithinGrace} waits out the grace for the aborted work to settle anyway.
@@ -383,14 +393,12 @@ export class FormationListener {
    * outside its `op`, and both are needed here.
    */
   private async provision(id: number, contact: FormationContactMessage): Promise<ResponderProvisionOutcome | undefined> {
-    const graceMs = Math.min(PROVISION_SETTLE_GRACE_MS, Math.floor(this.provisionTimeoutMs / 2));
-    const workMs = Math.max(1, this.provisionTimeoutMs - graceMs);
     const controller = new AbortController();
     let timedOut = false;
     const pending = this.options.provisionStrand(contact.token, contact.partyId, contact.disclosure, controller.signal);
     try {
       return await withTimeout(
-        workMs,
+        this.provisionWorkMs,
         `Formation provisioning#${id}`,
         () => pending,
         () => { timedOut = true; controller.abort(); }
@@ -399,9 +407,9 @@ export class FormationListener {
       if (!timedOut) throw err;
       log(
         'formation session #%d provisioning work budget expired after %dms; aborted, settling up to %dms',
-        id, workMs, graceMs
+        id, this.provisionWorkMs, this.provisionGraceMs
       );
-      return await this.settleWithinGrace(id, pending, graceMs);
+      return await this.settleWithinGrace(id, pending);
     }
   }
 
@@ -422,13 +430,12 @@ export class FormationListener {
    */
   private async settleWithinGrace(
     id: number,
-    pending: Promise<ResponderProvisionOutcome>,
-    graceMs: number
+    pending: Promise<ResponderProvisionOutcome>
   ): Promise<ResponderProvisionOutcome | undefined> {
     let stillPending = false;
     try {
       const outcome = await withTimeout(
-        graceMs,
+        this.provisionGraceMs,
         `Formation settle#${id}`,
         () => pending,
         () => { stillPending = true; }
@@ -440,7 +447,7 @@ export class FormationListener {
         log('formation session #%d provisioning failed after its abort: %o', id, err);
         return undefined;
       }
-      log('formation session #%d provisioning still pending after its %dms grace', id, graceMs);
+      log('formation session #%d provisioning still pending after its %dms grace', id, this.provisionGraceMs);
       // Log how it eventually settled so a late failure is not swallowed by the two
       // abandoned `withTimeout` calls.
       void pending.then(
