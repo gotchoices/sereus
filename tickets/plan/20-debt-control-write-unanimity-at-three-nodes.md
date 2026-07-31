@@ -56,7 +56,11 @@ there.
 - `debt-harness-supermajority-threshold-diverges-from-production` — the integration harness used
   to run a looser threshold (0.51) than production, which is why this never showed up in the test
   suite. Now aligned.
-- `debt-harness-control-cohort-never-multi-peer` — the harness cannot currently form a
-  three-machine cohort at all, so it cannot reproduce this yet.
+- `debt-harness-record-fret-ring-convergence-finding` — measured that the owner's peer ring
+  does reach all party members within ~5 s, so an owner-coordinated write issued after that
+  window does form a three-machine cohort. Writes issued immediately after party creation
+  race the ring and see one member, which is why this never showed up.
+- `debt-harness-control-cohort-observable-and-forced` — builds the wait/force helper the
+  harness needs before a scenario can reproduce this reliably.
 - `debt-control-write-availability-degraded-cohort-member` (in `plan/`) — coverage for a
   connected-but-slow machine inside the cohort; the boundary it targets is exactly this one.
