@@ -7,7 +7,9 @@
  * rejected redirect, whether an abort mid-body-read actually surfaces as the timeout the client
  * expects, and whether the response-body cap actually stops a real socket from streaming past
  * it. This suite drives the client against a real `node:http` server and the real
- * `globalThis.fetch` (no `fetchImpl`) to pin those three.
+ * `globalThis.fetch` (no `fetchImpl`) to pin those three, plus the two transport-level outcomes
+ * that only exist against a real socket: a connection that is never established, and a caller's
+ * abort travelling through a real `fetch`.
  *
  * Does not duplicate the stub suite's coverage of status/shape branching — see that file for
  * the full decision table.
@@ -57,6 +59,16 @@ async function expectFailure(
 	expect(error).toBeInstanceOf(FormationApprovalError);
 	expect((error as FormationApprovalError).failure).toBe(failure);
 	return error as FormationApprovalError;
+}
+
+/** Await `promise`, giving up after `ms` — without leaving a live timer behind the test. */
+async function settleOrGiveUp(promise: Promise<unknown>, ms: number): Promise<void> {
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	try {
+		await Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]);
+	} finally {
+		clearTimeout(timer);
+	}
 }
 
 /** Read a request body to completion before handing it to a `node:http` handler. */
@@ -109,12 +121,19 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	it('resolves a real 200 JSON approval from a real socket', async () => {
 		const { privateKeyB64, validationKey } = approverKeys();
 		const server = await startServer((req, res) => {
-			void readRequestBody(req).then((body) => {
-				const fields = JSON.parse(body) as FormationVouchFields;
-				const approval = signFormationApproval(fields, validationKey, privateKeyB64);
-				res.writeHead(200, { 'content-type': 'application/json' });
-				res.end(JSON.stringify(approval));
-			});
+			void readRequestBody(req)
+				.then((body) => {
+					const fields = JSON.parse(body) as FormationVouchFields;
+					const approval = signFormationApproval(fields, validationKey, privateKeyB64);
+					res.writeHead(200, { 'content-type': 'application/json' });
+					res.end(JSON.stringify(approval));
+				})
+				// Without this, a throw in the handler is an unhandled rejection and the client
+				// hangs to its own timeout, reporting `unavailable` instead of the real cause.
+				.catch((error: unknown) => {
+					res.writeHead(500, { 'content-type': 'text/plain' });
+					res.end(String(error));
+				});
 		});
 		try {
 			const request = baseRequest({ validationUrl: `${server.baseUrl}/hook` });
@@ -179,6 +198,11 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 		}
 	});
 
+	// KNOWN INTERMITTENT FAILURE (~1 run in 10 on win32/Node 24): Node's fetch occasionally drops
+	// the abort that lands while a stalled body is being read, and the read then stays pending for
+	// undici's own 300s body timeout instead of the client's timeoutMs. That is a real defect in
+	// the client (its budget is only as good as fetch's abort handling), tracked as
+	// `fix/formation-approval-timeout-not-enforced` — do NOT skip or loosen this test to hide it.
 	it('times out a real socket that answers headers and then never sends a body', async () => {
 		const server = await startServer((_req, res) => {
 			res.writeHead(200, { 'content-type': 'application/json' });
@@ -200,9 +224,55 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 		}
 	});
 
+	it('reports a real connection failure as unavailable, carrying the transport error', async () => {
+		// Bind a port and release it, so the address is well-formed but nothing is listening. This
+		// is the only case whose classification rests on a real transport error rather than on a
+		// response the stub suite can synthesize.
+		const server = await startServer((_req, res) => { res.end(); });
+		const deadUrl = `${server.baseUrl}/hook`;
+		await server.close();
+
+		const error = await expectFailure(
+			createHttpFormationApprover().requestApproval(baseRequest({ validationUrl: deadUrl })),
+			'unavailable'
+		);
+		// Neither the abort timer nor a caller cancellation — the hook could not be reached at all.
+		expect(error.message).toContain('could not be reached');
+		expect(error.cause).toBeDefined();
+	});
+
+	it('relays a caller abort into a real in-flight request and reports it as cancelled', async () => {
+		const server = await startServer((_req, res) => {
+			res.writeHead(200, { 'content-type': 'application/json' });
+			res.flushHeaders();
+			// Never ends: the caller's signal, not the client's own timer, has to end this one.
+		});
+		const caller = new AbortController();
+		const abortTimer = setTimeout(() => caller.abort(), 25);
+		try {
+			const request = baseRequest({ validationUrl: `${server.baseUrl}/hook` });
+
+			// A 30s client budget, so a prompt rejection can only have come from the caller's abort
+			// travelling through a real fetch — not from the approver's own timeout.
+			const error = await expectFailure(
+				createHttpFormationApprover({ timeoutMs: 30_000 }).requestApproval(request, caller.signal),
+				'unavailable'
+			);
+			expect(error.message).toContain('cancelled');
+		} finally {
+			clearTimeout(abortTimer);
+			await server.close();
+		}
+	});
+
 	it('stops reading a real, undeclared-length body once it passes the 64 KiB cap', async () => {
 		const CHUNK_BYTES = 8 * 1024;
-		const PLANNED_CHUNKS = 40; // 320 KiB if fully drained -- five times the 64 KiB cap.
+		// 1.25 MiB if fully drained -- twenty times the 64 KiB cap. The margin is deliberately
+		// wide: the assertion below is that the server did NOT finish, so it must be more than
+		// the OS socket buffer plus the client's own receive buffer can swallow before the
+		// client's cancel lands. Writes stop the moment the client hangs up, so a wide margin
+		// costs nothing in a passing run.
+		const PLANNED_CHUNKS = 160;
 		const chunk = Buffer.alloc(CHUNK_BYTES, 0x20);
 
 		let chunksWritten = 0;
@@ -245,7 +315,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 			// Give the server's connection-close event a moment to land before checking how much
 			// it actually got to write -- proves the client hung up rather than reading the whole
 			// oversized body and measuring after the fact.
-			await Promise.race([serverClosed, new Promise((resolve) => setTimeout(resolve, 2_000))]);
+			await settleOrGiveUp(serverClosed, 2_000);
 
 			expect(wroteAllChunks).toBe(false);
 			expect(chunksWritten).toBeLessThan(PLANNED_CHUNKS);
