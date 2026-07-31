@@ -169,6 +169,10 @@ export function registerGrantsRoutes(app: FastifyInstance, opts: GrantsRoutesOpt
       return errorResponse(reply, 'invalid_request', 'seed is required', 400);
     }
     const result = await donations.applySeed(request.params.id, body.seed);
+    // NOTE: exhaustive over today's three outcomes, and nothing forces it to stay
+    // that way — an unhandled fourth would fall out of the handler as `undefined`
+    // and hang the request rather than fail to compile. If `DonationSeedResult`
+    // ever grows a variant, add a `default:` that 500s here.
     switch (result.outcome) {
       case 'rejected':
         return errorResponse(reply, 'seed_failed', result.error ?? 'Node rejected the seed', 502);

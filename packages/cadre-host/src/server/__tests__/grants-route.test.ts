@@ -54,6 +54,7 @@ class FakeOrchestrator implements Orchestrator {
 let tmpRoot: string;
 let app: ReturnType<typeof Fastify>;
 let grants: GrantService;
+let store: DonationStore;
 let token: string;
 const originalFetch = globalThis.fetch;
 
@@ -69,11 +70,8 @@ beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-grants-svc-route-'));
   grants = new GrantService({ store: new GrantStore(join(tmpRoot, 'grants')) });
   token = grants.issue({ label: 'Alice', maxNodes: 2 }).token;
-  const donations = new DonationService({
-    orchestrator: new FakeOrchestrator(),
-    grants,
-    store: new DonationStore(join(tmpRoot, 'donations')),
-  });
+  store = new DonationStore(join(tmpRoot, 'donations'));
+  const donations = new DonationService({ orchestrator: new FakeOrchestrator(), grants, store });
   app = Fastify();
   registerErrorHandler(app);
   registerGrantsRoutes(app, { donations, grants });
@@ -197,6 +195,25 @@ describe('PUT /grants/:id/seed validation', () => {
     const after = await app.inject({ method: 'GET', url: `/grants/${id}`, headers: bearer(token) });
     expect((after.json() as { data: { donation: { status: string } } }).data.donation.status)
       .toBe('terminated');
+  });
+
+  it('answers 404 not_found when the record vanishes while the seed is in flight', async () => {
+    const created = await app.inject({ method: 'POST', url: '/grants', headers: bearer(token), payload: body });
+    const id = (created.json() as { data: { donation: { id: string } } }).data.donation.id;
+
+    // The row is gone by the time the node answers — the other half of the
+    // abandon mapping, which has no status to report.
+    globalThis.fetch = (async () => {
+      store.remove(id);
+      return { ok: true, json: async () => ({ success: true, peersAdded: 2 }) } as unknown as Response;
+    }) as typeof globalThis.fetch;
+
+    const res = await app.inject({
+      method: 'PUT', url: `/grants/${id}/seed`, headers: bearer(token), payload: { seed: 'encoded-seed' },
+    });
+
+    expect(res.statusCode).toBe(404);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('not_found');
   });
 });
 

@@ -600,12 +600,17 @@ export class DonationService {
    */
   async reapStaleAwaitingSeed(ttlMs: number = DONATION_AWAITING_SEED_TTL_MS): Promise<string[]> {
     const cutoff = this.now().getTime() - ttlMs;
-    const stale = this.store
-      .list()
-      .filter((d) => d.status === 'awaiting_seed' && Date.parse(d.updatedAt) < cutoff);
+    const stale = this.store.list().filter((d) => isReapable(d, cutoff));
     const reaped: string[] = [];
     for (const donation of stale) {
       try {
+        // Re-read: every `terminate` awaits, so from the second record on the
+        // candidate list is a stale snapshot. A seed landing in that gap makes
+        // the record `seeded`, and a respawn refreshes `updatedAt` precisely to
+        // defer this reap — terminating the snapshot copy would kill a loan that
+        // just came good. `terminate` writes synchronously from here, so nothing
+        // can slip between this decision and the terminal write.
+        if (!isReapable(this.store.get(donation.id), cutoff)) continue;
         await this.terminate(donation.id);
         reaped.push(donation.id);
         log('reaped stale awaiting_seed donation %s (age > %dms)', donation.id, ttlMs);
@@ -712,6 +717,16 @@ function denialToError(reason: GrantDenyReason | undefined): DonationError {
     default:
       return new DonationError('unauthorized', 'Unknown or missing grant token');
   }
+}
+
+/**
+ * Whether a record is still a stale-`awaiting_seed` reap candidate: the requester
+ * provisioned a node and has not presented a seed since `cutoff`. Stated once and
+ * applied twice in {@link DonationService.reapStaleAwaitingSeed} — on the sweep's
+ * candidate list, and again per record before the terminal write.
+ */
+function isReapable(donation: Donation | undefined, cutoff: number): boolean {
+  return donation?.status === 'awaiting_seed' && Date.parse(donation.updatedAt) < cutoff;
 }
 
 /** Derive the node's `/status` URL from its `/seed` URL (same origin/port). */

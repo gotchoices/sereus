@@ -734,6 +734,36 @@ describe('DonationService.reapStaleAwaitingSeed', () => {
     expect(store.liveNodeCount(token)).toBe(1);
   });
 
+  it('leaves a loan alone when a seed lands mid-sweep, before its turn comes up', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    const first = await svc.provision(baseRequest(token));
+    const second = await svc.provision(baseRequest(token));
+    clock = new Date(clock.getTime() + DONATION_AWAITING_SEED_TTL_MS + 60_000);
+
+    // The borrower seeds the second loan while the sweep is still awaiting the
+    // FIRST record's stop — the very write `applySeed` makes once its node
+    // answers. The sweep's candidate list predates it, so acting on that stale
+    // copy would terminate a loan that just came good.
+    orch.onStop = (dockerId) => {
+      if (dockerId !== 'dock_1') return;
+      store.put({ ...store.get(second.id)!, status: 'seeded', updatedAt: clock.toISOString() });
+    };
+
+    await expect(svc.reapStaleAwaitingSeed()).resolves.toEqual([first.id]);
+
+    expect(store.get(first.id)?.status).toBe('terminated');
+    expect(store.get(second.id)?.status).toBe('seeded');
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual(['dock_1']);
+    // The seeded loan still holds its quota slot; the reaped one does not.
+    expect(store.liveNodeCount(token)).toBe(1);
+  });
+
   it('is a no-op when nothing is stale', async () => {
     const orch = new FakeOrchestrator();
     const { grants, token } = makeGrants();

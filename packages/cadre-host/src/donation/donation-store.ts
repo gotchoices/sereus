@@ -32,6 +32,13 @@ const LIVE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
  *
  * Concurrency assumption: only one cadre-host process owns a given rootDir
  * (the orchestrator already enforces this). No file-locking primitives.
+ *
+ * NOTE: every method here is **synchronous**, and `DonationService` depends on
+ * that for correctness, not just convenience — each of its long operations
+ * re-reads a record and writes it back with no `await` in between, which is only
+ * atomic against the event loop while `get`/`put` cannot yield. Giving this class
+ * an async write path would silently reopen the resurrect-an-ended-loan races
+ * those re-reads exist to close, and the tests that guard them would still pass.
  */
 export class DonationStore {
   private readonly path: string;
