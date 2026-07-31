@@ -545,6 +545,10 @@ export class CadreNode implements SAppIdLookup {
 
     log('Starting CadreNode for party: %s', this.config.controlNetwork.partyId);
 
+    // NOTE: the only direct `console.*` in this library — a boot-time operator warning, not a
+    // diagnostic trace (those use `debug`, which an operator never sees without `DEBUG=`). If a
+    // second such warning ever appears here, route both through a `CadreNodeEvents` entry the
+    // embedder surfaces instead of growing a console surface inside a library.
     if (this.config.network?.announceAddrs && this.config.network.announceAddrs.length > 0) {
       console.warn(
         'network.announceAddrs is set but not yet supported (no upstream db-p2p option to apply it) ' +

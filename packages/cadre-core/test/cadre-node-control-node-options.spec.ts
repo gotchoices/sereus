@@ -25,8 +25,9 @@ import type { CadreNodeConfig } from '../src/types.js';
  * asks whether the resolved key (or its absence) reaches the node options.
  *
  * `NetworkConfig.announceAddrs` is still forwarded by nobody and is left
- * unasserted here — pinning "ignored" would cement the bug. Tracked by
- * `implement/cadre-announce-addrs-upstream`.
+ * unasserted here — pinning "ignored" would cement the bug. Blocked on the
+ * `announce-addrs-option` request filed against `@optimystic/db-p2p`;
+ * `cadre-node-announce-addrs-warning.spec.ts` pins the interim warning.
  */
 
 function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {

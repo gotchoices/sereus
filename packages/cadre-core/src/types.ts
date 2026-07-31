@@ -151,8 +151,9 @@ export interface NetworkConfig {
    * at construction (`addresses.announce` / `addresses.appendAnnounce`), and
    * `@optimystic/db-p2p`'s `NodeOptions` has no field for either — there is nothing
    * in this repo to wire this into. `CadreNode.start()` warns when this is set,
-   * rather than pretending it works. Tracked by `implement/14.1-cadre-announce-addrs-upstream`
-   * pending an upstream `db-p2p` change.
+   * rather than pretending it works. Unblocked by the `announce-addrs-option`
+   * request filed against `@optimystic/db-p2p`; wiring lands here once this repo's
+   * dependency range moves to a version carrying it.
    *
    * Use {@link relayAddrs} for reachability behind NAT today (a reserved relay slot
    * gives the node a real dialable circuit address), or `inviteAddressResolver` to

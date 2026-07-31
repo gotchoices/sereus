@@ -47,6 +47,13 @@ export interface CliConfigFile {
   /** Network configuration */
   network?: {
     listenAddrs?: string[];
+    /**
+     * Addresses to advertise instead of `listenAddrs`. Accepted but NOT YET
+     * APPLIED — nothing carries it to libp2p yet, so the node warns at start
+     * and keeps advertising its listen/relay addresses. See
+     * `NetworkConfig.announceAddrs` in `@serfab/cadre-core`; use `relayAddrs`
+     * for reachability behind NAT today.
+     */
     announceAddrs?: string[];
     relayAddrs?: string[];
     /**
@@ -134,6 +141,7 @@ export interface ResolvedConfig {
   };
   network?: {
     listenAddrs?: string[];
+    /** Accepted but not yet applied — see `CadreConfig.network.announceAddrs`. */
     announceAddrs?: string[];
     relayAddrs?: string[];
     enableRelay?: boolean;
