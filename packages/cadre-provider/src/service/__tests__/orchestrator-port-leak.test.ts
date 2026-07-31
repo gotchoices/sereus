@@ -22,6 +22,12 @@ function config(start: number, end: number): DockerConfig {
   return { image: 'test-image', portRange: { start, end } };
 }
 
+/** The subset of dockerode's create options this test asserts on. */
+type CreateOpts = {
+  Env: string[];
+  HostConfig: { PortBindings: Record<string, Array<{ HostIp?: string; HostPort: string }>> };
+};
+
 describe('DockerOrchestrator port-leak on provisioning failure', () => {
   it('releases all ports when docker.createContainer rejects', async () => {
     let fail = true;
@@ -112,7 +118,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
   });
 
   it('injects a per-container seed token and confines the seed/metrics ports to loopback', async () => {
-    const createSpy = vi.fn(async () => ({
+    const createSpy = vi.fn(async (_opts: CreateOpts) => ({
       id: 'cid-secure',
       start: vi.fn(async () => {}),
       remove: vi.fn(async () => {}),
@@ -126,10 +132,7 @@ describe('DockerOrchestrator port-leak on provisioning failure', () => {
     expect(result.seedToken).toEqual(expect.any(String));
     expect(result.seedToken.length).toBeGreaterThan(20);
 
-    const opts = createSpy.mock.calls[0]![0] as {
-      Env: string[];
-      HostConfig: { PortBindings: Record<string, Array<{ HostIp?: string; HostPort: string }>> };
-    };
+    const opts = createSpy.mock.calls[0]![0];
 
     // The same token is injected as CADRE_SEED_TOKEN so the container can gate POST /seed.
     expect(opts.Env).toContain(`CADRE_SEED_TOKEN=${result.seedToken}`);

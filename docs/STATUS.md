@@ -574,24 +574,19 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   a glob `include` reaching the file implicitly, a missing or non-`tsc` `typecheck` script, and a
   `typecheck` script pointing at a missing config.
 - Per-package scope:
-  - Source **+ tests**: `cadre-cli`, `integration-tests`, `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
+  - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `integration-tests`,
+    `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, run by the separate `typecheck:e2e` script)
-  - Shippable **source only**, now via a dedicated `tsconfig.typecheck.json` that also includes
+  - Shippable **source only**, via a dedicated `tsconfig.typecheck.json` that also includes
     `vitest.config.ts` (kept separate from the real `tsconfig.build.json` so widening the typecheck
-    program can't change what `yarn build` emits or where): `cadre-core`, `cadre-host`, `cadre-provider`,
-    `strand-proto`
+    program can't change what `yarn build` emits or where): `strand-proto`
 - Known coverage gaps:
-  - `cadre-core` tests and `cadre-host` server tests have pre-existing type drift (libp2p `peerId`→`privateKey`,
-    `CadreNodeConfig.privateKey` now `PrivateKey` not `Uint8Array`, `NodePorts.admin` added, implicit-`any` params).
-    Their `typecheck` stays at shippable-source until those tests are fixed — tracked by
-    `debt-widen-typecheck-to-test-files`, which also covers `cadre-provider` (4 errors across
-    `container-seed-endpoint.test.ts` and `orchestrator-port-leak.test.ts`).
   - `cadre-host` `ui/` (Svelte) and `reference-app-web` `.svelte` files are **not** covered — `tsc` can't type-check
     `.svelte`; that needs `svelte-check` (already a devDependency in both). Not wired into `typecheck` yet.
-  - `cadre-provider` **does** have test files (`src/**/__tests__/**/*.test.ts`); its `tsconfig.typecheck.json`
-    explicitly excludes them (same type-drift reasoning as `cadre-core`/`cadre-host`) rather than lacking any.
-    `strand-proto` is deprecated so left source-only by design.
+    `cadre-host`'s `ui/__tests__/*.ts` test files (not `.svelte`) **are** covered, via a second `tsc` pass over
+    `ui/tsconfig.json` chained into the package's `typecheck` script.
+  - `strand-proto` is deprecated so left source-only by design.
   - The seven `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
     `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
     `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather

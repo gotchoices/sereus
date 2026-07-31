@@ -103,7 +103,8 @@ describe('ContainerService seed endpoint provisioning', () => {
       seedEndpoint: 'http://localhost:8081/seed',
       seedToken: 'secret-token-abc',
     }));
-    const fetchMock = vi.fn(async () => jsonResponse({ success: true, peersAdded: 1 }));
+    const fetchMock = vi.fn(async (_url: string | URL, _init?: RequestInit) =>
+      jsonResponse({ success: true, peersAdded: 1 }));
     globalThis.fetch = fetchMock as typeof globalThis.fetch;
 
     const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');

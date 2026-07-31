@@ -4,13 +4,5 @@
     "rootDir": ".",
     "noEmit": true
   },
-  "include": ["src", "vitest.config.ts"],
-  // Tests carry pre-existing type drift (see docs/STATUS.md → Type-check coverage,
-  // debt-widen-typecheck-to-test-files), so they stay out of this program.
-  // NOTE: this excludes the __tests__ *directories*, whereas tsconfig.build.json excludes
-  // by filename (`**/*.test.ts`). Identical today — every test lives under a __tests__ dir,
-  // which is also all vitest's `include` matches. A `.test.ts` placed beside its source
-  // would land in `typecheck` (desirable) but never run; if that ever happens, fix the
-  // file's location rather than widening this exclude.
-  "exclude": ["src/**/__tests__/**"]
+  "include": ["src", "vitest.config.ts"]
 }
