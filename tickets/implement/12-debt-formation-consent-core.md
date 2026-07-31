@@ -5,10 +5,13 @@ difficulty: hard
 
 # The joining peer signs its own formation record — core implementation
 
-Continuation of `debt-formation-usage-peer-signature-unverified` (a prior implement run was
-stopped by its token budget during code reading; NO code changes were made — the working
-tree is untouched by that run). The full settled design from the plan stage is reproduced
-below, followed by findings from the interrupted run's code reading. A second ticket
+Continuation of `debt-formation-usage-peer-signature-unverified` (TWO prior implement runs
+were stopped by their token budgets during code reading; NO code changes were made — the
+working tree is untouched by both). The full settled design from the plan stage is
+reproduced below, followed by findings from both runs' code reading — between them, every
+production source file this ticket touches has now been read and its shapes verified, so
+the next run should START EDITING (Phase 1) rather than re-reading; only the tests,
+`index.ts`, and the repo-wide caller sweep remain unread. A second ticket
 (`debt-formation-consent-tests-docs`, prereq on this one) carries the exhaustive negative-test
 matrix and doc updates; THIS ticket must still leave `yarn build`, `yarn lint`, the
 cadre-core unit suite, and the formation integration scenarios green — which means updating
@@ -330,6 +333,73 @@ Export both from `index.ts`.
   `control-authorization.ts` (`ControlAction` union), the existing tests
   (`control-formation-invite.spec.ts`, formation unit/integration suites), and `index.ts`
   exports.
+
+## Findings from the second run's code reading (verified against source; still NO code changes)
+
+- **The contact message is built in `StrandFormationManager.formStrand` (~188), NOT in
+  `strand-solicitation.ts`.** The consent material (`peerKey`, `usageStampId`,
+  `peerSignature`) is minted/signed in `StrandSolicitationService.formStrand`, which then
+  calls `manager.formStrand(invitation, disclosure, node)` — so `manager.formStrand` needs
+  a new parameter carrying the consent fields (e.g. a
+  `consent: { peerKey, usageStampId, peerSignature }` object) to place on the contact.
+  `FormStrandResult.memberKey` is set from `contact.partyId` (~210) — unchanged. This is
+  the exact spot where direct-manager tests break (the already-flagged real-key-material
+  update).
+- `peer-authorization.ts` has a private `taggedDigest(domain, action, fields)` returning a
+  base64url digest string. `verifyFormationConsent` mirrors `verifyCadrePeerVoucher`
+  (~201): `verify(taggedDigest('CadreControl.FormationUsage', 'consent',
+  [token, usageStampId, peerKey, disclosure]), peerSig, peerKey, 'ed25519', 'base64url',
+  'base64url', 'base64url')` in a try/catch → `false`, logged at debug.
+- `formationConsentMessage` mirrors `formationVouchMessage` (control-database.ts ~177):
+  `buildAuthorizationMessage('CadreControl.FormationUsage', 'consent',
+  [token, usageStampId, peerKey, disclosure])`.
+- `execFormationUsageInsert` (~1478-1512): bind order is context params FIRST
+  (`peerSignature, nowCanonical, validationKey, validationSignature`), then column values.
+  New shape: columns `(Token, UseNumber, UsageStampId, PeerKey, PeerSig, Disclosure,
+  StrandId, StrandStampId)`, context `(Now, ValidationKey, ValidationSignature)`.
+- Nonce fallbacks confirmed: `redeemInvitation` ~1374 and `recordFormationUsage` ~1453 both
+  do `usageStampId ?? generateStampId(localPeerId)`; both currently declare
+  `usageStampId?: string; peerSignature?: string` — all of `usageStampId` / `peerKey` /
+  `peerSignature` become required.
+- `obtainApproval` (recorder ~126) takes
+  `Omit<FormationApprovalRequest, 'usageStampId' | 'validationUrl'> & { validationUrl: string | null }`,
+  mints via `controlDatabase.mintUsageStampId()` at ~137, and returns `{}` (skipping the
+  mint) when `validationUrl === null`. New shape: the caller passes the joiner's nonce into
+  the request; the return narrows to `{ validationKey?, validationSignature? }`. After
+  that, `mintUsageStampId` (control-database ~1309) likely loses its only caller — re-grep
+  before deleting it (this run's repo-wide caller sweep was cut off by budget).
+- Listener pre-check site: `runSession` reads the contact at ~473. Put the consent
+  pre-check immediately after the contact read (before `validateToken` — it is the
+  cheapest check and, like the token/disclosure rejections, discloses nothing). Verify
+  locally over `canonicalJson(contact.disclosure)`. **CAUTION:**
+  `requireEd25519PublicKeyB64`'s error message echoes the WHOLE rejected value, and its own
+  NOTE says to cap the echo when the value comes from a remote peer — this pre-check is
+  exactly that case. Catch the throw and reject/log WITHOUT echoing the full value.
+- `FormationListener.provision()` (~395-398) forwards `contact.token / contact.partyId /
+  contact.disclosure` into `options.provisionStrand` — widen the hook to take the whole
+  `FormationContactMessage` (the manager's adapter lambda in its constructor, ~136,
+  adjusts).
+- `provisionAsResponder` serializes at ~291 (`JSON.stringify(disclosure)` →
+  `canonicalJson(disclosure)`), passes `peerId: initiatorPartyId` into `recordUsage` at
+  ~306 (bound path) and into `provisionAndRecord` at ~381 (`provisionUnbound`).
+- `ed25519PublicKeyB64FromPeerId` (seed-bootstrap.ts:87) confirmed: returns the base64url
+  raw key, or null on non-Ed25519 / missing key / any parse failure; already exported from
+  `index.ts` (line ~193).
+- `control-schema.ts` embedded schema: `FormationUsage` spans lines ~490-596, the `'vouch'`
+  digest is at ~573, the context list at ~596. Backticks inside schema comments are
+  ESCAPED (`` \` ``) in the template literal — preserve the escaping when mirroring the
+  qsql edit.
+- `canonicalJson` (canonical-json.ts:12), `ed25519KeyPairFromLibp2p` (ed25519-key.ts:34),
+  and `requireEd25519PublicKeyB64` (ed25519-key.ts:85, throws on bad input) all match the
+  design's assumptions.
+- `recordFormationComplete` (strand-solicitation.ts ~416) calls `recordUsage` with the old
+  `{ token, peerId, strandId, disclosure }` shape, `disclosure` defaulting to `''` —
+  integration-test mocks only, per its own doc comment.
+- Still NOT read (budget): `index.ts` export layout,
+  `control-formation-invite.spec.ts` and the other unit/integration suites, and the full
+  repo caller sweep for `recordUsage` / `provisionAndRecord` / `recordFormationUsage` /
+  `redeemInvitation` / `mintUsageStampId` / `recordFormationComplete` — re-run that grep
+  first thing.
 
 ## TODO
 
