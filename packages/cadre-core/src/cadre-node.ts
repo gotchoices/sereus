@@ -32,6 +32,7 @@ import type {
   DeviceTokenRecord,
   CadrePeerVoucherFields,
   CadrePeerRow,
+  PeerAddressRecord,
   ResolveDeviceTokenOpts
 } from './types.js';
 import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
@@ -1272,7 +1273,11 @@ export class CadreNode implements SAppIdLookup {
    *   PeerId (the resolved node identity from `keyStore`/`config.privateKey`).
    * - If the row already exists: a self-signed UPDATE bumping `UpdatedAt`.
    * - If not, and the node is its own owner: an owner-signed INSERT that
-   *   also carries the self-signature.
+   *   also carries the self-signature. That INSERT is idempotent, so if an owner
+   *   {@link authorizePeer} of this node's own id seated the row inside the
+   *   read-then-insert window it no-ops — the publish then falls through to the
+   *   UPDATE path (re-reading and re-signing against the row that landed) rather
+   *   than leaving the authorize's null `Sig` in place, and reports `refreshed`.
    * - Otherwise: logs and returns (a non-owner node with no row yet must
    *   wait for an owner to insert it; it can then self-refresh).
    *
@@ -1316,29 +1321,65 @@ export class CadreNode implements SAppIdLookup {
     const addrs = await this.collectSelfAddrs();
     const existing = await this.controlDatabase.queryPeerRecord(peerId);
 
-    // Strictly increase UpdatedAt even on a same-millisecond re-publish.
+    if (!existing) {
+      if (!this.seedBootstrapService) {
+        log('registerSelf: not yet a CadrePeer member and no owner service to self-insert; skipping (an owner must add this peer first)');
+        return 'skipped';
+      }
+      // First-time row: requires an owner signature (the node is its own
+      // owner). insertSelfPeerRecord throws if no owner key is present.
+      const record = this.signSelfRecord(peerId, signingKey, addrs, null);
+      if (await this.seedBootstrapService.insertSelfPeerRecord(record)) {
+        if (this.committedAlone()) this.pendingSelfPeerWrite = true;
+        log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', record.updatedAt, addrs.length);
+        return 'inserted';
+      }
+      // An owner authorize of this node's OWN peer id seated the row inside the
+      // read-then-insert window. That insert is idempotent, so it left the
+      // authorize's null Sig in place and the row would not resolve until the
+      // next heartbeat. Fall through to the self-update path below, which
+      // re-reads and re-signs against the row that actually landed — the stamp
+      // read above is not that row's, and the self-update rule demands a
+      // strictly greater one.
+      //
+      // NOTE: the raced path reports 'refreshed' (honest about the write, which really
+      // was an UPDATE) even though the caller's intent was a first publish. No caller
+      // branches on 'inserted' today — only the CLI's log line distinguishes them. If a
+      // caller ever needs "this was the row's first publish", add a fourth
+      // SelfRegistrationOutcome rather than re-labelling this one.
+      log('registerSelf: own CadrePeer row appeared mid-publish (concurrent authorize); self-updating to carry the signature');
+    }
+
+    // `existing` is the pre-race read on the fall-through path, so re-read there.
+    const current = existing ?? await this.controlDatabase.queryPeerRecord(peerId);
+    if (!current) {
+      log('registerSelf: own CadrePeer row vanished mid-publish; skipping (next refresh re-inserts)');
+      return 'skipped';
+    }
+    const record = this.signSelfRecord(peerId, signingKey, addrs, current);
+    await this.controlDatabase.updateSelfPeerRecord(record);
+    if (this.committedAlone()) this.pendingSelfPeerWrite = true;
+    log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', record.updatedAt, addrs.length);
+    return 'refreshed';
+  }
+
+  /**
+   * Sign this node's address record for publication, stamped strictly later than
+   * `existing` (the row it is about to replace, or null for a first insert) so a
+   * same-millisecond re-publish still satisfies the monotonic `UpdatedAt` rule the
+   * `CadrePeer.AuthorizedUpdate` self-branch enforces.
+   */
+  private signSelfRecord(
+    peerId: string,
+    signingKey: { privateKeyB64: string; publicKeyB64: string },
+    addrs: string[],
+    existing: PeerAddressRecord | null
+  ): PeerAddressRecord {
     const updatedAt = Math.max(Date.now(), (existing?.updatedAt ?? 0) + 1);
-    const record = signPeerRecord(
+    return signPeerRecord(
       { peerId, publicKey: signingKey.publicKeyB64, addrs, updatedAt },
       signingKey.privateKeyB64
     );
-
-    if (existing) {
-      await this.controlDatabase.updateSelfPeerRecord(record);
-      if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-      log('registerSelf: refreshed own CadrePeer record (updatedAt=%d, %d addrs)', updatedAt, addrs.length);
-      return 'refreshed';
-    }
-    if (this.seedBootstrapService) {
-      // First-time row: requires an owner signature (the node is its own
-      // owner). insertSelfPeerRecord throws if no owner key is present.
-      await this.seedBootstrapService.insertSelfPeerRecord(record);
-      if (this.committedAlone()) this.pendingSelfPeerWrite = true;
-      log('registerSelf: inserted own CadrePeer record (owner-signed, updatedAt=%d, %d addrs)', updatedAt, addrs.length);
-      return 'inserted';
-    }
-    log('registerSelf: not yet a CadrePeer member and no owner service to self-insert; skipping (an owner must add this peer first)');
-    return 'skipped';
   }
 
   /**

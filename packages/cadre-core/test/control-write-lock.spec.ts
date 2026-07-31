@@ -143,7 +143,7 @@ describe('ControlDatabase — local write lock', () => {
 	 * Both first-row writers for the SAME peer, raced. The lock serializes them and the
 	 * loser's in-lock existence check turns its insert into a no-op, so exactly one row
 	 * lands and neither call throws a UNIQUE violation. Which one wins decides whether the
-	 * row carries the peer's self-signature.
+	 * row carries the peer's self-signature, and `insertSelfPeerRecord` reports which it was.
 	 */
 	it('keeps one row when self-publish wins the race against authorize, retaining the self signature', async () => {
 		const peer = await freshPeer();
@@ -153,22 +153,27 @@ describe('ControlDatabase — local write lock', () => {
 		);
 		const before = await db.countRows('CadrePeer');
 
-		await Promise.all([
+		const [inserted] = await Promise.all([
 			service.insertSelfPeerRecord(record),
 			service.authorizePeer({ peerId: peer.peerId }),
 		]);
 
+		expect(inserted).toBe(true);
 		expect(await db.countRows('CadrePeer')).toBe(before + 1);
 		expect((await db.queryPeerRecord(peer.peerId))?.sig).toBe(record.sig);
 	});
 
 	/**
-	 * The mirror ordering, and a deliberate pin on a KNOWN window: `authorizePeer` cannot
-	 * produce the peer's self-signature, so when it wins the row stays `Sig`-null and the
-	 * self-publish insert is skipped as already-present rather than filling it in. The row
-	 * only resolves once a later self-UPDATE lands. Tracked as
-	 * `bug-self-peer-record-sig-null-race` — the empty `sig` below is documented behaviour,
-	 * not an accident, so change this assertion only alongside that fix.
+	 * The mirror ordering. `authorizePeer` cannot produce the peer's self-signature, so when
+	 * it wins the seat the row is `Sig`-null and the self-publish's insert no-ops rather than
+	 * filling it in — at THIS layer the record simply does not land, which is why
+	 * `insertSelfPeerRecord` returns `false` instead of `void`.
+	 *
+	 * NOTE: this spec pins the lock/uniqueness contract only. Recovery from the lost race —
+	 * `CadreNode.publishSelfRecord` seeing that `false` and falling through to a self-UPDATE
+	 * so the row resolves without waiting for the next heartbeat — is covered in
+	 * `peer-record-resolution.spec.ts` ("carries a valid self-signature when an authorize
+	 * lands mid-publish"). Do not read the empty `sig` below as the end-to-end behaviour.
 	 */
 	it('keeps one row when authorize wins the race against self-publish, leaving the signature unset', async () => {
 		const peer = await freshPeer();
@@ -178,11 +183,12 @@ describe('ControlDatabase — local write lock', () => {
 		);
 		const before = await db.countRows('CadrePeer');
 
-		await Promise.all([
+		const [, inserted] = await Promise.all([
 			service.authorizePeer({ peerId: peer.peerId }),
 			service.insertSelfPeerRecord(record),
 		]);
 
+		expect(inserted).toBe(false);
 		expect(await db.countRows('CadrePeer')).toBe(before + 1);
 		expect((await db.queryPeerRecord(peer.peerId))?.sig).toBe('');
 	});

@@ -328,9 +328,14 @@ export class SeedBootstrapService {
    * is its own owner (it holds the owner key): the row is owner-signed
    * (satisfying `AuthorizedInsert`) AND carries a valid self-`Sig`, so it resolves
    * immediately without a follow-up self-update.
+   *
+   * @returns `true` when this call seated the row, `false` when a concurrent writer
+   *   (e.g. an {@link authorizePeer} of this node's own id) had already seated it —
+   *   in which case the row in the database is NOT this record and carries whatever
+   *   `Sig` that writer had, so the caller must self-update to publish its signature.
    */
-  async insertSelfPeerRecord(record: PeerAddressRecord): Promise<void> {
-    await this.insertCadrePeerRow({
+  async insertSelfPeerRecord(record: PeerAddressRecord): Promise<boolean> {
+    return await this.insertCadrePeerRow({
       peerId: record.peerId,
       publicKey: record.publicKey,
       multiaddr: record.addrs.join(','),
@@ -360,6 +365,11 @@ export class SeedBootstrapService {
    * (a pre-lock check would re-open the read-then-insert window). The existing row —
    * voucher, addresses, self-`Sig` — is left untouched; re-touching a live row is
    * {@link reauthorizePeer}'s job.
+   *
+   * @returns `true` when this call performed the INSERT, `false` when the in-lock
+   *   existence check found the row already seated. The loser needs to know: an
+   *   authorize seats a row with a null `Sig`, so a self-publish that lost the race
+   *   must fall through to a self-update or its record never lands.
    */
   private async insertCadrePeerRow(row: {
     peerId: string;
@@ -367,7 +377,7 @@ export class SeedBootstrapService {
     multiaddr: string;
     updatedAt: number;
     sig: string | null;
-  }): Promise<void> {
+  }): Promise<boolean> {
     if (!this.controlDatabase) {
       throw new Error('Control database not initialized');
     }
@@ -379,10 +389,10 @@ export class SeedBootstrapService {
     const signature = this.signDigest(cadrePeerVoucherDigest(row.peerId, stampId));
     const db = this.controlDatabase.getDatabase();
     const controlDatabase = this.controlDatabase;
-    await controlDatabase.mutateCadrePeer('peer-insert', async () => {
+    return await controlDatabase.mutateCadrePeer('peer-insert', async () => {
       if (await controlDatabase.queryCadrePeerStampId(row.peerId) !== null) {
         log('CadrePeer row already present for %s; insert skipped (already a member)', row.peerId);
-        return;
+        return false;
       }
       // Persist the vouching (owner, signature) onto the row (VouchOwner/VouchSig)
       // — identical to the context pair, which the AuthorizedInsert constraint binds — so a
@@ -392,6 +402,7 @@ export class SeedBootstrapService {
           with context OwnerKey = ?, Signature = ?
           values (?, ?, ?, ?, ?, ?, ?, ?)
       `, [this.ownerPublicKey, signature, row.peerId, row.publicKey, row.multiaddr, row.updatedAt, row.sig, stampId, this.ownerPublicKey, signature]);
+      return true;
     });
   }
 

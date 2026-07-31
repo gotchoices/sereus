@@ -137,6 +137,53 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(verifyPeerRecordSignature(second!)).toBe(true);
   }, 60_000);
 
+  it('carries a valid self-signature when an authorize lands mid-publish', async () => {
+    const { node, peerId } = booted;
+    node.setInviteAddresses([circuitAddr(peerId), '/ip4/1.2.3.4/tcp/4001']);
+
+    // Wedge the authorize into the exact window: after publishSelfRecord's
+    // "does my row exist?" read returned null, before its INSERT. The insert is
+    // idempotent, so the authorize's null-Sig row wins the seat and the publish
+    // must notice and self-update — otherwise the row never resolves until the
+    // next heartbeat.
+    const db = node.getControlDatabase()!;
+    const original = db.queryPeerRecord.bind(db);
+    let wedged = false;
+    db.queryPeerRecord = async (pid: string): Promise<PeerAddressRecord | null> => {
+      const result = await original(pid);
+      if (!wedged && pid === peerId && result === null) {
+        wedged = true;
+        await node.authorizePeer(peerId, []);
+      }
+      return result;
+    };
+
+    const outcome = await node.registerSelf();
+    expect(wedged).toBe(true);
+
+    // Restore before asserting so a later read cannot re-trigger the wedge.
+    db.queryPeerRecord = original;
+    const stored = await db.queryPeerRecord(peerId);
+    expect(verifyPeerRecordSignature(stored!)).toBe(true);
+    expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
+    // The write that landed was an UPDATE of the authorize's row.
+    expect(outcome).toBe('refreshed');
+  }, 60_000);
+
+  it('keeps the self-signature when the authorize lands after the publish', async () => {
+    const { node, peerId } = booted;
+    node.setInviteAddresses([circuitAddr(peerId), '/ip4/1.2.3.4/tcp/4001']);
+
+    // Reverse order: the self-publish seats the row, and the authorize's
+    // idempotent insert must leave the signed row alone.
+    await node.registerSelf();
+    await node.authorizePeer(peerId, []);
+
+    const stored = await node.getControlDatabase()!.queryPeerRecord(peerId);
+    expect(verifyPeerRecordSignature(stored!)).toBe(true);
+    expect((await node.resolvePeerAddrs(peerId)).length).toBeGreaterThan(0);
+  }, 60_000);
+
   it('rejects a self-update whose UpdatedAt does not strictly increase (replay guard)', async () => {
     const { node, peerId, publicKeyB64, privateKeyB64 } = booted;
     node.setInviteAddresses(['/ip4/3.3.3.3/tcp/4001']);

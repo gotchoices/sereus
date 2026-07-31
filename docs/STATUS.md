@@ -713,7 +713,12 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
 - [x] `packages/cadre-core/test/control-write-lock.spec.ts` — mutual exclusion and call order on
   `withWriteLock` itself, raced strand inserts, a bare write raced against two transactional
   `CadrePeer` mutations, both orderings of the self-publish/authorize first-row race (exactly one
-  row, no UNIQUE violation), and a rejecting locked body followed by a normal write.
+  row, no UNIQUE violation, and the insert reporting whether it won the seat), and a rejecting
+  locked body followed by a normal write.
+- That race spec pins the lock/uniqueness contract only. Recovery from a LOST race — the
+  self-publish seeing the authorize's `Sig`-null row and falling through to a self-UPDATE instead
+  of waiting a heartbeat — is covered end-to-end in
+  `packages/cadre-core/test/peer-record-resolution.spec.ts` (both orderings).
 - The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
   own: control writes are fast in-memory statements and Quereus serializes each one internally
   (`Database._withMutex`), so a unit-scale race between two of them completes the first before the

@@ -797,8 +797,11 @@ export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | '
  * `--owner` branch) can log what happened:
  * - `inserted` — the first owner-signed INSERT of this node's `CadrePeer` row.
  * - `refreshed` — a self-signed UPDATE of an existing row (heartbeat / addr change).
- * - `skipped` — nothing written (no self-signing key, or not yet a member with no
- *   owner service to self-insert).
+ *   Also reported when a first publish found its row seated by a concurrent
+ *   `authorizePeer` of this node's own id and fell through to the UPDATE — the write
+ *   really was an UPDATE, even though the caller's intent was a first publish.
+ * - `skipped` — nothing written (no self-signing key, not yet a member with no
+ *   owner service to self-insert, or the row was removed mid-publish).
  */
 export type SelfRegistrationOutcome = 'inserted' | 'refreshed' | 'skipped';
 
