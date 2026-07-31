@@ -265,7 +265,7 @@ function resolveFetch(fetchImpl?: typeof fetch): typeof fetch {
  * responders); if a responder ever runs on a platform without a body reader, that path needs a
  * real streaming read rather than a post-hoc measurement.
  */
-async function readCappedText(response: Response): Promise<string> {
+async function readCappedText(response: Response, budget: ApprovalBudget): Promise<string> {
   const declared = Number(response.headers.get('content-length'));
   if (Number.isFinite(declared) && declared > MAX_RESPONSE_BYTES) {
     throw new FormationApprovalError(
@@ -276,20 +276,30 @@ async function readCappedText(response: Response): Promise<string> {
 
   const body = response.body;
   if (!body || typeof body.getReader !== 'function') {
-    const text = await response.text();
+    // NOTE: nothing releases this body when the budget wins — `text()` has already locked it and
+    // the runtime owns the buffering. It only applies to readerless-fetch runtimes (React
+    // Native), which are not formation responders; a responder on such a platform would need a
+    // real streaming read here, as the cap note above already says.
+    const text = await budget.race(response.text());
     assertUnderCap(uint8ArrayFromString(text, 'utf8').byteLength);
     return text;
   }
-  return readCappedStream(body.getReader());
+  return readCappedStream(body.getReader(), budget);
 }
 
 /** Drain a body stream, aborting the read the moment the accumulated bytes pass the cap. */
-async function readCappedStream(reader: ReadableStreamDefaultReader<Uint8Array>): Promise<string> {
+async function readCappedStream(
+  reader: ReadableStreamDefaultReader<Uint8Array>,
+  budget: ApprovalBudget
+): Promise<string> {
   const chunks: Uint8Array[] = [];
   let total = 0;
   try {
     for (;;) {
-      const { done, value } = await reader.read();
+      // Raced, not just aborted: a `fetch` that drops the abort leaves this read pending
+      // forever, and the budget is the only thing that ends it. The `finally` below cancels
+      // the reader, which is what actually gives the connection back.
+      const { done, value } = await budget.race(reader.read());
       if (done) {
         break;
       }
@@ -393,14 +403,111 @@ function assertApprovingStatus(response: Response, origin: string): void {
 /**
  * Turn a response into an approval, releasing the body on every path that rejects it.
  */
-async function readApproval(response: Response, origin: string): Promise<FormationApproval> {
+async function readApproval(
+  response: Response,
+  origin: string,
+  budget: ApprovalBudget
+): Promise<FormationApproval> {
   try {
     assertApprovingStatus(response, origin);
-    return parseApproval(await readCappedText(response));
+    return parseApproval(await readCappedText(response, budget));
   } catch (error) {
     await discardBody(response);
     throw error;
   }
+}
+
+/**
+ * ONE deadline covering a whole approval exchange — connect, headers, AND body read — that fires
+ * whether or not the runtime's `fetch` honours an abort.
+ *
+ * Aborting is still done (it is what releases the socket where it works), but it cannot be the
+ * only bound: Node's `fetch` occasionally drops an abort that lands mid-body-read, leaving the
+ * read pending until undici's own 300s body timeout. Every await that can outlive the budget is
+ * raced against {@link ApprovalBudget.race} instead.
+ */
+interface ApprovalBudget {
+  /** `work`, or the budget's `unavailable` rejection — whichever settles first. */
+  race<T>(work: Promise<T>): Promise<T>;
+  /** True once the deadline has fired, i.e. any result arriving now is unwanted. */
+  expired(): boolean;
+  /** Clears the timer and the caller's abort listener. Must run on every exit path. */
+  dispose(): void;
+}
+
+/**
+ * Arm the budget for one request. The caller's `signal` is relayed by hand rather than with
+ * `AbortSignal.any` (not reliably present on React Native/Hermes; this client commits to
+ * `fetch` + `AbortController` only).
+ */
+function startBudget(
+  timeoutMs: number,
+  origin: string,
+  controller: AbortController,
+  signal?: AbortSignal
+): ApprovalBudget {
+  let expired = false;
+  let expire!: (error: FormationApprovalError) => void;
+  const deadline = new Promise<never>((_resolve, reject) => { expire = reject; });
+  // The deadline can fire between two raced awaits, with nothing attached to it; a bare handler
+  // keeps that from surfacing as an unhandled rejection without hiding it from `race`.
+  void deadline.catch(() => { /* observed by race() */ });
+
+  const fire = (reason: string): void => {
+    if (expired) {
+      return;
+    }
+    expired = true;
+    // Rejected BEFORE the abort, so this reason — not whatever a fetch that DOES honour the
+    // abort rejects with — is what the race settles on. Both are queued in the same turn, and
+    // the first one queued wins.
+    expire(new FormationApprovalError('unavailable', reason));
+    // Best-effort, and no longer load-bearing: where the runtime honours it, this hands the
+    // socket back instead of leaving it checked out until GC.
+    controller.abort();
+  };
+
+  const timer = setTimeout(
+    () => fire(`Approval hook ${origin} did not answer within ${timeoutMs}ms`),
+    timeoutMs
+  );
+  const onCallerAbort = (): void =>
+    fire(`Formation was cancelled while approval hook ${origin} was being asked`);
+  signal?.addEventListener('abort', onCallerAbort, { once: true });
+
+  return {
+    race: <T>(work: Promise<T>): Promise<T> => Promise.race([work, deadline]),
+    expired: () => expired,
+    dispose: (): void => {
+      // A leaked abort timer keeps a node's event loop alive.
+      clearTimeout(timer);
+      signal?.removeEventListener('abort', onCallerAbort);
+    }
+  };
+}
+
+/**
+ * Await the response, giving up when the budget expires — and cleaning up after ourselves if it
+ * does: a `fetch` that ignored the abort still delivers its response eventually, and an unread
+ * body keeps a connection checked out. A late rejection is logged rather than left unhandled.
+ */
+async function fetchWithinBudget(
+  pending: Promise<Response>,
+  budget: ApprovalBudget
+): Promise<Response> {
+  void pending.then(
+    (response) => {
+      if (budget.expired()) {
+        void discardBody(response);
+      }
+    },
+    (error: unknown) => {
+      if (budget.expired()) {
+        log('abandoned approval request rejected after its budget expired: %o', error);
+      }
+    }
+  );
+  return budget.race(pending);
 }
 
 /**
@@ -456,48 +563,35 @@ export function createHttpFormationApprover(options?: {
       }
 
       const controller = new AbortController();
-      let timedOut = false;
-      let callerAborted = false;
-      const timer = setTimeout(() => {
-        timedOut = true;
-        controller.abort();
-      }, timeoutMs);
-      // Relayed by hand rather than `AbortSignal.any` (not reliably present on React
-      // Native/Hermes; this client commits to `fetch` + `AbortController` only).
-      const onCallerAbort = (): void => {
-        callerAborted = true;
-        controller.abort();
-      };
-      signal?.addEventListener('abort', onCallerAbort, { once: true });
+      const budget = startBudget(timeoutMs, origin, controller, signal);
 
       try {
-        const response = await doFetch(url.toString(), {
-          method: 'POST',
-          headers: { 'content-type': 'application/json', accept: 'application/json' },
-          body: JSON.stringify(vouchFields(request)),
-          redirect: 'error',
-          signal: controller.signal
-        });
-        const approval = await readApproval(response, origin);
+        const response = await fetchWithinBudget(
+          doFetch(url.toString(), {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', accept: 'application/json' },
+            body: JSON.stringify(vouchFields(request)),
+            redirect: 'error',
+            signal: controller.signal
+          }),
+          budget
+        );
+        const approval = await readApproval(response, origin, budget);
         log('approval obtained from %s for token %s', origin, request.token);
         return approval;
       } catch (error) {
+        // Includes the budget's own rejection, which already carries the timeout/cancellation
+        // wording; anything else got here without the budget firing, so the hook is unreachable.
         if (error instanceof FormationApprovalError) {
           throw error;
         }
-        let reason: string;
-        if (timedOut) {
-          reason = `Approval hook ${origin} did not answer within ${timeoutMs}ms`;
-        } else if (callerAborted) {
-          reason = `Formation was cancelled while approval hook ${origin} was being asked`;
-        } else {
-          reason = `Approval hook ${origin} could not be reached`;
-        }
-        throw new FormationApprovalError('unavailable', reason, { cause: error });
+        throw new FormationApprovalError(
+          'unavailable',
+          `Approval hook ${origin} could not be reached`,
+          { cause: error }
+        );
       } finally {
-        // Cleared on EVERY exit path: a leaked abort timer keeps a node's event loop alive.
-        clearTimeout(timer);
-        signal?.removeEventListener('abort', onCallerAbort);
+        budget.dispose();
       }
     }
   };
