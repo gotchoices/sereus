@@ -3,17 +3,19 @@
  *
  * Capstone integration coverage for the `Strand.*` membership tables landed by the
  * `strand-membership-*` tickets (founder bootstrap → invite/join → member-peer →
- * manager rotation, and member-peer REMOVAL). Drives the full CLOSED-strand path
+ * manager rotation, member-peer REMOVAL, and a join driven from the SECOND node's own
+ * database). Drives the full CLOSED-strand path
  * across two REAL `CadreNode`s over libp2p, modelled on the proven two-node pattern
  * in `rbac-signed-write.integration.ts` (real nodes, `formStrand` over libp2p,
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
  * tests in `strand-formation-e2e.integration.ts`.
  *
- * Two independent tests, each with its OWN two-node strand via
- * {@link bringUpClosedStrand}: the admission/rotation lifecycle, and device-record
- * (`MemberPeer`) removal. They are deliberately NOT one narrative — the removal test
- * asserts enumerations, and the lifecycle test ends with rejected writes whose
- * post-state this file does not assert (see the rejection floor below).
+ * Three independent tests, each with its OWN two-node strand via
+ * {@link bringUpClosedStrand}: the admission/rotation lifecycle, device-record
+ * (`MemberPeer`) removal, and a JOINER-AUTHORED join. They are deliberately NOT one
+ * narrative — the removal test asserts enumerations, and the other two end with
+ * rejected writes whose post-state this file does not assert (see the rejection
+ * floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
  * This asserts the SQL-LAYER membership lifecycle using the writer APIs against the
@@ -31,22 +33,35 @@
  * are NOT repeated here. What this file adds is the NETWORK.
  *
  * ── WHERE THE WRITER LIFECYCLE RUNS (and why) ────────────────────────────────
- * The invite/join, member-peer, and manager-rotation writers all run against the
- * FOUNDER's strand DB — the authoritative DB where the founder bootstrap seated the
- * `Manager`/`Member`/`Header` those deferred constraints (`InviteValid`,
- * `MemberExists`, `Manager.Authorized`, …) read. Their accept/reject outcomes are
- * the gating deliverable. Cross-node replication of `Strand.*` rows to the JOINER's
- * DB is observed BEST-EFFORT and logged, never asserted as a bare gate: per the same
- * bootstrap-vs-networked caveat noted in `rbac-signed-write`, deferred-constraint-
- * bearing `Strand.*` rows may not reliably replicate under the manual-wire setup. A
- * "joiner" here is a distinct member keypair (+ the joiner node's real strand peer
- * id) admitted into the founder DB, never the founder's own key.
+ * The first two tests are FOUNDER-AUTHORITATIVE by design: every writer call runs
+ * against the founder's strand DB, the DB where the founder bootstrap seated the
+ * `Manager`/`Member`/`Header` that the deferred constraints (`InviteValid`,
+ * `MemberExists`, `Manager.Authorized`, …) read. That keeps their accept/reject
+ * BREADTH — many outcomes per bring-up — cheap and unambiguous. In those two, a
+ * "joiner" is a distinct member keypair (+ the joiner node's real strand peer id)
+ * admitted into the founder DB, never the founder's own key.
  *
- * OBSERVE-THEN-REQUIRE. The removal test does gate cross-node, but conditionally:
- * if the joiner was observed to see the rows APPEAR, it must also be observed to see
- * them DISAPPEAR. That never flakes on a slow or absent replica, and it still catches
- * the failure that matters — a delete that lands on the founder and never propagates.
- * The skip path is logged explicitly.
+ * The third test is JOINER-AUTHORED: the founder issues an invite, and the second
+ * node then runs `consumeInvite` / `registerMemberPeer` / a signed `App.Items` write
+ * against its OWN database, with each resulting row gated as visible from the
+ * founder. That proves the deferred constraints resolve against founder-authored
+ * rows read from the second node, and that a membership write authored there
+ * converges back.
+ *
+ * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
+ * probe in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
+ * every convergence check in the third test all throw on timeout. The old
+ * best-effort/observe-then-require paths are gone. A timeout here is a real
+ * convergence defect; do NOT restore a skip branch.
+ *
+ * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in this file
+ * proves a row is VISIBLE from the other node's database, not that its block lives
+ * there. A read on either node resolves one coordinator peer per block; when that
+ * resolves to the authoring node, the other node's `select` is a remote call against
+ * the author's storage and nothing needs to live locally. Visibility is the property
+ * an application actually observes, and it is what this file asserts. Proving
+ * physical replication needs a different technique (stop the authoring node first) —
+ * parked as `backlog/debt-strand-replication-vs-visibility-proof`.
  *
  * Rejection floor: per the optimystic deferred-constraint-rollback gap (backlog),
  * rejected writes assert via `rejects.toThrow()` ("throws" is the floor) and do NOT
@@ -210,8 +225,6 @@ interface ClosedStrandFixture {
 	joinerDb: Database;
 	/** The founding Member/Manager keypair, derived from the shared `MemberPrivateKey`. */
 	founderKeyPair: Ed25519KeyPair;
-	/** True when the founder's bootstrap rows were observed on the joiner DB. */
-	syncObserved: boolean;
 }
 
 /**
@@ -221,7 +234,7 @@ interface ClosedStrandFixture {
  * directly-constructed closed `StrandRow` on both sides, asserts the bring-up
  * invariants (the founder bootstrap seated exactly `Header`/`Member`/`Manager`; the
  * joiner wrote nothing of its own), dials the two strand-level libp2p nodes together,
- * and probes best-effort for replication of the founder's bootstrap rows.
+ * and GATES on the founder's bootstrap rows becoming visible to the joiner.
  *
  * `label` keeps the tests' party ids, strand ids and member keys disjoint, and each
  * call gets its OWN provisioner instance (its counter is per-instance), so nothing
@@ -304,28 +317,19 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 			{ timeoutMs: 10_000, description: 'joiner strand connects to founder strand' },
 		);
 
-		// ── BEST-EFFORT: joiner observes the founder's bootstrap rows via sync ──
-		// Logged, NOT gated — deferred-constraint-bearing Strand.* rows may not
-		// replicate reliably under the manual-wire setup (see header rationale).
-		let syncObserved = false;
-		try {
-			await waitUntil(
-				async () =>
-					(await strandCount(joinerDb, 'Header')) >= 1 &&
-					(await strandCount(joinerDb, 'Member')) >= 1 &&
-					(await strandCount(joinerDb, 'Manager')) >= 1,
-				{ timeoutMs: 8_000, intervalMs: 250, description: 'founder bootstrap rows replicate to joiner' },
-			);
-			syncObserved = true;
-		} catch {
-			syncObserved = false; // observed, not asserted
-		}
-		console.log(
-			`[closed-strand:${label}] founder bootstrap rows observed on joiner via sync=${syncObserved} ` +
-			'(best-effort; gating assertions are founder-local + writer accept/reject)',
+		// ── GATE: the founder's bootstrap rows become visible to the joiner ──
+		// Throws on timeout. Measured convergence is sub-second, so a 15 s budget
+		// expiring is a real defect, not a slow machine — see the header.
+		await waitUntil(
+			async () =>
+				(await strandCount(joinerDb, 'Header')) >= 1 &&
+				(await strandCount(joinerDb, 'Member')) >= 1 &&
+				(await strandCount(joinerDb, 'Manager')) >= 1,
+			{ timeoutMs: 15_000, intervalMs: 250, description: 'founder bootstrap rows replicate to joiner' },
 		);
+		console.log(`[closed-strand:${label}] founder bootstrap rows visible on joiner (gated)`);
 
-		return { founderNode, joinerNode, founderStrand, joinerStrand, founderDb, joinerDb, founderKeyPair, syncObserved };
+		return { founderNode, joinerNode, founderStrand, joinerStrand, founderDb, joinerDb, founderKeyPair };
 	} catch (error) {
 		// A partially-built fixture still holds live libp2p nodes; the caller never
 		// receives it, so it can never run its own teardown.
@@ -484,7 +488,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//     key still holding a `Manager` row, and this test revokes M.
 	//   • the single rejected write is LAST, per this file's rejection floor.
 	it('a member clears its own device record and a manager clears a revoked member\'s leftovers', async () => {
-		const { founderNode, joinerNode, joinerStrand, founderDb, joinerDb, founderKeyPair, syncObserved } =
+		const { founderNode, joinerNode, joinerStrand, founderDb, joinerDb, founderKeyPair } =
 			await bringUpClosedStrand('removal');
 
 		try {
@@ -514,49 +518,27 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			expect((await listMemberPeers(founderDb, member.publicKeyB64)).sort())
 				.toEqual([joinerPeerId, secondPeerId].sort());
 
-			// Observe-then-require, part one: did the joiner ever see M's two rows? The
-			// answer decides whether the cross-node checks below gate or are skipped.
-			let peersVisibleOnJoiner = false;
-			try {
-				await waitUntil(
-					async () => (await listMemberPeers(joinerDb, member.publicKeyB64)).length === 2,
-					{ timeoutMs: 8_000, intervalMs: 250, description: "M's two MemberPeer rows replicate to the joiner" },
-				);
-				peersVisibleOnJoiner = true;
-			} catch {
-				peersVisibleOnJoiner = false; // observed, not asserted
-			}
-			console.log(
-				`[closed-strand:removal] M's device rows observed on joiner=${peersVisibleOnJoiner} ` +
-				`(bootstrap sync=${syncObserved}); cross-node removal checks ` +
-				`${peersVisibleOnJoiner ? 'GATE' : 'are SKIPPED — the rows never replicated'}`,
+			// GATE: M's two device rows become visible on the joiner. Throws on timeout;
+			// there is no skip path (see the header — replication is gated everywhere).
+			await waitUntil(
+				async () => (await listMemberPeers(joinerDb, member.publicKeyB64)).length === 2,
+				{ timeoutMs: 15_000, intervalMs: 250, description: "M's two MemberPeer rows replicate to the joiner" },
 			);
 
 			/**
-			 * Observe-then-require, part two: IF the joiner saw M's rows appear, it must
-			 * also see them disappear — this `waitUntil` throws. Otherwise the check is
-			 * skipped loudly rather than silently. Catches the failure that matters (a
-			 * delete that lands on the founder and never propagates) without flaking on a
-			 * slow or absent replica.
+			 * The joiner must also see each removal — this `waitUntil` throws. Catches the
+			 * failure that matters: a delete that lands on the founder and never propagates.
 			 *
 			 * NOTE: this proves the removal is VISIBLE from the second node's database, not
-			 * that the block replicated to it. A read on either node resolves one coordinator
-			 * peer per block; when that resolves to the founder, the joiner's `select` is a
-			 * remote call against the founder's storage and nothing needs to live locally.
-			 * Visibility is the property this test wants. If a future ticket needs to prove
-			 * replication itself, read the joiner's raw storage, or stop the founder first.
+			 * that the block replicated to it — see the visibility caveat in the header.
 			 */
 			const requireJoinerAgrees = async (expected: string[], what: string): Promise<void> => {
-				if (!peersVisibleOnJoiner) {
-					console.log(`[closed-strand:removal] cross-node check SKIPPED (${what}): M's rows never replicated`);
-					return;
-				}
 				await waitUntil(
 					async () => {
 						const seen = (await listMemberPeers(joinerDb, member.publicKeyB64)).sort();
 						return JSON.stringify(seen) === JSON.stringify([...expected].sort());
 					},
-					{ timeoutMs: 8_000, intervalMs: 250, description: `joiner agrees: ${what}` },
+					{ timeoutMs: 15_000, intervalMs: 250, description: `joiner agrees: ${what}` },
 				);
 			};
 
@@ -625,6 +607,112 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 					[founderKeyPair.publicKeyB64, retireSignature, 'MemberPeer', founderPeerStamp],
 				),
 			).rejects.toThrow(/RowIsGone/);
+		} finally {
+			await stopBoth(founderNode, joinerNode);
+		}
+	}, 60_000);
+
+	// ── The join, authored on the SECOND node's own database ──────────────────
+	//
+	// The other two tests are founder-authoritative (see the header): they buy
+	// accept/reject breadth against the bootstrap-seated rows. This one buys the
+	// opposite property — that the second node is a genuine participant, not a
+	// spectator. Every write below is issued against `joinerDb`, and its deferred
+	// constraints (`Member.Authorized`'s invite branch, `ConsumedInvite.ValidUsage` /
+	// `NotExpired` / `NotCancelled`, `MemberPeer.MemberExists`) must resolve against
+	// rows the FOUNDER authored and the joiner only sees over the network.
+	//
+	// Step order is load-bearing: every accepted write comes first and the single
+	// rejected write is LAST, per this file's rejection floor.
+	it('a joining node runs the join against its OWN database and both nodes converge', async () => {
+		const { founderNode, joinerNode, joinerStrand, founderDb, joinerDb, founderKeyPair } =
+			await bringUpClosedStrand('joiner-db');
+
+		try {
+			// ── 1. The founder issues an invite; the secret travels out of band ──
+			// Handing `invitePrivateKey` straight to the joiner side models the real
+			// flow, where the manager delivers the invite secret to the invitee through
+			// some channel outside the strand.
+			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+
+			// The invite row must be VISIBLE to the joiner before it consumes it. Skipping
+			// this wait and leaning on the constraint's own read would fail
+			// `ConsumedInvite.ValidUsage` at commit and read like an authorization bug.
+			await waitUntil(
+				async () => (await joinerDb.get('select Key from Strand.Invite where Key = ?', [inviteKey]))?.Key === inviteKey,
+				{ timeoutMs: 15_000, intervalMs: 250, description: 'the invite row becomes visible to the joiner' },
+			);
+
+			// ── 2. The JOINER consumes it, against its OWN database ──────────────
+			const joinerMember = freshKeyPair();
+			await consumeInvite(joinerDb, {
+				inviteKey,
+				invitePrivateKey,
+				memberKey: joinerMember.publicKeyB64,
+			});
+
+			// Local and immediate — the writer's transaction committed, so no wait.
+			expect((await joinerDb.get('select Key from Strand.Member where Key = ?', [joinerMember.publicKeyB64]))?.Key)
+				.toBe(joinerMember.publicKeyB64);
+			expect((await joinerDb.get('select MemberKey from Strand.ConsumedInvite where InviteKey = ?', [inviteKey]))?.MemberKey)
+				.toBe(joinerMember.publicKeyB64);
+
+			// ── 3. THE HEADLINE: the joiner-authored membership reaches the founder ──
+			await waitUntil(
+				async () =>
+					(await founderDb.get('select Key from Strand.Member where Key = ?', [joinerMember.publicKeyB64]))?.Key
+						=== joinerMember.publicKeyB64 &&
+					(await founderDb.get('select MemberKey from Strand.ConsumedInvite where InviteKey = ?', [inviteKey]))?.MemberKey
+						=== joinerMember.publicKeyB64,
+				{ timeoutMs: 15_000, intervalMs: 250, description: 'the joiner-authored Member + ConsumedInvite reach the founder' },
+			);
+
+			// ── 4. The new member binds its REAL node, from its own database ─────
+			const joinerPeerId = joinerStrand.libp2pNode!.peerId.toString();
+			await registerMemberPeer(joinerDb, { memberKeyPair: joinerMember, peerId: joinerPeerId });
+			await waitUntil(
+				async () => (await listMemberPeers(founderDb, joinerMember.publicKeyB64)).includes(joinerPeerId),
+				{ timeoutMs: 15_000, intervalMs: 250, description: "the joiner's device record reaches the founder" },
+			);
+
+			// ── 5. A signed sApp write, authored on the joiner ───────────────────
+			// Layer-3 convergence, not a second membership check: the fixture's
+			// AuthorizedWrite is pure signature RBAC over `Id|Name|Value` and never reads
+			// Strand.Member. What this proves is that an App write authored by the
+			// newly-admitted key on the joiner's DB is seen by the founder.
+			const itemId = 'item-joiner-authored';
+			const itemValue = 'written on the joiner db';
+			const writeSig = signItem(joinerMember.privateKeyB64, itemId, 'hello', itemValue);
+			await joinerDb.exec(
+				`insert into App.Items (Id, Name, Value, CreatedBy)
+				   with context MemberKey = ?, Signature = ?
+				   values (?, ?, ?, ?)`,
+				[joinerMember.publicKeyB64, writeSig, itemId, 'hello', itemValue, joinerMember.publicKeyB64],
+			);
+			await waitUntil(
+				async () => {
+					const row = await founderDb.get('select Name, Value, CreatedBy from App.Items where Id = ?', [itemId]);
+					return row?.Name === 'hello' && row?.Value === itemValue && row?.CreatedBy === joinerMember.publicKeyB64;
+				},
+				{ timeoutMs: 15_000, intervalMs: 250, description: 'the joiner-authored App.Items row reaches the founder' },
+			);
+
+			// ── 6. LAST — a rejected join on the joiner's own database ───────────
+			// The deferred constraints must reject on the joiner too, not only on the
+			// founder: consuming a second founder-issued invite with the WRONG private key
+			// fails the invite-key possession proof at commit.
+			const { inviteKey: inviteKey2 } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+			await waitUntil(
+				async () => (await joinerDb.get('select Key from Strand.Invite where Key = ?', [inviteKey2]))?.Key === inviteKey2,
+				{ timeoutMs: 15_000, intervalMs: 250, description: 'the second invite row becomes visible to the joiner' },
+			);
+			await expect(
+				consumeInvite(joinerDb, {
+					inviteKey: inviteKey2,
+					invitePrivateKey: freshKeyPair().privateKeyB64,
+					memberKey: freshKeyPair().publicKeyB64,
+				}),
+			).rejects.toThrow();
 		} finally {
 			await stopBoth(founderNode, joinerNode);
 		}

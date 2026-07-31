@@ -731,7 +731,7 @@ selection-layer ticket `cross-network-unknown-peer-backfill-hardening` was plann
 `cross-network-cohort-no-unknown-backfill` + `cross-network-coordinator-no-unknown-fallback`),
 implemented, reviewed, and is **complete** in `../optimystic` (HEAD `56db2fd`). Rebuilt the linked
 `db-p2p` dist and re-ran the integration suite: `strand-formation-e2e` **11/11 pass** (was 3 fail /
-8 pass — Phase 2 storage+storage now green), `strand-membership-closed-strand-e2e` **1/1 pass**, and
+8 pass — Phase 2 storage+storage now green), `strand-membership-closed-strand-e2e` **3/3 pass**, and
 the **full integration suite is 98 passed / 2 failed** (was broadly blocked). The 2 remaining
 failures are a *separate, pre-existing* membership-authorization issue (not the cross-network path) —
 see "Membership gate" below; filed as `tickets/plan/membership-gate-uses-cadrepeer-record-presence.md`.
@@ -809,7 +809,7 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   for the same operation is parked in `backlog/feat-cadre-host-strand-removal-ui`.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
-  membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1). The optimystic
+  membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 3/3). The optimystic
   selection-layer fix (`cross-network-unknown-peer-backfill-hardening`, split into
   `cross-network-cohort-no-unknown-backfill` + `cross-network-coordinator-no-unknown-fallback`,
   both complete at optimystic HEAD `56db2fd`) stops the `min(2, clusterSize)` viability floor from
