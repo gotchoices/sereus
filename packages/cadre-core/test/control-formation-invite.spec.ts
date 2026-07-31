@@ -1292,77 +1292,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     });
   });
 
-  /**
-   * `FormationUsage.PeerConsented`: every usage row must carry the JOINER's own signature
-   * over the consent digest (Token, UsageStampId, PeerKey, Disclosure), verified against
-   * the row's `PeerKey`. Approver-free invites throughout, so `Authorized`'s validation
-   * branch cannot fire and each refusal is a single-constraint assertion.
-   */
-  describe('FormationUsage.PeerConsented joiner-consent branch', () => {
-    it('lands a consent whose signature matches the presented joiner key, and stores both', async () => {
-      const token = 'invite-consent-ok-' + rand();
-      const strandId = 'strand-consent-ok-' + rand();
-      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
-      await db.insertFormationInvite(token, 'sapp-consent-ok', ownerPublicKey, signMessage);
-
-      const consent = mintConsent(token);
-      expect((await db.recordFormationUsage({ token, strandId, ...consent })).useNumber).toBe(1);
-
-      const row = await rawDb.get(
-        'select PeerKey, PeerSig from CadreControl.FormationUsage where Token = ?',
-        [token],
-      );
-      expect(row?.PeerKey).toBe(consent.peerKey);
-      expect(row?.PeerSig).toBe(consent.peerSignature);
-    });
-
-    it('refuses a consent signed by a DIFFERENT joiner than the key presented', async () => {
-      const token = 'invite-consent-forged-' + rand();
-      const strandId = 'strand-consent-forged-' + rand();
-      await db.insertStrand(strandId, 'o', ownerPublicKey, signMessage);
-      await db.insertFormationInvite(token, 'sapp-consent-forged', ownerPublicKey, signMessage);
-
-      const presented = mintConsent(token);
-      const before = await usageCount();
-      // A perfectly valid signature — from the WRONG key: a second joiner signs over the
-      // same token and nonce, and its consent is filed under the first joiner's PeerKey.
-      // The pre-existing owner-signed strand keeps StrandExists and Authorized satisfied,
-      // so PeerConsented is the single rejector.
-      await expectConstraintFailure(
-        db.recordFormationUsage({
-          token, strandId,
-          peerKey: presented.peerKey,
-          usageStampId: presented.usageStampId,
-          peerSignature: signJoinerConsent(mintJoiner(), { token, usageStampId: presented.usageStampId }),
-        }),
-        'PeerConsented',
-      );
-      expect(await usageCount()).toBe(before);
-    });
-
-    it('rolls back the whole consent-seating transaction when the joiner signature fails', async () => {
-      const token = 'invite-consent-seatfail-' + rand();
-      await db.insertFormationInvite(token, 'sapp-consent-seatfail', ownerPublicKey, signMessage);
-
-      const presented = mintConsent(token);
-      const strandsBefore = await strandCount();
-      const usageBefore = await usageCount();
-      // Same wrong-key shape on an unbound invite with NO strand pre-inserted.
-      // PeerConsented is check-on-insert: it fires at the usage insert inside the seating
-      // transaction, and the strand insert that preceded it rolls back with it.
-      await expectConstraintFailure(
-        db.redeemInvitation({
-          token, strandId: 'strand-consent-seatfail-' + rand(),
-          peerKey: presented.peerKey,
-          usageStampId: presented.usageStampId,
-          peerSignature: signJoinerConsent(mintJoiner(), { token, usageStampId: presented.usageStampId }),
-        }),
-        'PeerConsented',
-      );
-      expect(await strandCount()).toBe(strandsBefore);
-      expect(await usageCount()).toBe(usageBefore);
-    });
-  });
+  // `FormationUsage.PeerConsented`'s own coverage — the positive path plus the whole
+  // forged/reused-signature matrix — lives in control-formation-consent-signature.spec.ts,
+  // so the constraint is asserted in ONE place. The cases here exercise it only incidentally,
+  // by supplying a real consent alongside whatever they actually pin.
 
   describe('ControlFormationUsageRecorder (DB-backed)', () => {
     it('isTokenValid: true for a known unexpired token, false for unknown or expired', async () => {

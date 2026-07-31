@@ -515,8 +515,19 @@ describe('FormationListener joiner-consent pre-check', () => {
   it('rejects tampered/mismatched/malformed consent before validating the token', async () => {
     for (const [label, bad] of await invalidConsentContacts(contact)) {
       let tokenChecks = 0;
+      let provisions = 0;
       const { options, identityDisclosed } = baseOptions({
-        validateToken: async () => { tokenChecks++; return { valid: true }; }
+        validateToken: async () => { tokenChecks++; return { valid: true }; },
+        provisionStrand: async () => {
+          provisions++;
+          return {
+            approved: true,
+            result: {
+              strand: { strandId: 'strand-should-not-exist', createdBy: 'responder' },
+              dbConnectionInfo: { endpoint: 'local', credentialsRef: '' }
+            }
+          };
+        }
       });
       const listener = new FormationListener(options);
       const { node, invoke } = captureHandler();
@@ -532,6 +543,10 @@ describe('FormationListener joiner-consent pre-check', () => {
       expect(result.cadrePeerAddrs, label).toBeUndefined();
       expect(identityDisclosed(), label).toBe(false);
       expect(tokenChecks, label).toBe(0);
+      // Nothing downstream of the pre-check runs either: a bad consent must never reach the
+      // side-effecting hook that mints or seats a strand, so a refused contact cannot leave a
+      // half-formed strand behind for the writer to trip over.
+      expect(provisions, label).toBe(0);
     }
   });
 
