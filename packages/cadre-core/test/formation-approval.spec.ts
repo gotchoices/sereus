@@ -481,6 +481,42 @@ describe('createHttpFormationApprover', () => {
     expect(error.message).toContain('within 25ms');
   });
 
+  it('rejects a pre-aborted caller signal as unavailable, without contacting the hook', async () => {
+    const { fetchImpl, calls } = stubFetch(() => jsonResponse({}));
+    const caller = new AbortController();
+    caller.abort();
+
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl }).requestApproval(baseRequest(), caller.signal),
+      'unavailable'
+    );
+    expect(error.message).toContain('cancelled');
+    // The hook was never asked — an abandoned redemption must not spend an approval.
+    expect(calls).toHaveLength(0);
+  });
+
+  it('relays a mid-flight caller abort into the request and reports it as cancelled', async () => {
+    let aborted = false;
+    const fetchImpl = ((_input: RequestInfo | URL, init?: RequestInit) =>
+      new Promise<Response>((_resolve, reject) => {
+        init?.signal?.addEventListener('abort', () => {
+          aborted = true;
+          reject(new Error('aborted by signal'));
+        });
+      })) as unknown as typeof fetch;
+    const caller = new AbortController();
+    setTimeout(() => caller.abort(), 10);
+
+    // A 10s client budget: a prompt rejection can only have come from the caller's abort.
+    const error = await expectFailure(
+      createHttpFormationApprover({ fetchImpl, timeoutMs: 10_000 })
+        .requestApproval(baseRequest(), caller.signal),
+      'unavailable'
+    );
+    expect(aborted).toBe(true);
+    expect(error.message).toContain('cancelled');
+  });
+
   it('times out a hook that answers headers instantly and then dribbles the body', async () => {
     let aborted = false;
     const { fetchImpl } = stubFetch((init) => {

@@ -68,7 +68,7 @@ const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
  * approval rather than lying "timed out" over a spent invite. A hook that observes the
  * abort before writing leaves the invite unspent.
  */
-const PROVISION_SETTLE_GRACE_MS = 2_000;
+export const PROVISION_SETTLE_GRACE_MS = 2_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
 const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = 15_000;
 /**
