@@ -44,8 +44,9 @@ function recorder(): ControlFormationUsageRecorder {
 
 /**
  * The minimum database surface a redemption touches once its signal is still live: an invite
- * that DEMANDS approval, plus the nonce mint. `onInviteRead` is the seam a test uses to abort
- * at the one moment `obtainApproval`'s own check covers — after the read, before the ask.
+ * that DEMANDS approval. (The nonce is minted by the JOINER and arrives on the call, so there
+ * is nothing here to mint it.) `onInviteRead` is the seam a test uses to abort at the one
+ * moment `obtainApproval`'s own check covers — after the read, before the ask.
  */
 function approvalDemandingDatabase(onInviteRead?: () => void): ControlDatabase {
   return {
@@ -60,6 +61,10 @@ function approvalDemandingDatabase(onInviteRead?: () => void): ControlDatabase {
   } as unknown as ControlDatabase;
 }
 
+// NOTE: the consent triple is deliberately placeholder text, not real key material — every
+// case here aborts before any signature is looked at, and the fake database above verifies
+// nothing. If that fake ever grows a real `PeerConsented`-style check, these strings become
+// silently wrong; mint them with `test/formation-consent-helper.ts` at that point.
 const REDEMPTION = {
   token: 'invite-abc', peerKey: 'joiner-pub-key', peerSignature: 'joiner-consent-sig',
   usageStampId: 'stamp-1', strandId: 'strand-1', disclosure: '{}',

@@ -190,9 +190,7 @@ export function formationVouchMessage(fields: {
 /**
  * The exact bytes the JOINING peer signs to consent to ONE redemption of a
  * `FormationInvite` — the TS mirror of the `'consent'` digest in the schema's
- * `FormationUsage.PeerConsented` constraint, in its field order. The helpers here
- * land ahead of that constraint and of every caller (`debt-formation-consent-core`
- * wires both), so nothing signs or checks these bytes yet.
+ * `FormationUsage.PeerConsented` constraint, in its field order.
  *
  * A sibling of {@link formationVouchMessage}, not a replacement: the approver's vouch
  * says the redemption may proceed, this says the joiner itself agreed to it, and the

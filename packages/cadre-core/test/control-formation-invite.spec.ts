@@ -15,6 +15,7 @@ import { ControlFormationUsageRecorder } from '../src/control-formation-recorder
 import { canonicalDatetime } from '../src/canonical-datetime.js';
 import { expectConstraintFailure, expectUniqueViolation } from './control-constraint-helpers.js';
 import { mintJoiner, mintConsent, signJoinerConsent } from './formation-consent-helper.js';
+import type { JoinerConsent } from './formation-consent-helper.js';
 
 const log = debug('sereus:cadre:test:formation-invite');
 
@@ -72,28 +73,24 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
    * attempted. `Now` goes through the same `canonicalDatetime` transform the writer uses.
    * Options object rather than positional args: the list is long enough that call sites would
    * be unreadable, and most cases only care about one or two fields. Raw inserts hit the
-   * `PeerConsented` CHECK like any other, so when none of the three consent fields is supplied
-   * a fresh joiner is minted and signs over exactly what the insert will carry.
+   * `PeerConsented` CHECK like any other, so when the consent triple is omitted a fresh joiner
+   * is minted and signs over exactly what the insert will carry. The triple is all-or-nothing
+   * in the type: a subset would leave the omitted fields unsigned and every case would then
+   * fail on `PeerConsented` rather than on the constraint it means to pin.
    */
   async function rawInsertFormationUsage(opts: {
     token: string;
     useNumber: number;
     strandId: string;
     strandStampId: string;
-    /** Single-use nonce; minted alongside a fresh consent when absent. */
-    usageStampId?: string;
-    /** The joining peer's key; a fresh consented joiner when absent. */
-    peerKey?: string;
-    /** The joiner's consent signature; minted with the key when absent. */
-    peerSignature?: string;
     disclosure?: string;
     validationKey?: string;
     validationSignature?: string;
-  }): Promise<void> {
+  } & (JoinerConsent | { usageStampId?: undefined; peerKey?: undefined; peerSignature?: undefined })): Promise<void> {
     const now = await canonicalDatetime(rawDb, Date.now());
-    const consent = opts.usageStampId !== undefined || opts.peerKey !== undefined || opts.peerSignature !== undefined
-      ? { usageStampId: opts.usageStampId!, peerKey: opts.peerKey!, peerSignature: opts.peerSignature! }
-      : mintConsent(opts.token, opts.disclosure ?? '');
+    const consent: JoinerConsent = opts.peerKey === undefined
+      ? mintConsent(opts.token, opts.disclosure ?? '')
+      : { usageStampId: opts.usageStampId, peerKey: opts.peerKey, peerSignature: opts.peerSignature };
     await rawDb.exec(
       `insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
          with context Now = ?, ValidationKey = ?, ValidationSignature = ?
@@ -746,7 +743,15 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       peerPrivateKey: string;
     }
 
-    /** Recompute peerSignature from the redemption's OWN current fields. */
+    /**
+     * Recompute peerSignature from the redemption's OWN current fields.
+     *
+     * NOTE: a case that varies `token`, `usageStampId`, `peerKey` or `disclosure` and forgets
+     * this fails on `PeerConsented` instead of the constraint it means to pin — a confusing
+     * symptom, since the case reads as being about the approver's digest. Nothing enforces the
+     * call; if that trap ever bites twice, fold the mutation and the re-signing into one
+     * `vary(redemption, changes)` helper so there is no separate step to forget.
+     */
     const reconsent = (r: Redemption): Redemption => ({
       ...r,
       peerSignature: signJoinerConsent({ privateKey: r.peerPrivateKey, peerKey: r.peerKey }, r),
