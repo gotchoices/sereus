@@ -45,10 +45,10 @@ function redactContainer(container: Container): Omit<Container, 'seedToken'> {
  */
 function validatePinnedOwnerKeys(value: unknown): { keys?: string[] } | { error: string } {
   if (value === undefined) return {};
-  if (!Array.isArray(value) || value.some(key => typeof key !== 'string')) {
+  if (!Array.isArray(value) || !value.every((key): key is string => typeof key === 'string')) {
     return { error: 'pinnedOwnerKeys must be an array of strings' };
   }
-  return { keys: value as string[] };
+  return { keys: value };
 }
 
 /** Coerce an arbitrary value to a strict boolean for the shutdownAfter flag */

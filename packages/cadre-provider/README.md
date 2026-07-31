@@ -229,7 +229,10 @@ The keys flow only from a tenant's own create request into that tenant's own
 container; there is **no provider-level default**, because a provider-wide pin would
 let one tenant's owner seed another tenant's node. Keys are not validated for
 encoding — a malformed pin never matches a real signer, so the node refuses the seed
-rather than failing to start. The first accepted seed anchors the key in `/data`, so
+rather than failing to start — but the list is trimmed, blank entries dropped and
+duplicates collapsed, so the container record shows exactly the pins the node got and
+a list of only blanks is the same as omitting the field. The first accepted seed
+anchors the key in `/data`, so
 later seeds from the same owner need no pin and survive restarts. A container created
 without keys still provisions (the omission is logged) but refuses every seed.
 

@@ -357,7 +357,7 @@ interface SeedAckMessage {
 | Mechanism | When Used | Notes |
 |-----------|-----------|-------|
 | Direct protocol | New node is dialable | Instigator dials, sends seed directly |
-| Provider API | Provider-hosted node | `POST /containers/:id/seed` via HTTPS — delivery only; the container must also have been *created* with its tenant's owner key pinned (below) |
+| Provider API | Provider-hosted node | `PUT /containers/:id/seed` via HTTPS — delivery only; the container must also have been *created* with its tenant's owner key pinned (below) |
 | QR code / deep link | Mobile onboarding | Seed encoded in URL, opened by app |
 | Environment variable | Container startup | `CADRE_SEED` contains base64-encoded seed |
 
@@ -717,12 +717,12 @@ sequenceDiagram
     participant U as User (Phone)
     participant P as Provider API
     participant C as Provider Container
-    U->>P: 1. Request container (payment)
+    U->>P: 1. Request container (payment + pinnedOwnerKeys)
     P->>C: 2. Spawn container
     C->>P: createCadrePeer() → PeerId
     P->>U: 3. Return PeerId + multiaddr
     Note over U: 4. authorizePeer (add to local control DB)<br/>5. createSeed()
-    U->>P: 6. POST /containers/:id/seed
+    U->>P: 6. PUT /containers/:id/seed
     P->>C: Forward seed
     Note over C: applySeed() (populate cache)
     U->>C: 7. Dial container (outbound, NAT-safe)

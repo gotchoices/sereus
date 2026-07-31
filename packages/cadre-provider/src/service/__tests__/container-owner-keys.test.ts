@@ -92,15 +92,40 @@ describe('ContainerService pinned owner keys', () => {
     expect((await store.getContainer(created.id))?.pinnedOwnerKeys).toEqual(['owner-a']);
   });
 
-  it('forwards exactly the keys it was given to the orchestrator', async () => {
+  it('normalizes the recorded keys: trimmed, blanks dropped, duplicates collapsed', async () => {
+    const store = new MemoryStore();
+    const { orchestrator } = capturingOrchestrator();
+    const service = new ContainerService({ store, orchestrator });
+
+    const created = await service.createContainer(request('cust-a', [' owner-a ', '', 'owner-a', '  ', 'owner-b']));
+
+    expect(created.pinnedOwnerKeys).toEqual(['owner-a', 'owner-b']);
+  });
+
+  it('treats a blanks-only list as no keys at all (never a bare CADRE_OWNER_KEYS)', async () => {
     const store = new MemoryStore();
     const { orchestrator, create } = capturingOrchestrator();
     const service = new ContainerService({ store, orchestrator });
 
-    const req = request('cust-a', ['owner-a', 'owner-a2']);
+    const created = await service.createContainer(request('cust-a', ['', '   ']));
+    await flush();
+
+    expect(created.pinnedOwnerKeys).toBeUndefined();
+    expect(create.mock.calls[0]![0].pinnedOwnerKeys).toBeUndefined();
+  });
+
+  it('forwards the keys recorded on the container, not the ones on the request', async () => {
+    const store = new MemoryStore();
+    const { orchestrator, create } = capturingOrchestrator();
+    const service = new ContainerService({ store, orchestrator });
+
+    // The record is the authority on what the node was told to trust, so a
+    // re-provision driven from a stored container reproduces its pins even when
+    // the request it is replayed with disagrees.
+    const req = request('cust-a', ['owner-stale']);
     const c: Container = {
       id: 'ctr_a', customerId: 'cust-a', partyId: req.partyId, profile: 'storage',
-      status: 'pending', resources: {}, tags: {},
+      status: 'pending', resources: {}, tags: {}, pinnedOwnerKeys: ['owner-a', 'owner-a2'],
       createdAt: new Date('2026-06-01T00:00:00.000Z'), updatedAt: new Date('2026-06-01T00:00:00.000Z'),
     };
     await store.saveContainer(c);
@@ -109,7 +134,7 @@ describe('ContainerService pinned owner keys', () => {
     expect(create.mock.calls[0]![0].pinnedOwnerKeys).toEqual(['owner-a', 'owner-a2']);
   });
 
-  it('omits pinnedOwnerKeys entirely when the request carries none (no provider default)', async () => {
+  it('omits pinnedOwnerKeys entirely when the container has none (no provider default)', async () => {
     const store = new MemoryStore();
     const { orchestrator, create } = capturingOrchestrator();
     const service = new ContainerService({ store, orchestrator });

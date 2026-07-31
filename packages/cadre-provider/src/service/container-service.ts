@@ -31,6 +31,19 @@ export function resolveTenantPush(
   return push.tenants?.[customerId] ?? push.default;
 }
 
+/**
+ * Normalize the tenant-supplied seed-trust anchors to exactly what the node will
+ * end up honouring: trimmed, empties dropped, deduped — the same reduction
+ * `cadre-cli`'s `collectPinnedOwnerKeys` applies to `CADRE_OWNER_KEYS`. Doing it
+ * here means `[""]` (which the CLI parses back to "trust nobody") is recorded and
+ * forwarded as no keys at all, rather than as a pin the operator can see but the
+ * node does not have. Returns a fresh array, so a later mutation of the caller's
+ * array cannot rewrite what the record says the node was told to trust.
+ */
+function normalizePinnedOwnerKeys(keys: string[] | undefined): string[] {
+  return [...new Set((keys ?? []).map(key => key.trim()).filter(key => key.length > 0))];
+}
+
 /** Container service options */
 export interface ContainerServiceOptions {
   /** Store for persisting container state */
@@ -72,6 +85,7 @@ export class ContainerService {
 
     log('Creating container %s for customer %s', id, request.customerId);
 
+    const pinnedOwnerKeys = normalizePinnedOwnerKeys(request.pinnedOwnerKeys);
     const container: Container = {
       id,
       customerId: request.customerId,
@@ -82,9 +96,7 @@ export class ContainerService {
       tags: request.tags ?? {},
       createdAt: now,
       updatedAt: now,
-      // Copied so a later mutation of the caller's array cannot rewrite what the
-      // record says the node was told to trust.
-      ...(request.pinnedOwnerKeys?.length ? { pinnedOwnerKeys: [...request.pinnedOwnerKeys] } : {}),
+      ...(pinnedOwnerKeys.length ? { pinnedOwnerKeys } : {}),
     };
 
     // Save initial state
@@ -116,8 +128,11 @@ export class ContainerService {
       // Seed-trust anchors come from THIS tenant's own create request and nowhere
       // else — same one-tenant-in, one-tenant-out discipline as push above, but
       // with no default tier at all: a provider-wide pin would let one tenant's
-      // owner seed another tenant's node.
-      const pinnedOwnerKeys = request.pinnedOwnerKeys ?? [];
+      // owner seed another tenant's node. Read off the record (normalized at
+      // create time), so the stored field is the single authority on what the
+      // node was told to trust and a future re-provision from the record alone
+      // reproduces the same pins.
+      const pinnedOwnerKeys = container.pinnedOwnerKeys ?? [];
       if (pinnedOwnerKeys.length === 0) {
         // Not an error — a container may legitimately be created before its owner
         // key is known. But it will refuse every seed until recreated, so make the

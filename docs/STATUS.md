@@ -376,7 +376,7 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   "Cold-start bootstrap retries" bullet under [Control Network Seed](architecture.md#control-network-seed).
 - [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
   `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
-- [x] **The multi-tenant provider's seed path now works end-to-end.** Previously `POST /containers/:id/seed`
+- [x] **The multi-tenant provider's seed path now works end-to-end.** Previously `PUT /containers/:id/seed`
   delivered fine (bearer token) but every container refused the seed: nothing pinned an owner key, so the
   node fell back to its empty node-local anchor. `POST /containers` now takes `pinnedOwnerKeys` (array of
   base64url owner keys, validated as such and rejected with `INVALID_REQUEST` otherwise); they are recorded

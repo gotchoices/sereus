@@ -48,13 +48,15 @@ export interface CreateContainerRequest {
    * Base64url owner public key(s) this tenant's node should trust as seed
    * signers. A fresh node's node-local trusted-owner store is empty and nothing
    * replicated can fill it, so without at least one key here the node refuses
-   * every seed the provider later delivers (`POST /containers/:id/seed`).
+   * every seed the provider later delivers (`PUT /containers/:id/seed`).
    *
    * Supplied per create request by the tenant that owns the container — there is
    * deliberately no provider-level default, since a shared pin would let one
-   * tenant's owner seed another tenant's node. Not validated here: a malformed
-   * key simply never matches a real seed signer and the node refuses the seed
-   * with the trust policy's reason.
+   * tenant's owner seed another tenant's node. Key *encoding* is not validated: a
+   * malformed key simply never matches a real seed signer and the node refuses
+   * the seed with the trust policy's reason. Entries are trimmed, blanks dropped
+   * and duplicates collapsed before the container record is written, so a list of
+   * only blanks is equivalent to omitting the field.
    */
   pinnedOwnerKeys?: string[];
 }
@@ -104,11 +106,18 @@ export interface Container {
    */
   peerId?: string;
   /**
-   * Owner key(s) the node was started with pinned as seed-trust anchors (from
-   * the create request). Recorded so a re-provision reuses them and so an
-   * operator debugging a refused seed can see what the node was told to trust;
-   * absent/empty means the node accepts no seed at all. Not a secret — these are
-   * public keys — so it is not redacted on the API boundary.
+   * Owner key(s) the node was started with pinned as seed-trust anchors — the
+   * normalized create-request list, and the authority `provisionContainer` reads
+   * when it hands pins to the orchestrator (so a re-provision from the record
+   * alone reproduces them, and an operator debugging a refused seed sees exactly
+   * what the node was told to trust). Absent means the node accepts no seed at
+   * all. Not a secret — these are public keys — so it is not redacted on the API
+   * boundary.
+   *
+   * NOTE: pins are settable only at create time; a tenant that needs different
+   * anchors recreates the container. If owner-key rotation without a recreate is
+   * ever required, this field needs an update path *and* a way to push the new
+   * pin into the already-running node (the env var is read once at start).
    */
   pinnedOwnerKeys?: string[];
 }
