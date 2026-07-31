@@ -44,8 +44,9 @@ apart — which is the dependency `feat-open-strand-witness-policy` runs into.
 ## Where a fix has to happen
 
 **Upstream, in `../optimystic` first.** Cohort selection lives entirely in `db-p2p`, and Sereus
-has no hook to influence it. That repo keeps its own ticket queue; this ticket exists so the
-Sereus side is tracked and so nobody mistakes the machine count for a party count in the
+has no hook to influence it. Filed there as
+`backlog/feat-cohort-selection-owner-aware-placement`; this ticket is the Sereus side — supplying
+the party label, and making sure nobody mistakes the machine count for a party count in the
 meantime.
 
 The shape of the ask, roughly: cohort selection needs an optional grouping label per machine,

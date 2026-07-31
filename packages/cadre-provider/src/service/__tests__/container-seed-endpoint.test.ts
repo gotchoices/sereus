@@ -110,7 +110,7 @@ describe('ContainerService seed endpoint provisioning', () => {
     const result = await service.applySeed('ctr_1', 'encoded-seed-xyz');
 
     expect(result).toEqual({ success: true, peersAdded: 1 });
-    const init = fetchMock.mock.calls[0]?.[1] as RequestInit;
+    const init = fetchMock.mock.calls[0]![1]!;
     const headers = init.headers as Record<string, string>;
     expect(headers.Authorization).toBe('Bearer secret-token-abc');
     expect(headers['Content-Type']).toBe('application/json');
