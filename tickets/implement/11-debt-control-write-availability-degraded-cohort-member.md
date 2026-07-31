@@ -1,4 +1,4 @@
-description: When one machine in a group is connected but slow or unresponsive, shared-settings changes made on another machine can be blocked by it. The measurement test now exists and has produced real numbers, but the outcome turned out to depend on which machine happens to coordinate the write — the remaining work is to make the test deterministic, finalize the measured timing bounds, and finish the handoff.
+description: When one machine in a group is connected but slow or unresponsive, shared-settings changes made on another machine can be blocked by it. The measurement test exists and has produced real numbers, and the cause of the run-to-run flakiness is now fully understood — the remaining work is to re-point the test's coordinator pin at the seam the write path actually uses, finalize the measured timing bounds, and finish the handoff.
 prereq:
 files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/integration-tests/src/harness/forced-cluster.ts, packages/integration-tests/src/harness/index.ts, docs/architecture.md
 difficulty: hard
@@ -35,92 +35,110 @@ Paths below live in the sibling reference workspace `../optimystic` unless prefi
    `The stream has been reset` when a held stream is aborted).
 
 <!-- resume-note -->
-## State after run 3 (2026-07-30): code complete, MEASURED — but outcome is coordinator-dependent
+## State after run 4 (2026-07-30): MYSTERY RESOLVED — the pin patches the wrong instance
 
-Two prior runs wrote the suite; this run executed it repeatedly. All code is committed at
-`590ada2` except the CURRENT WORKING TREE which additionally contains (uncommitted):
+All suite code is committed (`f0a2140`); run 4's working tree touched nothing but this ticket
+file. Runs 1–3 (commits `590ada2` + `f0a2140`) wrote the suite and produced the measured table
+below. Run 4 was pure code-reading in `../optimystic` and closed the open mystery. **No
+consistency defect exists — do not file the fix/blocked ticket the previous note conditionally
+asked for.**
 
-- `forced-cluster.ts`: new `pinCoordinator(nodes, candidates)` helper — patches `findCoordinator`
-  (own-property, same seam as `forceFullCohort`'s `findCluster` patch), picks the first candidate
-  not in the caller's `excludedPeers`, throws when all excluded (transactor treats that as
-  candidates-exhausted). Header comment documents why. Exported via `harness/index.ts` (`export *`).
-- Scenario: imports + wires `pinCoordinator([A, B, C], [A, B])` after `forceFullCohort` in
-  `beforeAll`, `pinned?.restore()` in `afterAll`; header comment updated.
-- Scenario constants TEMPORARILY raised for measurement (must be tightened to final values):
-  `WRITE_TIMEOUT_MS` 60_000→240_000, `STALLED_WRITE_TIMEOUT_MS` 90_000→240_000,
-  `FAILURE_CEILING_MS` 45_000→200_000, `DELAYED_COMMIT_CEILING_MS` 30_000→200_000, several per-`it`
-  timeouts →300_000.
+### The resolved root cause (read this before touching the harness)
 
-`yarn lint`: 0 errors. (6 warnings exist in `zz-scratch-delete-alone.integration.ts` — that file
-belongs to ticket `control-delete-while-alone-tombstone`, commit `4548349`, NOT this ticket.)
+There are TWO `Libp2pKeyPeerNetwork` instances per node, and the harness patches only one:
 
-### Measured results (the deliverable numbers so far — all single-machine, localhost websockets)
+- `createLibp2pNode` builds the node's instance at `../optimystic/packages/db-p2p/src/libp2p-node-base.ts:695`
+  and exposes it as `(node as any).keyNetwork` at `:1301`. This instance serves the
+  **coordinatedRepo** (`coordinatorRepo(keyNetwork, …)` at `:823`, applied `:868`) and
+  `createClusterClient` (`:697`). `forceFullCohort` and `pinCoordinator` patch THIS instance —
+  which is why forced 3-peer cohorts and consensus work at all.
+- The control DB's writes, however, run through the quereus-plugin collection factory's
+  `NetworkTransactor` (`ControlDatabase.initialize` registers the node via
+  `registerLibp2pNode`, `packages/cadre-core/src/control-database.ts:296`). That transactor is
+  built by `createNetworkTransactor`
+  (`../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts:141-200`),
+  whose key network comes from `resolveKeyNetwork('libp2p', node)` at `:180` → **`new
+  Libp2pKeyPeerNetwork(libp2pNode)` — a FRESH instance** (`:309-312`, default-args, cached with
+  the transactor by `getOrCreateTransactor`). Every transactor-level `findCoordinator` (and
+  `findCluster`) call goes through this UNPATCHED instance.
+
+Consequences, which explain every measured run:
+
+- `pinCoordinator` as committed is a **no-op for coordinator selection**. Run 6's "pinned to
+  [A, B]" behavior was not A-self-coordination — the pin simply never applied.
+- The unpatched instance has a per-key **coordinator cache**
+  (`../optimystic/packages/db-p2p/src/libp2p-key-network.ts:399`, `source=cache`), and the hot
+  control-tree block ids are stable, so ONE cold-FRET draw at the start of a suite sticks for the
+  whole run. Draw lands on the degraded node C → the writer reaches C over the (healthy) repo
+  protocol, C runs consensus and dials cluster RPCs **outbound** to A and B, C's own vote is
+  in-process, and C's INBOUND cluster-handler wrapper never sees a stream → fast commit, zero
+  intercepted streams (runs 5 and 6). Draw lands on A or B → the coordinator must dial INTO C's
+  degraded cluster handler → 55 s delayed commit / 42 s named failure (runs 2 and 3).
+- The "self path skips consensus" hypothesis is dead. `CoordinatorRepo.pend` does short-circuit
+  to bare `storageRepo.pend` when `getClusterSize() <= 1`
+  (`../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts:649-652`), but `getClusterSize`
+  uses the coordinatedRepo's (patched) instance, which returns 3 in this suite. That
+  short-circuit only fires for genuinely self-only cohorts — by design for solo nodes.
+- **Anti-vacuity caveat worth keeping:** `forced.callCount()` also increments from
+  `CoordinatorRepo.verifyResponsibility` → `isResponsibleForBlock` → `findCluster`
+  (`coordinator-repo.ts:249`, 60 s-cached per block). So the counter alone does not prove
+  consensus fan-out ran — pair it with `interceptedStreams()` (already done in the degraded
+  cases) or with an elapsed-time bound.
+
+### Measured results (single-machine, localhost websockets — carried forward from run 3)
 
 | Run | Setup | Outcome |
 | --- | --- | --- |
 | 1 full suite, unpinned | healthy case | commit, 359 ms ✓ |
-| 2 isolated, unpinned | 2 s-delayed member | **commits, 55.0 s and 55.1 s per write** — the 2 s delay is paid serially by ~27 cluster RPCs per write |
-| 3 isolated, unpinned | never-answering member | **clean failure at 42.1 s**, message contains the exact super-majority text, root cause `The stream has been reset`; rollback + not-queued assertions passed |
-| 5 isolated, unpinned | SAME never-answering case | **committed in 504 ms** |
-| 4 isolated, unpinned | reads-during-stall | write committed in 2.6 s (degradation never engaged), reads trivially fine |
-| 6 full suite, pinned to [A, B] | all degraded cases | degradation NEVER engages: zero streams hit the delay/stall wrapper, every write commits in ~250–500 ms; the three "must fail / must be delayed" cases fail their assertions |
-
-**Interpretation so far:** the outcome depends on which node the transactor's `findCoordinator`
-draw picks per block (cold FRET ≈ proximity to block id ≈ uniform across the trio):
-
-- Coordinator = the DEGRADED node C → writer reaches C over the repo protocol (healthy), C's own
-  cluster vote is in-process → fast commit. Real availability, matches the ticket's "known hole".
-- Coordinator = healthy remote (B) → B's cluster fan-out must RPC C's degraded cluster-protocol
-  handler → degradation bites (55 s delayed commit / 42 s failure).
-- Coordinator = the WRITER ITSELF (A, what the pin forces) → **open mystery**: writes commit fast
-  and C's cluster handler never receives a stream, yet the healthy case's forced-cohort
-  anti-vacuity assertions pass (cohort of 3 consulted). Budget ran out mid-code-read here.
-
-### Where the mystery investigation stopped (continue here, don't restart)
-
-Verified: `getRepo(selfPeer)` returns the node's `coordinatedRepo` (a `CoordinatorRepo` wrapping
-`StorageRepo`) — see `../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts:183`
-and node wiring in `../optimystic/packages/db-p2p/src/libp2p-node-base.ts:868`. So self-coordination
-is SUPPOSED to run cluster consensus. Next read was `CoordinatorRepo.pend`
-(`../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts:644`) to find where the A-self path
-avoids dialing C. Candidate explanations to check in code, in order:
-- a policy/size trim (`clusterSize`, `clusterSizeTolerance`, `allowDownsize`) shrinking the
-  effective consensus set on the self path;
-- `ClusterClient` reusing an existing open stream to C (handler swap only affects NEW inbound
-  streams) — note run 2 contradicts naive stream-reuse: every RPC there paid the 2 s delay;
-- the anti-vacuity `findCluster` counter being satisfied by the REPLICATION path (breadth-16
-  fan-out) rather than by consensus, letting consensus quietly run against a smaller set.
-
-If the self path genuinely commits without consulting the cohort, that is a CONSISTENCY question
-(one node can commit a control write alone whenever it self-coordinates) — file a `fix/` or
-`blocked/` ticket for it with the evidence above; do not silently absorb it into this coverage
-ticket.
+| 2 isolated, unpinned | 2 s-delayed member | commits, **55.0 s / 55.1 s per write** — 2 s delay paid serially by ~27 cluster RPCs per write (coordinator = healthy node) |
+| 3 isolated, unpinned | never-answering member | clean failure at **42.1 s**, exact super-majority text, root cause `The stream has been reset`; rollback + not-queued assertions passed |
+| 5 isolated, unpinned | same never-answering case | committed in 504 ms (coordinator draw = degraded C — see root cause) |
+| 4 isolated, unpinned | reads-during-stall | write committed in 2.6 s (degradation never engaged), reads fine |
+| 6 full suite, "pinned [A,B]" | all degraded cases | pin ineffective (wrong instance); cached draw = C → all writes ~250–500 ms, zero intercepted streams, must-fail cases fail assertions |
 
 ## TODO (remaining)
 
-- Resolve the self-coordination mystery above (code reading in `../optimystic`, then targeted runs).
-- Make the suite deterministic. Likely correct pin: `pinCoordinator([A, B, C], [B])` — forcing the
-  healthy REMOTE node to coordinate is the branch where degradation provably bites (runs 2 and 3).
-  Keep the pin-to-writer branch's fast-commit observation documented in the scenario header either
-  way.
-- Re-run the full suite (twice+) under the deterministic pin; set FINAL constants with honest slack
-  around the measured values (delayed commit ~55 s; stall failure ~42 s; keep the commit-case
-  ceiling below the failure-case floor) and restore tight `within` deadlines and per-`it` timeouts.
-- Re-check the two run-1 red flags under the deterministic setup (they were contaminated by an
-  abandoned in-flight write in run 1 and have NOT been cleanly reproduced):
+- Re-point the pin at the seam the transactor actually uses. Two viable shapes — pick one and
+  document why in the harness header:
+  - **Prototype patch (recommended for simplicity):** override
+    `Libp2pKeyPeerNetwork.prototype.findCoordinator` for the suite's lifetime (import the class
+    from `@optimystic/db-p2p`), restore the original in `restore()`. Covers every instance —
+    node-attached AND factory-created — on all three nodes. Bypasses the coordinator cache
+    (the override replaces the method that consults it).
+  - **Instance patch:** reach each node's factory transactor —
+    `node.getControlDatabase()` → private `collectionFactory` → private `transactors` map →
+    `(transactor as any).keyNetwork` — and own-property-patch `findCoordinator` there (transactor
+    exists by pin time; control writes already ran in `beforeAll`). Fragile double-private access;
+    only prefer it if the prototype patch proves too broad in practice.
+- Audit `forceFullCohort` for the same two-instance issue: check whether `NetworkTransactor`
+  calls `findCluster` on ITS instance anywhere on the write path (`batchesForPayload` /
+  cluster-nominees / replication fan-out, `../optimystic/packages/db-core/src/transactor/network-transactor.ts:401-407`).
+  Consensus cohort provably comes from the patched node instance (runs 2/3), so this may be
+  fine — but confirm and note it in the harness header either way.
+- Pin candidates to **[B]** (healthy REMOTE node) — the branch where degradation provably bites.
+  Keep the fast-commit-via-degraded-coordinator branch documented in the scenario header (it is
+  real availability, not a defect; the header text at scenario lines ~36-45 is already right,
+  update its mechanism description to match the resolved root cause: cache + wrong-instance, not
+  a fresh FRET draw per block).
+- Re-run the full suite (twice+) under the effective pin; set FINAL constants with honest slack
+  around measured values (delayed commit ~55 s; stall failure ~42 s; commit-case ceiling below
+  failure-case floor). The committed file still carries TEMPORARY measurement constants that MUST
+  be tightened: `WRITE_TIMEOUT_MS` 240_000, `STALLED_WRITE_TIMEOUT_MS` 240_000,
+  `FAILURE_CEILING_MS` 200_000, `DELAYED_COMMIT_CEILING_MS` 200_000, per-`it` timeouts 300_000.
+- Re-check the two run-1 red flags under the deterministic setup (contaminated by an abandoned
+  in-flight write in run 1, never cleanly reproduced):
   - control READS hung ≥ 15 s while a write was stalled (`hasOwnerKey` timeout);
   - after a failed write, LATER writes failed instantly still naming the failed write's block id
-    (`in-flight` + stream reset) — i.e. one failed control write may poison all subsequent ones.
-  Each, if cleanly reproduced, is a real defect: keep the test as reproducer, file a `fix/` ticket.
-- Run `yarn lint` again over the touched files.
-- Update `docs/architecture.md` → "Replication cluster size" with one or two sentences on the
-  measured cost: one degraded member turns a sub-second control write into ~55 s (slow member) or a
-  ~42 s failure (silent member), EXCEPT when the degraded node itself coordinates, in which case the
-  write commits fast.
+    (`in-flight` + stream reset) — one failed control write may poison subsequent ones.
+  Each, if cleanly reproduced, is a real defect: keep the test as reproducer, file a `fix/`
+  ticket.
+- `yarn lint` over touched files. (Known: 6 warnings in `zz-scratch-delete-alone.integration.ts`
+  belong to ticket `control-delete-while-alone-tombstone`, NOT this one.)
+- Update `docs/architecture.md` → "Replication cluster size": one degraded member turns a
+  sub-second control write into ~55 s (slow member) or ~42 s failure (silent member), EXCEPT when
+  the degraded node itself coordinates, in which case the write commits fast.
 - Write the review/ handoff (honest: single-machine timings; forced cohort replaces discovery;
-  pinned coordinator replaces FRET's draw; the fast-commit-via-degraded-coordinator branch is
-  documented, not asserted) and delete this ticket.
-
-Measurement logs from this run (may not survive the session):
-`C:\Users\n8ers\AppData\Local\Temp\claude\C--projects-sereus\d7bc0f30-411c-4187-9f66-8ad4c594d4ef\scratchpad\degraded-run*.log`
-— all `[measured]` lines are reproduced in the table above.
+  pinned coordinator replaces the production draw; note the two-key-network-instances discovery —
+  a reviewer may reasonably ask whether production wants the factory transactor to reuse
+  `node.keyNetwork` instead of a fresh default-args instance; that is a question for review, not
+  a defect proven here) and delete this ticket.
