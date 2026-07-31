@@ -41,16 +41,16 @@ function createMockProvisioner(prefix = 'test'): StrandProvisioner {
 /** In-memory usage recorder that tracks tokens */
 function createMockUsageRecorder(): FormationUsageRecorder & {
 	knownTokens: Set<string>;
-	usedTokens: Map<string, { peerId: string; strandId: string }>;
+	usedTokens: Map<string, { peerKey: string; strandId: string }>;
 } {
 	const knownTokens = new Set<string>();
-	const usedTokens = new Map<string, { peerId: string; strandId: string }>();
+	const usedTokens = new Map<string, { peerKey: string; strandId: string }>();
 
 	return {
 		knownTokens,
 		usedTokens,
-		recordUsage: async ({ token, peerId, strandId }) => {
-			usedTokens.set(token, { peerId, strandId });
+		recordUsage: async ({ token, peerKey, strandId }) => {
+			usedTokens.set(token, { peerKey, strandId });
 		},
 		isTokenUsed: async (token) => usedTokens.has(token),
 		isTokenValid: async (token) => ({
@@ -226,6 +226,7 @@ describe('E2E Strand Formation', () => {
 				invitation.token,
 				result.memberKey,
 				result.strandId,
+				{ usageStampId: 'stamp-e2e-rejoin', peerSignature: 'sig-e2e-rejoin' },
 			);
 
 			// Assert: token is now marked as used

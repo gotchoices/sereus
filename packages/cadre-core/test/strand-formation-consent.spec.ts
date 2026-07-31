@@ -16,8 +16,10 @@ import {
   type FormationApprovalRequest,
   type FormationApprover,
 } from '../src/formation-approval.js';
+import { canonicalJson } from '../src/canonical-json.js';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
+import { mintContactJoiner, mintContactConsent } from './formation-consent-helper.js';
 import type {
   FormationContactMessage,
   FormationResultMessage,
@@ -116,10 +118,12 @@ function captureHandler(): { node: Libp2p; invoke: (stream: MockStream) => Promi
 
 const REAL_DISCLOSURE: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'consent-test' };
 
-function contactFor(token: string, disclosure: StrandFormationDisclosure = REAL_DISCLOSURE): FormationContactMessage {
+async function contactFor(token: string, disclosure: StrandFormationDisclosure = REAL_DISCLOSURE): Promise<FormationContactMessage> {
+  const joiner = await mintContactJoiner();
   return {
     token,
-    partyId: 'initiator-key',
+    partyId: joiner.partyId,
+    ...mintContactConsent(joiner, token, disclosure),
     disclosure,
     cadrePeerAddrs: ['/ip4/127.0.0.1/tcp/1/p2p/initiator'],
   };
@@ -205,7 +209,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   it('(a) rejects an unknown token without disclosing identity or membership key', async () => {
     const { invoke } = responder();
 
-    const stream = new MockStream([encodeFrame(contactFor('no-such-' + rand()))]);
+    const stream = new MockStream([encodeFrame(await contactFor('no-such-' + rand()))]);
     await invoke(stream);
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -227,7 +231,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     });
 
     const { invoke } = responder();
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -252,7 +256,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const { invoke } = responder();
 
     // First use: approves, returns the REAL strand + key, records exactly one usage row.
-    const first = new MockStream([encodeFrame(contactFor(token))]);
+    const first = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(first);
     const ok = decodeFirstFrame<FormationResultMessage>(first.sent);
 
@@ -274,7 +278,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(usage?.UseNumber).toBe(1);
 
     // (d) second use of the single-use invite is rejected, and writes NO extra row.
-    const second = new MockStream([encodeFrame(contactFor(token))]);
+    const second = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(second);
     const rejected = decodeFirstFrame<FormationResultMessage>(second.sent);
 
@@ -296,7 +300,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const { invoke } = responder();
 
     // First use: approves, mints a fresh responder-provisioned strand, records one usage row.
-    const first = new MockStream([encodeFrame(contactFor(token))]);
+    const first = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(first);
     const ok = decodeFirstFrame<FormationResultMessage>(first.sent);
 
@@ -316,7 +320,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     // Second use of the single-use invite is rejected and writes NO extra row
     // (the security regression: the old fallback never recorded usage, so this re-approved).
-    const second = new MockStream([encodeFrame(contactFor(token))]);
+    const second = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(second);
     const rejected = decodeFirstFrame<FormationResultMessage>(second.sent);
 
@@ -335,11 +339,11 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     const { invoke } = responder();
 
-    const first = new MockStream([encodeFrame(contactFor(token))]);
+    const first = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(first);
     const r1 = decodeFirstFrame<FormationResultMessage>(first.sent);
 
-    const second = new MockStream([encodeFrame(contactFor(token))]);
+    const second = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(second);
     const r2 = decodeFirstFrame<FormationResultMessage>(second.sent);
 
@@ -359,7 +363,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(new Set([u1?.UseNumber, u2?.UseNumber])).toEqual(new Set([1, 2]));
 
     // Third use exhausts the invite.
-    const third = new MockStream([encodeFrame(contactFor(token))]);
+    const third = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(third);
     const r3 = decodeFirstFrame<FormationResultMessage>(third.sent);
     expect(r3.approved).toBe(false);
@@ -380,7 +384,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     });
 
     const { invoke } = responder();
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
 
     // A result frame IS written (no hang/drop), and it is a clean non-disclosing rejection.
@@ -413,7 +417,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
     const { invoke } = responder(approver);
 
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -434,8 +438,8 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // The single most important invariant: the nonce the approver SIGNED is the nonce INSERTED.
     expect(usage?.UsageStampId).toBe(approver.seen[0].usageStampId);
     // The recorded disclosure is the exact serialized text the approver signed over.
-    expect(usage?.Disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
-    expect(approver.seen[0].disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
+    expect(usage?.Disclosure).toBe(canonicalJson(REAL_DISCLOSURE));
+    expect(approver.seen[0].disclosure).toBe(canonicalJson(REAL_DISCLOSURE));
   });
 
   it('(i) unbound ValidationUrl invite: approval flows through provisionAndRecord, strand minted', async () => {
@@ -450,7 +454,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
     const { invoke } = responder(approver);
 
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -506,7 +510,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       {
         label: 'invalid signature (signed over tampered fields)',
         approver: recordingApprover((req) =>
-          signFormationApproval({ ...req, peerId: 'tampered-' + req.peerId }, validationPublicKey, validationPrivateKey)),
+          signFormationApproval({ ...req, peerKey: 'tampered-' + req.peerKey }, validationPublicKey, validationPrivateKey)),
         reason: 'Formation approval invalid',
       },
       {
@@ -519,7 +523,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     for (const { label, approver, reason } of scenarios) {
       const { invoke } = responder(approver);
-      const stream = new MockStream([encodeFrame(contactFor(token))]);
+      const stream = new MockStream([encodeFrame(await contactFor(token))]);
       await invoke(stream);
       const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -536,7 +540,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     const good = recordingApprover((req) =>
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
     const { invoke } = responder(good);
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
     expect(ok.approved).toBe(true);
@@ -558,7 +562,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       signFormationApproval(req, validationPublicKey, validationPrivateKey));
     const { invoke } = responder(approver);
 
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -570,7 +574,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
       'select Disclosure from CadreControl.FormationUsage where Token = ?',
       [token],
     );
-    expect(usage?.Disclosure).toBe(JSON.stringify(REAL_DISCLOSURE));
+    expect(usage?.Disclosure).toBe(canonicalJson(REAL_DISCLOSURE));
   });
 
   it('(l) oversized disclosure: rejected before the approver or the database is touched', async () => {
@@ -591,7 +595,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
 
     // Over the 8 KiB serialized cap.
     const oversized: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'x'.repeat(9000) };
-    const stream = new MockStream([encodeFrame(contactFor(token, oversized))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token, oversized))]);
     await invoke(stream);
     const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -622,7 +626,7 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     });
     const { invoke } = responder(approver);
 
-    const stream = new MockStream([encodeFrame(contactFor(token))]);
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
     await invoke(stream);
     const ok = decodeFirstFrame<FormationResultMessage>(stream.sent);
 
@@ -630,4 +634,69 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(ok.provisionResult?.strand.strandId).toBe(hostStrandId);
     expect(await db.countFormationUsage(token)).toBe(1);
   }, 40_000);
+
+  it('(n) rejects invalid joiner consent without burning the invite', async () => {
+    const hostStrandId = 'strand-host-badconsent-' + rand();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
+    const token = 'invite-badconsent-' + rand();
+    await db.insertFormationInvite(token, 'sapp-badconsent', ownerPublicKey, signMessage, {
+      totalUses: 1, strandId: hostStrandId, expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+    const { invoke } = responder();
+
+    const good = await contactFor(token);
+    const otherJoiner = await mintContactJoiner();
+    const badContacts: Array<[string, FormationContactMessage]> = [
+      ['tampered peerSignature', { ...good, peerSignature: (good.peerSignature[0] === 'A' ? 'B' : 'A') + good.peerSignature.slice(1) }],
+      ['partyId of a different joiner', { ...good, partyId: otherJoiner.partyId }],
+      ['garbage peerKey', { ...good, peerKey: 'garbage-not-32-bytes' }],
+    ];
+    for (const [label, bad] of badContacts) {
+      const stream = new MockStream([encodeFrame(bad)]);
+      await invoke(stream);
+      const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+      expect(result.approved, label).toBe(false);
+      expect(result.reason, label).toBe('Invalid joiner consent');
+      expect(result.partyId, label).toBeUndefined();
+      expect(result.provisionResult, label).toBeUndefined();
+      expect(await db.countFormationUsage(token), label).toBe(0);
+    }
+
+    // Nothing burned: the same single-use invite still redeems with a well-formed contact.
+    const stream = new MockStream([encodeFrame(await contactFor(token))]);
+    await invoke(stream);
+    expect(decodeFirstFrame<FormationResultMessage>(stream.sent).approved).toBe(true);
+    expect(await db.countFormationUsage(token)).toBe(1);
+  });
+
+  it('(o) joiner nonce reuse is a retryable conflict; a fresh nonce then succeeds', async () => {
+    const hostStrandId = 'strand-host-noncereuse-' + rand();
+    await db.insertStrand(hostStrandId, 'c', ownerPublicKey, signMessage, await generateStrandMemberKey());
+    const token = 'invite-noncereuse-' + rand();
+    await db.insertFormationInvite(token, 'sapp-noncereuse', ownerPublicKey, signMessage, {
+      totalUses: 2, strandId: hostStrandId, expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+    });
+    const { invoke } = responder();
+    const contact = await contactFor(token);
+
+    const first = new MockStream([encodeFrame(contact)]);
+    await invoke(first);
+    expect(decodeFirstFrame<FormationResultMessage>(first.sent).approved).toBe(true);
+    expect(await db.countFormationUsage(token)).toBe(1);
+
+    // Same contact again: UsageStampId is unique, the insert fails → retryable conflict.
+    const second = new MockStream([encodeFrame(contact)]);
+    await invoke(second);
+    const conflict = decodeFirstFrame<FormationResultMessage>(second.sent);
+    expect(conflict.approved).toBe(false);
+    expect(conflict.reason).toBe('Formation conflict, retry');
+    expect(conflict.partyId).toBeUndefined();
+    expect(await db.countFormationUsage(token)).toBe(1);
+
+    // A fresh joiner/nonce for the same token succeeds — the conflicted use was not spent.
+    const third = new MockStream([encodeFrame(await contactFor(token))]);
+    await invoke(third);
+    expect(decodeFirstFrame<FormationResultMessage>(third.sent).approved).toBe(true);
+    expect(await db.countFormationUsage(token)).toBe(2);
+  });
 });

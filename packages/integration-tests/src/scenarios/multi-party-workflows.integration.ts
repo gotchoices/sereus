@@ -69,15 +69,15 @@ function createMockProvisioner(prefix = 'mp'): StrandProvisioner {
 
 function createMockUsageRecorder(): FormationUsageRecorder & {
 	knownTokens: Set<string>;
-	usedTokens: Map<string, { peerId: string; strandId: string }>;
+	usedTokens: Map<string, { peerKey: string; strandId: string }>;
 } {
 	const knownTokens = new Set<string>();
-	const usedTokens = new Map<string, { peerId: string; strandId: string }>();
+	const usedTokens = new Map<string, { peerKey: string; strandId: string }>();
 	return {
 		knownTokens,
 		usedTokens,
-		recordUsage: async ({ token, peerId, strandId }) => {
-			usedTokens.set(token, { peerId, strandId });
+		recordUsage: async ({ token, peerKey, strandId }) => {
+			usedTokens.set(token, { peerKey, strandId });
 		},
 		isTokenUsed: async (token) => usedTokens.has(token),
 		isTokenValid: async (token) => ({
@@ -209,6 +209,7 @@ describe('Multi-Party Strand Workflows', () => {
 				// Record usage so token is consumed
 				await partyA.getStrandSolicitationService()!.recordFormationComplete(
 					invitation.token, formResult.memberKey, formResult.strandId,
+					{ usageStampId: 'stamp-closed-strand', peerSignature: 'sig-closed-strand' },
 				);
 
 				// Both parties add closed strand instances
@@ -303,6 +304,7 @@ describe('Multi-Party Strand Workflows', () => {
 				// Mark token as used
 				await partyA.getStrandSolicitationService()!.recordFormationComplete(
 					invitation.token, resultB.memberKey, resultB.strandId,
+					{ usageStampId: 'stamp-exclusive', peerSignature: 'sig-exclusive' },
 				);
 
 				// Party C attempts the same token — should be rejected

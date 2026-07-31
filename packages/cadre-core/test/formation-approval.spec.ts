@@ -28,7 +28,7 @@ function baseRequest(overrides: Partial<FormationApprovalRequest> = {}): Formati
     token: 'invite-abc',
     usageStampId: 'stamp-1',
     strandId: 'strand-1',
-    peerId: '12D3KooWJoiner',
+    peerKey: '12D3KooWJoiner',
     disclosure: AWKWARD_DISCLOSURE,
     validationUrl: 'https://approver.example/hook',
     ...overrides
@@ -121,7 +121,7 @@ describe('signFormationApproval / verifyFormationApproval', () => {
     ['token', { token: 'invite-other' }],
     ['usageStampId', { usageStampId: 'stamp-2' }],
     ['strandId', { strandId: 'strand-2' }],
-    ['peerId', { peerId: '12D3KooWOther' }],
+    ['peerKey', { peerKey: '12D3KooWOther' }],
     ['disclosure', { disclosure: `${AWKWARD_DISCLOSURE}x` }]
   ];
 

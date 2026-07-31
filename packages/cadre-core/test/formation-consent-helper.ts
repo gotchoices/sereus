@@ -1,6 +1,9 @@
+import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { generatePrivateKey, sign } from '@optimystic/quereus-plugin-crypto';
+import { canonicalJson } from '../src/canonical-json.js';
 import { generateStampId, formationConsentMessage } from '../src/control-database.js';
-import { ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
+import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate } from '../src/ed25519-key.js';
 
 /** A throwaway joining peer: base64url ed25519 seed + its public key. */
 export interface TestJoiner {
@@ -43,5 +46,24 @@ export function mintConsent(token: string, disclosure = '', joiner: TestJoiner =
     peerKey: joiner.peerKey,
     usageStampId,
     peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure }),
+  };
+}
+
+/** A joiner with a REAL libp2p identity: partyId embeds peerKey (the listener pins them). */
+export interface TestContactJoiner extends TestJoiner { partyId: string; }
+
+export async function mintContactJoiner(): Promise<TestContactJoiner> {
+  const libp2pKey = await generateKeyPair('Ed25519');
+  const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(libp2pKey);
+  return { privateKey: privateKeyB64, peerKey: publicKeyB64, partyId: peerIdFromPrivateKey(libp2pKey).toString() };
+}
+
+/** Consent triple for a strand-layer contact: signs over canonicalJson(disclosure). */
+export function mintContactConsent(joiner: TestContactJoiner, token: string, disclosure: unknown): JoinerConsent {
+  const usageStampId = generateStampId(joiner.partyId);
+  return {
+    peerKey: joiner.peerKey,
+    usageStampId,
+    peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure: canonicalJson(disclosure) }),
   };
 }

@@ -194,7 +194,7 @@ describe('verifyFormationConsent', () => {
         token: row.token,
         usageStampId: row.usageStampId,
         strandId: 'strand-1',
-        peerId: row.peerKey,
+        peerKey: row.peerKey,
         disclosure: row.disclosure
       }),
       joinerPrivateKey,

@@ -166,7 +166,10 @@ describe('StrandSolicitationService', () => {
 
   describe('recordFormationComplete', () => {
     it('should call recorder when available', async () => {
-      let recorded: { token: string; peerId: string; strandId: string; disclosure: string } | null = null;
+      let recorded: {
+        token: string; peerKey: string; peerSignature: string;
+        usageStampId: string; strandId: string; disclosure: string; signal?: AbortSignal;
+      } | null = null;
 
       const mockRecorder: FormationUsageRecorder = {
         recordUsage: async (params) => {
@@ -180,11 +183,14 @@ describe('StrandSolicitationService', () => {
         formationUsageRecorder: mockRecorder
       });
 
-      await service.recordFormationComplete('token-1', 'key-1', 'strand-1');
+      await service.recordFormationComplete('token-1', 'key-1', 'strand-1',
+        { usageStampId: 'stamp-1', peerSignature: 'sig-1' });
 
       expect(recorded).toEqual({
         token: 'token-1',
-        peerId: 'key-1',
+        peerKey: 'key-1',
+        peerSignature: 'sig-1',
+        usageStampId: 'stamp-1',
         strandId: 'strand-1',
         disclosure: ''
       });
@@ -193,7 +199,9 @@ describe('StrandSolicitationService', () => {
     it('should not throw without recorder', async () => {
       const service = new StrandSolicitationService();
 
-      await expect(service.recordFormationComplete('t', 'k', 's')).resolves.not.toThrow();
+      await expect(
+        service.recordFormationComplete('t', 'k', 's', { usageStampId: 'n', peerSignature: 'sig' })
+      ).resolves.not.toThrow();
     });
   });
 });

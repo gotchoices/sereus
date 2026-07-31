@@ -9,6 +9,7 @@ import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { formationVouchMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { mintJoiner, mintConsent } from './formation-consent-helper.js';
 
 /**
  * Exercises the node-level approver-key surface — `enrollValidationKey` /
@@ -166,14 +167,14 @@ describe('CadreNode validation-key enrollment', () => {
     });
 
     // Redeem it with a real approver sign-off over the exact redemption bytes.
-    const usageStampId = 'usage-retro-' + rand();
-    const joiner = 'peer-retro-' + rand();
+    const joiner = mintJoiner();
+    const consent = mintConsent(token, '', joiner);
     const validationSignature = cryptoSign(
-      formationVouchMessage({ token, usageStampId, strandId, peerId: joiner, disclosure: '' }),
+      formationVouchMessage({ token, usageStampId: consent.usageStampId, strandId, peerKey: joiner.peerKey, disclosure: '' }),
       approver.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url',
     ) as string;
     await db.recordFormationUsage({
-      token, strandId, peerId: joiner, usageStampId,
+      token, strandId, ...consent, disclosure: '',
       validationKey: approver.publicKey, validationSignature,
     });
     expect(await db.countFormationUsage(token)).toBe(1);
@@ -189,10 +190,10 @@ describe('CadreNode validation-key enrollment', () => {
     // in schemas/control.qsql). What must survive the removal is the consent row it authorized,
     // intact and still naming the same invitation, joiner and strand.
     const usage = await db.getDatabase().get(
-      'select Token, PeerId, StrandId from CadreControl.FormationUsage where UsageStampId = ?',
-      [usageStampId],
+      'select Token, PeerKey, StrandId from CadreControl.FormationUsage where UsageStampId = ?',
+      [consent.usageStampId],
     );
-    expect(usage).toMatchObject({ Token: token, PeerId: joiner, StrandId: strandId });
+    expect(usage).toMatchObject({ Token: token, PeerKey: joiner.peerKey, StrandId: strandId });
   }, 60_000);
 
   it('rejects an empty or whitespace-only key before any write', async () => {

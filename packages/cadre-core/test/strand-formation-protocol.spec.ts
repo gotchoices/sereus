@@ -11,6 +11,7 @@ import {
   type ResponderProvisionOutcome
 } from '../src/strand-formation-protocol.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
+import { mintContactJoiner, mintContactConsent } from './formation-consent-helper.js';
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
 
@@ -65,9 +66,11 @@ function captureHandler(): { node: Libp2p; invoke: (stream: MockStream) => Promi
 }
 
 const realDisclosure: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'real' };
+const joiner = await mintContactJoiner();
 const contact: FormationContactMessage = {
   token: 'invite-real',
-  partyId: 'initiator-key',
+  partyId: joiner.partyId,
+  ...mintContactConsent(joiner, 'invite-real', realDisclosure),
   disclosure: realDisclosure,
   cadrePeerAddrs: ['/ip4/127.0.0.1/tcp/1/p2p/initiator']
 };
@@ -235,7 +238,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   it('reports a timed-out provisionStrand as a retryable rejection, not a dropped stream', async () => {
     let capturedSignal: AbortSignal | undefined;
     const { options, identityDisclosed } = baseOptions({
-      provisionStrand: (_t, _p, _d, signal): Promise<ResponderProvisionOutcome> => {
+      provisionStrand: (_contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome> => {
         capturedSignal = signal;
         return new Promise(() => { /* never settles */ });
       }
@@ -397,7 +400,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     // still pass every timeout test above while cancelling healthy redemptions.
     let capturedSignal: AbortSignal | undefined;
     const { options } = baseOptions({
-      provisionStrand: (_t, _p, _d, signal): Promise<ResponderProvisionOutcome> => {
+      provisionStrand: (_contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome> => {
         capturedSignal = signal;
         return slowProvision(20, 'strand-in-budget')();
       }
@@ -422,7 +425,7 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     let calls = 0;
     const { options } = baseOptions({
       validateToken: async () => ({ valid: uses < 1 }),
-      provisionStrand: (_token, _partyId, _disclosure, signal): Promise<ResponderProvisionOutcome> => {
+      provisionStrand: (_contact: FormationContactMessage, signal?: AbortSignal): Promise<ResponderProvisionOutcome> => {
         if (++calls === 1) {
           // Writes nothing and rejects the moment the work budget aborts it — what
           // ControlFormationUsageRecorder does via FormationAbortedError.
@@ -503,6 +506,39 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
     expect(stream.closed).toBe(true);
+  });
+});
+
+// ── Joiner-consent pre-check: pure crypto, before any hook runs ────────────────
+
+describe('FormationListener joiner-consent pre-check', () => {
+  it('rejects tampered/mismatched/malformed consent before validating the token', async () => {
+    const otherJoiner = await mintContactJoiner();
+    const cases: Array<[string, FormationContactMessage]> = [
+      ['tampered peerSignature', { ...contact, peerSignature: (contact.peerSignature[0] === 'A' ? 'B' : 'A') + contact.peerSignature.slice(1) }],
+      ['partyId not embedding peerKey', { ...contact, partyId: otherJoiner.partyId }],
+      ['malformed peerKey', { ...contact, peerKey: 'garbage-not-32-bytes' }],
+    ];
+    for (const [label, bad] of cases) {
+      let tokenChecks = 0;
+      const { options, identityDisclosed } = baseOptions({
+        validateToken: async () => { tokenChecks++; return { valid: true }; }
+      });
+      const listener = new FormationListener(options);
+      const { node, invoke } = captureHandler();
+      listener.register(node);
+
+      const stream = new MockStream([encodeFrame(bad)]);
+      await invoke(stream);
+
+      const result = decodeFirstFrame<FormationResultMessage>(stream.sent);
+      expect(result.approved, label).toBe(false);
+      expect(result.reason, label).toBe('Invalid joiner consent');
+      expect(result.partyId, label).toBeUndefined();
+      expect(result.cadrePeerAddrs, label).toBeUndefined();
+      expect(identityDisclosed(), label).toBe(false);
+      expect(tokenChecks, label).toBe(0);
+    }
   });
 });
 
