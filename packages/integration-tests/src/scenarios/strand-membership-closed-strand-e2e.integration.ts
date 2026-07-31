@@ -85,7 +85,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
+import type { IRawStorage } from '@optimystic/db-p2p';
 import {
 	CadreNode,
 	generateStrandMemberKey,
@@ -105,7 +105,17 @@ import {
 import type { CadreNodeConfig, StrandRow, StrandInstance } from '@serfab/cadre-core';
 import type { Database } from '@quereus/quereus';
 import { generatePrivateKey, getPublicKey, digest, sign } from '@optimystic/quereus-plugin-crypto';
-import { waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
+import {
+	waitUntil,
+	wsTransports,
+	createSignedSAppConfig,
+	captureRawStorage,
+	compareBlockCoverage,
+	blockCoverageIsComplete,
+	formatBlockCoverageGap,
+	readBlockIndex,
+	type RawStorageCapture,
+} from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -129,15 +139,20 @@ function createMockProvisioner(prefix = 'closed'): StrandProvisioner {
 	};
 }
 
+/**
+ * @param capture - This node's OWN storage capture, whose per-scope factory becomes the
+ *   node's storage provider. One capture per node — see {@link bringUpClosedStrand}.
+ */
 function createTestNodeConfig(
 	partyId: string,
+	capture: RawStorageCapture,
 	opts: { bootstrapNodes?: string[]; profile?: 'storage' | 'transaction'; enableRelay?: boolean } = {},
 ): CadreNodeConfig {
 	return {
 		controlNetwork: { partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
 		profile: opts.profile ?? 'transaction',
 		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
+		storage: { provider: capture.provider },
 		network: {
 			transports: wsTransports(),
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
@@ -241,6 +256,18 @@ interface ClosedStrandFixture {
 	joinerDb: Database;
 	/** The founding Member/Manager keypair, derived from the shared `MemberPrivateKey`. */
 	founderKeyPair: Ed25519KeyPair;
+	/** The strand id both nodes attached — the scope key each node's raw store is filed under. */
+	strandId: string;
+	/**
+	 * Each node's OWN strand-scoped raw block store, for the physical-replication proof.
+	 * Reading these is a pure observation and never routes through either database — the
+	 * point of a raw-store probe is that it cannot itself cause a block to be acquired.
+	 */
+	founderStore: IRawStorage;
+	joinerStore: IRawStorage;
+	/** Each node's capture, so a test can assert WHICH scopes the provider was asked for. */
+	founderCapture: RawStorageCapture;
+	joinerCapture: RawStorageCapture;
 }
 
 /**
@@ -256,6 +283,11 @@ interface ClosedStrandFixture {
  * call gets its OWN provisioner instance (its counter is per-instance), so nothing
  * two bring-ups create can collide.
  *
+ * Each node's storage provider is a {@link captureRawStorage} capture, so the fixture can
+ * expose that node's strand-scoped raw block store. The capture is a PURE OBSERVATION —
+ * it hands out exactly the store the plain `() => new MemoryRawStorage()` provider used
+ * to, only remembered by scope — so the three tests that predate it are unaffected.
+ *
  * On any internal failure both nodes are stopped before the error is rethrown —
  * otherwise a bring-up fault leaks live libp2p nodes into the rest of the file.
  */
@@ -264,6 +296,13 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 	let founderNode: CadreNode | undefined;
 	let joinerNode: CadreNode | undefined;
 
+	// SEPARATE captures, one per node. A shared capture would hand both nodes the same
+	// per-scope stores, and the physical-replication proof below would pass for the worst
+	// possible reason (comparing a store with itself). The distinctness is asserted, not
+	// merely intended — see the fourth test.
+	const founderCapture = captureRawStorage();
+	const joinerCapture = captureRawStorage();
+
 	try {
 		// The closed strand's sApp is the realistic signed-write RBAC fixture, so an
 		// admitted member can drive a real App.Items signed write (layer-3).
@@ -271,10 +310,10 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		const sAppConfig = createSignedSAppConfig(appLogic, '0.1.0');
 
 		// ── Two real CadreNodes over libp2p (rbac/Phase-2 pattern) ───────────
-		founderNode = new CadreNode(createTestNodeConfig(`founder-${partyId}`, { profile: 'storage', enableRelay: true }));
+		founderNode = new CadreNode(createTestNodeConfig(`founder-${partyId}`, founderCapture, { profile: 'storage', enableRelay: true }));
 		await founderNode.start();
 
-		joinerNode = new CadreNode(createTestNodeConfig(`joiner-${partyId}`, { bootstrapNodes: founderNode.getMultiaddrs() }));
+		joinerNode = new CadreNode(createTestNodeConfig(`joiner-${partyId}`, joinerCapture, { bootstrapNodes: founderNode.getMultiaddrs() }));
 		await joinerNode.start();
 
 		// Form a strand over the wire to get a real negotiated strandId (the closed
@@ -304,6 +343,13 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 
 		const founderDb = founderStrand.database!.getDatabase();
 		const joinerDb = joinerStrand.database!.getDatabase();
+
+		// Each node's strand-scoped raw store, now that the provider has been asked for
+		// this strand's scope. `forStrand` throws (naming the scopes it did see) rather
+		// than returning an empty store, so a change to how cadre-core invokes the
+		// provider fails here instead of silently making every coverage check vacuous.
+		const founderStore = founderCapture.forStrand(formResult.strandId);
+		const joinerStore = joinerCapture.forStrand(formResult.strandId);
 
 		// ── Founder bootstrap: exactly Header(c) + founding Member + Manager ──
 		expect(await strandCount(founderDb, 'Header')).toBe(1);
@@ -345,7 +391,10 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		);
 		console.log(`[closed-strand:${label}] founder bootstrap rows visible on joiner (gated)`);
 
-		return { founderNode, joinerNode, founderStrand, joinerStrand, founderDb, joinerDb, founderKeyPair };
+		return {
+			founderNode, joinerNode, founderStrand, joinerStrand, founderDb, joinerDb, founderKeyPair,
+			strandId: formResult.strandId, founderStore, joinerStore, founderCapture, joinerCapture,
+		};
 	} catch (error) {
 		// A partially-built fixture still holds live libp2p nodes; the caller never
 		// receives it, so it can never run its own teardown.
@@ -737,6 +786,103 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 					memberKey: freshKeyPair().publicKeyB64,
 				}),
 			).rejects.toThrow();
+		} finally {
+			await stopBoth(founderNode, joinerNode);
+		}
+	}, 60_000);
+
+	// ── PHYSICAL replication, read out of the joiner's own block store ────────
+	//
+	// The three tests above assert VISIBILITY (see the header): a row shows up in the
+	// other node's `select`. That is the property an application observes, but it does
+	// NOT establish that the block lives on the other node — a read resolves one
+	// coordinator peer per block, and a coordinator that happens to be the AUTHOR answers
+	// from its own storage. This test closes that gap by looking directly inside the
+	// joiner's strand-scoped raw block store.
+	//
+	// ⚠ THE JOINER'S DATABASE IS OFF LIMITS IN THIS TEST — `joinerDb` is deliberately
+	// not destructured below, and no read of any kind may be issued against it. A read
+	// through the joiner can PUT the block there itself: `CoordinatorRepo.get` falls
+	// through to `restoreCorroborated` → `acquireBlockFromCohort` → `saveReplicatedBlock`,
+	// which persists the acquired block into the joiner's local storage. Probing after
+	// such a read would prove only "the bytes are here now", satisfying the probe for
+	// exactly the wrong reason. Every write below runs on `founderDb`; the joiner is
+	// observed only through its raw store, which no probe read can mutate. Adding a
+	// `joinerDb` read here silently converts this proof into a restatement of the
+	// visibility tests.
+	it("replicates the founder's blocks PHYSICALLY into the joiner's own block store", async () => {
+		const {
+			founderNode, joinerNode, founderDb, founderKeyPair,
+			strandId, founderStore, joinerStore, founderCapture, joinerCapture,
+		} = await bringUpClosedStrand('physical');
+
+		try {
+			// ── Anti-vacuity floor A: the two stores are genuinely different objects ──
+			// A shared capture (or a provider returning a singleton) would compare a store
+			// with itself and pass unconditionally.
+			expect(founderStore).not.toBe(joinerStore);
+
+			// ── Anti-vacuity floor B: the provider really was asked per scope ─────
+			// If cadre-core ever stops calling the provider with the strand id, `forStrand`
+			// in the bring-up already throws — this pins the control scope too, so a
+			// collapse of the two scopes into one store cannot slip through unnamed.
+			for (const [who, capture] of [['founder', founderCapture], ['joiner', joinerCapture]] as const) {
+				expect(capture.scopes(), `${who} provider scopes`).toContain('control');
+				expect(capture.scopes(), `${who} provider scopes`).toContain(strandId);
+			}
+
+			// ── Founder-only writes: membership blocks AND an application block ───
+			const newMember = freshKeyPair();
+			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+			await consumeInvite(founderDb, { inviteKey, invitePrivateKey, memberKey: newMember.publicKeyB64 });
+
+			const itemId = 'item-physical-replication';
+			const itemValue = 'authored only on the founder';
+			const writeSig = signItem(newMember.privateKeyB64, itemId, 'hello', itemValue);
+			await founderDb.exec(
+				`insert into App.Items (Id, Name, Value, CreatedBy)
+				   with context MemberKey = ?, Signature = ?
+				   values (?, ?, ?, ?)`,
+				[newMember.publicKeyB64, writeSig, itemId, 'hello', itemValue, newMember.publicKeyB64],
+			);
+
+			// ── Anti-vacuity floor C: the founder actually holds blocks ───────────
+			// An empty source index makes coverage trivially satisfied, so this is asserted
+			// separately from — and before — the coverage gate. The floor is deliberately
+			// far below the observed count (see the log line below) so it pins "not empty,
+			// and not one stray block" without pinning the storage layout.
+			const founderIndex = await readBlockIndex(founderStore);
+			expect(founderIndex.size).toBeGreaterThanOrEqual(2);
+
+			// ── THE PROOF: poll the joiner's RAW STORE until it covers the founder ──
+			// One-directional coverage, at a revision no older than the founder's, with
+			// content bytes actually present — never set equality (the joiner may hold
+			// blocks of its own) and never revision equality (it may be ahead).
+			// Source and target are read INSIDE each iteration, so a founder that gains a
+			// block mid-poll is compared against a joiner snapshot from the same moment.
+			const startedAt = Date.now();
+			try {
+				await waitUntil(
+					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
+					{ ...GATE, description: "the founder's blocks land physically in the joiner's block store" },
+				);
+			} catch (timeout) {
+				// `waitUntil` swallows a throwing condition (header note), so a probe that
+				// ERRORED every attempt would otherwise report a bare timeout. Re-running the
+				// comparison outside the wait either rethrows that real error or names the
+				// exact block ids the joiner never got.
+				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
+				throw new Error(
+					`joiner's block store never covered the founder's within ${GATE.timeoutMs}ms — ` +
+					formatBlockCoverageGap(finalGap),
+					{ cause: timeout },
+				);
+			}
+			console.log(
+				`[closed-strand:physical] founder holds ${founderIndex.size} committed blocks; ` +
+				`joiner's own store covered them in ${Date.now() - startedAt}ms ` +
+				`(joiner store holds ${(await readBlockIndex(joinerStore)).size})`,
+			);
 		} finally {
 			await stopBoth(founderNode, joinerNode);
 		}
