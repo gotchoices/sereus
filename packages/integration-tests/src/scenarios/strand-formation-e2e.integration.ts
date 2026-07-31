@@ -16,6 +16,8 @@ import {
 	CadreNode,
 	StrandSolicitationService,
 	ControlFormationUsageRecorder,
+	verifyFormationConsent,
+	ed25519PublicKeyB64FromPeerId,
 	signSchema,
 	type DisclosureValidator,
 	type FormationUsageRecorder,
@@ -778,6 +780,35 @@ describe('E2E Strand Formation', () => {
 			};
 		}
 
+		/**
+		 * Read back the single `FormationUsage` row recorded against `token`, in exactly the
+		 * shape {@link verifyFormationConsent} takes. `Disclosure` is returned verbatim: the
+		 * responder wrote the canonical serialization the joiner signed, so re-serializing it
+		 * here would break the signature-over-stored-bytes property under test.
+		 *
+		 * NOTE: returns whichever row the scan yields first, which is unambiguous only because
+		 * every caller here redeems a single-use invite. If a case ever reads back a multi-use
+		 * token, select the `UseNumber` it means rather than trusting scan order.
+		 */
+		async function readFormationUsage(party: TestParty, token: string): Promise<{
+			token: string; usageStampId: string; peerKey: string; disclosure: string; peerSig: string;
+		} | null> {
+			const db = party.controlDatabase.getDatabase();
+			for await (const row of db.eval(
+				'select Token, UsageStampId, PeerKey, PeerSig, Disclosure from CadreControl.FormationUsage where Token = ?',
+				[token],
+			)) {
+				return {
+					token: row['Token'] as string,
+					usageStampId: row['UsageStampId'] as string,
+					peerKey: row['PeerKey'] as string,
+					disclosure: row['Disclosure'] as string,
+					peerSig: row['PeerSig'] as string,
+				};
+			}
+			return null;
+		}
+
 		it('(i) rejects the second redemption of an unbound single-use invite', async () => {
 			const alice = await network.createParty({ name: 'alice-consent' });
 			const bob = await network.createParty({ name: 'bob-consent' });
@@ -855,6 +886,51 @@ describe('E2E Strand Formation', () => {
 
 			// No usage row was written, so a retry after convergence is not pre-blocked.
 			expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
+
+			aliceService.unregisterResponder(alice.ownerNode.libp2p);
+		}, 30_000);
+
+		it("(iii) stores a joiner consent signature that re-verifies against the joiner's own key", async () => {
+			const alice = await network.createParty({ name: 'alice-consent-sig' });
+			const bob = await network.createParty({ name: 'bob-consent-sig' });
+
+			const aliceService = responderService(alice);
+			const sign = ownerSigner(alice);
+
+			const token = `invite-consent-sig-${Date.now()}`;
+			await alice.controlDatabase.insertFormationInvite(token, 'sapp-consent-sig', alice.ownerPublicKey, sign, {
+				totalUses: 1,
+				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+			});
+
+			const bobService = new StrandSolicitationService({
+				partyId: bob.partyId,
+				cadrePeerAddrs: bob.ownerNode.multiaddrs,
+			});
+
+			const result = await bobService.formStrand(
+				invitationFor(token, 'sapp-consent-sig', alice),
+				{ partyId: bob.partyId, purpose: 'consent-signature' },
+				bob.ownerNode.libp2p,
+			);
+			expect(result.strandId).toBeDefined();
+
+			const row = await readFormationUsage(alice, token);
+			expect(row).not.toBeNull();
+
+			// The stored signature re-verifies from the row ALONE — nothing is carried over from
+			// the session that wrote it. That is what makes the row an audit record: any later
+			// reader of alice's control database can re-check the joiner's consent.
+			expect(verifyFormationConsent(row!)).toBe(true);
+
+			// ...and the key it verifies against is the joiner's real identity — an Ed25519 libp2p
+			// peer id is the identity multihash of exactly these key bytes, so the returned
+			// memberKey and the stored PeerKey are two encodings of one key.
+			expect(ed25519PublicKeyB64FromPeerId(result.memberKey)).toBe(row!.peerKey);
+
+			// Guard against a vacuous pass: the digest really does cover the stored disclosure
+			// bytes, so a tampered Disclosure column fails the very same check.
+			expect(verifyFormationConsent({ ...row!, disclosure: `${row!.disclosure} ` })).toBe(false);
 
 			aliceService.unregisterResponder(alice.ownerNode.libp2p);
 		}, 30_000);

@@ -62,9 +62,17 @@ An invitation may carry a `ValidationUrl`: a web hook an outside approver operat
 asked whether one particular redemption of that invitation may proceed.
 
 **The inviting party's node contacts the hook — not the joiner.** The party enrolled the
-approver's key and published the URL, so the trust relationship is the party's; and the approval
-is bound to a single-use nonce that only the redeeming node mints, so only that node can
-guarantee the nonce that was signed is the nonce that gets inserted.
+approver's key and published the URL, so the trust relationship is the party's: the hook answers
+to the party, and its answer must reach the row the party writes without passing through the
+joiner's hands.
+
+The single-use nonce the approval is bound to is minted by the **joiner**, not by the inviting
+node (`strand-solicitation.ts`). The joiner mints it, signs its own consent over it, and sends
+both in the contact message; the responder inserts that same value and asks the approver about
+it. Two separate signatures therefore cover one nonce — the joiner's `PeerSig` (it agreed to
+this redemption) and the approver's sign-off (this redemption may proceed) — so neither party
+can move an approval onto a different redemption, and the responder cannot manufacture a
+consent it did not receive.
 
 Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the transport),
 `signFormationApproval()` / `verifyFormationApproval()` (the digest helpers), and
@@ -73,8 +81,9 @@ Client side, in `@serfab/cadre-core`: `createHttpFormationApprover()` (the trans
 
 `ControlFormationUsageRecorder` contacts the hook automatically on both redemption paths
 (`recordUsage` against an existing host strand, and `provisionAndRecord` for an unbound invite):
-it reads the invite's `ValidationUrl`, mints the nonce, calls the approver, and writes the
-sign-off with the usage row.
+it reads the invite's `ValidationUrl`, calls the approver with the nonce and peer key the joiner
+supplied, and writes the sign-off with the usage row — alongside the joiner's own consent
+signature, which the schema re-verifies on that same insert.
 
 ### Wire contract
 
@@ -85,12 +94,19 @@ addresses, no membership keys:
 ```json
 {
   "token": "invite-...",
-  "usageStampId": "the redemption's single-use nonce",
+  "usageStampId": "the redemption's single-use nonce, minted by the joiner",
   "strandId": "the strand being joined",
-  "peerId": "the joining peer",
+  "peerKey": "base64url ed25519 public key of the joining peer",
   "disclosure": "verbatim text that will be stored as FormationUsage.Disclosure"
 }
 ```
+
+`peerKey` is the joiner's **key**, not its libp2p peer id: an Ed25519 peer id is the identity
+multihash of exactly those key bytes, so a hook that wants the peer id can derive it, while a
+hook that wants to check a signature has the key it needs. It is what lands in
+`FormationUsage.PeerKey`, and the joiner has itself signed a digest over it
+(`FormationUsage.PeerSig`) — so the peer named in the body provably asked to join, rather than
+merely being named by whoever is redeeming.
 
 Answer with `200` and:
 
@@ -140,7 +156,7 @@ anything off-link.
 ### What the signature covers
 
 The signature authorizes **exactly one** redemption. It is made over
-`digest('CadreControl.FormationUsage', 'vouch', Token, UsageStampId, StrandId, PeerId, Disclosure)`
+`digest('CadreControl.FormationUsage', 'vouch', Token, UsageStampId, StrandId, PeerKey, Disclosure)`
 — produce it with `signFormationApproval` (or, in another language, build the digest to match
 `formationVouchMessage`; never a hand-written field list) — which
 `FormationUsage.Authorized` re-verifies against the enrolled `ValidationKey` row when the
@@ -164,7 +180,7 @@ express().use(express.json()).post('/approve', (req, res) => {
   // node's own `FormationApprovalRequest` adds the `validationUrl`, which never reaches a hook.)
   const fields = req.body as FormationVouchFields;
 
-  if (!mayJoin(fields.peerId, fields.disclosure)) {
+  if (!mayJoin(fields.peerKey, fields.disclosure)) {
     res.status(403).json({ error: 'not on the roster' });
     return;
   }
