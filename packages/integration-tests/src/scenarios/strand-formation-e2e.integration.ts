@@ -1076,6 +1076,14 @@ describe('E2E Strand Formation', () => {
 					['disclosure', 'peerKey', 'strandId', 'token', 'usageStampId'],
 				);
 
+				// The rest of the same contract: a hook operator is promised a POST carrying JSON and
+				// asking for JSON back, at the ValidationUrl's OWN path — which may carry a hook
+				// secret, so it has to arrive unmangled.
+				expect(hook.lastMethod).toBe('POST');
+				expect(hook.lastPath).toBe('/hook');
+				expect(hook.lastHeaders?.['content-type']).toBe('application/json');
+				expect(hook.lastHeaders?.accept).toBe('application/json');
+
 				const row = await readFormationUsage(alice, token);
 				expect(row).not.toBeNull();
 
@@ -1196,6 +1204,9 @@ describe('E2E Strand Formation', () => {
 						bob.ownerNode.libp2p,
 					),
 				).rejects.toThrow(/Formation approval key is not enrolled/);
+				// Same shape as (iii): the hook still answered, and its perfectly valid sign-off was
+				// discarded by the redeeming node's local enrollment check against the now-deleted row.
+				expect(hook.requestCount).toBe(1);
 				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
 
 				aliceService.unregisterResponder(alice.ownerNode.libp2p);
@@ -1267,6 +1278,9 @@ describe('E2E Strand Formation', () => {
 
 				expect(await alice.controlDatabase.countFormationUsage(secondToken)).toBe(0);
 				expect(await alice.controlDatabase.countFormationUsage(firstToken)).toBe(1);
+				// Both redemptions really went out to the hook: the replay was refused on the ANSWER,
+				// not because the second attempt short-circuited before asking.
+				expect(hook.requestCount).toBe(2);
 
 				aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {

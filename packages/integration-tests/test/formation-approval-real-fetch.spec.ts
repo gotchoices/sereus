@@ -15,8 +15,6 @@
  * the full decision table.
  */
 
-import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
-import type { AddressInfo, Socket } from 'node:net';
 import { describe, expect, it } from 'vitest';
 import { generatePrivateKey } from '@optimystic/quereus-plugin-crypto';
 import {
@@ -29,6 +27,7 @@ import {
 	type FormationApprovalRequest,
 	type FormationVouchFields
 } from '@serfab/cadre-core';
+import { readRequestBody, startLoopbackHttpServer } from '../src/harness/fixtures/loopback-http-server.js';
 
 function baseRequest(overrides: Partial<FormationApprovalRequest> = {}): FormationApprovalRequest {
 	return {
@@ -71,56 +70,10 @@ async function settleOrGiveUp(promise: Promise<unknown>, ms: number): Promise<vo
 	}
 }
 
-/** Read a request body to completion before handing it to a `node:http` handler. */
-function readRequestBody(req: IncomingMessage): Promise<string> {
-	return new Promise((resolve, reject) => {
-		const chunks: Uint8Array[] = [];
-		req.on('data', (chunk: Uint8Array) => chunks.push(chunk));
-		req.on('end', () => resolve(Buffer.concat(chunks).toString('utf8')));
-		req.on('error', reject);
-	});
-}
-
-interface TestServer {
-	/** `http://127.0.0.1:<port>` — append a path to build a `validationUrl`. */
-	readonly baseUrl: string;
-	/** Closes the listener AND destroys any still-open sockets (a handler that never `res.end()`s otherwise hangs `server.close()`). */
-	close(): Promise<void>;
-}
-
-/** Start a throwaway `node:http` server on an OS-assigned port for one test. */
-function startServer(handler: (req: IncomingMessage, res: ServerResponse) => void): Promise<TestServer> {
-	return new Promise((resolve, reject) => {
-		const server: Server = createServer(handler);
-		const sockets = new Set<Socket>();
-		server.on('connection', (socket: Socket) => {
-			sockets.add(socket);
-			socket.on('close', () => sockets.delete(socket));
-		});
-		server.once('error', reject);
-		server.listen(0, '127.0.0.1', () => {
-			const address = server.address() as AddressInfo | null;
-			if (address === null) {
-				reject(new Error('test server did not bind a TCP address'));
-				return;
-			}
-			resolve({
-				baseUrl: `http://127.0.0.1:${address.port}`,
-				close: () => new Promise<void>((resolveClose) => {
-					for (const socket of sockets) {
-						socket.destroy();
-					}
-					server.close(() => resolveClose());
-				})
-			});
-		});
-	});
-}
-
 describe('createHttpFormationApprover against a real node:http server', () => {
 	it('resolves a real 200 JSON approval from a real socket', async () => {
 		const { privateKeyB64, validationKey } = approverKeys();
-		const server = await startServer((req, res) => {
+		const server = await startLoopbackHttpServer((req, res) => {
 			void readRequestBody(req)
 				.then((body) => {
 					const fields = JSON.parse(body) as FormationVouchFields;
@@ -148,7 +101,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	});
 
 	it('treats a real HTTP 403 response as refused', async () => {
-		const server = await startServer((_req, res) => {
+		const server = await startLoopbackHttpServer((_req, res) => {
 			res.writeHead(403, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({ error: 'no' }));
 		});
@@ -162,7 +115,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	});
 
 	it('treats a real HTTP 500 response as unavailable', async () => {
-		const server = await startServer((_req, res) => {
+		const server = await startLoopbackHttpServer((_req, res) => {
 			res.writeHead(500, { 'content-type': 'text/plain' });
 			res.end('boom');
 		});
@@ -178,7 +131,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	it('treats a real redirect as unavailable, whichever way the runtime\'s fetch reports it', async () => {
 		// The redirect target lives on this same throwaway server, in case some runtime path
 		// actually follows it rather than rejecting on `redirect: 'error'`.
-		const server = await startServer((req, res) => {
+		const server = await startLoopbackHttpServer((req, res) => {
 			if (req.url === '/redirect-target') {
 				res.writeHead(200, { 'content-type': 'application/json' });
 				res.end(JSON.stringify({ validationKey: 'k', validationSignature: 's' }));
@@ -199,7 +152,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	});
 
 	it('times out a real socket that answers headers and then never sends a body', async () => {
-		const server = await startServer((_req, res) => {
+		const server = await startLoopbackHttpServer((_req, res) => {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.flushHeaders();
 			// Deliberately never writes a body or calls res.end() — the client's abort timer must
@@ -223,7 +176,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 		// Bind a port and release it, so the address is well-formed but nothing is listening. This
 		// is the only case whose classification rests on a real transport error rather than on a
 		// response the stub suite can synthesize.
-		const server = await startServer((_req, res) => { res.end(); });
+		const server = await startLoopbackHttpServer((_req, res) => { res.end(); });
 		const deadUrl = `${server.baseUrl}/hook`;
 		await server.close();
 
@@ -237,7 +190,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 	});
 
 	it('relays a caller abort into a real in-flight request and reports it as cancelled', async () => {
-		const server = await startServer((_req, res) => {
+		const server = await startLoopbackHttpServer((_req, res) => {
 			res.writeHead(200, { 'content-type': 'application/json' });
 			res.flushHeaders();
 			// Never ends: the caller's signal, not the client's own timer, has to end this one.
@@ -275,7 +228,7 @@ describe('createHttpFormationApprover against a real node:http server', () => {
 		let resolveServerClosed: () => void;
 		const serverClosed = new Promise<void>((resolve) => { resolveServerClosed = resolve; });
 
-		const server = await startServer((_req, res) => {
+		const server = await startLoopbackHttpServer((_req, res) => {
 			// No content-length: writing before end() without setting one forces chunked
 			// transfer-encoding, so the client can only cap this by actually streaming, not by
 			// reading the declared size up front.
