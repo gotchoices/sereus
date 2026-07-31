@@ -18,6 +18,20 @@
  * replication) is covered end-to-end by `strand-formation-e2e.integration.ts`.
  * Accordingly there are NO assertions on harness membership bookkeeping
  * (`strand.parties`) — only on real control-DB state and real connectivity.
+ *
+ * HOW MANY MACHINES THE WRITES BELOW ACTUALLY REACH — deliberately not asserted.
+ * A control write is offered to a set of the party's machines (its "cohort") and
+ * commits once a super-majority of that set approves; a ONE-machine cohort commits on
+ * the writer's own vote, so a write that merely passes says nothing about how many
+ * machines took part. Bob's party is a single machine, so his cohort genuinely is one.
+ * Alice's two drones do connect, but her control writes race the peer-discovery ring
+ * that is still warming up (it reaches every party member within about five seconds),
+ * so hers may be offered to one, two or three machines from run to run. Nothing in
+ * this file asserts a cohort size, and nothing should: this is the suite's broad smoke
+ * test, and binding it to a three-machine cohort would bind it to the unanimity bar
+ * that applies there (every machine must approve), a known fragility tracked as
+ * `debt-control-write-unanimity-at-three-nodes`. The multi-machine claim is owned by
+ * `harness-party-control-cohort.integration.ts`, which waits for the ring first.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';

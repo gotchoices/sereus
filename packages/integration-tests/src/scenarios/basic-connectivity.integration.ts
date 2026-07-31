@@ -5,6 +5,11 @@
  * - Create parties with real libp2p nodes
  * - Nodes can connect to each other
  * - Cleanup works properly
+ *
+ * Scope note: this asserts libp2p CONNECTIVITY only. A connection is not evidence that
+ * a machine would be included in a control-database write — that set (the "cohort") is
+ * chosen by the peer-discovery ring, not by the connection list, and is asserted in
+ * `harness-party-control-cohort.integration.ts`.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
