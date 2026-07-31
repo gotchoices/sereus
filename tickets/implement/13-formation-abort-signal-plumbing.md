@@ -3,6 +3,13 @@ files: packages/cadre-core/src/strand-formation-protocol.ts, packages/cadre-core
 difficulty: hard
 ----
 
+<!-- resume-note -->
+A prior agent run completed ALL source edits but hit its token budget before writing the
+tests or running validation. Do not redo the source changes — verify them by running the
+validation commands, then write the two test items below. Everything under "Source changes
+already landed" is in the working tree (uncommitted).
+<!-- /resume-note -->
+
 ## Context
 
 Confirmed bug (repro details in the sibling ticket `formation-settle-grace-listener`): when the
@@ -27,72 +34,66 @@ Signal placement rules — the point of the whole exercise:
 - Every signal param is optional, so existing test doubles and the `StrandProvisioner` mock
   path keep compiling. Fakes stay structurally assignable.
 
-## Already in the working tree (do not redo)
+## Source changes already landed (verify, do not redo)
 
-- `control-database.ts`: `FormationAbortedError` exported directly below
-  `MissingHostStrandError`. Constructor is `(token, operation)` — token FIRST (unlike
-  `MissingHostStrandError`). Its docblock already states the "never thrown once the insert
-  has been issued" rule and that the manager rethrows it rather than mapping to a conflict.
-- `strand-formation-protocol.ts`: `PROVISION_SETTLE_GRACE_MS = 2_000` constant + docblock,
-  and the work-budget-equals-hook-timeout race note in `DEFAULT_PROVISION_TIMEOUT_MS`'s
-  docblock. Both are consumed by the sibling ticket; nothing in this ticket touches them.
+All per the original TODO list, all in the working tree:
 
-## TODO (all placements verified against current code)
-
-- `strand-formation-protocol.ts`: add optional 4th param `signal?: AbortSignal` to
-  `FormationListenerOptions.provisionStrand` (type-level only — passing a real signal is the
-  sibling ticket's job). Docblock: aborted when the listener's work budget expires; a hook
-  that observes it before writing leaves the invite unspent.
-- `strand-solicitation.ts` (`FormationUsageRecorder`, param objects at ~:66 and ~:102): add
-  optional `signal?: AbortSignal` to `recordUsage` and `provisionAndRecord`.
+- `strand-formation-protocol.ts`: `FormationListenerOptions.provisionStrand` has optional
+  4th param `signal?: AbortSignal` with docblock (type-level only — the listener does not
+  pass one yet; that is the sibling ticket's job). Pre-existing from an earlier run:
+  `PROVISION_SETTLE_GRACE_MS` constant + docblocks — untouched, correct.
+- `strand-solicitation.ts`: `FormationUsageRecorder.recordUsage` and `provisionAndRecord`
+  param objects each gained optional `signal?: AbortSignal` with a one-line docblock.
 - `formation-approval.ts`:
-  - `FormationApprover.requestApproval` gains an optional second `signal?: AbortSignal`
-    param; DELETE the stale `NOTE:` above it (~:83–87 — this work is exactly the case it
-    anticipates).
-  - `createHttpFormationApprover`'s `requestApproval` (~:441–482): after `origin` is
-    computed and BEFORE creating the timer or fetching — pre-aborted signal → throw
-    `FormationApprovalError('unavailable', `Formation was cancelled before approval hook ${origin} was asked`)`.
-    Otherwise add a `callerAborted` flag beside the existing `timedOut` flag plus
-    `signal.addEventListener('abort', onCallerAbort, { once: true })` where `onCallerAbort`
-    sets the flag and calls `controller.abort()`; remove via `removeEventListener` in the
-    existing `finally` (which already clears the timer). Error-message branch in the catch:
-    `timedOut` → existing message; else `callerAborted` →
-    `` `Formation was cancelled while approval hook ${origin} was being asked` ``; else the
-    existing could-not-be-reached message. Do NOT use `AbortSignal.any` — not reliably
-    present on React Native/Hermes; the docblock at ~:418 commits to `fetch` +
-    `AbortController` only.
-- `control-database.ts`: `recordFormationUsage` and `redeemInvitation` param objects gain
-  optional `signal?: AbortSignal`. Check INSIDE the `withWriteLock` callback — for record,
-  immediately before `execFormationUsageInsert`; for redeem, before
-  `inTransaction('redemption', ...)` — ONE check, never between the two inserts. Throw
-  `new FormationAbortedError(token, 'usage recording')` / `(token, 'redemption')`. A
-  synchronous throw inside the callback is fine (`writeQueue.then(fn, fn)` turns it into a
-  rejection). The reads (`queryStrandStampId`, `nextUseNumber`) stay before the lock,
-  unchecked.
-- `control-formation-recorder.ts`:
-  - `recordUsage` and `provisionAndRecord`: destructure `signal`; entry check at the TOP
-    (`if (signal?.aborted) throw new FormationAbortedError(token, ...)`) — before
-    `queryFormationInvite`, and in `provisionAndRecord` also before the `randomBytes`
-    strand-id mint. Thread `signal` into `controlDatabase.recordFormationUsage` /
-    `redeemInvitation`.
-  - `obtainApproval` gains a second `signal?: AbortSignal` param; check it immediately
-    before `this.approver.requestApproval(fullRequest, signal)`.
-- `strand-formation-manager.ts`:
-  - Listener wiring becomes
-    `provisionStrand: (token, initiatorPartyId, disclosure, signal) => this.provisionAsResponder(token, initiatorPartyId, disclosure, signal)`.
-  - `provisionAsResponder` gains optional trailing `signal?: AbortSignal`; thread into
-    `recorder!.recordUsage({..., signal})` and `provisionUnbound(..., signal)` →
-    `provisionAndRecord({..., signal})`. The `strandProvisioner` fallback and the
-    placeholder path write nothing — no signal needed.
-  - In `provisionAsResponder`'s catch, rethrow `FormationAbortedError` BEFORE the
-    `FormationApprovalError` mapping (import from `./control-database.js` — no cycle;
-    control-database does not import the manager), so an abandoned provisioning is not
-    reported as `'Formation conflict, retry'`. With this ticket alone the listener never
-    fires the signal, so the rethrow is dormant until the sibling ticket lands — that is the
-    intended intermediate state.
+  - `FormationApprover.requestApproval(request, signal?)` — stale NOTE about missing
+    AbortSignal support replaced with a docblock describing the new param.
+  - `createHttpFormationApprover`'s `requestApproval`: pre-aborted signal (checked after
+    `origin` is computed, before the timer/fetch) throws
+    `FormationApprovalError('unavailable', 'Formation was cancelled before approval hook
+    ${origin} was asked')`. Mid-flight: `callerAborted` flag + `onCallerAbort` listener
+    (added `{ once: true }`, relays to `controller.abort()`; comment notes
+    `AbortSignal.any` deliberately avoided for React Native/Hermes). Listener removed in
+    the existing `finally` alongside `clearTimeout`. Catch picks message via if/else chain:
+    `timedOut` → existing "did not answer within Nms"; else `callerAborted` →
+    `'Formation was cancelled while approval hook ${origin} was being asked'`; else
+    existing could-not-be-reached.
+- `control-database.ts`: `redeemInvitation` and `recordFormationUsage` param objects gained
+  optional `signal?: AbortSignal` (docblocked). Check is INSIDE the `withWriteLock`
+  callback: redeem checks before `inTransaction('redemption', ...)` (one check, never
+  between the two inserts) throwing `new FormationAbortedError(token, 'redemption')`;
+  record checks immediately before `execFormationUsageInsert` throwing
+  `(token, 'usage recording')`. Reads (`queryStrandStampId`, `nextUseNumber`) stay before
+  the lock, unchecked. Pre-existing from an earlier run: `FormationAbortedError` class —
+  untouched, correct. NOTE: `redeemInvitation`'s lock body was re-indented when the check
+  was inserted (the SQL template literal's leading whitespace changed — harmless to SQL).
+- `control-formation-recorder.ts`: imports `FormationAbortedError` (value import merged
+  into the existing `control-database.js` import). `recordUsage` / `provisionAndRecord`
+  destructure `signal` and check at the TOP (before `queryFormationInvite`; in
+  `provisionAndRecord` also before the `randomBytes` strand-id mint), throwing
+  `FormationAbortedError(token, 'usage recording')` / `(token, 'redemption')`. Signal
+  threaded into `controlDatabase.recordFormationUsage` / `redeemInvitation`.
+  `obtainApproval` gained a second `signal?: AbortSignal` param, checked immediately
+  before `this.approver.requestApproval(fullRequest, signal)` throwing
+  `FormationAbortedError(fields.token, 'approval')`.
+- `strand-formation-manager.ts`: imports `FormationAbortedError` from
+  `./control-database.js` (comment notes no cycle). Listener wiring passes the 4th
+  `signal` arg through to `provisionAsResponder`, which gained optional trailing
+  `signal?: AbortSignal` and threads it into `recorder!.recordUsage({..., signal})` and
+  `provisionUnbound(..., signal)` → `provisionAndRecord({..., signal})`. The
+  `strandProvisioner` fallback and placeholder path write nothing — no signal, as
+  intended. `provisionAsResponder`'s catch rethrows `FormationAbortedError` BEFORE the
+  `FormationApprovalError` mapping (dormant until the sibling ticket fires the signal —
+  intended intermediate state).
 
-## Tests
+Editor diagnostics during the run showed transient "Expected 3 arguments, but got 4" /
+unused-variable errors in `strand-formation-manager.ts` — these appeared mid-edit-sequence
+and should be stale (the signature edits landed after the wiring edit), but NOTHING has been
+validated: no typecheck, no lint, no tests were run. Verify first.
 
+## TODO (remaining)
+
+- Run root `yarn typecheck` first to confirm the landed edits compile; fix any real
+  residue (watch `strand-formation-manager.ts` — see stale-diagnostics note above).
 - Extend `test/formation-approval.spec.ts` (has `stubFetch` / `expectFailure` /
   `baseRequest` helpers):
   - Pre-aborted caller signal → `unavailable`, and `calls` has length 0 (hook never
@@ -114,3 +115,6 @@ Signal placement rules — the point of the whole exercise:
 
 `yarn workspace @serfab/cadre-core test 2>&1 | tee /tmp/cc-test.log`, then root
 `yarn typecheck` and `yarn lint`.
+
+When done, write the review/ handoff for the whole ticket (source changes above + tests)
+and delete this file.

@@ -70,6 +70,8 @@ export interface FormationUsageRecorder {
     strandId: string;
     /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
     disclosure: string;
+    /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
+    signal?: AbortSignal;
   }): Promise<void>;
 
   /**
@@ -106,6 +108,8 @@ export interface FormationUsageRecorder {
     sAppId: string;
     /** Exact text to write to `FormationUsage.Disclosure`; the approver signs these bytes. */
     disclosure: string;
+    /** Aborted when the caller has given up; observed BEFORE any write so the invite stays unspent. */
+    signal?: AbortSignal;
   }): Promise<{ strandId: string; memberPrivateKey: string | null }>;
 
   /**

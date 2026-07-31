@@ -1348,12 +1348,18 @@ export class ControlDatabase {
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
+    /**
+     * Aborted when the caller has given up. Checked ONCE, inside the write lock, before the
+     * transaction is opened — never between the two inserts — throwing
+     * {@link FormationAbortedError} with the invite unspent.
+     */
+    signal?: AbortSignal;
   }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
       peerId, peerSignature, usageStampId,
-      nowMs, validationKey, validationSignature,
+      nowMs, validationKey, validationSignature, signal,
     } = params;
     log('Redeeming invitation %s -> strand %s', token, strandId);
 
@@ -1362,24 +1368,31 @@ export class ControlDatabase {
     const stampId = usageStampId ?? generateStampId(localPeerId);
     const useNumber = await this.nextUseNumber(token);
 
-    await this.withWriteLock(() => this.inTransaction('redemption', async () => {
-      // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
-      //    still carrying a fresh unique StampId for the anti-replay column.
-      //    Hard-coded open + keyless: the consent branch admits no other shape.
-      await this.db!.exec(`
-        insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
-          with context OwnerKey = null, Signature = null
-          values (?, 'o', null, ?)
-      `, [strandId, strandStampId]);
+    await this.withWriteLock(() => {
+      // Inside the lock: a redemption still parked behind another writer when the caller's
+      // budget expired is abandoned rather than executed.
+      if (signal?.aborted) {
+        throw new FormationAbortedError(token, 'redemption');
+      }
+      return this.inTransaction('redemption', async () => {
+        // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
+        //    still carrying a fresh unique StampId for the anti-replay column.
+        //    Hard-coded open + keyless: the consent branch admits no other shape.
+        await this.db!.exec(`
+          insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
+            with context OwnerKey = null, Signature = null
+            values (?, 'o', null, ?)
+        `, [strandId, strandStampId]);
 
-      // 2. FormationUsage row — authorised by the matching FormationInvite, and
-      //    carrying the strand's stamp so it authorizes THIS row and no other.
-      await this.execFormationUsageInsert({
-        token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
-        peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
-        validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
+        // 2. FormationUsage row — authorised by the matching FormationInvite, and
+        //    carrying the strand's stamp so it authorizes THIS row and no other.
+        await this.execFormationUsageInsert({
+          token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
+          peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+          validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
+        });
       });
-    }));
+    });
 
     log('Redeemed invitation %s -> strand %s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId: stampId };
@@ -1417,11 +1430,17 @@ export class ControlDatabase {
     nowMs?: number;
     validationKey?: string;
     validationSignature?: string;
+    /**
+     * Aborted when the caller has given up. Checked inside the write lock, immediately
+     * before the insert is issued, throwing {@link FormationAbortedError} with the invite
+     * unspent. Never checked once the insert has been issued.
+     */
+    signal?: AbortSignal;
   }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
-      peerId, peerSignature, usageStampId, nowMs, validationKey, validationSignature,
+      peerId, peerSignature, usageStampId, nowMs, validationKey, validationSignature, signal,
     } = params;
 
     const localPeerId = this.config.libp2pNode.peerId.toString();
@@ -1432,11 +1451,18 @@ export class ControlDatabase {
     }
     const useNumber = await this.nextUseNumber(token);
 
-    await this.withWriteLock(() => this.execFormationUsageInsert({
-      token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
-      peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
-      validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
-    }));
+    await this.withWriteLock(() => {
+      // Inside the lock: a write still queued behind another writer when the caller's
+      // budget expired is abandoned rather than executed.
+      if (signal?.aborted) {
+        throw new FormationAbortedError(token, 'usage recording');
+      }
+      return this.execFormationUsageInsert({
+        token, useNumber, usageStampId: stampId, disclosure, strandId, strandStampId,
+        peerId, peerSignature: peerSignature ?? null, nowMs: nowMs ?? Date.now(),
+        validationKey: validationKey ?? null, validationSignature: validationSignature ?? null,
+      });
+    });
 
     log('Recorded formation usage: token=%s strand=%s (use #%d)', token, strandId, useNumber);
     return { useNumber, usageStampId: stampId };

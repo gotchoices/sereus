@@ -278,8 +278,12 @@ export interface FormationListenerOptions {
    * Returns a {@link ResponderProvisionOutcome}: the hook may REJECT post-validation
    * (e.g. an unconverged host strand) and the listener turns that into a clean,
    * non-disclosing `approved: false` reply rather than dropping the result frame.
+   *
+   * `signal` is aborted when the listener's work budget expires: a hook that observes it
+   * BEFORE writing abandons the redemption and leaves the invite unspent. Optional so
+   * signal-unaware hooks (tests, mocks) stay assignable.
    */
-  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure): Promise<ResponderProvisionOutcome>;
+  provisionStrand(token: string, initiatorPartyId: string, disclosure: StrandFormationDisclosure, signal?: AbortSignal): Promise<ResponderProvisionOutcome>;
   /** Responder identity, disclosed only AFTER token + disclosure validation passes. */
   getResponderIdentity(): { partyId: string; cadrePeerAddrs: string[] };
   sessionTimeoutMs?: number;

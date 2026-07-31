@@ -1,6 +1,6 @@
 import debug from 'debug';
 import { randomBytes } from '@optimystic/quereus-plugin-crypto';
-import type { ControlDatabase } from './control-database.js';
+import { FormationAbortedError, type ControlDatabase } from './control-database.js';
 import {
   createHttpFormationApprover,
   verifyFormationApproval,
@@ -123,7 +123,8 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * the security authority; do not "simplify" the database check away in favour of these.
    */
   private async obtainApproval(
-    request: Omit<FormationApprovalRequest, 'usageStampId' | 'validationUrl'> & { validationUrl: string | null }
+    request: Omit<FormationApprovalRequest, 'usageStampId' | 'validationUrl'> & { validationUrl: string | null },
+    signal?: AbortSignal
   ): Promise<{ usageStampId?: string; validationKey?: string; validationSignature?: string }> {
     const { validationUrl, ...fields } = request;
     if (validationUrl === null) {
@@ -131,7 +132,10 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     }
     const usageStampId = this.controlDatabase.mintUsageStampId();
     const fullRequest: FormationApprovalRequest = { ...fields, usageStampId, validationUrl };
-    const approval = await this.approver.requestApproval(fullRequest);
+    if (signal?.aborted) {
+      throw new FormationAbortedError(fields.token, 'approval');
+    }
+    const approval = await this.approver.requestApproval(fullRequest, signal);
     if (!verifyFormationApproval(fullRequest, approval)) {
       throw new FormationApprovalError(
         'malformed',
@@ -167,8 +171,12 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     peerId: string;
     strandId: string;
     disclosure: string;
+    signal?: AbortSignal;
   }): Promise<void> {
-    const { token, peerId, strandId, disclosure } = params;
+    const { token, peerId, strandId, disclosure, signal } = params;
+    if (signal?.aborted) {
+      throw new FormationAbortedError(token, 'usage recording');
+    }
     const invite = await this.controlDatabase.queryFormationInvite(token);
     // NOTE: a missing invite row reads as "no approval required" here and in
     // `provisionAndRecord`, so an invite that vanished between `resolveStrand` and this read
@@ -178,8 +186,8 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     const approval = await this.obtainApproval({
       token, strandId, peerId, disclosure,
       validationUrl: invite?.validationUrl ?? null,
-    });
-    await this.controlDatabase.recordFormationUsage({ token, strandId, peerId, disclosure, ...approval });
+    }, signal);
+    await this.controlDatabase.recordFormationUsage({ token, strandId, peerId, disclosure, signal, ...approval });
     log('Recorded formation usage: token=%s strand=%s', token, strandId);
   }
 
@@ -237,15 +245,19 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
     peerId: string;
     sAppId: string;
     disclosure: string;
+    signal?: AbortSignal;
   }): Promise<{ strandId: string; memberPrivateKey: string | null }> {
-    const { token, peerId, disclosure } = params;
+    const { token, peerId, disclosure, signal } = params;
+    if (signal?.aborted) {
+      throw new FormationAbortedError(token, 'redemption');
+    }
     const strandId = `strand-${randomBytes(128, 'hex') as string}`;
     const invite = await this.controlDatabase.queryFormationInvite(token);
     const approval = await this.obtainApproval({
       token, strandId, peerId, disclosure,
       validationUrl: invite?.validationUrl ?? null,
-    });
-    await this.controlDatabase.redeemInvitation({ token, strandId, peerId, disclosure, ...approval });
+    }, signal);
+    await this.controlDatabase.redeemInvitation({ token, strandId, peerId, disclosure, signal, ...approval });
     log('Provisioned + recorded unbound strand: token=%s strand=%s', token, strandId);
     return { strandId, memberPrivateKey: null };
   }

@@ -80,11 +80,13 @@ export interface FormationApproval {
  * {@link verifyFormationApproval} before writing.
  */
 export interface FormationApprover {
-  // NOTE: no caller-supplied `AbortSignal` — the only cancellation is the transport's own
-  // timeout. Enough while a redemption runs to completion or fails; if the responder ever gains
-  // a way to cancel a formation in flight, this needs an optional signal threaded through to
-  // `fetch` alongside the timeout's.
-  requestApproval(request: FormationApprovalRequest): Promise<FormationApproval>;
+  /**
+   * `signal` is the caller's cancellation (the formation responder's work budget expiring):
+   * a pre-aborted or mid-flight abort rejects with an `unavailable`
+   * {@link FormationApprovalError} without (further) contacting the hook. Optional so
+   * signal-unaware implementations stay assignable.
+   */
+  requestApproval(request: FormationApprovalRequest, signal?: AbortSignal): Promise<FormationApproval>;
 }
 
 /**
@@ -438,19 +440,34 @@ export function createHttpFormationApprover(options?: {
   const fetchImpl = options?.fetchImpl;
 
   return {
-    async requestApproval(request: FormationApprovalRequest): Promise<FormationApproval> {
+    async requestApproval(request: FormationApprovalRequest, signal?: AbortSignal): Promise<FormationApproval> {
       const doFetch = resolveFetch(fetchImpl);
       const url = parseHookUrl(request.validationUrl);
       // Origin only in messages: a ValidationUrl's path/query may carry a hook secret, and
       // these strings reach logs and the joiner's rejection reason.
       const origin = url.origin;
 
+      if (signal?.aborted) {
+        throw new FormationApprovalError(
+          'unavailable',
+          `Formation was cancelled before approval hook ${origin} was asked`
+        );
+      }
+
       const controller = new AbortController();
       let timedOut = false;
+      let callerAborted = false;
       const timer = setTimeout(() => {
         timedOut = true;
         controller.abort();
       }, timeoutMs);
+      // Relayed by hand rather than `AbortSignal.any` (not reliably present on React
+      // Native/Hermes; this client commits to `fetch` + `AbortController` only).
+      const onCallerAbort = (): void => {
+        callerAborted = true;
+        controller.abort();
+      };
+      signal?.addEventListener('abort', onCallerAbort, { once: true });
 
       try {
         const response = await doFetch(url.toString(), {
@@ -467,16 +484,19 @@ export function createHttpFormationApprover(options?: {
         if (error instanceof FormationApprovalError) {
           throw error;
         }
-        throw new FormationApprovalError(
-          'unavailable',
-          timedOut
-            ? `Approval hook ${origin} did not answer within ${timeoutMs}ms`
-            : `Approval hook ${origin} could not be reached`,
-          { cause: error }
-        );
+        let reason: string;
+        if (timedOut) {
+          reason = `Approval hook ${origin} did not answer within ${timeoutMs}ms`;
+        } else if (callerAborted) {
+          reason = `Formation was cancelled while approval hook ${origin} was being asked`;
+        } else {
+          reason = `Approval hook ${origin} could not be reached`;
+        }
+        throw new FormationApprovalError('unavailable', reason, { cause: error });
       } finally {
         // Cleared on EVERY exit path: a leaked abort timer keeps a node's event loop alive.
         clearTimeout(timer);
+        signal?.removeEventListener('abort', onCallerAbort);
       }
     }
   };

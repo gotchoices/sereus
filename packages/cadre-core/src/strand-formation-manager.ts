@@ -10,6 +10,8 @@ import {
   FormationApprovalError,
   type FormationApprovalFailure
 } from './formation-approval.js';
+// control-database does not import this manager, so this import introduces no cycle.
+import { FormationAbortedError } from './control-database.js';
 import type {
   DisclosureValidator,
   FormationUsageRecorder,
@@ -131,8 +133,8 @@ export class StrandFormationManager {
     this.listener = new FormationListener({
       validateToken: (token) => this.validateToken(token),
       validateDisclosure: (token, disclosure) => this.validateDisclosure(token, disclosure),
-      provisionStrand: (token, initiatorPartyId, disclosure) =>
-        this.provisionAsResponder(token, initiatorPartyId, disclosure),
+      provisionStrand: (token, initiatorPartyId, disclosure, signal) =>
+        this.provisionAsResponder(token, initiatorPartyId, disclosure, signal),
       getResponderIdentity: () => ({ partyId: this.partyId, cadrePeerAddrs: this.cadrePeerAddrs }),
       sessionTimeoutMs: this.config.sessionTimeoutMs,
       stepTimeoutMs: this.config.stepTimeoutMs,
@@ -280,7 +282,8 @@ export class StrandFormationManager {
   private async provisionAsResponder(
     token: string,
     initiatorPartyId: string,
-    disclosure: StrandFormationDisclosure
+    disclosure: StrandFormationDisclosure,
+    signal?: AbortSignal
   ): Promise<ResponderProvisionOutcome> {
     // Serialized ONCE, here: this exact string is what the approver signs and what the
     // recorder writes to `FormationUsage.Disclosure` — a re-serialization anywhere below
@@ -304,7 +307,8 @@ export class StrandFormationManager {
             token,
             peerId: initiatorPartyId,
             strandId: resolved.strandId,
-            disclosure: disclosureText
+            disclosure: disclosureText,
+            signal
           });
           return this.approve({
             strand: { strandId: resolved.strandId, createdBy: 'responder' },
@@ -317,9 +321,14 @@ export class StrandFormationManager {
           return { approved: false, reason: 'Host strand not yet available on this responder' };
         }
         case 'unbound':
-          return await this.provisionUnbound(token, initiatorPartyId, disclosureText);
+          return await this.provisionUnbound(token, initiatorPartyId, disclosureText, signal);
       }
     } catch (err) {
+      if (err instanceof FormationAbortedError) {
+        // The listener's timeout path owns the reply for an abandoned provisioning; mapping
+        // this onto 'Formation conflict, retry' would misreport it as a conflict.
+        throw err;
+      }
       if (err instanceof FormationApprovalError) {
         log('approval failed (%s) for token %s: %o', err.failure, token, err);
         return { approved: false, reason: APPROVAL_REJECTION_REASONS[err.failure] };
@@ -361,7 +370,8 @@ export class StrandFormationManager {
   private async provisionUnbound(
     token: string,
     initiatorPartyId: string,
-    disclosureText: string
+    disclosureText: string,
+    signal?: AbortSignal
   ): Promise<ResponderProvisionOutcome> {
     const recorder = this.formationUsageRecorder;
     if (recorder?.provisionAndRecord) {
@@ -370,7 +380,8 @@ export class StrandFormationManager {
         token,
         peerId: initiatorPartyId,
         sAppId,
-        disclosure: disclosureText
+        disclosure: disclosureText,
+        signal
       });
       return this.approve({
         strand: { strandId: provisioned.strandId, createdBy: 'responder' },
