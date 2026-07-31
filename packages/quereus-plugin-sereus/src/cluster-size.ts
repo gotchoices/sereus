@@ -82,12 +82,60 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * Default number of nodes a **strand** network is told its replication cluster should have.
  *
  * Strand data is application data, where partial replication is a legitimate choice: only
- * the control database's every-member-reads-all-of-it character forces full replication.
- * Two is the floor ({@link MIN_CLUSTER_SIZE}) and inherits the read-repair weakness
- * described on {@link CONTROL_REPLICATION_BREADTH}; raising it per strand is the embedder's
- * call. Tracked as `backlog/debt-strand-replication-breadth-ignores-party-count`.
+ * the control database's every-member-reads-all-of-it character forces full replication
+ * ({@link CONTROL_REPLICATION_BREADTH}). So the question here is not "everyone" but "how
+ * few is too few", and the answer is four.
+ *
+ * **Why four.** A write commits when a super-majority of the cohort approves, and that bar is
+ * Optimystic's `DEFAULT_SUPER_MAJORITY_THRESHOLD` of 0.75 — which Cadre selects by naming no
+ * threshold at all (see {@link CONTROL_CLUSTER_POLICY}). Approvals needed is
+ * `ceil(cohort x 0.75)`, so:
+ *
+ * | copies | approvals needed | holders that may be offline |
+ * |--------|------------------|-----------------------------|
+ * | 2      | 2                | 0                           |
+ * | 3      | 3                | 0                           |
+ * | 4      | 3                | 1                           |
+ * | 5      | 4                | 1                           |
+ * | 6      | 5                | 1                           |
+ *
+ * Four is the smallest breadth that lets a write commit while one holder is away. At two or
+ * three every holder must be awake for every write, which for a workspace shared between
+ * phones and laptops is the ordinary case, not the rare one. Six buys no more fault tolerance
+ * than four and costs more overfetch (see the NOTE below).
+ *
+ * **It is also a correctness floor, not only a durability one.** At breadth 2 a node that has
+ * fallen behind asks exactly one peer whether it is current, and Optimystic accepts that single
+ * answer as the cluster's truth (`corroboratorCapacity` in `db-p2p/src/cluster/quorum-restore.ts`
+ * lowers the corroboration floor to one when the cohort cannot hold a second voter). If that
+ * peer is also behind it honestly reports the stale revision, the reader concludes it is
+ * current, and re-arms its repair window forever. Measured on the control-DB replication
+ * scenario: 4 failures in 10 runs at breadth 2, 0 in 20 at breadth 3, 0 in 10 at breadth 8.
+ * Any value above 2 lifts the floor off a single voter. The underlying Optimystic behaviour is
+ * unfixed — `backlog/debt-read-repair-single-voter-corroboration` — so a caller that configures
+ * 2 explicitly still takes the exposure.
+ *
+ * **Why not derived from the party or member count.** The strand's `Member` rows live *in* the
+ * strand database, which runs on the strand libp2p node, whose cluster size is frozen at
+ * construction — reading the list to configure the node needs the node to exist. Open strands
+ * have no member list at all. The count also changes in the unsafe direction: a node that
+ * restarted after someone joined derives a wider expected cohort than one that did not, and the
+ * membership admission gate's confident path is what rejects the *wider* view. And a `Member` is
+ * a party, not a machine; cohort width consumes machines. Full reasoning in
+ * `docs/architecture.md` → "Replication cluster size".
+ *
+ * Raising or lowering it per strand is still the embedder's call
+ * ({@link resolveStrandClusterSize}, `CadreNodeConfig.strandClusterSize`,
+ * `StrandConnectionOptions.clusterSize`) — but every node on one strand must agree, so a change
+ * means restarting all of them. There is no smaller-than-{@link MIN_CLUSTER_SIZE} option.
+ *
+ * NOTE: cohort selection overfetches proportionally — `Libp2pKeyPeerNetwork.membershipOverfetch`
+ * asks FRET for `max(clusterSize * 4, clusterSize + 16)` candidates and does one peerStore
+ * protocol lookup per candidate, so 4 requests a 20-peer band (was 18 at breadth 2). Negligible,
+ * and bounded by the peers FRET actually knows. If strand cohort selection ever shows up as slow,
+ * look here first.
  */
-export const DEFAULT_STRAND_CLUSTER_SIZE = 2;
+export const DEFAULT_STRAND_CLUSTER_SIZE = 4;
 
 /**
  * Resolve the cluster size to hand `createLibp2pNode` for a **strand** network, applying

@@ -11,9 +11,15 @@ Latent defect in `../optimystic` (`db-p2p`), split out of Sereus's
 **Scope narrowed 2026-07-29: strand data only.** `control-db-replicates-to-whole-party` has landed, so
 the control database no longer configures two-copy replication — its cohort is the whole party, which
 raises `corroboratorCapacity` from 1 to N-1 and with it the corroboration floor, so a lone stale peer
-can no longer pass as the cluster's truth there. Sereus's remaining exposure is **strand** networks,
-which still default to a replication breadth of 2 (`DEFAULT_STRAND_CLUSTER_SIZE`), and any other
-caller that configures a factor of 2.
+can no longer pass as the cluster's truth there.
+
+**Scope narrowed again 2026-07-31: no default configuration in Sereus is exposed.**
+`debt-strand-replication-breadth-ignores-party-count` raised `DEFAULT_STRAND_CLUSTER_SIZE` from 2 to
+4, so strand networks no longer configure two-copy replication either. Any breadth above 2 lifts the
+corroboration floor off a single voter. Do **not** close this ticket: the Optimystic behaviour is
+unfixed, and a caller that explicitly configures a strand at 2 (`CadreNodeConfig.strandClusterSize`,
+`StrandConnectionOptions.clusterSize` — both accept `MIN_CLUSTER_SIZE` = 2) still hits it, as does
+any other Optimystic embedder.
 
 ## What happens
 

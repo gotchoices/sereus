@@ -363,10 +363,12 @@ export interface CadreNodeConfig {
    *
    * Frozen when the strand's libp2p node is created; a change takes effect on
    * restart, not when cadre membership grows. Defaults to
-   * {@link DEFAULT_STRAND_CLUSTER_SIZE} (2); anything below
+   * {@link DEFAULT_STRAND_CLUSTER_SIZE} (4 — the smallest breadth whose 0.75
+   * super-majority still commits with one holder offline); anything below
    * {@link MIN_CLUSTER_SIZE} is rejected before a node is created. The cost of a
    * small value is replication breadth and reliance on read repair, not commit
-   * correctness.
+   * correctness — but at 2 that read repair cannot converge, because a lone
+   * corroborator's stale answer is accepted as the cluster's truth.
    */
   strandClusterSize?: number;
 

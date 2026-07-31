@@ -27,13 +27,14 @@ caveat honestly; nothing tests past it.
 
 ## Why it matters
 
-Replication breadth for a strand is currently 2 copies per block
-(`DEFAULT_STRAND_CLUSTER_SIZE`), so on a **two**-node strand every block should land
-on both nodes and the distinction should not bite. That is a claim we believe but do
-not verify. If it is ever wrong — or if breadth changes, or the strand grows past two
-nodes (`backlog/debt-strand-replication-breadth-ignores-party-count` covers the
-breadth-vs-party-count question) — the tests would keep passing while durability
-quietly disappeared.
+Replication breadth for a strand is 4 copies per block (`DEFAULT_STRAND_CLUSTER_SIZE`,
+raised from 2 by `debt-strand-replication-breadth-ignores-party-count`), and the cohort
+is capped at the peers that actually serve the strand — so on a **two**-node strand every
+block should land on both nodes and the distinction should not bite. That is a claim we
+believe but do not verify. If it is ever wrong — or if breadth changes again, or the
+strand grows past four nodes, where partial replication resumes and a reader outside the
+cohort is genuinely reading over the network — the tests would keep passing while
+durability quietly disappeared.
 
 ## What proof would look like
 

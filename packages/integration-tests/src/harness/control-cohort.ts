@@ -95,14 +95,31 @@ interface NodeWithKeyNetwork {
  * would make {@link waitForControlCohort} poll to its timeout and then blame the
  * network for a wiring fault.
  */
-function resolveKeyNetwork(node: TestCadreNode): Libp2pKeyPeerNetwork {
-	const attached = (node.libp2p as unknown as NodeWithKeyNetwork).keyNetwork;
+function resolveKeyNetwork(libp2p: unknown, label: string): Libp2pKeyPeerNetwork {
+	const attached = (libp2p as NodeWithKeyNetwork).keyNetwork;
 	if (!attached) {
 		throw new Error(
-			`control-cohort: node ${node.peerId} exposes no attached keyNetwork — `
+			`control-cohort: ${label} exposes no attached keyNetwork — `
 			+ 'it was not built by createLibp2pNode, or optimystic stopped attaching it');
 	}
 	return attached;
+}
+
+/**
+ * One-shot read of the peer ids a libp2p node would currently offer a write to, for ANY
+ * Optimystic network — control or strand. The strand case is why this is separate from
+ * {@link readControlCohort}: a strand node is a bare libp2p node, not a `TestCadreNode`.
+ *
+ * The probe-key argument in the file header applies here too, with the strand's own
+ * breadth in place of the control one: `findCluster` returns the ring's closest-k peers
+ * where k is the node's configured cluster size, so on a strand smaller than
+ * `DEFAULT_STRAND_CLUSTER_SIZE` (4) that set is every peer FRET has classified as serving
+ * the strand, whatever key is asked about.
+ */
+export async function readCohort(libp2p: unknown, label = 'node'): Promise<string[]> {
+	const members = await probeCohort(resolveKeyNetwork(libp2p, label));
+	log('%s cohort=%d %o', label, members.length, members);
+	return members;
 }
 
 /**
@@ -112,8 +129,7 @@ function resolveKeyNetwork(node: TestCadreNode): Libp2pKeyPeerNetwork {
 export async function readControlCohort(
 	party: TestParty, node: TestCadreNode = party.ownerNode
 ): Promise<string[]> {
-	const members = await probeCohort(resolveKeyNetwork(node));
-	log('party %s node %s cohort=%d %o', party.name, node.peerId, members.length, members);
+	const members = await readCohort(node.libp2p, `party ${party.name} node ${node.peerId}`);
 	return members;
 }
 
@@ -158,7 +174,7 @@ export async function waitForControlCohort(
 
 	// Resolve up front so a missing attachment throws here rather than being swallowed
 	// by the poll loop (which treats a throwing condition as "not yet").
-	const keyNetwork = resolveKeyNetwork(node);
+	const keyNetwork = resolveKeyNetwork(node.libp2p, `party ${party.name} node ${node.peerId}`);
 	const {
 		timeoutMs = DEFAULT_COHORT_TIMEOUT_MS,
 		intervalMs = DEFAULT_COHORT_INTERVAL_MS,

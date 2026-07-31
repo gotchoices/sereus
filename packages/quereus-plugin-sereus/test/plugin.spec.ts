@@ -386,6 +386,30 @@ describe('resolveStrandClusterSize', () => {
 	});
 });
 
+describe('DEFAULT_STRAND_CLUSTER_SIZE', () => {
+	// Optimystic's `DEFAULT_SUPER_MAJORITY_THRESHOLD`, which Cadre selects by naming no
+	// `superMajorityThreshold` at all. Approvals needed is `ceil(cohort * threshold)`.
+	const SUPER_MAJORITY_THRESHOLD = 0.75;
+	const approvalsNeeded = (cohort: number) => Math.ceil(cohort * SUPER_MAJORITY_THRESHOLD);
+
+	it('is the smallest breadth whose super-majority still commits with one holder offline', () => {
+		// The whole justification for the number: at 2 and 3 every holder must be awake
+		// for every write, which for a workspace of phones and laptops is the ordinary
+		// case. This is what would break if someone lowered the default back.
+		expect(approvalsNeeded(DEFAULT_STRAND_CLUSTER_SIZE)).toBeLessThan(DEFAULT_STRAND_CLUSTER_SIZE);
+		for (let smaller = MIN_CLUSTER_SIZE; smaller < DEFAULT_STRAND_CLUSTER_SIZE; smaller++) {
+			expect(approvalsNeeded(smaller)).toBe(smaller);
+		}
+	});
+
+	it('is above the breadth at which read repair cannot converge', () => {
+		// At a cohort of 2 the reader has exactly one corroborator, and Optimystic
+		// accepts that single stale answer as the cluster's truth
+		// (`backlog/debt-read-repair-single-voter-corroboration`, still open upstream).
+		expect(DEFAULT_STRAND_CLUSTER_SIZE).toBeGreaterThan(2);
+	});
+});
+
 describe('CONTROL_REPLICATION_BREADTH', () => {
 	// The control database is read in full by every party member, so its cohort must
 	// cover the whole party. The number is deliberately NOT the strand default: a

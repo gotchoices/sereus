@@ -68,18 +68,35 @@ describe('StrandInstanceManager cluster size wiring', () => {
     );
   });
 
-  it('forwards a configured clusterSize to the strand node', async () => {
+  it('resolves the default freshly on resume rather than caching a stale value', async () => {
+    // `buildStrandRuntime` is shared by startStrand and resumeStrand. A resumed
+    // strand must re-resolve, so a node restarted after the default moved picks
+    // up the new breadth instead of replaying whatever it was built with.
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-override', { clusterSize: 4 }));
+    await manager.startStrand(createStartConfig('cs-default-resume'));
+    await manager.quiesceStrand('cs-default-resume');
+    await manager.resumeStrand('cs-default-resume', { bootstrapNodes: [], mode: 'networked' });
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+    expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
+      expect.objectContaining({ clusterSize: DEFAULT_STRAND_CLUSTER_SIZE })
+    );
+  });
+
+  it('forwards a configured clusterSize to the strand node', async () => {
+    // 6, not 4: the override must differ from `DEFAULT_STRAND_CLUSTER_SIZE` or a
+    // manager that ignored the config entirely would still pass this assertion.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-override', { clusterSize: 6 }));
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
-      expect.objectContaining({ clusterSize: 4 })
+      expect.objectContaining({ clusterSize: 6 })
     );
   });
 
   it('preserves clusterSize across a quiesce/resume cycle', async () => {
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-resume', { clusterSize: 4 }));
+    await manager.startStrand(createStartConfig('cs-resume', { clusterSize: 6 }));
     await manager.quiesceStrand('cs-resume');
     await manager.resumeStrand('cs-resume', { bootstrapNodes: [], mode: 'networked' });
 
@@ -87,7 +104,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // The rebuilt node must declare the same size — a resume that silently
     // dropped back to the default would split the strand's admission gate.
     expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
-      expect.objectContaining({ clusterSize: 4 })
+      expect.objectContaining({ clusterSize: 6 })
     );
   });
 

@@ -24,6 +24,9 @@ import type { SereusPluginResult, Libp2pNodeWithRepo } from '../../src/types.js'
  * size exceeds the peer set the coordinator declares refuses to vote on the
  * write, and one refusal fails the commit.
  *
+ * The second suite below covers what that default number does at strand sizes
+ * either side of it — see its header.
+ *
  * Replication is not event-driven on `IRepo`, so the assertions poll via
  * `waitUntil` (10s default) — matching the integration-tests harness pattern.
  */
@@ -303,6 +306,126 @@ describe('connectToStrand (networked e2e)', () => {
 	// peer A's commit path returns "Failed to get super-majority: 1/2 approvals".
 	// Recovery would require partition detection + cluster downsize (60s window
 	// per `partitionDetectionWindow`) or a fundamentally different topology.
-	// Tracked in scope for `4-scale-testing`.
+	// Tracked in scope for `4-scale-testing`. A *four*-node strand is the case that
+	// does survive losing a holder — see 'strand sizes under the default breadth'.
 	it.todo('peer A continues accepting writes after peer B shuts down (needs cluster downsize support)');
+});
+
+/**
+ * What `DEFAULT_STRAND_CLUSTER_SIZE` (4) does at strand sizes either side of it.
+ *
+ * The constant is a replication *target*, not a precondition. Optimystic caps a cohort
+ * at the peers that actually serve the network and shrinks one it cannot fill
+ * (`allowDownsize: true`, which every strand path passes), and the commit bar is
+ * `ceil(actualCohortSize x 0.75)` computed from the cohort that formed — not from the
+ * configured target. Two consequences, both asserted rather than assumed, because
+ * raising the target from 2 to 4 is exactly the change that would break them if either
+ * stopped holding:
+ *
+ *  - a strand smaller than the target still commits (1, 2 and 3 nodes below), and
+ *  - a strand *at* the target commits with one holder gone — `ceil(4 x 0.75) = 3` of 4,
+ *    which is the entire reason the default is 4 and not 2 or 3.
+ *
+ * These build real meshes, so they are slower than the suite above; each carries its own
+ * timeout.
+ */
+describe('strand sizes under the default breadth', () => {
+	let peers: PeerHandle[] = [];
+
+	beforeEach(() => {
+		peers = [];
+	});
+
+	afterEach(async () => {
+		// Reverse order: later peers dialled earlier ones, so release their sockets first.
+		for (const peer of [...peers].reverse()) await tearDown(peer);
+		peers = [];
+	});
+
+	/**
+	 * Start `count` peers on a fresh strand and dial them into a full mesh. Peer 0 is the
+	 * schema author and bootstrap; the rest bootstrap off it and then dial each other, so
+	 * cluster consensus can reach every member rather than routing through peer 0.
+	 */
+	async function startMesh(count: number): Promise<PeerHandle[]> {
+		const strandId = randomUUID();
+		const first = await startPeer(strandId, TEST_SCHEMA, [], await makeDir('mesh0'));
+		peers.push(first);
+
+		const bootstrapAddr = pickLocalAddr(first.node);
+		for (let i = 1; i < count; i++) {
+			peers.push(await startPeer(strandId, TEST_SCHEMA, [bootstrapAddr], await makeDir(`mesh${i}`)));
+		}
+
+		for (let i = 1; i < count; i++) {
+			for (let j = 1; j < i; j++) {
+				await peers[i]!.node.dial(peers[j]!.node.getMultiaddrs()[0]!);
+			}
+		}
+
+		await waitUntil(
+			() => peers.every(p => p.node.getConnections().length >= count - 1),
+			{ timeoutMs: 20_000, description: `all ${count} peers to see ${count - 1} connections each` },
+		);
+		return peers;
+	}
+
+	async function countRows(peer: PeerHandle): Promise<number> {
+		const rows = await selectAll<{ c: number }>(peer.db, 'select count(*) as c from App.Msg');
+		return rows[0]?.c ?? 0;
+	}
+
+	for (const size of [1, 2, 3]) {
+		it(`commits a write on a ${size}-node strand, below the breadth-4 target`, async () => {
+			// The regression `bug-cluster-size-exceeds-cadre-size` was filed for: a target
+			// wider than the strand must downsize, not deadlock. At 3 the cohort is all
+			// three and the 0.75 bar is unanimity (`ceil(3 x 0.75) = 3`) — narrower than
+			// the same strand ran at breadth 2, where only two of the three voted.
+			const mesh = await startMesh(size);
+			const author = mesh[0]!;
+
+			await author.db.exec(`insert into App.Msg(Id, Body) values (1, 'small-strand')`);
+
+			await waitUntil(
+				async () => await countRows(author) === 1,
+				{ description: `the ${size}-node strand to commit its write` },
+			);
+			const rows = await selectAll<{ Id: number; Body: string }>(author.db, 'select Id, Body from App.Msg');
+			expect(rows).toEqual([{ Id: 1, Body: 'small-strand' }]);
+		}, 60_000);
+	}
+
+	it('commits a write on a 4-node strand after one holder stops', async () => {
+		// The justification for the number, exercised rather than restated: at a breadth
+		// of 4 every peer is in every cohort, so stopping one removes a genuine holder.
+		// `ceil(4 x 0.75) = 3` still approves. At 2 or 3 this write would fail, because
+		// every holder must be awake for every write at those breadths.
+		const mesh = await startMesh(4);
+		const author = mesh[0]!;
+		const doomed = mesh[3]!;
+
+		await author.db.exec(`insert into App.Msg(Id, Body) values (1, 'all-four-up')`);
+		await waitUntil(
+			async () => await countRows(doomed) === 1,
+			{ timeoutMs: 20_000, description: 'the fourth peer to observe the first write' },
+		);
+
+		await tearDown(doomed);
+		peers = peers.filter(p => p !== doomed);
+		await waitUntil(
+			() => author.node.getConnections().length <= 2,
+			{ timeoutMs: 20_000, description: 'the author to notice the stopped peer is gone' },
+		);
+
+		// The stopped peer may still be selected into the cohort (its advertised protocols
+		// linger in the peerStore), in which case the coordinator waits out its dial before
+		// counting 3 of 4. That wait is why this test's budget is generous.
+		await author.db.exec(`insert into App.Msg(Id, Body) values (2, 'one-holder-down')`);
+
+		const rows = await selectAll<{ Id: number; Body: string }>(author.db, 'select Id, Body from App.Msg order by Id');
+		expect(rows).toEqual([
+			{ Id: 1, Body: 'all-four-up' },
+			{ Id: 2, Body: 'one-holder-down' },
+		]);
+	}, 120_000);
 });

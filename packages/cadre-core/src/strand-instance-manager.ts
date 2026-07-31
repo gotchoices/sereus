@@ -59,8 +59,9 @@ export interface StartStrandConfig {
    * Number of nodes Optimystic is told this strand's replication cluster should
    * have. Same rule as {@link CadreNodeConfig.strandClusterSize}, which CadreNode
    * forwards here: every node on the strand should use the same value, and it is
-   * frozen when the strand's libp2p node is created. Defaults to 2; values
-   * below that are rejected by `resolveStrandClusterSize`. Strand-only — the
+   * frozen when the strand's libp2p node is created. Defaults to
+   * `DEFAULT_STRAND_CLUSTER_SIZE` (4); values below `MIN_CLUSTER_SIZE` (2) are
+   * rejected by `resolveStrandClusterSize`. Strand-only — the
    * control network's breadth is the fixed `CONTROL_REPLICATION_BREADTH`.
    */
   clusterSize?: number;

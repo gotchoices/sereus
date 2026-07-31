@@ -25,7 +25,7 @@ import {
 } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation } from '@serfab/cadre-core';
-import { TestCadreNetwork, signMessageEd25519, waitUntil, wsTransports, createSignedSAppConfig } from '../harness/index.js';
+import { TestCadreNetwork, signMessageEd25519, waitUntil, wsTransports, createSignedSAppConfig, readCohort } from '../harness/index.js';
 import type { TestParty } from '../harness/types.js';
 
 // ── Mock implementations ────────────────────────────────────────────────────
@@ -646,13 +646,19 @@ describe('E2E Strand Formation', () => {
 					"insert into App.Data (Key, Val) values ('alice-data', 'from Alice')",
 				);
 
+				// The cohort a strand write is offered to is `min(serving peers, clusterSize)`.
+				// At `DEFAULT_STRAND_CLUSTER_SIZE` = 4 that is all three members here, so the
+				// row lands on every one of them. This assertion is what would catch the
+				// default silently dropping back to 2, where at most two of the three held any
+				// given block and the third obtained it on demand at read time
+				// (`cluster-fetch:synced`) — which the waiters below cannot distinguish from
+				// real replication, since both end in a successful `select`.
+				await waitUntil(
+					async () => (await readCohort(aliceStrand.libp2pNode!, 'alice strand')).length >= 3,
+					{ timeoutMs: 15_000, intervalMs: 250, description: 'Alice strand cohort to reach all three members' },
+				);
+
 				// Verify replication to Bob
-				// NOTE: a three-party strand still uses `DEFAULT_STRAND_CLUSTER_SIZE` = 2, so at
-				// most two of the three hold any given block; the third reader obtains it on demand
-				// via Optimystic's read-time block acquisition (`cluster-fetch:synced`). So this
-				// waiter and Carol's below prove every member can *read* the row, NOT that every
-				// member holds a copy. If read acquisition regresses, this fails as a replication
-				// timeout — see backlog/debt-strand-replication-breadth-ignores-party-count.
 				const bobDb = bobStrand.database!.getDatabase();
 				await waitUntil(
 					async () => {

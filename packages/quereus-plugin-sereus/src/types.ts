@@ -24,7 +24,8 @@ export interface StrandConnectionOptions {
 	 * have. Ignored when {@link libp2pNode} is injected (the injected node was
 	 * built with its own value). Every peer on the strand should use the same
 	 * number — see `resolveStrandClusterSize`. Defaults to
-	 * `DEFAULT_STRAND_CLUSTER_SIZE` (2).
+	 * `DEFAULT_STRAND_CLUSTER_SIZE` (4 — the smallest breadth whose 0.75
+	 * super-majority still commits with one holder offline).
 	 */
 	clusterSize?: number;
 	/** Inject an existing libp2p node instead of creating one */
