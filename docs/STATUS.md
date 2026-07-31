@@ -94,7 +94,7 @@ Conventions:
     - `@optimystic/db-p2p` currently accepts `id?: string` and uses `peerIdFromString(id)` (no explicit private key load/save).
     - For a real `sereus-node`, we need **stable PeerID** (and the corresponding private key) across restarts.
     - TODO: decide on a persistence format (protobuf/JSON) and implement `--key-file` (or similar) in a dedicated node runner.
-  - [ ] `relay?: boolean` exists in `NodeOptions` but appears **unused** in `createLibp2pNode` today (no circuit-relay service).
+  - [x] `relay?: boolean` in `NodeOptions` now wires a circuit-relay **server** (`circuitRelayServer(options.relayServerInit)` in `db-p2p`'s `libp2p-node-base.ts`); cadre sets it from `network.enableRelay`, defaulting on for the storage profile. Reserving a slot on someone else's relay is the other direction and needs no server: `network.relayAddrs` becomes a `/p2p-circuit` listen address (`cadre-core/src/relay-addrs.ts`).
   - [ ] Cluster membership logic is in flux:
     - `optimystic/packages/db-p2p/src/cluster/service.ts` includes a note to “Re-enable and fix cluster membership logic for proper DHT routing”.
 

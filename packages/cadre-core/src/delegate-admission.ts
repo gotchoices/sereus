@@ -254,15 +254,30 @@ export function pruneStoppedStrandAnnounces(
  * logs-and-skips.
  */
 export function circuitRelayTargetOrThrow(addr: string): CircuitRelayTarget {
+  const target = parseCircuitRelayTarget(addr);
+  if (!target) {
+    throw new Error(`Multiaddr names no circuit relay (expected …/p2p/<relayPeerId>/p2p-circuit): ${addr}`);
+  }
+  return target;
+}
+
+/**
+ * The circuit relay named by `addr`; null when `addr` is well-formed but simply
+ * names no relay (a direct listen addr, a bare `/p2p-circuit`), and THROWS when
+ * `addr` is malformed (unparsable multiaddr, garbage relay peerId). The two
+ * callers want opposite things from the first case and the same thing from the
+ * second, so the distinction lives here rather than in either of them.
+ */
+function parseCircuitRelayTarget(addr: string): CircuitRelayTarget | null {
   const ma = multiaddr(addr);
   const components = ma.getComponents();
   const circuitIdx = components.findIndex((c) => c.name === 'p2p-circuit');
   if (circuitIdx < 1) {
-    throw new Error(`Multiaddr names no circuit relay (expected …/p2p/<relayPeerId>/p2p-circuit): ${addr}`);
+    return null;
   }
   const relay = components[circuitIdx - 1];
   if (relay.name !== 'p2p' || !relay.value) {
-    throw new Error(`Multiaddr's /p2p-circuit is not preceded by a relay peerId: ${addr}`);
+    return null;
   }
   peerIdFromString(relay.value); // validate; throws on garbage
   return {
@@ -271,10 +286,15 @@ export function circuitRelayTargetOrThrow(addr: string): CircuitRelayTarget {
   };
 }
 
-/** One-addr body of {@link extractCircuitRelayTargets}; null when `addr` names no relay. */
+/**
+ * One-addr body of {@link extractCircuitRelayTargets}; null when `addr` names no
+ * relay. Only a MALFORMED addr logs — the addr lists this reads (a node's live
+ * multiaddrs, its configured listen addrs) are mostly direct addrs, and calling
+ * each of those "unparsable" is both wrong and per-announce noise.
+ */
 function circuitRelayTarget(addr: string): CircuitRelayTarget | null {
   try {
-    return circuitRelayTargetOrThrow(addr);
+    return parseCircuitRelayTarget(addr);
   } catch (err) {
     log('Skipping unparsable relay addr %s: %o', addr, err);
     return null;

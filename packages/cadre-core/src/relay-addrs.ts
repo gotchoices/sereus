@@ -65,7 +65,15 @@ export function resolveListenAddrs(network: NetworkConfig | undefined): string[]
   return dedupe([...(listenAddrs ?? [DEFAULT_DIRECT_LISTEN_ADDR]), ...circuits]);
 }
 
-/** One entry of {@link relayCircuitAddrs}: the addr the node listens on for this relay. */
+/**
+ * One entry of {@link relayCircuitAddrs}: the addr the node listens on for this relay.
+ *
+ * NOTE: an entry carrying components AFTER `/p2p-circuit` — a full relayed DIAL addr,
+ * `…/p2p/<relay>/p2p-circuit/p2p/<someone else>` — is passed through as written and
+ * would be listened on verbatim. It validates (the relay it names is real), so only an
+ * operator who pastes a peer's relayed address into `relayAddrs` hits it; if that turns
+ * out to be a common paste, truncate at the `/p2p-circuit` component here.
+ */
 function circuitListenAddr(relayAddr: string): string {
   const alreadyCircuit = parseComponents(relayAddr).some((c) => c.name === 'p2p-circuit');
   const listenAddr = alreadyCircuit ? relayAddr : `${relayAddr}/p2p-circuit`;
