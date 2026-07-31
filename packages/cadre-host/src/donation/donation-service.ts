@@ -139,6 +139,11 @@ export class DonationService {
       id,
       grantToken: request.grantToken,
       partyId: request.partyId,
+      // Persisted so `respawn` can replay the spawn from the record alone.
+      // Neither is secret (dialable addrs + public keys), so both ride along in
+      // the redacted `DonationView` too.
+      bootstrapNodes: request.bootstrapNodes,
+      ownerKeys: request.ownerKeys,
       profile,
       status: 'provisioning',
       createdAt: nowIso,
@@ -265,16 +270,101 @@ export class DonationService {
   }
 
   /**
-   * Terminate a donation: stop + remove the child process, then mark the record
-   * `terminated` (kept for audit, excluded from the live-node tally).
+   * Re-spawn a donated node that is no longer running, replaying the spawn
+   * inputs persisted on the record. The node keeps its workdir — and with it its
+   * identity key, trusted-owner anchor, and retained bootstrap peers — so it
+   * comes back as the *same* peer and rejoins from its own durable node-local
+   * stores. Only the host-side handles change: `dockerId`, `seedEndpoint`,
+   * `seedToken` are written back fresh.
+   *
+   * **Status is deliberately unchanged.** A `seeded` node stays `seeded` (it
+   * needs no re-seeding); an `awaiting_seed` node stays `awaiting_seed` and the
+   * borrower's later seed goes to the new endpoint/token.
+   *
+   * Returns the refreshed view, or `undefined` when the record predates
+   * respawn support (no persisted `bootstrapNodes`/`ownerKeys`) and therefore
+   * cannot be replayed — a skip, not a failure, so a sweep over the store keeps
+   * going. Orchestrator failures DO throw; the caller owns backoff/give-up.
+   */
+  async respawn(id: string): Promise<DonationView | undefined> {
+    const donation = this.requireDonation(id);
+    // A terminal record must never come back: `terminated` is a loan the
+    // borrower ended, `error` is one the host gave up on. Callers filter for
+    // this already — the guard is here so no future one can resurrect a loan by
+    // omission.
+    if (donation.status === 'terminated' || donation.status === 'error') {
+      throw new DonationError(
+        'invalid_state',
+        `Donation ${id} cannot be respawned in status ${donation.status}`,
+      );
+    }
+    if (!donation.bootstrapNodes?.length || !donation.ownerKeys?.length) {
+      log('donation %s is not respawnable (record predates persisted spawn inputs)', id);
+      return undefined;
+    }
+
+    const attempted: Donation = {
+      ...donation,
+      respawn: {
+        attempts: (donation.respawn?.attempts ?? 0) + 1,
+        lastAttemptAt: this.now().toISOString(),
+      },
+    };
+
+    let dockerId: string | undefined;
+    try {
+      const result = await this.orchestrator.createContainer({
+        containerId: id,
+        partyId: donation.partyId,
+        bootstrapNodes: donation.bootstrapNodes,
+        profile: donation.profile,
+        pinnedOwnerKeys: donation.ownerKeys,
+      });
+      dockerId = result.dockerId;
+
+      const respawned: Donation = {
+        ...attempted,
+        dockerId: result.dockerId,
+        seedEndpoint: result.seedEndpoint,
+        seedToken: result.seedToken,
+        updatedAt: this.now().toISOString(),
+      };
+      this.store.put(respawned);
+      log('respawned donation %s → %s (status %s)', id, result.dockerId, respawned.status);
+      return redact(respawned);
+    } catch (err) {
+      const message = errorMessage(err);
+      log('respawn of donation %s failed: %s', id, message);
+      // Stop — never reclaim — a child we spawned but failed to record:
+      // `removeContainer` deletes the workdir, which holds the identity key and
+      // node-local stores that are the whole reason a respawn is the same node.
+      // The orphaned handle's ports are released by the next createContainer for
+      // this containerId, so the leak is self-healing.
+      if (dockerId) await this.safeStop(dockerId);
+      this.storeAttempt(attempted);
+      throw new DonationError('orchestrator_error', `Failed to respawn donated node: ${message}`);
+    }
+  }
+
+  /**
+   * Terminate a donation: mark the record `terminated` FIRST, then stop + remove
+   * the child process (kept in the store for audit, excluded from the live-node
+   * tally).
+   *
+   * Order matters: stopping the child fires the orchestrator's `onStateChange`,
+   * and a respawn supervisor listening there must already see a terminal record
+   * — otherwise it observes "node gone, record still `seeded`" and resurrects a
+   * loan the borrower just ended. The tradeoff: a crash between the write and
+   * the stop leaves a `terminated` record with a live child (reaped on the next
+   * host start), which is strictly better than resurrecting an ended loan.
    */
   async terminate(id: string): Promise<void> {
     const donation = this.requireDonation(id);
+    this.store.put({ ...donation, status: 'terminated', updatedAt: this.now().toISOString() });
     if (donation.dockerId) {
       await this.safeStop(donation.dockerId);
       await this.safeReclaim(donation.dockerId);
     }
-    this.store.put({ ...donation, status: 'terminated', updatedAt: this.now().toISOString() });
     log('donation %s terminated', id);
   }
 
@@ -330,6 +420,19 @@ export class DonationService {
       await this.orchestrator.stopContainer(dockerId);
     } catch (err) {
       log('failed to stop container %s: %s', dockerId, errorMessage(err));
+    }
+  }
+
+  /**
+   * Persist a failed respawn's attempt counters. Best-effort: we are already
+   * unwinding an orchestrator failure, and a store error here must not mask it.
+   * Losing the counter only costs the caller one extra attempt before backoff.
+   */
+  private storeAttempt(donation: Donation): void {
+    try {
+      this.store.put(donation);
+    } catch (err) {
+      log('failed to record respawn attempt for %s: %s', donation.id, errorMessage(err));
     }
   }
 

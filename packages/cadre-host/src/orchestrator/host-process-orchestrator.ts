@@ -207,17 +207,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     return () => { this.stateListeners.delete(listener); };
   }
 
-  /** Handles that init() found dead (PID gone or token mismatch). */
-  listDeadHandles(): PersistedHandle[] {
-    const dead: PersistedHandle[] = [];
-    for (const h of this.handles.values()) {
-      if (!h.alive) {
-        dead.push(this.toPersisted(h));
-      }
-    }
-    return dead;
-  }
-
   /**
    * Spawn a generic managed node — the donated-node path (the requester's cadre,
    * pinned to the *requester's* owner key). The node is given its own protobuf
@@ -238,6 +227,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     const workdir = this.workdirFor(request.containerId);
     const identity = await ensureNodeIdentity(workdir);
     log('container %s identity peerId=%s', request.containerId, identity.peerId);
+    this.dropStaleHandle(request.containerId);
     const ports: NodePorts = {
       health: this.portAllocator.allocate(),
       metrics: this.portAllocator.allocate(),
@@ -245,7 +235,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       // node keeps its peer id but may announce a different port. Recoverable —
       // it dials out to its retained bootstrap peers and republishes its own
       // CadrePeer row once connected. If that reconnect ever proves too slow,
-      // pin the p2p port per containerId (see backlog/bug-donated-nodes-never-respawned).
+      // pin the p2p port per containerId (see donated-node-respawn-core).
       p2p: this.portAllocator.allocate(),
       admin: this.portAllocator.allocate(),
     };
@@ -551,6 +541,33 @@ export class HostProcessOrchestrator implements Orchestrator {
       seedToken,
       p2pPort: ports.p2p,
     };
+  }
+
+  /**
+   * Drop any handle left over from a previous spawn of the same `containerId`
+   * and release its ports. Handles are keyed by the per-spawn `dockerId`, so
+   * without this a re-spawn (donated-node respawn) would strand the prior
+   * handle in the map forever, leaking four ports from a bounded range each
+   * time. Mirrors the same cleanup in `ensureOwnerNode`.
+   *
+   * DO NOT delete the workdir: the identity key and node-local stores
+   * (trusted-owner anchor, retained cold-start dial targets) live there and are
+   * the whole reason a respawn comes back as the same node. `launchChild`
+   * reuses the same workdir.
+   *
+   * NOTE: releasing the ports hands them straight back to the allocator, so a
+   * re-spawn while the *previous* child is still listening can bind-clash. Every
+   * caller today re-spawns only a container it has established is not running
+   * (`DonationService.respawn`, `ensureOwnerNode`). If a caller ever needs to
+   * replace a live child, stop it first — or hold the ports until its exit.
+   */
+  private dropStaleHandle(containerId: string): void {
+    for (const h of this.handles.values()) {
+      if (h.containerId !== containerId) continue;
+      log('dropping stale handle %s for container %s', h.dockerId, containerId);
+      this.releasePorts(h.ports);
+      this.handles.delete(h.dockerId);
+    }
   }
 
   /** A managed node's own directory under `rootDir` — config, log, storage, identity. */

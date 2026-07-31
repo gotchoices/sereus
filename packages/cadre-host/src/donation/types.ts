@@ -134,6 +134,12 @@ export type DonationStatus =
  * foreign party), and `seedToken` gates the node's own `POST /seed` — it is
  * minted host-side, persisted here (so a host restart in the request→seed gap
  * can still present the seed), and NEVER returned to the grantee.
+ *
+ * The record also carries every input the original spawn consumed
+ * (`partyId` + `profile` + `bootstrapNodes` + `ownerKeys`), so a crashed node can
+ * be re-spawned from the record alone — see `DonationService.respawn`. Records
+ * written before those two fields existed have neither; such a record is NOT
+ * respawnable and is skipped (never crashes a sweep).
  */
 export interface Donation {
   /** "grn_<nanoid>" — also the donated node's orchestrator containerId. */
@@ -142,6 +148,23 @@ export interface Donation {
   grantToken: string;
   /** The REQUESTER's cadre (a foreign party this host merely hosts a node for). */
   partyId: string;
+  /**
+   * Requester control-network bootstrap multiaddrs — replayed on respawn.
+   * Absent on records written before respawn support; those are not respawnable.
+   */
+  bootstrapNodes?: string[];
+  /**
+   * Requester owner public key(s), base64url — replayed as the node's pinned
+   * seed-trust anchors (`CADRE_OWNER_KEYS`) on respawn. Absent on records written
+   * before respawn support; those are not respawnable.
+   */
+  ownerKeys?: string[];
+  /**
+   * Respawn bookkeeping, owned by the supervisor's backoff. Absent until the
+   * first respawn attempt. Not secret — it rides along in `DonationView` so the
+   * borrower's `GET /grants/:id` shows the counters for free.
+   */
+  respawn?: { attempts: number; lastAttemptAt: string };
   /** Node profile. Defaults to `storage` so the node participates and is dialable. */
   profile: 'storage' | 'transaction';
   status: DonationStatus;

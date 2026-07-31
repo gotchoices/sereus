@@ -19,6 +19,7 @@ import { rotateOnDisk } from '../orchestrator/log-rotator.js';
 import { decodeDockerId, encodeDockerId } from '../orchestrator/types.js';
 import { StateStore } from '../orchestrator/state-store.js';
 import { isPidAlive } from '../orchestrator/pid-liveness.js';
+import { loadIdentity } from '../installer/identity.js';
 
 const FAKE_CHILD = `
 import fs from 'node:fs';
@@ -157,6 +158,44 @@ describe('HostProcessOrchestrator.createContainer', () => {
     const persisted = new StateStore((orch as unknown as { rootDir: string }).rootDir).load();
     expect(persisted.handles).toHaveLength(1);
     expect(persisted.handles[0]!.dockerId).toBe(result.dockerId);
+  });
+});
+
+describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
+  // The donated-node respawn path calls createContainer again with the id of a
+  // container the host still holds a (now dead) handle for. Handles are keyed by
+  // the per-spawn dockerId, so without an explicit drop the old one would linger
+  // forever and its four ports would never come back.
+  it('drops the stale handle, releases its ports, and keeps the identity', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    const identityPath = join(rootDir, 'c1', 'identity.key');
+    const peerBefore = loadIdentity(identityPath).peerId;
+
+    // Kill the child the way a crash would — the handle survives, still marked
+    // alive until something notices.
+    const { pid: firstPid } = decodeDockerId(first.dockerId);
+    process.kill(firstPid, 'SIGKILL');
+    await waitFor(() => !isPidAlive(firstPid));
+
+    const second = await orch.createContainer(makeRequest('c1'));
+
+    // Exactly one handle for c1, and it is the new spawn.
+    const handles = new StateStore(rootDir).load().handles.filter((h) => h.containerId === 'c1');
+    expect(handles).toHaveLength(1);
+    expect(handles[0]!.dockerId).toBe(second.dockerId);
+
+    // The allocator hands back the lowest free port, so re-using the first
+    // spawn's exact ports is what proves they were released.
+    expect(second.p2pPort).toBe(first.p2pPort);
+    expect(second.healthEndpoint).toBe(first.healthEndpoint);
+
+    // Same workdir, same key → same peer id. This is what makes a respawn the
+    // same node rather than a new one the borrower's cadre has never approved.
+    expect(loadIdentity(identityPath).peerId).toBe(peerBefore);
   });
 });
 
@@ -411,10 +450,6 @@ describe('Restart recovery (init)', () => {
 
     expect(await b.isRunning(r1.dockerId)).toBe(true);
     expect(await b.isRunning(r2.dockerId)).toBe(false);
-
-    const dead = b.listDeadHandles();
-    expect(dead.map((d) => d.dockerId)).toContain(r2.dockerId);
-    expect(dead.map((d) => d.dockerId)).not.toContain(r1.dockerId);
 
     // Ports from both should be reserved (no overlapping allocations from `b`)
     // Allocate three more containers via `b` and confirm none collide with

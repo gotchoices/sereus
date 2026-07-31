@@ -58,7 +58,11 @@ class FakeOrchestrator implements Orchestrator {
     };
   }
 
+  /** Observation hook — lets a test inspect the world as the stop happens. */
+  onStop?: (dockerId: string) => void;
+
   async stopContainer(dockerId: string): Promise<void> {
+    this.onStop?.(dockerId);
     this.stopped.push(dockerId);
   }
 
@@ -243,6 +247,134 @@ describe('DonationService reclaim-on-failure', () => {
       .rejects.toMatchObject({ code: 'orchestrator_error' });
     expect(orch.removed).toEqual([]);
     expect(store.list().find((d) => d.grantToken === token)?.status).toBe('error');
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+});
+
+describe('DonationService.respawn', () => {
+  it('replays the persisted spawn inputs, swaps the handles, and leaves status alone', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    // Pretend the borrower seeded it, then the child died.
+    store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
+
+    const view = await svc.respawn(provisioned.id);
+
+    expect(view?.status).toBe('seeded');
+    // The replayed spawn carried the persisted inputs, not fresh ones.
+    expect(orch.createCalls).toHaveLength(2);
+    expect(orch.createCalls[1]).toMatchObject({
+      containerId: provisioned.id,
+      partyId: 'party-P',
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      pinnedOwnerKeys: ['owner-key-b64url'],
+      profile: 'storage',
+    });
+
+    const stored = store.get(provisioned.id)!;
+    expect(stored.status).toBe('seeded');
+    expect(stored.dockerId).toBe('dock_2');
+    expect(stored.seedEndpoint).toBe('http://127.0.0.1:9002/seed');
+    expect(stored.seedToken).toBe('seed-token-2');
+    expect(stored.respawn?.attempts).toBe(1);
+    // Nothing was stopped or reclaimed — the workdir (identity key, node-local
+    // stores) has to survive for the respawn to be the same node.
+    expect(orch.stopped).toEqual([]);
+    expect(orch.removed).toEqual([]);
+  });
+
+  it('keeps awaiting_seed records awaiting_seed so a later seed hits the new endpoint', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    const view = await svc.respawn(provisioned.id);
+
+    expect(view?.status).toBe('awaiting_seed');
+    expect(store.get(provisioned.id)?.seedToken).toBe('seed-token-2');
+  });
+
+  it('skips a record written before the spawn inputs were persisted', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    // A pre-existing row on disk: no bootstrapNodes / ownerKeys to replay.
+    store.put({
+      id: 'grn_legacy',
+      grantToken: token,
+      partyId: 'party-P',
+      profile: 'storage',
+      status: 'seeded',
+      dockerId: 'dock_old',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    // A skip, not a throw — a sweep over the store must survive these.
+    await expect(svc.respawn('grn_legacy')).resolves.toBeUndefined();
+    expect(orch.createCalls).toHaveLength(0);
+    expect(store.get('grn_legacy')?.dockerId).toBe('dock_old');
+  });
+
+  it('refuses to resurrect a terminated loan', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    await svc.terminate(provisioned.id);
+
+    await expect(svc.respawn(provisioned.id)).rejects.toMatchObject({ code: 'invalid_state' });
+    expect(orch.createCalls).toHaveLength(1);
+  });
+
+  it('records the attempt and throws when the spawn fails', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    orch.failCreate = true;
+
+    await expect(svc.respawn(provisioned.id)).rejects.toMatchObject({ code: 'orchestrator_error' });
+
+    const stored = store.get(provisioned.id)!;
+    expect(stored.respawn?.attempts).toBe(1);
+    // The old handles are untouched — the caller owns backoff, not cleanup.
+    expect(stored.dockerId).toBe('dock_1');
+    expect(stored.status).toBe('awaiting_seed');
+  });
+});
+
+describe('DonationService.terminate', () => {
+  it('marks the record terminated BEFORE stopping the child', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    // The stop fires the orchestrator's state-change; a respawn supervisor
+    // reacting to it must already see a terminal record, or it resurrects a
+    // loan the borrower just ended.
+    let statusAtStop: string | undefined;
+    orch.onStop = () => { statusAtStop = store.get(provisioned.id)?.status; };
+
+    await svc.terminate(provisioned.id);
+
+    expect(statusAtStop).toBe('terminated');
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual(['dock_1']);
     expect(store.liveNodeCount(token)).toBe(0);
   });
 });
