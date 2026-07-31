@@ -17,7 +17,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DonationService } from '../donation-service.js';
+import { DonationService, DONATION_AWAITING_SEED_TTL_MS } from '../donation-service.js';
 import { DonationStore } from '../donation-store.js';
 import { GrantService } from '../grant-service.js';
 import { GrantStore } from '../grant-store.js';
@@ -217,9 +217,10 @@ describe('DonationService.respawn', () => {
     // Pretend the borrower seeded it, then the child died.
     store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
 
-    const view = await svc.respawn(provisioned.id);
+    const result = await svc.respawn(provisioned.id);
 
-    expect(view?.status).toBe('seeded');
+    expect(result).toMatchObject({ outcome: 'respawned' });
+    expect(result.outcome === 'respawned' && result.donation.status).toBe('seeded');
     // The replayed spawn carried the persisted inputs, not fresh ones.
     expect(orch.createCalls).toHaveLength(2);
     expect(orch.createCalls[1]).toMatchObject({
@@ -249,9 +250,10 @@ describe('DonationService.respawn', () => {
     const svc = new DonationService({ orchestrator: orch, grants, store });
 
     const provisioned = await svc.provision(baseRequest(token));
-    const view = await svc.respawn(provisioned.id);
+    const result = await svc.respawn(provisioned.id);
 
-    expect(view?.status).toBe('awaiting_seed');
+    expect(result).toMatchObject({ outcome: 'respawned' });
+    expect(result.outcome === 'respawned' && result.donation.status).toBe('awaiting_seed');
     expect(store.get(provisioned.id)?.seedToken).toBe('seed-token-2');
   });
 
@@ -274,7 +276,7 @@ describe('DonationService.respawn', () => {
     });
 
     // A skip, not a throw — a sweep over the store must survive these.
-    await expect(svc.respawn('grn_legacy')).resolves.toBeUndefined();
+    await expect(svc.respawn('grn_legacy')).resolves.toEqual({ outcome: 'not_respawnable' });
     expect(orch.createCalls).toHaveLength(0);
     expect(store.get('grn_legacy')?.dockerId).toBe('dock_old');
   });
@@ -346,6 +348,74 @@ describe('DonationService.respawn', () => {
     expect(stored.dockerId).toBe('dock_1');
     expect(stored.status).toBe('awaiting_seed');
     expect(stored.respawn?.attempts).toBe(1);
+  });
+
+  it('lets a borrower terminate that lands mid-spawn win, and cleans up the new child', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
+
+    // The borrower's DELETE lands inside the respawn's spawn window.
+    orch.createDelayMs = 20;
+    let terminated: Promise<void> | undefined;
+    orch.onCreate = () => { terminated ??= svc.terminate(provisioned.id); };
+
+    const result = await svc.respawn(provisioned.id);
+    await terminated;
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'terminated' });
+    const stored = store.get(provisioned.id)!;
+    // The ending's write stands whole: no new handles, no attempt counter.
+    expect(stored.status).toBe('terminated');
+    expect(stored.dockerId).toBe('dock_1');
+    expect(stored.seedToken).toBe('seed-token-1');
+    expect(stored.respawn).toBeUndefined();
+    // The child the ending could not see is stopped AND reclaimed — it is the
+    // only thing left holding that spawn's ports and workdir.
+    expect(orch.stopped).toContain('dock_2');
+    expect(orch.removed).toContain('dock_2');
+    // The ended loan no longer holds a quota slot.
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('lets a stale-seed reap that lands mid-spawn win without restarting the TTL clock', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    const provisioned = await svc.provision(baseRequest(token));
+
+    // Past the awaiting_seed TTL, so the sweep collects this record.
+    clock = new Date(clock.getTime() + DONATION_AWAITING_SEED_TTL_MS + 60_000);
+    const reapAtIso = clock.toISOString();
+    orch.createDelayMs = 20;
+    let reaped: Promise<string[]> | undefined;
+    orch.onCreate = () => {
+      // Move the clock on once the reap's terminal write has landed, so a
+      // respawn that overwrote it would show up as a *later* updatedAt.
+      reaped ??= svc.reapStaleAwaitingSeed().then((ids) => {
+        clock = new Date(clock.getTime() + 1_000);
+        return ids;
+      });
+    };
+
+    const result = await svc.respawn(provisioned.id);
+    await expect(reaped).resolves.toEqual([provisioned.id]);
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'terminated' });
+    const stored = store.get(provisioned.id)!;
+    expect(stored.status).toBe('terminated');
+    // The reap's own "now" — a respawn write here would restart the TTL clock.
+    expect(stored.updatedAt).toBe(reapAtIso);
+    expect(orch.stopped).toContain('dock_2');
+    expect(orch.removed).toContain('dock_2');
+    expect(store.liveNodeCount(token)).toBe(0);
   });
 });
 

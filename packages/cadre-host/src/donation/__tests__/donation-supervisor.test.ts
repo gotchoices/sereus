@@ -361,6 +361,39 @@ describe('DonationSupervisor.reconcile', () => {
     expect(h.orch.stopped).toEqual([]);
   });
 
+  it('does not count a respawn abandoned mid-spawn as a failed attempt', async () => {
+    const h = makeHarness();
+    const view = await h.provision();
+    h.store.put({
+      ...requireDonation(h.store, view.id),
+      status: 'seeded',
+      // Already at the cap and long past the longest backoff, so a *failed*
+      // attempt here would land straight in the give-up path.
+      respawn: {
+        attempts: DONATION_RESPAWN_MAX_ATTEMPTS,
+        lastAttemptAt: new Date(h.nowMs() - 10 * 60_000).toISOString(),
+      },
+    });
+    h.orch.crash(dockerIdOf(view));
+    // The borrower ends the loan while the respawn's spawn is in flight.
+    h.orch.createDelayMs = 20;
+    let terminated: Promise<void> | undefined;
+    h.orch.onCreate = () => { terminated ??= h.service.terminate(view.id); };
+
+    await expect(h.supervisor.reconcile()).resolves.toEqual([]);
+    await terminated;
+
+    const stored = requireDonation(h.store, view.id);
+    // Nothing threw, so no attempt was persisted and give-up never ran.
+    expect(stored.status).toBe('terminated');
+    expect(stored.error).toBeUndefined();
+    expect(stored.respawn?.attempts).toBe(DONATION_RESPAWN_MAX_ATTEMPTS);
+    expect(stored.dockerId).toBe(view.dockerId);
+    // The abandoned child is stopped and reclaimed, not left holding ports.
+    expect(h.orch.stopped).toContain('dock_2');
+    expect(h.orch.removed).toContain('dock_2');
+  });
+
   it('survives a pass over a store it cannot read', async () => {
     const orch = new FakeOrchestrator();
     const store = new UnreadableDonationStore(join(tmpRoot, 'donations'));

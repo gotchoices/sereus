@@ -297,16 +297,28 @@ export class DonationSupervisor {
   /** One respawn attempt, with the give-up check on failure. */
   private async attemptRespawn(donation: Donation): Promise<string | undefined> {
     try {
-      const view = await this.service.respawn(donation.id);
-      // `undefined` = a record written before the spawn inputs were persisted.
-      // Not respawnable and never will be; skip it every pass (cheap — no
-      // orchestrator call is reached) rather than fail the sweep.
-      if (!view) {
-        log('donation %s is down but not respawnable (no persisted spawn inputs)', donation.id);
-        return undefined;
+      const result = await this.service.respawn(donation.id);
+      switch (result.outcome) {
+        case 'not_respawnable':
+          // A record written before the spawn inputs were persisted. Not
+          // respawnable and never will be; skip it every pass (cheap — no
+          // orchestrator call is reached) rather than fail the sweep.
+          log('donation %s is down but not respawnable (no persisted spawn inputs)', donation.id);
+          return undefined;
+        case 'abandoned':
+          // The loan ended while the spawn was in flight and the ending won.
+          // Nothing threw, so no attempt is persisted and the give-up path is
+          // never entered — correct: this is not a failed attempt.
+          log(
+            'respawn of donation %s was abandoned (record went %s mid-spawn)',
+            donation.id,
+            result.status ?? 'missing',
+          );
+          return undefined;
+        case 'respawned':
+          log('respawned donation %s → %s', donation.id, result.donation.dockerId);
+          return donation.id;
       }
-      log('respawned donation %s → %s', donation.id, view.dockerId);
-      return donation.id;
     } catch (err) {
       const message = errorMessage(err);
       // `respawn` persists the incremented counter; re-read it rather than

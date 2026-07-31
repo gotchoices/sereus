@@ -6,6 +6,7 @@ import type { Orchestrator } from '@serfab/cadre-provider';
 import type { DonationStore } from './donation-store.js';
 import type {
   Donation,
+  DonationStatus,
   DonationView,
   GrantDenyReason,
   GrantValidator,
@@ -13,6 +14,21 @@ import type {
 import { DonationError } from './types.js';
 
 const log = debug('cadre:host:donation-service');
+
+/**
+ * The only statuses a loan may come back from. An allowlist, not a terminal
+ * denylist: `terminated` is a loan the borrower ended and `error` one the host
+ * gave up on (neither may come back), while `provisioning` is a provision still
+ * in flight — replaying its spawn would race that provision and strand the
+ * record in `provisioning`, which no reap sweep collects.
+ *
+ * Checked twice in {@link DonationService.respawn} — once on entry, once after
+ * the spawn — so the "may this loan come back" rule is stated exactly once.
+ */
+const RESPAWNABLE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
+  'awaiting_seed',
+  'seeded',
+]);
 
 /**
  * Default age after which a donation still stuck in `awaiting_seed` is
@@ -60,6 +76,23 @@ export interface DonationPeerInfo {
   peerId: string;
   multiaddrs: string[];
 }
+
+/**
+ * Outcome of {@link DonationService.respawn}. Three distinct non-throwing ends,
+ * which a bare `DonationView | undefined` conflated:
+ *
+ * - `respawned` — a new child is up and the record now names its handles.
+ * - `not_respawnable` — the record predates persisted spawn inputs, so there is
+ *   nothing to replay. Permanent; no child was spawned.
+ * - `abandoned` — the loan ended (or the record vanished) while the spawn was in
+ *   flight. The ending wins: the record is left exactly as the ending wrote it
+ *   and the new child is cleaned up. `status` is the status that won, absent
+ *   when the row is gone entirely.
+ */
+export type RespawnResult =
+  | { outcome: 'respawned'; donation: DonationView }
+  | { outcome: 'not_respawnable' }
+  | { outcome: 'abandoned'; status?: DonationStatus };
 
 /** Constructor options. */
 export interface DonationServiceOptions {
@@ -281,25 +314,23 @@ export class DonationService {
    * needs no re-seeding); an `awaiting_seed` node stays `awaiting_seed` and the
    * borrower's later seed goes to the new endpoint/token.
    *
-   * Returns the refreshed view, or `undefined` when the record predates
-   * respawn support (no persisted `bootstrapNodes`/`ownerKeys`) and therefore
-   * cannot be replayed — a skip, not a failure, so a sweep over the store keeps
-   * going. Orchestrator failures DO throw; the caller owns backoff/give-up.
+   * **An ending that lands mid-spawn wins.** The record is re-read after the
+   * orchestrator returns; if it went `terminated` (or `error`, or vanished)
+   * while the child was starting, that write stands and the new child is
+   * abandoned — see {@link abandonRespawn}. Both non-`respawned` outcomes are
+   * skips, not failures, so a sweep over the store keeps going. Orchestrator
+   * failures DO throw; the caller owns backoff/give-up.
    *
    * NOTE: not serialized. Two overlapping calls for the same id both spawn a
    * child, and the second spawn drops the first's orchestrator handle — leaving
    * an unmanaged process. A supervisor with more than one trigger (timer +
    * exit event) must not let its passes overlap on one id.
    */
-  async respawn(id: string): Promise<DonationView | undefined> {
+  async respawn(id: string): Promise<RespawnResult> {
     const donation = this.requireDonation(id);
-    // An allowlist, not a terminal denylist: `terminated` is a loan the borrower
-    // ended and `error` one the host gave up on (neither may come back), while
-    // `provisioning` is a provision still in flight — replaying its spawn would
-    // race that provision and strand the record in `provisioning`, which no reap
-    // sweep collects. Callers filter for this already; the guard is here so no
-    // future one can resurrect or double-spawn a loan by omission.
-    if (donation.status !== 'awaiting_seed' && donation.status !== 'seeded') {
+    // Callers filter for this already; the guard is here so no future one can
+    // resurrect or double-spawn a loan by omission.
+    if (!RESPAWNABLE_STATUSES.has(donation.status)) {
       throw new DonationError(
         'invalid_state',
         `Donation ${id} cannot be respawned in status ${donation.status}`,
@@ -307,7 +338,7 @@ export class DonationService {
     }
     if (!donation.bootstrapNodes?.length || !donation.ownerKeys?.length) {
       log('donation %s is not respawnable (record predates persisted spawn inputs)', id);
-      return undefined;
+      return { outcome: 'not_respawnable' };
     }
 
     const attempted: Donation = {
@@ -329,16 +360,34 @@ export class DonationService {
       });
       dockerId = result.dockerId;
 
+      // Re-read: `donation` predates the orchestrator round-trip (seconds of
+      // wall clock) and `store.put` replaces the whole row, so writing that copy
+      // back would undo a `terminate` — or a reap, or a give-up — that landed
+      // while the spawn was in flight, resurrecting an ended loan. The store is
+      // synchronous, so this read-decide-write is atomic against the event loop
+      // only as long as no `await` sneaks in between.
+      const current = this.store.get(id);
+      if (!current || !RESPAWNABLE_STATUSES.has(current.status)) {
+        return this.abandonRespawn(id, result.dockerId, current);
+      }
+
       const respawned: Donation = {
-        ...attempted,
+        ...current,
+        // Merge only the attempt counters forward off the entry-time copy.
+        respawn: attempted.respawn,
         dockerId: result.dockerId,
         seedEndpoint: result.seedEndpoint,
         seedToken: result.seedToken,
+        // NOTE: on an `awaiting_seed` record this is the very field the
+        // stale-seed reap measures age from, so each respawn defers that reap.
+        // Bounded today (5 attempts, ≤80s backoff ≈ 2.5min against a 30min TTL,
+        // then give-up moves the record to `error`) — but anyone raising
+        // DONATION_RESPAWN_MAX_ATTEMPTS should re-check that arithmetic.
         updatedAt: this.now().toISOString(),
       };
       this.store.put(respawned);
       log('respawned donation %s → %s (status %s)', id, result.dockerId, respawned.status);
-      return redact(respawned);
+      return { outcome: 'respawned', donation: redact(respawned) };
     } catch (err) {
       const message = errorMessage(err);
       log('respawn of donation %s failed: %s', id, message);
@@ -351,6 +400,41 @@ export class DonationService {
       this.storeAttempt(attempted);
       throw new DonationError('orchestrator_error', `Failed to respawn donated node: ${message}`);
     }
+  }
+
+  /**
+   * Give up on a respawn whose loan ended while the child was starting: stop the
+   * new child and, unless the record went `error`, reclaim it.
+   *
+   * Reclaim, not merely stop. The ending's own cleanup already ran and found
+   * nothing: `HostProcessOrchestrator.createContainer` calls `dropStaleHandle`
+   * *while* spawning, so by the time the concurrent `terminate` reached its
+   * stop/reclaim the old handle was gone and both calls were swallowed as
+   * best-effort no-ops. The new handle is now the only thing holding that
+   * spawn's ports and workdir, so stopping alone would leak both. On a
+   * `terminated` record the loan is over and the workdir (identity key +
+   * node-local stores) goes with it — which is what `terminate` intended.
+   *
+   * `error` is the deliberate exception, matching `DonationSupervisor.giveUp`:
+   * that path keeps the workdir so a later `terminate` can still reclaim the
+   * same node. Defensive only — the supervisor serializes its passes, so
+   * `giveUp` cannot actually run concurrently with a respawn.
+   */
+  private async abandonRespawn(
+    id: string,
+    dockerId: string,
+    current: Donation | undefined,
+  ): Promise<RespawnResult> {
+    const status = current?.status;
+    log(
+      'donation %s went %s during respawn — abandoning new child %s',
+      id,
+      status ?? 'missing',
+      dockerId,
+    );
+    await this.safeStop(dockerId);
+    if (status !== 'error') await this.safeReclaim(dockerId);
+    return status ? { outcome: 'abandoned', status } : { outcome: 'abandoned' };
   }
 
   /**
