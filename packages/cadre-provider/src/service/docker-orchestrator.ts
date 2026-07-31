@@ -211,6 +211,14 @@ export class DockerOrchestrator implements Orchestrator {
           // — only ever this tenant's, resolved upstream by ContainerService. The
           // node reads it via the CADRE_PUSH env mapping. Never logged.
           request.push ? `CADRE_PUSH=${JSON.stringify(request.push)}` : '',
+          // This tenant's cold-start seed-trust anchors. `cadre-cli start` unions
+          // the comma-separated list into a pinnedKeyTrustPolicy, which is the
+          // only thing that lets a fresh container accept the first seed the
+          // provider delivers — its node-local trusted-owner store starts empty
+          // and nothing replicated can fill it. Omitted entirely when the list is
+          // empty (the CLI would parse a bare var to [] anyway, but a node told to
+          // trust nobody should not look configured).
+          request.pinnedOwnerKeys?.length ? `CADRE_OWNER_KEYS=${request.pinnedOwnerKeys.join(',')}` : '',
         ].filter(Boolean),
         HostConfig: {
           // Health (which also serves the authenticated `POST /seed`) and metrics

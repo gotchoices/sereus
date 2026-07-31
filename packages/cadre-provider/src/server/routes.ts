@@ -36,6 +36,21 @@ function redactContainer(container: Container): Omit<Container, 'seedToken'> {
   return rest;
 }
 
+/**
+ * Validate the optional `pinnedOwnerKeys` field of a create request: absent, or
+ * an array of strings. The key *contents* are deliberately not checked — a
+ * malformed pin simply never matches a real seed signer, so the node refuses the
+ * seed with the trust policy's reason rather than failing to start, and the
+ * provider does not need to know the ed25519 encoding to accept a request.
+ */
+function validatePinnedOwnerKeys(value: unknown): { keys?: string[] } | { error: string } {
+  if (value === undefined) return {};
+  if (!Array.isArray(value) || value.some(key => typeof key !== 'string')) {
+    return { error: 'pinnedOwnerKeys must be an array of strings' };
+  }
+  return { keys: value as string[] };
+}
+
 /** Coerce an arbitrary value to a strict boolean for the shutdownAfter flag */
 function parseShutdownFlag(value: unknown): boolean {
   if (value === true) return true;
@@ -96,7 +111,10 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     }
     if (!requireScope(reply, customer, Scope.ContainersCreate)) return reply;
 
-    const body = request.body as Partial<CreateContainerRequest> & { shutdownAfter?: unknown };
+    const body = request.body as Omit<Partial<CreateContainerRequest>, 'pinnedOwnerKeys'> & {
+      shutdownAfter?: unknown;
+      pinnedOwnerKeys?: unknown;
+    };
 
     // Validate required fields
     if (!body.partyId) {
@@ -104,6 +122,12 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
     }
     if (!body.bootstrapNodes?.length) {
       return errorResponse(reply, 'INVALID_REQUEST', 'bootstrapNodes is required');
+    }
+    // Optional, but the create call is the last point where the caller can still
+    // supply it — a container created without it refuses every seed.
+    const pinned = validatePinnedOwnerKeys(body.pinnedOwnerKeys);
+    if ('error' in pinned) {
+      return errorResponse(reply, 'INVALID_REQUEST', pinned.error);
     }
 
     // Check quota
@@ -120,6 +144,7 @@ export function registerRoutes(app: FastifyInstance, ctx: RouteContext): void {
       resources: body.resources,
       strandFilter: body.strandFilter,
       tags: body.tags,
+      ...(pinned.keys ? { pinnedOwnerKeys: pinned.keys } : {}),
     };
 
     const container = await containerService.createContainer(createRequest);

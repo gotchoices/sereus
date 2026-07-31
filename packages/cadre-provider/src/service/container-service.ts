@@ -82,6 +82,9 @@ export class ContainerService {
       tags: request.tags ?? {},
       createdAt: now,
       updatedAt: now,
+      // Copied so a later mutation of the caller's array cannot rewrite what the
+      // record says the node was told to trust.
+      ...(request.pinnedOwnerKeys?.length ? { pinnedOwnerKeys: [...request.pinnedOwnerKeys] } : {}),
     };
 
     // Save initial state
@@ -110,6 +113,18 @@ export class ContainerService {
       // Resolve push strictly by the OWNING tenant's id — never another tenant's.
       const push = resolveTenantPush(this.push, container.customerId);
 
+      // Seed-trust anchors come from THIS tenant's own create request and nowhere
+      // else — same one-tenant-in, one-tenant-out discipline as push above, but
+      // with no default tier at all: a provider-wide pin would let one tenant's
+      // owner seed another tenant's node.
+      const pinnedOwnerKeys = request.pinnedOwnerKeys ?? [];
+      if (pinnedOwnerKeys.length === 0) {
+        // Not an error — a container may legitimately be created before its owner
+        // key is known. But it will refuse every seed until recreated, so make the
+        // eventual refusal traceable to the create call that caused it.
+        log('Container %s created with no pinned owner keys; it will reject any seed delivered to it', container.id);
+      }
+
       // Create the container via orchestrator
       const result = await this.orchestrator.createContainer({
         containerId: container.id,
@@ -119,6 +134,7 @@ export class ContainerService {
         resources: request.resources,
         strandFilter: request.strandFilter,
         ...(push ? { push } : {}),
+        ...(pinnedOwnerKeys.length ? { pinnedOwnerKeys } : {}),
       });
       dockerId = result.dockerId;
 

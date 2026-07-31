@@ -376,6 +376,20 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   "Cold-start bootstrap retries" bullet under [Control Network Seed](architecture.md#control-network-seed).
 - [x] `DonationService` lifecycle (`provision` / `getPeer` / `applySeed` / `terminate` / `get` /
   `list`, exported from `@serfab/cadre-host`) — proven end-to-end by the integration test below.
+- [x] **The multi-tenant provider's seed path now works end-to-end.** Previously `POST /containers/:id/seed`
+  delivered fine (bearer token) but every container refused the seed: nothing pinned an owner key, so the
+  node fell back to its empty node-local anchor. `POST /containers` now takes `pinnedOwnerKeys` (array of
+  base64url owner keys, validated as such and rejected with `INVALID_REQUEST` otherwise); they are recorded
+  on the `Container` record, threaded through `ContainerService.provisionContainer` into
+  `OrchestratorCreateRequest.pinnedOwnerKeys`, and injected by `DockerOrchestrator` as comma-separated
+  `CADRE_OWNER_KEYS` — the same var cadre-host uses. **Strictly per-tenant, no provider-level default**
+  (a shared pin would let one tenant's owner seed another tenant's node); a create with no keys is logged
+  and still succeeds, but that container accepts no seed. First accepted seed anchors the key on the
+  durable `/data` volume, so later seeds need no pin. Tested: `docker-orchestrator-push.test.ts` (env
+  injection + omission), `container-owner-keys.test.ts` (forwarding, no default, cross-tenant),
+  `create-container-owner-keys.test.ts` (route accept/validate). **Not yet covered**: a real node
+  actually accepting a provider-delivered seed — `container-seed-endpoint.test.ts` stubs `fetch`, so no
+  test exercises a live `SeedTrustPolicy` decision on the provider path.
 - [~] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
   reap sweep + `DonationService` unit tests — in progress (`tickets/implement/2-donation-service.md`,
   Phase 2/3). `DonationService` is today exercised only through the integration scenario.

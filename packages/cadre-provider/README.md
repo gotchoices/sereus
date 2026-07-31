@@ -210,6 +210,29 @@ cadre that authorized it. The volume is created on first provision, re-attached 
 a container is recreated under the same id, and deleted along with the container on terminate. Nothing
 in `/data` survives termination, by design.
 
+### Seed trust: pin the tenant's owner key at create time
+
+Delivering a seed (`PUT /containers/:id/seed`) is authenticated by a per-container
+bearer token, but whether the node *honours* the seed is a separate decision made
+against its own trusted-owner anchor — empty on a fresh container, and not fillable
+from replicated state. So `POST /containers` accepts `pinnedOwnerKeys`: the base64url
+ed25519 owner public key(s) of the tenant's own cadre, which the orchestrator passes
+to the node as `CADRE_OWNER_KEYS`.
+
+```bash
+curl -X POST $URL/api/v1/containers \
+  -H 'Authorization: Bearer ...' \
+  -d '{"partyId":"...","bootstrapNodes":["..."],"pinnedOwnerKeys":["<owner-b64url>"]}'
+```
+
+The keys flow only from a tenant's own create request into that tenant's own
+container; there is **no provider-level default**, because a provider-wide pin would
+let one tenant's owner seed another tenant's node. Keys are not validated for
+encoding — a malformed pin never matches a real signer, so the node refuses the seed
+rather than failing to start. The first accepted seed anchors the key in `/data`, so
+later seeds from the same owner need no pin and survive restarts. A container created
+without keys still provisions (the omission is logged) but refuses every seed.
+
 ### Kubernetes
 
 For Kubernetes deployments, implement a custom orchestrator or use the Docker orchestrator with Docker-in-Docker.

@@ -357,11 +357,13 @@ interface SeedAckMessage {
 | Mechanism | When Used | Notes |
 |-----------|-----------|-------|
 | Direct protocol | New node is dialable | Instigator dials, sends seed directly |
-| Provider API | Provider-hosted node | `POST /containers/:id/seed` via HTTPS |
+| Provider API | Provider-hosted node | `POST /containers/:id/seed` via HTTPS — delivery only; the container must also have been *created* with its tenant's owner key pinned (below) |
 | QR code / deep link | Mobile onboarding | Seed encoded in URL, opened by app |
 | Environment variable | Container startup | `CADRE_SEED` contains base64-encoded seed |
 
 All mechanisms deliver the same `SeedMessage` payload; only the transport differs.
+
+**Delivery and trust are separate gates**, and a hosted node makes the split explicit. On the provider path the per-container bearer token (`CADRE_SEED_TOKEN`) decides whether `POST /seed` is *accepted for processing*; whether its contents are *honoured* is decided by the node's own `SeedTrustPolicy` against its node-local anchor — which is empty on a fresh container and which nothing replicated can fill. So a container-hosted node must be told at **create** time whose seeds to trust: `POST /containers` takes `pinnedOwnerKeys` (the tenant's own base64url owner key(s)), and the orchestrator passes them to the node as comma-separated `CADRE_OWNER_KEYS` — the same operator-pin path as cadre-cli's `--pin-owner-key`, and the same var cadre-host's donation flow uses. The pin flows strictly from one tenant's create request into that tenant's own container: there is deliberately **no provider-level default owner key**, since a provider-wide pin would let one tenant's owner seed another tenant's node. The first accepted seed anchors the key (`anchorAs`) into the node's trusted-owner store on the durable `/data` volume, so later seeds from the same owner need no pin and survive a restart. A container created with no pinned keys is provisioned normally (and the omission is logged) but will refuse every seed — recreate it with keys rather than trying to deliver one.
 
 ### Simple API
 

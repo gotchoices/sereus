@@ -44,6 +44,19 @@ export interface CreateContainerRequest {
   strandFilter?: string;
   /** Optional tags for the container */
   tags?: Record<string, string>;
+  /**
+   * Base64url owner public key(s) this tenant's node should trust as seed
+   * signers. A fresh node's node-local trusted-owner store is empty and nothing
+   * replicated can fill it, so without at least one key here the node refuses
+   * every seed the provider later delivers (`POST /containers/:id/seed`).
+   *
+   * Supplied per create request by the tenant that owns the container — there is
+   * deliberately no provider-level default, since a shared pin would let one
+   * tenant's owner seed another tenant's node. Not validated here: a malformed
+   * key simply never matches a real seed signer and the node refuses the seed
+   * with the trust policy's reason.
+   */
+  pinnedOwnerKeys?: string[];
 }
 
 /** Container record in the provider database */
@@ -90,6 +103,14 @@ export interface Container {
    * `ContainerService.getPeerInfo` keeps reading them live.
    */
   peerId?: string;
+  /**
+   * Owner key(s) the node was started with pinned as seed-trust anchors (from
+   * the create request). Recorded so a re-provision reuses them and so an
+   * operator debugging a refused seed can see what the node was told to trust;
+   * absent/empty means the node accepts no seed at all. Not a secret — these are
+   * public keys — so it is not redacted on the API boundary.
+   */
+  pinnedOwnerKeys?: string[];
 }
 
 /** Container status response */

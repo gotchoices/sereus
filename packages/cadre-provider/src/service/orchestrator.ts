@@ -36,9 +36,12 @@ export interface OrchestratorCreateRequest {
    * node-donation flow in cadre-host) MUST be started with that owner's key(s)
    * pinned, or `POST /seed` is refused forever.
    *
-   * The Docker orchestrator (cadre-provider) ignores this for now — its tenants
-   * pin owner trust through their own path. Only cadre-host's HostProcessOrchestrator
-   * threads it into the child (as `CADRE_OWNER_KEYS`).
+   * Both implementations thread the list into the spawned node as the
+   * comma-separated `CADRE_OWNER_KEYS`: cadre-host's `HostProcessOrchestrator`
+   * into the child process's env, cadre-provider's `DockerOrchestrator` into the
+   * container's env. Each caller passes exactly the keys of the one tenant /
+   * requester the node is being launched for; no orchestrator supplies a default,
+   * because a shared pin would let one tenant's owner seed another tenant's node.
    */
   pinnedOwnerKeys?: string[];
 }
