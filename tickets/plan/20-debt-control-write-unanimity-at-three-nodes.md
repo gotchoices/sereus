@@ -60,7 +60,9 @@ there.
   does reach all party members within ~5 s, so an owner-coordinated write issued after that
   window does form a three-machine cohort. Writes issued immediately after party creation
   race the ring and see one member, which is why this never showed up.
-- `debt-harness-control-cohort-observable-and-forced` — builds the wait/force helper the
+- `debt-harness-cohort-wait-and-force-helpers` — builds the wait/observe/force helpers the
   harness needs before a scenario can reproduce this reliably.
+- `debt-harness-party-multi-machine-control-write` — the scenario that uses them; it is the
+  place this fragility is expected to show up first.
 - `debt-control-write-availability-degraded-cohort-member` (in `plan/`) — coverage for a
   connected-but-slow machine inside the cohort; the boundary it targets is exactly this one.
