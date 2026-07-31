@@ -390,9 +390,15 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `create-container-owner-keys.test.ts` (route accept/validate). **Not yet covered**: a real node
   actually accepting a provider-delivered seed — `container-seed-endpoint.test.ts` stubs `fetch`, so no
   test exercises a live `SeedTrustPolicy` decision on the provider path.
-- [~] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
-  reap sweep + `DonationService` unit tests — in progress (`tickets/implement/2-donation-service.md`,
-  Phase 2/3). `DonationService` is today exercised only through the integration scenario.
+- [x] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
+  reap sweep + `DonationService` unit tests (`donation/__tests__/donation-service.test.ts`, a fake
+  orchestrator over a real on-disk store).
+- [~] Respawn of a crashed donated node. The record now persists every spawn input and
+  `DonationService.respawn(id)` replays it against the same workdir (so the node returns with its
+  original peer id), and the orchestrator no longer strands the previous spawn's handle/ports. **No
+  production caller yet** — the supervisor that decides *when* to respawn, with its backoff and
+  give-up path, is `tickets/implement/16.5-donated-node-respawn-supervisor.md`. Until it lands a
+  crashed donated node still stays dead.
 - [ ] WAN reachability for the request surface and per-donated-node NAT/relay mapping — deferred
   (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`); v1 donation is loopback-only.
 - [x] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —

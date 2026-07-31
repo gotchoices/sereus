@@ -285,14 +285,21 @@ export class DonationService {
    * respawn support (no persisted `bootstrapNodes`/`ownerKeys`) and therefore
    * cannot be replayed — a skip, not a failure, so a sweep over the store keeps
    * going. Orchestrator failures DO throw; the caller owns backoff/give-up.
+   *
+   * NOTE: not serialized. Two overlapping calls for the same id both spawn a
+   * child, and the second spawn drops the first's orchestrator handle — leaving
+   * an unmanaged process. A supervisor with more than one trigger (timer +
+   * exit event) must not let its passes overlap on one id.
    */
   async respawn(id: string): Promise<DonationView | undefined> {
     const donation = this.requireDonation(id);
-    // A terminal record must never come back: `terminated` is a loan the
-    // borrower ended, `error` is one the host gave up on. Callers filter for
-    // this already — the guard is here so no future one can resurrect a loan by
-    // omission.
-    if (donation.status === 'terminated' || donation.status === 'error') {
+    // An allowlist, not a terminal denylist: `terminated` is a loan the borrower
+    // ended and `error` one the host gave up on (neither may come back), while
+    // `provisioning` is a provision still in flight — replaying its spawn would
+    // race that provision and strand the record in `provisioning`, which no reap
+    // sweep collects. Callers filter for this already; the guard is here so no
+    // future one can resurrect or double-spawn a loan by omission.
+    if (donation.status !== 'awaiting_seed' && donation.status !== 'seeded') {
       throw new DonationError(
         'invalid_state',
         `Donation ${id} cannot be respawned in status ${donation.status}`,

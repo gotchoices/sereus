@@ -28,6 +28,7 @@ import { DonationService } from '../donation-service.js';
 import { DonationStore } from '../donation-store.js';
 import { GrantService } from '../grant-service.js';
 import { GrantStore } from '../grant-store.js';
+import type { Donation } from '../types.js';
 import { DonationError } from '../types.js';
 
 function sleep(ms: number): Promise<void> {
@@ -80,6 +81,19 @@ class FakeOrchestrator implements Orchestrator {
 
   async getLogs(): Promise<string> {
     return '';
+  }
+}
+
+/** A store whose next `put` fails once — the post-spawn write-failure path. */
+class FlakyDonationStore extends DonationStore {
+  failNextPut = false;
+
+  override put(donation: Donation): void {
+    if (this.failNextPut) {
+      this.failNextPut = false;
+      throw new DonationError('storage_error', 'disk full');
+    }
+    super.put(donation);
   }
 }
 
@@ -337,6 +351,22 @@ describe('DonationService.respawn', () => {
     expect(orch.createCalls).toHaveLength(1);
   });
 
+  it('refuses a record whose provision is still in flight', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    // A host that died mid-provision leaves exactly this row: spawn inputs
+    // persisted, status never advanced. Replaying it would race the provision
+    // and strand the record in a status no reap sweep collects.
+    store.put({ ...store.get(provisioned.id)!, status: 'provisioning' });
+
+    await expect(svc.respawn(provisioned.id)).rejects.toMatchObject({ code: 'invalid_state' });
+    expect(orch.createCalls).toHaveLength(1);
+  });
+
   it('records the attempt and throws when the spawn fails', async () => {
     const orch = new FakeOrchestrator();
     const store = new DonationStore(join(tmpRoot, 'donations'));
@@ -353,6 +383,28 @@ describe('DonationService.respawn', () => {
     // The old handles are untouched — the caller owns backoff, not cleanup.
     expect(stored.dockerId).toBe('dock_1');
     expect(stored.status).toBe('awaiting_seed');
+  });
+
+  it('stops — but never reclaims — the new child when the post-spawn write fails', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new FlakyDonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    store.failNextPut = true;
+
+    await expect(svc.respawn(provisioned.id)).rejects.toMatchObject({ code: 'orchestrator_error' });
+
+    // Stopped, not removed: `removeContainer` deletes the workdir, and the
+    // workdir is the identity key that makes a later respawn the SAME node.
+    expect(orch.stopped).toEqual(['dock_2']);
+    expect(orch.removed).toEqual([]);
+    // The record still points at the old spawn, with the attempt recorded.
+    const stored = store.get(provisioned.id)!;
+    expect(stored.dockerId).toBe('dock_1');
+    expect(stored.status).toBe('awaiting_seed');
+    expect(stored.respawn?.attempts).toBe(1);
   });
 });
 

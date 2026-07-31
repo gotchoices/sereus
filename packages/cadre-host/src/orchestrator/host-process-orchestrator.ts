@@ -560,6 +560,10 @@ export class HostProcessOrchestrator implements Orchestrator {
    * caller today re-spawns only a container it has established is not running
    * (`DonationService.respawn`, `ensureOwnerNode`). If a caller ever needs to
    * replace a live child, stop it first — or hold the ports until its exit.
+   *
+   * The drop happens before the launch can fail, so a failed re-spawn leaves the
+   * caller holding a dockerId this orchestrator no longer knows — see
+   * `backlog/debt-failed-respawn-strands-donated-workdir`.
    */
   private dropStaleHandle(containerId: string): void {
     for (const h of this.handles.values()) {
