@@ -2612,14 +2612,9 @@ export class CadreNode implements SAppIdLookup {
     log('Handling strand removed: %s', strandId);
 
     try {
-      // Untrack from hibernation
-      this.hibernationManager.untrackStrand(strandId);
-
-      // Remove sApp config
-      this.sAppConfigs.delete(strandId);
-
-      await this.strandManager.stopStrand(strandId);
-      this.emit('strand:stopped', { strandId });
+      // Same local teardown the explicit stop performs — deliberately NOT stopStrand
+      // itself, whose `_running` guard would throw on a poll that lands during shutdown.
+      await this.detachStrand(strandId);
     } catch (error) {
       log('Error stopping strand %s: %o', strandId, error);
       this.emit('strand:error', {
@@ -3461,12 +3456,18 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode not running');
     }
 
-    // Untrack from hibernation
+    await this.detachStrand(strandId);
+  }
+
+  /**
+   * Local teardown for one strand, shared by the caller-driven {@link stopStrand} and the
+   * watcher-driven `handleStrandRemoved`: untrack hibernation, drop the sApp config, stop
+   * the instance, emit `strand:stopped`. Touches no control-plane row — which side of the
+   * removal the node is on is the caller's concern, not this method's.
+   */
+  private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);
-
-    // Remove sApp config
     this.sAppConfigs.delete(strandId);
-
     await this.strandManager.stopStrand(strandId);
     this.emit('strand:stopped', { strandId });
   }

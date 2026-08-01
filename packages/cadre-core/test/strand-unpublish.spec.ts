@@ -47,6 +47,8 @@ describe('CadreNode strand unpublish', () => {
   const QUIET_WINDOW_MS = WATCH_INTERVAL_MS * 5;
   /** Budget for the poll-driven waits — generous; the assertions resolve in a poll or two. */
   const WAIT_BUDGET_MS = 10_000;
+  /** `vi.waitFor` options for every poll-driven gate below. */
+  const WAIT_OPTS = { timeout: WAIT_BUDGET_MS, interval: 50 };
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
@@ -75,8 +77,7 @@ describe('CadreNode strand unpublish', () => {
       controlNetwork: { partyId: 'strand-unpublish-' + rand(), bootstrapNodes: [] },
       privateKey: nodeKey,
       profile: 'transaction',
-      ...(overrides.strandWatchInterval === undefined ? {} : { strandWatchInterval: overrides.strandWatchInterval }),
-      ...(overrides.strandFilter === undefined ? {} : { strandFilter: overrides.strandFilter }),
+      ...overrides,
     });
     await n.start();
 
@@ -105,6 +106,19 @@ describe('CadreNode strand unpublish', () => {
       (message: Uint8Array): string =>
         cryptoSign(message, ownerKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
     );
+  }
+
+  /** Ids seen for each lifecycle event, in order, for the watcher-driven assertions below. */
+  function collectStrandEvents(n: CadreNode): {
+    discovered: string[];
+    stopped: string[];
+    errors: string[];
+  } {
+    const events = { discovered: [] as string[], stopped: [] as string[], errors: [] as string[] };
+    n.on('strand:discovered', ({ strandId }) => void events.discovered.push(strandId));
+    n.on('strand:stopped', ({ strandId }) => void events.stopped.push(strandId));
+    n.on('strand:error', ({ strandId }) => void events.errors.push(strandId));
+    return events;
   }
 
   function revocationRow(db: ControlDatabase, stampId: string): Promise<Record<string, unknown> | undefined> {
@@ -276,19 +290,6 @@ describe('CadreNode strand unpublish', () => {
     expect((await db.queryRevokedStamps('Strand')).size).toBe(0);
   }, 60_000);
 
-  /** Ids seen for each lifecycle event, in order, for the watcher-driven assertions below. */
-  function collectStrandEvents(n: CadreNode): {
-    discovered: string[];
-    stopped: string[];
-    errors: string[];
-  } {
-    const events = { discovered: [] as string[], stopped: [] as string[], errors: [] as string[] };
-    n.on('strand:discovered', ({ strandId }) => void events.discovered.push(strandId));
-    n.on('strand:stopped', ({ strandId }) => void events.stopped.push(strandId));
-    n.on('strand:error', ({ strandId }) => void events.errors.push(strandId));
-    return events;
-  }
-
   it('stops a watched instance when the row vanishes from under it (the sibling-side removal path)', async () => {
     node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
     const db = node.getControlDatabase()!;
@@ -301,21 +302,24 @@ describe('CadreNode strand unpublish', () => {
     // the test would fail for a reason unrelated to the code under test — hence a gate on the
     // event rather than a sleep.
     await node.publishStrand(strandId);
-    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), { timeout: WAIT_BUDGET_MS, interval: 50 });
+    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), WAIT_OPTS);
 
     // Only now register the config + launch. Adding first would have the watcher relaunch the
-    // strand on discovery and emit a second `strand:started`, muddying the event stream.
+    // strand on discovery and emit a SECOND `strand:started` for the same instance, muddying
+    // the event stream — that duplicate is itself a defect, tracked separately as
+    // `fix/duplicate-strand-started-on-rediscovery`; ordering around it keeps this test on
+    // the removal path.
     await node.addStrand(createStrandConfig(strandId));
     expect(node.getStrand(strandId)).toBeDefined();
 
     expect(await deleteStrandRow(node, strandId)).toBe(true);
     expect(await db.queryStrands()).toEqual([]);
 
-    await vi.waitFor(() => expect(events.stopped).toEqual([strandId]), { timeout: WAIT_BUDGET_MS, interval: 50 });
+    await vi.waitFor(() => expect(events.stopped).toEqual([strandId]), WAIT_OPTS);
     expect(node.getStrand(strandId)).toBeUndefined();
     expect(node.getStrands().size).toBe(0);
 
-    // Exactly once. `handleStrandRemoved` drops the id from `knownStrands` before invoking the
+    // Exactly once. `StrandWatcher.poll` drops the id from `knownStrands` before invoking the
     // callback, so a repeat is not expected — but a regression here reaches an app as a
     // duplicate shutdown, so assert it across a further quiet window.
     await quietWindow();
@@ -323,46 +327,53 @@ describe('CadreNode strand unpublish', () => {
     expect(events.errors).toEqual([]);
 
     // The sApp config went with the strand: a re-publish is DISCOVERED again rather than
-    // relaunched. This is what proves `handleStrandRemoved` cleared both `sAppConfigs` and the
-    // watcher's `knownStrands`, and that the removal's `Revocation` tombstone is not mistaken
-    // for a live row.
+    // relaunched. This is what proves `handleStrandRemoved` cleared `sAppConfigs` and the
+    // watcher dropped the id from `knownStrands`, and that the removal's `Revocation`
+    // tombstone is not mistaken for a live row.
     await node.publishStrand(strandId);
-    await vi.waitFor(
-      () => expect(events.discovered).toEqual([strandId, strandId]),
-      { timeout: WAIT_BUDGET_MS, interval: 50 },
-    );
+    await vi.waitFor(() => expect(events.discovered).toEqual([strandId, strandId]), WAIT_OPTS);
     expect(node.getStrand(strandId)).toBeUndefined();
     expect(events.errors).toEqual([]);
   }, 60_000);
 
   it('keeps running a strand its strandFilter excluded, even after the row vanishes', async () => {
-    const strandId = 'strand-filtered-out-' + rand();
+    const excludedId = 'strand-filtered-out-' + rand();
+    const admittedId = 'strand-watched-instead-' + rand();
     node = await startSelfOwnerNode({
       strandWatchInterval: WATCH_INTERVAL_MS,
       // The `strandId` form rather than `{ mode: 'none' }`: it is the shape a real app uses,
       // and it keeps the test honest about WHICH strand was excluded.
-      strandFilter: { mode: 'strandId', strandId: 'strand-watched-instead-' + rand() },
+      strandFilter: { mode: 'strandId', strandId: admittedId },
     });
+    const db = node.getControlDatabase()!;
     const events = collectStrandEvents(node);
 
-    // Rejected by the filter, so the watcher never tracks the row — no discovery, ever.
-    await node.publishStrand(strandId);
+    // The admitted strand is the LIVENESS WITNESS for every negative below: its discovery is
+    // what proves the watcher is actually polling, so the excluded strand's silence is an
+    // observation rather than the vacuous pass a dead watcher would also produce.
+    await node.publishStrand(admittedId);
+    await node.publishStrand(excludedId);
+    await vi.waitFor(() => expect(events.discovered).toEqual([admittedId]), WAIT_OPTS);
+
+    // Rejected by the filter, so the watcher never tracks that row — no discovery, ever.
     await quietWindow();
-    expect(events.discovered).toEqual([]);
+    expect(events.discovered).toEqual([admittedId]);
 
     // An app may still run a strand the watcher was told to ignore.
-    await node.addStrand(createStrandConfig(strandId));
-    expect(node.getStrand(strandId)).toBeDefined();
+    await node.addStrand(createStrandConfig(excludedId));
+    expect(node.getStrand(excludedId)).toBeDefined();
 
-    expect(await deleteStrandRow(node, strandId)).toBe(true);
+    expect(await deleteStrandRow(node, excludedId)).toBe(true);
+    // The row really is gone party-wide — otherwise "still running" below proves nothing.
+    expect((await db.queryStrands()).map((row) => row.Id)).toEqual([admittedId]);
     await quietWindow();
 
     // Documented consequence, not a defect: a node that opted out of WATCHING a strand also
     // opted out of observing its party-wide removal. Its only stop is a local
     // `stopStrand`/`unpublishStrand` call.
-    expect(node.getStrand(strandId)).toBeDefined();
+    expect(node.getStrand(excludedId)).toBeDefined();
     expect(events.stopped).toEqual([]);
-    expect(events.discovered).toEqual([]);
+    expect(events.discovered).toEqual([admittedId]);
     expect(events.errors).toEqual([]);
   }, 60_000);
 });
