@@ -75,10 +75,11 @@
  *
  * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the four
  * database-driven tests (all but the fourth) proves a row is VISIBLE from the other
- * node's database, not that its block lives there. A read on either node resolves one coordinator peer per block;
- * when that resolves to the authoring node, the other node's `select` is a remote call
- * against the author's storage and nothing needs to live locally. Visibility is the
- * property an application actually observes, and it is what those three assert.
+ * node's database, not that its block lives there. A read on either node resolves one
+ * coordinator peer per block; when that resolves to the authoring node, the other node's
+ * `select` is a remote call against the author's storage and nothing needs to live
+ * locally. Visibility is the property an application actually observes, and it is what
+ * those four assert.
  * Physical replication is proven separately by the FOURTH test, which writes only on
  * the founder and then reads the joiner's raw block store directly, never its database.
  * Its own comment states exactly which blocks that claim covers (post-dial ones) and
@@ -185,11 +186,11 @@ function freshKeyPair(): Ed25519KeyPair {
 	return { privateKeyB64, publicKeyB64 };
 }
 
+/** The `Strand.*` tables this file reads by name. */
+type StrandTable = 'Header' | 'Member' | 'Manager' | 'Invite' | 'ConsumedInvite' | 'MemberPeer';
+
 /** Count rows in a `Strand.*` table as seen by a strand DB. */
-async function strandCount(
-	db: Database,
-	table: 'Header' | 'Member' | 'Manager' | 'Invite' | 'ConsumedInvite' | 'MemberPeer',
-): Promise<number> {
+async function strandCount(db: Database, table: StrandTable): Promise<number> {
 	const row = await db.get(`select count(1) as c from Strand.${table}`);
 	return (row?.c as number) ?? 0;
 }
@@ -218,46 +219,51 @@ async function revocationExists(db: Database, tableName: string, stampId: string
 	return false;
 }
 
-/** Every `Strand.Member.Key` currently visible, scanned (`Key` alone is the whole PK). */
-async function memberKeys(db: Database): Promise<string[]> {
-	const keys: string[] = [];
-	for await (const row of db.eval('select Key from Strand.Member')) {
-		keys.push(row.Key as string);
+/**
+ * Every value of one column of a `Strand.*` table, via an UNFILTERED scan.
+ *
+ * SCANNED, never sought — the single primitive behind {@link memberKeys},
+ * {@link inviteKeys} and {@link managerKeys}. Each of those tables has a single-column
+ * primary key, so ANY where-equality on it is a FULL-PK predicate, which the optimystic
+ * module serves as a point lookup that can MISS on a networked strand (see the
+ * lookup-shape note in the file header). Inside a `waitUntil` that miss is
+ * indistinguishable from a plain timeout — exactly the wrong way for a convergence gate
+ * to fail. Filtering in JavaScript instead depends only on the scan returning a SUPERSET
+ * of the live rows, the weakest possible assumption about the storage layer.
+ */
+async function scanColumn(db: Database, table: StrandTable, column: string): Promise<string[]> {
+	const values: string[] = [];
+	for await (const row of db.eval(`select ${column} from Strand.${table}`)) {
+		values.push(row[column] as string);
 	}
-	return keys;
+	return values;
+}
+
+/** Every `Strand.Member.Key` currently visible. */
+async function memberKeys(db: Database): Promise<string[]> {
+	return scanColumn(db, 'Member', 'Key');
+}
+
+/** Every `Strand.Invite.Key` currently visible. */
+async function inviteKeys(db: Database): Promise<string[]> {
+	return scanColumn(db, 'Invite', 'Key');
+}
+
+/** Every `Strand.Manager.MemberKey` currently visible. */
+async function managerKeys(db: Database): Promise<string[]> {
+	return scanColumn(db, 'Manager', 'MemberKey');
 }
 
 /**
- * Every `(MemberKey, Generation)` visible in `Strand.Manager`, via an unfiltered scan.
- *
- * SCANNED, never sought. `Manager`'s primary key is the single `MemberKey` column, so
- * ANY where-equality on it is a FULL-PK predicate — which the optimystic module serves
- * as a point lookup that can MISS on a networked strand (see the lookup-shape note in
- * the file header). Inside a `waitUntil` that miss is indistinguishable from a plain
- * timeout, which is exactly the wrong way for the fifth test's enabling gate to fail.
- * Comparing in JavaScript depends only on the scan returning a SUPERSET of the live
- * rows — the weakest possible assumption about the storage layer.
+ * The `Strand.Manager.Generation` of one manager, or `undefined` if that key holds no
+ * visible row. ONE scan reading both columns together — never two scans matched by
+ * position, which the storage layer never promises to keep aligned.
  */
-async function managerRows(db: Database): Promise<Array<{ memberKey: string; generation: number }>> {
-	const rows: Array<{ memberKey: string; generation: number }> = [];
+async function managerGeneration(db: Database, memberKey: string): Promise<number | undefined> {
 	for await (const row of db.eval('select MemberKey, Generation from Strand.Manager')) {
-		rows.push({ memberKey: row.MemberKey as string, generation: Number(row.Generation) });
+		if (row.MemberKey === memberKey) return Number(row.Generation);
 	}
-	return rows;
-}
-
-/** Every `Strand.Manager.MemberKey` currently visible — {@link managerRows} minus the generations. */
-async function managerKeys(db: Database): Promise<string[]> {
-	return (await managerRows(db)).map(row => row.memberKey);
-}
-
-/** Every `Strand.Invite.Key` currently visible, scanned for the same reason as {@link managerRows}. */
-async function inviteKeys(db: Database): Promise<string[]> {
-	const keys: string[] = [];
-	for await (const row of db.eval('select Key from Strand.Invite')) {
-		keys.push(row.Key as string);
-	}
-	return keys;
+	return undefined;
 }
 
 // ── App.Items signed-write helpers (reused shape from rbac-signed-write) ───────
@@ -1070,8 +1076,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// schema's, which enforces only strict ordering. If `addManager` ever seats successors
 			// at some other larger value, relax this to `toBeGreaterThan(0)` — nothing is wrong in
 			// that case.
-			expect((await managerRows(joinerDb)).find(row => row.memberKey === managerM.publicKeyB64)?.generation)
-				.toBe(1);
+			expect(await managerGeneration(joinerDb, managerM.publicKeyB64)).toBe(1);
 
 			// ── 5. M issues an invite from the joiner — LIVE Manager read ────────
 			const { inviteKey: mInvite, invitePrivateKey: mSecret } =
@@ -1103,8 +1108,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// ── 7. M promotes X — LIVE Manager read, strict generation ordering ──
 			await addManager(joinerDb, { byManagerKeyPair: managerM, newManagerKey: managerX.publicKeyB64 });
-			expect((await managerRows(joinerDb)).find(row => row.memberKey === managerX.publicKeyB64)?.generation)
-				.toBe(2);
+			expect(await managerGeneration(joinerDb, managerX.publicKeyB64)).toBe(2);
 			await waitUntil(
 				async () => (await managerKeys(founderDb)).includes(managerX.publicKeyB64),
 				{ ...GATE, description: "X's Manager row reaches the founder" },
@@ -1144,8 +1148,19 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 
 			// ── 11. LAST — a non-manager is refused ON THE SECOND NODE too ───────
 			// Without this the test could pass by the joiner accepting everything
-			// indiscriminately. Rejection floor: `rejects.toThrow()` only, nothing follows.
+			// indiscriminately. Two flavours, because they fail for DIFFERENT reasons:
+			// a stranger holds neither a Member nor a Manager row, while Z is a seated
+			// MEMBER holding no Manager row — the only case that distinguishes
+			// `Invite.InviteValid`'s `Manager` lookup from a membership check. Z is
+			// gated visible here first, otherwise "no Manager row" would be trivially
+			// true for a node that had never heard of Z at all.
+			// Rejection floor: `rejects.toThrow()` only, nothing follows.
+			await waitUntil(
+				async () => (await memberKeys(joinerDb)).includes(memberZ.publicKeyB64),
+				{ ...GATE, description: "Z's founder-authored Member row is visible on the second node" },
+			);
 			await expect(issueInvite(joinerDb, { managerKeyPair: freshKeyPair() })).rejects.toThrow();
+			await expect(issueInvite(joinerDb, { managerKeyPair: memberZ })).rejects.toThrow();
 		} finally {
 			await stopBoth(founderNode, joinerNode);
 		}

@@ -878,7 +878,10 @@ selection-layer ticket `cross-network-unknown-peer-backfill-hardening` was plann
 implemented, reviewed, and is **complete** in `../optimystic` (HEAD `56db2fd`). Rebuilt the linked
 `db-p2p` dist and re-ran the integration suite: `strand-formation-e2e` **11/11 pass** (was 3 fail /
 8 pass — Phase 2 storage+storage now green), `strand-membership-closed-strand-e2e` **1/1 pass** (its
-only test at that date; the file is **3/3** since the joiner-authored join landed 2026-07-30), and
+only test at that date; the file has grown to **five** tests since — the joiner-authored join
+2026-07-30, then physical block replication and manager-actions-from-the-second-node 2026-07-31.
+Four of the five are currently **intermittent** on a platform fault outside this repo, tracked as
+`blocked/strand-unique-index-sync-stale-revision`), and
 the **full integration suite is 98 passed / 2 failed** (was broadly blocked). The 2 remaining
 failures are a *separate, pre-existing* membership-authorization issue (not the cross-network path) —
 see "Membership gate" below; filed as `tickets/plan/membership-gate-uses-cadrepeer-record-presence.md`.
