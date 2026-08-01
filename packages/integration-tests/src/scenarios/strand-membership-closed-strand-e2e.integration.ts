@@ -3,19 +3,20 @@
  *
  * Capstone integration coverage for the `Strand.*` membership tables landed by the
  * `strand-membership-*` tickets (founder bootstrap → invite/join → member-peer →
- * manager rotation, member-peer REMOVAL, and a join driven from the SECOND node's own
- * database). Drives the full CLOSED-strand path
+ * manager rotation, member-peer REMOVAL, and both a join and MANAGER ACTIONS driven
+ * from the SECOND node's own database). Drives the full CLOSED-strand path
  * across two REAL `CadreNode`s over libp2p, modelled on the proven two-node pattern
  * in `rbac-signed-write.integration.ts` (real nodes, `formStrand` over libp2p,
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
  * tests in `strand-formation-e2e.integration.ts`.
  *
- * Three independent tests, each with its OWN two-node strand via
+ * FIVE independent tests, each with its OWN two-node strand via
  * {@link bringUpClosedStrand}: the admission/rotation lifecycle, device-record
- * (`MemberPeer`) removal, and a JOINER-AUTHORED join. They are deliberately NOT one
- * narrative — the removal test asserts enumerations, and the other two end with
- * rejected writes whose post-state this file does not assert (see the rejection
- * floor below).
+ * (`MemberPeer`) removal, a JOINER-AUTHORED join, PHYSICAL block replication, and
+ * MANAGER-AUTHORIZED writers run from the second node. They are deliberately NOT one
+ * narrative — the removal test asserts enumerations, the physical-replication test may
+ * not read the joiner's database at all, and four of the five end with rejected writes
+ * whose post-state this file does not assert (see the rejection floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
  * This asserts the SQL-LAYER membership lifecycle using the writer APIs against the
@@ -50,10 +51,21 @@
  * `Strand.Invite` row) resolves from there. See that test's own comment for which of
  * the join's other constraints are local rather than cross-node.
  *
+ * The FIFTH test is joiner-authored too, but for the MANAGER writers rather than the
+ * join. The founder promotes a second-node member to manager, and from there
+ * `issueInvite`, `addMemberByManager`, `addManager`, `revokeMember` and the manager arm
+ * of `removeMemberPeer` all run against `joinerDb`. Between them they cover both
+ * flavours of manager-list read the schema uses — the LIVE `Manager` table
+ * (`Invite.InviteValid`, `Manager.Authorized`'s promotion branch) and the PRE-transaction
+ * snapshot `committed.Manager` (`Member.Authorized`'s direct-admit and manager-remove
+ * branches, `MemberPeer.Authorized`'s manager branch) — each of which must resolve that
+ * founder-authored `Manager` row over the network. Its own comment states what is local
+ * by construction rather than cross-node.
+ *
  * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
  * gate in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
- * every convergence check in the third test all throw on timeout, all on the shared
- * {@link GATE} budget. The old best-effort/observe-then-require paths are gone. A
+ * every convergence check in the third and fifth tests all throw on timeout, all on the
+ * shared {@link GATE} budget. The old best-effort/observe-then-require paths are gone. A
  * timeout here is a real convergence defect; do NOT restore a skip branch.
  *
  * NOTE: `waitUntil` swallows a throwing condition and retries, so a gate whose read
@@ -61,9 +73,9 @@
  * that simply never arrived. If one of these ever times out, check the harness debug
  * log (`Wait condition threw: …`) before concluding it is a convergence failure.
  *
- * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the first
- * three tests proves a row is VISIBLE from the other node's database, not that its
- * block lives there. A read on either node resolves one coordinator peer per block;
+ * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the four
+ * database-driven tests (all but the fourth) proves a row is VISIBLE from the other
+ * node's database, not that its block lives there. A read on either node resolves one coordinator peer per block;
  * when that resolves to the authoring node, the other node's `select` is a remote call
  * against the author's storage and nothing needs to live locally. Visibility is the
  * property an application actually observes, and it is what those three assert.
@@ -94,6 +106,7 @@ import {
 	strandMemberKeyPair,
 	issueInvite,
 	consumeInvite,
+	addMemberByManager,
 	registerMemberPeer,
 	listMemberPeers,
 	removeMemberPeer,
@@ -209,6 +222,39 @@ async function revocationExists(db: Database, tableName: string, stampId: string
 async function memberKeys(db: Database): Promise<string[]> {
 	const keys: string[] = [];
 	for await (const row of db.eval('select Key from Strand.Member')) {
+		keys.push(row.Key as string);
+	}
+	return keys;
+}
+
+/**
+ * Every `(MemberKey, Generation)` visible in `Strand.Manager`, via an unfiltered scan.
+ *
+ * SCANNED, never sought. `Manager`'s primary key is the single `MemberKey` column, so
+ * ANY where-equality on it is a FULL-PK predicate — which the optimystic module serves
+ * as a point lookup that can MISS on a networked strand (see the lookup-shape note in
+ * the file header). Inside a `waitUntil` that miss is indistinguishable from a plain
+ * timeout, which is exactly the wrong way for the fifth test's enabling gate to fail.
+ * Comparing in JavaScript depends only on the scan returning a SUPERSET of the live
+ * rows — the weakest possible assumption about the storage layer.
+ */
+async function managerRows(db: Database): Promise<Array<{ memberKey: string; generation: number }>> {
+	const rows: Array<{ memberKey: string; generation: number }> = [];
+	for await (const row of db.eval('select MemberKey, Generation from Strand.Manager')) {
+		rows.push({ memberKey: row.MemberKey as string, generation: Number(row.Generation) });
+	}
+	return rows;
+}
+
+/** Every `Strand.Manager.MemberKey` currently visible — {@link managerRows} minus the generations. */
+async function managerKeys(db: Database): Promise<string[]> {
+	return (await managerRows(db)).map(row => row.memberKey);
+}
+
+/** Every `Strand.Invite.Key` currently visible, scanned for the same reason as {@link managerRows}. */
+async function inviteKeys(db: Database): Promise<string[]> {
+	const keys: string[] = [];
+	for await (const row of db.eval('select Key from Strand.Invite')) {
 		keys.push(row.Key as string);
 	}
 	return keys;
@@ -942,4 +988,168 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			await stopBoth(founderNode, joinerNode);
 		}
 	}, 60_000);
+
+	// ── MANAGER actions, authored on the SECOND node's own database ───────────
+	//
+	// The third test proves the second node can JOIN from its own database. This one
+	// proves it can ADMINISTER from there: a member seated on the second node is
+	// promoted to manager by the founder, and from that point every manager writer runs
+	// against `joinerDb`.
+	//
+	// WHAT IS GENUINELY CROSS-NODE HERE. Each manager rule below resolves M's `Manager`
+	// row — authored on the FOUNDER — from the second node's database, in one of the
+	// schema's two flavours:
+	//   • LIVE `Manager`:      `Invite.InviteValid` (step 5),
+	//                          `Manager.Authorized`'s promotion branch (step 7).
+	//   • `committed.Manager`: `Member.Authorized`'s direct-admit branch (step 6) and
+	//                          manager-remove branch (step 9),
+	//                          `MemberPeer.Authorized`'s manager branch (step 10).
+	// Those are DIFFERENT reads — a plain `select`, versus a PRE-transaction snapshot
+	// taken inside a later transaction on that same database. This test asserts they
+	// AGREE. If they do not, that is the finding, not something to work around.
+	//
+	// WHAT IS LOCAL BY CONSTRUCTION — do not over-credit the test. M's own `Member` row
+	// is authored on `joinerDb` (step 1), so `Revocation.Authorized`'s `committed.Member`
+	// check on the tombstone filer in steps 9/10 is a local read. `Manager.MemberExists`
+	// in step 7 and `MemberPeer.MemberExists` in step 8 read rows steps 6/8 just wrote on
+	// this very database. And the invite M issues in step 5 is CONSUMED on the founder, so
+	// its consumption-side checks are founder-local — the cross-node claim there is that a
+	// joiner-authored invite is USABLE, not merely visible.
+	//
+	// Step order is load-bearing. Presence gates come BEFORE the mutations whose absence
+	// they later gate: without step 6's gate, "the founder no longer sees Y" would pass
+	// instantly against a founder that never received Y at all. And `revokeMember` /
+	// `removeMemberPeer` are quiet no-ops on rows they cannot see, so each is preceded by
+	// a local assertion that the target IS visible — otherwise a step that never ran would
+	// report success. The single rejected write is LAST, per this file's rejection floor.
+	it('a manager promoted on the second node runs manager actions from its OWN database', async () => {
+		const { founderNode, joinerNode, founderDb, joinerDb, founderKeyPair } =
+			await bringUpClosedStrand('manager-2nd');
+
+		try {
+			const managerM = freshKeyPair();   // seated on the joiner, promoted by the founder
+			const memberZ = freshKeyPair();    // admitted on the founder off M's invite
+			const managerX = freshKeyPair();   // admitted AND promoted by M
+			const memberY = freshKeyPair();    // admitted, then revoked and cleaned up by M
+
+			// ── 1. Seat M as a member, via a join authored on the second node ────
+			// Already proven by the joiner-authored join test — setup here, not the claim.
+			const { inviteKey: seatInvite, invitePrivateKey: seatSecret } =
+				await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+			await waitUntil(
+				async () => (await inviteKeys(joinerDb)).includes(seatInvite),
+				{ ...GATE, description: "M's seating invite becomes visible to the second node" },
+			);
+			await consumeInvite(joinerDb, {
+				inviteKey: seatInvite,
+				invitePrivateKey: seatSecret,
+				memberKey: managerM.publicKeyB64,
+			});
+
+			// ── 2. M's membership reaches the founder (so step 3 is not racing it) ──
+			await waitUntil(
+				async () => (await memberKeys(founderDb)).includes(managerM.publicKeyB64),
+				{ ...GATE, description: "M's Member row reaches the founder" },
+			);
+
+			// ── 3. The founder promotes M to manager ─────────────────────────────
+			await addManager(founderDb, { byManagerKeyPair: founderKeyPair, newManagerKey: managerM.publicKeyB64 });
+			expect(await managerKeys(founderDb)).toContain(managerM.publicKeyB64);
+
+			// ── 4. THE ENABLING GATE: M's Manager row visible on the joiner ──────
+			// Everything below depends on the second node resolving this row.
+			await waitUntil(
+				async () => (await managerKeys(joinerDb)).includes(managerM.publicKeyB64),
+				{ ...GATE, description: "M's Manager row becomes visible on the second node" },
+			);
+			// Generation asserted separately so a step-7 failure is unambiguous: `addManager`'s
+			// writer falls back to generation 1 when it cannot see the authorizer's row, and the
+			// schema then rejects — which would read as "the promotion rule is wrong" rather than
+			// "the joiner could not see M's manager row".
+			// NOTE: this pins the WRITER's successor policy (authorizer generation + 1), not the
+			// schema's, which enforces only strict ordering. If `addManager` ever seats successors
+			// at some other larger value, relax this to `toBeGreaterThan(0)` — nothing is wrong in
+			// that case.
+			expect((await managerRows(joinerDb)).find(row => row.memberKey === managerM.publicKeyB64)?.generation)
+				.toBe(1);
+
+			// ── 5. M issues an invite from the joiner — LIVE Manager read ────────
+			const { inviteKey: mInvite, invitePrivateKey: mSecret } =
+				await issueInvite(joinerDb, { managerKeyPair: managerM });
+			await waitUntil(
+				async () => (await inviteKeys(founderDb)).includes(mInvite),
+				{ ...GATE, description: "M's joiner-authored invite reaches the founder" },
+			);
+			// USABLE, not merely present: the founder admits Z off M's invite.
+			await consumeInvite(founderDb, {
+				inviteKey: mInvite,
+				invitePrivateKey: mSecret,
+				memberKey: memberZ.publicKeyB64,
+			});
+			expect(await memberKeys(founderDb)).toContain(memberZ.publicKeyB64);
+
+			// ── 6. M admits X and Y directly — committed.Manager read ────────────
+			// Not insert-if-absent: each key is admitted exactly once (a repeat call would
+			// collide on Member's primary key).
+			await addMemberByManager(joinerDb, { managerKeyPair: managerM, memberKey: managerX.publicKeyB64 });
+			await addMemberByManager(joinerDb, { managerKeyPair: managerM, memberKey: memberY.publicKeyB64 });
+			await waitUntil(
+				async () => {
+					const seen = await memberKeys(founderDb);
+					return seen.includes(managerX.publicKeyB64) && seen.includes(memberY.publicKeyB64);
+				},
+				{ ...GATE, description: "M's directly-admitted members reach the founder" },
+			);
+
+			// ── 7. M promotes X — LIVE Manager read, strict generation ordering ──
+			await addManager(joinerDb, { byManagerKeyPair: managerM, newManagerKey: managerX.publicKeyB64 });
+			expect((await managerRows(joinerDb)).find(row => row.memberKey === managerX.publicKeyB64)?.generation)
+				.toBe(2);
+			await waitUntil(
+				async () => (await managerKeys(founderDb)).includes(managerX.publicKeyB64),
+				{ ...GATE, description: "X's Manager row reaches the founder" },
+			);
+
+			// ── 8. Y registers a device record on the joiner ─────────────────────
+			// Self-signed (the test holds Y's private key); a synthetic peer id is correct —
+			// Y is not a real node. Presence is gated on the founder so step 10's absence
+			// gate cannot pass vacuously.
+			const yPeerId = 'peer-manager-2nd-y';
+			await registerMemberPeer(joinerDb, { memberKeyPair: memberY, peerId: yPeerId });
+			await waitUntil(
+				async () => (await listMemberPeers(founderDb, memberY.publicKeyB64)).includes(yPeerId),
+				{ ...GATE, description: "Y's device record reaches the founder" },
+			);
+
+			// ── 9. M revokes Y — committed.Manager read ──────────────────────────
+			// Y holds no Manager row (NotAManager passes); F/M/X/Z remain (MinOneMember).
+			expect(await memberKeys(joinerDb)).toContain(memberY.publicKeyB64);
+			await revokeMember(joinerDb, { managerKeyPair: managerM, memberKey: memberY.publicKeyB64 });
+			expect(await memberKeys(joinerDb)).not.toContain(memberY.publicKeyB64);
+			await waitUntil(
+				async () => !(await memberKeys(founderDb)).includes(memberY.publicKeyB64),
+				{ ...GATE, description: "Y's revocation reaches the founder" },
+			);
+
+			// ── 10. M clears Y's orphan device record — committed.Manager read ───
+			// Device records do NOT cascade on revocation, so the manager branch is the only
+			// way this orphan can ever be cleared (Y would never sign the self branch).
+			expect(await listMemberPeers(joinerDb, memberY.publicKeyB64)).toEqual([yPeerId]);
+			await removeMemberPeer(joinerDb, { managerKeyPair: managerM, memberKey: memberY.publicKeyB64, peerId: yPeerId });
+			expect(await listMemberPeers(joinerDb, memberY.publicKeyB64)).toEqual([]);
+			await waitUntil(
+				async () => (await listMemberPeers(founderDb, memberY.publicKeyB64)).length === 0,
+				{ ...GATE, description: "the cleared device record is gone on the founder" },
+			);
+
+			// ── 11. LAST — a non-manager is refused ON THE SECOND NODE too ───────
+			// Without this the test could pass by the joiner accepting everything
+			// indiscriminately. Rejection floor: `rejects.toThrow()` only, nothing follows.
+			await expect(issueInvite(joinerDb, { managerKeyPair: freshKeyPair() })).rejects.toThrow();
+		} finally {
+			await stopBoth(founderNode, joinerNode);
+		}
+		// Roughly twice as many convergence gates as the other tests. Bring-up still
+		// dominates the wall clock — this is headroom, not an expectation of slowness.
+	}, 90_000);
 });
