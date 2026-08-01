@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -182,5 +183,114 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     // nothing left to tear down.
     expect(mocks.stop).toHaveBeenCalledTimes(1);
     expect(mocks.close).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('StrandInstanceManager resume transport identity', () => {
+  // The strand's libp2p node peerId is derived once at launch from `config.privateKey`
+  // (see cadre-node.ts's per-strand key derivation, pinned separately in
+  // cadre-node-strand-launch-key.spec.ts). Waking a hibernated strand must rebuild
+  // the runtime with that SAME key — any relay reservation or peer-store entry
+  // recorded under the old peerId goes stale the moment resume hands libp2p a
+  // different one. These tests pin `resumeStrand`'s reuse of the retained key.
+  let authorPrivateKey: string;
+  let authorPublicKey: string;
+
+  const testSchema = 'create table Test (id text primary key);';
+  const testVersion = '1.0.0';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+  });
+
+  function createStrandRow(id: string): StrandRow {
+    return { Id: id, MemberPrivateKey: null, Type: 'o' };
+  }
+
+  function createSAppConfig(): SAppConfig {
+    return {
+      id: authorPublicKey,
+      version: testVersion,
+      schema: testSchema,
+      signature: signSchema(testSchema, testVersion, authorPrivateKey)
+    };
+  }
+
+  function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
+    return {
+      strandRow: createStrandRow(strandId),
+      sAppConfig: createSAppConfig(),
+      profile: 'transaction',
+      defaultLatencyHint: 'interactive',
+      ...overrides
+    };
+  }
+
+  function lastCreateLibp2pNodeArgs(): { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] } {
+    const calls = mocks.createLibp2pNode.mock.calls as unknown[][];
+    return calls[calls.length - 1]![0] as { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] };
+  }
+
+  it('resume rebuilds the libp2p node with the same private key it launched with', async () => {
+    const transportKey = await generateKeyPair('Ed25519');
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('key-strand', { privateKey: transportKey }));
+    expect(lastCreateLibp2pNodeArgs().privateKey?.raw).toEqual(transportKey.raw);
+
+    await manager.quiesceStrand('key-strand');
+    await manager.resumeStrand('key-strand');
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+    expect(lastCreateLibp2pNodeArgs().privateKey?.raw).toEqual(transportKey.raw);
+  });
+
+  it('resume overrides (bootstrap addrs, mode) replace only those fields, leaving the key untouched', async () => {
+    const transportKey = await generateKeyPair('Ed25519');
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('key-strand-override', {
+      privateKey: transportKey,
+      bootstrapNodes: ['/ip4/1.1.1.1/tcp/4001/p2p/QmOld'],
+      mode: 'bootstrap'
+    }));
+
+    await manager.quiesceStrand('key-strand-override');
+    const seed = ['/ip4/9.9.9.9/tcp/4001/p2p/QmNew'];
+    await manager.resumeStrand('key-strand-override', { bootstrapNodes: seed, mode: 'networked' });
+
+    const args = lastCreateLibp2pNodeArgs();
+    expect(args.privateKey?.raw).toEqual(transportKey.raw);
+    expect(args.bootstrapNodes).toEqual(seed);
+  });
+
+  it('a strand launched with no private key resumes with none', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('no-key-strand'));
+    expect(lastCreateLibp2pNodeArgs().privateKey).toBeUndefined();
+
+    await manager.quiesceStrand('no-key-strand');
+    await manager.resumeStrand('no-key-strand');
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
+    expect(lastCreateLibp2pNodeArgs().privateKey).toBeUndefined();
+  });
+
+  it('fully stopping a strand drops the retained config, so a later launch does not inherit the old key', async () => {
+    const oldKey = await generateKeyPair('Ed25519');
+    const newKey = await generateKeyPair('Ed25519');
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('stop-then-relaunch', { privateKey: oldKey }));
+
+    await manager.quiesceStrand('stop-then-relaunch');
+    await manager.stopStrand('stop-then-relaunch');
+
+    // Resume must not silently rehydrate the stopped strand from the dropped config.
+    await expect(manager.resumeStrand('stop-then-relaunch')).rejects.toThrow(/not tracked/);
+
+    // A fresh launch under the same strand id gets ITS OWN key, not the retained one.
+    await manager.startStrand(createStartConfig('stop-then-relaunch', { privateKey: newKey }));
+    expect(lastCreateLibp2pNodeArgs().privateKey?.raw).toEqual(newKey.raw);
+    expect(lastCreateLibp2pNodeArgs().privateKey?.raw).not.toEqual(oldKey.raw);
   });
 });
