@@ -81,9 +81,12 @@ gate dials on one side, or identify which side re-dials
 Note the harness uses `MemoryRawStorage`, so the "survives a restart of the revoking
 node" case has no persistence to restart onto and needs a different fixture.
 
-Mechanics for a rerun: `cd packages/integration-tests && yarn vitest run -t "<test
-name>"` (a path filter did not match on Windows; `-t` did). The suite has a
-stale-build guard — `../quereus` needed `yarn build` before it would run.
+Mechanics for a rerun: `cd packages/integration-tests && npx vitest run
+src/scenarios/<file>.integration.ts` — a **package-relative, forward-slash** path filter does
+work on Windows (verified 2026-07-31: one scenario ran in 38 s total). Prefer it over `-t
+"<test name>"`, which matches the test name but still imports every scenario file, costing
+~2 minutes of transform/import before anything runs. The suite has a stale-build guard —
+`../quereus` and `../optimystic` may each need a rebuild before it will run.
 
 ## Remaining work for this plan pass
 

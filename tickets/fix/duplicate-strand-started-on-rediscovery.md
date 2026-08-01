@@ -63,3 +63,42 @@ A permanent regression test belongs beside the existing lifecycle coverage in
 `packages/cadre-core/test/strand-unpublish.spec.ts`, whose first watcher test currently orders
 `publishStrand` before `addStrand` specifically to route around this duplicate (see the comment
 there naming this ticket) — that ordering constraint can relax once this is fixed.
+
+# Arm added 2026-07-31 (review of `debt-strand-unpublish-sibling-convergence-e2e`)
+
+The mirror-image defect lives two methods away and should be fixed in the same pass: a node can
+emit `strand:stopped` for a strand it never started.
+
+`CadreNode.detachStrand` (`packages/cadre-core/src/cadre-node.ts`) ends with:
+
+```ts
+await this.strandManager.stopStrand(strandId);
+this.emit('strand:stopped', { strandId });
+```
+
+`StrandInstanceManager.stopStrand` returns early — logging "Strand %s not found" — for an id it
+does not hold (`packages/cadre-core/src/strand-instance-manager.ts`, the `this.instances.get`
+early return). `detachStrand` cannot tell that answer apart from a real teardown, so it emits
+regardless. Exactly the same shape as `launchStrand` above: an unconditional lifecycle event
+after an idempotent manager call.
+
+Two reachable ways in, both on ordinary paths:
+
+- **Party owner that publishes but does not run the strand.** Its own `StrandWatcher` tracks the
+  row it just published (`knownStrands.set` happens before the no-config `strand:discovered`
+  branch), so a later `unpublishStrand` → `forcePoll` → `handleStrandRemoved` → `detachStrand`
+  fires `strand:stopped` for an instance that never existed. This is the exact shape of node A in
+  `packages/integration-tests/src/scenarios/strand-unpublish-sibling-convergence.integration.ts`.
+- **`CadreNode.stopStrand(id)` called for a strand that is not running** — the public API emits
+  the event unconditionally too.
+
+Expected behaviour: `strand:stopped` fires once per actual teardown of a running instance. A
+removal (or an explicit stop) for an id this node holds no instance for is a no-op: no event.
+
+Note the interaction with the existing `unpublishStrand` comment, which says the watcher path and
+the explicit-stop path "cannot double-stop into an error" *because* the manager no-ops. That stays
+true; gating the emit on a real stop is what removes the spurious event without disturbing it.
+
+`repro: static` for this arm — read from the code paths above, not run. Confirming it takes a
+listener on a self-owner node that calls `publishStrand` without `addStrand`, then
+`unpublishStrand`, and asserts `strand:stopped` never fires.

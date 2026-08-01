@@ -35,6 +35,10 @@
  * - closed strands and `MemberPrivateKey` destruction (unit-covered);
  * - filter-excluded siblings (unit-covered: a node whose `strandFilter` never
  *   admitted the strand never observes the removal);
+ * - the doc claim that a stopped node RETAINS the strand's local durable storage
+ *   (architecture.md, same paragraph) — this harness stores into `MemoryRawStorage`
+ *   owned by the node being torn down, so there is nothing outliving the stop to
+ *   read back; proving retention needs a persistent-storage fixture;
  * - a third node.
  */
 
@@ -176,6 +180,10 @@ describe('Two-node strand-unpublish sibling convergence', () => {
 			});
 			expect(events.discovered).toEqual([strandId, strandId]);
 			expect(B.getStrand(strandId)).toBeUndefined();
+			// Discovered, NOT relaunched — assert the other lifecycle arrays stayed put so
+			// that claim is pinned outright rather than inferred from the wait resolving.
+			expect(events.started).toEqual([strandId]);
+			expect(events.stopped).toEqual([strandId]);
 			expect(events.errors).toEqual([]);
 		} finally {
 			// B first: its watcher must not spend its last polls reading a dead peer.

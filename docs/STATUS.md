@@ -966,7 +966,9 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   still-running local instance before resolving; sibling nodes stop theirs on their next watcher
   poll — except a sibling whose `strandFilter` excluded the strand, which never observes the
   removal and keeps running until stopped locally (both sides pinned by
-  `strand-unpublish.spec.ts`). The old local-only `CadreNode.removeStrand` was renamed `stopStrand` (behaviour unchanged:
+  `strand-unpublish.spec.ts`; the sibling stop is additionally proven across two real nodes by
+  `strand-unpublish-sibling-convergence.integration.ts`). The old local-only
+  `CadreNode.removeStrand` was renamed `stopStrand` (behaviour unchanged:
   the row survives and the strand is rediscovered on restart). Unpublishing a closed strand
   destroys its `MemberPrivateKey` irreversibly; the id itself is not blacklisted — an owner
   re-publish re-seats it on a fresh stamp (`strand-unpublish.spec.ts`). The operator surface
