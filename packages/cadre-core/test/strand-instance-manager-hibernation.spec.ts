@@ -26,42 +26,48 @@ const mocks = vi.hoisted(() => {
 vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 
+const testSchema = 'create table Test (id text primary key);';
+const testVersion = '1.0.0';
+
+let authorPrivateKey: string;
+let authorPublicKey: string;
+
+beforeEach(() => {
+  vi.clearAllMocks();
+  authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+  authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+});
+
+function createStrandRow(id: string): StrandRow {
+  return { Id: id, MemberPrivateKey: null, Type: 'o' };
+}
+
+function createSAppConfig(): SAppConfig {
+  return {
+    id: authorPublicKey,
+    version: testVersion,
+    schema: testSchema,
+    signature: signSchema(testSchema, testVersion, authorPrivateKey)
+  };
+}
+
+function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
+  return {
+    strandRow: createStrandRow(strandId),
+    sAppConfig: createSAppConfig(),
+    profile: 'transaction',
+    defaultLatencyHint: 'interactive',
+    ...overrides
+  };
+}
+
+/** Config object handed to the most recent `createLibp2pNode` call. */
+function lastCreateLibp2pNodeArgs(): { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] } {
+  const calls = mocks.createLibp2pNode.mock.calls as unknown[][];
+  return calls[calls.length - 1]![0] as { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] };
+}
+
 describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
-  let authorPrivateKey: string;
-  let authorPublicKey: string;
-
-  const testSchema = 'create table Test (id text primary key);';
-  const testVersion = '1.0.0';
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-  });
-
-  function createStrandRow(id: string): StrandRow {
-    return { Id: id, MemberPrivateKey: null, Type: 'o' };
-  }
-
-  function createSAppConfig(): SAppConfig {
-    return {
-      id: authorPublicKey,
-      version: testVersion,
-      schema: testSchema,
-      signature: signSchema(testSchema, testVersion, authorPrivateKey)
-    };
-  }
-
-  function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
-    return {
-      strandRow: createStrandRow(strandId),
-      sAppConfig: createSAppConfig(),
-      profile: 'transaction',
-      defaultLatencyHint: 'interactive',
-      ...overrides
-    };
-  }
-
   it('quiesce releases node + db but retains the instance record', async () => {
     const manager = new StrandInstanceManager();
     const instance = await manager.startStrand(createStartConfig('q-strand'));
@@ -193,46 +199,6 @@ describe('StrandInstanceManager resume transport identity', () => {
   // the runtime with that SAME key — any relay reservation or peer-store entry
   // recorded under the old peerId goes stale the moment resume hands libp2p a
   // different one. These tests pin `resumeStrand`'s reuse of the retained key.
-  let authorPrivateKey: string;
-  let authorPublicKey: string;
-
-  const testSchema = 'create table Test (id text primary key);';
-  const testVersion = '1.0.0';
-
-  beforeEach(() => {
-    vi.clearAllMocks();
-    authorPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
-    authorPublicKey = getPublicKey(authorPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
-  });
-
-  function createStrandRow(id: string): StrandRow {
-    return { Id: id, MemberPrivateKey: null, Type: 'o' };
-  }
-
-  function createSAppConfig(): SAppConfig {
-    return {
-      id: authorPublicKey,
-      version: testVersion,
-      schema: testSchema,
-      signature: signSchema(testSchema, testVersion, authorPrivateKey)
-    };
-  }
-
-  function createStartConfig(strandId: string, overrides?: Partial<StartStrandConfig>): StartStrandConfig {
-    return {
-      strandRow: createStrandRow(strandId),
-      sAppConfig: createSAppConfig(),
-      profile: 'transaction',
-      defaultLatencyHint: 'interactive',
-      ...overrides
-    };
-  }
-
-  function lastCreateLibp2pNodeArgs(): { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] } {
-    const calls = mocks.createLibp2pNode.mock.calls as unknown[][];
-    return calls[calls.length - 1]![0] as { privateKey?: { raw: Uint8Array }; bootstrapNodes: string[] };
-  }
-
   it('resume rebuilds the libp2p node with the same private key it launched with', async () => {
     const transportKey = await generateKeyPair('Ed25519');
     const manager = new StrandInstanceManager();
@@ -262,6 +228,25 @@ describe('StrandInstanceManager resume transport identity', () => {
     const args = lastCreateLibp2pNodeArgs();
     expect(args.privateKey?.raw).toEqual(transportKey.raw);
     expect(args.bootstrapNodes).toEqual(seed);
+  });
+
+  it('the key survives repeated hibernate/wake cycles, not just the first', async () => {
+    // resumeStrand REPLACES the retained launch config with its merged resumeConfig,
+    // so cycle N+1 rebuilds from cycle N's output. A merge that lost the key would
+    // still pass a single-cycle test if the loss only showed on the rewritten config.
+    const transportKey = await generateKeyPair('Ed25519');
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('key-strand-cycles', { privateKey: transportKey }));
+
+    for (const seed of [['/ip4/2.2.2.2/tcp/4001/p2p/QmA'], ['/ip4/3.3.3.3/tcp/4001/p2p/QmB']]) {
+      await manager.quiesceStrand('key-strand-cycles');
+      await manager.resumeStrand('key-strand-cycles', { bootstrapNodes: seed, mode: 'networked' });
+      const args = lastCreateLibp2pNodeArgs();
+      expect(args.bootstrapNodes).toEqual(seed);
+      expect(args.privateKey?.raw).toEqual(transportKey.raw);
+    }
+
+    expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(3);
   });
 
   it('a strand launched with no private key resumes with none', async () => {
