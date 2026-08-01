@@ -3026,7 +3026,11 @@ export class CadreNode implements SAppIdLookup {
    *
    * Convergence caveats, same class as {@link enrollValidationKey}'s: a sibling that has
    * not yet synced keeps running the strand until its own watcher observes the missing
-   * row; and a removal committed while ALONE (0 control connections) is local-only and
+   * row; a sibling whose `strandFilter` never admitted this strand never observes the
+   * removal AT ALL and keeps running its instance indefinitely — opting out of watching a
+   * strand is also opting out of its party-wide removal, so such a node's only stop is its
+   * own local {@link stopStrand}/`unpublishStrand` call; and a removal committed while
+   * ALONE (0 control connections) is local-only and
    * does not propagate when siblings return — a physical delete cannot be re-issued the
    * way an insert can (logged loudly; see the delete-while-alone durability note in
    * docs/architecture.md and control-delete-while-alone-tombstone).

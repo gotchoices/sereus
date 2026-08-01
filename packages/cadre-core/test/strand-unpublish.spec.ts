@@ -1,12 +1,13 @@
-import { describe, it, expect, afterEach } from 'vitest';
+import { describe, it, expect, afterEach, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
+import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { ControlDatabase } from '../src/control-database.js';
-import type { StrandConfig } from '../src/types.js';
+import type { Ed25519KeyPair } from '../src/ed25519-key.js';
+import type { StrandConfig, StrandFilter } from '../src/types.js';
 
 /**
  * Exercises the node-level strand removal surface — `unpublishStrand`, the owner-signed
@@ -21,6 +22,15 @@ import type { StrandConfig } from '../src/types.js';
  * the row, the id is NOT blacklisted for owner re-publish, and the local instance is
  * stopped by the time the promise resolves.
  *
+ * The last two tests cover the OTHER side of the same party-wide contract: a node that did
+ * not issue the removal and learns of it only by seeing the `Strand` row missing on its own
+ * next `StrandWatcher` poll (`StrandWatcher.poll` → `onStrandRemoved` →
+ * `CadreNode.handleStrandRemoved`). That branch is never reached through `unpublishStrand`,
+ * which force-stops the local instance itself. They stand in for a sibling without a second
+ * machine, by deleting the row out from under a single running node with a direct
+ * `ControlDatabase.deleteStrand`; whether the deletion actually becomes VISIBLE to a real
+ * second node over the network is a separate, cross-machine question covered elsewhere.
+ *
  * Boots a self-signing node the way `validation-key-enrollment.spec.ts` does: the node's
  * libp2p key IS its owner key, enrolled in `OwnerKey` so its self-signed control writes are
  * authorised.
@@ -28,23 +38,73 @@ import type { StrandConfig } from '../src/types.js';
 describe('CadreNode strand unpublish', () => {
   let node: CadreNode | undefined;
 
+  /** Poll interval for the watcher-driven tests: short enough to assert in well under a second. */
+  const WATCH_INTERVAL_MS = 200;
+  /**
+   * "…and it stays that way" window, five polls wide. Derived from the interval on purpose:
+   * a future interval bump must not silently turn a real assertion into a vacuous one.
+   */
+  const QUIET_WINDOW_MS = WATCH_INTERVAL_MS * 5;
+  /** Budget for the poll-driven waits — generous; the assertions resolve in a poll or two. */
+  const WAIT_BUDGET_MS = 10_000;
+
   const rand = (): string => Math.random().toString(36).slice(2);
 
-  async function startSelfOwnerNode(): Promise<CadreNode> {
+  const quietWindow = (): Promise<void> =>
+    new Promise((resolve) => setTimeout(resolve, QUIET_WINDOW_MS));
+
+  /**
+   * Owner keypair each node self-signs with, so a test can drive a control writer directly
+   * without `startSelfOwnerNode` having to change its return type.
+   */
+  const ownerKeys = new WeakMap<CadreNode, Ed25519KeyPair>();
+
+  /**
+   * @param overrides - The `CadreNodeConfig` fields the watcher-removal tests need. Both
+   *   default to the production values, so existing call sites are unaffected.
+   *   NOTE: carry this parameter across when the duplicated copies of this helper are
+   *   consolidated into a shared harness (`debt-self-owner-node-test-harness-duplicated`).
+   */
+  async function startSelfOwnerNode(
+    overrides: { strandWatchInterval?: number; strandFilter?: StrandFilter } = {},
+  ): Promise<CadreNode> {
     const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
+    const ownerKey = ed25519KeyPairFromLibp2p(nodeKey);
 
     const n = new CadreNode({
       controlNetwork: { partyId: 'strand-unpublish-' + rand(), bootstrapNodes: [] },
       privateKey: nodeKey,
       profile: 'transaction',
+      ...(overrides.strandWatchInterval === undefined ? {} : { strandWatchInterval: overrides.strandWatchInterval }),
+      ...(overrides.strandFilter === undefined ? {} : { strandFilter: overrides.strandFilter }),
     });
     await n.start();
 
     const db = n.getControlDatabase();
     expect(db).not.toBeNull();
-    await db!.insertOwnerKey(publicKeyB64);
+    await db!.insertOwnerKey(ownerKey.publicKeyB64);
+    ownerKeys.set(n, ownerKey);
     return n;
+  }
+
+  /**
+   * Remove a `Strand` row the way somebody ELSE's removal arrives here: straight through the
+   * owner-signed writer, with no local stop. `unpublishStrand` cannot stand in — it
+   * force-stops the local instance itself, masking the watcher path under test. What is left
+   * is exactly a sibling's state a moment after another party's removal commits: the row is
+   * gone from this node's view, its instance is still running, and only the next poll can
+   * notice.
+   */
+  async function deleteStrandRow(n: CadreNode, strandId: string): Promise<boolean> {
+    const ownerKey = ownerKeys.get(n);
+    if (!ownerKey) throw new Error('deleteStrandRow requires a node started by startSelfOwnerNode');
+    return await n.getControlDatabase()!.deleteStrand(
+      strandId,
+      ownerKey.publicKeyB64,
+      // ed25519 over the raw canonical bytes (no pre-hash), as every control writer expects.
+      (message: Uint8Array): string =>
+        cryptoSign(message, ownerKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
+    );
   }
 
   function revocationRow(db: ControlDatabase, stampId: string): Promise<Record<string, unknown> | undefined> {
@@ -214,5 +274,95 @@ describe('CadreNode strand unpublish', () => {
     expect(stopped).toEqual([strandId]);
     // Still a control-plane no-op: nothing was published, so nothing is tombstoned.
     expect((await db.queryRevokedStamps('Strand')).size).toBe(0);
+  }, 60_000);
+
+  /** Ids seen for each lifecycle event, in order, for the watcher-driven assertions below. */
+  function collectStrandEvents(n: CadreNode): {
+    discovered: string[];
+    stopped: string[];
+    errors: string[];
+  } {
+    const events = { discovered: [] as string[], stopped: [] as string[], errors: [] as string[] };
+    n.on('strand:discovered', ({ strandId }) => void events.discovered.push(strandId));
+    n.on('strand:stopped', ({ strandId }) => void events.stopped.push(strandId));
+    n.on('strand:error', ({ strandId }) => void events.errors.push(strandId));
+    return events;
+  }
+
+  it('stops a watched instance when the row vanishes from under it (the sibling-side removal path)', async () => {
+    node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
+    const db = node.getControlDatabase()!;
+    const strandId = 'strand-vanished-' + rand();
+    const events = collectStrandEvents(node);
+
+    // Publish FIRST, then wait for `strand:discovered`: that event is the proof the watcher
+    // holds the id in `knownStrands`, which is the precondition for its removal path ever
+    // firing. A delete that lands before the first successful poll could never fire it, and
+    // the test would fail for a reason unrelated to the code under test — hence a gate on the
+    // event rather than a sleep.
+    await node.publishStrand(strandId);
+    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), { timeout: WAIT_BUDGET_MS, interval: 50 });
+
+    // Only now register the config + launch. Adding first would have the watcher relaunch the
+    // strand on discovery and emit a second `strand:started`, muddying the event stream.
+    await node.addStrand(createStrandConfig(strandId));
+    expect(node.getStrand(strandId)).toBeDefined();
+
+    expect(await deleteStrandRow(node, strandId)).toBe(true);
+    expect(await db.queryStrands()).toEqual([]);
+
+    await vi.waitFor(() => expect(events.stopped).toEqual([strandId]), { timeout: WAIT_BUDGET_MS, interval: 50 });
+    expect(node.getStrand(strandId)).toBeUndefined();
+    expect(node.getStrands().size).toBe(0);
+
+    // Exactly once. `handleStrandRemoved` drops the id from `knownStrands` before invoking the
+    // callback, so a repeat is not expected — but a regression here reaches an app as a
+    // duplicate shutdown, so assert it across a further quiet window.
+    await quietWindow();
+    expect(events.stopped).toEqual([strandId]);
+    expect(events.errors).toEqual([]);
+
+    // The sApp config went with the strand: a re-publish is DISCOVERED again rather than
+    // relaunched. This is what proves `handleStrandRemoved` cleared both `sAppConfigs` and the
+    // watcher's `knownStrands`, and that the removal's `Revocation` tombstone is not mistaken
+    // for a live row.
+    await node.publishStrand(strandId);
+    await vi.waitFor(
+      () => expect(events.discovered).toEqual([strandId, strandId]),
+      { timeout: WAIT_BUDGET_MS, interval: 50 },
+    );
+    expect(node.getStrand(strandId)).toBeUndefined();
+    expect(events.errors).toEqual([]);
+  }, 60_000);
+
+  it('keeps running a strand its strandFilter excluded, even after the row vanishes', async () => {
+    const strandId = 'strand-filtered-out-' + rand();
+    node = await startSelfOwnerNode({
+      strandWatchInterval: WATCH_INTERVAL_MS,
+      // The `strandId` form rather than `{ mode: 'none' }`: it is the shape a real app uses,
+      // and it keeps the test honest about WHICH strand was excluded.
+      strandFilter: { mode: 'strandId', strandId: 'strand-watched-instead-' + rand() },
+    });
+    const events = collectStrandEvents(node);
+
+    // Rejected by the filter, so the watcher never tracks the row — no discovery, ever.
+    await node.publishStrand(strandId);
+    await quietWindow();
+    expect(events.discovered).toEqual([]);
+
+    // An app may still run a strand the watcher was told to ignore.
+    await node.addStrand(createStrandConfig(strandId));
+    expect(node.getStrand(strandId)).toBeDefined();
+
+    expect(await deleteStrandRow(node, strandId)).toBe(true);
+    await quietWindow();
+
+    // Documented consequence, not a defect: a node that opted out of WATCHING a strand also
+    // opted out of observing its party-wide removal. Its only stop is a local
+    // `stopStrand`/`unpublishStrand` call.
+    expect(node.getStrand(strandId)).toBeDefined();
+    expect(events.stopped).toEqual([]);
+    expect(events.discovered).toEqual([]);
+    expect(events.errors).toEqual([]);
   }, 60_000);
 });
