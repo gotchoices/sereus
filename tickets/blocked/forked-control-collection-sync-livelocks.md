@@ -25,6 +25,17 @@ failure goes away without the upstream fix. That is a mitigation of the trigger,
 not of the livelock — a fork arriving by any other route (a partition, a restore
 from an older snapshot) would hit the same wall.
 
+> **Scope correction, 2026-07-31 — that alternative unblock is narrower than it reads.**
+> `tickets/blocked/strand-unique-index-sync-stale-revision` records the *same* error class
+> at the *same* throwing line (`Collection.syncInternal`, `collection.ts:341`) reached with
+> **no fork at all**: a plain two-node closed strand doing ordinary membership writes —
+> nothing partitioned, nothing restarted, no local-only commit anywhere. Removing this
+> scenario's fork would therefore silence *this* file and leave that one failing. The
+> revision pairs differ in kind too (here rev 9 / requested 9, the coordinator level with
+> the request; there rev 2 / requested 1, a client context that never left zero), so the
+> two may not share a single root cause. Treat plan ticket 10 as removing one trigger, not
+> as closing out `Collection`'s sync loop.
+
 ## The failing test
 
 `packages/integration-tests/src/scenarios/zz-scratch-delete-alone.integration.ts`
