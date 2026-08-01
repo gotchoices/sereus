@@ -3226,6 +3226,15 @@ export class CadreNode implements SAppIdLookup {
    * control-discovered (`handleStrandAdded`) entry points. Resolves the cohort
    * seed, selects the mode, starts the strand, and registers it with the
    * hibernation manager before emitting `strand:started`.
+   *
+   * Idempotent no-op when the strand manager already tracks `strand.Id` — the
+   * ordinary founding sequence is `addStrand` (starts it locally) followed by
+   * `publishStrand` (makes it visible), so this node's own `StrandWatcher`
+   * rediscovers a row it already started and calls this again via
+   * `handleStrandAdded`. Without the guard that re-entry would resolve a fresh
+   * (already-connected) cohort seed and re-emit `strand:started` for an
+   * instance that never stopped. The guard runs before the cohort-seed RPC
+   * fan-out, so a rediscovery costs nothing beyond the map lookup.
    */
   private async launchStrand(
     strand: StrandRow,
@@ -3233,6 +3242,12 @@ export class CadreNode implements SAppIdLookup {
     explicitMode?: StrandMode,
     founder?: boolean
   ): Promise<StrandInstance> {
+    const existing = this.strandManager.getInstance(strand.Id);
+    if (existing) {
+      log('launchStrand: strand %s already tracked locally — skipping re-launch', strand.Id);
+      return existing;
+    }
+
     // Each strand node gets its own transport identity, derived from the cadre
     // identity key + strandId (see strand-transport-key.ts). Sharing the
     // control node's key here gave every node one peerId, which collides at a
@@ -3464,10 +3479,21 @@ export class CadreNode implements SAppIdLookup {
    * watcher-driven `handleStrandRemoved`: untrack hibernation, drop the sApp config, stop
    * the instance, emit `strand:stopped`. Touches no control-plane row — which side of the
    * removal the node is on is the caller's concern, not this method's.
+   *
+   * The stop + emit are skipped when the strand manager holds no instance for `strandId` —
+   * e.g. a party owner that published a strand's row but never ran it locally, or an
+   * explicit {@link stopStrand} for an id this node never started. `hibernationManager`
+   * untrack and the `sAppConfigs` delete stay unconditional (both are no-ops when there is
+   * nothing to remove), so a launch that failed before an instance was ever tracked still
+   * gets its stray sApp config cleared.
    */
   private async detachStrand(strandId: string): Promise<void> {
     this.hibernationManager.untrackStrand(strandId);
     this.sAppConfigs.delete(strandId);
+    if (!this.strandManager.hasStrand(strandId)) {
+      log('detachStrand: strand %s not tracked locally — no-op (no stop, no strand:stopped)', strandId);
+      return;
+    }
     await this.strandManager.stopStrand(strandId);
     this.emit('strand:stopped', { strandId });
   }

@@ -110,11 +110,13 @@ describe('CadreNode strand unpublish', () => {
 
   /** Ids seen for each lifecycle event, in order, for the watcher-driven assertions below. */
   function collectStrandEvents(n: CadreNode): {
+    started: string[];
     discovered: string[];
     stopped: string[];
     errors: string[];
   } {
-    const events = { discovered: [] as string[], stopped: [] as string[], errors: [] as string[] };
+    const events = { started: [] as string[], discovered: [] as string[], stopped: [] as string[], errors: [] as string[] };
+    n.on('strand:started', ({ strandId }) => void events.started.push(strandId));
     n.on('strand:discovered', ({ strandId }) => void events.discovered.push(strandId));
     n.on('strand:stopped', ({ strandId }) => void events.stopped.push(strandId));
     n.on('strand:error', ({ strandId }) => void events.errors.push(strandId));
@@ -296,21 +298,19 @@ describe('CadreNode strand unpublish', () => {
     const strandId = 'strand-vanished-' + rand();
     const events = collectStrandEvents(node);
 
-    // Publish FIRST, then wait for `strand:discovered`: that event is the proof the watcher
-    // holds the id in `knownStrands`, which is the precondition for its removal path ever
-    // firing. A delete that lands before the first successful poll could never fire it, and
-    // the test would fail for a reason unrelated to the code under test — hence a gate on the
-    // event rather than a sleep.
-    await node.publishStrand(strandId);
-    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), WAIT_OPTS);
-
-    // Only now register the config + launch. Adding first would have the watcher relaunch the
-    // strand on discovery and emit a SECOND `strand:started` for the same instance, muddying
-    // the event stream — that duplicate is itself a defect, tracked separately as
-    // `fix/duplicate-strand-started-on-rediscovery`; ordering around it keeps this test on
-    // the removal path.
+    // Normal founding order: start the strand locally, then publish its row. This node's own
+    // watcher rediscovers the row it just published and must treat that as a no-op (see
+    // `launchStrand`'s already-tracked guard) rather than relaunching and re-emitting
+    // `strand:started` for an instance that is already running.
     await node.addStrand(createStrandConfig(strandId));
     expect(node.getStrand(strandId)).toBeDefined();
+    await node.publishStrand(strandId);
+
+    // Give the watcher a few polls to rediscover the row it already started and (correctly)
+    // no-op on it rather than relaunching.
+    await quietWindow();
+    expect(events.started).toEqual([strandId]);
+    expect(events.discovered).toEqual([]);
 
     expect(await deleteStrandRow(node, strandId)).toBe(true);
     expect(await db.queryStrands()).toEqual([]);
@@ -333,6 +333,29 @@ describe('CadreNode strand unpublish', () => {
     await node.publishStrand(strandId);
     await vi.waitFor(() => expect(events.discovered).toEqual([strandId, strandId]), WAIT_OPTS);
     expect(node.getStrand(strandId)).toBeUndefined();
+    expect(events.errors).toEqual([]);
+  }, 60_000);
+
+  it('never emits strand:stopped for a strand this node published but never ran locally', async () => {
+    node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
+    const strandId = 'strand-publish-only-' + rand();
+    const events = collectStrandEvents(node);
+
+    // Publish without addStrand, and wait for strand:discovered: that proves the watcher's
+    // knownStrands already tracks the row (knownStrands.set happens before the no-config
+    // strand:discovered branch), which is the precondition for its removal path firing below.
+    await node.publishStrand(strandId);
+    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), WAIT_OPTS);
+    expect(node.getStrand(strandId)).toBeUndefined();
+
+    // unpublishStrand's own explicit-stop branch is gated on getInstance(trimmed), which is
+    // undefined here, so the only route to strand:stopped is the watcher-driven forcePoll ->
+    // handleStrandRemoved -> detachStrand path — exactly the case detachStrand must no-op on:
+    // no local instance was ever running, so there is nothing to stop and no event to emit.
+    await node.unpublishStrand(strandId);
+
+    expect(node.getStrand(strandId)).toBeUndefined();
+    expect(events.stopped).toEqual([]);
     expect(events.errors).toEqual([]);
   }, 60_000);
 
