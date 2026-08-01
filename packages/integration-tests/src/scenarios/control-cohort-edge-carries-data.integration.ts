@@ -129,6 +129,52 @@ function openControlConnections(node: CadreNode): Connection[] {
 		.filter((c) => c.status === 'open');
 }
 
+/**
+ * Did this read fail because Optimystic refused to SELF-COORDINATE rather than
+ * because the data is gone? An isolated node whose high-water mark remembers a
+ * larger network blocks self-coordination — `partition-detected`, or
+ * `grace-period-not-elapsed` until 30 s (`selfCoordinationConfig.gracePeriodMs`)
+ * have passed since its last connection — see
+ * `Libp2pKeyPeerNetwork.shouldAllowSelfCoordination` in `../optimystic`. That is
+ * correct behavior for a node that just lost the network, and it is a property
+ * of B's isolation, not a counterexample to anything this scenario claims.
+ */
+function isSelfCoordinationBlocked(error: unknown): boolean {
+	return String((error as { message?: string })?.message ?? error).includes('Self-coordination blocked');
+}
+
+/**
+ * `waitUntil`, but a condition that keeps THROWING reports its last error and
+ * `context` on timeout. Plain `waitUntil` logs a throw and treats it as "not
+ * yet", so a poll whose every attempt fails the same way — the known failure
+ * shape in this suite — otherwise times out with no cause attached at all.
+ */
+async function waitUntilOrExplain(
+	condition: () => Promise<boolean>,
+	options: { timeoutMs: number; intervalMs: number; description: string },
+	context: string
+): Promise<void> {
+	let lastError: unknown;
+	try {
+		await waitUntil(async () => {
+			try {
+				const done = await condition();
+				lastError = undefined;
+				return done;
+			} catch (error) {
+				lastError = error;
+				return false;
+			}
+		}, options);
+	} catch (timeout) {
+		// The timeout is the cause; the condition's own last failure — the part a
+		// human actually needs — is quoted into the message.
+		throw new Error(`${String(timeout)}`
+			+ (lastError ? `; last error: ${String(lastError)}` : '')
+			+ `; ${context}`, { cause: timeout });
+	}
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Control-cohort edge carries data (three nodes, severed backbone)', () => {
@@ -143,6 +189,9 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			const { A, B, C, aPeerId, bPeerId, cPeerId } = await bootControlTrio({
 				reconcileMsB: 600_000, handles, gaterB: severable.gater
 			});
+			// Appended to every poll failure below: an aggregate transactor error names
+			// a raw peer id, which is unattributable without this map (or a debug rerun).
+			const peerMap = `peers: A=${aPeerId} B=${bPeerId} C=${cPeerId}`;
 
 			// ── 2. Baseline, while B↔A is still up and every read path is healthy.
 			const baseline = await B.getControlDatabase()!.queryPeerRecord(cPeerId);
@@ -179,12 +228,20 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			);
 
 			// ── 4. Negative window (~4s of checkpoints, 250ms apart). B stays fully
-			//       isolated while C's record stays RESOLVABLE on B — so the absence
-			//       of a link is "nothing dialled", not "nothing to dial". The
-			//       resolvability read is served from B's local pre-sever replicated
-			//       state via transactor self-coordination (no pin is active); the
-			//       peerStore check per iteration is what proves nothing but the
-			//       record path could later supply C's address.
+			//       isolated while C's record stays KNOWN to B — so the absence of a
+			//       link is "nothing dialled", not "nothing to dial". The peerStore
+			//       check per iteration is what proves nothing but the record path
+			//       could later supply C's address.
+			//
+			// The resolvability read is best-effort BY DESIGN: it is served from B's
+			// local pre-sever replicated state (no pin is active), and a freshly
+			// isolated node is often refused self-coordination for the whole window
+			// — see `isSelfCoordinationBlocked`. Observed both ways run to run. So a
+			// blocked read is counted and tolerated; any OTHER read failure, and any
+			// successful read that comes back EMPTY, still fails the test. Neither
+			// tolerance weakens the ordering argument: B knew C's address before the
+			// sever (bracket above) and dials C successfully in step 6, so "B had
+			// nothing to dial" is ruled out from both sides regardless.
 			//
 			// NOTE: if this window ever fails on a connection count, the first
 			// suspect is a `self:peer:update`-triggered reconcile pass on B
@@ -192,13 +249,22 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			// 10-minute cadence does not suppress it). B listens on nothing, so its
 			// address set should never change mid-test. Diagnose with
 			// DEBUG='sereus:cadre:node'.
+			let resolvedInWindow = 0;
+			let selfCoordBlockedInWindow = 0;
 			for (let checkpoint = 0; checkpoint < 16; checkpoint++) {
 				expect(openControlConnections(B)).toHaveLength(0);
 				expect(connectionsTo(A, bPeerId)).toHaveLength(0);
 				expect(await peerStoreAddrsFor(B, cPeerId)).toHaveLength(0);
-				expect((await B.resolvePeerAddrs(cPeerId)).length).toBeGreaterThan(0);
+				try {
+					expect((await B.resolvePeerAddrs(cPeerId)).length).toBeGreaterThan(0);
+					resolvedInWindow++;
+				} catch (error) {
+					if (!isSelfCoordinationBlocked(error)) throw error;
+					selfCoordBlockedInWindow++;
+				}
 				await sleep(250);
 			}
+			expect(resolvedInWindow + selfCoordBlockedInWindow).toBe(16);
 
 			// ── 5. C authors R1 while B is provably absent, with the coordinator
 			//       pinned to C for exactly this write (file header, PIN SCOPING).
@@ -212,9 +278,10 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 				// Polled, never called once: a 3-member-cohort control write is
 				// effectively unanimous, so a single stream reset fails the commit
 				// outright; production retries on the record heartbeat.
-				await waitUntil(
+				await waitUntilOrExplain(
 					async () => (await C.registerSelf()) === 'refreshed',
-					{ timeoutMs: 60_000, intervalMs: 1_000, description: 'C authors R1 (a fresh self-record revision) while B is isolated' }
+					{ timeoutMs: 60_000, intervalMs: 1_000, description: 'C authors R1 (a fresh self-record revision) while B is isolated' },
+					peerMap
 				);
 				const authored = await C.getControlDatabase()!.queryPeerRecord(cPeerId);
 				expect(authored).not.toBeNull();
@@ -236,14 +303,15 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			//       per-peer failures, so the denied sibling never aborts the
 			//       pass) and then the non-owner fill, C.
 			let passes = 0;
-			await waitUntil(
+			await waitUntilOrExplain(
 				async () => {
 					if (hasOutboundTo(B, cPeerId)) return true;
 					passes++;
 					await B.reconcileControlCohort();
 					return false;
 				},
-				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'an explicit reconcile pass dials C' }
+				{ timeoutMs: 60_000, intervalMs: 1_000, description: 'an explicit reconcile pass dials C' },
+				peerMap
 			);
 			expect(passes).toBeGreaterThan(0);
 			// B's open control connection set is exactly {C}: one outbound
@@ -283,15 +351,20 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 				await sleep(250);
 			}
 			if (!carried) {
-				// The peer-id map turns an aggregate transactor error naming a raw
-				// peer id into something a human can attribute without a debug rerun.
 				throw new Error(
 					`B never observed C's isolated revision (updatedAt >= ${r1}) within 60s`
 					+ (lastReadError ? `; last read error: ${String(lastReadError)}` : '')
-					+ `; peers: A=${aPeerId} B=${bPeerId} C=${cPeerId}`);
+					+ `; ${peerMap}`);
 			}
 			// The SAME connection recorded at link time is still the open one — R1
 			// crossed that connection, not a later replacement.
+			//
+			// NOTE: this is deliberately strict. If libp2p ever recycles the edge
+			// mid-carry (idle close + redial, or a transport upgrade), this assert
+			// fails on a run where carriage actually worked. The claim would then
+			// have to weaken to "every connection B has held since link time was to
+			// C" — recorded via a `connection:open` listener on B from step 6 —
+			// rather than connection identity. No such recycle has been observed.
 			const openNow = openControlConnections(B);
 			for (const conn of openNow) expect(conn.remotePeer.toString()).toBe(cPeerId);
 			expect(openNow.some((c) => c.id === linkConnId)).toBe(true);

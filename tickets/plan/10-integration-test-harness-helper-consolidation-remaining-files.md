@@ -34,7 +34,7 @@ and are re-exported through `packages/integration-tests/src/harness/index.ts`:
 | --- | --- |
 | `membership-connection-gater` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `waitForConnection` |
 | `strand-addr-seed-convergence` | `wsTransports`, `createSignedSAppConfig`, `nodeConfig`, `makeOwnOwner`, `connectControlNodes`, `controlAddrs` |
-| `control-cohort-three-node-isolation` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `connectionsTo`, `hasOutboundTo` |
+| `control-cohort-three-node-isolation` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`, and its whole private `bootTrio` (see the arm below) |
 | `control-cohort-cold-start-retry` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `randomPeerId`, `connectionsTo` |
 | `control-stream-authz` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `waitForConnection` |
 | `control-write-degraded-cohort-member` | `nodeConfig` only (added after this ticket was filed; its `makeOwnOwner`/`randomPeerId`/`wsTransports` copies were already folded back into the harness during that ticket's review) |
@@ -67,6 +67,29 @@ candidates to hoist alongside: `waitForConnection` (gater + stream-authz — and
 exported instead of re-implemented), `connectionsTo` / `hasOutboundTo`
 (three-node-isolation + cold-start-retry), and `controlAddrs` (strand-addr-seed plus
 `push-wake-e2e`, which still keeps its own).
+
+## Arm added 2026-07-31 (review of `debt-cohort-edge-carries-data-coverage`)
+
+That ticket added a second scenario built on the same three-node topology,
+`control-cohort-edge-carries-data.integration.ts`, and — deliberately, to avoid
+destabilising a scenario it was not asked to touch — **ported** rather than moved the
+isolation scenario's private `bootTrio` into a new shared harness module,
+`packages/integration-tests/src/harness/control-trio.ts` (`bootControlTrio` /
+`stopControlTrio`). It also lifted `connectionsTo` / `hasOutboundTo` /
+`peerStoreAddrsFor` into `node-fixtures.ts`. So the isolation scenario now has a
+full shared twin of its ~150-line boot sequence sitting beside it: two copies of the
+same delicate ordering proof, which will drift.
+
+Fold into this ticket's sweep of `control-cohort-three-node-isolation`: delete its
+private `bootTrio` and the three connection helpers, and have it call
+`bootControlTrio` (whose `gaterB` option is optional, so the isolation scenario simply
+omits it). The shared module's header already records that it is a port awaiting this
+ticket — remove that note when it lands.
+
+Two of the "needs a decision" items above are now settled by that work:
+`controlNodeConfig` gained a `pinnedOwnerKeys` option (emits
+`trustedOwners: { pinnedKeys }`) and a `connectionGater` option, so the isolation
+scenario's `trustedOwners` difference no longer blocks the swap.
 
 ## Expected outcome
 
