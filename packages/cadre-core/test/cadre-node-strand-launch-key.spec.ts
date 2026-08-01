@@ -35,6 +35,9 @@ function createConfig(): CadreNodeConfig {
 function injectFakeStrandManager(node: CadreNode): { configs: StartStrandConfig[] } {
   const configs: StartStrandConfig[] = [];
   (node as unknown as { strandManager: unknown }).strandManager = {
+    // launchStrand's already-tracked guard checks this first; the fake never tracks a
+    // running instance, so every call is a fresh launch.
+    getInstance: () => undefined,
     startStrand: async (config: StartStrandConfig) => {
       configs.push(config);
       return {

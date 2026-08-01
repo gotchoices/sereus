@@ -326,12 +326,14 @@ describe('CadreNode strand unpublish', () => {
     expect(events.stopped).toEqual([strandId]);
     expect(events.errors).toEqual([]);
 
-    // The sApp config went with the strand: a re-publish is DISCOVERED again rather than
-    // relaunched. This is what proves `handleStrandRemoved` cleared `sAppConfigs` and the
-    // watcher dropped the id from `knownStrands`, and that the removal's `Revocation`
-    // tombstone is not mistaken for a live row.
+    // The sApp config went with the strand: a re-publish is DISCOVERED rather than relaunched.
+    // The founding order above (addStrand then publishStrand) emits no `strand:discovered` for
+    // this node's own strand, so this republish is the only source of that event — this is
+    // what proves `handleStrandRemoved` cleared `sAppConfigs` and the watcher dropped the id
+    // from `knownStrands`, and that the removal's `Revocation` tombstone is not mistaken for a
+    // live row.
     await node.publishStrand(strandId);
-    await vi.waitFor(() => expect(events.discovered).toEqual([strandId, strandId]), WAIT_OPTS);
+    await vi.waitFor(() => expect(events.discovered).toEqual([strandId]), WAIT_OPTS);
     expect(node.getStrand(strandId)).toBeUndefined();
     expect(events.errors).toEqual([]);
   }, 60_000);
