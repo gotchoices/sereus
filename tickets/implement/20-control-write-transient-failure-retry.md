@@ -7,6 +7,67 @@ difficulty: hard
 
 # Bounded retry for transient control-write failures
 
+<!-- resume-note -->
+## RESUME NOTE — prior run hit its token budget mid-implement (2026-07-31)
+
+**Done (verify by opening the file, do not redo):**
+
+- `packages/cadre-core/src/control-write-retry.ts` **created and complete**: `CONTROL_WRITE_ATTEMPTS = 3`,
+  `CONTROL_WRITE_RETRY_BUDGET_MS = 10_000`, private `CONTROL_WRITE_RETRY_DELAYS_MS = [250, 1_000]`,
+  `RETRIABLE_CONTROL_WRITE_PATTERNS`, `isRetriableControlWriteFailure` (via `unwrapError`),
+  `ControlWriteRetryOptions` (injectable `delaysMs`/`sleep`/`now`), `retryControlWrite`,
+  `jitteredDelay` (±50%, capped at largest base so no sleep exceeds ~1 s), `defaultSleep`.
+  Budget checked after a failed attempt BEFORE sleeping; last error rethrown unchanged;
+  attempts logged at `sereus:cadre:control-db`. **Not yet imported anywhere, not built, not tested.**
+
+**Everything else in the TODO below is NOT started** — no `control-database.ts` edits, no
+`index.ts` exports, no specs, no doc edits.
+
+**Facts the prior run verified (saves re-discovery):**
+
+- Error texts confirmed against sources: coordinator throws
+  `` `Failed to get super-majority: ${approvals}/${peers} approvals (needed ${superMajority}, ${rejections} rejections)` ``
+  (`../optimystic/packages/db-p2p/src/repo/cluster-coordinator.ts:374`; non-zero-rejection case exists —
+  a distinct `ValidatorRejectionError` fires only when rejections exceed the allowed max, so the
+  super-majority message CAN carry a non-zero count). Transactor throws
+  `` `Some peers did not complete: ${details}; root: ...` `` with `.cause` set
+  (`../optimystic/packages/db-core/src/transactor/network-transactor.ts:243`).
+- `unwrapError` (quereus `src/common/errors.ts:166`) walks the full `Error.cause` chain — nested
+  matching works at any depth.
+- Call sites to repoint at a new private `lockedWithRetry` (wraps `retryControlWrite(() => this.withWriteLock(fn))`):
+  `execWrite` at `control-database.ts:1432`, `mutateCadrePeer`'s lock at `:1375`, the three
+  `deleteGuardedRow` wrappers at `:960` / `:1021` / `:1221`, `withUseNumberRetry`'s inner lock at `:1780`.
+  Those six are ALL the `withWriteLock` call sites; leave `withWriteLock` (`:1413`) bare.
+- `mutateCadrePeer` is **public** — specs can drive `lockedWithRetry` through it with an arbitrary
+  throwing body (no private-method cast needed for the loop-behavior tests).
+- Test pacing seam design: add a private field on `ControlDatabase`
+  (e.g. `controlWriteRetryPacing: ControlWriteRetryOptions = {}`, placed by `writeQueue` at `:397`),
+  passed by `lockedWithRetry`; specs set it via a cast (same pattern as
+  `selfRegistrationTimerSlot` in `control-write-lock.spec.ts:39`). Head-of-line test: inject a
+  `sleep` returning a manually-resolved promise — start `mutateCadrePeer` with a body that fails
+  once with a retriable message, await sleep-entered, run `insertStrand` (must resolve while first
+  is parked), then release the sleep; fully deterministic, no real waiting. Notification-count
+  tests: save/restore `membershipListener` via cast (node wires its own in `start()`).
+- Two-loop interaction test can be pure-unit: assert classifier DISJOINTNESS
+  (`isLostUseNumberRace(transient) === false`, `isRetriableControlWriteFailure(lostRace) === false` —
+  `isLostUseNumberRace` is exported from `control-database.ts`) plus a composed simulation of
+  `withUseNumberRetry`'s shape showing total body runs stay ≤ 3, never 9.
+- Style: `control-database.ts` is 2-space indented; the new module and the test files use tabs
+  (matches `.editorconfig` / the other tab-indented src modules — repo is mixed, both pass lint).
+- Ticket-listed spec `test/control-formation-use-number-retry.spec.ts` exists; solo/offline specs
+  (`control-database-solo.spec.ts`, `control-database-offline-peers.spec.ts`) must pass unedited.
+
+- Editor diagnostics on the new file showed `Cannot find module '@quereus/quereus'` (and a
+  consequent implicit-any on the destructured `message`) immediately after creation — the SAME
+  import resolves fine in `control-database.ts`, so this is most likely a language-server artifact
+  on the not-yet-built file, but the next run must confirm it clears under `yarn build` before
+  trusting it; if it does not, the destructured callback in `isRetriableControlWriteFailure` may
+  need an explicit `ErrorInfo`-shaped annotation.
+
+Resume at Phase 1's third bullet (`lockedWithRetry` wiring) in the TODO at the bottom; the full
+spec below is unchanged and still authoritative.
+<!-- /resume-note -->
+
 ## The decision this ticket encodes
 
 The planning pass looked at all three options the plan ticket listed and one of them is
