@@ -170,6 +170,13 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 				() => openControlConnections(B).length === 0,
 				{ timeoutMs: 15_000, intervalMs: 250, description: 'B holds zero open control connections after the sever' }
 			);
+			// `hangUp` resolves when B's side is closed; A learns of the close a beat
+			// later (its own close event). Wait for A's side to drain too, or the
+			// window's very first `connectionsTo(A, bPeerId)` checkpoint races it.
+			await waitUntil(
+				() => connectionsTo(A, bPeerId).length === 0,
+				{ timeoutMs: 15_000, intervalMs: 250, description: "A's side of the severed connection drains" }
+			);
 
 			// ── 4. Negative window (~4s of checkpoints, 250ms apart). B stays fully
 			//       isolated while C's record stays RESOLVABLE on B — so the absence
@@ -276,9 +283,12 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 				await sleep(250);
 			}
 			if (!carried) {
+				// The peer-id map turns an aggregate transactor error naming a raw
+				// peer id into something a human can attribute without a debug rerun.
 				throw new Error(
 					`B never observed C's isolated revision (updatedAt >= ${r1}) within 60s`
-					+ (lastReadError ? `; last read error: ${String(lastReadError)}` : ''));
+					+ (lastReadError ? `; last read error: ${String(lastReadError)}` : '')
+					+ `; peers: A=${aPeerId} B=${bPeerId} C=${cPeerId}`);
 			}
 			// The SAME connection recorded at link time is still the open one — R1
 			// crossed that connection, not a later replacement.
