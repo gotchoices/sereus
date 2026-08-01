@@ -810,6 +810,16 @@ where local rows exist.
   clear the unanimity bar comfortably every run — `debt-control-write-unanimity-at-three-nodes` is
   about a member that is slow or silent, which is the file above, not about three healthy machines.
   Runtime ~24 s.
+- [x] `packages/integration-tests/src/scenarios/strand-unpublish-sibling-convergence.integration.ts`
+  — party-wide strand removal reaches the OTHER side: two real nodes, owner A publishes a strand,
+  sibling B discovers it over the wire (`strand:discovered` — B is deliberately not an owner, so
+  the sighting proves a network read), runs it (`mode: 'bootstrap'`), and stops it exactly once
+  when its 1 s watcher poll observes A's `unpublishStrand` delete — the first proof anywhere that
+  a control-plane DELETE becomes visible to a sibling reader (the two-node convergence scenario
+  proves an INSERT; the degraded-cohort scenario reads `removePeer` back on the writer). A
+  five-poll quiet window pins exactly-once / no re-add; a re-publish is then rediscovered, proving
+  the watcher cleared the id and the removal's `Revocation` tombstone is not read back as a live
+  row. Test body ~25–30 s.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.

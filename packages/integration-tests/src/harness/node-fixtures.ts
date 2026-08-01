@@ -45,6 +45,8 @@ export interface ControlNodeOpts {
   hibernation?: boolean;
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
+  /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
+  strandWatchMs?: number;
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
@@ -63,6 +65,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: 'all' },
     storage: { provider: () => new MemoryRawStorage() },
+    ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     network: {
       transports: wsTransports(),
@@ -166,20 +169,26 @@ export async function connectControlNodes(reader: CadreNode, writer: CadreNode):
  *
  * `partyId` is built as `${partyIdPrefix}-${tag}-<timestamp>`; pass `partyIdPrefix` to
  * keep an existing scenario's party-id namespacing (default `'ctrl'`).
+ *
+ * `opts.strandWatchMs` overrides the strand watcher poll cadence on BOTH nodes —
+ * scenarios asserting watcher-driven convergence need a cadence shorter than the
+ * 5 s `CadreNode` default so their quiet-window assertions stay affordable.
  */
 export async function bootPair(
   tag: string,
   partyIdPrefix = 'ctrl',
+  opts: { strandWatchMs?: number } = {},
 ): Promise<{ A: CadreNode; B: CadreNode }> {
   const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
+  const { strandWatchMs } = opts;
 
   const aKey = await generateKeyPair('Ed25519');
-  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
   await A.start();
   await makeOwnOwner(A, aKey);
 
   const bKey = await generateKeyPair('Ed25519');
-  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction' }));
+  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
   await B.start();
 
   // A vouches B so B's inbound pull streams pass A's per-stream control-DB gate
