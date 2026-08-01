@@ -292,6 +292,31 @@ describe('CadreNode strand unpublish', () => {
     expect((await db.queryRevokedStamps('Strand')).size).toBe(0);
   }, 60_000);
 
+  it('re-emits strand:started on a genuine restart, and strand:stopped only once per instance', async () => {
+    node = await startSelfOwnerNode();
+    const strandId = 'strand-restart-' + rand();
+    const events = collectStrandEvents(node);
+
+    // The idempotence guards in `launchStrand`/`detachStrand` key off the strand manager's
+    // instance map ONLY, so a real stop-then-start cycle is two distinct instances and must
+    // produce the full event pair each time. A guard keyed off anything stickier (an id seen
+    // once, a config still registered) would silence the second launch — this pins that.
+    await node.addStrand(createStrandConfig(strandId));
+    await node.stopStrand(strandId);
+    await node.addStrand(createStrandConfig(strandId));
+    expect(node.getStrand(strandId)).toBeDefined();
+    expect(events.started).toEqual([strandId, strandId]);
+    expect(events.stopped).toEqual([strandId]);
+
+    // Second stop of the same id: the instance is already gone, so `detachStrand` no-ops
+    // rather than emitting a phantom second `strand:stopped`.
+    await node.stopStrand(strandId);
+    await node.stopStrand(strandId);
+    expect(node.getStrand(strandId)).toBeUndefined();
+    expect(events.stopped).toEqual([strandId, strandId]);
+    expect(events.errors).toEqual([]);
+  }, 60_000);
+
   it('stops a watched instance when the row vanishes from under it (the sibling-side removal path)', async () => {
     node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
     const db = node.getControlDatabase()!;
