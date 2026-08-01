@@ -10,6 +10,17 @@ export { CadreNode } from './cadre-node.js';
 // Control database
 export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener } from './control-database.js';
 
+// Bounded retry for transient control-write failures (classifier + loop behind
+// ControlDatabase.lockedWithRetry; exported so the integration package can drive the
+// classifier against real engine errors)
+export {
+  CONTROL_WRITE_ATTEMPTS,
+  CONTROL_WRITE_RETRY_BUDGET_MS,
+  isRetriableControlWriteFailure,
+  retryControlWrite,
+  type ControlWriteRetryOptions
+} from './control-write-retry.js';
+
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';
 

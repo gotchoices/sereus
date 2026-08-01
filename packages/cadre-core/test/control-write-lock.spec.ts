@@ -5,8 +5,9 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { signPeerRecord } from '../src/peer-record.js';
-import type { ControlDatabase } from '../src/control-database.js';
+import type { ControlDatabase, MembershipChangeListener } from '../src/control-database.js';
 import type { SeedBootstrapService } from '../src/seed-bootstrap.js';
+import type { ControlWriteRetryOptions } from '../src/control-write-retry.js';
 
 /**
  * `ControlDatabase`'s local write lock: every public writer runs through
@@ -38,6 +39,24 @@ async function freshPeer(): Promise<{ peerId: string; publicKeyB64: string; priv
 /** Test-only window onto the self-registration timer these tests must neutralize. */
 function selfRegistrationTimerSlot(node: CadreNode): { selfRegistrationTimer: ReturnType<typeof setTimeout> | null } {
 	return node as unknown as { selfRegistrationTimer: ReturnType<typeof setTimeout> | null };
+}
+
+/**
+ * Test-only window onto `lockedWithRetry`'s pacing seams, so the retry tests never wait
+ * out a real backoff. Same cast pattern as {@link selfRegistrationTimerSlot}.
+ */
+function retryPacingSlot(db: ControlDatabase): { controlWriteRetryPacing: ControlWriteRetryOptions } {
+	return db as unknown as { controlWriteRetryPacing: ControlWriteRetryOptions };
+}
+
+/**
+ * An error text `isRetriableControlWriteFailure` classifies as transient — the
+ * transactor's "the cohort did not answer" aggregate. A literal here (rather than a real
+ * cluster failure) because these tests pin LOCK interaction, not classification; the
+ * classifier table lives in `control-write-retry.spec.ts`.
+ */
+function transientClusterFailure(): Error {
+	return new Error('Some peers did not complete: 12D3KooWpeer: The stream has been reset; root: abc');
 }
 
 describe('ControlDatabase — local write lock', () => {
@@ -207,5 +226,85 @@ describe('ControlDatabase — local write lock', () => {
 		await expect(failing).rejects.toThrow('body failed');
 		await expect(following).resolves.toBeUndefined();
 		expect(await db.queryStrand('race-strand-after-failure')).not.toBeNull();
+	});
+
+	/**
+	 * The property the "retry wraps the lock" shape buys: `lockedWithRetry`'s backoff
+	 * sleeps with NO lock held, so a writer queued behind a transiently-failed write runs
+	 * DURING the backoff instead of stalling behind it. Deterministic, no real waiting:
+	 * the injected sleep parks the first writer on a manually-released promise, and the
+	 * second writer must complete while it is parked.
+	 */
+	it('lets a queued write run while an earlier write sleeps out its retry backoff', async () => {
+		const slot = retryPacingSlot(db);
+		const savedPacing = slot.controlWriteRetryPacing;
+		try {
+			let signalSleepEntered!: () => void;
+			const sleepEntered = new Promise<void>((resolve) => { signalSleepEntered = resolve; });
+			let releaseSleep!: () => void;
+			const parked = new Promise<void>((resolve) => { releaseSleep = resolve; });
+			slot.controlWriteRetryPacing = {
+				sleep: () => { signalSleepEntered(); return parked; },
+			};
+
+			let bodyRuns = 0;
+			const retried = db.mutateCadrePeer('retry-backoff-test', async () => {
+				bodyRuns++;
+				if (bodyRuns === 1) {
+					throw transientClusterFailure();
+				}
+			});
+
+			await sleepEntered;
+			// First writer is parked in its backoff with the lock RELEASED — a write queued
+			// now must commit without waiting for the retry to resume.
+			await db.insertStrand('strand-during-backoff', 'o', owner.publicKey, owner.sign);
+			expect(await db.queryStrand('strand-during-backoff')).not.toBeNull();
+			expect(bodyRuns).toBe(1);
+
+			releaseSleep();
+			await retried;
+			expect(bodyRuns).toBe(2);
+		} finally {
+			slot.controlWriteRetryPacing = savedPacing;
+		}
+	});
+
+	/**
+	 * `mutateCadrePeer`'s notify sits INSIDE the retried body, so the count must track
+	 * committed mutations, not attempts: exactly one notification when a retried body
+	 * eventually commits, zero when every attempt fails. The exhaustion arm also pins that
+	 * the LAST error surfaces by identity, unwrapped, through the whole
+	 * `mutateCadrePeer` → `lockedWithRetry` stack.
+	 */
+	it('notifies membership once for a retried mutation and never on exhaustion', async () => {
+		const slot = retryPacingSlot(db);
+		const savedPacing = slot.controlWriteRetryPacing;
+		const listenerSlot = db as unknown as { membershipListener: MembershipChangeListener | null };
+		const savedListener = listenerSlot.membershipListener;
+		let notifications = 0;
+		try {
+			slot.controlWriteRetryPacing = { sleep: () => Promise.resolve() };
+			db.setMembershipChangeListener(async () => { notifications++; });
+
+			let bodyRuns = 0;
+			await db.mutateCadrePeer('retry-notify-once', async () => {
+				bodyRuns++;
+				if (bodyRuns === 1) {
+					throw transientClusterFailure();
+				}
+			});
+			expect(bodyRuns).toBe(2);
+			expect(notifications).toBe(1);
+
+			const exhausted = transientClusterFailure();
+			await expect(db.mutateCadrePeer('retry-notify-never', async () => {
+				throw exhausted;
+			})).rejects.toBe(exhausted);
+			expect(notifications).toBe(1);
+		} finally {
+			db.setMembershipChangeListener(savedListener);
+			slot.controlWriteRetryPacing = savedPacing;
+		}
 	});
 });

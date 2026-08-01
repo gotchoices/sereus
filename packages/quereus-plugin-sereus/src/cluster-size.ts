@@ -59,7 +59,10 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * `superMajorityThreshold` is deliberately ABSENT. Omitting it makes both the cluster member
  * and the coordinator fall back to Optimystic's `DEFAULT_SUPER_MAJORITY_THRESHOLD` (0.75) —
  * the bar a real party commits control writes against. Setting it here, or at any one
- * consumer, reintroduces exactly the divergence this constant exists to prevent.
+ * consumer, reintroduces exactly the divergence this constant exists to prevent. The absence
+ * is a researched decision, not an inherited default: no threshold both relaxes the
+ * three-node unanimity bar and satisfies Optimystic's partition-safety condition at the
+ * shipped admission fraction — see `docs/architecture.md` → "Replication cluster size".
  *
  * `sizeTolerance` only makes sense alongside `allowDownsize`: a fixed
  * {@link CONTROL_REPLICATION_BREADTH}-wide target is unsatisfiable by any real (2-7 node)

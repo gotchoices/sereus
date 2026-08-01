@@ -13,6 +13,8 @@ import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
+import { retryControlWrite } from './control-write-retry.js';
+import type { ControlWriteRetryOptions } from './control-write-retry.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -396,6 +398,12 @@ export class ControlDatabase {
   private membershipListener: MembershipChangeListener | null = null;
   /** Tail of the local-write chain — see {@link withWriteLock}. */
   private writeQueue: Promise<unknown> = Promise.resolve();
+  /**
+   * Pacing seams for {@link lockedWithRetry}. Production leaves this empty (real backoff,
+   * real clock); specs inject a recorded `sleep` / fake `now` so no test waits out a real
+   * backoff.
+   */
+  private controlWriteRetryPacing: ControlWriteRetryOptions = {};
 
   constructor(config: ControlDatabaseConfig) {
     this.config = config;
@@ -957,7 +965,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.withWriteLock(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage));
   }
 
   /**
@@ -1018,7 +1026,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.withWriteLock(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage));
   }
 
   /**
@@ -1218,7 +1226,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.withWriteLock(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage));
   }
 
   /**
@@ -1368,11 +1376,18 @@ export class ControlDatabase {
    * The listener itself only READS (it re-materializes the membership snapshot) — a
    * listener that wrote through a locked method would deadlock.
    *
+   * Reaches the lock through {@link lockedWithRetry}, so after a transient cluster
+   * failure the WHOLE locked body re-runs — `body` must be atomic and re-runnable (the
+   * contract on {@link withWriteLock}). The notify sits after a successful `body` inside
+   * the same attempt and a throwing attempt never reaches it, so a retried mutation
+   * still notifies exactly once: on the attempt that commits, and not at all on
+   * exhaustion.
+   *
    * @param reason - Label for the log line only (e.g. `'peer-insert'`).
    */
   async mutateCadrePeer<T>(reason: string, body: () => Promise<T>): Promise<T> {
     this.ensureInitialized();
-    return this.withWriteLock(async () => {
+    return this.lockedWithRetry(async () => {
       this.assertCommitBoundary(reason, 'on entry to');
       const result = await body();
       this.assertCommitBoundary(reason, 'on return from');
@@ -1409,6 +1424,14 @@ export class ControlDatabase {
    * no error, and it strands the whole write queue, not only that call. There is no
    * cheap fail-fast: a "held" flag cannot tell re-entry from a legitimately queued
    * concurrent writer. Compose bare private bodies instead.
+   *
+   * A locked body must also be ATOMIC and RE-RUNNABLE: the public write surface reaches
+   * this lock through {@link lockedWithRetry}, which re-runs the WHOLE body after a
+   * transient cluster failure. Atomic holds for every body today — one statement, or
+   * wrapped in {@link inTransaction} — so a failed attempt leaves nothing half-applied;
+   * re-runnable means a retry re-runs the body's reads too, which is what makes it safe.
+   * Signatures and stamp ids minted OUTSIDE the body are deliberately NOT re-minted per
+   * attempt: a retry re-presents the exact signed message the first attempt presented.
    */
   async withWriteLock<T>(fn: () => Promise<T>): Promise<T> {
     // Chain behind the current tail regardless of how it settled, then park a
@@ -1419,8 +1442,27 @@ export class ControlDatabase {
   }
 
   /**
-   * One-statement local write, serialized by {@link withWriteLock}. Prefer this over a
-   * bare `getDatabase().exec` so a new writer cannot forget the lock — the hazard
+   * {@link withWriteLock} plus the bounded transient-failure retry
+   * ({@link retryControlWrite}) — the wrapper the whole public write surface goes
+   * through, so a control write that failed because the cluster cohort did not answer is
+   * re-presented a moment later instead of surfacing to ~19 callers that are not
+   * uniformly written to retry.
+   *
+   * The retry wraps the LOCK, it does not live inside it: each attempt takes and
+   * releases the lock, and the backoff sleeps with NO lock held, so a write parked in
+   * backoff never stalls the other local writers queued behind it. Same reason
+   * {@link withUseNumberRetry} re-takes the lock per attempt — see the note on
+   * `USE_NUMBER_ATTEMPTS`. Safe because every locked body is atomic and re-runnable
+   * (the contract on {@link withWriteLock}).
+   */
+  private lockedWithRetry<T>(fn: () => Promise<T>): Promise<T> {
+    return retryControlWrite(() => this.withWriteLock(fn), this.controlWriteRetryPacing);
+  }
+
+  /**
+   * One-statement local write, serialized by {@link withWriteLock} and retried on a
+   * transient cluster failure via {@link lockedWithRetry}. Prefer this over a bare
+   * `getDatabase().exec` so a new writer cannot forget the lock — the hazard
    * {@link assertCommitBoundary} can only catch after the fact.
    *
    * Public so `SeedBootstrapService`'s direct `CadrePeer`/`DeviceToken` SQL writes go
@@ -1429,7 +1471,7 @@ export class ControlDatabase {
    */
   execWrite(sql: string, params?: SqlParameters): Promise<void> {
     this.ensureInitialized();
-    return this.withWriteLock(() => this.db!.exec(sql, params));
+    return this.lockedWithRetry(() => this.db!.exec(sql, params));
   }
 
   /**
@@ -1777,7 +1819,11 @@ export class ControlDatabase {
     let lastError: unknown;
     for (let attempt = 1; attempt <= USE_NUMBER_ATTEMPTS; attempt++) {
       try {
-        return await this.withWriteLock(async () => {
+        // lockedWithRetry carries the transient-cluster retry INSIDE this use-number
+        // retry. The loops cannot multiply: a lost use number is a constraint failure,
+        // which `isRetriableControlWriteFailure` never matches, and a transient cluster
+        // failure is not a lost use number, so exactly one loop claims any given error.
+        return await this.lockedWithRetry(async () => {
           // Inside the lock: a write still parked behind another writer when the caller's
           // budget expired is abandoned rather than executed.
           if (signal?.aborted) {
