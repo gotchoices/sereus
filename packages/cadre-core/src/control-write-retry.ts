@@ -64,11 +64,24 @@ const CONTROL_WRITE_RETRY_DELAYS_MS: readonly number[] = [250, 1_000];
  *   (`db-core/src/transactor/network-transactor.ts`), the surface a reset stream produces.
  *   The observed one-shot failure was exactly this: `registerSelf()` racing a connection
  *   still forming, `cause=The stream has been reset`.
+ *
+ *   NOTE: the transactor raises this message from THREE sites — `get` (a block read, which
+ *   a write body also performs), `pend` (phase 1, nothing committed) and `commitBlocks`
+ *   (phase 2). The first two are unambiguously safe to re-present. The commit-phase one is
+ *   the open question: `TransactorSource.transact` cancels the pend and rethrows, but peers
+ *   that already committed stay committed, so a retried body could re-issue SQL over a write
+ *   that partly landed and surface a constraint failure instead of the transient error.
+ *   Unobserved and narrow (it needs a commit-phase partial failure to survive the
+ *   transactor's own budget); establishing whether it is reachable, and narrowing this
+ *   pattern if it is, is an arm of `control-write-retry-real-error-coverage`.
  * - `Failed to get super-majority: N/M approvals (needed K, 0 rejections)` — the cluster
  *   coordinator's shortfall error (`db-p2p/src/repo/cluster-coordinator.ts`), matched ONLY
  *   with a zero rejection count. The same message with a non-zero count means a member
  *   actually voted no (that branch carries `membership-not-admitted` rejections), and
  *   retrying it would re-present a spent signature to a cohort that already refused it.
+ *   This one is raised while collecting PROMISES, before any commit, so re-presenting it is
+ *   safe. A decisive rejection is a different error entirely (`ValidatorRejectionError`,
+ *   `Transaction rejected by validators`), which this classifier also never matches.
  *
  * Deliberately NOT matched: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
@@ -180,6 +193,12 @@ export async function retryControlWrite<T>(
  * sleep exceeds it (see {@link CONTROL_WRITE_RETRY_DELAYS_MS} for why). `Math.random` is
  * fine here — the jitter only de-synchronizes concurrent retriers, nothing is derived
  * from it.
+ *
+ * NOTE: the cap bites on the LAST delay, whose base IS the largest, so ~half of those sleeps
+ * land exactly on the cap rather than spread — de-synchronization is only partial there.
+ * Harmless while retriers are a handful of party nodes whose attempts already start seconds
+ * apart; if a party ever retries in a tight synchronized herd, raise the cap above the
+ * largest base instead of jittering about it.
  */
 function jitteredDelay(delays: readonly number[], attemptNumber: number): number {
 	if (delays.length === 0) {

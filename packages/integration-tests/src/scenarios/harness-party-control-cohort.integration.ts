@@ -35,8 +35,8 @@
  * WHY `happy-path.integration.ts` WAS NOT RETROFITTED INSTEAD. It is the suite's
  * broad smoke test. Binding its writes to a three-machine cohort would bind the canary
  * to the unanimity bar — at three machines a super-majority is `ceil(3 x 0.75) = 3`,
- * i.e. EVERY machine must approve — which is a known fragility tracked separately as
- * `debt-control-write-unanimity-at-three-nodes`. A flaky canary costs more than it
+ * i.e. EVERY machine must approve — which is a known fragility documented in
+ * `docs/architecture.md` → "Replication cluster size". A flaky canary costs more than it
  * buys, so the multi-machine claim lives here and `happy-path` only carries a comment
  * saying what it does and does not exercise.
  *
@@ -50,7 +50,7 @@
  *   - whole file .................. ~23–25 s
  *
  * A three-machine cohort of HEALTHY machines therefore clears the unanimity bar
- * comfortably: `debt-control-write-unanimity-at-three-nodes` is about what happens
+ * comfortably: the unanimity fragility is about what happens
  * when one of the three is slow or silent (measured in
  * `control-write-degraded-cohort-member.integration.ts`), not about the healthy case.
  * If a write here ever starts failing with

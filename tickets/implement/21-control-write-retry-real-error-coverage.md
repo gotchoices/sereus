@@ -80,6 +80,36 @@ This is the assertion that protects the budget's whole rationale. Do not drop it
 bounds turn out to be loose — state the measured numbers in the scenario's header comment the way
 the current header already states them.
 
+### 4. Is a commit-phase aggregate reachable, and is retrying it safe?
+
+Added by the review of `control-write-transient-failure-retry`. Optimystic raises
+`Some peers did not complete:` from **three** places in
+`../optimystic/packages/db-core/src/transactor/network-transactor.ts`: the block `get` path
+(~line 243), `pend` (~line 528) and `commitBlocks` (~line 718). The first two are safe to
+re-present — a read failed, or phase 1 failed and nothing was committed. The third is not
+obviously safe: `TransactorSource.transact` cancels the pend and rethrows, but peers that
+already committed remain committed, so re-running the whole write body could issue its SQL
+over a write that partly landed. The caller would then see a constraint failure (e.g.
+`UNIQUE constraint failed: CadrePeer.PeerId`) for a write that actually succeeded, instead
+of the transient error.
+
+This is inferred from reading the transactor, not observed — it needs a commit-phase partial
+failure to survive the transactor's own retry budget, which may not be reachable at all.
+Establish which it is:
+
+- Determine whether a commit-phase `Some peers did not complete:` can reach `ControlDatabase`
+  at all (does `transact`'s cancel + the coordinator's own budget always convert it into
+  something else first?).
+- If it cannot, say so in `control-write-retry.ts`'s pattern comment and delete the NOTE that
+  currently flags it as open.
+- If it can, narrow the pattern (match only the pend/get shapes, or classify on the
+  `cause` chain) so an already-committed write is never re-presented, and cover it.
+
+The zero-rejection super-majority pattern does NOT carry this risk and needs no change: it is
+raised while collecting promises, before any commit
+(`db-p2p/src/repo/cluster-coordinator.ts:374`), and a decisive rejection is a different error
+class (`ValidatorRejectionError`).
+
 ## Edge cases & interactions
 
 - **The retry changes the existing cases' timings.** Re-measure every case in the scenario after
@@ -108,6 +138,8 @@ the current header already states them.
 - Add the transient-reset case; tune the reset count against real runs.
 - Add `isRetriableControlWriteFailure` assertions to the existing never-answering case, positive
   and negative.
+- Settle the commit-phase question (section 4) and either delete or act on the NOTE in
+  `control-write-retry.ts`.
 - Re-assert the never-answering case's elapsed bounds so a retry firing there fails the scenario.
 - Re-measure every case and update the scenario header's measured table and
   `docs/architecture.md` → "Replication cluster size" if any number moved.

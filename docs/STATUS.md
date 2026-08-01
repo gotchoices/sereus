@@ -807,7 +807,8 @@ where local rows exist.
   amount of waiting adds the third — asserted on the observed size, not merely on "it threw"); a
   real `createStrand` into a *waited* three-machine cohort (commits, ~0.7–1.0 s, read back by
   strand id); and the same write into a *forced* cohort (~0.2–0.4 s). Healthy three-machine writes
-  clear the unanimity bar comfortably every run — `debt-control-write-unanimity-at-three-nodes` is
+  clear the unanimity bar comfortably every run — the unanimity fragility (and the bounded retry
+  that now absorbs its transient half, `architecture.md` → "Replication cluster size") is
   about a member that is slow or silent, which is the file above, not about three healthy machines.
   Runtime ~24 s.
 - [x] `packages/integration-tests/src/scenarios/strand-unpublish-sibling-convergence.integration.ts`
