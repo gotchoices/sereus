@@ -124,3 +124,55 @@ field the reopen tests need or bloat the shared interface for one caller. Leave 
   rethrown. Preserve this exactly when hoisting.
 - **Doc-comment loss.** Reviewer should diff each deleted local function against the shared
   one and confirm no explanatory rationale (the "why", not the "what") got silently dropped.
+
+<!-- resume-note -->
+Prior run hit BUDGET_WARNING during investigation, before any file was created or edited —
+zero code changes exist. Re-read all 5 spec files in full and verified the ticket's design
+is accurate; the following saves the next agent re-discovery time:
+
+- **`openRawStrand`** present only in `strand-member-revocation.spec.ts` (~L117-133) and
+  `strand-membership-peer-rotation.spec.ts` (~L109-125). Absent from
+  `strand-approval-replay.spec.ts` and `strand-membership-invite.spec.ts`.
+- **`insertHeader`** present only in the same two files (member-revocation ~L147-154,
+  peer-rotation ~L132-139) — bodies + doc comments identical.
+- **`rawInsertMember`** present only in the same two files (member-revocation ~L221-228,
+  peer-rotation ~L142-149) — identical.
+- **`inTransaction`** present in all 4 files (approval-replay ~L141-156, member-revocation
+  ~L231-246, invite ~L78-93, peer-rotation ~L690-705) — identical bodies including the
+  rollback-after-failed-commit try/catch. Only the `debug(...)` namespace argument differs
+  per file (`strand-approval-replay`, `strand-revocation`, `strand-invite`, `strand-rotation`)
+  — ticket already accounts for this, collapsing to one shared
+  `sereus:cadre:test:strand-spec-helpers` namespace.
+- **`fileTombstone` is OUT of scope** — absent from the ticket's export list, so leave all
+  copies local and untouched. Exists in 3 of the 4 files with a signature mismatch:
+  `strand-approval-replay.spec.ts` (~L196-209) and `strand-membership-peer-rotation.spec.ts`
+  (~L192-205) both use `fileTombstone(db, tableName, stampId, retiree)`;
+  `strand-member-revocation.spec.ts` (~L174-187) instead uses
+  `fileTombstone(db, stampId, retiree, tableName = 'Member')` (args reordered, `tableName` a
+  plain string with a default, not the 3-name union). `strand-membership-invite.spec.ts` has
+  no `fileTombstone` at all. Do not unify these three — the ticket scoped this out on purpose.
+- **`openStrand` signature.** `strand-approval-replay.spec.ts`'s local version takes NO
+  `type` param (hardcoded `'c'`, always passes `founderKeyPair: founder`). The other three
+  take `type: 'o' | 'c'` and pass `founderKeyPair: type === 'c' ? founder : undefined`. The
+  ticket's shared signature `openStrand(type: 'o' | 'c' = 'c')` is compatible with
+  approval-replay's no-arg call sites via the default.
+- **`StrandTable` per-file unions verified** exactly as the ticket states: approval-replay =
+  `Member|MemberPeer|Manager|Revocation`; member-revocation =
+  `Header|Member|Manager|ConsumedInvite|CancelledInvite|Revocation`; invite =
+  `Header|Invite|ConsumedInvite|CancelledInvite|Member|Manager`; peer-rotation =
+  `Header|Member|MemberPeer|Manager`. The union of all four matches the ticket's specified
+  `StrandTable` type exactly — no correction needed.
+- `strand-membership-writer.spec.ts` fully re-read too: local `makeSAppConfig` (~L118-126),
+  local `count()` (~L111-116), local `OpenStrand` interface (~L82-87) + `openStrandDb()`
+  (~L94-109) all confirmed as described in the ticket's "intentionally NOT fully folded in"
+  section — leave `OpenStrand`/`openStrandDb` local, just swap `makeSAppConfig`/`count` for
+  the shared `makeSAppConfig`/`tableCount` and rename call sites.
+- `strand-membership-peer-rotation.spec.ts` is 1,518 lines; only grepped its top-level
+  function/interface/type declarations for the back half (confirmed no NEW helper
+  definitions past line ~730 — rest is test bodies using the helpers already catalogued
+  above), not a full line-by-line read of every test body.
+
+Next agent should proceed straight to implementation: create
+`packages/cadre-core/test/strand-spec-helpers.ts` per the TODO list above (the resolved
+export shape is unchanged), then update the 5 spec files, run `yarn lint` and
+`yarn workspace @serfab/cadre-core test`, and hand off to `review/`.
