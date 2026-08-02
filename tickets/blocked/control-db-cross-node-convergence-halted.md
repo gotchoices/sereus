@@ -194,3 +194,60 @@ coordinator's revision as a structured field), sereus consumes it only through
 - Do not edit or rebuild `../optimystic`'s or `../quereus`'s `src` to force a result. Rebuilding
   their `dist` is the guard's own prescribed remedy and is fine; editing their sources is not.
 - Do not re-file this per scenario. One upstream defect, one ticket.
+
+## Validation 2026-08-01 — re-measured against optimystic v0.18.0
+
+The tickets in this class were all filed on 07-31, while `../optimystic` was mid-flight landing
+`collection-open-vs-create-semantics` (19:56) and `repo-reports-unavailable-vs-absent` (20:44).
+Because sereus resolves `@optimystic/*` to that checkout's **source**, those measurements were
+taken against a moving tree and could not be trusted either way. Optimystic has since cut
+**v0.18.0** (`9a06f1b`, 08-01 20:11) and sereus's declared ranges are already `^0.18.0`.
+
+Re-measured at sereus HEAD with a full `yarn build` first (so the freshness guard passes and the
+`dist/` the integration suite actually loads is current):
+
+- `yarn build` — clean.
+- `packages/integration-tests` full suite — **12 files failed / 28 passed (40); 16 tests failed /
+  198 passed / 6 skipped (220)**, 655 s.
+
+Every one of the 16 is already catalogued in `tickets/.pre-existing-known.md` against this ticket
+or its siblings. Nothing new appeared, and nothing in this class cleared. **The class is real at
+v0.18.0 — it was not an artifact of measuring against a moving checkout.**
+
+Failure signatures observed, grouped:
+
+- `SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10 retries: stale
+  revision: block … at rev 3, requested rev 1` — the fork livelock, exactly as described above.
+- `PartialCommitError: Legacy multi-tree commit was not atomic` — row tree `default/CadrePeer`
+  durably committed, index tree `default/CadrePeer/index/_uniq_5` not. This is
+  `strand-unique-index-sync-stale-revision`, and the partial commit is now *reported* rather than
+  silent.
+- `Missing block (…)` raised from `create table CadreControl.OwnerKey` and from ordinary reads.
+- `Self-coordination blocked: grace-period-not-elapsed. No coordinator available for key.`
+
+## A hypothesis the next session should test first
+
+The last two signatures did not exist before v0.18.0, and both are the *intended* effect of the
+two changes that landed on 07-31: `open` no longer invents a collection it could not fetch, and the
+repo layer now distinguishes "unavailable" from "absent". That suggests these are not new breakage
+but **newly visible breakage** — a node that previously read an invented-empty collection and
+reported "no rows" now says `Missing block` instead.
+
+If that is right, part of the earlier green on this suite was false, and the underlying
+replication fault has been present the whole time. That would be good news about v0.18.0 and bad
+news about how much of this suite ever proved what it claimed.
+
+It is a hypothesis, not a finding. What would settle it: run the same scenarios against published
+`@optimystic/*` **0.17.0** (drop the `resolutions` link, install from the registry) and compare.
+If they pass there and fail here, the semantics change is the trigger and the sereus-side work is
+to handle the honest error. If they fail on both, v0.18.0 is incidental and the write path was
+already broken.
+
+## For the optimystic side
+
+`../optimystic/tickets/blocked/two-node-convergence-acceptance-cross-repo-build.md` is waiting on
+exactly this measurement — three convergence fixes shipped there without ever being confirmed
+against the real end-to-end test, because that test lives here and the agent could not do the
+cross-repo rebuild. **The rebuild has now been done and the answer is: still failing.**
+`control-db-two-node-convergence` ("replicates an owner-written CadrePeer row from node A to node B
+over the live control network") fails at 19.5 s against v0.18.0.
