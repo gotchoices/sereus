@@ -100,6 +100,27 @@ describe('isRetriableControlWriteFailure', () => {
 		))).toBe(false);
 	});
 
+	/**
+	 * The veto spans the `cause` chain, not one message. A read-phase aggregate at one level
+	 * must not license a retry when ANOTHER level reports a commit-phase batch — whichever
+	 * order the two land in. Asserted for the retriable transactor arm and the super-majority
+	 * arm alike, since an indeterminate commit disqualifies a re-run no matter what else in
+	 * the chain looks transient.
+	 */
+	it('never retries a chain that reports a commit-phase batch at ANY level', () => {
+		const chained = (outer: string, inner: string): Error =>
+			new Error(outer, { cause: new Error(inner) });
+
+		for (const retriable of [TRANSACTOR_AGGREGATE, SUPER_MAJORITY_NONE_ANSWERED]) {
+			// The control: on its own, each of these IS retried.
+			expect(isRetriableControlWriteFailure(new Error(retriable))).toBe(true);
+			expect(isRetriableControlWriteFailure(
+				chained(retriable, TRANSACTOR_AGGREGATE_COMMIT_PHASE))).toBe(false);
+			expect(isRetriableControlWriteFailure(
+				chained(TRANSACTOR_AGGREGATE_COMMIT_PHASE, retriable))).toBe(false);
+		}
+	});
+
 	it('retries a super-majority shortfall with ZERO rejections, at any approval count', () => {
 		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_NONE_ANSWERED))).toBe(true);
 		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_PARTIAL))).toBe(true);

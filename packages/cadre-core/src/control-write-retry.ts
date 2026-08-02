@@ -84,7 +84,7 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
 	/Failed to get super-majority: \d+\/\d+ approvals \(needed \d+, 0 rejections\)/;
 
 /**
- * Is this transactor aggregate one whose write demonstrably did NOT commit?
+ * Is this a transactor aggregate from a phase where nothing can have committed yet?
  *
  * The transactor raises `Some peers did not complete:` from three sites
  * (`db-core/src/transactor/network-transactor.ts`), and only two of them are safe to
@@ -102,7 +102,8 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  *   the commit may have completed with only the response lost. Re-running the write body over
  *   a write that landed turns a success into a constraint failure (e.g.
  *   `UNIQUE constraint failed: CadrePeer.PeerId`). Surfacing the transient error instead lets
- *   the caller re-read committed state and decide.
+ *   the caller re-read committed state and decide. Commit-phase messages are vetoed by
+ *   {@link reportsIndeterminateCommit}, not here.
  *
  * The `cause` chain does not discriminate the phases — a commit-phase aggregate carries the
  * same stream-reset/dial error a pend-phase one does. The per-batch DETAIL text does: `get`
@@ -117,21 +118,33 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * (`control-write-retry-scenario-coverage`); if that lands and later reddens here, an upstream
  * reformat is the first thing to check.
  *
- * Conservative on both edges: any `[blocks:` occurrence disqualifies the whole message, even
- * alongside a `[block:` (the trailing `root: <cause message>` is free text and could in
- * principle carry either token, and an indeterminate commit anywhere in the message is reason
- * enough not to re-run). An aggregate whose details came out EMPTY (possible when
- * `formatBatchStatuses` has no batches to format) carries neither token and is likewise not
- * retried — an unattributable failure is not a proven non-commit.
+ * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
+ * batches to format) carries neither token, matches nothing here, and is not retried — an
+ * unattributable failure is not a proven non-commit.
  */
 function isUncommittedTransactorAggregate(message: string): boolean {
-	if (!TRANSACTOR_AGGREGATE.test(message)) {
-		return false;
-	}
-	if (message.includes(COMMIT_BATCH_TOKEN)) {
-		return false;
-	}
-	return message.includes(SINGLE_BLOCK_BATCH_TOKEN);
+	return TRANSACTOR_AGGREGATE.test(message) && message.includes(SINGLE_BLOCK_BATCH_TOKEN);
+}
+
+/**
+ * Does ANY message in the failure's `cause` chain describe a commit-phase batch — i.e. an
+ * outcome nobody can call committed or not?
+ *
+ * Vetoes the whole chain rather than the one message carrying the token, and vetoes it
+ * regardless of which matcher would otherwise have claimed it. The narrower per-message rule
+ * would already catch every shape the transactor is known to build (a commit-phase aggregate
+ * emits `[blocks:` for every batch it formats, and embeds its cause's message inline as
+ * `root: …`, so both tokens land in one string) — but "known to build" is an argument about
+ * another repo's error assembly, and this way an indeterminate commit anywhere in the chain
+ * costs a retry we could have had instead of risking a re-run over a write that landed.
+ */
+function reportsIndeterminateCommit(messages: readonly string[]): boolean {
+	return messages.some(message => message.includes(COMMIT_BATCH_TOKEN));
+}
+
+/** The coordinator's shortfall, raised pre-commit, with nobody having voted no. */
+function isUnansweredSuperMajorityShortfall(message: string): boolean {
+	return SUPER_MAJORITY_SHORTFALL_UNANSWERED.test(message);
 }
 
 /**
@@ -147,7 +160,7 @@ function isUncommittedTransactorAggregate(message: string): boolean {
  */
 const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [
 	isUncommittedTransactorAggregate,
-	message => SUPER_MAJORITY_SHORTFALL_UNANSWERED.test(message),
+	isUnansweredSuperMajorityShortfall,
 ];
 
 /**
@@ -161,6 +174,10 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * is `QuereusError` → `Error` → `Error`), so the match must work at any depth. Anything
  * that is not an `Error` is never retried.
  *
+ * {@link reportsIndeterminateCommit} vetoes the whole chain before any matcher runs, so a
+ * failure that reports a commit-phase batch anywhere is never retried on the strength of some
+ * other level looking transient.
+ *
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
  * network are driven from the REAL engine in `control-formation-use-number-retry.spec.ts`, so
  * a rewording reddens a spec rather than silently disabling the retry. The two RETRIABLE
@@ -171,7 +188,11 @@ export function isRetriableControlWriteFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
-	return unwrapError(error).some(({ message }) =>
+	const messages = unwrapError(error).map(({ message }) => message);
+	if (reportsIndeterminateCommit(messages)) {
+		return false;
+	}
+	return messages.some(message =>
 		RETRIABLE_CONTROL_WRITE_MATCHERS.some(matches => matches(message)));
 }
 

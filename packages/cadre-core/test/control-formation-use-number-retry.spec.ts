@@ -301,6 +301,10 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
         await realAuthorizedFailureError(),
       ];
       for (const failure of failures) {
+        // Non-vacuity: the classifier returns false for ANY non-`Error`, so without this the
+        // case would still pass if the engine ever threw something that is not an Error and
+        // the message-matching arm were never exercised at all.
+        expect(failure).toBeInstanceOf(Error);
         expect(isRetriableControlWriteFailure(failure)).toBe(false);
       }
     });
