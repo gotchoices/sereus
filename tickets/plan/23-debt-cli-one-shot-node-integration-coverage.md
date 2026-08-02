@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-08-02T07:07:43.815Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\23-debt-cli-one-shot-node-integration-coverage.plan.2026-08-02T07-07-43-815Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: The command-line tool's one-off commands are never tested against a real running node, so a mistake in the shared "start up, do one thing, shut down" step would not be caught by any test.
 files: packages/cadre-cli/src/commands/node-session.ts, packages/cadre-cli/src/commands/subcommand.ts, packages/cadre-cli/src/commands/strands.ts, packages/cadre-cli/src/commands/validation-key.ts, packages/cadre-cli/test/subcommand-wiring.spec.ts, packages/cadre-core/test/strand-unpublish.spec.ts
 difficulty: medium
