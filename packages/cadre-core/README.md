@@ -182,7 +182,7 @@ The main entry point for cadre participation.
 | `control:disconnected` | - | Disconnected from control network |
 | `strand:started` | `{ strandId }` | Strand instance started |
 | `strand:stopped` | `{ strandId }` | Strand instance stopped |
-| `strand:error` | `{ strandId, error }` | Error in strand instance |
+| `strand:error` | `{ strandId, error }` | Error in strand instance. A failed launch re-emits this on every retry (backing off up to 5 min), so treat it as a repeating signal, not a one-shot |
 
 ## Related Documentation
 

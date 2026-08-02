@@ -71,6 +71,14 @@ export class StrandWatcher {
   private readonly callbacks: StrandWatcherCallbacks;
   private readonly queryable: StrandQueryable;
   private readonly sAppIdLookup?: SAppIdLookup;
+  /**
+   * Wall-clock source for the retry backoff. Read fresh at each use rather than
+   * snapshotted per poll: a poll awaits `onStrandAdded`, and a launch that fails
+   * slowly (e.g. a dial timeout) would otherwise be scheduled off the clock as it
+   * read *before* the attempt, putting `nextAttemptAt` in the past. Injectable so
+   * tests can advance time deterministically without fake timers.
+   */
+  private readonly now: () => number;
 
   private knownStrands: Map<string, StrandRow> = new Map();
   /** Ids admitted under a `defer` decision; re-evaluated each poll until they resolve. */
@@ -86,13 +94,15 @@ export class StrandWatcher {
     callbacks: StrandWatcherCallbacks,
     filter: StrandFilter = { mode: 'all' },
     pollInterval: number = 5000,
-    sAppIdLookup?: SAppIdLookup
+    sAppIdLookup?: SAppIdLookup,
+    now: () => number = Date.now
   ) {
     this.queryable = queryable;
     this.callbacks = callbacks;
     this.filter = filter;
     this.pollInterval = pollInterval;
     this.sAppIdLookup = sAppIdLookup;
+    this.now = now;
     log('StrandWatcher created with filter: %o, interval: %dms', filter, pollInterval);
   }
 
@@ -134,20 +144,17 @@ export class StrandWatcher {
    * Record a failed launch attempt and schedule when the strand may be retried:
    * `pollInterval * 2^(failures-1)`, capped at {@link MAX_RETRY_BACKOFF_MS}.
    */
-  private recordFailure(strandId: string, now: number): void {
+  private recordFailure(strandId: string): void {
     const failures = (this.failureStates.get(strandId)?.failures ?? 0) + 1;
     const delay = Math.min(this.pollInterval * 2 ** (failures - 1), MAX_RETRY_BACKOFF_MS);
-    this.failureStates.set(strandId, { failures, nextAttemptAt: now + delay });
+    this.failureStates.set(strandId, { failures, nextAttemptAt: this.now() + delay });
     log('Strand %s launch failed (%d consecutive) - next attempt in %dms', strandId, failures, delay);
   }
 
   /**
    * Poll for strand changes.
-   *
-   * @param now - Wall-clock reference for the retry backoff. Injectable so tests
-   *   can advance time deterministically without fake timers.
    */
-  private async poll(now: number = Date.now()): Promise<void> {
+  private async poll(): Promise<void> {
     if (!this.running) return;
 
     try {
@@ -158,7 +165,9 @@ export class StrandWatcher {
       for (const strand of currentStrands) {
         if (this.knownStrands.has(strand.Id)) continue;
         const failure = this.failureStates.get(strand.Id);
-        if (failure && now < failure.nextAttemptAt) continue; // backing off after a failed launch
+        // Clock read per candidate, not once per poll: an earlier strand's launch
+        // may have taken a long time, and this one's gate must reflect that.
+        if (failure && this.now() < failure.nextAttemptAt) continue; // backing off after a failed launch
         const decision = this.evaluateFilter(strand);
         if (decision === 'reject') continue;
         log('Strand added: %s', strand.Id);
@@ -179,7 +188,7 @@ export class StrandWatcher {
           // the backoff recorded here.
           this.knownStrands.delete(strand.Id);
           this.provisional.delete(strand.Id);
-          this.recordFailure(strand.Id, now);
+          this.recordFailure(strand.Id);
         }
       }
 
@@ -297,12 +306,9 @@ export class StrandWatcher {
 
   /**
    * Force an immediate poll (useful for testing)
-   *
-   * @param now - Optional wall-clock reference, forwarded to the retry backoff so
-   *   a test can advance past a strand's next-attempt time without fake timers.
    */
-  async forcePoll(now?: number): Promise<void> {
-    await this.poll(now);
+  async forcePoll(): Promise<void> {
+    await this.poll();
   }
 }
 

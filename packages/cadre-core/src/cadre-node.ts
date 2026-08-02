@@ -3059,6 +3059,14 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Add a strand with its sApp configuration.
    * The hosting application must provide the sApp schema when creating a strand.
+   *
+   * A rejected call leaves nothing running but DOES leave the sApp config
+   * registered, deliberately: both an explicit retry and the {@link StrandWatcher}'s
+   * automatic relaunch need it. So once the strand's row is visible on the control
+   * network (via {@link publishStrand} or another member), a failed launch keeps
+   * being re-attempted in the background — each failure re-emitting `strand:error`
+   * — until it succeeds. {@link detachStrand} (reached via {@link stopStrand}) is
+   * what abandons a strand for good.
    */
   async addStrand(config: StrandConfig): Promise<StrandInstance> {
     if (!this._running) {
