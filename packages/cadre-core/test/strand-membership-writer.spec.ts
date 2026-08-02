@@ -13,7 +13,7 @@ import {
   STRAND_ENGINE,
   STRAND_ENGINE_VERSION,
 } from '../src/strand-membership-writer.js';
-import type { SAppConfig } from '../src/types.js';
+import { makeSAppConfig, tableCount } from './strand-spec-helpers.js';
 
 /**
  * Unit + component coverage for the founder-bootstrap primitives.
@@ -108,23 +108,6 @@ async function openStrandDb(
   };
 }
 
-async function count(db: Database, table: 'Header' | 'Member' | 'Manager'): Promise<number> {
-  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
-    return (row as { c: number }).c;
-  }
-  return 0;
-}
-
-function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
-  return {
-    id: 'sapp-author-pubkey',
-    version: '1.2.3',
-    schema: 'table Note (Id integer primary key, Body text not null)',
-    signature: 'sapp-signature',
-    ...overrides,
-  };
-}
-
 describe('bootstrapFounderMembership', () => {
   let open: OpenStrand | null = null;
 
@@ -143,9 +126,9 @@ describe('bootstrapFounderMembership', () => {
 
     await bootstrapFounderMembership(db, { strandId, type: 'c', sApp, founderKeyPair });
 
-    expect(await count(db, 'Header')).toBe(1);
-    expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'Header')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
 
     const header = await db.get('select * from Strand.Header');
     expect(header?.Id).toBe(strandId);
@@ -170,9 +153,9 @@ describe('bootstrapFounderMembership', () => {
 
     await bootstrapFounderMembership(db, { strandId, type: 'o', sApp: makeSAppConfig() });
 
-    expect(await count(db, 'Header')).toBe(1);
-    expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Manager')).toBe(0);
+    expect(await tableCount(db, 'Header')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(0);
+    expect(await tableCount(db, 'Manager')).toBe(0);
 
     const header = await db.get('select Type from Strand.Header');
     expect(header?.Type).toBe('o');
@@ -189,9 +172,9 @@ describe('bootstrapFounderMembership', () => {
     // InsertOnly / PK violation.
     await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
 
-    expect(await count(db, 'Header')).toBe(1);
-    expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'Header')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
   it('is idempotent across a reopen: a fresh DB over persisted storage re-runs without duplicating rows', async () => {
@@ -210,17 +193,17 @@ describe('bootstrapFounderMembership', () => {
     // not a fresh insert into an empty catalog.
     open = await openStrandDb(strandId, storage);
     const { db } = open;
-    expect(await count(db, 'Header')).toBe(1);
-    expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'Header')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
 
     // Re-running the founder bootstrap against the reopened DB (the real
     // cross-process restart path) is a no-op — the count guards see the hydrated
     // rows and skip, so no duplicate Header / InsertOnly violation.
     await expect(bootstrapFounderMembership(db, params)).resolves.toBeUndefined();
-    expect(await count(db, 'Header')).toBe(1);
-    expect(await count(db, 'Member')).toBe(1);
-    expect(await count(db, 'Manager')).toBe(1);
+    expect(await tableCount(db, 'Header')).toBe(1);
+    expect(await tableCount(db, 'Member')).toBe(1);
+    expect(await tableCount(db, 'Manager')).toBe(1);
   }, 30_000);
 
   // The nearest in-process stand-in for a node that acquires an already-populated
@@ -241,14 +224,14 @@ describe('bootstrapFounderMembership', () => {
     await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: secondManager.publicKeyB64 });
     await addMemberByManager(cold.db, { managerKeyPair: founderKeyPair, memberKey: plainMember.publicKeyB64 });
     await addManager(cold.db, { byManagerKeyPair: founderKeyPair, newManagerKey: secondManager.publicKeyB64 });
-    expect(await count(cold.db, 'Member')).toBe(3);
-    expect(await count(cold.db, 'Manager')).toBe(2);
+    expect(await tableCount(cold.db, 'Member')).toBe(3);
+    expect(await tableCount(cold.db, 'Manager')).toBe(2);
     await cold.shutdown();
 
     open = await openStrandDb(strandId, storage);
     const { db } = open;
-    expect(await count(db, 'Member')).toBe(3);
-    expect(await count(db, 'Manager')).toBe(2);
+    expect(await tableCount(db, 'Member')).toBe(3);
+    expect(await tableCount(db, 'Manager')).toBe(2);
 
     // The hydrated strand is still writable, and the hydrated rows really back the
     // constraints: the manager appointed in the COLD session authorizes a promotion in
@@ -257,7 +240,7 @@ describe('bootstrapFounderMembership', () => {
     await expect(
       addManager(db, { byManagerKeyPair: secondManager, newManagerKey: plainMember.publicKeyB64 }),
     ).resolves.toBeUndefined();
-    expect(await count(db, 'Manager')).toBe(3);
+    expect(await tableCount(db, 'Manager')).toBe(3);
   }, 30_000);
 
   it('coalesces a missing sApp signature to empty string (NOT NULL Header column)', async () => {
@@ -282,8 +265,8 @@ describe('bootstrapFounderMembership', () => {
 
     // Fail-before-write: no closed Header is left stranded without a founding
     // Member/Manager (which could never admit anyone).
-    expect(await count(db, 'Header')).toBe(0);
-    expect(await count(db, 'Member')).toBe(0);
-    expect(await count(db, 'Manager')).toBe(0);
+    expect(await tableCount(db, 'Header')).toBe(0);
+    expect(await tableCount(db, 'Member')).toBe(0);
+    expect(await tableCount(db, 'Manager')).toBe(0);
   }, 30_000);
 });

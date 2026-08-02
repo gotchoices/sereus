@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { Database } from '@quereus/quereus';
+import type { Database } from '@quereus/quereus';
 import {
   issueInvite,
   consumeInvite,

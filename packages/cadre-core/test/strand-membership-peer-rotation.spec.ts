@@ -1,13 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import debug from 'debug';
-import { randomUUID } from 'node:crypto';
-import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { connectToStrand } from '@serfab/quereus-plugin-sereus';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { describe, it, expect } from 'vitest';
+import type { Database } from '@quereus/quereus';
 import {
-  bootstrapFounderMembership,
   addMemberByManager,
   revokeMember,
   registerMemberPeer,
@@ -20,7 +13,15 @@ import {
   generateStrandStampId,
 } from '../src/strand-membership-writer.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { SAppConfig } from '../src/types.js';
+import {
+  freshKeyPair,
+  tableCount,
+  openStrand,
+  openRawStrand,
+  insertHeader,
+  rawInsertMember,
+  inTransaction,
+} from './strand-spec-helpers.js';
 
 /**
  * Component coverage for the two remaining founder-reachable writers:
@@ -36,118 +37,6 @@ import type { SAppConfig } from '../src/types.js';
  * INSERTs in the founding state — and genuinely exercises signature verification.
  */
 
-const log = debug('sereus:cadre:test:strand-rotation');
-
-function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
-  return {
-    id: 'sapp-author-pubkey',
-    version: '1.2.3',
-    schema: 'table Note (Id integer primary key, Body text not null)',
-    signature: 'sapp-signature',
-    ...overrides,
-  };
-}
-
-/** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): Ed25519KeyPair {
-  const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-  const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
-  return { privateKeyB64, publicKeyB64 };
-}
-
-type StrandTable = 'Header' | 'Member' | 'MemberPeer' | 'Manager';
-
-async function tableCount(db: Database, table: StrandTable): Promise<number> {
-  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
-    return (row as { c: number }).c;
-  }
-  return 0;
-}
-
-interface Strand {
-  db: Database;
-  strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Manager. */
-  founder: Ed25519KeyPair;
-  shutdown: () => Promise<void>;
-}
-
-const opened: Strand[] = [];
-
-/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
-async function openStrand(type: 'o' | 'c'): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const founder = strandMemberKeyPair(await generateStrandMemberKey());
-  await bootstrapFounderMembership(db, {
-    strandId,
-    type,
-    sApp: makeSAppConfig(),
-    founderKeyPair: type === 'c' ? founder : undefined,
-  });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-/**
- * Open a strand DB in bootstrap mode WITHOUT the founder bootstrap — no Header, no
- * Member, no Manager. Used by the founding-order test below, which has to seed the
- * `Header`/`Member`/`Manager` rows itself to vary their order; every other test wants
- * the bootstrap already run and uses {@link openStrand}.
- */
-async function openRawStrand(): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder: freshKeyPair(), // unused — no bootstrap ran
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-/**
- * Insert the singleton `Header` with the given Type. Every Header column is NOT NULL
- * (Quereus defaults unqualified columns to NOT NULL), so all are supplied with
- * placeholder values — only `Type` is load-bearing here.
- */
-async function insertHeader(db: Database, type: 'o' | 'c'): Promise<void> {
-  await db.exec(
-    `insert into Strand.Header
-       (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ['strand-id', type, 'sapp', '1.0.0', 'schema', 'sig', 'engine', '1.0.0'],
-  );
-}
-
-/** Raw `Member` insert with all-null context (the bootstrap-branch shape) and a fresh stamp. */
-async function rawInsertMember(db: Database, key: string): Promise<void> {
-  await db.exec(
-    `insert into Strand.Member (Key, StampId)
-       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-       values (?, ?)`,
-    [key, generateStrandStampId()],
-  );
-}
-
 /** Raw founding `Manager` insert: all-null context, generation 0 — what the bootstrap writer emits. */
 async function rawInsertFoundingManager(db: Database, memberKey: string): Promise<void> {
   await db.exec(
@@ -157,13 +46,6 @@ async function rawInsertFoundingManager(db: Database, memberKey: string): Promis
     [memberKey, generateStrandStampId()],
   );
 }
-
-afterEach(async () => {
-  while (opened.length > 0) {
-    const strand = opened.pop()!;
-    await strand.shutdown();
-  }
-});
 
 /** The live StampId of one Manager row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
 async function managerStamp(db: Database, key: string): Promise<string> {
@@ -683,24 +565,6 @@ async function addExtraManagers(db: Database, founder: Ed25519KeyPair, count: nu
 async function seatMembers(db: Database, founder: Ed25519KeyPair, ...keys: Ed25519KeyPair[]): Promise<void> {
   for (const kp of keys) {
     await addMemberByManager(db, { managerKeyPair: founder, memberKey: kp.publicKeyB64 });
-  }
-}
-
-/** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
-async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
-  await db.beginTransaction();
-  try {
-    await statements();
-    await db.commit();
-  } catch (error) {
-    // A failed commit() already tore the transaction down, so rollback() throws
-    // "no transaction active" — log it rather than masking the real cause.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
-    }
-    throw error;
   }
 }
 
