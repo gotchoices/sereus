@@ -586,6 +586,43 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   flags where only one program covers the file, a bare `tsc --noEmit` defaulting to `./tsconfig.json`,
   a glob `include` reaching the file implicitly, a missing or non-`tsc` `typecheck` script, and a
   `typecheck` script pointing at a missing config.
+- [x] Every test file Vitest **collects** — plus every `setupFiles` / `globalSetup` module it executes
+  alongside them — is inside its package's type-check program. Vitest strips types and runs; it never
+  type-checks the files it executes, so a test file has type safety only if some `tsc` program happens
+  to include it, and nothing enforced that. It had already slipped: `cadre-provider` excluded its own
+  test directory from `tsconfig.typecheck.json` to clear a batch of errors, with no follow-up filed.
+  Enforced by `scripts/check-test-file-typecheck-coverage.mjs` (`yarn check:test-file-typecheck-coverage`,
+  chained into root `yarn typecheck` after the config gate above). It asks Vitest itself for the file
+  list — `createVitest` + `globTestSpecifications()` from `vitest/node`, which resolves each package's
+  config (`extends`, plugins, nested `projects:`) and globs the matches **without importing or running
+  any of them** — then diffs that list against the union of the package's resolved `tsc` programs.
+  Asking Vitest rather than re-implementing its globbing is what makes the awkward shapes work:
+  `quereus-plugin-sereus` and `reference-app-rn` use `projects:` with per-project `include`/`exclude`,
+  and `integration-tests` collects `../../test-harness/build-freshness.spec.ts` from outside its own
+  package. Current state: **251 collected files across the nine Vitest packages, 3 allowlisted, 0
+  unexplained orphans**, and the whole sweep costs ~1.2 s wall clock in one Node process — that is the
+  entire cost added to root `yarn typecheck`. Root now declares `vitest` as a devDependency so the
+  script's `vitest/node` import is a real dependency rather than a hoisting accident (which also let
+  `test-harness/**` come out of knip's root `ignore`).
+  Exemptions live in `scripts/test-typecheck-allowlist.json`, keyed by package name, each carrying a
+  written `reason` and exact package-relative file paths (no globs, so a moved file forces someone to
+  touch the list). The allowlist is **validated, not merely consulted**: an entry naming a package that
+  is not a Vitest workspace, a blank `reason`, a missing/empty/absolute/escaping `files` path, a file
+  Vitest no longer collects, or a file that is now *inside* the program all fail the gate. That last
+  one is the point — a package that gets fixed fails until its justification is deleted, which is
+  exactly the drift that left this document wrong in both directions at once.
+  `scripts/check-test-file-typecheck-coverage.test.mjs` (`yarn test:test-file-typecheck-coverage`,
+  chained into root `yarn test`) proves it catches drift rather than merely passing today, with 29
+  throwaway-fixture workspaces covering: the `src/**/__tests__/**` exclusion reintroduced, `typecheck`
+  repointed at a build config that omits `test/`, a file collected by only one `projects:` entry,
+  `setupFiles`/`globalSetup` left outside the program, a spec collected from outside the package (both
+  covered and uncovered), a Vitest config that throws on load, a `.mts` config, two `-p` flags (covered
+  by the second, and by neither), a bare `tsc --noEmit`, a package collecting zero files, the ten-file
+  output cap, and every allowlist shape and staleness case above.
+  Shared mechanics for both gates (workspace discovery, `-p` scraping, program resolution, and path
+  normalization — Vitest reports forward-slashed `C:/…` paths, TypeScript reports platform separators)
+  now live in `scripts/lib/typecheck-programs.mjs`; the config gate's 16 fixtures pass unmodified across
+  that refactor.
 - Per-package scope:
   - Source **+ tests**: `cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`, `integration-tests`,
     `quereus-plugin-sereus` (via `tsconfig.typecheck.json`), `reference-app-rn`,
@@ -594,8 +631,13 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
     that package's `build`, **not** into root `yarn typecheck`, so the fast gate does not cover them)
   - Shippable **source only**, via a dedicated `tsconfig.typecheck.json` that also includes
     `vitest.config.ts` (kept separate from the real `tsconfig.build.json` so widening the typecheck
-    program can't change what `yarn build` emits or where): `strand-proto` — deprecated, and it has no
-    test files anyway, so nothing is hidden by the narrower program
+    program can't change what `yarn build` emits or where): `strand-proto` — deprecated. Its three test
+    files (`test/auto/*.ts`) **are** hidden by that narrower program: Vitest collects them and no `tsc`
+    program includes them. Adding `test` to the include produces 11 errors where the tests have bit-rotted
+    against current libp2p types (4x `TS2353` `peerId` no longer in `Libp2pOptions`, 2x `TS5097` `.ts`
+    import extensions, `TS2339` `Stream.stream`, plus `BootstrapMode` widening), and the package is not
+    being revived — so those three files are explicitly allowlisted in
+    `scripts/test-typecheck-allowlist.json` with that reason recorded there
   - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`) and has
     no test files yet (see `debt-ns-unit-test-harness`)
 - Known coverage gaps:
@@ -604,6 +646,14 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
     `cadre-host`'s `ui/__tests__/*.ts` test files (not `.svelte`) **are** covered, via a second `tsc` pass over
     `ui/tsconfig.json` chained into the package's `typecheck` script. That config's `include` also lists
     `src/**/*.svelte`, which plain `tsc` silently ignores — the entry is there for `svelte-check`, not for this pass.
+  - `check-test-file-typecheck-coverage` has three deliberate blind spots, each marked `NOTE:` at its
+    code site. Only files with a TypeScript extension (`.ts`, `.tsx`, `.mts`, `.cts`) are checked — a
+    `.js` test file cannot sit inside a `tsc` program unless its config sets `allowJs` (none here does)
+    and the repo has zero JS test files today, so such a file would pass unchecked rather than fail
+    unfixably. Collected modules that resolve inside `node_modules` are skipped — a dependency's
+    `globalSetup` is not this repo's code to type-check. And `.svelte` is a non-issue for *this* gate:
+    every Vitest `include` in the repo targets `*.ts`, so no `.svelte` file is ever collected (Svelte
+    coverage remains the separate `svelte-check` gap above).
   - The seven `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
     `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
     `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather

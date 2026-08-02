@@ -26,14 +26,14 @@ const config: KnipConfig = {
 
 	workspaces: {
 		// Root workspace: ignore non-package trees. tess/ is the vendored ticket
-		// runner, ops/ is infra tooling, docs/ is documentation, scripts/ are
-		// release helpers, and test-harness/ is test infrastructure imported by
-		// relative path from several packages' vitest globalSetup files (its
-		// `vitest` import belongs to those consumers' devDependencies, not to the
-		// root manifest) — none are part of the nine product workspaces this gate
-		// guards.
+		// runner, ops/ is infra tooling, docs/ is documentation, and scripts/ are
+		// release + gate helpers — none are part of the nine product workspaces
+		// this gate guards. test-harness/ is *not* ignored: its `vitest` import
+		// now resolves against the root manifest (root declares vitest for
+		// scripts/check-test-file-typecheck-coverage.mjs), so ignoring it draws a
+		// "Remove from ignore" configuration hint and buys nothing.
 		'.': {
-			ignore: ['tess/**', 'ops/**', 'docs/**', 'scripts/**', 'test-harness/**'],
+			ignore: ['tess/**', 'ops/**', 'docs/**', 'scripts/**'],
 		},
 
 		'packages/cadre-cli': {},

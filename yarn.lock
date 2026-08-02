@@ -14988,6 +14988,7 @@ __metadata:
     semver: "npm:^7.7.3"
     typescript: "npm:^5.9.3"
     typescript-eslint: "npm:^8.60.1"
+    vitest: "npm:^4.0.17"
   languageName: unknown
   linkType: soft
 
