@@ -345,3 +345,90 @@ of commit 03a1045 — start implementing directly from this map.
 `cd packages/cadre-core && yarn test 2>&1 | tee /tmp/cadre-core.log`, then `yarn lint`
 and `yarn tsc --noEmit` (check package.json for the exact typecheck script name). No
 integration suite.
+
+## Context map addendum (second run — also budget-stopped before any code change)
+
+A second agent run re-verified the whole map above against the current tree (commit
+4d470e1) and stopped on the soft token budget. **Again no file was modified; the tree is
+clean of this ticket's work.** Every line number in the prior map is still accurate.
+Discovery is DONE — a third run should start editing immediately (Phase 1 schema edit
+first) and not re-read beyond the files named here. New findings this run:
+
+### Mock-based tests WILL break when the filter moves — plan for them
+
+- `packages/cadre-core/test/cadre-node-authorized-surface.spec.ts` injects a FAKE
+  `controlDatabase` (`inject()`, lines 71–82) exposing only `queryCadrePeers` (returns
+  the raw member list verbatim) and `queryRevokedStamps`. Its test at lines 218–241,
+  "drops a fully valid, anchored voucher whose StampId is retired in Revocation", relies
+  on `listAuthorizedMembers` doing the revoked-stamp filtering. Once that filter moves
+  into the real `queryCadrePeers`, this test FAILS (the fake does not filter, and the
+  node no longer does). Re-point it: the fake's `queryCadrePeers` should now model the
+  DB contract (pre-filter revoked rows out of what it returns), and the
+  resurrected-row-vs-tombstone coverage moves to the DB level (see next bullet). The
+  test's final assertion `isMember(A) === true` with comment "Still ADDRESSABLE —
+  revocation is a trust judgment, not an address purge" INVERTS by design under this
+  ticket — a revoked row now disappears from the addressable surface too (that is the
+  point: stop RPC-ing / addressing revoked peers). Update that test, its comment, the
+  spec's header comment (lines 8–19 describe the two surfaces), and the
+  `listMembers`/`isMember` doc comments in cadre-node.ts (lines 3787–3807) which still
+  describe the addressable surface as trust-free.
+- `packages/cadre-core/test/membership-gate-helpers.ts` (lines 87, 111) and
+  `cadre-node-control-cohort.spec.ts` (line 77) also stub `queryRevokedStamps` on fake
+  ControlDatabases. Nothing breaks there (the stub just goes unused on the
+  listAuthorizedMembers path — it is still used by `resolveDeviceToken`), but if a fake's
+  `queryCadrePeers` is made self-filtering, keep the stubs consistent.
+
+### The "planted at a retired stamp" read-path test cannot use real writes
+
+A live row coexisting with its own tombstone is NOT constructible on a real database —
+the write-time constraints forbid both orders and both are deferred, so one transaction
+cannot sneak it in either (`Revocation.RowIsGone` rejects tombstoning a live stamp;
+`CadrePeer.NotRevoked` rejects inserting over a tombstone). The state only arises from
+cross-node replication merge. Two established in-repo patterns for testing it:
+- mock level: `cadre-node-authorized-surface.spec.ts:218` (fake DB returns both), and
+- wrap level: `device-token-registry.spec.ts:284–310` temporarily replaces
+  `db.queryRevokedStamps` with a wrapper that reports an extra stamp while the row still
+  lives, restoring it in a `finally`. This works for the new `queryCadrePeers` /
+  `queryPeerRecord` filtering as long as they read through `this.queryRevokedStamps`
+  (make them do so — do not inline the SQL — precisely so this seam keeps working; worth
+  a one-line comment at the call site).
+So the ticket's read-path case "a CadrePeer row planted at a retired stamp is absent
+from queryCadrePeers()" should use the wrap-level pattern against a REAL database.
+
+### Implementation details settled this run
+
+- `queryPeerRecord`'s SELECT does not currently include `StampId` — add it to the column
+  list to check retirement (row shape `PeerAddressRecord` does NOT gain the field; check
+  and drop, return shape unchanged).
+- `reissueRevocations`: mint all per-row signatures BEFORE entering the locked body —
+  `withWriteLock`'s doc (control-database.ts:1428–1434) requires a retried attempt to
+  re-present the exact same signed message, not re-mint. Any `executed` counter must be
+  reset to 0 at the TOP of the locked body: `lockedWithRetry` re-runs the whole body, so
+  a counter incremented outside the reset double-counts on retry.
+- An UPDATE whose `where StampId = ?` matches nothing is a silent no-op (counted as a
+  statement run, no error). Fine for this ticket's contract ("how many statements ran");
+  the follow-up sweep reads `queryRevocations()` first so it only names stamps it holds.
+- A constraint failure inside the batch propagates out of `inTransaction` (rollback) and
+  is NOT retried by `lockedWithRetry` — the retry classifier only retries transient
+  cluster failures (`control-write-retry.ts`), so the "one bad row rolls back the batch
+  and surfaces" requirement falls out for free.
+- Schema comment sites that name `Immutable` and must be reworded in BOTH schema copies
+  when it splits: the `Authorized` constraint's trailing paragraph ("RowIsGone and
+  Immutable are unchanged…", qsql 694–695) and the table block comment's read-side
+  sentence (qsql 626–627) which credits `CadreNode.listAuthorizedMembers` — re-credit
+  `ControlDatabase.queryCadrePeers` (every membership reader inherits it).
+- `control-authorization.ts` `CONTROL_TABLES` doc (lines 30–33) mentions only the
+  `'remove'`-tagged Revocation digest — extend with a clause for `'reissue'`.
+- No `revocationReissueDigest` helper in `peer-authorization.ts` is needed: the only
+  signer is `ControlDatabase.reissueRevocations`, which uses `buildAuthorizationMessage`
+  (raw-bytes encoding) directly, mirroring `deleteGuardedRow`.
+- `expectConstraintFailure` (control-constraint-helpers.ts) asserts
+  `CHECK constraint failed: <Name>\b` and its doc forbids widening to multiple accepted
+  names — hence the replay spec's Immutable test MUST be restructured into two
+  single-rejector probes (signed update changing StampId → `ReissueOnly`; unsigned
+  counter-only bump → `AuthorizedReissue`; unsigned delete → `NoDelete`), not re-pointed
+  wholesale.
+- `publishSelfRecord` (cadre-node.ts 1337/1371) verified safe under a filtered
+  `queryPeerRecord`: both reads only gate publish-vs-refresh; the insert-if-absent guard
+  lives in `SeedBootstrapService.insertSelfPeerRecord` on raw `queryStampId`. Worst case
+  (own row planted at a retired stamp) falls through to 'skipped' — acceptable.
