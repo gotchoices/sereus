@@ -10,6 +10,7 @@ import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { formationVouchMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { mintJoiner, mintConsent } from './formation-consent-helper.js';
+import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises the node-level approver-key surface — `enrollValidationKey` /
@@ -41,25 +42,6 @@ describe('CadreNode validation-key enrollment', () => {
     };
   }
 
-  async function startSelfOwnerNode(enrollOwner = true): Promise<CadreNode> {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
-
-    const n = new CadreNode({
-      controlNetwork: { partyId: 'validation-key-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
-    await n.start();
-
-    if (enrollOwner) {
-      const db = n.getControlDatabase();
-      expect(db).not.toBeNull();
-      await db!.insertOwnerKey(publicKeyB64);
-    }
-    return n;
-  }
-
   function revocationRow(db: ControlDatabase, stampId: string): Promise<Record<string, unknown> | undefined> {
     return db.getDatabase().get(
       'select TableName, RowKey, StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
@@ -73,7 +55,7 @@ describe('CadreNode validation-key enrollment', () => {
   });
 
   it('enroll → list shows it → remove → list is empty', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const approver = makeApprover();
 
     expect(await node.listValidationKeys()).toEqual([]);
@@ -86,7 +68,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('lists multiple enrolled keys in sorted order', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const keys = [makeApprover().publicKey, makeApprover().publicKey, makeApprover().publicKey];
 
     for (const key of keys) {
@@ -97,7 +79,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('removal writes a Revocation tombstone retiring the row\'s stamp', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const db = node.getControlDatabase()!;
     const approver = makeApprover();
 
@@ -116,7 +98,7 @@ describe('CadreNode validation-key enrollment', () => {
   it('re-enrolling the same key after removal succeeds on a fresh stamp', async () => {
     // The tombstone retires ONE stamp, not the key — so rotation (add → remove → add) must
     // still work, and the retired stamp must stay retired.
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const db = node.getControlDatabase()!;
     const approver = makeApprover();
 
@@ -134,7 +116,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('removing a key that is not enrolled is a silent no-op (no throw, no tombstone)', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const db = node.getControlDatabase()!;
     const absent = makeApprover();
 
@@ -148,7 +130,7 @@ describe('CadreNode validation-key enrollment', () => {
     // The schema's approval CHECKs run at write time, so removing an approver key narrows
     // who may approve FUTURE redemptions only. If someone later "fixes" removal into a
     // retroactive revocation, this test fails — which is the point.
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const db = node.getControlDatabase()!;
     const nodeOwner = ed25519KeyPairFromLibp2p((node as unknown as { identityKey: Parameters<typeof ed25519KeyPairFromLibp2p>[0] }).identityKey);
     const signAsOwner = (message: Uint8Array): string =>
@@ -197,7 +179,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('rejects an empty or whitespace-only key before any write', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
     const db = node.getControlDatabase()!;
 
     for (const blank of ['', '   ', '\t\n']) {
@@ -210,7 +192,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('rejects a malformed (non-base64url or wrong-length) key before any write', async () => {
-    node = await startSelfOwnerNode();
+    ({ node } = await startSelfOwnerNode('validation-key-'));
 
     await expect(node.enrollValidationKey('not-a-real-key')).rejects.toThrow(
       /validation key must be a base64url-encoded (Ed25519 public key|32-byte Ed25519 public key)/i,
@@ -222,7 +204,7 @@ describe('CadreNode validation-key enrollment', () => {
   it('rejects when the node is not an enrolled owner (constraint propagates, nothing lands)', async () => {
     // Self-signing key present (past the "no signing key" guard) but not in OwnerKey, so
     // ValidationKey.AuthorizedInsert rejects the write.
-    node = await startSelfOwnerNode(false);
+    ({ node } = await startSelfOwnerNode('validation-key-', { enrollOwner: false }));
     const approver = makeApprover();
 
     await expect(node.enrollValidationKey(approver.publicKey)).rejects.toThrow();
