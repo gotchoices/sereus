@@ -72,6 +72,29 @@ function withPeerId(addr: string, peerId: string): string {
   return addr.includes('/p2p/') ? addr : `${addr}/p2p/${peerId}`;
 }
 
+/** A node-local store envelope as `@serfab/cadre-core` snapshot-writes it. */
+interface NodeLocalEnvelope {
+  version: number;
+  partyId: string;
+  owners?: Record<string, unknown>;
+  peers?: Record<string, unknown>;
+}
+
+/**
+ * The single `<name>.<encoded party>.json` node-local store in `dir`, parsed —
+ * or undefined while it has not been written yet. The party component is
+ * filename-encoded by cadre-core, so match on the name prefix and check the
+ * envelope's own `partyId` instead of rebuilding the encoding here.
+ *
+ * NOTE: takes the first prefix match; a donated node serves exactly one party
+ * today. If a workdir ever holds several parties' stores, select by encoded
+ * party rather than by prefix.
+ */
+function readNodeLocalStore(dir: string, name: string): NodeLocalEnvelope | undefined {
+  const file = readdirSync(dir).find((f) => f.startsWith(`${name}.`) && f.endsWith('.json'));
+  return file ? (JSON.parse(readFileSync(join(dir, file), 'utf8')) as NodeLocalEnvelope) : undefined;
+}
+
 describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)', () => {
   let tmpRoot: string;
   let requesterOrch: HostProcessOrchestrator;
@@ -259,14 +282,25 @@ describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)'
     expect(peerIdFromPrivateKey(key).toString()).toBe(peerInfo.peerId);
 
     // Both stores are written on seed intake, which lags applySeed's response.
+    // They are snapshot-written only from a `put`, so a file existing already
+    // means at least one entry landed — but assert the payload anyway, since
+    // "some file with the right prefix" would also pass for a foreign party or
+    // a stranger's key.
     await waitUntil(
-      async () => {
-        const files = readdirSync(workdir);
-        return files.some((f) => f.startsWith('bootstrap-peers.') && f.endsWith('.json'))
-          && files.some((f) => f.startsWith('trusted-owners.') && f.endsWith('.json'));
-      },
+      async () =>
+        !!readNodeLocalStore(workdir, 'bootstrap-peers') && !!readNodeLocalStore(workdir, 'trusted-owners'),
       { timeoutMs: OP_MS, intervalMs: 500, description: 'node-local stores materialise in the donated workdir' },
     );
+
+    // The retained cold-start dial target is the requester owner the seed
+    // nominated, and the anchored owner key is the one the node was pinned to.
+    const peers = readNodeLocalStore(workdir, 'bootstrap-peers')!;
+    expect(peers.partyId).toBe(partyId);
+    expect(Object.keys(peers.peers ?? {})).toContain(requesterPeerId);
+
+    const owners = readNodeLocalStore(workdir, 'trusted-owners')!;
+    expect(owners.partyId).toBe(partyId);
+    expect(Object.keys(owners.owners ?? {})).toContain(requesterOwnerKey);
   }, OP_MS + 5_000);
 
   it('step 7: terminate removes the node and marks the donation terminated', async () => {

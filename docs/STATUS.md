@@ -413,7 +413,10 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   (`tickets/backlog/feat-cadre-host-wan-grant-reachability.md`); v1 donation is loopback-only.
 - [x] Cross-package node-donation integration test (a real cadre-cli requester ↔ a donated node) —
   `packages/integration-tests/src/scenarios/cadre-host-node-donation.integration.ts`, drives
-  `DonationService` directly (5/5 steps green).
+  `DonationService` directly (6/6 steps green). Step 6b also asserts what the donated child left on
+  disk: `identity.key` decoding to the peer id the requester approved, plus node-local
+  `bootstrap-peers.<party>.json` / `trusted-owners.<party>.json` carrying the requester's peer id and
+  pinned owner key.
 
 ## Testing / CI
 
