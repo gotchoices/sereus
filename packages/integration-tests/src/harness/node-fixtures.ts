@@ -43,6 +43,8 @@ export interface ControlNodeOpts {
   enableRelay?: boolean;
   listenAddrs?: string[];
   hibernation?: boolean;
+  /** Which strands this node participates in (default `'all'`). */
+  strandFilter?: 'all' | 'none';
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
   /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
@@ -63,7 +65,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
   return {
     controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
     profile: opts.profile ?? 'transaction',
-    strandFilter: { mode: 'all' },
+    strandFilter: { mode: opts.strandFilter ?? 'all' },
     storage: { provider: () => new MemoryRawStorage() },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
@@ -132,8 +134,13 @@ export async function peerStoreAddrsFor(node: CadreNode, remotePeerId: string): 
   }
 }
 
+/** The control node's currently-observed multiaddrs as strings. */
+export function controlAddrs(node: CadreNode): string[] {
+  return node.getControlNode()!.getMultiaddrs().map((ma) => ma.toString());
+}
+
 /** Wait until `node`'s control libp2p reports an open connection to `peerId`. */
-async function waitForControlConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
+export async function waitForControlConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
   const controlNode = node.getControlNode()!;
   await waitUntil(() => controlNode.getConnections().some((c) => c.remotePeer.toString() === peerId), {
     timeoutMs: 15_000,

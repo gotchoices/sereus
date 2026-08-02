@@ -30,49 +30,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { CadreNode, ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { waitUntil } from '../harness/index.js';
+import { CadreNode } from '@serfab/cadre-core';
+import { waitUntil, controlNodeConfig, makeOwnOwner, waitForControlConnection } from '../harness/index.js';
 
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
-
-function nodeConfig(partyId: string, privateKey?: PrivateKey): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId, bootstrapNodes: [] },
-		profile: 'transaction',
-		strandFilter: { mode: 'none' },
-		storage: { provider: () => new MemoryRawStorage() },
-		...(privateKey ? { privateKey } : {}),
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-		},
-	};
-}
-
-/** Genesis: enroll the node's own derived key and wire seed-bootstrap (anchors it). */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
-}
-
-/** Wait until `node`'s control node reports a live connection to `peerId`. */
-async function waitForConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
-	await waitUntil(
-		() => node.getControlNode()!.getConnections().some((c) => c.remotePeer.toString() === peerId),
-		{ timeoutMs: 15_000, intervalMs: 250, description }
-	);
+function nodeConfig(partyId: string, privateKey?: PrivateKey) {
+	return controlNodeConfig({ partyId, privateKey, strandFilter: 'none' });
 }
 
 describe('E2E control-network membership connection gater', () => {
@@ -129,14 +94,14 @@ describe('E2E control-network membership connection gater', () => {
 			member = new CadreNode(nodeConfig('gater-party', memberKey));
 			await member.start();
 			await member.getControlNode()!.dial(rxAddr);
-			await waitForConnection(Rx, memberPeerId, 'receiver admits its authorized member');
-			await waitForConnection(member, rxPeerId, 'member sees the receiver connection');
+			await waitForControlConnection(Rx, memberPeerId, 'receiver admits its authorized member');
+			await waitForControlConnection(member, rxPeerId, 'member sees the receiver connection');
 
 			// ── 3. Enrollment carve-out: createInvite re-opens the door ────────────
 			const { invite } = await Rx.createInvite('gater-invite-token', 60_000);
 			expect(invite.token).toBe('gater-invite-token');
 			await outsider.getControlNode()!.dial(rxAddr);
-			await waitForConnection(Rx, outsiderPeerId, 'receiver admits a stranger during the invite window');
+			await waitForControlConnection(Rx, outsiderPeerId, 'receiver admits a stranger during the invite window');
 		} finally {
 			await Promise.allSettled([outsider?.stop(), member?.stop(), Rx?.stop()]);
 		}
@@ -183,7 +148,7 @@ describe('E2E control-network membership connection gater', () => {
 			// Minting an open invitation is what says "I expect a stranger".
 			await Rx.createOpenInvitation('gater-formation-sapp', 60_000);
 			await outsiderNode.dial(rxAddr);
-			await waitForConnection(Rx, outsiderPeerId, 'receiver admits a stranger while an invitation is outstanding');
+			await waitForControlConnection(Rx, outsiderPeerId, 'receiver admits a stranger while an invitation is outstanding');
 		} finally {
 			await Promise.allSettled([outsider?.stop(), Rx?.stop()]);
 		}
@@ -202,7 +167,7 @@ describe('E2E control-network membership connection gater', () => {
 			const strangerPeerId = stranger.peerId!.toString();
 
 			await stranger.getControlNode()!.dial(freshAddr);
-			await waitForConnection(fresh, strangerPeerId, 'un-enrolled node admits an unknown dialer');
+			await waitForControlConnection(fresh, strangerPeerId, 'un-enrolled node admits an unknown dialer');
 		} finally {
 			await Promise.allSettled([stranger?.stop(), fresh?.stop()]);
 		}

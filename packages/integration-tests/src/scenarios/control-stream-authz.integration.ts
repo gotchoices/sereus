@@ -43,23 +43,16 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
-import { MemoryRawStorage, RepoClient } from '@optimystic/db-p2p';
+import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
-import { CadreNode, ed25519KeyPairFromLibp2p, collectStrandAddrs } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { waitUntil } from '../harness/index.js';
-
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
+import { CadreNode, collectStrandAddrs } from '@serfab/cadre-core';
+import { controlNodeConfig, makeOwnOwner, waitForControlConnection, waitUntil } from '../harness/index.js';
 
 interface NodeOpts {
 	partyId: string;
@@ -68,37 +61,13 @@ interface NodeOpts {
 	enableRelay?: boolean;
 }
 
-function nodeConfig(opts: NodeOpts): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'none' },
-		storage: { provider: () => new MemoryRawStorage() },
-		...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
-		network: {
-			transports: wsTransports(),
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
-		},
-		hibernation: { enabled: false },
-	};
-}
-
-/** Genesis: enroll the node's own derived key and wire seed-bootstrap (anchors it). */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
+function nodeConfig(opts: NodeOpts) {
+	return controlNodeConfig({ ...opts, strandFilter: 'none' });
 }
 
 /** Wait until `node`'s control node reports a live connection to `peerId`. */
 async function waitForConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
-	await waitUntil(
-		() => node.getControlNode()!.getConnections().some((c) => c.remotePeer.toString() === peerId),
-		{ timeoutMs: 15_000, intervalMs: 250, description }
-	);
+	await waitForControlConnection(node, peerId, description);
 }
 
 /**
