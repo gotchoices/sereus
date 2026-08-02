@@ -1,11 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import debug from 'debug';
-import {
-  generatePrivateKey,
-  getPublicKey,
-  sign as cryptoSign,
-  randomBytes,
-} from '@optimystic/quereus-plugin-crypto';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Database } from '@quereus/quereus';
@@ -14,7 +8,16 @@ import { buildAuthorizationMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { cadrePeerVoucherDigest, cadrePeerRemoveDigest, deviceTokenAddDigest } from '../src/peer-authorization.js';
 import type { DeviceTokenAuthorizedRow } from '../src/peer-authorization.js';
-import { expectConstraintFailure } from './control-constraint-helpers.js';
+import {
+  expectConstraintFailure,
+  freshKeyPair,
+  freshStamp,
+  signAs,
+  signB64,
+  revocationMessage,
+  reissueMessage,
+  type KeyPair,
+} from './control-constraint-helpers.js';
 import { mintConsent } from './formation-consent-helper.js';
 
 /**
@@ -42,8 +45,11 @@ import { mintConsent } from './formation-consent-helper.js';
  *     replay itself;
  *   - `RevocationRecorded` (on the guarded tables) refuses a delete that does not carry
  *     the matching tombstone in the same transaction — a bare delete would free the stamp;
- *   - `RowIsGone` / `Immutable` (on Revocation) keep the tombstone honest: a stamp may
- *     only be retired once its row is gone, and never un-retired;
+ *   - `RowIsGone` / `NoDelete` / `FreshTombstone` / `ReissueOnly` (on Revocation) keep
+ *     the tombstone honest: a stamp may only be retired once its row is gone, never
+ *     un-retired, and the only mutable column is the `ReissuedAt` re-broadcast counter
+ *     (owner-signed, monotonic — see `control-revocation-reissue.spec.ts` for the
+ *     re-issue coverage, including `AuthorizedReissue`);
  *   - `Authorized` (on Revocation) makes the append itself an owner action — retiring a
  *     stamp evicts a peer party-wide and permanently forecloses re-admitting that row, so
  *     an unauthenticated append was both a flooding surface and a remote eviction /
@@ -56,38 +62,14 @@ import { mintConsent } from './formation-consent-helper.js';
  * one founding owner: these probes mutate the owner set and peer table, so a shared
  * database would leak state between them.
  *
- * NOTE: this file covers four constraints and is past 1200 lines. It stays whole because
- * every section shares the same fixture and signing helpers; if the `Authorized` section
- * keeps growing, split it into its own spec and lift the shared helpers into
- * `control-constraint-helpers.ts` rather than duplicating them.
+ * NOTE: this file covers four constraints and is past 1200 lines. The split the earlier
+ * note here called for has happened: the `ReissuedAt` re-issue coverage lives in
+ * `control-revocation-reissue.spec.ts`, and the shared signing fixtures (`freshKeyPair`,
+ * `freshStamp`, `signAs`, `signB64`, `revocationMessage`, `reissueMessage`) were lifted
+ * into `control-constraint-helpers.ts` rather than duplicated.
  */
 
 const log = debug('sereus:cadre:test:revocation-replay');
-
-interface KeyPair {
-  privateKey: string;
-  publicKey: string;
-}
-
-function freshKeyPair(): KeyPair {
-  const privateKey = generatePrivateKey('ed25519', 'base64url') as string;
-  return {
-    privateKey,
-    publicKey: getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string,
-  };
-}
-
-const freshStamp = (): string => randomBytes(256, 'base64url') as string;
-
-/** ed25519-sign the raw canonical message bytes (no pre-hash), as the schema's verify expects. */
-function signAs(kp: KeyPair, message: Uint8Array): string {
-  return cryptoSign(message, kp.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
-}
-
-/** ed25519-sign a base64url digest STRING (the peer-authorization helper encoding). */
-function signB64(kp: KeyPair, digestB64url: string): string {
-  return cryptoSign(digestB64url, kp.privateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
-}
 
 /** The enrollment message the insert branch binds: digest('CadreControl.OwnerKey', 'add', new.Key, new.StampId). */
 const enrollMessage = (key: string, stampId: string): Uint8Array =>
@@ -113,10 +95,6 @@ const strandAddMessage = (
 /** `Strand`'s delete branch binds only the stored (Id, StampId) — a distinct, narrower digest. */
 const strandRemoveMessage = (id: string, stampId: string): Uint8Array =>
   buildAuthorizationMessage('CadreControl.Strand', 'remove', [id, stampId]);
-
-/** `Revocation.Authorized` binds the whole tombstone row under its own domain tag. */
-const revocationMessage = (tableName: string, rowKey: string, stampId: string): Uint8Array =>
-  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
 
 describe('Revocation: remove-then-replay resurrection is closed', () => {
   let node: CadreNode;
@@ -1037,37 +1015,66 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     await expectConstraintFailure(tombstoneStamp('FormationInvite', 'fi-not-revocable', freshStamp()), 'RowIsGone');
   }, 60_000);
 
-  it('Revocation: a tombstone is permanent — delete and update are both refused (Immutable)', async () => {
+  it('Revocation: a tombstone is permanent — delete refused, and update may move only the counter (NoDelete / ReissueOnly / AuthorizedReissue)', async () => {
     // Retiring a never-existing stamp is allowed and harmless: a stamp carries 128 bits of
     // CSPRNG output, so a future legitimate stamp cannot collide with a pre-planted tombstone.
+    // Every write below keys on StampId ALONE — matching production (reissueRevocations) —
+    // because equality over the full composite primary key (TableName, StampId) hits the
+    // point-lookup descent that has been observed missing an existing row (see the statement
+    // comment in reissueRevocations).
+    const rowKey = '12D3KooWOrphanTombstoneTarget';
     const orphan = freshStamp();
-    await tombstoneStamp('CadrePeer', '12D3KooWOrphanTombstoneTarget', orphan);
+    await tombstoneStamp('CadrePeer', rowKey, orphan);
 
+    // Withdrawal is dead outright: NoDelete is the only on-delete constraint, so the
+    // unsigned shape pins it alone (control-revocation-reissue.spec.ts pins the
+    // owner-signed shape).
+    await expectConstraintFailure(
+      rawDb.exec('delete from CadreControl.Revocation where StampId = ?', [orphan]),
+      'NoDelete',
+    );
+
+    // An update that touches the identity is refused even when FULLY owner-authorized:
+    // the founder signs the reissue digest over the NEW values and the counter moves
+    // upward, so AuthorizedReissue passes and the identity clause of ReissueOnly is the
+    // single rejector.
+    const rotatedStamp = freshStamp();
     await expectConstraintFailure(
       rawDb.exec(
-        'delete from CadreControl.Revocation where TableName = ? and StampId = ?',
-        ['CadrePeer', orphan],
+        `update CadreControl.Revocation
+           with context OwnerKey = ?, Signature = ?
+           set StampId = ?, ReissuedAt = 1
+           where StampId = ?`,
+        [
+          founder.publicKey,
+          signAs(founder, reissueMessage('CadrePeer', rowKey, rotatedStamp, 1)),
+          rotatedStamp,
+          orphan,
+        ],
       ),
-      'Immutable',
+      'ReissueOnly',
     );
+
+    // And a counter-only bump is an OWNER action: identity untouched and moving upward,
+    // so ReissueOnly passes and AuthorizedReissue is the single rejector of the unsigned
+    // shape. (The accept direction lives in control-revocation-reissue.spec.ts.)
     await expectConstraintFailure(
-      rawDb.exec(
-        'update CadreControl.Revocation set StampId = ? where TableName = ? and StampId = ?',
-        [freshStamp(), 'CadrePeer', orphan],
-      ),
-      'Immutable',
+      rawDb.exec('update CadreControl.Revocation set ReissuedAt = 1 where StampId = ?', [orphan]),
+      'AuthorizedReissue',
     );
+
     const still = await rawDb.get(
-      'select StampId from CadreControl.Revocation where TableName = ? and StampId = ?',
-      ['CadrePeer', orphan],
+      'select StampId, ReissuedAt from CadreControl.Revocation where StampId = ?',
+      [orphan],
     );
     expect(still).toBeDefined();
+    expect(Number(still?.ReissuedAt)).toBe(0);
   }, 60_000);
 
   // ── Appending a tombstone is itself an OWNER action (Authorized) ───────────
   //
-  // `RowIsGone` and `Immutable` above only constrain WHEN a stamp may be retired and that
-  // retirement sticks — neither asks WHO is retiring it. Without `Authorized` any writer
+  // `RowIsGone` and `NoDelete` / `ReissueOnly` above only constrain WHEN a stamp may be
+  // retired and that retirement sticks — none asks WHO is retiring it. Without `Authorized` any writer
   // reaching the replicated control database could append here, and the two concrete
   // consequences (measured before the constraint landed) are inverted in the FLOOD and
   // PRE-BLOCK tests below.

@@ -1,4 +1,11 @@
 import { expect } from 'vitest';
+import {
+  generatePrivateKey,
+  getPublicKey,
+  sign as cryptoSign,
+  randomBytes,
+} from '@optimystic/quereus-plugin-crypto';
+import { buildAuthorizationMessage } from '../src/control-database.js';
 
 /**
  * Assert a control-plane write was rejected by one of the NAMED CHECK constraints, not by
@@ -48,3 +55,55 @@ export function expectUniqueViolation(write: Promise<unknown>, ...columns: strin
     new RegExp(`UNIQUE constraint failed: ${escaped.join(', ')}`, 'i'),
   );
 }
+
+// ── Shared signing fixtures for the CadreControl authorization suites ─────────
+//
+// Lifted from `control-revocation-replay.spec.ts` when the `Revocation` re-issue
+// coverage split into its own spec (`control-revocation-reissue.spec.ts`) — both
+// suites drive the same owner-signed write shapes and must agree on how a test
+// owner signs.
+
+export interface KeyPair {
+  privateKey: string;
+  publicKey: string;
+}
+
+export function freshKeyPair(): KeyPair {
+  const privateKey = generatePrivateKey('ed25519', 'base64url') as string;
+  return {
+    privateKey,
+    publicKey: getPublicKey(privateKey, 'ed25519', 'base64url', 'base64url') as string,
+  };
+}
+
+/** A fresh one-off `StampId` nonce, sized like production's (generateStampId). */
+export const freshStamp = (): string => randomBytes(256, 'base64url') as string;
+
+/** ed25519-sign the raw canonical message bytes (no pre-hash), as the schema's verify expects. */
+export function signAs(kp: KeyPair, message: Uint8Array): string {
+  return cryptoSign(message, kp.privateKey, 'ed25519', 'bytes', 'base64url', 'base64url') as string;
+}
+
+/** ed25519-sign a base64url digest STRING (the peer-authorization helper encoding). */
+export function signB64(kp: KeyPair, digestB64url: string): string {
+  return cryptoSign(digestB64url, kp.privateKey, 'ed25519', 'base64url', 'base64url', 'base64url') as string;
+}
+
+/** `Revocation.Authorized` binds the whole tombstone row under its own domain tag. */
+export const revocationMessage = (tableName: string, rowKey: string, stampId: string): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Revocation', 'remove', [tableName, rowKey, stampId]);
+
+/**
+ * `Revocation.AuthorizedReissue` binds the identity triple PLUS the new counter under the
+ * distinct 'reissue' action tag. `reissuedAt` rides as `String(reissuedAt)` because the
+ * schema digests `cast(new.ReissuedAt as text)` — every digest field is TEXT on both
+ * sides (see `buildAuthorizationMessage`), and the pairing is pinned end-to-end by the
+ * happy-path test in `control-revocation-reissue.spec.ts`.
+ */
+export const reissueMessage = (
+  tableName: string,
+  rowKey: string,
+  stampId: string,
+  reissuedAt: number,
+): Uint8Array =>
+  buildAuthorizationMessage('CadreControl.Revocation', 'reissue', [tableName, rowKey, stampId, String(reissuedAt)]);

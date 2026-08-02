@@ -16,6 +16,11 @@ import { MemoryTrustedOwnerStore, type TrustedOwnerStore } from '../src/trusted-
  * against an owner key pinned in the NODE-LOCAL trusted-owner anchor — and self
  * is excluded. Fail-closed on every missing piece. The control-network wake and
  * strand-address gates consult the authorized surface.
+ *
+ * A peer whose `StampId` is retired in `CadreControl.Revocation` is on NEITHER
+ * surface: the filter lives in `ControlDatabase.queryCadrePeers` (rows are dropped
+ * before any reader sees them), and both surfaces inherit it — a revoked peer is
+ * neither trusted nor dialable.
  */
 
 function createConfig(): CadreNodeConfig {
@@ -69,12 +74,18 @@ function bareRow(peerId: string, multiaddr: string | null = null): PeerRow {
  * `anchor` omitted → the pre-start shape (no trusted-owner store at all).
  */
 function inject(node: CadreNode, opts: { selfPeerId: string; members: PeerRow[]; anchor?: TrustedOwnerStore; revoked?: Set<string> }): void {
+  const revoked = opts.revoked ?? new Set<string>();
   (node as unknown as { controlNode: unknown }).controlNode = {
     peerId: { toString: () => opts.selfPeerId }
   };
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
-    queryCadrePeers: async () => opts.members,
-    queryRevokedStamps: async () => opts.revoked ?? new Set<string>()
+    // The real ControlDatabase.queryCadrePeers drops any row whose StampId is retired
+    // in Revocation BEFORE any reader sees it; the fake mirrors that contract so these
+    // tests exercise the surfaces exactly as the node reads them.
+    queryCadrePeers: async () => opts.members.filter(row => row.stampId === null || !revoked.has(row.stampId)),
+    // Models the DB surface; the membership reads under test no longer call it (the
+    // filter moved into queryCadrePeers), but resolveDeviceToken still does.
+    queryRevokedStamps: async () => revoked
   };
   if (opts.anchor) {
     (node as unknown as { trustedOwnerStore: TrustedOwnerStore }).trustedOwnerStore = opts.anchor;
@@ -216,13 +227,14 @@ describe('CadreNode addressable-vs-authorized surface', () => {
   });
 
   it('drops a fully valid, anchored voucher whose StampId is retired in Revocation', async () => {
-    // Mock-level is the ONLY place this state is constructible: on a real database the
-    // write-time constraints themselves forbid a live row coexisting with its tombstone
-    // (`Revocation.RowIsGone` blocks tombstoning a live row; the guarded table's
-    // `NotRevoked` blocks re-inserting over a tombstone). The coexistence models the
-    // cross-node CONVERGENCE race — a node accepts a replayed admission before the
-    // tombstone arrives, then both rows merge in via replication, not local writes.
-    // Readers must treat the tombstone as authoritative.
+    // The live-row-plus-tombstone coexistence is only constructible at the mock level:
+    // on a real database the write-time constraints forbid it (`Revocation.RowIsGone`
+    // blocks tombstoning a live row; the guarded table's `NotRevoked` blocks
+    // re-inserting over a tombstone). It models the cross-node CONVERGENCE race — a
+    // node accepts a replayed admission before the tombstone arrives, then both rows
+    // merge in via replication, not local writes. The tombstone is authoritative, and
+    // the filter that enforces it lives in the real ControlDatabase.queryCadrePeers
+    // (the fake mirrors that contract — see inject).
     const node = new CadreNode(createConfig());
     const owner = makeOwner();
     const resurrected = vouchedRow(A, owner, { multiaddr: '/ip4/2.2.2.2/tcp/2' });
@@ -236,8 +248,9 @@ describe('CadreNode addressable-vs-authorized surface', () => {
     expect((await node.listAuthorizedMembers()).map(m => m.peerId)).toEqual([B]);
     expect(await node.isAuthorizedMember(A)).toBe(false);
     expect(await node.isAuthorizedMember(B)).toBe(true);
-    // Still ADDRESSABLE — revocation is a trust judgment, not an address purge.
-    expect(await node.isMember(A)).toBe(true);
+    // NOT addressable either — revocation removes the peer from BOTH surfaces, by
+    // design: a revoked peer must not be dialed, RPC'd, or handed out as an address.
+    expect(await node.isMember(A)).toBe(false);
   });
 
   it('authorizes no one when the anchor is empty (cold-start / not-yet-enrolled node)', async () => {
