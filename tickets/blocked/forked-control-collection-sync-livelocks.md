@@ -1,7 +1,7 @@
 ----
 description: Once a control-database write has been committed by a node that was alone, that node and its sibling hold two different histories of the same table. When they reconnect, every later write from the alone node fails instead of reconciling — the write layer keeps asking for a revision number the other side has already used, ten times, then gives up. The retry loop lives in the sibling optimystic repo, so it cannot be fixed here.
 prereq:
-files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 285-370, updateInternal ~line 125-185 — the actionContext assignment on line 184), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection ~line 710-737), packages/integration-tests/src/scenarios/zz-scratch-delete-alone.integration.ts (the scenario that provokes the fork), tickets/plan/10-control-delete-while-alone-tombstone.md (the sereus-side gap that creates the fork)
+files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 285-370, updateInternal ~line 125-185 — the actionContext assignment on line 184), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection ~line 710-737), packages/integration-tests/src/scenarios/control-delete-while-alone-convergence.integration.ts (successor of the deleted zz-scratch experiment; currently dies EARLIER, in setup — see "The failing test"), packages/cadre-core/src/control-database.ts + packages/cadre-core/src/cadre-node.ts (the shipped Revocation tombstone + growth-edge drain — converges the revocation, does NOT remove the fork; see "Alternative unblock")
 difficulty: medium
 ----
 
@@ -18,27 +18,47 @@ landed and rebuilt (`cd ../optimystic && yarn workspace @optimystic/db-core buil
 Then re-run the failing scenario and delete this ticket's entry from
 `tickets/.pre-existing-known.md`.
 
-**Alternative unblock, entirely in this repo:** `tickets/plan/10-control-delete-while-alone-tombstone`
-closes the gap that *creates* the fork. If a control write can no longer commit
-local-only, the scenario below can no longer construct two histories, and the
-failure goes away without the upstream fix. That is a mitigation of the trigger,
-not of the livelock — a fork arriving by any other route (a partition, a restore
-from an older snapshot) would hit the same wall.
+**Alternative unblock — corrected 2026-08-01: there is none in this repo.** An earlier
+version of this section pointed at the plan ticket
+`10-control-delete-while-alone-tombstone` as closing the gap that *creates* the fork.
+That plan has since shipped, as `control-revocation-reissuable-tombstone` +
+`control-revocation-drain-on-growth` — and **it does not remove the fork.** What shipped
+converges the *`Revocation` tombstone*: every guarded delete writes an owner-signed
+tombstone row retiring the removed row's stamp, membership reads treat a retired stamp
+as absent, and a tombstone that committed while the node was alone is re-issued (an
+owner-signed monotonic `ReissuedAt` bump) on the next cohort-growth edge. But
+`removePeer` still commits a local-only `CadrePeer` **delete** while alone — the shipped
+work makes the *revocation* durable, it does not prevent the two-histories fork in the
+`CadrePeer` collection itself. The sequence this ticket describes still constructs the
+fork, and the livelock remains reachable. The only unblock is the upstream fix.
 
-> **Scope correction, 2026-07-31 — that alternative unblock is narrower than it reads.**
+> **Scope note, 2026-07-31 (still stands):**
 > `tickets/blocked/strand-unique-index-sync-stale-revision` records the *same* error class
 > at the *same* throwing line (`Collection.syncInternal`, `collection.ts:341`) reached with
 > **no fork at all**: a plain two-node closed strand doing ordinary membership writes —
-> nothing partitioned, nothing restarted, no local-only commit anywhere. Removing this
-> scenario's fork would therefore silence *this* file and leave that one failing. The
-> revision pairs differ in kind too (here rev 9 / requested 9, the coordinator level with
-> the request; there rev 2 / requested 1, a client context that never left zero), so the
-> two may not share a single root cause. Treat plan ticket 10 as removing one trigger, not
-> as closing out `Collection`'s sync loop.
+> nothing partitioned, nothing restarted, no local-only commit anywhere. The revision pairs
+> differ in kind too (here rev 9 / requested 9, the coordinator level with the request;
+> there rev 2 / requested 1, a client context that never left zero), so the two may not
+> share a single root cause. Even a hypothetical fix that stopped the fork forming would
+> remove one trigger, not close out `Collection`'s sync loop.
 
 ## The failing test
 
-`packages/integration-tests/src/scenarios/zz-scratch-delete-alone.integration.ts`
+**Status 2026-08-01:** the scratch experiment this section measured
+(`zz-scratch-delete-alone.integration.ts`) has been deleted by its owning ticket and
+replaced with the real scenario
+`packages/integration-tests/src/scenarios/control-delete-while-alone-convergence.integration.ts`
+(two tests: reconnect convergence, and restart durability of the tombstone sweep). The
+successor **does not currently reach the fork this ticket is about**: both of its tests
+die at ~15 s in Phase 1 setup (authorize a peer, converge it to the sibling — before any
+delete happens) with the *other* class's fingerprint — `SyncRetryExhaustedError …
+default/CadrePeer … at rev 3 (resp. 4), requested rev 1` — tracked under
+`tickets/blocked/control-db-cross-node-convergence-halted`. Once that class clears, the
+successor scenario is the repro for this ticket. The measurements below are from the
+deleted scratch file (2026-07-31) and remain the only direct observation of the fork
+livelock itself.
+
+`zz-scratch-delete-alone.integration.ts` (deleted)
 → `SCRATCH delete-while-alone v2 > does a genuinely local-only removePeer reach a sibling that already has the row?`
 
 ```
@@ -73,9 +93,10 @@ fallback broadcast, `A.registerSelf()` or `A.authorizePeer(yPeerId)`, i.e. the f
 
 ## What the scenario builds
 
-The file is a committed scratch experiment owned by
-`tickets/plan/10-control-delete-while-alone-tombstone` (its header says so, and says to
-delete it when the experiment settles). It deliberately manufactures a fork:
+The scratch file was a committed experiment owned by the delete-while-alone plan work
+(shipped as `control-revocation-reissuable-tombstone` + `control-revocation-drain-on-growth`;
+the experiment settled and the file was deleted per its own header). It deliberately
+manufactured a fork — the successor scenario keeps the same phase structure:
 
 1. A and B up, peer X authorized, X converged onto B.
 2. B stopped; A restarted on the same `MemoryRawStorage`; A now has zero connections.
@@ -84,8 +105,9 @@ delete it when the experiment settles). It deliberately manufactures a fork:
 4. B restarts and reconnects, still holding X. A then issues more `CadrePeer` writes.
 
 So by step 4 the two nodes hold different content at the same revision height. The
-experiment's own question (does the alone delete reach B?) is answered `false` on both
-paths — that finding belongs to plan ticket 10 and is not what this ticket is about.
+experiment's own question (does the alone delete reach B?) was answered `false` on both
+paths — that finding drove the now-shipped tombstone + drain work and is not what this
+ticket is about.
 
 ## The upstream defect
 
@@ -165,7 +187,7 @@ way as `tickets/blocked/report-dependency-floor-bump-to-embedding-app.md`.
 
 ## Do not
 
-- Do not skip, delete, or loosen the scratch test to make the suite green. It is scratch,
-  and plan ticket 10 may legitimately delete it once the experiment settles — but that
-  disposition belongs to that ticket with a human's sign-off, not to a triage pass hiding
-  a reproducible failure.
+- Do not skip, delete, or loosen `control-delete-while-alone-convergence.integration.ts`
+  to make the suite green. (The old scratch file's deletion was its owning ticket's
+  documented disposition once the experiment settled — not a triage pass hiding a
+  failure; the successor scenario covers landed behaviour and stays.)

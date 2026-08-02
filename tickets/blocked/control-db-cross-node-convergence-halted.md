@@ -1,7 +1,7 @@
 ----
 description: When two or more machines share a cadre, a row written on one of them no longer reaches the others. Most writes now fail outright after about twenty seconds of retrying, and the ones that do succeed never show up on the second machine. This affects every multi-machine scenario in the integration suite. The defect is in the shared database library kept in the sibling `optimystic` checkout, so it cannot be fixed here.
 prereq:
-files: packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts (scenario 2, circuit-relay), ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 340-410, updateInternal ~line 180-250, createOrOpen/open/probeHeader ~line 60-140), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection), ../optimystic/tickets/blocked/two-node-convergence-acceptance-cross-repo-build.md
+files: packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/control-delete-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts (scenario 2, circuit-relay), ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 340-410, updateInternal ~line 180-250, createOrOpen/open/probeHeader ~line 60-140), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection), ../optimystic/tickets/blocked/two-node-convergence-acceptance-cross-repo-build.md
 difficulty: hard
 ----
 
@@ -50,6 +50,7 @@ Confirmed failing against clean optimystic `bf7e3d2`:
 | `control-cohort-cold-start-retry.integration.ts` — `B recovers from a refused seed dial and converges on a later reconcile pass` | `SyncRetryExhaustedError` — `default/CadrePeer`, **at rev 6, requested rev 1** |
 | `strand-addr-seed-convergence.integration.ts` — `joins a second node into the founder's strand from the RPC-resolved seed alone` | `SyncRetryExhaustedError` — `default/CadrePeer`, **at rev 1, requested rev 1** |
 | `control-write-while-alone-convergence.integration.ts` — both tests | `Timeout waiting for B observes the X CadrePeer row written on A while alone after 30000ms`, and `Timeout waiting for B resolves A DeviceToken re-replicated after cohort growth after 30000ms` |
+| `control-delete-while-alone-convergence.integration.ts` — both tests | `SyncRetryExhaustedError` — `default/CadrePeer`, **at rev 3 (resp. 4), requested rev 1**. Both die symmetrically at ~15 s in Phase 1 setup (authorize X / converge on B — the same machinery as the write-while-alone entry above), **before** the delete or any revocation-drain code runs, so the scenario proves nothing about the delete-while-alone feature either way. Measured 2026-08-01 solo run (added later than the rest of this table: sereus at the `control-revocation-drain-on-growth` working tree, `../quereus` v4.6.0 `f620aade`) |
 | `websocket-chat.integration.ts` — `should replicate a chat message over WebSocket` | `Timeout waiting for message replicates to phone after 15000ms` |
 | `convergence-stress.integration.ts` — `should retain converged data after disconnect and reconnect` | 1 failed / 2 passed in that file |
 | `push-wake-e2e.integration.ts` — `delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial` | intermittent; both class signatures — see "Folded in 2026-08-01" below |
@@ -60,8 +61,11 @@ Confirmed failing against clean optimystic `bf7e3d2`:
 Not re-measured here because they are already tracked and their tickets say a green run proves
 nothing: `control-cohort-three-node-isolation`, `control-cohort-edge-carries-data`,
 `control-write-degraded-cohort-member`, `strand-membership-closed-strand-e2e`,
-`zz-scratch-delete-alone`, `strand-formation-e2e` Phase 2. See "Relationship to the existing
-tickets" below — they now look like the same defect.
+`strand-formation-e2e` Phase 2. See "Relationship to the existing tickets" below — they now
+look like the same defect. (`zz-scratch-delete-alone`, formerly on this list, was a scratch
+experiment deleted 2026-08-01; its successor `control-delete-while-alone-convergence` is
+measured in the table above and dies in this class, earlier than the fork it was built to
+provoke.)
 
 ## Error output
 
@@ -124,8 +128,9 @@ Two blocked tickets already describe this error class at the same throwing line:
 
 - `tickets/blocked/forked-control-collection-sync-livelocks` — `default/CadrePeer`,
   **rev 9 / requested 9**, trigger described as a manufactured fork (a local-only write while
-  alone, then reconnect). It offers `tickets/plan/10-control-delete-while-alone-tombstone` as an
-  in-repo mitigation, on the reasoning that removing the fork removes the failure.
+  alone, then reconnect). It once offered the delete-while-alone plan work as an in-repo
+  mitigation; that work has since shipped (the revocation tombstone + growth-edge drain) and
+  does NOT remove the fork, so that ticket now records the upstream fix as its only unblock.
 - `tickets/blocked/strand-unique-index-sync-stale-revision` — `default/Member/index/_uniq_1`,
   **rev 2 / requested 1**, and states as an invariant that the collection which cannot sync is
   *"always a unique-index sub-collection, never the data tree."*

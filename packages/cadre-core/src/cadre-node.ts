@@ -3132,10 +3132,14 @@ export class CadreNode implements SAppIdLookup {
    * removal AT ALL and keeps running its instance indefinitely — opting out of watching a
    * strand is also opting out of its party-wide removal, so such a node's only stop is its
    * own local {@link stopStrand}/`unpublishStrand` call; and a removal committed while
-   * ALONE (0 control connections) is local-only and
-   * does not propagate when siblings return — a physical delete cannot be re-issued the
-   * way an insert can (logged loudly; see the delete-while-alone durability note in
-   * docs/architecture.md and control-delete-while-alone-tombstone).
+   * ALONE (0 control connections) deletes the row local-only. The accompanying
+   * `Revocation` tombstone IS queued and re-issued on the next cohort-growth edge
+   * ({@link noteGuardedDelete}/{@link drainPendingRevocations}), so the stamp retirement
+   * — and with it the consent re-seat foreclosure — does propagate; but the physical row
+   * deletion cannot be replayed, and `queryStrands` reads raw (no retired-stamp filter),
+   * so siblings that already hold the row keep running the strand until the collection
+   * itself converges (logged loudly; see the delete-while-alone durability note in
+   * docs/architecture.md).
    *
    * A no-op (no throw, no tombstone) when the row is already absent — but a
    * locally-running instance of that id is still stopped.
@@ -3165,9 +3169,9 @@ export class CadreNode implements SAppIdLookup {
     // unreplicated deletion there would send an operator chasing a phantom.
     if (removed && this.committedAlone()) {
       log('unpublishStrand(%s) committed while ALONE (0 control connections): the deletion is ' +
-        'local-only, so other nodes may keep running the strand until re-replication — and a ' +
-        'physical delete cannot be replayed without a schema tombstone — see ' +
-        'control-delete-while-alone-tombstone.', trimmed);
+        'local-only. Its Revocation tombstone is queued for re-issue on cohort growth, but the ' +
+        'row deletion itself cannot be replayed, so other nodes may keep running the strand ' +
+        'until the collection converges.', trimmed);
     }
     // Converge locally now rather than waiting up to a poll interval. The watcher fires
     // onStrandRemoved for a strand it tracked; the explicit stop below covers a node whose

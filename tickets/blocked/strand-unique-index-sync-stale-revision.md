@@ -152,10 +152,12 @@ Same error class, same throwing line (`Collection.syncInternal`,
 is why this is filed separately rather than folded into that ticket:
 
 - That ticket's trigger is a manufactured fork — a control-database write committed by a
-  node that was alone, later reconnecting to a sibling with a different history. It
-  offers `tickets/plan/10-control-delete-while-alone-tombstone` as an "alternative
-  unblock, entirely in this repo", reasoning that removing local-only commits removes
-  the fork and therefore the failure.
+  node that was alone, later reconnecting to a sibling with a different history. It once
+  offered the delete-while-alone plan work as an "alternative unblock, entirely in this
+  repo"; that work has since shipped (`control-revocation-reissuable-tombstone` +
+  `control-revocation-drain-on-growth`) and does NOT remove the fork — it converges the
+  revocation tombstone, not the delete — so that ticket now records the upstream fix as
+  its only unblock.
 - **This needs no fork of any kind.** A plain two-node closed strand doing ordinary
   membership writes: nothing partitioned, nothing restarted, no local-only commit
   anywhere. Removing the fork trigger would not make this go away.

@@ -15,8 +15,10 @@
  *
  * Recipe notes (all load-bearing):
  * - CONNECT BEFORE WRITE, both the publish and the removal: a delete committed
- *   with a cluster of one is the separate delete-while-alone durability gap
- *   (`plan/control-delete-while-alone-tombstone`), deliberately out of scope.
+ *   with a cluster of one is the separate delete-while-alone durability path
+ *   (shipped as `control-revocation-reissuable-tombstone` +
+ *   `control-revocation-drain-on-growth`, proven by
+ *   `control-delete-while-alone-convergence`), deliberately out of scope here.
  * - B is NOT its own owner (`bootPair`), so every row it observes arrived over
  *   the wire — Phase 1's `strand:discovered` is the anti-vacuity anchor proving
  *   a genuine network read before the removal is ever issued.
