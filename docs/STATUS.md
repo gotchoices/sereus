@@ -393,6 +393,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
 - [x] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
   reap sweep + `DonationService` unit tests (`donation/__tests__/donation-service.test.ts`, a fake
   orchestrator over a real on-disk store).
+- [x] Stuck-`provisioning` reap sweep (`DonationService.reapStaleProvisioning`, 5-minute TTL, on the
+  same startup + periodic trigger as the stale-`awaiting_seed` reap). A host that died between
+  writing the `provisioning` row and finishing the spawn otherwise left that row live forever,
+  permanently holding one slot of the grantee's node quota. Terminalizes the row to `error` and, when
+  the orchestrator can still resolve the spawned child (`resolveDockerId`), stops and reclaims it.
+  Covered by unit tests only — no integration-level crash/restart scenario.
 - [x] Respawn of a crashed donated node. The record persists every spawn input and
   `DonationService.respawn(id)` replays it against the same workdir (so the node returns with its
   original peer id), and the orchestrator no longer strands the previous spawn's handle/ports. The

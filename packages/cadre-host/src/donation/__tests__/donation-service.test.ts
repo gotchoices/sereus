@@ -5,8 +5,9 @@
  *
  * Covers: provision → awaiting_seed (pinned keys threaded, seedToken persisted +
  * redacted), seedToken survival across a store reconstruct, per-grant quota-race
- * serialization, reclaim-on-post-spawn-failure, seeding, respawn, terminate, and
- * the stale-awaiting_seed reap.
+ * serialization, reclaim-on-post-spawn-failure, seeding, respawn, terminate, the
+ * stale-awaiting_seed reap, and the stuck-provisioning reap (the host died
+ * between writing the row and finishing the spawn).
  *
  * A recurring theme: **an ending that lands mid-operation wins.** `provision`,
  * `applySeed`, and `respawn` each hold an entry-time copy of the record across a

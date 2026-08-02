@@ -682,6 +682,15 @@ export class DonationService {
    * the orchestrator can still find for it. Status is written FIRST (same
    * ordering rule as {@link terminate}): reclaiming fires `onStateChange`, and
    * anything listening must already see a terminal record.
+   *
+   * NOTE: the reclaim only reaches a child the orchestrator has a handle for.
+   * `HostProcessOrchestrator.launchChild` spawns the process and persists the
+   * handle in the same synchronous step, so the only child this misses is one
+   * whose host died between the OS spawn and that write — an orphan process
+   * this reap terminalizes the record for but cannot kill (its ports stay held
+   * until a reboot). If that window ever widens (an async step added between
+   * spawn and persist), the orchestrator needs its own orphan sweep — a record
+   * that names no handle cannot get one after the fact.
    */
   private async reclaimStuckProvisioning(donation: Donation): Promise<void> {
     this.store.put({
