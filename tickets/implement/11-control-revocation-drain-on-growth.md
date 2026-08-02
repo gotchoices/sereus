@@ -6,7 +6,33 @@ difficulty: hard
 ----
 
 <!-- resume-note -->
-## Resume note (2026-08-01 run, ended on BUDGET_WARNING)
+## Resume note (2026-08-01 run 2, ended on BUDGET_WARNING)
+
+This run landed Phase 1's ControlDatabase half and NOTHING else. The working tree
+contains these completed, uncommitted edits — do not redo them:
+
+- `packages/cadre-core/src/control-database.ts`:
+  - `GuardedDeleteListener` type added + exported next to `MembershipChangeListener`
+    (exact shape from run-1 refinement 7: synchronous, `{ tableName, rowKey, stampId }`).
+  - `private guardedDeleteListener` field next to `membershipListener`.
+  - `deleteGuardedRow` fires the listener in try/catch after `inTransaction` resolves
+    (after the `'%s deleted'` log line, before `return true`).
+  - `setGuardedDeleteListener(listener | null)` added directly after
+    `setMembershipChangeListener`, same ownership contract.
+- `packages/cadre-core/src/index.ts`: `type GuardedDeleteListener` appended to the
+  control-database export line.
+
+Nothing in `cadre-node.ts`, `seed-bootstrap.ts`, tests, docs, or tickets/ was touched.
+No build or tests were run this session — edits are additive and type-clean by
+inspection, but verify with the suite on resume.
+
+Resume at: run-1 refinement 8 (`noteControlWrite` rewrite) + `pendingRevocations`
+field + `noteGuardedDelete` + wiring (`start()` ~613 beside the membership listener,
+teardown ~2697), then the seed-bootstrap wrapper (refinement 1), the drain
+(refinements 2–6), then tests / integration scenario / docs / board reconciliation.
+Everything in the run-1 note below still governs.
+
+## Resume note (2026-08-01 run 1, ended on BUDGET_WARNING)
 
 A prior agent run spent its whole budget on the investigation pass and made **zero code
 edits** — the working tree is untouched by this ticket. Everything below in this section

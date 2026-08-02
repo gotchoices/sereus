@@ -371,6 +371,23 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
  */
 export type MembershipChangeListener = (reason: string) => Promise<void>;
 
+/**
+ * Notified after a guarded-table delete — and the `CadreControl.Revocation`
+ * tombstone it writes in the same transaction — has COMMITTED.
+ *
+ * The seam the write-while-alone re-replication queue hangs off
+ * ({@link CadreNode.noteGuardedDelete}): one listener covers all four guarded
+ * tables (`CadrePeer` / `DeviceToken` / `Strand` / `ValidationKey`) because every
+ * owner delete funnels through {@link deleteGuardedRow}. Synchronous — the
+ * handler only records the tombstone's identity; it must not throw (the notifier
+ * swallows and logs anyway — a committed delete never fails because bookkeeping did).
+ */
+export type GuardedDeleteListener = (revocation: {
+  tableName: RevocableTable;
+  rowKey: string;
+  stampId: string;
+}) => void;
+
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */
   partyId: string;
@@ -396,6 +413,7 @@ export class ControlDatabase {
   private readonly config: ControlDatabaseConfig;
   private initialized = false;
   private membershipListener: MembershipChangeListener | null = null;
+  private guardedDeleteListener: GuardedDeleteListener | null = null;
   /** Tail of the local-write chain — see {@link withWriteLock}. */
   private writeQueue: Promise<unknown> = Promise.resolve();
   /**
@@ -1361,6 +1379,13 @@ export class ControlDatabase {
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
+    if (this.guardedDeleteListener) {
+      try {
+        this.guardedDeleteListener({ tableName: table, rowKey: keyValue, stampId });
+      } catch (error) {
+        log('guarded-delete listener threw (committed delete unaffected): %o', error);
+      }
+    }
     return true;
   }
 
@@ -1491,6 +1516,16 @@ export class ControlDatabase {
    */
   setMembershipChangeListener(listener: MembershipChangeListener | null): void {
     this.membershipListener = listener;
+  }
+
+  /**
+   * Wire (or clear, with null) the single listener notified after every committed
+   * guarded-table delete. Same ownership contract as
+   * {@link setMembershipChangeListener}: one CadreNode, one listener, a second
+   * call replaces the first.
+   */
+  setGuardedDeleteListener(listener: GuardedDeleteListener | null): void {
+    this.guardedDeleteListener = listener;
   }
 
   /**

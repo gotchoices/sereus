@@ -8,7 +8,7 @@ export { canonicalJson } from './canonical-json.js';
 export { CadreNode } from './cadre-node.js';
 
 // Control database
-export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener } from './control-database.js';
+export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, formationVouchMessage, formationConsentMessage, type ControlDatabaseConfig, type ControlTable, type RevocableTable, type FormationUsageResult, type MembershipChangeListener, type GuardedDeleteListener } from './control-database.js';
 
 // Bounded retry for transient control-write failures (classifier + loop behind
 // ControlDatabase.lockedWithRetry; exported so the integration package can drive the
