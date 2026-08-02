@@ -1,13 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import debug from 'debug';
-import { randomUUID } from 'node:crypto';
+import { describe, it, expect } from 'vitest';
 import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { connectToStrand } from '@serfab/quereus-plugin-sereus';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
-  bootstrapFounderMembership,
   addMemberByManager,
   revokeMember,
   addManager,
@@ -17,8 +10,8 @@ import {
   leaveStrand,
   signStrandApproval,
 } from '../src/strand-membership-writer.js';
+import { freshKeyPair, tableCount, openStrand, inTransaction } from './strand-spec-helpers.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { SAppConfig } from '../src/types.js';
 
 /**
  * The six CAPTURE-AND-REPLAY attacks the single-use stamp mechanism closes.
@@ -65,95 +58,6 @@ import type { SAppConfig } from '../src/types.js';
  * MemoryRawStorage + the optimystic local transactor) via `connectToStrand` — the
  * same path `StrandDatabase` uses.
  */
-
-const log = debug('sereus:cadre:test:strand-approval-replay');
-
-function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
-  return {
-    id: 'sapp-author-pubkey',
-    version: '1.2.3',
-    schema: 'table Note (Id integer primary key, Body text not null)',
-    signature: 'sapp-signature',
-    ...overrides,
-  };
-}
-
-/** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): Ed25519KeyPair {
-  const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-  const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
-  return { privateKeyB64, publicKeyB64 };
-}
-
-type StrandTable = 'Member' | 'MemberPeer' | 'Manager' | 'Revocation';
-
-async function tableCount(db: Database, table: StrandTable): Promise<number> {
-  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
-    return (row as { c: number }).c;
-  }
-  return 0;
-}
-
-interface Strand {
-  db: Database;
-  strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Manager (generation 0). */
-  founder: Ed25519KeyPair;
-  shutdown: () => Promise<void>;
-}
-
-const opened: Strand[] = [];
-
-/** Open a closed strand DB in bootstrap mode and run the founder bootstrap. */
-async function openStrand(): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const founder = strandMemberKeyPair(await generateStrandMemberKey());
-  await bootstrapFounderMembership(db, {
-    strandId,
-    type: 'c',
-    sApp: makeSAppConfig(),
-    founderKeyPair: founder,
-  });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-afterEach(async () => {
-  while (opened.length > 0) {
-    const strand = opened.pop()!;
-    await strand.shutdown();
-  }
-});
-
-/** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
-async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
-  await db.beginTransaction();
-  try {
-    await statements();
-    await db.commit();
-  } catch (error) {
-    // A failed commit() already tore the transaction down, so rollback() throws
-    // "no transaction active" — log it rather than masking the real cause.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
-    }
-    throw error;
-  }
-}
 
 // ── Live-row readers (unfiltered scan + JS filter, the writer's scan-not-seek idiom) ──
 

@@ -1,13 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import debug from 'debug';
-import { randomUUID } from 'node:crypto';
-import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { connectToStrand } from '@serfab/quereus-plugin-sereus';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { describe, it, expect } from 'vitest';
+import { getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import {
-  bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
   cancelInvite,
@@ -24,8 +17,8 @@ import {
   memberRegistrationPayload,
 } from '../src/strand-member-registry.js';
 import { EnrollmentService } from '../src/enrollment.js';
-import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { SAppConfig, MemberRegistration } from '../src/types.js';
+import { freshKeyPair, tableCount, openStrand, inTransaction } from './strand-spec-helpers.js';
+import type { MemberRegistration } from '../src/types.js';
 
 /**
  * Component coverage for the per-strand invite -> join handshake (issuance,
@@ -39,101 +32,6 @@ import type { SAppConfig, MemberRegistration } from '../src/types.js';
  * Manager), which forces every admit below past the `count <= 1` bootstrap
  * branch into the genuine signature-verifying branches of `Member.Authorized`.
  */
-
-const log = debug('sereus:cadre:test:strand-invite');
-
-function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
-  return {
-    id: 'sapp-author-pubkey',
-    version: '1.2.3',
-    schema: 'table Note (Id integer primary key, Body text not null)',
-    signature: 'sapp-signature',
-    ...overrides,
-  };
-}
-
-/** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): Ed25519KeyPair {
-  const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-  const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
-  return { privateKeyB64, publicKeyB64 };
-}
-
-type StrandTable = 'Header' | 'Invite' | 'ConsumedInvite' | 'CancelledInvite' | 'Member' | 'Manager';
-
-async function tableCount(db: Database, table: StrandTable): Promise<number> {
-  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
-    return (row as { c: number }).c;
-  }
-  return 0;
-}
-
-/**
- * Run `statements` in one explicit transaction: commit on success, rollback on failure.
- *
- * Needed by the same-transaction-manager tests, which must put an `addManager` and a
- * dependent write in ONE transaction so the `committed.Manager` reads are exercised.
- * (Duplicated from `strand-member-revocation.spec.ts`, which does not export it.)
- */
-async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
-  await db.beginTransaction();
-  try {
-    await statements();
-    await db.commit();
-  } catch (error) {
-    // A failed commit() already tore the transaction down, so rollback() throws
-    // "no transaction active" — log it rather than masking the real cause.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
-    }
-    throw error;
-  }
-}
-
-interface Strand {
-  db: Database;
-  strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Manager. */
-  founder: Ed25519KeyPair;
-  shutdown: () => Promise<void>;
-}
-
-const opened: Strand[] = [];
-
-/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
-async function openStrand(type: 'o' | 'c'): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const founder = strandMemberKeyPair(await generateStrandMemberKey());
-  await bootstrapFounderMembership(db, {
-    strandId,
-    type,
-    sApp: makeSAppConfig(),
-    founderKeyPair: type === 'c' ? founder : undefined,
-  });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-afterEach(async () => {
-  while (opened.length > 0) {
-    const strand = opened.pop()!;
-    await strand.shutdown();
-  }
-});
 
 // ── Phase 1: invite issuance ─────────────────────────────────────────────────
 

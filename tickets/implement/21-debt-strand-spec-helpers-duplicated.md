@@ -79,57 +79,88 @@ different lifecycle from the other four files' `openStrand`/`openRawStrand`, not
 near-verbatim copy. Forcing it into `Strand`/`RawStrand` would either lose the `storage`
 field the reopen tests need or bloat the shared interface for one caller. Leave it local.
 
-## Progress so far (this run)
+## Progress so far (this run, continuing a prior interrupted run)
 
-`packages/cadre-core/test/strand-spec-helpers.ts` has been **created** with all the exports
-listed above, matching the resolved design exactly:
+`packages/cadre-core/test/strand-spec-helpers.ts` was already **created** (prior run) with all
+the exports listed above, matching the resolved design exactly — `makeSAppConfig`,
+`freshKeyPair`, `StrandTable` (8-member union), `tableCount`, `ShutdownHandle`/`Strand`/
+`RawStrand`, module-level `opened` + `afterEach`, `openStrand(type: 'o' | 'c' = 'c')`,
+`openRawStrand()` (narrower `RawStrand`, no `founder`), `insertHeader`, `rawInsertMember`,
+`inTransaction`. Re-verified this run against the exports list — no changes needed.
 
-- `makeSAppConfig`, `freshKeyPair`, `StrandTable` (8-member union), `tableCount` — done.
-- `ShutdownHandle` (internal), `Strand`, `RawStrand` — done.
-- Module-level `opened: ShutdownHandle[]` + `afterEach` import from `vitest` — done.
-- `openStrand(type: 'o' | 'c' = 'c')` — done, matches the resolved signature (default `'c'`
-  so `strand-approval-replay.spec.ts`'s no-arg call sites keep working once wired).
-- `openRawStrand()` returning the narrower `RawStrand` (no `founder` field) — done.
-- `insertHeader`, `rawInsertMember` (imports `generateStrandStampId` from
-  `../src/strand-membership-writer.js`), `inTransaction` (with the rollback-after-failed-
-  commit try/catch preserved intact) — done.
-- JSDoc comments folded onto each export per the TODO below (the "why" notes from each
-  original file's per-function doc comment) — done in the new module.
+This run wired **3 of the 5** spec files to import from it and deleted their local copies:
 
-**No spec file has been touched yet.** All 5 files still have their own local copies of
-these helpers; `strand-spec-helpers.ts` exists standalone and nothing imports it yet.
-`yarn lint` / `yarn test` have NOT been run this session — do both only after finishing the
-spec-file edits below, since the new module alone will show as an unused file until wired in.
+- `strand-approval-replay.spec.ts` — DONE. Imported `freshKeyPair`, `tableCount`,
+  `openStrand`, `inTransaction` from `./strand-spec-helpers.js`. Deleted local
+  `makeSAppConfig`, `freshKeyPair`, `StrandTable`, `tableCount`, `Strand` interface, `opened`,
+  `openStrand`, local `afterEach`, `inTransaction`, and the `log`/`debug` var. Kept local
+  `memberStamp`/`managerRow`/`memberPeerStamp`/`isMember`/`isManager`/`fileTombstone`/
+  `seatMember` (this file's non-shared helpers). Removed now-unused imports (`afterEach` from
+  vitest, `debug`, `randomUUID`, `MemoryRawStorage`, `connectToStrand`, `generatePrivateKey`,
+  `getPublicKey`, `generateStrandMemberKey`, `strandMemberKeyPair`, `bootstrapFounderMembership`,
+  `SAppConfig` type). Grepped the file afterward to confirm none of those names remain
+  referenced anywhere (including doc comments needing the import) — clean.
+- `strand-member-revocation.spec.ts` — DONE. Imported `freshKeyPair`, `tableCount`,
+  `openStrand`, `openRawStrand`, `insertHeader`, `rawInsertMember`, `inTransaction`. Deleted
+  the same category of local duplicates. Kept local `isMemberRow`, `memberStampId`,
+  `fileTombstone` (3-arg-reordered signature — deliberately NOT unified per the resolved
+  design), `rawDeleteMember`. Verified all 27 `openStrand(...)`/`openRawStrand(...)` call
+  sites in the file always pass `type` explicitly or destructure only `{ db }` /
+  `{ db, founder }` — compatible with the shared signatures. Removed now-unused imports;
+  `generateStrandStampId` stays imported (file still calls it directly in several test
+  bodies, confirmed via grep). Grepped for leftover references to every removed name — clean.
+- `strand-membership-invite.spec.ts` — DONE. Imported `freshKeyPair`, `tableCount`,
+  `openStrand`, `inTransaction`. This file had no local `openRawStrand`/`insertHeader`/
+  `rawInsertMember` to begin with (per the ticket's own file-by-file table), so only those
+  four were wired. Kept `getPublicKey` import (used directly at the invite-key-proof
+  assertion, not just inside the deleted local `freshKeyPair`) but dropped
+  `generatePrivateKey` (was only used inside the deleted local `freshKeyPair`). Dropped
+  `SAppConfig` type import (only used in the deleted local `makeSAppConfig`; the file's own
+  `MemberRegistration` type import stays). Grepped afterward for every removed name — only
+  prose/doc-comment mentions of `MemoryRawStorage`/`connectToStrand` remain (harmless), no
+  dangling code references.
+
+**Not yet started:** `strand-membership-peer-rotation.spec.ts` (1,518 lines — the largest of
+the 5, has its own `openStrand`/`openRawStrand`/`insertHeader`/`rawInsertMember`/
+`inTransaction` local copies per the ticket's file-by-file table, same pattern as
+member-revocation) and `strand-membership-writer.spec.ts` (smaller edit — only swap local
+`makeSAppConfig`/`count` for shared `makeSAppConfig`/`tableCount`, leave `OpenStrand`/
+`openStrandDb` alone). Neither file has been touched this run.
+
+**`yarn lint` / `yarn test` have NOT been run at all** across either this run or the prior
+one — do both only after ALL 5 spec files are wired, per the ticket's original plan (the
+partial state right now — 3 of 5 files wired, `strand-spec-helpers.ts` unimported by the
+other 2 — would show false-positive unused-import noise on the unwired files if linted now).
 
 ## Remaining TODO
 
-- Update `strand-approval-replay.spec.ts`, `strand-member-revocation.spec.ts`,
-  `strand-membership-invite.spec.ts`, `strand-membership-peer-rotation.spec.ts`: delete the
-  local `makeSAppConfig`, `freshKeyPair`, `StrandTable`, `tableCount`, `Strand`, `opened`,
-  `afterEach` teardown, `openStrand`, `openRawStrand` (where present — only in
-  `strand-member-revocation.spec.ts` and `strand-membership-peer-rotation.spec.ts`),
-  `insertHeader` (where present — same two files), `rawInsertMember` (where present — same
-  two files), `inTransaction` (where present — all 4 files); import the shared versions
-  instead from `./strand-spec-helpers.js`. Keep whatever each file does NOT share
-  (`strand-member-revocation.spec.ts`'s `isMemberRow`/`fileTombstone`/`rawDeleteMember`/
-  `memberStampId`; `strand-membership-peer-rotation.spec.ts`'s `rawInsertFoundingManager`,
-  `managerStamp`, `memberPeerStamp`, `fileTombstone`, `addExtraManagers`, `seatMembers`,
-  `insertManagerRow`, `managerGeneration`; `strand-approval-replay.spec.ts`'s
-  `memberStamp`/`managerRow`/`memberPeerStamp`/`isMember`/`isManager`/`fileTombstone`/
-  `seatMember`; `strand-membership-invite.spec.ts` has no other locals to keep beyond what's
-  already noted).
-- Update `strand-membership-writer.spec.ts`: delete its local `makeSAppConfig` (line ~118)
-  and `count` (line ~111), import shared `makeSAppConfig` and `tableCount` from
-  `./strand-spec-helpers.js`, rename call sites `count(db, ...)` -> `tableCount(db, ...)`.
-  Leave `OpenStrand`/`openStrandDb` as-is (see rationale above) — do NOT touch those.
-- Remove now-unused imports each spec file picks up as a side effect of deleting its local
-  helpers (`randomUUID`, `MemoryRawStorage`, `connectToStrand`, `generatePrivateKey`,
-  `getPublicKey`, `generateStrandMemberKey`, `strandMemberKeyPair`,
-  `bootstrapFounderMembership`, `generateStrandStampId`, `debug`, and vitest's `afterEach` —
-  only where the file no longer references them directly after the edit).
-- `yarn lint` clean (catches unused imports/vars) and `yarn workspace @serfab/cadre-core test`
-  (or `cd packages/cadre-core && yarn test`) green, all 5 specs' assertions unchanged. Per
-  the "Edge cases" section below, run the FULL package suite (not per-file) at least once.
+- Wire `strand-membership-peer-rotation.spec.ts`: import `freshKeyPair`, `tableCount`,
+  `openStrand`, `openRawStrand`, `insertHeader`, `rawInsertMember`, `inTransaction` from
+  `./strand-spec-helpers.js`; delete the matching local definitions (same category as just
+  done in `strand-member-revocation.spec.ts` — use that file's edit as the template). Keep
+  local-only: `rawInsertFoundingManager`, `managerStamp`, `memberPeerStamp`, `fileTombstone`,
+  `addExtraManagers`, `seatMembers`, `insertManagerRow`, `managerGeneration`. Re-verify (per
+  the ticket's "Edge cases") that no call site destructures `.founder` off an
+  `openRawStrand()` result before wiring the narrower `RawStrand` return type in. Remove
+  now-unused imports the same way as the 3 files already done (check for `randomUUID`,
+  `MemoryRawStorage`, `connectToStrand`, `generatePrivateKey`, `getPublicKey`,
+  `generateStrandMemberKey`, `strandMemberKeyPair`, `bootstrapFounderMembership`, `debug`,
+  vitest's `afterEach`, `SAppConfig` type — grep each before removing since this file may use
+  some of them directly outside the deleted helpers, as `getPublicKey` turned out to be in
+  `strand-membership-invite.spec.ts`). This is the biggest remaining file — read it in full
+  first; the prior run's earlier notes below only cover its declarations, not a full line-by-
+  line read of every test body.
+- Wire `strand-membership-writer.spec.ts`: delete its local `makeSAppConfig` (~line 118) and
+  `count` (~line 111), import shared `makeSAppConfig`/`tableCount` from
+  `./strand-spec-helpers.js`, rename call sites `count(db, ...)` → `tableCount(db, ...)`.
+  Leave `OpenStrand`/`openStrandDb` untouched (see "intentionally NOT fully folded in"
+  section above).
+- Once both remaining files are wired: `yarn lint` clean (catches unused imports/vars) and
+  `yarn workspace @serfab/cadre-core test` (or `cd packages/cadre-core && yarn test`) green,
+  all 5 specs' assertions unchanged.
+- Per "Edge cases" below, run the FULL package suite (not per-file) at least once to confirm
+  vitest's per-file module isolation holds for the shared `opened`/`afterEach` state across
+  files that now share the import.
 
 ## Edge cases & interactions
 
@@ -154,13 +185,22 @@ spec-file edits below, since the new module alone will show as an unused file un
   not the "what") got silently dropped.
 
 <!-- resume-note -->
-Prior run hit BUDGET_WARNING immediately after creating
-`packages/cadre-core/test/strand-spec-helpers.ts` and fixing a stray unused-import lint issue
-in it — zero spec files have been edited yet. The new helper module is believed complete and
-correct against the resolved design (re-verify against the exports list above before wiring
-it in, but it should not need redesign). Re-read all 5 spec files in full if needed — the
-following, gathered by an even earlier interrupted run and re-confirmed this run, saves
-re-discovery time:
+This run hit BUDGET_WARNING after wiring 3 of the 5 spec files (`strand-approval-replay.spec.ts`,
+`strand-member-revocation.spec.ts`, `strand-membership-invite.spec.ts` — all 3 fully edited,
+each independently grepped afterward to confirm no dangling references to removed local
+helpers remain). `strand-membership-peer-rotation.spec.ts` and
+`strand-membership-writer.spec.ts` are UNTOUCHED. `strand-spec-helpers.ts` itself needed no
+changes this run — it was already correct from the prior run.
+
+**Important:** the 3 wired files have NOT been lint- or test-verified this run (deliberately
+deferred until all 5 are wired, per the note above) — do not assume they are bug-free without
+running `yarn lint` / the test suite once all 5 are done. If lint/test surfaces an issue in one
+of the 3 "done" files, fix it there rather than assuming the issue is only in the 2 remaining
+files.
+
+Re-read `strand-membership-peer-rotation.spec.ts` and `strand-membership-writer.spec.ts` in
+full before editing — the following, gathered by earlier interrupted runs and re-confirmed
+across runs, saves re-discovery time:
 
 - **`openRawStrand`** present only in `strand-member-revocation.spec.ts` (~L117-133) and
   `strand-membership-peer-rotation.spec.ts` (~L109-125). Absent from

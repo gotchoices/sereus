@@ -1,13 +1,6 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import debug from 'debug';
-import { randomUUID } from 'node:crypto';
+import { describe, it, expect } from 'vitest';
 import { Database } from '@quereus/quereus';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
-import { connectToStrand } from '@serfab/quereus-plugin-sereus';
-import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
 import {
-  bootstrapFounderMembership,
   issueInvite,
   consumeInvite,
   cancelInvite,
@@ -20,8 +13,16 @@ import {
   signStrandApproval,
   generateStrandStampId,
 } from '../src/strand-membership-writer.js';
+import {
+  freshKeyPair,
+  tableCount,
+  openStrand,
+  openRawStrand,
+  insertHeader,
+  rawInsertMember,
+  inTransaction,
+} from './strand-spec-helpers.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { SAppConfig } from '../src/types.js';
 
 /**
  * Component coverage for `Strand.Member` REMOVAL — the authorization gate closed
@@ -39,118 +40,9 @@ import type { SAppConfig } from '../src/types.js';
  * pinned.
  */
 
-const log = debug('sereus:cadre:test:strand-revocation');
-
-function makeSAppConfig(overrides: Partial<SAppConfig> = {}): SAppConfig {
-  return {
-    id: 'sapp-author-pubkey',
-    version: '1.2.3',
-    schema: 'table Note (Id integer primary key, Body text not null)',
-    signature: 'sapp-signature',
-    ...overrides,
-  };
-}
-
-/** A fresh, unrelated ed25519 keypair in the base64url shape the constraints consume. */
-function freshKeyPair(): Ed25519KeyPair {
-  const privateKeyB64 = generatePrivateKey('ed25519', 'base64url') as string;
-  const publicKeyB64 = getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
-  return { privateKeyB64, publicKeyB64 };
-}
-
-type StrandTable = 'Header' | 'Member' | 'Manager' | 'ConsumedInvite' | 'CancelledInvite' | 'Revocation';
-
-async function tableCount(db: Database, table: StrandTable): Promise<number> {
-  for await (const row of db.eval(`select count(1) as c from Strand.${table}`)) {
-    return (row as { c: number }).c;
-  }
-  return 0;
-}
-
 /** True iff a `Member` row exists for this key. */
 async function isMemberRow(db: Database, key: string): Promise<boolean> {
   return (await db.get('select Key from Strand.Member where Key = ?', [key])) != null;
-}
-
-interface Strand {
-  db: Database;
-  strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Manager. */
-  founder: Ed25519KeyPair;
-  shutdown: () => Promise<void>;
-}
-
-const opened: Strand[] = [];
-
-/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
-async function openStrand(type: 'o' | 'c'): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const founder = strandMemberKeyPair(await generateStrandMemberKey());
-  await bootstrapFounderMembership(db, {
-    strandId,
-    type,
-    sApp: makeSAppConfig(),
-    founderKeyPair: type === 'c' ? founder : undefined,
-  });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-/**
- * Open a strand DB in bootstrap mode WITHOUT the founder bootstrap — no Header,
- * no Member, no Manager. For tests that need a member set with NO manager at
- * all (`bootstrapFounderMembership` always seats a founding Manager, and any
- * Manager row makes `NotAManager` fire alongside the floor under test).
- */
-async function openRawStrand(): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder: freshKeyPair(), // unused — no bootstrap ran
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
-afterEach(async () => {
-  while (opened.length > 0) {
-    const strand = opened.pop()!;
-    await strand.shutdown();
-  }
-});
-
-/**
- * Insert the singleton `Header` with the given Type. Every Header column is NOT
- * NULL (Quereus defaults unqualified columns to NOT NULL), so all are supplied
- * with placeholder values — only `Type` is load-bearing here.
- */
-async function insertHeader(db: Database, type: 'o' | 'c'): Promise<void> {
-  await db.exec(
-    `insert into Strand.Header
-       (Id, Type, sAppId, sAppVersion, sAppSchema, sAppSignature, Engine, EngineVersion)
-       values (?, ?, ?, ?, ?, ?, ?, ?)`,
-    ['strand-id', type, 'sapp', '1.0.0', 'schema', 'sig', 'engine', '1.0.0'],
-  );
 }
 
 /** The live StampId of one Member row, via unfiltered scan + JS filter (the writer's scan-not-seek idiom). */
@@ -215,34 +107,6 @@ async function rawDeleteMember(
     await doDelete();
     await fileTombstone(db, stampId, retiree);
   });
-}
-
-/** Raw `Member` insert with all-null context (the bootstrap-branch shape) and a freshly minted stamp. */
-async function rawInsertMember(db: Database, key: string): Promise<void> {
-  await db.exec(
-    `insert into Strand.Member (Key, StampId)
-       with context ManagerKey = null, ManagerSignature = null, MemberSignature = null
-       values (?, ?)`,
-    [key, generateStrandStampId()],
-  );
-}
-
-/** Run `statements` in one explicit transaction: commit on success, rollback on failure. */
-async function inTransaction(db: Database, statements: () => Promise<void>): Promise<void> {
-  await db.beginTransaction();
-  try {
-    await statements();
-    await db.commit();
-  } catch (error) {
-    // A failed commit() already tore the transaction down, so rollback() throws
-    // "no transaction active" — log it rather than masking the real cause.
-    try {
-      await db.rollback();
-    } catch (rollbackError) {
-      log('Rollback after a rejected transaction was a no-op: %s', rollbackError);
-    }
-    throw error;
-  }
 }
 
 // ── Unauthorized removal is rejected (the original bug) ───────────────────────
