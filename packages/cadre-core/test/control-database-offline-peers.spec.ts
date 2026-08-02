@@ -1,9 +1,12 @@
 import { describe, it, expect } from 'vitest';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+import { webRTC, webRTCDirect } from '@libp2p/webrtc';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
+import { multiaddr } from '@multiformats/multiaddr';
+import type { Multiaddr } from '@multiformats/multiaddr';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
@@ -218,6 +221,124 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 	return insertResolvableOfflinePeer(owner, key, addrs);
 }
 
+// ============================================================================
+// WebRTC transport shapes
+//
+// NOTE: `@libp2p/webrtc`'s Node entry point re-exports `node-datachannel`'s
+// polyfill, a NATIVE module shipped with prebuilt binaries. On a platform with
+// no prebuild it is compiled from source (cmake) at install time, and on a
+// platform where the binding cannot load at all the `import` at the top of this
+// file fails the WHOLE spec file, not just the WebRTC cases. If that happens in
+// CI, the fix is a prebuild/toolchain one — do not delete the coverage.
+// ============================================================================
+
+/**
+ * An arbitrary sha2-256 multihash (base64url, `u`-prefixed), standing in for a
+ * `/webrtc-direct` peer's certificate hash. It is never verified against
+ * anything — the connect never gets an answer — but it must be syntactically
+ * valid, because `multiaddr()` throws on a malformed certhash and
+ * `parseMultiaddrs` then silently DROPS the address, putting the case straight
+ * back into vacuity.
+ */
+const WEBRTC_CERTHASH = 'uEiDriKKtLzKrTdlDsdqSFqCGZ5uV1Sy4rDeYcTNTNKgpJQ';
+
+/**
+ * db-p2p's transport-factory element type. The WebRTC factories need the same
+ * brand-skew bridge the browser app uses — see the `TransportFactory` comment in
+ * `reference-app-web/src/lib/cadre-web.ts` for the full explanation:
+ * `@libp2p/webrtc` nests its own physical copy of `@libp2p/interface`, and
+ * `transportSymbol` is a `unique symbol`, so the two brands differ by identity
+ * while being runtime-identical. `webSockets()` and `circuitRelayTransport()`
+ * need no bridge — they resolve to the hoisted copy.
+ */
+type TransportFactory = NonNullable<NetworkConfig['transports']>[number];
+
+/**
+ * The browser reference app's transport list
+ * (`reference-app-web/src/lib/cadre-web.ts`). No `rtcConfiguration`: the app
+ * passes ICE servers from its runtime manifest, but a test must never reach a
+ * STUN/TURN host — host candidates are enough to arm a dial.
+ */
+const browserTransports = (): NetworkConfig['transports'] => [
+	webSockets(),
+	circuitRelayTransport(),
+	webRTC() as unknown as TransportFactory,
+	webRTCDirect() as unknown as TransportFactory
+];
+
+/** The phone reference app's transport list (`reference-app-rn/src/cadre-phone.ts`) — no `webRTCDirect`. */
+const phoneTransports = (): NetworkConfig['transports'] => [
+	webSockets(),
+	circuitRelayTransport(),
+	webRTC() as unknown as TransportFactory
+];
+
+/**
+ * The transport libp2p would dial `addr` with, by its `Symbol.toStringTag`
+ * (`@libp2p/webrtc`, `@libp2p/webrtc-direct`, `@libp2p/websockets`, …), or null
+ * when no configured transport claims it. `components` is not on the public
+ * `Libp2p` interface, so this peeks the same way {@link pendingPeerWrites}
+ * does; `dialTransportForMultiaddr` is declared on `TransportManager` in
+ * `@libp2p/interface-internal`, typed structurally here rather than pulling in
+ * that package for one call.
+ */
+function dialTransportTag(node: CadreNode, addr: Multiaddr): string | null {
+	const libp2p = node.getControlNode();
+	expect(libp2p).not.toBeNull();
+	const transport = (libp2p as unknown as {
+		components: {
+			transportManager: {
+				dialTransportForMultiaddr(ma: Multiaddr): { readonly [Symbol.toStringTag]: string } | undefined;
+			};
+		};
+	}).components.transportManager.dialTransportForMultiaddr(addr);
+	return transport ? String(transport[Symbol.toStringTag]) : null;
+}
+
+/**
+ * Assert libp2p routes each address to the named transport — `null` meaning no
+ * configured transport claims it, so libp2p filters it out of a dial entirely.
+ *
+ * This is the anti-vacuity guard for every WebRTC case. Merely LISTING
+ * `webRTC()` in the transports proves nothing: `reconcileControlCohort` dials
+ * whatever `resolvePeerAddrs` returns, and a sibling recorded at a `/ws`
+ * address is dialed by WebSockets no matter what else is configured — the
+ * WebRTC transports would be dead weight and the case a rename of one that
+ * already exists.
+ */
+function expectDialRouting(node: CadreNode, expected: ReadonlyArray<readonly [string, string | null]>): void {
+	for (const [addr, tag] of expected) {
+		expect([addr, dialTransportTag(node, multiaddr(addr))]).toEqual([addr, tag]);
+	}
+}
+
+interface WebRtcPeer extends OfflinePeer {
+	/** `…/p2p-circuit/webrtc/…` — claimed by `@libp2p/webrtc`. */
+	relayedAddr: string;
+	/** `…/webrtc-direct/certhash/…` — claimed by `@libp2p/webrtc-direct`, when that transport is configured. */
+	directAddr: string;
+}
+
+/**
+ * Mint an offline sibling recorded at the address shapes the WebRTC transports
+ * actually claim, both on RFC 5737 TEST-NET-1 (guaranteed unrouted). `n` keeps
+ * each sibling's addresses distinct; the relay hop's peerId is a throwaway key.
+ *
+ * `withDirect` controls whether the `/webrtc-direct` address goes ON RECORD —
+ * the phone shape has no transport that claims it, so recording it there would
+ * only exercise libp2p's address filter. It is returned either way so a case
+ * can assert the unclaimed routing.
+ */
+async function mintWebRtcPeer(owner: OwnerNode, n: number, withDirect: boolean): Promise<WebRtcPeer> {
+	const key = await generateKeyPair('Ed25519');
+	const peerId = peerIdFromPrivateKey(key).toString();
+	const relayId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+	const relayedAddr = `/ip4/192.0.2.${n}/tcp/4001/ws/p2p/${relayId}/p2p-circuit/webrtc/p2p/${peerId}`;
+	const directAddr = `/ip4/192.0.2.${n}/udp/4001/webrtc-direct/certhash/${WEBRTC_CERTHASH}/p2p/${peerId}`;
+	const peer = await insertResolvableOfflinePeer(owner, key, withDirect ? [relayedAddr, directAddr] : [relayedAddr]);
+	return { ...peer, relayedAddr, directAddr };
+}
+
 /**
  * The full control read/write table, each operation under its own deadline,
  * contents asserted. Returns the peerId that `authorizePeer` added so callers
@@ -426,6 +547,13 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		}
 	}, 180_000);
 
+	// NOTE: this block carries the per-transport-shape cases and is the part of
+	// this file that grows — the file is 750 lines (`wc -l`) with the WebRTC
+	// shapes added, up from 519. If it gains more than a couple more shapes,
+	// split it into its own spec and lift the shared minting / operation-set
+	// helpers (`bootOwnerNode`, `insertResolvableOfflinePeer`,
+	// `runControlOperationSet`, `expectIntactAfterPass`, `within`) into
+	// `control-db-node-helpers.ts`.
 	describe('stress and transport shapes (transaction profile)', () => {
 		it('three blackhole siblings: the sequential dial loop accumulates cost but the pass stays bounded', async () => {
 			const owner = await bootOwnerNode('transaction', 'three-blackhole');
@@ -513,6 +641,109 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 				await expectIntactAfterPass(owner, [blackhole], authorizedPeerId);
 			} finally {
 				await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+			}
+		}, 120_000);
+
+		// The two reference apps ship WebRTC, so a freeze that lives only on that
+		// transport would reach a user before it reached a test. Both cases below
+		// assert WHICH transport libp2p picked before running the operation set —
+		// see `expectDialRouting`.
+		it('serves every control read/write locally with the BROWSER reference transport list', async () => {
+			const owner = await bootOwnerNode('transaction', 'webrtc-browser', browserTransports());
+			try {
+				const sibling = await mintWebRtcPeer(owner, 51, true);
+				expectDialRouting(owner.node, [
+					[sibling.relayedAddr, '@libp2p/webrtc'],
+					[sibling.directAddr, '@libp2p/webrtc-direct']
+				]);
+
+				const authorizedPeerId = await runControlOperationSet(owner, [sibling]);
+				await within('reconcileControlCohort()', RECONCILE_TIMEOUT_MS,
+					() => owner.node.reconcileControlCohort());
+				await expectIntactAfterPass(owner, [sibling], authorizedPeerId);
+			} finally {
+				await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+			}
+		}, 120_000);
+
+		it('serves every control read/write locally with the PHONE reference transport list', async () => {
+			const owner = await bootOwnerNode('transaction', 'webrtc-phone', phoneTransports());
+			try {
+				const sibling = await mintWebRtcPeer(owner, 52, false);
+				expectDialRouting(owner.node, [
+					[sibling.relayedAddr, '@libp2p/webrtc'],
+					// What makes the phone shape genuinely different from the browser
+					// one: with no `webRTCDirect()` configured, NOTHING claims a
+					// `/webrtc-direct` address — libp2p filters it out of a dial, so
+					// pasting the browser case's address in here would test nothing.
+					[sibling.directAddr, null]
+				]);
+
+				const authorizedPeerId = await runControlOperationSet(owner, [sibling]);
+				await within('reconcileControlCohort()', RECONCILE_TIMEOUT_MS,
+					() => owner.node.reconcileControlCohort());
+				await expectIntactAfterPass(owner, [sibling], authorizedPeerId);
+			} finally {
+				await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+			}
+		}, 120_000);
+
+		// The dial-storm case above, under the browser transport list: what is
+		// concurrent is the local ops against the pass, not the dials against each
+		// other.
+		it('a WebRTC reconcile pass grinding through dead dials cannot block a local read or write', async () => {
+			const owner = await bootOwnerNode('transaction', 'webrtc-dial-storm', browserTransports());
+			try {
+				const siblings = [
+					await mintWebRtcPeer(owner, 53, true),
+					await mintWebRtcPeer(owner, 54, true),
+					await mintWebRtcPeer(owner, 55, true)
+				];
+				for (const sibling of siblings) {
+					expectDialRouting(owner.node, [
+						[sibling.relayedAddr, '@libp2p/webrtc'],
+						[sibling.directAddr, '@libp2p/webrtc-direct']
+					]);
+				}
+
+				const pass = owner.node.reconcileControlCohort();
+				const authorizedPeerId = await runControlOperationSet(owner, siblings);
+
+				await within('reconcileControlCohort() (WebRTC storm pass)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+				await expectIntactAfterPass(owner, siblings, authorizedPeerId);
+			} finally {
+				await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+			}
+		}, 180_000);
+
+		it('stop() resolves inside its budget with a WebRTC dial in flight', async () => {
+			const owner = await bootOwnerNode('transaction', 'webrtc-stop-mid-dial', browserTransports());
+			try {
+				const sibling = await mintWebRtcPeer(owner, 56, true);
+				expectDialRouting(owner.node, [
+					[sibling.relayedAddr, '@libp2p/webrtc'],
+					[sibling.directAddr, '@libp2p/webrtc-direct']
+				]);
+
+				// Same shape as the blackhole stop-mid-dial case: wait until the dial
+				// is actually IN FLIGHT, and if the pass settles first (e.g. a network
+				// that answers TEST-NET-1) proceed anyway — stop() must be bounded
+				// either way.
+				const pass = owner.node.reconcileControlCohort();
+				let passSettled = false;
+				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });
+				await within('WebRTC dial in flight (dial queue non-empty)', OP_TIMEOUT_MS, async () => {
+					while (!passSettled && owner.node.getControlNode()!.getDialQueue().length === 0) {
+						await delay(25);
+					}
+				});
+
+				await within('node.stop() (WebRTC dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
+				await within('reconcileControlCohort() (after stop)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+			} finally {
+				// stop() is the subject here, so it is called in the body; this is the
+				// leak guard for the paths that never reach it (stop() is idempotent).
+				await within('node.stop() (guard)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
 			}
 		}, 120_000);
 	});
