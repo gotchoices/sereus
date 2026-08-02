@@ -207,7 +207,7 @@ stepping on each other.
   seat consumed.
 - Give both cases a 30 s vitest timeout, matching the surrounding phases.
 
-### Phase 3 — validate
+### Phase 3 — validate (nothing below has run yet)
 
 - `yarn workspace @serfab/integration-tests test 2>&1 | tee` the scenario file (stream the
   output; never silently redirect).
@@ -215,3 +215,52 @@ stepping on each other.
 - `yarn lint` and the repo type check over both touched packages.
 - Sanity-check the guard against a vacuous pass: temporarily drop the `signal` argument from
   `StrandFormationManager`'s `recordUsage` call and confirm case (i) fails; restore it.
+
+## Prior run: read-only survey only, no code written
+
+A previous implement run crossed its token budget after reading the relevant sources and
+before editing anything. **No files were changed** — the working tree is untouched and every
+TODO above is still open. What that run confirmed against the code, so the next run does not
+re-read six files to re-derive it:
+
+**The plan's numbers check out.** `provisionTimeoutMs: 3000` on the responder is not clamped:
+`resolveProvisionTimeoutMs` (`strand-formation-protocol.ts:304`) computes a ceiling of
+`max(1, 30000 − 5000 − min(3000, 12500))` = 22000 ms, and 3000 < 22000. `splitProvisionBudget`
+(`:330`) then yields **workMs 1500 / graceMs 1500**, as the plan assumed. An unconfigured
+joiner gets `DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS` = 15 s (`:103`).
+
+**The case (i) reason string arrives as written.** `runSession` sends
+`{ approved: false, reason: 'Formation provisioning timed out' }` (`:601`) and `dialFormation`
+rethrows it as `Error('Formation rejected: <reason>')` (`:681`), so
+`.rejects.toThrow(/Formation provisioning timed out/)` matches.
+
+**The case (i) abort really does reach the socket.** `createHttpFormationApprover`'s
+`startBudget` registers `onCallerAbort` on the caller signal and calls `controller.abort()` on
+the `fetch` (`formation-approval.ts:462-482`), so the held request's response emits `close`
+with `writableEnded` still false — which is exactly what the new `abortedCount` counts. The
+resulting `FormationApprovalError` is re-labelled `FormationAbortedError` by
+`ControlFormationUsageRecorder.askApprover` (`control-formation-recorder.ts:164`),
+`provisionAsResponder` rethrows it rather than mapping it to a rejection
+(`strand-formation-manager.ts:358`), and `settleWithinGrace` sees an already-rejected promise
+(`stillPending` false) and returns `undefined` — the timed-out reply. Chain confirmed by
+reading; not yet confirmed by running.
+
+**Signatures the new code needs.**
+- `insertStrand(strandId, type, ownerKey, signMessage, memberPrivateKey?)` —
+  `control-database.ts:998`. Matches the call the plan specifies.
+- `StrandSolicitationServiceOptions.formationConfig?: StrandFormationManagerConfig` already
+  exists (`strand-solicitation.ts:197`) and is threaded to the manager at `:259`, so extending
+  `responderService` is a pass-through, not a new option.
+- The case (ii) decorator must satisfy `FormationUsageRecorder`. The **bound** path calls only
+  `resolveStrand` → `recordUsage` (`strand-formation-manager.ts:327-343`), but `validateToken`
+  also calls `isTokenValid` + `isTokenUsed` (`:262-268`), so delegate at least those four.
+
+**Fixture edit shape.** `answer()` (`approval-hook-server.ts:76`) is currently synchronous and
+called from a `.then()` whose `.catch` writes the 500 fallback; making it `async` and awaiting
+`beforeAnswer` keeps that fallback working. `requestCount++` is at `:81`, right after
+`JSON.parse` — insert the `beforeAnswer` await after the `lastRequest`/`lastMethod`/`lastPath`/
+`lastHeaders` captures (`:82-85`) and before `decide` (`:87`), which preserves the plan's
+"`requestCount` means the responder asked" property. Note `startLoopbackHttpServer.close()`
+destroys open sockets before closing the listener (`loopback-http-server.ts:65-70`), so a
+never-released hold cannot hang teardown — but the held handler's later `res.end()` still needs
+the `writableEnded || destroyed` guard, since it runs after that destroy.
