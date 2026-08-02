@@ -1,7 +1,7 @@
 ----
 description: When two or more machines share a cadre, a row written on one of them no longer reaches the others. Most writes now fail outright after about twenty seconds of retrying, and the ones that do succeed never show up on the second machine. This affects every multi-machine scenario in the integration suite. The defect is in the shared database library kept in the sibling `optimystic` checkout, so it cannot be fixed here.
 prereq:
-files: packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 340-410, updateInternal ~line 180-250, createOrOpen/open/probeHeader ~line 60-140), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection), ../optimystic/tickets/blocked/two-node-convergence-acceptance-cross-repo-build.md
+files: packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/scenarios/control-write-while-alone-convergence.integration.ts, packages/integration-tests/src/scenarios/websocket-chat.integration.ts, packages/integration-tests/src/scenarios/convergence-stress.integration.ts, packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts (scenario 2, circuit-relay), ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal ~line 340-410, updateInternal ~line 180-250, createOrOpen/open/probeHeader ~line 60-140), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (classifyStaleRejection), ../optimystic/tickets/blocked/two-node-convergence-acceptance-cross-repo-build.md
 difficulty: hard
 ----
 
@@ -52,6 +52,7 @@ Confirmed failing against clean optimystic `bf7e3d2`:
 | `control-write-while-alone-convergence.integration.ts` — both tests | `Timeout waiting for B observes the X CadrePeer row written on A while alone after 30000ms`, and `Timeout waiting for B resolves A DeviceToken re-replicated after cohort growth after 30000ms` |
 | `websocket-chat.integration.ts` — `should replicate a chat message over WebSocket` | `Timeout waiting for message replicates to phone after 15000ms` |
 | `convergence-stress.integration.ts` — `should retain converged data after disconnect and reconnect` | 1 failed / 2 passed in that file |
+| `push-wake-e2e.integration.ts` — `delivers a wake to a NAT'd receiver over a circuit-relay (signaling-first) dial` | intermittent; both class signatures — see "Folded in 2026-08-01" below |
 
 `control-cohort-auto-convergence.integration.ts` was on the incoming report's list and now
 **passes** — that one really was drift. It is not tracked.
@@ -242,6 +243,72 @@ It is a hypothesis, not a finding. What would settle it: run the same scenarios 
 If they pass there and fail here, the semantics change is the trigger and the sereus-side work is
 to handle the honest error. If they fail on both, v0.18.0 is incidental and the write path was
 already broken.
+
+## Folded in 2026-08-01 — `push-wake-e2e` scenario 2 (circuit-relay)
+
+`packages/integration-tests/src/scenarios/push-wake-e2e.integration.ts` →
+`E2E push-wake over the control network > delivers a wake to a NAT'd receiver over a
+circuit-relay (signaling-first) dial` belongs to this class. It arrived as a separate
+pre-existing-failure report during `debt-membership-gate-coalescing-refresh-tests`, and is
+folded here rather than filed anew per the "one upstream defect, one ticket" rule above.
+
+Measured at sereus `c1043b5`, `../optimystic` clean at `9a06f1b` (v0.18.0), `../quereus` clean
+at `f620aade` (v4.6.0), suite stale-build guard green on every run:
+
+| Run | Result |
+| --- | --- |
+| whole file (`push-wake-e2e.integration.ts`) | 4/4 pass, 36 s |
+| solo (`-t "circuit-relay"`), 4 runs | **3 fail / 1 pass** |
+
+Two signatures across the three failures, both already listed in this ticket:
+
+1. Rx's own control-DB schema load dies bringing up the table the party already has —
+   the rev-N/requested-N pair, on the *schema* collection rather than a data tree:
+
+   ```
+   QuereusError: Failed to execute DDL: create table CadreControl.OwnerKey (…)
+   Error: Module 'optimystic' create failed for table 'OwnerKey': Failed to initialize
+     Optimystic table: sync for collection optimystic/schema exhausted 10 retries:
+     stale revision: block optimystic/schema at rev 1, requested rev 1
+    ❯ OptimysticVirtualTable.doInitialize
+      ../../../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts:316:13
+    ❯ ControlDatabase.loadSchema ../cadre-core/src/control-database.ts:534:5
+   ```
+
+   The incoming report saw `Missing block (…)` at this same line instead; that is the other
+   v0.18.0 face of the same thing, already noted under "Validation 2026-08-01".
+
+2. The plain convergence timeout, identical in shape to `control-write-while-alone-convergence`:
+
+   ```
+   Error: Timeout waiting for Rx observes S's CadrePeer membership row written on L after 30000ms
+    ❯ waitForCadrePeerConverged src/harness/test-network.ts:322:3
+   ```
+
+**Why it is this defect and not the membership gate.** Scenario 2's own comments warn that a
+stale per-stream gate snapshot kills exactly this bring-up, so that was ruled out first: under
+`DEBUG='sereus:cadre:*'` the reporting session recorded **zero**
+`authorizeInboundControlStream: DENYING` lines, and the write-driven
+`refreshAuthorizedControlPeers(peer-insert)` fired promptly (1 then 2 authorized peers). The
+throw is upstream of any sereus gate, at `Collection.syncInternal`'s retry exhaustion.
+
+**Why solo fails and whole-file passes.** Not evidence of test pollution — every scenario in
+the file mints its own `partyId`/`strandId` from `Date.now()` and tears its nodes down in a
+`finally`. Solo simply starts cold (first-fork import + JIT), which widens the window in which
+L has committed the party's schema/`CadrePeer` header while the joining node's collection
+instance is still contextless. So **a green whole-file run proves nothing here**, the same
+caveat this ticket's other entries carry. Re-measure with `-t "circuit-relay"`, several runs.
+
+Scenario 2 is the most exposed member of this file because it is the only one where a node
+joins a party whose control collections were **already committed by another node** (relay L
+genesises alone, S and Rx join after). Scenarios 1/3/4 either write from the node that
+invented the collection or never form the cohort at that instant.
+
+Note for whoever re-measures: `tickets/.pre-existing-known.md` lists this same test under
+**"Resolved in place"** for `UnsupportedListenAddressesError` in the circuit-relay reservation
+store, fixed by `strand-delegate-peer-relay-admission` (2026-07-29). That fix stands — the
+relay reservation now materialises correctly, and none of the failures above mention it. Same
+test, different defect.
 
 ## For the optimystic side
 
