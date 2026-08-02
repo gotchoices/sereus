@@ -27,7 +27,7 @@ import {
 	type StrandProvisioner,
 } from '@serfab/cadre-core';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation } from '@serfab/cadre-core';
+import type { CadreNodeConfig, StrandRow, SAppConfig, StrandFormationDisclosure, OpenInvitation, StrandFormationManagerConfig } from '@serfab/cadre-core';
 import { TestCadreNetwork, signMessageEd25519, startApprovalHook, waitUntil, wsTransports, createSignedSAppConfig, readCohort } from '../harness/index.js';
 import type { TestParty } from '../harness/types.js';
 
@@ -147,16 +147,27 @@ function ownerSigner(party: TestParty): (message: Uint8Array) => string {
  * approval client, which is precisely what Phase 5 puts under test. Injecting a fake
  * approver here would void it.
  *
+ * `overrides` is additive and every field is optional, so the single-argument callers of
+ * Phases 4 and 5 keep their behaviour verbatim:
+ * - `formationConfig` — Phase 6 shrinks the responder's provisioning budget so its work
+ *   deadline (and the abort it fires) lands in ~1.5 s instead of the 12 s default.
+ * - `formationUsageRecorder` — Phase 6 (ii) wraps the real recorder in a timing decorator.
+ *
  * NOTE: callers unregister at the END of the case rather than in a `finally`, so a failing
  * assertion leaves the handler registered. Harmless while every case creates its own
  * parties (the leak dies with `network.shutdown()`); if a case ever shares a party with
- * another, move the unregister into a `finally`.
+ * another, move the unregister into a `finally` — Phase 6 already does, because it has
+ * assertions that can throw while an approval hook is still held.
  */
-function responderService(party: TestParty): StrandSolicitationService {
+function responderService(
+	party: TestParty,
+	overrides: { formationConfig?: StrandFormationManagerConfig; formationUsageRecorder?: FormationUsageRecorder } = {},
+): StrandSolicitationService {
 	const service = new StrandSolicitationService({
 		partyId: party.partyId,
 		cadrePeerAddrs: party.ownerNode.multiaddrs,
-		formationUsageRecorder: new ControlFormationUsageRecorder(party.controlDatabase),
+		formationUsageRecorder: overrides.formationUsageRecorder ?? new ControlFormationUsageRecorder(party.controlDatabase),
+		...(overrides.formationConfig ? { formationConfig: overrides.formationConfig } : {}),
 	});
 	service.registerResponder(party.ownerNode.libp2p);
 	return service;

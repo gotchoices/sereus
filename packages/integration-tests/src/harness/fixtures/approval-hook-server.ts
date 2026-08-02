@@ -32,8 +32,19 @@ export interface ApprovalHookServer {
 	readonly validationUrl: string;
 	/** Public key (base64url) of the pair this hook signs with — the key to enroll as a `ValidationKey`. */
 	readonly validationKey: string;
-	/** How many requests the hook has answered. Proves the responder really called out. */
+	/**
+	 * How many requests the hook has RECEIVED (counted as soon as the body parses, before
+	 * {@link ApprovalHookOptions.beforeAnswer} or `decide` run). Proves the responder really
+	 * called out — a held request is counted, an unanswered one still is.
+	 */
 	readonly requestCount: number;
+	/**
+	 * How many requests the CLIENT gave up on before the fixture answered — the response
+	 * closed with nothing written. A redeeming node that relays its caller-abort onto the
+	 * outgoing `fetch` shows up here, so a test can prove the cancellation reached the wire
+	 * rather than inferring it from a reply that some unrelated timeout could also produce.
+	 */
+	readonly abortedCount: number;
 	/** The posted body of the most recent request, verbatim, or null if never asked. */
 	readonly lastRequest: FormationVouchFields | null;
 	/**
@@ -59,6 +70,17 @@ export interface ApprovalHookOptions {
 	decide?: (fields: FormationVouchFields) => 'approve' | 'refuse' | FormationApproval;
 	/** Sign with this key instead of a freshly generated one — lets a caller pre-sign the same way. */
 	privateKeyB64?: string;
+	/**
+	 * Awaited between the `requestCount` bump and `decide` — the HOLD lever: an approver that
+	 * goes quiet (a queue behind a human) rather than answering yes or no. `requestIndex` is
+	 * the 1-based value `requestCount` just took, so a caller can hold only the first ask and
+	 * let a later retry through the same published `ValidationUrl`.
+	 *
+	 * A caller that holds MUST release: the fixture never times a hold out. `close()` destroys
+	 * open sockets, so a forgotten hold cannot hang teardown, but the held handler then wakes
+	 * to an already-dead response — which is why every write below is guarded.
+	 */
+	beforeAnswer?: (fields: FormationVouchFields, requestIndex: number) => Promise<void>;
 }
 
 /** Start an approval hook on an OS-assigned loopback port. */
@@ -68,21 +90,36 @@ export async function startApprovalHook(options: ApprovalHookOptions = {}): Prom
 	const decide = options.decide ?? ((): 'approve' => 'approve');
 
 	let requestCount = 0;
+	let abortedCount = 0;
 	let lastRequest: FormationVouchFields | null = null;
 	let lastMethod: string | null = null;
 	let lastPath: string | null = null;
 	let lastHeaders: IncomingHttpHeaders | null = null;
 
-	const answer = (req: IncomingMessage, res: ServerResponse, body: string): void => {
+	/**
+	 * True once this response can no longer be written to — the client aborted (or `close()`
+	 * destroyed the socket) while the handler was held. Writing anyway throws
+	 * `ERR_STREAM_WRITE_AFTER_END` out of a `.then()`, i.e. an unhandled rejection.
+	 */
+	const isDead = (res: ServerResponse): boolean => res.writableEnded || res.destroyed;
+
+	const answer = async (req: IncomingMessage, res: ServerResponse, body: string): Promise<void> => {
 		// The posted `disclosure` is signed verbatim: `fields` is the object `JSON.parse` produced
 		// and is handed to `signFormationApproval` untouched, so the approver's digest covers the
 		// exact string the redeeming node will insert.
 		const fields = JSON.parse(body) as FormationVouchFields;
-		requestCount++;
+		const requestIndex = ++requestCount;
 		lastRequest = fields;
 		lastMethod = req.method ?? null;
 		lastPath = req.url ?? null;
 		lastHeaders = req.headers;
+
+		if (options.beforeAnswer) {
+			await options.beforeAnswer(fields, requestIndex);
+			if (isDead(res)) {
+				return;
+			}
+		}
 
 		const verdict = decide(fields);
 		if (verdict === 'refuse') {
@@ -98,11 +135,21 @@ export async function startApprovalHook(options: ApprovalHookOptions = {}): Prom
 	};
 
 	const server = await startLoopbackHttpServer((req, res) => {
+		// 'close' on the response fires when the connection goes away, answered or not; nothing
+		// written by then means the client hung up first.
+		res.on('close', () => {
+			if (!res.writableEnded) {
+				abortedCount++;
+			}
+		});
 		void readRequestBody(req)
 			.then((body) => answer(req, res, body))
 			// Without this, a throw in the handler is an unhandled rejection and the client hangs
 			// to its own timeout, reporting `unavailable` instead of the real cause.
 			.catch((error: unknown) => {
+				if (isDead(res)) {
+					return;
+				}
 				res.writeHead(500, { 'content-type': 'text/plain' });
 				res.end(String(error));
 			});
@@ -112,6 +159,7 @@ export async function startApprovalHook(options: ApprovalHookOptions = {}): Prom
 		validationUrl: `${server.baseUrl}${HOOK_PATH}`,
 		validationKey,
 		get requestCount(): number { return requestCount; },
+		get abortedCount(): number { return abortedCount; },
 		get lastRequest(): FormationVouchFields | null { return lastRequest; },
 		get lastMethod(): string | null { return lastMethod; },
 		get lastPath(): string | null { return lastPath; },
