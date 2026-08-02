@@ -803,8 +803,12 @@ where local rows exist.
   WebRTC dial path really ran. Still uncovered: the browser's **listening** posture
   (`listenAddrs: ['/p2p-circuit', '/webrtc']`) needs a live relay to reserve against, so it is an
   integration-suite shape, not a unit one.
-- [x] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
-  — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
+- [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
+  — currently fails in `beforeAll`, all 6 cases skipped; blocked on
+  `blocked/transactor-key-network-ignores-network-scoping` (an upstream `../optimystic`
+  coordinator-cache-poisoning bug: a node racing its first dial can elect itself
+  coordinator and cache that pick for 30 min). Design and coverage below are otherwise
+  accurate and were last observed green pre-regression. — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
   being downsized out of it. Real three-node trio over localhost websockets, with cohort discovery
   and coordinator assignment forced (`harness/forced-cluster.ts`) because FRET's routing table stays
