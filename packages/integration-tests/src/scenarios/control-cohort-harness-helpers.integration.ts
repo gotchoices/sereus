@@ -4,22 +4,59 @@
  * `harness/control-cohort.ts` lets a scenario ask "how many machines would a control
  * write actually be offered to right now?", wait for that number to reach a target, and
  * record what the real `findCluster` returned. `harness/forced-cluster.ts` can pin that
- * set to a constant. Everything downstream that claims a multi-machine control write
+ * set to a constant (`forceFullCohort`) and pin which member coordinates the write
+ * (`pinCoordinator`). Everything downstream that claims a multi-machine control write
  * rests on those helpers being right, so this file pins their behaviour cheaply: it
- * boots two small parties, probes them, and asserts the sizes, the member ids, the
- * argument-validation throws and the patch/restore lifecycle.
+ * boots two small parties, probes them, and asserts the sizes, the member ids, every
+ * accepted node shape, the argument-validation throws and the patch/restore lifecycle.
  *
  * There are no writes here at all, so the whole file runs in seconds — the one slow
  * step is waiting out the ~5 s FRET ring convergence on the three-node party.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import type { Libp2p } from '@libp2p/interface';
+import type { Libp2p, PeerId } from '@libp2p/interface';
+import { Libp2pKeyPeerNetwork } from '@optimystic/db-p2p';
 import {
 	createTestParty, shutdownTestParty, readControlCohort, waitForControlCohort,
-	observeControlCohorts, forceFullCohort
+	observeControlCohorts, forceFullCohort, pinCoordinator, CONTROL_COHORT_PROBE_KEY
 } from '../harness/index.js';
 import type { TestParty, TestCadreNode, CohortNodeSource } from '../harness/index.js';
+
+/**
+ * A `CadreNode`-shaped cohort source over an already-started libp2p node.
+ *
+ * The real `CadreNode` branch of `resolveControlLibp2p` is discriminated purely by the
+ * presence of `getControlNode`, so this stands in for one without booting a cadre — which
+ * the only scenario that uses real `CadreNode`s cannot currently do (see
+ * `docs/STATUS.md` → `control-write-degraded-cohort-member`).
+ *
+ * NOTE: a stand-in cannot catch a `CadreNode` that GAINS a `libp2p` property, which would
+ * silently re-route the resolver to the `TestCadreNode` branch (see the doc comment on
+ * `resolveControlLibp2p`). Only a real instance would; re-check when that scenario runs.
+ */
+function asCadreNodeSource(controlNode: Libp2p | null): CohortNodeSource {
+	return { getControlNode: () => controlNode } as unknown as CohortNodeSource;
+}
+
+/**
+ * An exclusion entry as `NetworkTransactor` passes them. `pinCoordinator` compares
+ * `excludedPeers` by `toString()` only, so a party node's peer id string is enough — the
+ * harness never hands out real `PeerId` objects.
+ */
+function asPeerId(id: string): PeerId {
+	return { toString: () => id } as unknown as PeerId;
+}
+
+/**
+ * Ask the patched prototype directly. `forceFullCohort` / `pinCoordinator` install
+ * substitutes that never touch `this`, so this observes exactly what they installed
+ * without reaching into a node's private key-network instances.
+ */
+const patchedPrototype = Libp2pKeyPeerNetwork.prototype as unknown as {
+	findCluster(key: Uint8Array): Promise<Record<string, unknown>>;
+	findCoordinator(key: Uint8Array, options?: { excludedPeers?: PeerId[] }): Promise<PeerId>;
+};
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -144,6 +181,32 @@ describe('control-cohort harness helpers', () => {
 		}
 	}, 30_000);
 
+	it('accepts a CadreNode-shaped source, reading through getControlNode', async () => {
+		// The branch the degraded-cohort scenario would exercise if its `beforeAll` ran;
+		// covered here so the widening is not resting entirely on the type-checker.
+		const forced = forceFullCohort([asCadreNodeSource(solo.ownerNode.libp2p)]);
+		try {
+			expect(await readControlCohort(solo)).toEqual([solo.ownerNode.peerId]);
+			expect(forced.cohortSizes()).toContain(1);
+		} finally {
+			forced.restore();
+		}
+	}, 30_000);
+
+	it('blames an unstarted CadreNode rather than dialling nothing', () => {
+		// `getControlNode()` returns null until `start()`; forcing on that would build a
+		// cohort entry with no address, which downstream looks like a dial failure.
+		expect(() => forceFullCohort([asCadreNodeSource(null)]))
+			.toThrow(/no started control node/);
+	});
+
+	it('rejects a non-object source by naming what it got', () => {
+		expect(() => forceFullCohort([null as unknown as CohortNodeSource]))
+			.toThrow(/expected a node object; got null/);
+		expect(() => forceFullCohort(['not-a-node' as unknown as CohortNodeSource]))
+			.toThrow(/expected a node object; got string/);
+	});
+
 	it('names the shape it could not recognise rather than forcing an empty cohort', () => {
 		expect(() => forceFullCohort([{ notANode: true } as unknown as CohortNodeSource]))
 			.toThrow(/unrecognised node shape.*notANode/s);
@@ -164,6 +227,52 @@ describe('control-cohort harness helpers', () => {
 		await expect(waitForControlCohort(solo, 1, { node: unattached }))
 			.rejects.toThrow(/exposes no attached keyNetwork/);
 	}, 30_000);
+
+	it('pins the coordinator to the first candidate the caller has not excluded', async () => {
+		const [droneA, droneB] = [trio.droneNodes[0]!, trio.droneNodes[1]!];
+		const forced = forceFullCohort([trio.ownerNode, droneA, droneB]);
+		const pinned = pinCoordinator([droneA, droneB]);
+		try {
+			expect((await patchedPrototype.findCoordinator(CONTROL_COHORT_PROBE_KEY)).toString())
+				.toBe(droneA.peerId);
+			// The transactor's re-coordination path: a failed coordinator comes back as an
+			// exclusion, and the next candidate must serve rather than the pin re-picking it.
+			expect((await patchedPrototype.findCoordinator(
+				CONTROL_COHORT_PROBE_KEY, { excludedPeers: [asPeerId(droneA.peerId)] })).toString())
+				.toBe(droneB.peerId);
+			await expect(patchedPrototype.findCoordinator(CONTROL_COHORT_PROBE_KEY, {
+				excludedPeers: [asPeerId(droneA.peerId), asPeerId(droneB.peerId)]
+			})).rejects.toThrow(/every pinned coordinator candidate is excluded/);
+			expect(pinned.callCount()).toBe(3);
+		} finally {
+			// Reverse order of application: unpin before un-forcing.
+			pinned.restore();
+			forced.restore();
+		}
+	}, 30_000);
+
+	it('re-keys the cohort candidates-first without changing its membership', async () => {
+		const drone = trio.droneNodes[1]!;
+		const forced = forceFullCohort([trio.ownerNode, trio.droneNodes[0]!, drone]);
+		const pinned = pinCoordinator([drone]);
+		try {
+			const members = Object.keys(await patchedPrototype.findCluster(CONTROL_COHORT_PROBE_KEY));
+			// Set-cover keeps the first-inserted peer among those tied on coverage, so the
+			// pinned candidate leading is the whole mechanism — but nobody may be dropped.
+			expect(members[0]).toBe(drone.peerId);
+			expect([...members].sort()).toEqual(
+				[trio.ownerNode.peerId, ...trio.droneNodes.map((d) => d.peerId)].sort());
+		} finally {
+			pinned.restore();
+			forced.restore();
+		}
+		// Both patches really are off: the real cohort read answers again.
+		expect((await readControlCohort(trio)).length).toBeGreaterThanOrEqual(1);
+	}, 30_000);
+
+	it('refuses an empty coordinator candidate set', () => {
+		expect(() => pinCoordinator([])).toThrow(/empty candidate set/);
+	});
 
 	it('refuses an out-of-order restore instead of reinstating a stale findCluster', async () => {
 		const forced = forceFullCohort([solo.ownerNode]);

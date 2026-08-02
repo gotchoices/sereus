@@ -804,11 +804,7 @@ where local rows exist.
   (`listenAddrs: ['/p2p-circuit', '/webrtc']`) needs a live relay to reserve against, so it is an
   integration-suite shape, not a unit one.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
-  — currently fails in `beforeAll`, all 6 cases skipped; blocked on
-  `blocked/transactor-key-network-ignores-network-scoping` (an upstream `../optimystic`
-  coordinator-cache-poisoning bug: a node racing its first dial can elect itself
-  coordinator and cache that pick for 30 min). Design and coverage below are otherwise
-  accurate and were last observed green pre-regression. — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
+  — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
   being downsized out of it. Real three-node trio over localhost websockets, with cohort discovery
   and coordinator assignment forced (`harness/forced-cluster.ts`) because FRET's routing table stays
@@ -820,7 +816,27 @@ where local rows exist.
   half-applied), and post-failure recovery. Latency figures and the uncovered
   degraded-node-is-coordinator branch are in `architecture.md`. One case is a standing `it.fails`
   reproducer for `fix/control-reads-blocked-by-stalled-write`: local control reads on the writing
-  node block behind an in-flight stalled write. Runtime ~185 s.
+  node block behind an in-flight stalled write. Runtime ~185 s. **Currently not running**: fails in
+  `beforeAll`, all 6 cases skipped, blocked on
+  `blocked/transactor-key-network-ignores-network-scoping` (an upstream `../optimystic`
+  coordinator-cache-poisoning bug — a node racing its first outbound dial can elect itself
+  coordinator for a control-DB key and cache that pick for 30 minutes). The design and coverage
+  described above are otherwise accurate and were last observed green before that regression.
+- [x] `packages/integration-tests/src/scenarios/control-cohort-harness-helpers.integration.ts` — the
+  two harness modules the two entries above rest on, tested on their own terms and with no control
+  writes at all (~13 s, two small parties). Covers `harness/control-cohort.ts`
+  (`readControlCohort`/`waitForControlCohort`/`observeControlCohorts`): the one-node cohort that
+  must resolve on the first poll, the owner's view reaching all three party members, the
+  immediate — not timed-out — throws for an unsatisfiable `minPeers`, the drone view that caps at
+  two forever, and the observer passing through rather than substituting. And
+  `harness/forced-cluster.ts`: each node shape `CohortNodeSource` accepts (a `TestCadreNode`, a
+  bare started `Libp2p`, a `CadreNode` read through `getControlNode()`) plus the throws for an
+  unstarted `CadreNode`, a non-object, an unrecognised shape and a node listed twice (which would
+  silently force a cohort smaller than asked for); `pinCoordinator`'s candidate order, its
+  `excludedPeers` fallback and all-excluded throw, and its candidates-first re-keying of the cohort
+  without changing membership; and the last-applied-first-restored patch stacking that
+  `harness/key-network-patch.ts` enforces. The `CadreNode` shape is covered here structurally
+  because the one scenario that uses real `CadreNode`s is the blocked entry above.
 - [x] `packages/integration-tests/src/scenarios/harness-party-control-cohort.integration.ts` — the
   counterpart that uses **real** cohort discovery instead of forcing it: it proves a control write
   was offered to more than the machine that issued it. A control write that merely passes cannot
