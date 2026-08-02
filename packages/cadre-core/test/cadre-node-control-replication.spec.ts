@@ -24,11 +24,16 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
 
 interface PeerRow { peerId: string; sig: string; updatedAt: number }
 
+interface RevRow { tableName: string; rowKey: string; stampId: string; reissuedAt: number }
+
 interface FakeSeed {
   authorize: boolean;
   reauthorizeCalls: Array<{ peerId: string; updatedAt: number }>;
   removeCalls: string[];
   authorizeCalls: string[];
+  reissueRevocationsCalls: Array<{ rows: RevRow[]; reissuedAt: number }>;
+  /** When set, the fake `reissueRevocations` throws instead of recording. */
+  reissueRevocationsError: Error | null;
 }
 
 /** A minimal control-node fake exposing only what the re-replication paths read. */
@@ -57,9 +62,17 @@ function inject(
     canAuthorize?: boolean;
     running?: boolean;
     hasSeed?: boolean;
+    revocations?: RevRow[];
   }
 ): { seed: FakeSeed; queryCadrePeersCalls: () => number; registerSelfCalls: () => number } {
-  const seed: FakeSeed = { authorize: opts.canAuthorize ?? true, reauthorizeCalls: [], removeCalls: [], authorizeCalls: [] };
+  const seed: FakeSeed = {
+    authorize: opts.canAuthorize ?? true,
+    reauthorizeCalls: [],
+    removeCalls: [],
+    authorizeCalls: [],
+    reissueRevocationsCalls: [],
+    reissueRevocationsError: null
+  };
   let queryCadrePeers = 0;
   let registerSelf = 0;
 
@@ -72,14 +85,20 @@ function inject(
     queryCadrePeers: async () => { queryCadrePeers++; return opts.members ?? []; },
     queryPeerRecord: async (peerId: string) =>
       (opts.records && peerId in opts.records) ? opts.records[peerId] : null,
-    queryDeviceToken: async () => null
+    queryDeviceToken: async () => null,
+    queryRevocations: async () => opts.revocations ?? []
   };
   if (opts.hasSeed ?? true) {
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       canAuthorize: () => seed.authorize,
       reauthorizePeer: async (peerId: string, updatedAt: number) => { seed.reauthorizeCalls.push({ peerId, updatedAt }); },
       removePeer: async (peerId: string) => { seed.removeCalls.push(peerId); },
-      authorizePeer: async (o: { peerId: string }) => { seed.authorizeCalls.push(o.peerId); }
+      authorizePeer: async (o: { peerId: string }) => { seed.authorizeCalls.push(o.peerId); },
+      reissueRevocations: async (rows: readonly RevRow[], reissuedAt: number) => {
+        if (seed.reissueRevocationsError) { throw seed.reissueRevocationsError; }
+        seed.reissueRevocationsCalls.push({ rows: [...rows], reissuedAt });
+        return rows.length;
+      }
     };
   }
   // Stub the self-row re-touch so the drain isolates peer/reconstruction work.
@@ -92,9 +111,27 @@ function inject(
 }
 
 /** Read the private re-replication queue for assertions. */
-function pending(node: CadreNode): Map<string, 'authorize' | 'remove'> {
-  return (node as unknown as { pendingPeerWrites: Map<string, 'authorize' | 'remove'> }).pendingPeerWrites;
+function pending(node: CadreNode): Map<string, 'authorize'> {
+  return (node as unknown as { pendingPeerWrites: Map<string, 'authorize'> }).pendingPeerWrites;
 }
+
+/** Read the private revocation re-replication queue for assertions. */
+function pendingRevs(node: CadreNode): Map<string, { tableName: string; rowKey: string; stampId: string }> {
+  return (node as unknown as { pendingRevocations: Map<string, { tableName: string; rowKey: string; stampId: string }> })
+    .pendingRevocations;
+}
+
+/**
+ * Drive the committed-delete seam handler directly. The real listener is wired in
+ * `start()` (which these tests never call), so — like the `pending(node).set(...)`
+ * seeding above — the handler is exercised via cast.
+ */
+function noteDelete(node: CadreNode, rev: { tableName: string; rowKey: string; stampId: string }): void {
+  (node as unknown as { noteGuardedDelete: (r: typeof rev) => void }).noteGuardedDelete(rev);
+}
+
+const revRow = (stampId: string, reissuedAt = 0): RevRow =>
+  ({ tableName: 'CadrePeer', rowKey: `row-of-${stampId}`, stampId, reissuedAt });
 
 describe('CadreNode write-while-alone re-replication', () => {
   describe('queueing (noteControlWrite via authorizePeer / removePeer)', () => {
@@ -114,19 +151,30 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(pending(node).has('peer-X')).toBe(false);
     });
 
-    it('queues a remove that committed while alone (security-relevant)', async () => {
-      const node = new CadreNode(createConfig());
-      inject(node, { connections: 0 });
-      await node.removePeer('peer-X');
-      expect(pending(node).get('peer-X')).toBe('remove');
-    });
-
-    it('remove-after-authorize while alone: remove wins (last op for the subject)', async () => {
+    it('a remove clears a queued authorize for the same subject (row gone — re-issuing the insert would resurrect it)', async () => {
       const node = new CadreNode(createConfig());
       inject(node, { connections: 0 });
       await node.authorizePeer('peer-X');
+      expect(pending(node).get('peer-X')).toBe('authorize');
       await node.removePeer('peer-X');
-      expect(pending(node).get('peer-X')).toBe('remove');
+      expect(pending(node).has('peer-X')).toBe(false);
+    });
+  });
+
+  describe('queueing (noteGuardedDelete via the committed-delete seam)', () => {
+    it('queues a guarded delete that committed while alone (0 connections)', () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 0 });
+      noteDelete(node, { tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
+      expect(pendingRevs(node).get('stamp-1')).toEqual({ tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
+    });
+
+    it('does NOT queue (and clears) a guarded delete that committed while connected', () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 2 });
+      pendingRevs(node).set('stamp-1', { tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
+      noteDelete(node, { tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
+      expect(pendingRevs(node).has('stamp-1')).toBe(false);
     });
   });
 
@@ -172,15 +220,89 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(pending(node).has('peer-X')).toBe(false);
     });
 
-    it('re-issues a pending remove (best-effort delete) and clears it', async () => {
+    it('never calls removePeer from the drain (removals ride the revocation queue)', async () => {
       const node = new CadreNode(createConfig());
-      const { seed } = inject(node, {});
-      pending(node).set('peer-X', 'remove');
+      const { seed } = inject(node, {
+        revocations: [revRow('stamp-1')]
+      });
+      pendingRevs(node).set('stamp-1', { tableName: 'CadrePeer', rowKey: 'peer-X', stampId: 'stamp-1' });
 
       await node.drainPendingControlReplication('test');
 
-      expect(seed.removeCalls).toEqual(['peer-X']);
-      expect(pending(node).has('peer-X')).toBe(false);
+      expect(seed.removeCalls).toEqual([]);
+      expect(seed.reissueRevocationsCalls).toHaveLength(1);
+    });
+  });
+
+  describe('revocation drain (drainPendingRevocations)', () => {
+    it('first drain sweeps EVERY held tombstone in one call, queued stamps included exactly once', async () => {
+      const node = new CadreNode(createConfig());
+      const held = [revRow('stamp-1', 5), revRow('stamp-2'), revRow('stamp-3')];
+      const { seed } = inject(node, { revocations: held });
+      // stamp-2 is also in the in-session queue — must not be re-issued twice.
+      pendingRevs(node).set('stamp-2', { tableName: 'CadrePeer', rowKey: 'row-of-stamp-2', stampId: 'stamp-2' });
+
+      await node.drainPendingControlReplication('first');
+
+      expect(seed.reissueRevocationsCalls).toHaveLength(1);
+      const call = seed.reissueRevocationsCalls[0]!;
+      expect(call.rows.map((r) => r.stampId).sort()).toEqual(['stamp-1', 'stamp-2', 'stamp-3']);
+      // Strictly above every held ReissuedAt.
+      expect(call.reissuedAt).toBeGreaterThan(5);
+      expect(pendingRevs(node).size).toBe(0);
+    });
+
+    it('second drain with an empty queue does not re-sweep', async () => {
+      const node = new CadreNode(createConfig());
+      const { seed } = inject(node, { revocations: [revRow('stamp-1')] });
+
+      await node.drainPendingControlReplication('first');
+      await node.drainPendingControlReplication('second');
+
+      expect(seed.reissueRevocationsCalls).toHaveLength(1);
+    });
+
+    it('second drain re-issues exactly the queued row and clears it on success', async () => {
+      const node = new CadreNode(createConfig());
+      const { seed } = inject(node, { revocations: [revRow('stamp-1'), revRow('stamp-2')] });
+
+      await node.drainPendingControlReplication('first');
+      pendingRevs(node).set('stamp-2', { tableName: 'CadrePeer', rowKey: 'row-of-stamp-2', stampId: 'stamp-2' });
+      await node.drainPendingControlReplication('second');
+
+      expect(seed.reissueRevocationsCalls).toHaveLength(2);
+      expect(seed.reissueRevocationsCalls[1]!.rows.map((r) => r.stampId)).toEqual(['stamp-2']);
+      expect(pendingRevs(node).has('stamp-2')).toBe(false);
+    });
+
+    it('a throwing reissueRevocations leaves the queue intact and retries the sweep on the next drain', async () => {
+      const node = new CadreNode(createConfig());
+      const { seed } = inject(node, { revocations: [revRow('stamp-1')] });
+      pendingRevs(node).set('stamp-1', { tableName: 'CadrePeer', rowKey: 'row-of-stamp-1', stampId: 'stamp-1' });
+      seed.reissueRevocationsError = new Error('Failed to get super-majority');
+
+      await node.drainPendingControlReplication('first');
+
+      expect(pendingRevs(node).has('stamp-1')).toBe(true);
+
+      // Failure did not consume the one-shot sweep: the next drain sweeps again.
+      seed.reissueRevocationsError = null;
+      await node.drainPendingControlReplication('second');
+
+      expect(seed.reissueRevocationsCalls).toHaveLength(1);
+      expect(seed.reissueRevocationsCalls[0]!.rows.map((r) => r.stampId)).toEqual(['stamp-1']);
+      expect(pendingRevs(node).has('stamp-1')).toBe(false);
+    });
+
+    it('a node with no owner key drops queued revocations without touching the database', async () => {
+      const node = new CadreNode(createConfig());
+      const { seed } = inject(node, { canAuthorize: false, revocations: [revRow('stamp-1')] });
+      pendingRevs(node).set('stamp-1', { tableName: 'CadrePeer', rowKey: 'row-of-stamp-1', stampId: 'stamp-1' });
+
+      await node.drainPendingControlReplication('test');
+
+      expect(seed.reissueRevocationsCalls).toEqual([]);
+      expect(pendingRevs(node).size).toBe(0);
     });
   });
 

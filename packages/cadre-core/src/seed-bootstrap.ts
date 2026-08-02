@@ -18,7 +18,8 @@ import type {
   InviteResult,
   CadreInvite,
   PeerAddressRecord,
-  DeviceTokenRecord
+  DeviceTokenRecord,
+  RevocationRow
 } from './types.js';
 import type { ControlDatabase } from './control-database.js';
 import { generateStampId } from './control-database.js';
@@ -587,6 +588,34 @@ export class SeedBootstrapService {
       return;
     }
     log('Peer %s re-authorized (UpdatedAt=%d) for write-while-alone re-replication', peerId, updatedAt);
+  }
+
+  /**
+   * Owner re-issue of a batch of `Revocation` tombstones: bump each row's
+   * `ReissuedAt` so the storage layer re-broadcasts a tombstone that committed
+   * while the node was alone. The delete-while-alone counterpart of
+   * {@link reauthorizePeer} — a removed row cannot be re-touched (it is gone),
+   * but its tombstone can, and every membership read treats a retired stamp as
+   * absent.
+   *
+   * The signatures, the single transaction, and the strictly-monotonic
+   * `reissuedAt` contract are {@link ControlDatabase.reissueRevocations}'s. What
+   * stays here is the owner-key precondition.
+   *
+   * @returns how many tombstones were re-issued (`rows.length` on success).
+   * @throws if no owner private key is configured or the control database is not
+   *   initialized.
+   */
+  async reissueRevocations(rows: readonly RevocationRow[], reissuedAt: number): Promise<number> {
+    // Fail fast on a keyless service before any DB work (see removePeer): a
+    // non-owner cannot sign the reissue digests.
+    const ownerKey = this.requireOwnerPublicKey();
+    if (!this.controlDatabase) {
+      throw new Error('Control database not initialized');
+    }
+    return this.controlDatabase.reissueRevocations(
+      rows, reissuedAt, ownerKey, message => this.signMessageBytes(message),
+    );
   }
 
   /**

@@ -71,7 +71,7 @@ import {
 } from './control-cohort.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase } from './control-database.js';
+import { ControlDatabase, type RevocableTable } from './control-database.js';
 import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
@@ -360,15 +360,36 @@ export class CadreNode implements SAppIdLookup {
 
   // ── Write-while-alone re-replication (control-write-ensure-replicated) ──────
   /**
-   * Re-replication queue for owner control writes that committed while this
-   * node was alone — `controlNode.getConnections().length === 0` at write time
-   * means the Optimystic commit was local-only (the block's cluster was ≤1) and
-   * never broadcast. Maps the affected subject peerId → the write to re-issue once
-   * the cohort grows. A later op for the same subject overwrites an earlier one
-   * (authorize then remove → remove wins). Drained on the 0→≥1 control-connection
-   * transition by {@link drainPendingControlReplication}.
+   * Re-replication queue for owner `authorizePeer` writes that committed while
+   * this node was alone — `controlNode.getConnections().length === 0` at write
+   * time means the Optimystic commit was local-only (the block's cluster was ≤1)
+   * and never broadcast. Maps the affected subject peerId → 'authorize', to
+   * re-issue once the cohort grows. Removals are NOT tracked here — a delete
+   * leaves a `Revocation` tombstone, tracked by {@link pendingRevocations}; a
+   * removePeer also clears any queued authorize for the same subject (the row is
+   * gone, so re-issuing the insert would be wrong). Drained on the 0→≥1
+   * control-connection transition by {@link drainPendingControlReplication}.
    */
-  private pendingPeerWrites: Map<string, 'authorize' | 'remove'> = new Map();
+  private pendingPeerWrites: Map<string, 'authorize'> = new Map();
+  /**
+   * Re-replication queue for `Revocation` tombstones that committed while this
+   * node was alone, keyed on the retired `StampId`. Fed by the control DB's
+   * committed-delete seam ({@link noteGuardedDelete}), so one queue covers all
+   * four guarded tables (`CadrePeer` / `DeviceToken` / `Strand` /
+   * `ValidationKey`). Drained (owner-signed `ReissuedAt` bump, which re-broadcasts
+   * the tombstone) by {@link drainPendingRevocations}. Like
+   * {@link pendingPeerWrites}, not cleared on stop — the in-memory queue does not
+   * survive a restart anyway; the first-growth sweep covers that gap.
+   */
+  private pendingRevocations: Map<string, { tableName: RevocableTable; rowKey: string; stampId: string }> = new Map();
+  /**
+   * Guards the once-per-process first-growth revocation sweep (re-issue EVERY
+   * locally-held tombstone, covering removals from before this process started).
+   * Deliberately separate from {@link reconstructedLocalOnlyWrites} and set only
+   * after a sweep pass SUCCEEDS (including the nothing-held case) — a throwing
+   * sweep retries on the next growth edge instead of being lost for the process.
+   */
+  private reissuedHeldRevocations = false;
   /** This node's own `CadrePeer` self-write committed local-only (re-touched on growth). */
   private pendingSelfPeerWrite = false;
   /** This node's own `DeviceToken` self-write committed local-only (re-touched on growth). */
@@ -611,6 +632,9 @@ export class CadreNode implements SAppIdLookup {
       // rest of start() and the refresh early-returns while it is — a write in that
       // window is covered by start's own pass below.
       this.controlDatabase.setMembershipChangeListener((reason) => this.refreshMembershipGate(reason));
+      // Committed-delete seam → write-while-alone revocation queue. Same wiring
+      // window argument as the membership listener above.
+      this.controlDatabase.setGuardedDeleteListener((revocation) => this.noteGuardedDelete(revocation));
 
       // Create strand queryable using the control database
       const queryable = this.createStrandQueryable();
@@ -2019,26 +2043,48 @@ export class CadreNode implements SAppIdLookup {
    * cohort grows; otherwise the write replicated and any stale queue entry for this
    * subject is dropped.
    *
-   * A `remove` that commits alone is a security-relevant durability gap (a revoked
-   * peer may persist as a member elsewhere), so it is logged loudly — and, because
-   * a physical delete leaves no local trace to re-issue from, its on-growth
-   * re-issue is best-effort only (see {@link drainPendingPeerWrites}).
+   * A `remove` never queues here — a delete's re-replicable half is its
+   * `Revocation` tombstone, which the committed-delete seam routes into
+   * {@link pendingRevocations} ({@link noteGuardedDelete}). The `remove` arm only
+   * drops any queued authorize for the subject (the row is gone; re-issuing the
+   * insert would resurrect it) and, when the commit was alone, logs the
+   * security-relevant window loudly.
    */
   private noteControlWrite(peerId: string, kind: 'authorize' | 'remove'): void {
+    if (kind === 'remove') {
+      this.pendingPeerWrites.delete(peerId);
+      if (this.committedAlone()) {
+        log('removePeer(%s) committed while ALONE (0 control connections): the deletion is ' +
+          'local-only, so a revoked peer may persist in the cohort until the queued ' +
+          'Revocation tombstone is re-issued on cohort growth (drainPendingRevocations).', peerId);
+      }
+      return;
+    }
     if (!this.committedAlone()) {
       this.pendingPeerWrites.delete(peerId);
       return;
     }
-    this.pendingPeerWrites.set(peerId, kind);
-    if (kind === 'remove') {
-      log('removePeer(%s) committed while ALONE (0 control connections): the deletion is ' +
-        'local-only, so a revoked peer may persist in the cohort until re-replication. The ' +
-        'on-growth re-issue is best-effort (a physical delete cannot be replayed without a ' +
-        'schema tombstone — see control-delete-while-alone-tombstone).', peerId);
-    } else {
-      log('authorizePeer(%s) committed while alone (0 control connections); queued for ' +
-        're-replication on cohort growth', peerId);
+    this.pendingPeerWrites.set(peerId, 'authorize');
+    log('authorizePeer(%s) committed while alone (0 control connections); queued for ' +
+      're-replication on cohort growth', peerId);
+  }
+
+  /**
+   * Committed-delete seam handler ({@link GuardedDeleteListener}, wired in
+   * {@link start}): a guarded-table delete and its `Revocation` tombstone
+   * committed. If the node was alone the tombstone is local-only — queue it for
+   * an owner-signed re-issue on cohort growth; otherwise it broadcast, so drop
+   * any stale queue entry for the stamp. Synchronous by contract — bookkeeping
+   * only, never throws into the delete path.
+   */
+  private noteGuardedDelete(revocation: { tableName: RevocableTable; rowKey: string; stampId: string }): void {
+    if (!this.committedAlone()) {
+      this.pendingRevocations.delete(revocation.stampId);
+      return;
     }
+    this.pendingRevocations.set(revocation.stampId, revocation);
+    log('%s delete of %s committed while alone (0 control connections); Revocation tombstone ' +
+      '(stamp %s) queued for re-issue on cohort growth', revocation.tableName, revocation.rowKey, revocation.stampId);
   }
 
   /**
@@ -2070,8 +2116,9 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
     const firstGrowth = !this.reconstructedLocalOnlyWrites;
-    log('Draining control re-replication (reason=%s, firstGrowth=%s, pendingPeers=%d, self=%s, deviceToken=%s)',
-      reason, firstGrowth, this.pendingPeerWrites.size, this.pendingSelfPeerWrite, this.pendingSelfDeviceWrite);
+    log('Draining control re-replication (reason=%s, firstGrowth=%s, pendingPeers=%d, pendingRevocations=%d, self=%s, deviceToken=%s)',
+      reason, firstGrowth, this.pendingPeerWrites.size, this.pendingRevocations.size,
+      this.pendingSelfPeerWrite, this.pendingSelfDeviceWrite);
 
     // 1. Self rows. On the first growth always re-touch (covers a self row carried
     //    over from a prior process that committed local-only before this start);
@@ -2087,16 +2134,26 @@ export class CadreNode implements SAppIdLookup {
       this.pendingSelfDeviceWrite = false;
     }
 
-    // 2. First growth: an owner reconstructs membership rows it may have
+    // 2. Revocation tombstones (security-relevant, so ahead of the CadrePeer
+    //    re-touches — those can burn tens of seconds in upstream retry livelock
+    //    after a collection fork, while the tombstone lives in a different
+    //    collection that is merely behind, not forked). No membership-gate
+    //    refresh around this step: a re-issue only bumps `ReissuedAt` — LOCAL
+    //    membership visibility changed at delete time (deleteCadrePeer already
+    //    notified), and receiving-node staleness is the pre-existing
+    //    pull-on-read / periodic-refresh property.
+    await this.drainPendingRevocations();
+
+    // 3. First growth: an owner reconstructs membership rows it may have
     //    authored that never replicated (covers writes from before this process
     //    started). Rows already tracked in the in-memory queue are handled by
-    //    step 3 — skipped here to avoid a double re-touch.
+    //    step 4 — skipped here to avoid a double re-touch.
     if (firstGrowth) {
       this.reconstructedLocalOnlyWrites = true;
       await this.reconstructAuthoredMembership();
     }
 
-    // 3. In-session pending owner membership writes (authorize / remove).
+    // 4. In-session pending owner authorize writes.
     await this.drainPendingPeerWrites();
   }
 
@@ -2124,6 +2181,66 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Re-issue `Revocation` tombstones so a removal that committed while alone
+   * still reaches the cohort. Two regimes, one method:
+   *
+   * - **First successful pass per process** ({@link reissuedHeldRevocations}
+   *   false): sweep EVERY locally-held tombstone from `queryRevocations()` — the
+   *   only cover for a removal made before this process started, since the
+   *   in-memory queue does not survive a restart. Queued stamps are part of that
+   *   same batch (exactly once — one transaction, no double bump).
+   * - **Later passes**: only the tombstones queued in-session by
+   *   {@link noteGuardedDelete}.
+   *
+   * Owner-gated: a node with no owner key cannot sign a re-issue, so stray queue
+   * entries are dropped (mirrors {@link drainPendingPeerWrites}). Best-effort — a
+   * failure is logged and leaves the queue (and the sweep flag) untouched for the
+   * next growth edge. A successful `reissueRevocations` exec is NOT proof of
+   * broadcast (the connection that fired the growth edge may not be in the
+   * affected block's cluster — see
+   * tickets/backlog/control-rereplication-broadcast-confirmation); the drain
+   * inherits that known gap, and a full disconnect→reconnect (or the next
+   * process's sweep) re-covers it.
+   *
+   * NOTE: the sweep is O(all tombstones ever) row-updates in one transaction,
+   * once per process — `Revocation` is append-only and unbounded growth is
+   * declared acceptable for a cadre-sized party. If the tombstone table ever
+   * gets large, bound the sweep (e.g. persist a node-local high-water mark of
+   * what has been re-issued while connected) instead of re-touching everything.
+   */
+  private async drainPendingRevocations(): Promise<void> {
+    const sweep = !this.reissuedHeldRevocations;
+    if (!sweep && this.pendingRevocations.size === 0) {
+      return;
+    }
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+    if (!this.seedBootstrapService?.canAuthorize()) {
+      // A non-owner node cannot sign a re-issue; drop any stray entries.
+      this.pendingRevocations.clear();
+      return;
+    }
+    try {
+      const held = await this.controlDatabase.queryRevocations();
+      const rows = sweep ? held : held.filter((r) => this.pendingRevocations.has(r.stampId));
+      if (rows.length > 0) {
+        const reissuedAt = Math.max(Date.now(), Math.max(...rows.map((r) => r.reissuedAt)) + 1);
+        await this.seedBootstrapService.reissueRevocations(rows, reissuedAt);
+        log('drain: re-issued %d revocation tombstone(s)%s', rows.length, sweep ? ' (first-growth sweep)' : '');
+      }
+      this.reissuedHeldRevocations = true;
+      // Per-stamp clear (not clear()) so an entry queued concurrently mid-drain
+      // survives for the next growth edge.
+      for (const row of rows) {
+        this.pendingRevocations.delete(row.stampId);
+      }
+    } catch (error) {
+      log('drain: revocation re-issue failed; leaving queued for next growth: %o', error);
+    }
+  }
+
+  /**
    * One-shot, first-cohort-growth reconstruction of the write-while-alone queue for
    * an OWNER node: re-touch every membership row that may be an unreplicated
    * owner insert. A row is a candidate iff it is not self (handled by
@@ -2135,9 +2252,10 @@ export class CadreNode implements SAppIdLookup {
    * row is a no-op-equivalent).
    *
    * A node with no owner private key skips this entirely — it cannot re-sign
-   * rows for other peers, and rows it merely holds are not its to re-issue. DELETEs
-   * cannot be reconstructed here (a removed row leaves no local trace and the schema
-   * carries no tombstone) — see the delete-path note in {@link drainPendingPeerWrites}.
+   * rows for other peers, and rows it merely holds are not its to re-issue.
+   * DELETEs are not reconstructed here — the `Revocation` tombstone sweep in
+   * {@link drainPendingRevocations} covers them (a removed row leaves no
+   * `CadrePeer` trace, but its tombstone is re-issuable).
    */
   private async reconstructAuthoredMembership(): Promise<void> {
     if (!this.controlDatabase || !this.controlNode) {
@@ -2192,20 +2310,14 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Drain the in-session write-while-alone queue: re-issue each pending owner
-   * membership write now that the cohort can broadcast it. Sequential (no fan-out)
-   * to avoid a thundering re-touch; an entry is cleared only on success, so a
-   * failure (or a still-alone re-commit) leaves it queued for the next growth.
-   *
-   * - `authorize`: re-issue as an idempotent monotonic owner UPDATE
-   *   ({@link reissuePeerAuthorize}). Skipped (and cleared) if the row vanished
-   *   (raced a delete) or now carries a self-`Sig` (the peer self-published and owns
-   *   its republish).
-   * - `remove` (security-relevant): a removePeer-while-alone physically removed the
-   *   row locally, so a re-issued DELETE matches nothing and does NOT propagate —
-   *   full delete durability requires a schema tombstone (deferred:
-   *   `control-delete-while-alone-tombstone`). We still attempt the re-issue
-   *   (harmless, and it propagates in the row-still-present case); the commit-alone
-   *   was already logged loudly in {@link noteControlWrite}.
+   * authorize as an idempotent monotonic owner UPDATE
+   * ({@link reissuePeerAuthorize}) now that the cohort can broadcast it.
+   * Sequential (no fan-out) to avoid a thundering re-touch; an entry is cleared
+   * only on success, so a failure (or a still-alone re-commit) leaves it queued
+   * for the next growth. An entry is skipped (and cleared) if the row vanished
+   * (raced a delete) or now carries a self-`Sig` (the peer self-published and owns
+   * its republish). Removals are drained by {@link drainPendingRevocations}, not
+   * here.
    */
   private async drainPendingPeerWrites(): Promise<void> {
     if (this.pendingPeerWrites.size === 0) {
@@ -2228,27 +2340,21 @@ export class CadreNode implements SAppIdLookup {
    * the entry stays queued for the next cohort growth.
    */
   private async reissuePendingPeerWrites(): Promise<void> {
-    for (const [peerId, kind] of [...this.pendingPeerWrites]) {
+    for (const peerId of [...this.pendingPeerWrites.keys()]) {
       if (!this._running || !this.controlNode || !this.controlDatabase || !this.seedBootstrapService) {
         return;
       }
       try {
-        if (kind === 'authorize') {
-          const record = await this.controlDatabase.queryPeerRecord(peerId);
-          if (!record || record.sig) {
-            // Removed since, or peer self-published — nothing for the owner to re-issue.
-            this.pendingPeerWrites.delete(peerId);
-            continue;
-          }
-          await this.reissuePeerAuthorize(peerId, record.updatedAt);
-        } else {
-          // Best-effort delete re-issue (see method doc): propagates only if the row
-          // is somehow still present locally.
-          await this.seedBootstrapService.removePeer(peerId);
+        const record = await this.controlDatabase.queryPeerRecord(peerId);
+        if (!record || record.sig) {
+          // Removed since, or peer self-published — nothing for the owner to re-issue.
+          this.pendingPeerWrites.delete(peerId);
+          continue;
         }
+        await this.reissuePeerAuthorize(peerId, record.updatedAt);
         this.pendingPeerWrites.delete(peerId);
       } catch (error) {
-        log('drain: re-issue of %s (%s) failed; leaving queued for next growth: %o', peerId, kind, error);
+        log('drain: re-issue of %s (authorize) failed; leaving queued for next growth: %o', peerId, error);
       }
     }
   }
@@ -2696,6 +2802,7 @@ export class CadreNode implements SAppIdLookup {
     // gate refresh, and a notification arriving after this point is a no-op.
     if (this.controlDatabase) {
       this.controlDatabase.setMembershipChangeListener(null);
+      this.controlDatabase.setGuardedDeleteListener(null);
       await this.controlDatabase.close();
       this.controlDatabase = null;
     }
