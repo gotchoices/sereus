@@ -107,7 +107,14 @@ function buildFakeDb(members: PeerRow[], revoked: Set<string>): FakeControlDatab
   const db: FakeControlDatabase = {
     peerQueries: 0,
     listener: null,
-    queryCadrePeers: async () => { db.peerQueries++; return members; },
+    // The real `ControlDatabase.queryCadrePeers` drops every row whose StampId is
+    // retired in `CadreControl.Revocation` BEFORE any reader sees it, so both gates
+    // inherit the exclusion without asking for it. The fake has to mirror that or it
+    // hands the gates rows the database would never have returned.
+    queryCadrePeers: async () => {
+      db.peerQueries++;
+      return members.filter(row => row.stampId === null || !revoked.has(row.stampId));
+    },
     queryRevokedStamps: async () => revoked,
     setMembershipChangeListener: (listener) => { db.listener = listener; },
     mutateCadrePeer: async (reason, body) => {
