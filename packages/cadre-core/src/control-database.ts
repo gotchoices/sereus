@@ -94,13 +94,14 @@ export class FormationAbortedError extends Error {
  * number the writer would have to take is past `FormationInvite.TotalUses`, so the
  * invitation is spent.
  *
- * Raised only on a RETRY inside {@link ControlDatabase.redeemInvitation} /
- * {@link ControlDatabase.recordFormationUsage} — the first attempt leaves the check to
- * `FormationUsage.Authorized`'s own `FI.TotalUses >= new.UseNumber` clause, since
- * `StrandFormationManager.validateToken` already gated on the token being unused. Without
- * this the retry would fail as a generic `CHECK constraint failed: Authorized`, which the
- * manager reports as a retryable `Formation conflict, retry` — telling the joiner to retry
- * something that can never succeed.
+ * Raised inside {@link ControlDatabase.redeemInvitation} / {@link ControlDatabase.recordFormationUsage}
+ * on EVERY attempt, including the first: two redemptions of one token racing on the SAME node
+ * serialize behind the local write queue, so the loser's first attempt already takes a use
+ * number past the seat budget — `StrandFormationManager.validateToken`'s `isTokenUsed` check
+ * cannot catch this, since it ran before either redemption wrote anything. Without this the
+ * write would fail as a generic `CHECK constraint failed: Authorized`, which the manager
+ * reports as a retryable `Formation conflict, retry` — telling the joiner to retry something
+ * that can never succeed.
  */
 export class InvitationExhaustedError extends Error {
   constructor(
@@ -1847,12 +1848,19 @@ export class ControlDatabase {
      * {@link FormationAbortedError} with the invite unspent.
      */
     signal?: AbortSignal;
+    /**
+     * The invite's seat budget, when the caller already has it in hand (e.g. it already read
+     * the `FormationInvite` row to get here). Passed through to {@link withUseNumberRetry} so
+     * every attempt can check the seat budget without an extra read. `undefined` falls back to
+     * a fresh {@link queryFormationInvite} read; `null` means "no invite row" / unlimited.
+     */
+    totalUses?: number | null;
   }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
       peerKey, peerSignature, usageStampId,
-      nowMs, validationKey, validationSignature, signal,
+      nowMs, validationKey, validationSignature, signal, totalUses,
     } = params;
     log('Redeeming invitation %s -> strand %s', token, strandId);
 
@@ -1862,7 +1870,7 @@ export class ControlDatabase {
     // approver's signed digest. Re-minting per attempt would only churn.
     const strandStampId = generateStampId(localPeerId);
 
-    const useNumber = await this.withUseNumberRetry(token, 'redemption', signal, attemptUseNumber =>
+    const useNumber = await this.withUseNumberRetry(token, 'redemption', signal, totalUses, attemptUseNumber =>
       this.inTransaction('redemption', async () => {
         // 1. Strand row — authorised by the FormationUsage branch (no owner sig),
         //    still carrying a fresh unique StampId for the anti-replay column.
@@ -1933,11 +1941,19 @@ export class ControlDatabase {
      * once an insert has been issued.
      */
     signal?: AbortSignal;
+    /**
+     * The invite's seat budget, when the caller already has it in hand (e.g. it already read
+     * the `FormationInvite` row to get here). Passed through to {@link withUseNumberRetry} so
+     * every attempt can check the seat budget without an extra read. `undefined` falls back to
+     * a fresh {@link queryFormationInvite} read; `null` means "no invite row" / unlimited.
+     */
+    totalUses?: number | null;
   }): Promise<FormationUsageResult> {
     this.ensureInitialized();
     const {
       token, strandId, disclosure = '',
       peerKey, peerSignature, usageStampId, nowMs, validationKey, validationSignature, signal,
+      totalUses,
     } = params;
 
     // Read ONCE, outside the loop: the host strand is pre-existing and owner-signed, and a
@@ -1947,7 +1963,7 @@ export class ControlDatabase {
       throw new MissingHostStrandError(strandId, token);
     }
 
-    const useNumber = await this.withUseNumberRetry(token, 'usage recording', signal, attemptUseNumber =>
+    const useNumber = await this.withUseNumberRetry(token, 'usage recording', signal, totalUses, attemptUseNumber =>
       this.execFormationUsageInsert({
         token, useNumber: attemptUseNumber, usageStampId, disclosure, strandId, strandStampId,
         peerKey, peerSignature, nowMs: nowMs ?? Date.now(),
@@ -1987,12 +2003,16 @@ export class ControlDatabase {
    * write is issued.
    *
    * @param operation - `'redemption'` | `'usage recording'`, for the abort error's text.
+   * @param knownTotalUses - The invite's seat budget when the caller already has it in hand
+   * (`undefined` to fall back to a fresh {@link queryFormationInvite} read; `null` for "no
+   * invite row" / unlimited). Passed through to {@link assertSeatRemains} on every attempt.
    * @returns The `UseNumber` the successful attempt wrote under.
    */
   private async withUseNumberRetry(
     token: string,
     operation: string,
     signal: AbortSignal | undefined,
+    knownTotalUses: number | null | undefined,
     write: (useNumber: number) => Promise<void>,
   ): Promise<number> {
     let lastError: unknown;
@@ -2009,9 +2029,7 @@ export class ControlDatabase {
             throw new FormationAbortedError(token, operation);
           }
           const useNumber = await this.nextUseNumber(token);
-          if (attempt > 1) {
-            await this.assertSeatRemains(token, useNumber);
-          }
+          await this.assertSeatRemains(token, useNumber, knownTotalUses);
           await write(useNumber);
           return useNumber;
         });
@@ -2031,29 +2049,38 @@ export class ControlDatabase {
   }
 
   /**
-   * Refuse a RETRY that would consume a seat the invite does not have.
+   * Refuse an attempt that would consume a seat the invite does not have.
    *
    * `FormationUsage.Authorized` already enforces `FI.TotalUses is null or FI.TotalUses >=
    * new.UseNumber`, so an over-limit write fails at the database anyway — but it fails as a
    * generic `CHECK constraint failed: Authorized`, which the manager reports as a retryable
    * conflict. Catching it here as {@link InvitationExhaustedError} lets the joiner be told the
-   * invitation is spent instead of being sent around a loop that can never close.
+   * invitation is spent instead of being sent around a loop that can never close. Run on EVERY
+   * attempt, including the first: two redemptions racing on the SAME node serialize behind the
+   * local write queue, so the loser's first attempt is already over budget, with no retry
+   * involved.
    *
-   * Only retries pay for this read: the first attempt is already gated by
-   * `StrandFormationManager.validateToken`'s `isTokenUsed` check, and re-reading the invite on
-   * the common path would cost every redemption a read for nothing.
+   * `knownTotalUses` lets a caller that already read the `FormationInvite` row (both
+   * production callers in `ControlFormationUsageRecorder` do) skip a second read on the common,
+   * non-racing path. `undefined` falls back to a fresh read here.
    */
-  private async assertSeatRemains(token: string, useNumber: number): Promise<void> {
-    const invite = await this.queryFormationInvite(token);
+  private async assertSeatRemains(
+    token: string,
+    useNumber: number,
+    knownTotalUses: number | null | undefined,
+  ): Promise<void> {
     // A missing invite is left to `Authorized` — it is not an exhaustion, and the CHECK's
     // rejection is already the right, non-retryable answer for it. That fallback is also what
     // makes this read's failure mode safe: it is a full-primary-key point lookup
     // (`FormationInvite where Token = ?`), the shape whose reliability on a networked strand
     // is still open (tracked by `debt-composite-pk-point-lookup-unreliable-untracked`). A
-    // spurious empty result only costs the retry its NAMED exhaustion error, reverting it to
+    // spurious empty result only costs the attempt its NAMED exhaustion error, reverting it to
     // today's generic `Authorized` refusal — never a seat the invite does not have.
-    if (invite?.totalUses != null && useNumber > invite.totalUses) {
-      throw new InvitationExhaustedError(token, useNumber, invite.totalUses);
+    const totalUses = knownTotalUses !== undefined
+      ? knownTotalUses
+      : (await this.queryFormationInvite(token))?.totalUses ?? null;
+    if (totalUses != null && useNumber > totalUses) {
+      throw new InvitationExhaustedError(token, useNumber, totalUses);
     }
   }
 

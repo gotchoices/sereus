@@ -214,7 +214,8 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
       validationUrl: invite?.validationUrl ?? null,
     }, signal);
     await this.controlDatabase.recordFormationUsage({
-      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal, ...approval,
+      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal,
+      totalUses: invite?.totalUses ?? null, ...approval,
     });
     log('Recorded formation usage: token=%s strand=%s', token, strandId);
   }
@@ -269,11 +270,10 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    * the stream silently) — but no longer via a `(Token, UseNumber)` primary-key collision on
    * this node: `redeemInvitation` reads the use number INSIDE the write lock, so two local
    * redemptions serialize and the second one reads the number the first already committed.
-   * It is then refused because that number is past the invite's seat budget — by
-   * `FormationUsage.Authorized`'s `TotalUses >= UseNumber` clause on a first attempt, or by
-   * `InvitationExhaustedError` when a genuine lost race (another node, another `Database`
-   * handle) sent it around the retry loop first. A PK collision is still what a cross-node
-   * race surfaces as, and that one IS retried under a fresh use number rather than thrown.
+   * It is then refused because that number is past the invite's seat budget, reported as a
+   * named `InvitationExhaustedError` on every attempt (including the first, which is what a
+   * same-node race hits). A PK collision is still what a cross-node race surfaces as, and that
+   * one IS retried under a fresh use number rather than thrown.
    */
   async provisionAndRecord(params: {
     token: string;
@@ -295,7 +295,8 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
       validationUrl: invite?.validationUrl ?? null,
     }, signal);
     await this.controlDatabase.redeemInvitation({
-      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal, ...approval,
+      token, strandId, peerKey, peerSignature, usageStampId, disclosure, signal,
+      totalUses: invite?.totalUses ?? null, ...approval,
     });
     log('Provisioned + recorded unbound strand: token=%s strand=%s', token, strandId);
     return { strandId, memberPrivateKey: null };

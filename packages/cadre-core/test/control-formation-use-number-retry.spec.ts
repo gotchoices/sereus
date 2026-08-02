@@ -363,10 +363,14 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       ]);
 
       expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
-      // The loser reads use #2 under the lock and is refused by `Authorized`'s seat clause —
-      // non-retryable, so the retry cannot manufacture a seat the invite does not have.
+      // The loser reads use #2 under the lock, on its FIRST attempt — no retry involved — and
+      // is refused by name: a same-node race is caught the same way a lost cross-node race is.
       const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
-      expect(String(rejected.reason)).toMatch(/CHECK constraint failed: Authorized\b/);
+      expect(rejected.reason).toBeInstanceOf(InvitationExhaustedError);
+      const exhausted = rejected.reason as InvitationExhaustedError;
+      expect(exhausted.token).toBe(token);
+      expect(exhausted.useNumber).toBe(2);
+      expect(exhausted.totalUses).toBe(1);
       expect(await usageCount()).toBe(before + 1);
       expect(await useNumbersFor(token)).toEqual([1]);
     });

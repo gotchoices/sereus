@@ -283,8 +283,10 @@ export class StrandFormationManager {
    * Defense-in-depth: known provisioning/redeem failures are caught and mapped to a logged
    * protocol rejection rather than a thrown insert + a silently-closed stream. The mapping is
    * per-failure, NOT blanket retry-suggesting: an exhausted invitation
-   * ({@link InvitationExhaustedError}, raised once `ControlDatabase`'s use-number retry finds
-   * no seat left) is reported as `'Invalid token'`, because retrying it can never succeed. The
+   * ({@link InvitationExhaustedError}, raised by `ControlDatabase` whenever a redemption's use
+   * number is past the invite's seat budget — including a first attempt racing another
+   * redemption of the same token on this node, not only a retry) is reported as `'Invalid
+   * token'`, because retrying it can never succeed. The
    * `(Token, UseNumber)` PK collision that concurrent redemptions of one invite used to
    * surface here is now retried a layer down and no longer reaches this method. The
    * LOG-before-reject keeps this a deliberate internal-error→protocol-rejection conversion
