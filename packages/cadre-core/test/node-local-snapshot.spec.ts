@@ -54,7 +54,7 @@ function envelope(payloadKey: string, partyId: string, entries: Record<string, u
 class GatedSlot implements DurableSlot {
 	text: string | undefined;
 	readonly saveCalls: string[] = [];
-	private readonly pendingReleases: Array<() => void> = [];
+	private readonly pending: Array<{ resolve: () => void; reject: (error: Error) => void }> = [];
 
 	async load(): Promise<string | undefined> {
 		return this.text;
@@ -62,15 +62,24 @@ class GatedSlot implements DurableSlot {
 
 	async save(text: string): Promise<void> {
 		this.saveCalls.push(text);
-		await new Promise<void>((resolve) => this.pendingReleases.push(resolve));
+		await new Promise<void>((resolve, reject) => this.pending.push({ resolve, reject }));
 		this.text = text;
 	}
 
 	/** Let the oldest in-flight save land. */
 	releaseNext(): void {
-		const release = this.pendingReleases.shift();
-		if (!release) throw new Error('GatedSlot: no in-flight save to release');
-		release();
+		this.takeOldest().resolve();
+	}
+
+	/** Fail the oldest in-flight save, as a backend that could not write would. */
+	failNext(error: Error): void {
+		this.takeOldest().reject(error);
+	}
+
+	private takeOldest(): { resolve: () => void; reject: (error: Error) => void } {
+		const oldest = this.pending.shift();
+		if (!oldest) throw new Error('GatedSlot: no in-flight save to release');
+		return oldest;
 	}
 }
 
@@ -209,6 +218,26 @@ describe('PersistentTrustedOwnerStore over a DurableSlot', () => {
 
 		const reloaded = await PersistentTrustedOwnerStore.open(slot, PARTY);
 		expect(reloaded.all()).toEqual(new Set([KEY_A, KEY_B, KEY_C]));
+	});
+
+	it('a save that fails mid-chain rejects only its own caller — the queued put still lands the full set', async () => {
+		const slot = new GatedSlot();
+		const store = await PersistentTrustedOwnerStore.open(slot, PARTY);
+
+		const first = store.trust(KEY_A, 'genesis');
+		const second = store.trust(KEY_B, 'invite');
+
+		await untilSaveCount(slot, 1);
+		slot.failNext(new Error('quota exceeded'));
+		await expect(first).rejects.toThrow(/quota exceeded/);
+
+		// The chain must survive the failure and run the queued put's save.
+		await untilSaveCount(slot, 2);
+		slot.releaseNext();
+		await second;
+
+		expect(Object.keys(JSON.parse(slot.saveCalls[1]).owners).sort()).toEqual([KEY_A, KEY_B].sort());
+		expect((await PersistentTrustedOwnerStore.open(slot, PARTY)).all()).toEqual(new Set([KEY_A, KEY_B]));
 	});
 });
 
