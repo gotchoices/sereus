@@ -323,3 +323,47 @@ against the real end-to-end test, because that test lives here and the agent cou
 cross-repo rebuild. **The rebuild has now been done and the answer is: still failing.**
 `control-db-two-node-convergence` ("replicates an owner-written CadrePeer row from node A to node B
 over the live control network") fails at 19.5 s against v0.18.0.
+
+## Validation 2026-08-02 — re-measured after `stale-failure-carries-coordinator-revision`
+
+Optimystic has since landed `cluster-read-consult-cannot-report-unreachable` and
+`stale-failure-carries-coordinator-revision` (the structured coordinator revision on `StaleFailure`
+that the "What upstream needs to change" section above asked for). Rebuilt both checkouts
+(`../optimystic` `yarn build`, then sereus `yarn build`) and re-ran the anchor scenario.
+
+`control-db-two-node-convergence` — **still failing**, but the failure has changed shape in a way
+worth acting on:
+
+```
+Query failed: collection default/CadrePeer holds committed revision 3, but its header block read
+as absent — storage reported that nothing was ever committed under this id
+  at OptimysticVirtualTable.runQuery (../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts:552)
+  at ControlDatabase.queryStampId (packages/cadre-core/src/control-database.ts:747)
+```
+
+Two things changed:
+
+1. **It fails in 619 ms of test time, not 19.5 s.** No retry storm, no timeout — the read reports a
+   specific inconsistency immediately.
+2. **The claim is now local and checkable**, and it is not a networking claim. The collection's own
+   metadata says committed revision 3 exists; the header block under that same collection id reads
+   as *absent* — and, per the new absent-vs-unavailable distinction, absent means storage
+   affirmatively reported nothing was ever committed there, not that a fetch failed.
+
+That is the strongest support yet for the unmasking hypothesis recorded in the 08-01 section: a
+node in this state previously fell through to an invented empty collection and answered "no rows".
+The fault was always there; three rounds of upstream retry/quorum fixes could not have cleared it
+because it is not a retry or quorum problem.
+
+## Where to look next
+
+A collection holding revision 3 with no header block under its id is either a write that recorded
+metadata without durably placing the header, or a header written under a different id than the one
+the read derives. The header block id is the collection URI path (`default/CadrePeer`) and is
+rewritten only when the BTree root node id changes, so a revision that advanced without a
+corresponding header rewrite would produce exactly this. Worth one focused session, and it is
+cheap to instrument now that the error names the collection and the revision.
+
+Which side of the repo boundary the bug sits on is no longer obvious, so do not assume upstream:
+the write path runs through sereus's `ControlDatabase` and the quereus-plugin-optimystic bridge as
+well as `db-core`. Confirm where the header goes missing before filing anywhere.
