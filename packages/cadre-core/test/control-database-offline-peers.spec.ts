@@ -233,12 +233,18 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 // ============================================================================
 
 /**
- * An arbitrary sha2-256 multihash (base64url, `u`-prefixed), standing in for a
- * `/webrtc-direct` peer's certificate hash. It is never verified against
- * anything — the connect never gets an answer — but it must be syntactically
- * valid, because `multiaddr()` throws on a malformed certhash and
- * `parseMultiaddrs` then silently DROPS the address, putting the case straight
- * back into vacuity.
+ * An arbitrary sha2-256 multihash (base64url, `u`-prefixed — it decodes to the
+ * 34 bytes `0x12 0x20 …`), standing in for a `/webrtc-direct` peer's
+ * certificate hash. It is never verified against anything: the connect never
+ * gets an answer.
+ *
+ * A real value is used for readability, NOT because anything checks it —
+ * measured, `multiaddr()` does not validate the certhash at all. `u!!!bad!!!`
+ * and even the un-prefixed `notmultibase` both parse and round-trip; only an
+ * EMPTY certhash fails, and then with an unrelated `UnknownProtocolError` about
+ * the following segment. So the routing assertion below is the only thing
+ * standing between a wrong address and a vacuous case — do not weaken it on the
+ * assumption that a malformed address would fail loudly on its own.
  */
 const WEBRTC_CERTHASH = 'uEiDriKKtLzKrTdlDsdqSFqCGZ5uV1Sy4rDeYcTNTNKgpJQ';
 
@@ -257,7 +263,17 @@ type TransportFactory = NonNullable<NetworkConfig['transports']>[number];
  * The browser reference app's transport list
  * (`reference-app-web/src/lib/cadre-web.ts`). No `rtcConfiguration`: the app
  * passes ICE servers from its runtime manifest, but a test must never reach a
- * STUN/TURN host — host candidates are enough to arm a dial.
+ * STUN/TURN host — host candidates are enough to arm a dial. The app's
+ * permissive `connectionGater` is also not copied: it exists to un-block the
+ * browser's default refusal to dial insecure/loopback addresses, and node's
+ * default gater does not refuse the TEST-NET-1 addresses used here.
+ *
+ * NOTE: these two lists are a COPY of the apps' — `cadre-core` cannot import
+ * from a package that depends on it, so nothing enforces they stay in step. If
+ * a reference app gains or drops a transport, update the list here to match;
+ * the cases keep passing either way, they just stop describing the app. If the
+ * apps' lists ever start diverging faster than this file tracks them, export
+ * them from a shared place both can import instead.
  */
 const browserTransports = (): NetworkConfig['transports'] => [
 	webSockets(),
@@ -317,6 +333,25 @@ interface WebRtcPeer extends OfflinePeer {
 	relayedAddr: string;
 	/** `…/webrtc-direct/certhash/…` — claimed by `@libp2p/webrtc-direct`, when that transport is configured. */
 	directAddr: string;
+	/** The relay hop inside {@link relayedAddr} — see {@link dialQueuePeerIds}. */
+	relayPeerId: string;
+}
+
+/**
+ * The peerIds libp2p currently has dials queued or in flight for.
+ *
+ * This is what lets a case assert dial IDENTITY rather than mere queue depth.
+ * A WebRTC dial puts TWO entries here: the sibling itself, and the RELAY HOP
+ * out of its `…/p2p-circuit/webrtc/…` address — the latter appears only because
+ * `@libp2p/webrtc` claimed the address, decapsulated `/webrtc` and re-dialed the
+ * signalling leg. No other configured transport produces it, so its presence is
+ * proof the WebRTC dial path actually ran and not merely that something was
+ * queued.
+ */
+function dialQueuePeerIds(node: CadreNode): string[] {
+	return node.getControlNode()!.getDialQueue()
+		.map((d) => d.peerId?.toString())
+		.filter((id): id is string => id !== undefined);
 }
 
 /**
@@ -336,7 +371,7 @@ async function mintWebRtcPeer(owner: OwnerNode, n: number, withDirect: boolean):
 	const relayedAddr = `/ip4/192.0.2.${n}/tcp/4001/ws/p2p/${relayId}/p2p-circuit/webrtc/p2p/${peerId}`;
 	const directAddr = `/ip4/192.0.2.${n}/udp/4001/webrtc-direct/certhash/${WEBRTC_CERTHASH}/p2p/${peerId}`;
 	const peer = await insertResolvableOfflinePeer(owner, key, withDirect ? [relayedAddr, directAddr] : [relayedAddr]);
-	return { ...peer, relayedAddr, directAddr };
+	return { ...peer, relayedAddr, directAddr, relayPeerId: relayId };
 }
 
 /**
@@ -548,7 +583,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 	}, 180_000);
 
 	// NOTE: this block carries the per-transport-shape cases and is the part of
-	// this file that grows — the file is 750 lines (`wc -l`) with the WebRTC
+	// this file that grows — the file is 791 lines (`wc -l`) with the WebRTC
 	// shapes added, up from 519. If it gains more than a couple more shapes,
 	// split it into its own spec and lift the shared minting / operation-set
 	// helpers (`bootOwnerNode`, `insertResolvableOfflinePeer`,
@@ -725,18 +760,24 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 					[sibling.directAddr, '@libp2p/webrtc-direct']
 				]);
 
-				// Same shape as the blackhole stop-mid-dial case: wait until the dial
-				// is actually IN FLIGHT, and if the pass settles first (e.g. a network
-				// that answers TEST-NET-1) proceed anyway — stop() must be bounded
-				// either way.
+				// Same shape as the blackhole stop-mid-dial case, but waiting on the
+				// RELAY HOP rather than on queue depth: that entry exists only if the
+				// WebRTC dial path actually ran (see `dialQueuePeerIds`), so this is
+				// what makes the case about a WebRTC dial and not about any dial. If
+				// the pass settles first (e.g. a network that answers TEST-NET-1)
+				// proceed anyway — stop() must be bounded either way.
 				const pass = owner.node.reconcileControlCohort();
 				let passSettled = false;
 				void pass.then(() => { passSettled = true; }, () => { passSettled = true; });
-				await within('WebRTC dial in flight (dial queue non-empty)', OP_TIMEOUT_MS, async () => {
-					while (!passSettled && owner.node.getControlNode()!.getDialQueue().length === 0) {
+				await within('WebRTC dial in flight (relay hop queued)', OP_TIMEOUT_MS, async () => {
+					while (!passSettled && !dialQueuePeerIds(owner.node).includes(sibling.relayPeerId)) {
 						await delay(25);
 					}
 				});
+				// The sibling's own dial is in flight alongside the signalling leg.
+				if (!passSettled) {
+					expect(dialQueuePeerIds(owner.node)).toContain(sibling.peerId);
+				}
 
 				await within('node.stop() (WebRTC dial in flight)', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());
 				await within('reconcileControlCohort() (after stop)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);

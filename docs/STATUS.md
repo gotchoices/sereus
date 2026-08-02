@@ -790,8 +790,16 @@ where local rows exist.
   in-flight pass grinding through dead dials that cannot block local ops (the dials themselves are
   sequential); `stop()` bounded with a dial in flight; and a
   circuit-relay transport variant. Shared harness with the solo spec:
-  `test/control-db-node-helpers.ts`. WebRTC-in-the-transport-set is deferred — see backlog
-  `debt-webrtc-transport-control-liveness-coverage`.
+  `test/control-db-node-helpers.ts`. The same shapes also run under the **two reference apps' real
+  transport lists** — browser (`webSockets`/`circuitRelay`/`webRTC`/`webRTCDirect`) and phone (the
+  same without `webRTCDirect`) — against siblings recorded at the address forms those transports
+  actually claim (`…/p2p-circuit/webrtc/…` and `…/webrtc-direct/certhash/…`). Anti-vacuity there is
+  `expectDialRouting`, which asserts via `dialTransportForMultiaddr` WHICH transport claims each
+  address before the operation set runs (listing `webRTC()` while dialing a `/ws` address would
+  prove nothing), plus a dial-queue identity check on the relay hop, which is queued only if the
+  WebRTC dial path really ran. Still uncovered: the browser's **listening** posture
+  (`listenAddrs: ['/p2p-circuit', '/webrtc']`) needs a live relay to reserve against, so it is an
+  integration-suite shape, not a unit one.
 - [x] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
