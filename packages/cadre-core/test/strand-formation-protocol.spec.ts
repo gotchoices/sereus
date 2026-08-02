@@ -119,8 +119,10 @@ function slowProvision(delayMs: number, strandId: string): () => Promise<Respond
 
 describe('FormationListener disclosure timing (no responder cadre on rejection)', () => {
   it('rejects an invalid token without disclosing responder identity/cadre', async () => {
+    let disclosureChecks = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateToken: async () => ({ valid: false })
+      validateToken: async () => ({ valid: false }),
+      validateDisclosure: async () => { disclosureChecks++; return true; }
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
@@ -136,11 +138,14 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.cadrePeerAddrs).toBeUndefined();
     // The responder identity must not even be read before a token passes.
     expect(identityDisclosed()).toBe(false);
+    // Nor may a spent/forged token still drive the disclosure hook: the token gate comes first.
+    expect(disclosureChecks).toBe(0);
   });
 
   it('rejects an invalid disclosure without disclosing responder cadre', async () => {
+    let disclosureChecks = 0;
     const { options, identityDisclosed } = baseOptions({
-      validateDisclosure: async () => false
+      validateDisclosure: async () => { disclosureChecks++; return false; }
     });
     const listener = new FormationListener(options);
     const { node, invoke } = captureHandler();
@@ -154,6 +159,9 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
     expect(result.reason).toBe('Invalid disclosure');
     expect(result.cadrePeerAddrs).toBeUndefined();
     expect(identityDisclosed()).toBe(false);
+    // The positive control for every `disclosureChecks === 0` assertion elsewhere: a contact
+    // that clears consent + token DOES reach the hook, exactly once.
+    expect(disclosureChecks).toBe(1);
   });
 
   it('rejects over the concurrency cap without disclosing responder cadre', async () => {
@@ -545,9 +553,9 @@ describe('FormationListener joiner-consent pre-check', () => {
       expect(result.cadrePeerAddrs, label).toBeUndefined();
       expect(identityDisclosed(), label).toBe(false);
       expect(tokenChecks, label).toBe(0);
-      // A bad consent must also never reach validateDisclosure: in production that hook can
-      // call out to an external approval service, so this is the line that stops an
-      // unauthenticated peer from driving outbound requests chosen by its own text.
+      // validateDisclosure is a host-supplied hook that may do arbitrary work (an allowlist
+      // read, an approval call) over attacker-chosen text, so an unsigned contact must not
+      // reach it either.
       expect(disclosureChecks, label).toBe(0);
       // Nothing downstream of the pre-check runs either: a bad consent must never reach the
       // side-effecting hook that mints or seats a strand, so a refused contact cannot leave a
