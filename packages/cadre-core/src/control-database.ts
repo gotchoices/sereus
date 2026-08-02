@@ -372,6 +372,13 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
 export type MembershipChangeListener = (reason: string) => Promise<void>;
 
 /**
+ * Identity of the tombstone a committed guarded delete wrote — a
+ * {@link RevocationRow} minus its `ReissuedAt` counter, which a fresh tombstone
+ * always seats at 0 (`FreshTombstone`) and so carries no information.
+ */
+export type RevokedRowRef = Omit<RevocationRow, 'reissuedAt'>;
+
+/**
  * Notified after a guarded-table delete — and the `CadreControl.Revocation`
  * tombstone it writes in the same transaction — has COMMITTED.
  *
@@ -382,11 +389,7 @@ export type MembershipChangeListener = (reason: string) => Promise<void>;
  * handler only records the tombstone's identity; it must not throw (the notifier
  * swallows and logs anyway — a committed delete never fails because bookkeeping did).
  */
-export type GuardedDeleteListener = (revocation: {
-  tableName: RevocableTable;
-  rowKey: string;
-  stampId: string;
-}) => void;
+export type GuardedDeleteListener = (revocation: RevokedRowRef) => void;
 
 export interface ControlDatabaseConfig {
   /** Party ID for the control network */

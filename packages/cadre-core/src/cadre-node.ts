@@ -71,7 +71,7 @@ import {
 } from './control-cohort.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
-import { ControlDatabase, type RevocableTable } from './control-database.js';
+import { ControlDatabase, type RevokedRowRef } from './control-database.js';
 import { SeedBootstrapService, type SeedEventCallbacks } from './seed-bootstrap.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import {
@@ -377,17 +377,19 @@ export class CadreNode implements SAppIdLookup {
    * committed-delete seam ({@link noteGuardedDelete}), so one queue covers all
    * four guarded tables (`CadrePeer` / `DeviceToken` / `Strand` /
    * `ValidationKey`). Drained (owner-signed `ReissuedAt` bump, which re-broadcasts
-   * the tombstone) by {@link drainPendingRevocations}. Like
-   * {@link pendingPeerWrites}, not cleared on stop — the in-memory queue does not
-   * survive a restart anyway; the first-growth sweep covers that gap.
+   * the tombstone) by {@link drainPendingRevocations}. Cleared on stop alongside
+   * {@link pendingPeerWrites} — the tombstone rows are durable, so the next
+   * lifetime's first-growth sweep re-covers anything dropped here.
    */
-  private pendingRevocations: Map<string, { tableName: RevocableTable; rowKey: string; stampId: string }> = new Map();
+  private pendingRevocations: Map<string, RevokedRowRef> = new Map();
   /**
-   * Guards the once-per-process first-growth revocation sweep (re-issue EVERY
-   * locally-held tombstone, covering removals from before this process started).
+   * Guards the once-per-lifetime first-growth revocation sweep (re-issue EVERY
+   * locally-held tombstone, covering removals from before this node started).
    * Deliberately separate from {@link reconstructedLocalOnlyWrites} and set only
    * after a sweep pass SUCCEEDS (including the nothing-held case) — a throwing
-   * sweep retries on the next growth edge instead of being lost for the process.
+   * sweep retries on the next growth edge instead of being lost for the lifetime.
+   * Reset on stop, so a stop()→start() cycle sweeps again (that second start is
+   * exactly a "removals from before this lifetime" case).
    */
   private reissuedHeldRevocations = false;
   /** This node's own `CadrePeer` self-write committed local-only (re-touched on growth). */
@@ -1566,13 +1568,17 @@ export class CadreNode implements SAppIdLookup {
     this.turnConnectionCloseHandler = null;
 
     // Reset the write-while-alone re-replication state so a stop()→start() cycle
-    // re-arms the growth edge and re-runs the first-growth reconstruction. Any
-    // queued local-only writes are moot once the node is torn down; owner
-    // inserts are re-covered by reconstruction on the next start, and the
-    // (already-loudly-logged) delete gap is tracked for follow-up.
+    // re-arms the growth edge and re-runs BOTH one-shot passes. Any queued
+    // local-only writes are moot once the node is torn down: owner inserts are
+    // re-covered by the next start's reconstruction, and delete tombstones by its
+    // first-growth revocation sweep — which is why the sweep flag must reset too,
+    // or the second lifetime would skip the sweep and strand exactly the
+    // committed-alone tombstones it exists to carry.
     this.hasControlConnection = false;
     this.reconstructedLocalOnlyWrites = false;
+    this.reissuedHeldRevocations = false;
     this.pendingPeerWrites.clear();
+    this.pendingRevocations.clear();
     this.pendingSelfPeerWrite = false;
     this.pendingSelfDeviceWrite = false;
   }
@@ -2077,7 +2083,7 @@ export class CadreNode implements SAppIdLookup {
    * any stale queue entry for the stamp. Synchronous by contract — bookkeeping
    * only, never throws into the delete path.
    */
-  private noteGuardedDelete(revocation: { tableName: RevocableTable; rowKey: string; stampId: string }): void {
+  private noteGuardedDelete(revocation: RevokedRowRef): void {
     if (!this.committedAlone()) {
       this.pendingRevocations.delete(revocation.stampId);
       return;
@@ -2120,7 +2126,19 @@ export class CadreNode implements SAppIdLookup {
       reason, firstGrowth, this.pendingPeerWrites.size, this.pendingRevocations.size,
       this.pendingSelfPeerWrite, this.pendingSelfDeviceWrite);
 
-    // 1. Self rows. On the first growth always re-touch (covers a self row carried
+    // 1. Revocation tombstones FIRST: a removal that never reached the cohort
+    //    leaves a revoked peer live elsewhere, which outranks every re-touch
+    //    below. Ordering is not cosmetic — every `CadrePeer` write here (self row
+    //    included) can burn tens of seconds in upstream retry livelock after a
+    //    collection fork, while the tombstone lives in a different collection
+    //    that is merely behind, not forked. No membership-gate refresh around
+    //    this step: a re-issue only bumps `ReissuedAt` — LOCAL membership
+    //    visibility changed at delete time (deleteCadrePeer already notified),
+    //    and receiving-node staleness is the pre-existing pull-on-read /
+    //    periodic-refresh property.
+    await this.drainPendingRevocations();
+
+    // 2. Self rows. On the first growth always re-touch (covers a self row carried
     //    over from a prior process that committed local-only before this start);
     //    afterwards only when a self-write-while-alone was recorded this session.
     //    registerSelf is idempotent + single-flight, so this never races a
@@ -2133,16 +2151,6 @@ export class CadreNode implements SAppIdLookup {
       await this.retouchSelfDeviceToken();
       this.pendingSelfDeviceWrite = false;
     }
-
-    // 2. Revocation tombstones (security-relevant, so ahead of the CadrePeer
-    //    re-touches — those can burn tens of seconds in upstream retry livelock
-    //    after a collection fork, while the tombstone lives in a different
-    //    collection that is merely behind, not forked). No membership-gate
-    //    refresh around this step: a re-issue only bumps `ReissuedAt` — LOCAL
-    //    membership visibility changed at delete time (deleteCadrePeer already
-    //    notified), and receiving-node staleness is the pre-existing
-    //    pull-on-read / periodic-refresh property.
-    await this.drainPendingRevocations();
 
     // 3. First growth: an owner reconstructs membership rows it may have
     //    authored that never replicated (covers writes from before this process
@@ -2202,11 +2210,14 @@ export class CadreNode implements SAppIdLookup {
    * inherits that known gap, and a full disconnect→reconnect (or the next
    * process's sweep) re-covers it.
    *
-   * NOTE: the sweep is O(all tombstones ever) row-updates in one transaction,
-   * once per process — `Revocation` is append-only and unbounded growth is
-   * declared acceptable for a cadre-sized party. If the tombstone table ever
-   * gets large, bound the sweep (e.g. persist a node-local high-water mark of
-   * what has been re-issued while connected) instead of re-touching everything.
+   * NOTE: the sweep is O(all tombstones ever) row-updates — plus one owner
+   * signature each — in one transaction, once per lifetime. `Revocation` is
+   * append-only and unbounded growth is declared acceptable for a cadre-sized
+   * party. If the tombstone table ever gets large, bound the sweep (e.g. persist
+   * a node-local high-water mark of what has been re-issued while connected)
+   * instead of re-touching everything; note the `Math.max(...)` spread below also
+   * caps out around 10^5 rows (V8 argument limit) before the size becomes merely
+   * a latency problem.
    */
   private async drainPendingRevocations(): Promise<void> {
     const sweep = !this.reissuedHeldRevocations;

@@ -294,6 +294,28 @@ describe('CadreNode write-while-alone re-replication', () => {
       expect(pendingRevs(node).has('stamp-1')).toBe(false);
     });
 
+    it('a stop() re-arms the sweep, so the next lifetime sweeps its held tombstones again', async () => {
+      const node = new CadreNode(createConfig());
+      const { seed } = inject(node, { revocations: [revRow('stamp-1')] });
+
+      await node.drainPendingControlReplication('first');
+      expect(seed.reissueRevocationsCalls).toHaveLength(1);
+
+      // stop()'s teardown resets the write-while-alone state. Without the sweep
+      // flag resetting with it, a second lifetime would skip the sweep — and a
+      // removal committed alone in THIS lifetime is precisely a "before my start"
+      // tombstone from the next one's point of view.
+      (node as unknown as { stopRecordRefresh: () => void }).stopRecordRefresh();
+      const { seed: restarted } = inject(node, { revocations: [revRow('stamp-1', 7)] });
+
+      await node.drainPendingControlReplication('after restart');
+
+      expect(seed.reissueRevocationsCalls).toHaveLength(1); // pre-stop fake, untouched
+      expect(restarted.reissueRevocationsCalls).toHaveLength(1);
+      expect(restarted.reissueRevocationsCalls[0]!.rows.map((r) => r.stampId)).toEqual(['stamp-1']);
+      expect(restarted.reissueRevocationsCalls[0]!.reissuedAt).toBeGreaterThan(7);
+    });
+
     it('a node with no owner key drops queued revocations without touching the database', async () => {
       const node = new CadreNode(createConfig());
       const { seed } = inject(node, { canAuthorize: false, revocations: [revRow('stamp-1')] });
