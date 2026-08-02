@@ -515,9 +515,11 @@ describe('FormationListener joiner-consent pre-check', () => {
   it('rejects tampered/mismatched/malformed consent before validating the token', async () => {
     for (const [label, bad] of await invalidConsentContacts(contact)) {
       let tokenChecks = 0;
+      let disclosureChecks = 0;
       let provisions = 0;
       const { options, identityDisclosed } = baseOptions({
         validateToken: async () => { tokenChecks++; return { valid: true }; },
+        validateDisclosure: async () => { disclosureChecks++; return true; },
         provisionStrand: async () => {
           provisions++;
           return {
@@ -543,6 +545,10 @@ describe('FormationListener joiner-consent pre-check', () => {
       expect(result.cadrePeerAddrs, label).toBeUndefined();
       expect(identityDisclosed(), label).toBe(false);
       expect(tokenChecks, label).toBe(0);
+      // A bad consent must also never reach validateDisclosure: in production that hook can
+      // call out to an external approval service, so this is the line that stops an
+      // unauthenticated peer from driving outbound requests chosen by its own text.
+      expect(disclosureChecks, label).toBe(0);
       // Nothing downstream of the pre-check runs either: a bad consent must never reach the
       // side-effecting hook that mints or seats a strand, so a refused contact cannot leave a
       // half-formed strand behind for the writer to trip over.
