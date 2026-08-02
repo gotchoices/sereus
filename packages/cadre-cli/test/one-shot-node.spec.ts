@@ -44,7 +44,7 @@ import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
-import { CadreNode, type CadreNodeConfig } from '@serfab/cadre-core';
+import { CadreNode, type CadreNodeConfig, type StrandRow } from '@serfab/cadre-core';
 import { resolveStorageConfig } from '../src/commands/node-session.js';
 
 /** The compiled entry the `cadre` bin points at — what an operator actually runs. */
@@ -103,9 +103,20 @@ function runCli(args: string[], cwd: string): Promise<CliRun> {
   });
 }
 
-/** A per-test temp directory; the caller removes it in a `finally`. */
-function tempDir(tag: string): string {
-  return mkdtempSync(join(tmpdir(), `cadre-oneshot-${tag}-`));
+/**
+ * Run `body` in a temp directory of its own, and remove it afterwards.
+ *
+ * A cleanup failure is ignored — on Windows a handle released a moment ago can still hold the
+ * directory, and losing that race must not fail a test whose assertions already passed. Same
+ * treatment as `protobuf-identity.spec.ts`.
+ */
+async function withTempDir(tag: string, body: (dir: string) => Promise<void>): Promise<void> {
+  const dir = mkdtempSync(join(tmpdir(), `cadre-oneshot-${tag}-`));
+  try {
+    await body(dir);
+  } finally {
+    try { rmSync(dir, { recursive: true, force: true }); } catch { /* see above */ }
+  }
 }
 
 /**
@@ -156,10 +167,87 @@ function seedNodeConfig(partyId: string, blocksDir: string, privateKey: PrivateK
   };
 }
 
+/** The `Strand` rows this party holds, read from a node that is already started. */
+async function strandRows(node: CadreNode): Promise<StrandRow[]> {
+  const db = node.getControlDatabase();
+  if (!db) throw new Error('node has no control database — it is not started');
+  return await db.queryStrands();
+}
+
+/** Boot a solo node on `blocksDir`, run `body` against it, and stop it however `body` ends. */
+async function withSoloNode(
+  partyId: string,
+  blocksDir: string,
+  privateKey: PrivateKey,
+  body: (node: CadreNode) => Promise<void>,
+): Promise<void> {
+  const node = new CadreNode(seedNodeConfig(partyId, blocksDir, privateKey));
+  try {
+    await node.start();
+    await body(node);
+  } finally {
+    await node.stop();
+  }
+}
+
+/** A closed strand's membership key is opaque to everything under test — only its survival is. */
+const MEMBER_PRIVATE_KEY = 'cli-oneshot-membership-key';
+
+/**
+ * Perform genesis and publish `strands`, so the spawned CLI meets a party it is the owner of.
+ *
+ * Genesis has to happen here because a bare CLI node is not an owner — an unseeded
+ * `strand remove` would fail authorization rather than exercise the write — and no CLI command
+ * performs genesis (`enroll register` is an offline signature check; genesis lives in
+ * `start --owner`).
+ */
+async function seedStrands(
+  partyId: string,
+  blocksDir: string,
+  privateKey: PrivateKey,
+  strands: { id: string; type: 'o' | 'c' }[],
+): Promise<void> {
+  await withSoloNode(partyId, blocksDir, privateKey, async (node) => {
+    const owner = node.getIdentityOwnerKey();
+    const db = node.getControlDatabase();
+    expect(db).not.toBeNull();
+    expect(await db!.ensureOwnerKey(owner.publicKeyB64)).toBe(true);
+    node.initializeSeedBootstrap(owner.privateKeyB64);
+
+    for (const strand of strands) {
+      await node.publishStrand(strand.id, strand.type, strand.type === 'c' ? MEMBER_PRIVATE_KEY : undefined);
+    }
+
+    // Pin the seed before spawning anything: without this, a publish that silently did nothing
+    // would let a removal "succeed" over an absent row and the test would pass vacuously.
+    const seeded = (await strandRows(node)).map((row) => row.Id);
+    for (const strand of strands) {
+      expect(seeded).toContain(strand.id);
+    }
+  });
+}
+
+/**
+ * The config a spawned CLI resolves for itself: same party, identity and storage as the seed.
+ *
+ * `strandFilter: 'none'` keeps the one-shot node from trying to LAUNCH an instance for a seeded
+ * row — there is no strand network behind it. Nothing under test is weakened: `strand remove`
+ * reads the row through `db.queryStrand(id)` directly, never through the filter.
+ */
+function ownerCliConfig(dir: string, keyPath: string, partyId: string, blocksDir: string): string {
+  return writeConfig(dir, {
+    identity: { protobufKeyFile: keyPath },
+    controlNetwork: { partyId, bootstrapNodes: [] },
+    profile: 'storage',
+    strandFilter: 'none',
+    storage: { type: 'file', path: blocksDir },
+    network: { listenAddrs: [] },
+  });
+}
+
 describe('one-shot commands against a real solo node', () => {
   it('lists strands as a parseable JSON array, with the progress line on stderr', async () => {
-    const dir = tempDir('list');
-    try {
+    await withTempDir('list', async (dir) => {
       const { keyPath } = await writeIdentity(dir);
       const configPath = writeConfig(dir, {
         identity: { protobufKeyFile: keyPath },
@@ -177,53 +265,20 @@ describe('one-shot commands against a real solo node', () => {
       // "Connecting..." progress goes to stderr.
       expect(JSON.parse(result.stdout)).toEqual([]);
       expect(result.stderr).toContain('Connecting to control network...');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }, NODE_TEST_TIMEOUT_MS);
 
   // The destructive shape, and the reason this spec exists: `strand remove` is an operator's
   // only route to a party-wide control-plane delete.
-  //
-  // Genesis has to be done here because a bare CLI node is not an owner — an unseeded
-  // `strand remove` would fail authorization rather than exercise the write — and there is no
-  // CLI command that performs genesis (`enroll register` is an offline signature check;
-  // genesis lives in `start --owner`).
   it('removes a seeded strand, and the row is gone from the control database afterwards', async () => {
-    const dir = tempDir('remove');
-    try {
+    await withTempDir('remove', async (dir) => {
       const { keyPath, privateKey } = await writeIdentity(dir);
       const partyId = freshPartyId('remove');
       const blocksDir = join(dir, 'blocks');
       const strandId = 'cli-oneshot-strand';
 
-      const configPath = writeConfig(dir, {
-        identity: { protobufKeyFile: keyPath },
-        controlNetwork: { partyId, bootstrapNodes: [] },
-        profile: 'storage',
-        // `none` keeps the one-shot node from trying to LAUNCH an instance for the seeded row —
-        // there is no strand network behind it. Nothing under test is weakened: `strand remove`
-        // reads the row through `db.queryStrand(id)` directly, never through the filter.
-        strandFilter: 'none',
-        storage: { type: 'file', path: blocksDir },
-        network: { listenAddrs: [] },
-      });
-
-      const seed = new CadreNode(seedNodeConfig(partyId, blocksDir, privateKey));
-      try {
-        await seed.start();
-        const owner = seed.getIdentityOwnerKey();
-        const db = seed.getControlDatabase();
-        expect(db).not.toBeNull();
-        expect(await db!.ensureOwnerKey(owner.publicKeyB64)).toBe(true);
-        seed.initializeSeedBootstrap(owner.privateKeyB64);
-        await seed.publishStrand(strandId, 'o');
-        // Pin the seed before spawning: without this, a publish that silently did nothing would
-        // let the removal "succeed" over an absent row and the test would pass vacuously.
-        expect((await db!.queryStrands()).map((row) => row.Id)).toContain(strandId);
-      } finally {
-        await seed.stop();
-      }
+      const configPath = ownerCliConfig(dir, keyPath, partyId, blocksDir);
+      await seedStrands(partyId, blocksDir, privateKey, [{ id: strandId, type: 'o' }]);
 
       const result = await runCli(['strand', 'remove', strandId, '--yes', '-c', configPath], dir);
 
@@ -233,18 +288,39 @@ describe('one-shot commands against a real solo node', () => {
 
       // Proved at the database, not from the CLI's own success line — that line is printed from
       // the plan, so it would read the same over a write that never landed.
-      const verifier = new CadreNode(seedNodeConfig(partyId, blocksDir, privateKey));
-      try {
-        await verifier.start();
-        const db = verifier.getControlDatabase();
-        expect(db).not.toBeNull();
-        expect((await db!.queryStrands()).map((row) => row.Id)).not.toContain(strandId);
-      } finally {
-        await verifier.stop();
-      }
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+      await withSoloNode(partyId, blocksDir, privateKey, async (verifier) => {
+        expect((await strandRows(verifier)).map((row) => row.Id)).not.toContain(strandId);
+      });
+    });
+  }, NODE_TEST_TIMEOUT_MS);
+
+  // The refusal's EXIT CODE is the security-relevant surface, and a real process is the only
+  // place it can be observed: `subcommand-wiring.spec.ts` stubs `process.exit`, so execution
+  // there continues past the call and the code is inferred rather than exercised.
+  it('refuses a closed strand without --yes, exits 1, and leaves the membership key intact', async () => {
+    await withTempDir('refuse', async (dir) => {
+      const { keyPath, privateKey } = await writeIdentity(dir);
+      const partyId = freshPartyId('refuse');
+      const blocksDir = join(dir, 'blocks');
+      const strandId = 'cli-oneshot-closed-strand';
+
+      const configPath = ownerCliConfig(dir, keyPath, partyId, blocksDir);
+      await seedStrands(partyId, blocksDir, privateKey, [{ id: strandId, type: 'c' }]);
+
+      const result = await runCli(['strand', 'remove', strandId, '-c', configPath], dir);
+
+      expect(result.code, `stdout: ${result.stdout}`).toBe(1);
+      expect(result.stderr).toContain(`✗ Refusing to remove closed strand without --yes: ${strandId}`);
+      // A refusal is a reason for the exit code, not a result — nothing on stdout to pipe.
+      expect(result.stdout).toBe('');
+
+      // The row surviving is the point: its membership key exists nowhere else, so a refusal
+      // that still wrote would have destroyed it while reporting that it had not.
+      await withSoloNode(partyId, blocksDir, privateKey, async (verifier) => {
+        const row = (await strandRows(verifier)).find((candidate) => candidate.Id === strandId);
+        expect(row).toMatchObject({ Type: 'c', MemberPrivateKey: MEMBER_PRIVATE_KEY });
+      });
+    });
   }, NODE_TEST_TIMEOUT_MS);
 });
 
@@ -258,19 +334,15 @@ describe('one-shot command config failures', () => {
   const CONFIG_TEST_TIMEOUT_MS = 60_000;
 
   it('exits 1 naming the missing config file', async () => {
-    const dir = tempDir('no-config');
-    try {
+    await withTempDir('no-config', async (dir) => {
       const result = await runCli(['strand', 'list', '-c', join(dir, 'absent.json')], dir);
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('Failed to list strands: Config file not found');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }, CONFIG_TEST_TIMEOUT_MS);
 
   it('exits 1 on a config file that does not parse', async () => {
-    const dir = tempDir('bad-yaml');
-    try {
+    await withTempDir('bad-yaml', async (dir) => {
       const configPath = join(dir, 'cadre.yaml');
       writeFileSync(configPath, '{ unclosed', 'utf8');
 
@@ -279,14 +351,11 @@ describe('one-shot command config failures', () => {
       expect(result.code).toBe(1);
       // The parser's own wording is js-yaml's, not ours — pin the prefix the CLI owns.
       expect(result.stderr).toContain('Failed to list strands:');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }, CONFIG_TEST_TIMEOUT_MS);
 
   it('exits 1 on a strandFilter it cannot interpret', async () => {
-    const dir = tempDir('bad-filter');
-    try {
+    await withTempDir('bad-filter', async (dir) => {
       const configPath = writeConfig(dir, {
         controlNetwork: { partyId: freshPartyId('bad-filter'), bootstrapNodes: [] },
         profile: 'transaction',
@@ -299,14 +368,11 @@ describe('one-shot command config failures', () => {
 
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('Invalid strandFilter');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }, CONFIG_TEST_TIMEOUT_MS);
 
   it('exits 1 on file storage with no path', async () => {
-    const dir = tempDir('no-path');
-    try {
+    await withTempDir('no-path', async (dir) => {
       const configPath = writeConfig(dir, {
         controlNetwork: { partyId: freshPartyId('no-path'), bootstrapNodes: [] },
         profile: 'storage',
@@ -318,8 +384,6 @@ describe('one-shot command config failures', () => {
 
       expect(result.code).toBe(1);
       expect(result.stderr).toContain('Storage path is required for file storage type');
-    } finally {
-      rmSync(dir, { recursive: true, force: true });
-    }
+    });
   }, CONFIG_TEST_TIMEOUT_MS);
 });

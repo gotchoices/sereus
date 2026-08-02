@@ -485,7 +485,11 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   list is linked-only (`@optimystic/*`, `@quereus/quereus`); it is wired into **both** its `unit` and
   `e2e` `vitest.config.ts` project blocks, since Vitest 4.1.8 does not run a project-array-sibling's
   `globalSetup` unless each project block sets it itself. `cadre-cli` pins `@serfab/cadre-core` (real,
-  non-mocked symbols land in its specs) plus the linked siblings `cadre-core` already guards. `cadre-host`
+  non-mocked symbols land in its specs) plus the linked siblings `cadre-core` already guards, **and
+  itself** — `one-shot-node.spec.ts` spawns this package's own `dist/bin/cadre.js`, so a `src` edit
+  with no following build now fails the whole cadre-cli suite, including the specs that import `src`
+  directly. Same tradeoff `integration-tests` already carries; editing a spec does not trip it, since
+  `test/` is excluded from the source scan. `cadre-host`
   reaches `@serfab/cadre-cli`, `@serfab/cadre-core`, `@serfab/cadre-provider` and
   `@serfab/quereus-plugin-sereus` only through `workspace:` ranges (no `link:` entry of its own — the
   `@optimystic`/`@quereus` packages arrive transitively through `cadre-core`), and its guard files live
@@ -989,10 +993,20 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   structured under `--json`. `--yes` is a flag, not a prompt, because these commands run
   non-interactively (`strand.spec.ts` over a fake store; `subcommand-wiring.spec.ts` drives the
   real commander → `runSubcommand` → `nodeStore` path over a stubbed `withConnectedNode`,
-  pinning the refusal's non-zero exit). **Still not exercised against a real node:** no test
-  stands one up, so the last hop — `withConnectedNode` itself and the control-database write —
-  is covered only by the node-level `strand-unpublish.spec.ts` on the far side. A cadre-host UI
-  for the same operation is parked in `backlog/feat-cadre-host-strand-removal-ui`.
+  pinning the refusal's non-zero exit). **Now exercised against a real node too**
+  (`debt-cli-one-shot-node-integration-coverage`): `one-shot-node.spec.ts` spawns the compiled
+  `dist/bin/cadre.js` as a child process against a real solo `CadreNode` (`bootstrapNodes: []`,
+  `listenAddrs: []` — `start()` emits `control:connected` unconditionally, so a one-shot command
+  needs no peers), seeds an owner-signed row in-process, and proves the outcome **at the control
+  database from a re-opened node** rather than from the CLI's own success line: an open strand's
+  row is gone after `remove --yes`, and a closed strand's row *and its `MemberPrivateKey`*
+  survive the `--yes`-less refusal. Because it is a real process, the exit code is observed
+  rather than inferred from a stubbed `process.exit`. The branches a real node cannot produce —
+  connect timeout, a `start()` that settles after the timer, a failing `stop()` — are covered
+  over a fake node in `node-session-branches.spec.ts`, including that the timeout's rejection is
+  never orphaned into a process crash. Real-node coverage is `strand` only; `validation-key` and
+  `status` share the same `withConnectedNode` seam and stay on the fake-node wiring spec. A
+  cadre-host UI for the same operation is parked in `backlog/feat-cadre-host-strand-removal-ui`.
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1 at that date, 3/3
