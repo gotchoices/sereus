@@ -1117,16 +1117,23 @@ const node = new CadreNode({
 
 ```typescript
 import { CadreNode } from '@serfab/cadre-core';
-import { RNRawStorage } from '@optimystic/db-p2p-storage-rn';
+import { LevelDBRawStorage, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
+import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
+
+const openDb = (name: string) => openOptimysticRNDb({
+  openFn: (n, createIfMissing, errorIfExists) => new LevelDB(n, createIfMissing, errorIfExists),
+  WriteBatch: LevelDBWriteBatch,
+  name
+});
 
 const node = new CadreNode({
   // ...
   profile: 'transaction',
   strandFilter: { mode: 'sAppId', sAppId: 'com.example.myapp' },
   storage: {
-    provider: (strandId) => new RNRawStorage(strandId)
+    provider: (strandId) => new LevelDBRawStorage(openDb(`sereus-${strandId}`))
   },
   network: {
     transports: [webSockets(), circuitRelayTransport()],

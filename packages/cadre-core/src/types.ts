@@ -123,8 +123,9 @@ export interface StorageConfig {
    *
    * For React Native, use the appropriate storage from @optimystic/db-p2p-storage-rn:
    * ```typescript
-   * import { RNRawStorage } from '@optimystic/db-p2p-storage-rn';
-   * storage: { provider: (strandId) => new RNRawStorage(strandId) }
+   * import { LevelDBRawStorage } from '@optimystic/db-p2p-storage-rn';
+   * // `db` is an open LevelDB handle (see `openOptimysticRNDb` over `rn-leveldb`)
+   * storage: { provider: (strandId) => new LevelDBRawStorage(openDb(`sereus-${strandId}`)) }
    * ```
    *
    * For in-memory storage (testing):

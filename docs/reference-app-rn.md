@@ -19,7 +19,7 @@ This document describes the architecture for `packages/reference-app-rn`, a mini
 │  Expo / React Native     │                          │  Node.js CLI           │
 │  cadre-core              │     libp2p protocols     │  cadre-core            │
 │  db-p2p (RN entrypoint)  │◄──────────────────────►│  db-p2p (TCP)          │
-│  db-p2p-storage-rn (LevelDB)│                       │  db-p2p-storage-fs     │
+│  db-p2p-storage-rn       │                          │  db-p2p-storage-fs     │
 │  quereus + plugins       │                          │  quereus + plugins     │
 │  Chat sApp schema        │     shared strand        │  Chat sApp schema      │
 └──────────────────────────┘                          └────────────────────────┘
