@@ -57,6 +57,17 @@ const SEEDABLE_STATUSES: ReadonlySet<DonationStatus> = new Set<DonationStatus>([
  */
 export const DONATION_AWAITING_SEED_TTL_MS = 30 * 60 * 1000;
 
+/**
+ * Default age after which a donation still stuck in `provisioning` is
+ * auto-terminated: the host wrote the row before starting the child, and a
+ * crash/kill in that window (or during the spawn itself) leaves nothing to
+ * advance it across a restart. A real spawn (identity key read/gen, port
+ * allocation, process spawn) completes in well under a second normally, so 5
+ * minutes is generously past "any plausible spawn" without risking a false
+ * reap of one still genuinely in flight under heavy load.
+ */
+export const DONATION_PROVISIONING_TTL_MS = 5 * 60 * 1000;
+
 /** How often the reap sweep runs while cadre-host is up. 5 minutes. */
 export const DONATION_REAP_SWEEP_MS = 5 * 60 * 1000;
 
@@ -129,10 +140,23 @@ export type RespawnResult =
   | { outcome: 'not_respawnable' }
   | { outcome: 'abandoned'; status?: DonationStatus };
 
+/**
+ * Orchestrator capability `reapStaleProvisioning` needs beyond the base
+ * `Orchestrator`: resolve a spawn's friendly containerId (== a donation's id)
+ * back to its current dockerId, so a stuck-`provisioning` reap can find and
+ * reclaim a child that was actually spawned before the host died. Optional —
+ * only `HostProcessOrchestrator` implements it (see its `resolveDockerId`).
+ * Absent on a test double or a future orchestrator, the reap just terminalizes
+ * the record with nothing to reclaim.
+ */
+export interface DonationOrchestrator extends Orchestrator {
+  resolveDockerId?(containerId: string): string | undefined;
+}
+
 /** Constructor options. */
 export interface DonationServiceOptions {
   /** Orchestrator that spawns/stops the donated node child process. */
-  orchestrator: Orchestrator;
+  orchestrator: DonationOrchestrator;
   /** Grant validator (identity/expiry/revocation + quota). */
   grants: GrantValidator;
   /** Persistent donation store (`donations.json`). */
@@ -158,7 +182,7 @@ export interface DonationServiceOptions {
  * `2-donation-service` ticket and land alongside this file.
  */
 export class DonationService {
-  private readonly orchestrator: Orchestrator;
+  private readonly orchestrator: DonationOrchestrator;
   private readonly grants: GrantValidator;
   private readonly store: DonationStore;
   private readonly now: () => Date;
@@ -621,6 +645,58 @@ export class DonationService {
     return reaped;
   }
 
+  /**
+   * Auto-terminate donations stuck in `provisioning` past `ttlMs` — the record
+   * is written before the child spawn starts, so a host crash/kill anywhere in
+   * that window (including mid-spawn) leaves nothing to advance it across a
+   * restart: there is no in-flight `provisionLocked` call left to reach its
+   * post-spawn re-read. Run on the same periodic sweep and startup pass as
+   * {@link reapStaleAwaitingSeed}. Age is measured from `updatedAt`, which for a
+   * genuinely-stuck row equals `createdAt` — `provisionLocked` never touches a
+   * `provisioning` record again except to advance it out of this predicate.
+   * Best-effort per record: a failed reap is logged and the sweep continues.
+   * Returns the reaped donation ids.
+   */
+  async reapStaleProvisioning(ttlMs: number = DONATION_PROVISIONING_TTL_MS): Promise<string[]> {
+    const cutoff = this.now().getTime() - ttlMs;
+    const stale = this.store.list().filter((d) => isStaleProvisioning(d, cutoff));
+    const reaped: string[] = [];
+    for (const donation of stale) {
+      try {
+        // Re-read: an in-flight (same-process) provisionLocked call can still
+        // advance this exact record between the snapshot above and now.
+        const current = this.store.get(donation.id);
+        if (!current || !isStaleProvisioning(current, cutoff)) continue;
+        await this.reclaimStuckProvisioning(current);
+        reaped.push(donation.id);
+        log('reaped stuck provisioning donation %s (age > %dms)', donation.id, ttlMs);
+      } catch (err) {
+        log('failed to reap stuck provisioning donation %s: %s', donation.id, errorMessage(err));
+      }
+    }
+    return reaped;
+  }
+
+  /**
+   * Terminalize a stuck-`provisioning` record as `error` and reclaim any child
+   * the orchestrator can still find for it. Status is written FIRST (same
+   * ordering rule as {@link terminate}): reclaiming fires `onStateChange`, and
+   * anything listening must already see a terminal record.
+   */
+  private async reclaimStuckProvisioning(donation: Donation): Promise<void> {
+    this.store.put({
+      ...donation,
+      status: 'error',
+      error: 'stuck in provisioning past TTL — host likely restarted mid-spawn',
+      updatedAt: this.now().toISOString(),
+    });
+    const dockerId = this.orchestrator.resolveDockerId?.(donation.id);
+    if (dockerId) {
+      await this.safeStop(dockerId);
+      await this.safeReclaim(dockerId);
+    }
+  }
+
   /** One donation (redacted), or undefined when unknown. */
   get(id: string): DonationView | undefined {
     const donation = this.store.get(id);
@@ -727,6 +803,15 @@ function denialToError(reason: GrantDenyReason | undefined): DonationError {
  */
 function isReapable(donation: Donation | undefined, cutoff: number): boolean {
   return donation?.status === 'awaiting_seed' && Date.parse(donation.updatedAt) < cutoff;
+}
+
+/**
+ * Whether a record is still a stuck-`provisioning` reap candidate. Stated
+ * once and applied twice in {@link DonationService.reapStaleProvisioning} — on
+ * the sweep's candidate list, and again per record before the terminal write.
+ */
+function isStaleProvisioning(donation: Donation | undefined, cutoff: number): boolean {
+  return donation?.status === 'provisioning' && Date.parse(donation.updatedAt) < cutoff;
 }
 
 /** Derive the node's `/status` URL from its `/seed` URL (same origin/port). */

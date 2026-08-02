@@ -32,9 +32,11 @@ export { DonationStore } from './donation-store.js';
 export {
   DonationService,
   DONATION_AWAITING_SEED_TTL_MS,
+  DONATION_PROVISIONING_TTL_MS,
   DONATION_REAP_SWEEP_MS,
 } from './donation-service.js';
 export type {
+  DonationOrchestrator,
   DonationProvisionRequest,
   DonationSeedResult,
   DonationPeerInfo,

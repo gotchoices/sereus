@@ -41,6 +41,7 @@ import {
   DonationStore,
   DonationSupervisor,
   DONATION_AWAITING_SEED_TTL_MS,
+  DONATION_PROVISIONING_TTL_MS,
   DONATION_REAP_SWEEP_MS,
 } from '../donation/index.js';
 import { NatService } from '../nat/index.js';
@@ -319,13 +320,18 @@ program
       donationSupervisor.start();
 
       // Reap orphaned donations: a requester that provisioned a node but never
-      // presented a seed leaves an `awaiting_seed` child holding host ports.
+      // presented a seed leaves an `awaiting_seed` child holding host ports,
+      // and a host that died between writing a `provisioning` row and finishing
+      // the spawn leaves that row stuck forever (nothing else ever revisits it).
       // Sweep once at startup (for records recovered from disk by
       // orchestrator.init()), then periodically.
       const reapStale = (): void => {
         void donationService
           .reapStaleAwaitingSeed(DONATION_AWAITING_SEED_TTL_MS)
           .catch((err) => console.error(`donation reap failed: ${(err as Error).message}`));
+        void donationService
+          .reapStaleProvisioning(DONATION_PROVISIONING_TTL_MS)
+          .catch((err) => console.error(`donation provisioning reap failed: ${(err as Error).message}`));
       };
       reapStale();
       const reapTimer = setInterval(reapStale, DONATION_REAP_SWEEP_MS);

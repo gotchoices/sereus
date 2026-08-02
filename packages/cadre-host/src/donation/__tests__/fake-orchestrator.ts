@@ -89,6 +89,14 @@ export class FakeOrchestrator implements Orchestrator {
     return this.children.get(dockerId)?.running ?? false;
   }
 
+  /** Resolve a spawn's friendly containerId back to its dockerId. */
+  resolveDockerId(containerId: string): string | undefined {
+    for (const [dockerId, child] of this.children) {
+      if (child.containerId === containerId) return dockerId;
+    }
+    return undefined;
+  }
+
   async getLogs(): Promise<string> {
     return '';
   }

@@ -25,7 +25,11 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { DonationService, DONATION_AWAITING_SEED_TTL_MS } from '../donation-service.js';
+import {
+  DonationService,
+  DONATION_AWAITING_SEED_TTL_MS,
+  DONATION_PROVISIONING_TTL_MS,
+} from '../donation-service.js';
 import { DonationStore } from '../donation-store.js';
 import { GrantService } from '../grant-service.js';
 import { GrantStore } from '../grant-store.js';
@@ -775,5 +779,124 @@ describe('DonationService.reapStaleAwaitingSeed', () => {
     await svc.provision(baseRequest(token));
     expect(await svc.reapStaleAwaitingSeed(30 * 60 * 1000)).toEqual([]);
     expect(orch.removed).toEqual([]);
+  });
+});
+
+describe('DonationService.reapStaleProvisioning', () => {
+  /**
+   * A donation whose host died right after writing the `provisioning` row —
+   * exactly what `provisionLocked` writes before it ever calls the
+   * orchestrator (see `donation-service.ts`). No `dockerId`: nothing beyond
+   * this raw write ever happened for the record itself.
+   */
+  const stuckRecord = (opts: { id: string; token: string; at: string }): Donation => ({
+    id: opts.id,
+    grantToken: opts.token,
+    partyId: 'party-P',
+    bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+    ownerKeys: ['owner-key-b64url'],
+    profile: 'storage',
+    status: 'provisioning',
+    createdAt: opts.at,
+    updatedAt: opts.at,
+  });
+
+  it('reaps a donation stuck in provisioning past the TTL and marks it error', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    store.put(stuckRecord({ id: 'grn_stuck', token, at: clock.toISOString() }));
+    clock = new Date(clock.getTime() + DONATION_PROVISIONING_TTL_MS + 60_000);
+
+    const reaped = await svc.reapStaleProvisioning(DONATION_PROVISIONING_TTL_MS);
+
+    expect(reaped).toEqual(['grn_stuck']);
+    expect(store.get('grn_stuck')?.status).toBe('error');
+    expect(store.get('grn_stuck')?.error).toMatch(/provisioning/);
+    // Nothing was ever spawned — no dockerId to resolve, so nothing to stop/reclaim.
+    expect(orch.stopped).toEqual([]);
+    expect(orch.removed).toEqual([]);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('stops and reclaims the child when the orchestrator can resolve its dockerId', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    // Simulates a crash between the host spawning the child (the orchestrator
+    // already knows it by dockerId) and `provisionLocked` writing that dockerId
+    // onto the donation record — the resource-leak wrinkle from the ticket.
+    const spawn = await orch.createContainer({
+      containerId: 'grn_stuck',
+      partyId: 'party-P',
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      profile: 'storage',
+      pinnedOwnerKeys: ['owner-key-b64url'],
+    });
+    store.put(stuckRecord({ id: 'grn_stuck', token, at: clock.toISOString() }));
+    clock = new Date(clock.getTime() + DONATION_PROVISIONING_TTL_MS + 60_000);
+
+    const reaped = await svc.reapStaleProvisioning(DONATION_PROVISIONING_TTL_MS);
+
+    expect(reaped).toEqual(['grn_stuck']);
+    expect(store.get('grn_stuck')?.status).toBe('error');
+    expect(orch.stopped).toEqual([spawn.dockerId]);
+    expect(orch.removed).toEqual([spawn.dockerId]);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('leaves a fresh provisioning record within the TTL alone', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    const clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    store.put(stuckRecord({ id: 'grn_fresh', token, at: clock.toISOString() }));
+
+    expect(await svc.reapStaleProvisioning(DONATION_PROVISIONING_TTL_MS)).toEqual([]);
+    expect(store.get('grn_fresh')?.status).toBe('provisioning');
+    expect(orch.stopped).toEqual([]);
+  });
+
+  it('leaves a record alone that legitimately advances between the sweep snapshot and its per-record re-read', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants({ maxNodes: 5 });
+    let clock = new Date('2025-01-01T00:00:00.000Z');
+    const svc = new DonationService({ orchestrator: orch, grants, store, now: () => clock });
+
+    const firstSpawn = await orch.createContainer({
+      containerId: 'grn_first',
+      partyId: 'party-P',
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      profile: 'storage',
+      pinnedOwnerKeys: ['owner-key-b64url'],
+    });
+    store.put(stuckRecord({ id: 'grn_first', token, at: clock.toISOString() }));
+    store.put(stuckRecord({ id: 'grn_second', token, at: clock.toISOString() }));
+    clock = new Date(clock.getTime() + DONATION_PROVISIONING_TTL_MS + 60_000);
+
+    // The second record's own in-flight `provisionLocked` call finally lands
+    // while the sweep is still awaiting the FIRST record's stop — the sweep's
+    // candidate list predates that write, so acting on the stale copy would
+    // wrongly terminate a provision that just came good.
+    orch.onStop = (dockerId) => {
+      if (dockerId !== firstSpawn.dockerId) return;
+      store.put({ ...store.get('grn_second')!, status: 'awaiting_seed', updatedAt: clock.toISOString() });
+    };
+
+    const reaped = await svc.reapStaleProvisioning(DONATION_PROVISIONING_TTL_MS);
+
+    expect(reaped).toEqual(['grn_first']);
+    expect(store.get('grn_first')?.status).toBe('error');
+    expect(store.get('grn_second')?.status).toBe('awaiting_seed');
+    expect(store.liveNodeCount(token)).toBe(1);
   });
 });
