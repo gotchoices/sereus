@@ -5,7 +5,7 @@ import { CadreNode } from '../src/cadre-node.js';
 import type { ControlNetworkSeed } from '../src/types.js';
 import {
   MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb,
-  type Owner, type PeerRow
+  type Owner, type PeerRow, type FakeControlDatabase
 } from './membership-gate-helpers.js';
 
 /**
@@ -246,6 +246,26 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     return fakeDb(node).mutateCadrePeer(reason, async () => { body(); });
   }
 
+  /**
+   * Make every row look like an owner-authored, not-yet-self-published row, so the
+   * re-issue paths judge it re-issuable. Does NOT touch `peerQueries` — only the
+   * whole-membership read the gate refresh issues is counted.
+   */
+  function stubPeerRecordReads(db: FakeControlDatabase): void {
+    (db as unknown as {
+      queryPeerRecord: (peerId: string) => Promise<{ updatedAt: number; sig: string | null } | null>;
+    }).queryPeerRecord = async () => ({ updatedAt: 1, sig: null });
+  }
+
+  function queuePendingWrites(node: CadreNode, peerIds: string[]): void {
+    (node as unknown as { pendingPeerWrites: Map<string, 'authorize' | 'remove'> }).pendingPeerWrites =
+      new Map(peerIds.map((id) => [id, 'authorize' as const]));
+  }
+
+  function drainPendingPeerWrites(node: CadreNode): Promise<void> {
+    return (node as unknown as { drainPendingPeerWrites(): Promise<void> }).drainPendingPeerWrites();
+  }
+
   it('admits a peer whose row was written BELOW the membership wrappers — denied until it is called', async () => {
     const { node, owner, members } = await nodeWithMutableRows();
     const LATE = 'peer-late';
@@ -387,6 +407,13 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
     const before = db.peerQueries;
     const ids = ['peer-a', 'peer-b', 'peer-c', 'peer-d'];
 
+    // Fidelity note: the real `mutateCadrePeer` notifies INSIDE the control DB's
+    // write lock, so four local `CadrePeer` writes never overlap like this. The
+    // overlap being modelled is the one production really has — a write-driven
+    // refresh racing an undriven one (`start`, `reconcile`, `applySeed`,
+    // `onSeedApplied`), none of which hold the lock. The fake omits the lock so
+    // the shared coalescing path can be driven from a single seam.
+
     // Hold every membership read open until the test releases it, so the burst is
     // deterministic rather than dependent on microtask ordering.
     const blocked: Array<() => void> = [];
@@ -431,24 +458,86 @@ describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
 
     // Each re-issue is a notifying `CadrePeer` write; without the defer scope the
     // drain would cost one full membership read per queued entry.
-    (db as unknown as {
-      queryPeerRecord: (peerId: string) => Promise<{ updatedAt: number; sig: string | null } | null>;
-    }).queryPeerRecord = async () => ({ updatedAt: 1, sig: null });
+    stubPeerRecordReads(db);
     (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
       canAuthorize: () => true,
       reauthorizePeer: async (peerId: string) =>
         db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(peerId, owner)); })
     };
-    (node as unknown as { pendingPeerWrites: Map<string, 'authorize' | 'remove'> }).pendingPeerWrites =
-      new Map(queued.map((id) => [id, 'authorize' as const]));
+    queuePendingWrites(node, queued);
 
     const before = db.peerQueries;
-    await (node as unknown as { drainPendingPeerWrites(): Promise<void> }).drainPendingPeerWrites();
+    await drainPendingPeerWrites(node);
 
     expect(db.peerQueries - before).toBe(1);
+    expect(db.peerQueries - before).toBeLessThan(queued.length);
     for (const id of queued) {
       expect(authorize(node, id)).toBe(true);
     }
+  });
+
+  it('collapses the owner-authored reconstruction sweep into ONE refresh', async () => {
+    // The defer scope's OTHER caller. Same helper as the drain above, so the risk
+    // is low — but the two are the only scopes in the codebase and neither should
+    // be able to regress into a per-row read unnoticed.
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    const extra = ['peer-r1', 'peer-r2'];
+    for (const id of extra) {
+      members.push(vouchedRow(id, owner));
+    }
+
+    let reissued = 0;
+    stubPeerRecordReads(db);
+    (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+      canAuthorize: () => true,
+      // A re-issue is an owner UPDATE of a row already present: no row change, but
+      // it notifies like any other `CadrePeer` write — what the scope absorbs.
+      reauthorizePeer: async () => {
+        reissued++;
+        await db.mutateCadrePeer('peer-reauthorize', async () => { /* row already seated */ });
+      }
+    };
+
+    const before = db.peerQueries;
+    await (node as unknown as { reconstructAuthoredMembership(): Promise<void> }).reconstructAuthoredMembership();
+
+    expect(reissued).toBe(1 + extra.length);
+    // The sweep's own row read, plus ONE flush at scope exit — not one per re-issue.
+    expect(db.peerQueries - before).toBe(2);
+    for (const id of [MEMBER, ...extra]) {
+      expect(authorize(node, id)).toBe(true);
+    }
+  });
+
+  it('suppresses a CONCURRENT unrelated write refresh until the drain scope exits', async () => {
+    // The documented cost of the depth counter being INSTANCE-level rather than
+    // scope-local: a writer that has nothing to do with the drain still has its
+    // refresh held to scope exit, so its own `await` resolves before its peer is
+    // admitted. Pinned here because it is the one place the "a caller always
+    // observes its own change" contract does not hold.
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    const OUTSIDER = 'peer-concurrent';
+    const observedInScope: boolean[] = [];
+
+    stubPeerRecordReads(db);
+    (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+      canAuthorize: () => true,
+      reauthorizePeer: async (peerId: string) => {
+        await db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(peerId, owner)); });
+        await write(node, () => { members.push(vouchedRow(OUTSIDER, owner)); });
+        observedInScope.push(authorize(node, OUTSIDER));
+      }
+    };
+    queuePendingWrites(node, ['peer-q1']);
+
+    const before = db.peerQueries;
+    await drainPendingPeerWrites(node);
+
+    expect(observedInScope).toEqual([false]);
+    expect(db.peerQueries - before).toBe(1);
+    expect(authorize(node, OUTSIDER)).toBe(true);
   });
 
   it('raises no refresh once the membership listener is detached', async () => {
