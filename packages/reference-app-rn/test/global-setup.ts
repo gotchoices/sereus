@@ -2,7 +2,7 @@
  * Vitest global setup — runs once before the `node` project of the
  * reference-app-rn unit suite.
  *
- * `node-local-slots.spec.ts` composes `kvSlot`/`secureStoreSlot` with the REAL
+ * `node-local-slots.spec.ts` composes `kvStoreSlot`/`secureStoreSlot` with the REAL
  * `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`,
  * `secure-key-store.spec.ts` throws the real `KeyStoreAccessError`, and
  * `push-wake.spec.ts` reaches `STRAND_WAKE_TYPE` through `src/push-wake.ts` —

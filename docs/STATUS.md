@@ -542,9 +542,18 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   the workspace) to `workspace:^`, without which `distBackedDependencies` cannot classify it and the
   drift spec would pass having checked nothing. `@optimystic/db-p2p-storage-web` is guarded even though
   the current specs import it only as a type: it is a declared, link-resolved dependency the app itself
-  runs, and the drift spec checks the manifest, not the import graph. `reference-app-rn` remains the one
-  app with no guard at all, despite its `node-local-slots.spec.ts` importing real `cadre-core` symbols —
-  see backlog `debt-reference-app-rn-build-guard`.
+  runs, and the drift spec checks the manifest, not the import graph.
+- [x] **`reference-app-rn` guarded too — every Vitest package that runs compiled output now is.** Its
+  `node-local-slots.spec.ts`, `secure-key-store.spec.ts` and `push-wake.spec.ts` import real
+  (non-type) `@serfab/cadre-core` values, so the suite ran that package's `dist` with nothing checking
+  it was current. Same `test/global-setup.ts` + `build-targets.spec.ts` pair as `reference-app-web`,
+  with the same eight targets except `@optimystic/db-p2p-storage-rn` in place of the `-web` one. The
+  `globalSetup` is wired into the **`node`** project block of its two-project `vitest.config.ts` only:
+  the `react` project's single spec (`test/react/use-cadre.spec.ts`) `vi.mock`s `@serfab/cadre-core`
+  and `../../src/cadre-phone` — the only module reaching `@optimystic/db-p2p-storage-rn` — so it loads
+  no compiled output at all. `cadre-provider` (no `workspace:`/`link:` dependencies) and
+  `reference-app-ns` (no `vitest.config.ts` yet) remain the two packages with no guard, both for the
+  reason that there is nothing yet to guard.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
@@ -599,7 +608,7 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   Asking Vitest rather than re-implementing its globbing is what makes the awkward shapes work:
   `quereus-plugin-sereus` and `reference-app-rn` use `projects:` with per-project `include`/`exclude`,
   and `integration-tests` collects `../../test-harness/build-freshness.spec.ts` from outside its own
-  package. Current state: **251 collected files across the nine Vitest packages, 3 allowlisted, 0
+  package. Current state: **253 collected files across the nine Vitest packages, 3 allowlisted, 0
   unexplained orphans**, and the whole sweep costs ~1.2 s wall clock in one Node process — that is the
   entire cost added to root `yarn typecheck`. Root now declares `vitest` as a devDependency so the
   script's `vitest/node` import is a real dependency rather than a hoisting accident (which also let

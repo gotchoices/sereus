@@ -26,6 +26,7 @@
  *   - `packages/cadre-host/src/__tests__/global-setup.ts`
  *   - `packages/quereus-plugin-sereus/test/global-setup.ts`
  *   - `packages/reference-app-web/test/global-setup.ts`
+ *   - `packages/reference-app-rn/test/global-setup.ts`
  *
  * Two kinds of package are checked. A `workspace` target lives under this
  * repository's `packages/`. A `linked` target lives in a sibling repository
