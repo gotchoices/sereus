@@ -1,5 +1,5 @@
 description: Five test files each keep their own copy of the same setup code for opening a test database and seeding rows; move it to one shared file so a fix lands once instead of five times.
-files: packages/cadre-core/test/strand-spec-helpers.ts (new), packages/cadre-core/test/strand-membership-peer-rotation.spec.ts, packages/cadre-core/test/strand-member-revocation.spec.ts, packages/cadre-core/test/strand-membership-invite.spec.ts, packages/cadre-core/test/strand-approval-replay.spec.ts, packages/cadre-core/test/strand-membership-writer.spec.ts
+files: packages/cadre-core/test/strand-spec-helpers.ts (created), packages/cadre-core/test/strand-membership-peer-rotation.spec.ts, packages/cadre-core/test/strand-member-revocation.spec.ts, packages/cadre-core/test/strand-membership-invite.spec.ts, packages/cadre-core/test/strand-approval-replay.spec.ts, packages/cadre-core/test/strand-membership-writer.spec.ts
 difficulty: easy
 ----
 
@@ -50,7 +50,7 @@ spec **file** its own module registry, so each file that imports
 registration — no cross-file leakage. Confirm this holds by running the full suite (not
 just one file at a time) after wiring the import.
 
-Two decisions from the original ticket, now settled:
+Two decisions from the original ticket, already settled:
 
 1. **`openRawStrand` return type.** Give it the narrower `RawStrand` (no `founder`) instead
    of manufacturing an unused `freshKeyPair()` to satisfy `Strand`. Checked: every call site
@@ -79,30 +79,57 @@ different lifecycle from the other four files' `openStrand`/`openRawStrand`, not
 near-verbatim copy. Forcing it into `Strand`/`RawStrand` would either lose the `storage`
 field the reopen tests need or bloat the shared interface for one caller. Leave it local.
 
-## TODO
+## Progress so far (this run)
 
-- Create `packages/cadre-core/test/strand-spec-helpers.ts` with the exports above. Fold each
-  file's per-function doc comment into one JSDoc per export on the shared version rather than
-  dropping the explanatory text (e.g. `inTransaction`'s "a failed commit already tore the
-  transaction down" note, `insertHeader`'s "every Header column is NOT NULL" note,
-  `openRawStrand`'s "used by tests that need no manager at all" note).
+`packages/cadre-core/test/strand-spec-helpers.ts` has been **created** with all the exports
+listed above, matching the resolved design exactly:
+
+- `makeSAppConfig`, `freshKeyPair`, `StrandTable` (8-member union), `tableCount` — done.
+- `ShutdownHandle` (internal), `Strand`, `RawStrand` — done.
+- Module-level `opened: ShutdownHandle[]` + `afterEach` import from `vitest` — done.
+- `openStrand(type: 'o' | 'c' = 'c')` — done, matches the resolved signature (default `'c'`
+  so `strand-approval-replay.spec.ts`'s no-arg call sites keep working once wired).
+- `openRawStrand()` returning the narrower `RawStrand` (no `founder` field) — done.
+- `insertHeader`, `rawInsertMember` (imports `generateStrandStampId` from
+  `../src/strand-membership-writer.js`), `inTransaction` (with the rollback-after-failed-
+  commit try/catch preserved intact) — done.
+- JSDoc comments folded onto each export per the TODO below (the "why" notes from each
+  original file's per-function doc comment) — done in the new module.
+
+**No spec file has been touched yet.** All 5 files still have their own local copies of
+these helpers; `strand-spec-helpers.ts` exists standalone and nothing imports it yet.
+`yarn lint` / `yarn test` have NOT been run this session — do both only after finishing the
+spec-file edits below, since the new module alone will show as an unused file until wired in.
+
+## Remaining TODO
+
 - Update `strand-approval-replay.spec.ts`, `strand-member-revocation.spec.ts`,
   `strand-membership-invite.spec.ts`, `strand-membership-peer-rotation.spec.ts`: delete the
   local `makeSAppConfig`, `freshKeyPair`, `StrandTable`, `tableCount`, `Strand`, `opened`,
-  `afterEach` teardown, `openStrand`, `openRawStrand` (where present), `insertHeader` (where
-  present), `rawInsertMember` (where present), `inTransaction` (where present); import the
-  shared versions instead. Keep whatever each file does NOT share
+  `afterEach` teardown, `openStrand`, `openRawStrand` (where present — only in
+  `strand-member-revocation.spec.ts` and `strand-membership-peer-rotation.spec.ts`),
+  `insertHeader` (where present — same two files), `rawInsertMember` (where present — same
+  two files), `inTransaction` (where present — all 4 files); import the shared versions
+  instead from `./strand-spec-helpers.js`. Keep whatever each file does NOT share
   (`strand-member-revocation.spec.ts`'s `isMemberRow`/`fileTombstone`/`rawDeleteMember`/
-  `memberStampId`; `strand-membership-peer-rotation.spec.ts`'s `rawInsertFoundingManager`).
-- Update `strand-membership-writer.spec.ts`: delete its local `makeSAppConfig` and `count`,
-  import shared `makeSAppConfig` and `tableCount`, rename call sites `count(db, ...)` ->
-  `tableCount(db, ...)`. Leave `OpenStrand`/`openStrandDb` as-is (see rationale above).
-- Remove now-unused imports each file picks up as a side effect (`randomUUID`,
-  `MemoryRawStorage`, `connectToStrand`, `generatePrivateKey`, `getPublicKey`,
-  `generateStrandMemberKey`, `strandMemberKeyPair`, `bootstrapFounderMembership`,
-  `generateStrandStampId`, `debug` — only where the file no longer references them directly).
+  `memberStampId`; `strand-membership-peer-rotation.spec.ts`'s `rawInsertFoundingManager`,
+  `managerStamp`, `memberPeerStamp`, `fileTombstone`, `addExtraManagers`, `seatMembers`,
+  `insertManagerRow`, `managerGeneration`; `strand-approval-replay.spec.ts`'s
+  `memberStamp`/`managerRow`/`memberPeerStamp`/`isMember`/`isManager`/`fileTombstone`/
+  `seatMember`; `strand-membership-invite.spec.ts` has no other locals to keep beyond what's
+  already noted).
+- Update `strand-membership-writer.spec.ts`: delete its local `makeSAppConfig` (line ~118)
+  and `count` (line ~111), import shared `makeSAppConfig` and `tableCount` from
+  `./strand-spec-helpers.js`, rename call sites `count(db, ...)` -> `tableCount(db, ...)`.
+  Leave `OpenStrand`/`openStrandDb` as-is (see rationale above) — do NOT touch those.
+- Remove now-unused imports each spec file picks up as a side effect of deleting its local
+  helpers (`randomUUID`, `MemoryRawStorage`, `connectToStrand`, `generatePrivateKey`,
+  `getPublicKey`, `generateStrandMemberKey`, `strandMemberKeyPair`,
+  `bootstrapFounderMembership`, `generateStrandStampId`, `debug`, and vitest's `afterEach` —
+  only where the file no longer references them directly after the edit).
 - `yarn lint` clean (catches unused imports/vars) and `yarn workspace @serfab/cadre-core test`
-  (or `cd packages/cadre-core && yarn test`) green, all 5 specs' assertions unchanged.
+  (or `cd packages/cadre-core && yarn test`) green, all 5 specs' assertions unchanged. Per
+  the "Edge cases" section below, run the FULL package suite (not per-file) at least once.
 
 ## Edge cases & interactions
 
@@ -111,24 +138,29 @@ field the reopen tests need or bloat the shared interface for one caller. Leave 
   `vitest.config.ts` disables it) — run the FULL package suite, not one spec file at a time,
   to confirm no strand leaks/double-shutdowns across files sharing the import.
 - **`openStrand` default param.** `strand-approval-replay.spec.ts` calls `openStrand()` with
-  no argument today (always type `'c'`); the shared signature defaults `type` to `'c'` so
-  that call site is unchanged. The other three files always pass `type` explicitly — confirm
-  none accidentally start relying on the default where they meant to pass `'o'`.
+  no argument today (always type `'c'`); the shared signature (already implemented) defaults
+  `type` to `'c'` so that call site is unchanged once wired. The other three files always
+  pass `type` explicitly — confirm none accidentally start relying on the default where they
+  meant to pass `'o'`.
 - **`openRawStrand`'s narrowed return type.** Re-verify (don't just trust this ticket) that
   no call site anywhere destructures `.founder` from an `openRawStrand()`/`RawStrand` result
-  before deleting the placeholder `freshKeyPair()` founder field.
-- **Rollback-after-failed-commit ordering in `inTransaction`.** The try/catch around
-  `db.rollback()` inside the catch block must stay: a failed `commit()` has already torn the
-  transaction down, so the follow-up `rollback()` throws "no transaction active", and that
-  secondary error must be logged, not allowed to replace/mask the original `error` being
-  rethrown. Preserve this exactly when hoisting.
+  before wiring the shared version in.
+- **Rollback-after-failed-commit ordering in `inTransaction`.** Already preserved intact in
+  the new shared module — double check the deleted per-file copies aren't relied upon for
+  anything subtly different before removing them (a diff review of each deletion against the
+  new shared source is the fastest way to confirm).
 - **Doc-comment loss.** Reviewer should diff each deleted local function against the shared
-  one and confirm no explanatory rationale (the "why", not the "what") got silently dropped.
+  one (already written with folded-in JSDoc) and confirm no explanatory rationale (the "why",
+  not the "what") got silently dropped.
 
 <!-- resume-note -->
-Prior run hit BUDGET_WARNING during investigation, before any file was created or edited —
-zero code changes exist. Re-read all 5 spec files in full and verified the ticket's design
-is accurate; the following saves the next agent re-discovery time:
+Prior run hit BUDGET_WARNING immediately after creating
+`packages/cadre-core/test/strand-spec-helpers.ts` and fixing a stray unused-import lint issue
+in it — zero spec files have been edited yet. The new helper module is believed complete and
+correct against the resolved design (re-verify against the exports list above before wiring
+it in, but it should not need redesign). Re-read all 5 spec files in full if needed — the
+following, gathered by an even earlier interrupted run and re-confirmed this run, saves
+re-discovery time:
 
 - **`openRawStrand`** present only in `strand-member-revocation.spec.ts` (~L117-133) and
   `strand-membership-peer-rotation.spec.ts` (~L109-125). Absent from
@@ -141,38 +173,41 @@ is accurate; the following saves the next agent re-discovery time:
   ~L231-246, invite ~L78-93, peer-rotation ~L690-705) — identical bodies including the
   rollback-after-failed-commit try/catch. Only the `debug(...)` namespace argument differs
   per file (`strand-approval-replay`, `strand-revocation`, `strand-invite`, `strand-rotation`)
-  — ticket already accounts for this, collapsing to one shared
-  `sereus:cadre:test:strand-spec-helpers` namespace.
-- **`fileTombstone` is OUT of scope** — absent from the ticket's export list, so leave all
-  copies local and untouched. Exists in 3 of the 4 files with a signature mismatch:
+  — already collapsed to one shared `sereus:cadre:test:strand-spec-helpers` namespace in the
+  new module.
+- **`fileTombstone` is OUT of scope** — absent from the shared module's export list, so leave
+  all copies local and untouched. Exists in 3 of the 4 files with a signature mismatch:
   `strand-approval-replay.spec.ts` (~L196-209) and `strand-membership-peer-rotation.spec.ts`
   (~L192-205) both use `fileTombstone(db, tableName, stampId, retiree)`;
   `strand-member-revocation.spec.ts` (~L174-187) instead uses
   `fileTombstone(db, stampId, retiree, tableName = 'Member')` (args reordered, `tableName` a
   plain string with a default, not the 3-name union). `strand-membership-invite.spec.ts` has
-  no `fileTombstone` at all. Do not unify these three — the ticket scoped this out on purpose.
+  no `fileTombstone` at all. Do not unify these three.
 - **`openStrand` signature.** `strand-approval-replay.spec.ts`'s local version takes NO
   `type` param (hardcoded `'c'`, always passes `founderKeyPair: founder`). The other three
   take `type: 'o' | 'c'` and pass `founderKeyPair: type === 'c' ? founder : undefined`. The
-  ticket's shared signature `openStrand(type: 'o' | 'c' = 'c')` is compatible with
-  approval-replay's no-arg call sites via the default.
-- **`StrandTable` per-file unions verified** exactly as the ticket states: approval-replay =
+  shared signature `openStrand(type: 'o' | 'c' = 'c')` (already implemented) is compatible
+  with approval-replay's no-arg call sites via the default.
+- **`StrandTable` per-file unions verified** exactly as this ticket states: approval-replay =
   `Member|MemberPeer|Manager|Revocation`; member-revocation =
   `Header|Member|Manager|ConsumedInvite|CancelledInvite|Revocation`; invite =
   `Header|Invite|ConsumedInvite|CancelledInvite|Member|Manager`; peer-rotation =
-  `Header|Member|MemberPeer|Manager`. The union of all four matches the ticket's specified
-  `StrandTable` type exactly — no correction needed.
-- `strand-membership-writer.spec.ts` fully re-read too: local `makeSAppConfig` (~L118-126),
-  local `count()` (~L111-116), local `OpenStrand` interface (~L82-87) + `openStrandDb()`
-  (~L94-109) all confirmed as described in the ticket's "intentionally NOT fully folded in"
-  section — leave `OpenStrand`/`openStrandDb` local, just swap `makeSAppConfig`/`count` for
-  the shared `makeSAppConfig`/`tableCount` and rename call sites.
+  `Header|Member|MemberPeer|Manager`. The union of all four matches the shared module's
+  `StrandTable` type exactly (already implemented) — no correction needed.
+- `strand-membership-writer.spec.ts`: local `makeSAppConfig` (~L118-126), local `count()`
+  (~L111-116), local `OpenStrand` interface (~L82-87) + `openStrandDb()` (~L94-109) all
+  confirmed as described in the "intentionally NOT fully folded in" section — leave
+  `OpenStrand`/`openStrandDb` local, just swap `makeSAppConfig`/`count` for the shared
+  `makeSAppConfig`/`tableCount` and rename call sites.
 - `strand-membership-peer-rotation.spec.ts` is 1,518 lines; only grepped its top-level
   function/interface/type declarations for the back half (confirmed no NEW helper
   definitions past line ~730 — rest is test bodies using the helpers already catalogued
-  above), not a full line-by-line read of every test body.
+  above, plus `addExtraManagers`/`seatMembers`/`insertManagerRow`/`managerGeneration` which
+  are local-only and stay put), not a full line-by-line read of every test body.
 
-Next agent should proceed straight to implementation: create
-`packages/cadre-core/test/strand-spec-helpers.ts` per the TODO list above (the resolved
-export shape is unchanged), then update the 5 spec files, run `yarn lint` and
-`yarn workspace @serfab/cadre-core test`, and hand off to `review/`.
+Next agent should proceed straight to wiring: for each of the 4 files, replace the local
+helper block with an import from `./strand-spec-helpers.js` (verify the relative path — the
+new file lives beside them at `packages/cadre-core/test/strand-spec-helpers.ts`), delete the
+now-redundant local definitions, delete now-unused imports, then do the smaller
+`strand-membership-writer.spec.ts` edit, then run `yarn lint` and
+`yarn workspace @serfab/cadre-core test` (full suite), then hand off to `review/`.
