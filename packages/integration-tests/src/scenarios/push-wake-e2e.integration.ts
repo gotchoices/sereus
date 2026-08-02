@@ -114,6 +114,7 @@ import {
 	controlNodeConfig,
 	makeOwnOwner,
 	connectControlNodes,
+	controlAddrs,
 } from '../harness/index.js';
 
 // ── Helpers ─────────────────────────────────────────────────────────────────
@@ -125,11 +126,6 @@ table Data (
     Val text
 );
 `;
-
-/** The control node's currently-observed multiaddrs as strings. */
-function controlAddrs(node: CadreNode): string[] {
-	return node.getControlNode()!.getMultiaddrs().map((ma) => ma.toString());
-}
 
 /**
  * Owner-signed INSERT of the receiver's own self-signed `CadrePeer` record

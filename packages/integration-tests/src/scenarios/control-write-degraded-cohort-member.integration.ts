@@ -74,13 +74,10 @@ import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import debug from 'debug';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 import type { Stream, Connection } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
 import {
-	waitUntil, sleep, forceFullCohort, pinCoordinator, wsTransports, makeOwnOwner, randomPeerId
+	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId
 } from '../harness/index.js';
 import type { ForcedCohortHandle, PinnedCoordinatorHandle } from '../harness/index.js';
 
@@ -299,35 +296,6 @@ function observeClusterHandler(node: CadreNode, partyId: string): Promise<Degrad
 
 // ── Trio boot ─────────────────────────────────────────────────────────────────
 
-/**
- * Local because the shared `controlNodeConfig` has no `trustedOwners` option yet —
- * the one open decision in `plan/10-integration-test-harness-helper-consolidation-
- * remaining-files`, which tracks folding this builder (and the isolation scenario's
- * identical copy) into the harness. Everything else here comes from the harness.
- */
-function nodeConfig(opts: {
-	partyId: string;
-	privateKey: PrivateKey;
-	profile: 'storage' | 'transaction';
-	pinnedOwnerKeys?: string[];
-}): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
-		profile: opts.profile,
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		privateKey: opts.privateKey,
-		network: {
-			transports: wsTransports(),
-			// Unlike the isolation scenario, ALL THREE nodes listen: cluster fan-out
-			// must be able to dial every cohort member directly.
-			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws']
-		},
-		...(opts.pinnedOwnerKeys ? { trustedOwners: { pinnedKeys: opts.pinnedOwnerKeys } } : {}),
-		hibernation: { enabled: false }
-	};
-}
-
 /** Does this node hold an OPEN control connection to `remotePeerId`? */
 function hasOpenConnectionTo(node: CadreNode, remotePeerId: string): boolean {
 	return (node.getControlNode()?.getConnections() ?? [])
@@ -371,7 +339,9 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const bPeerId = peerIdFromPrivateKey(bKey).toString();
 		const cPeerId = peerIdFromPrivateKey(cKey).toString();
 
-		A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
+		// Unlike the isolation scenario, ALL THREE nodes listen (the harness default):
+		// cluster fan-out must be able to dial every cohort member directly.
+		A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
 		await A.start();
 		const aOwnerKey = await makeOwnOwner(A, aKey);
 		const aPeerId = A.peerId!.toString();
@@ -386,8 +356,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			{ timeoutMs: 20_000, intervalMs: 250, description: 'A self-registers a CadrePeer row with addrs' }
 		);
 
-		B = new CadreNode(nodeConfig({ partyId, privateKey: bKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
-		C = new CadreNode(nodeConfig({ partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
+		B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
+		C = new CadreNode(controlNodeConfig({ partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey] }));
 		await B.start();
 		await joinMember(A, B, bPeerId);
 		await C.start();

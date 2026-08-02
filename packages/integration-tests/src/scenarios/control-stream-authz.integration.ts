@@ -45,29 +45,19 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString as libp2pPeerIdFromString } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p } from 'libp2p';
 import { RepoClient } from '@optimystic/db-p2p';
 import { peerIdFromString as repoPeerIdFromString } from '@optimystic/db-core';
 import type { IPeerNetwork, IBlock } from '@optimystic/db-core';
 import { CadreNode, collectStrandAddrs } from '@serfab/cadre-core';
+import type { CadreNodeConfig } from '@serfab/cadre-core';
 import { controlNodeConfig, makeOwnOwner, waitForControlConnection, waitUntil } from '../harness/index.js';
+import type { ControlNodeOpts } from '../harness/index.js';
 
-interface NodeOpts {
-	partyId: string;
-	privateKey?: PrivateKey;
-	profile?: 'storage' | 'transaction';
-	enableRelay?: boolean;
-}
-
-function nodeConfig(opts: NodeOpts) {
+/** Every node here runs control-only (`strandFilter: 'none'`); nothing else differs. */
+function nodeConfig(opts: Omit<ControlNodeOpts, 'strandFilter'>): CadreNodeConfig {
 	return controlNodeConfig({ ...opts, strandFilter: 'none' });
-}
-
-/** Wait until `node`'s control node reports a live connection to `peerId`. */
-async function waitForConnection(node: CadreNode, peerId: string, description: string): Promise<void> {
-	await waitForControlConnection(node, peerId, description);
 }
 
 /**
@@ -114,7 +104,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			M = new CadreNode(nodeConfig({ partyId, privateKey: mKey }));
 			await M.start();
 			await M.getControlNode()!.dial(aAddr);
-			await waitForConnection(A, mPeerId, 'owner admits its authorized member');
+			await waitForControlConnection(A, mPeerId, 'owner admits its authorized member');
 
 			// ── Outsider O: enrollment window open → connection ADMITTED ──────────
 			const { invite } = await A.createInvite('stream-authz-invite', 60_000);
@@ -123,7 +113,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			await O.start();
 			const oPeerId = O.peerId!.toString();
 			await O.getControlNode()!.dial(aAddr);
-			await waitForConnection(A, oPeerId, 'owner admits the outsider during the invite window');
+			await waitForControlConnection(A, oPeerId, 'owner admits the outsider during the invite window');
 
 			// ── Raw repo-protocol clients (bypass every cadre-core surface) ───────
 			const protocolPrefix = `/optimystic/control-${partyId}`;
@@ -234,7 +224,7 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			A.grantDelegateAdmission(mPeerId, strandId, dPeerId);
 			expect(A.hasDelegateAdmission(dPeerId)).toBe(true);
 			await D.getControlNode()!.dial(aAddr);
-			await waitForConnection(A, dPeerId, 'relay-owner admits the announced delegate');
+			await waitForControlConnection(A, dPeerId, 'relay-owner admits the announced delegate');
 
 			// ── (c) The admitted delegate still gets NOTHING above the connection ─
 			// Raw repo pend on the control-DB protocol: the fail-closed per-stream
