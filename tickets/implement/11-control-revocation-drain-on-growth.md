@@ -5,6 +5,139 @@ files: packages/cadre-core/src/cadre-node.ts (noteControlWrite ~2027, runDrainCo
 difficulty: hard
 ----
 
+<!-- resume-note -->
+## Resume note (2026-08-01 run, ended on BUDGET_WARNING)
+
+A prior agent run spent its whole budget on the investigation pass and made **zero code
+edits** — the working tree is untouched by this ticket. Everything below in this section
+is verified context so the next run can start editing immediately. The original ticket
+body (unchanged, below) still governs; where this note refines the design, the note wins
+— each deviation is flagged and justified.
+
+### All seams confirmed (fresh line numbers)
+
+- `cadre-node.ts`: `pendingPeerWrites` field ~371, `committedAlone` ~2011,
+  `noteControlWrite` ~2027, `runDrainControlReplication` ~2067,
+  `reconstructAuthoredMembership` ~2142, `drainPendingPeerWrites` ~2210,
+  `reissuePendingPeerWrites` ~2230, growth-edge handlers ~2277–2321,
+  membership-listener wiring in `start()` at 613, teardown at 2697–2701,
+  `deferMembershipGateRefresh` ~4077, `authorizePeer`/`removePeer` call
+  `noteControlWrite` at 4104/4121 (the only two call sites).
+- `control-database.ts`: `membershipListener` field 398, `MembershipChangeListener` type
+  363–372, `deleteGuardedRow` 1325–1365 (commit happens inside `inTransaction` at 1347;
+  fire the new listener right after it resolves, before the `return true`),
+  `reissueRevocations` 1395–1443 (already takes `rows, reissuedAt, ownerKey,
+  signMessage`; one transaction; `reissuedAt` must be STRICTLY above every row's
+  current value), `queryRevocations` 794–806, `queryRevokedStamps` 777,
+  `setMembershipChangeListener` 1492, `queryCadrePeerStampId` is public (used by
+  the integration test to capture X's stamp before removal).
+- `seed-bootstrap.ts`: `canAuthorize` 264, `requireOwnerPublicKey` 467,
+  `signMessageBytes` 499, `reauthorizePeer` 575 — the model for the new wrapper.
+- `RevocationRow` lives in `types.ts` ~844 (`tableName`/`rowKey`/`stampId`/`reissuedAt`);
+  `seed-bootstrap.ts` must add it to its `./types.js` type-import block (lines 8–22).
+
+### Design refinements settled during investigation
+
+1. **Signing seam**: add `SeedBootstrapService.reissueRevocations(rows: readonly
+   RevocationRow[], reissuedAt: number): Promise<number>` mirroring `reauthorizePeer`
+   — `requireOwnerPublicKey()` first, throw if `!this.controlDatabase`, then delegate to
+   `controlDatabase.reissueRevocations(rows, reissuedAt, ownerKey,
+   m => this.signMessageBytes(m))`.
+2. **Merge the two drain arms into ONE method** `drainPendingRevocations()` on
+   `CadreNode`, instead of a separate first-growth sweep + in-session step. On the sweep
+   pass the batch is simply ALL of `queryRevocations()` (queued stamps included exactly
+   once — that satisfies "not bumped twice" with one transaction and no dedup logic);
+   on later passes it is `held.filter(r => pendingRevocations.has(r.stampId))`.
+   `reissuedAt = Math.max(Date.now(), max(rows.reissuedAt) + 1)`.
+3. **Success-gated sweep flag, not `reconstructedLocalOnlyWrites`**: add a separate
+   `private reissuedHeldRevocations = false`, set true only after a successful pass
+   (including the nothing-to-do case). A throwing sweep therefore retries on the next
+   growth edge instead of being lost for the process — deliberate improvement over the
+   ticket's one-shot wording ("a failure leaves them queued" then applies to the sweep
+   too). Do NOT touch `reconstructedLocalOnlyWrites` for this.
+4. **Queue clearing is per-stamp, not `clear()`**, after success:
+   `for (const row of rows) pendingRevocations.delete(row.stampId)` — safe against an
+   entry added concurrently mid-drain. Exception: non-owner path still `clear()`s
+   (stray entries, mirrors `drainPendingPeerWrites`). Order inside the method: size/flag
+   early-return → `_running`/`controlDatabase` guard → `canAuthorize()` gate (clear +
+   return) → try { query, filter, reissue, mark } catch (log, leave queued).
+5. **Step placement**: insert as step 2 of `runDrainControlReplication`, after the self
+   rows, BEFORE `reconstructAuthoredMembership`/`drainPendingPeerWrites` — revocations
+   are security-relevant and the `CadrePeer` re-touches can burn ~21 s in upstream
+   retry livelock after a fork; the tombstone write is a different collection
+   (`Revocation`) which is merely *behind* on the sibling, not forked, so it should
+   commit cleanly. Renumber the existing step comments.
+6. **No gate refresh needed for the revocation step** (ticket asked to check): the
+   re-issue only bumps `ReissuedAt`; local membership visibility changed at delete time
+   and `deleteCadrePeer` already notified then. Receiving-node staleness is the
+   pre-existing pull-on-read/periodic-refresh property. State this in a comment on the
+   drain step; no `deferMembershipGateRefresh` wrapper around it.
+7. **Listener shape**: `export type GuardedDeleteListener = (revocation: { tableName:
+   RevocableTable; rowKey: string; stampId: string }) => void` — synchronous (the
+   handler only mutates a Map + logs), invoked inside try/catch in `deleteGuardedRow`
+   after `inTransaction` resolves. Field + `setGuardedDeleteListener` next to the
+   membership pair; wire in `start()` beside line 613
+   (`(r) => this.noteGuardedDelete(r)`), clear beside line 2698. Do not clear
+   `pendingRevocations` on stop (matches `pendingPeerWrites` behavior).
+8. **`noteControlWrite` rewrite**: keep the `'authorize' | 'remove'` parameter. The
+   `remove` arm now ONLY (a) `pendingPeerWrites.delete(peerId)` (a queued authorize is
+   stale once the row is gone) and (b) when `committedAlone()`, logs loudly with NEW
+   text saying the Revocation tombstone is queued and will be re-issued on cohort
+   growth (it is no longer best-effort-and-probably-useless). `pendingPeerWrites`
+   narrows to `Map<string, 'authorize'>`; delete the `remove` branch in
+   `reissuePendingPeerWrites` and update the doc comments on the field,
+   `drainPendingPeerWrites`, and `reconstructAuthoredMembership` (its "DELETEs cannot
+   be reconstructed" sentence is now false — the revocation sweep covers them).
+
+### Test-plan corrections discovered
+
+- `cadre-node-control-replication.spec.ts`: three existing tests assert the OLD remove
+  behavior and must be rewritten, not kept: "queues a remove that committed while
+  alone" (117–130 asserts `pending.get === 'remove'`), "remove-after-authorize while
+  alone: remove wins" (124), "re-issues a pending remove (best-effort delete)"
+  (175–184, asserts `seed.removeCalls`). The `pending()` helper's type and `FakeSeed`
+  also reference `'remove'`.
+- The `inject()` fake control DB MUST gain `queryRevocations: async () => []` (else the
+  new drain step throws a caught-but-noisy TypeError in every existing drain test) and,
+  for the new tests, an interposable `queryRevocations`/`reissueRevocations` pair on
+  the fake seed. New-queue tests drive `noteGuardedDelete` directly via cast (the
+  listener is wired in `start()`, which these tests never call) — same pattern as the
+  existing `pending(node).set(...)` seeding.
+- "First growth" in units: with refinement 2/3, the assertion becomes: first drain →
+  ONE `reissueRevocations` call containing every `queryRevocations()` row exactly once
+  (queued stamps not doubled); second drain with empty queue → no call; second drain
+  with a queued entry → a call with exactly that row.
+- **Integration risk found in the ledger**: the insert/update analog
+  `control-write-while-alone-convergence.integration.ts` is ALREADY a known
+  pre-existing failure ("both tests") under `control-db-cross-node-convergence-halted`
+  (blocked, upstream optimystic — see `tickets/.pre-existing-known.md` lines 17–37). So
+  the new delete scenario may fail even SOLO with that class's fingerprint
+  (`SyncRetryExhaustedError … requested rev 1` variants or a converged-wait timeout),
+  not only the whole-suite livelock signature the ticket's Tests section anticipates
+  (`rev N, requested rev N`). Handle BOTH in the handoff: if the new scenario fails
+  with either fingerprint, list it in `.pre-existing-known.md` under the matching slug
+  (convergence-halted vs forked-control-collection-sync-livelocks), update that
+  ticket's `files:`/failing-test references, and say so plainly — do not skip/loosen.
+- Scenario recipe notes: `B.isMember(x)` works with an EMPTY trusted-owner anchor
+  (scratch precedent — `isMember` is the addressable surface, not
+  `listAuthorizedMembers`); capture `xStamp` via
+  `A.getControlDatabase()!.queryCadrePeerStampId(xPeerId)` BEFORE `removePeer`; after
+  each A restart `initializeSeedBootstrap(privateKeyB64)` must run BEFORE the sibling
+  connects (the growth-edge drain needs `canAuthorize()`); OwnerKey row survives
+  restart on the same `MemoryRawStorage` (no re-insert). Keep scratch's phase order:
+  A vouches B before `connectControlNodes(B, A)`.
+
+### Docs / board notes
+
+- `docs/architecture.md`: besides the ~204 bullet rewrite, the INTRO line at ~198
+  ("only the **delete-while-alone** path remains an open durability gap") must change
+  too. The clear-on-exec-is-not-broadcast residual references
+  `tickets/backlog/control-rereplication-broadcast-confirmation.md` (exists, verified).
+- `tickets/blocked/forked-control-collection-sync-livelocks.md`: fix the "Alternative
+  unblock" paragraph (this work converges the *tombstone*, the `CadrePeer` fork
+  remains) AND its `files:`/scenario references to `zz-scratch-delete-alone`, which
+  this ticket deletes.
+
 ## Why
 
 `control-revocation-reissuable-tombstone` makes a `CadreControl.Revocation` row
