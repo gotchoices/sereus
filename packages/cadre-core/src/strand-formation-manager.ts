@@ -23,6 +23,7 @@ import type {
 import {
   FormationListener,
   INVALID_TOKEN_REASON,
+  PROVISION_RESPONSE_TRAVEL_MARGIN_MS,
   dialFormation,
   isValidResponderCreatesResult,
   type FormationContactMessage,
@@ -64,10 +65,11 @@ export interface StrandFormationManagerConfig {
   /** Step timeout in milliseconds */
   stepTimeoutMs?: number;
   /**
-   * Provisioning budget in milliseconds — responder's `provisionStrand` hook call and
-   * initiator's `await-response` read. See `strand-formation-protocol.ts` for the full
-   * ordering rationale (approval hook < responder provisioning < initiator await-response
-   * < session).
+   * Provisioning budget in milliseconds for the RESPONDER's `provisionStrand` hook call.
+   * The initiator's `await-response` wait is derived automatically from this value plus
+   * `PROVISION_RESPONSE_TRAVEL_MARGIN_MS` (`strand-formation-protocol.ts`) — never set
+   * directly — so the ordering documented there (approval hook < responder provisioning <
+   * initiator await-response < session) cannot collapse when this is configured.
    */
   provisionTimeoutMs?: number;
   /** Maximum concurrent sessions */
@@ -208,7 +210,7 @@ export class StrandFormationManager {
         validateResponse: (response) => this.validateResponse(invitation, disclosure, response),
         sessionTimeoutMs: this.config.sessionTimeoutMs,
         stepTimeoutMs: this.config.stepTimeoutMs,
-        provisionTimeoutMs: this.config.provisionTimeoutMs,
+        provisionTimeoutMs: this.initiatorProvisionTimeoutMs(),
         protocolId: this.config.protocolId
       });
 
@@ -233,6 +235,18 @@ export class StrandFormationManager {
    */
   getActiveSessionCounts(): { listeners: number; dialers: number } {
     return { listeners: this.listener.activeCount, dialers: this.dialerSessions };
+  }
+
+  /**
+   * Derive the initiator's await-response budget from the configured RESPONDER budget —
+   * never the same number (see `StrandFormationManagerConfig.provisionTimeoutMs`). Mirrors
+   * `resolveProvisionTimeoutMs`'s own "`0`/negative means unset" rule so an unset config
+   * still lets both sides fall back to their own independent defaults; must NOT hardcode
+   * `DEFAULT_PROVISION_TIMEOUT_MS` here, or the per-role clamping downstream is defeated.
+   */
+  private initiatorProvisionTimeoutMs(): number | undefined {
+    const host = this.config.provisionTimeoutMs;
+    return host && host > 0 ? host + PROVISION_RESPONSE_TRAVEL_MARGIN_MS : undefined;
   }
 
   // ── Responder-side hooks ─────────────────────────────────────────────────────

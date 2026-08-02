@@ -83,8 +83,17 @@ const DEFAULT_PROVISION_TIMEOUT_MS = 12_000;
  * abort before writing leaves the invite unspent.
  */
 const PROVISION_SETTLE_GRACE_MS = 2_000;
+/**
+ * Wire-latency margin (ms) added to the responder's provisioning budget to get the
+ * initiator's await-response budget — the travel time for the result frame to come back
+ * after the responder finishes (see {@link DEFAULT_PROVISION_TIMEOUT_MS}).
+ * `StrandFormationManager` reuses this constant so a CONFIGURED budget preserves the same
+ * margin the defaults do, instead of applying the same number to both sides and racing the
+ * initiator's own timeout against the responder's clean rejection reply.
+ */
+export const PROVISION_RESPONSE_TRAVEL_MARGIN_MS = 3_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
-const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = 15_000;
+const DEFAULT_INITIATOR_PROVISION_TIMEOUT_MS = DEFAULT_PROVISION_TIMEOUT_MS + PROVISION_RESPONSE_TRAVEL_MARGIN_MS;
 /**
  * Default cap on concurrent inbound formation sessions.
  * NOTE: a longer provisioning budget holds a session's slot longer, so a slow hook can
