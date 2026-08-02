@@ -12,11 +12,21 @@ import { isLostUseNumberRace } from '../src/control-database.js';
  * The transient-control-write classifier and retry loop behind
  * `ControlDatabase.lockedWithRetry`, in isolation — no database, no network.
  *
- * The classifier table below asserts against message LITERALS. That is a deliberate,
- * known dependency on engine/transactor error text (the same one `isLostUseNumberRace`
- * carries); producing these messages from the REAL engine so a rewording fails a spec
- * instead of silently disabling the retry is the follow-up ticket
- * `control-write-retry-real-error-coverage`.
+ * The classifier table below asserts against message LITERALS, a known dependency on
+ * engine/transactor error text. It is only half the coverage, deliberately:
+ *
+ *  - the NON-retriable side (constraint/authorization failures, and disjointness with
+ *    `isLostUseNumberRace`) is additionally driven from the REAL engine in
+ *    `control-formation-use-number-retry.spec.ts`, which boots a `CadreNode` — so a
+ *    reworded constraint message reddens a spec there;
+ *  - the RETRIABLE side cannot be produced here at all. Both messages come off a real
+ *    multi-node cluster (the network transactor's aggregate, the cluster coordinator's
+ *    super-majority shortfall), which needs an integration scenario, not a unit spec.
+ *    `control-write-retry-scenario-coverage` produces them for real; until it lands, a
+ *    rewording upstream would silently disable the retry and only these literals would
+ *    notice. The literals below are transcribed from the transactor's own format strings
+ *    (`db-core/src/transactor/network-transactor.ts`) — they are not claimed to be
+ *    captured output.
  */
 
 /**
@@ -35,8 +45,27 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
 	return { sleep: () => Promise.resolve(), now: () => 0, ...overrides };
 }
 
+/**
+ * The transactor aggregate as the block-read (`get`) and phase-1 (`pend`) sites format it:
+ * per-batch details name a SINGLE block, `<peerId>[block:<id>](<status>)`. Nothing has
+ * committed when either site raises, so the write is known not to have landed.
+ *
+ * This one is a real captured message (recorded in
+ * `tickets/fix/control-read-over-fresh-edge-stream-resets.md`), not a reconstruction.
+ */
 const TRANSACTOR_AGGREGATE =
-	'Some peers did not complete: 12D3KooWpeer: The stream has been reset; root: abc123';
+	'Some peers did not complete: 12D3KooWBkxetzv16fD2997rSFQfqDQJYX7NFhmcwhk3AEfqr1VU[block:PaWaynQLVfuwhcw4tGh0uX_BDGPyoXWs-VPZOs0OpGk](in-flight) cause=The stream has been reset; root: The stream has been reset';
+/**
+ * The SAME aggregate message from the phase-2 (`commitBlocks`) site, which formats a batch's
+ * block COUNT instead — `<peerId>[blocks:<count>](<status>)`. A no-response there is
+ * indeterminate (the coordinator may have committed and only the reply was lost), so this one
+ * must never be re-presented.
+ */
+const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
+	'Some peers did not complete: 12D3KooWpeer[blocks:3](no-response) cause=The stream has been reset; root: The stream has been reset';
+/** The aggregate with no per-batch details at all — `formatBatchStatuses` had nothing to format. */
+const TRANSACTOR_AGGREGATE_NO_DETAILS =
+	'Some peers did not complete: ; root: The stream has been reset';
 const SUPER_MAJORITY_NONE_ANSWERED =
 	'Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)';
 const SUPER_MAJORITY_PARTIAL =
@@ -48,8 +77,27 @@ const LOST_USE_NUMBER =
 const LOST_USE_NUMBER_DEFERRED = 'CHECK constraint failed: Monotonic';
 
 describe('isRetriableControlWriteFailure', () => {
-	it('retries the transactor aggregate ("the cohort did not answer")', () => {
+	it('retries the read/pend-phase transactor aggregate ("the cohort did not answer")', () => {
 		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE))).toBe(true);
+	});
+
+	/**
+	 * The distinction the `[block:` / `[blocks:` token draws. A commit-phase no-response is
+	 * INDETERMINATE — the coordinator runs consensus internally and may have committed with only
+	 * the reply lost — so re-running the write body would risk turning a success into a
+	 * constraint failure. Same message prefix, same `cause`; only the per-batch detail differs.
+	 */
+	it('never retries the commit-phase aggregate — the write may have landed', () => {
+		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE_COMMIT_PHASE))).toBe(false);
+	});
+
+	it('never retries an aggregate whose phase cannot be told from its details', () => {
+		// No details, so no token: an unattributable failure is not a proven non-commit.
+		expect(isRetriableControlWriteFailure(nested(TRANSACTOR_AGGREGATE_NO_DETAILS))).toBe(false);
+		// A single-block batch alongside a commit batch: the conservative arm wins.
+		expect(isRetriableControlWriteFailure(nested(
+			'Some peers did not complete: 12D3KooWa[block:blk-7](no-response), 12D3KooWb[blocks:3](no-response)',
+		))).toBe(false);
 	});
 
 	it('retries a super-majority shortfall with ZERO rejections, at any approval count', () => {

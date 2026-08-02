@@ -21,9 +21,8 @@ const log = debug('sereus:cadre:control-db');
  * A write somebody actually REJECTED is never retried — re-presenting it would re-present
  * a spent signature against a cohort that already said no.
  *
- * Lives outside `control-database.ts` so the integration package can drive the classifier
- * against real engine errors (follow-up ticket `control-write-retry-real-error-coverage`)
- * without importing the whole database class.
+ * Lives outside `control-database.ts` so a spec can drive the classifier against real engine
+ * errors without importing the whole database class.
  */
 
 /**
@@ -57,31 +56,88 @@ export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
  */
 const CONTROL_WRITE_RETRY_DELAYS_MS: readonly number[] = [250, 1_000];
 
+/** The network transactor's aggregate, raised when some cohort peers gave no usable answer. */
+const TRANSACTOR_AGGREGATE = /Some peers did not complete:/;
+
 /**
- * The two error messages that mean "the cohort did not answer", and nothing else.
+ * How the aggregate's per-batch details name a SINGLE-block batch — the shape both the block
+ * read (`get`) and phase 1 (`pend`) format, and the only shape safe to re-present.
+ */
+const SINGLE_BLOCK_BATCH_TOKEN = '[block:';
+
+/**
+ * How the aggregate's per-batch details name a MULTI-block batch — the shape phase 2
+ * (`commitBlocks`) formats, and the marker of an outcome too indeterminate to retry.
+ */
+const COMMIT_BATCH_TOKEN = '[blocks:';
+
+/**
+ * The cluster coordinator's super-majority shortfall (`db-p2p/src/repo/cluster-coordinator.ts`),
+ * matched ONLY with a ZERO rejection count. The same message with a non-zero count means a
+ * member actually voted no (that branch carries `membership-not-admitted` rejections), and
+ * retrying it would re-present a spent signature to a cohort that already refused it. This one
+ * is raised while collecting PROMISES, before any commit, so re-presenting it is safe. A
+ * decisive rejection is a different error entirely (`ValidatorRejectionError`,
+ * `Transaction rejected by validators`), which this classifier also never matches.
+ */
+const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
+	/Failed to get super-majority: \d+\/\d+ approvals \(needed \d+, 0 rejections\)/;
+
+/**
+ * Is this transactor aggregate one whose write demonstrably did NOT commit?
  *
- * - `Some peers did not complete:` — the network transactor's aggregate
- *   (`db-core/src/transactor/network-transactor.ts`), the surface a reset stream produces.
- *   The observed one-shot failure was exactly this: `registerSelf()` racing a connection
- *   still forming, `cause=The stream has been reset`.
+ * The transactor raises `Some peers did not complete:` from three sites
+ * (`db-core/src/transactor/network-transactor.ts`), and only two of them are safe to
+ * re-present:
  *
- *   NOTE: the transactor raises this message from THREE sites — `get` (a block read, which
- *   a write body also performs), `pend` (phase 1, nothing committed) and `commitBlocks`
- *   (phase 2). The first two are unambiguously safe to re-present. The commit-phase one is
- *   the open question: `TransactorSource.transact` cancels the pend and rethrows, but peers
- *   that already committed stay committed, so a retried body could re-issue SQL over a write
- *   that partly landed and surface a constraint failure instead of the transient error.
- *   Unobserved and narrow (it needs a commit-phase partial failure to survive the
- *   transactor's own budget); establishing whether it is reachable, and narrowing this
- *   pattern if it is, is an arm of `control-write-retry-real-error-coverage`.
- * - `Failed to get super-majority: N/M approvals (needed K, 0 rejections)` — the cluster
- *   coordinator's shortfall error (`db-p2p/src/repo/cluster-coordinator.ts`), matched ONLY
- *   with a zero rejection count. The same message with a non-zero count means a member
- *   actually voted no (that branch carries `membership-not-admitted` rejections), and
- *   retrying it would re-present a spent signature to a cohort that already refused it.
- *   This one is raised while collecting PROMISES, before any commit, so re-presenting it is
- *   safe. A decisive rejection is a different error entirely (`ValidatorRejectionError`,
- *   `Transaction rejected by validators`), which this classifier also never matches.
+ * - `get` (a block read, which a write body also performs) and `pend` (phase 1) fail before
+ *   anything commits, so the write is known not to have landed;
+ * - `commitBlocks` (phase 2) is REACHABLE here and NOT safe. `commitBlock` throws the
+ *   aggregate when a header/tail commit got NO response at all — precisely the transient
+ *   class this retry targets — and that escapes `commit()`, survives `TransactorSource`'s
+ *   cancel-and-rethrow (cancel reaches PENDING actions only; a peer that already committed
+ *   stays committed) and `Collection.syncInternal` (which retries StaleFailure RETURN values,
+ *   not throws), reaching this funnel QuereusError-wrapped. The tail commit is one batch to
+ *   one coordinator running consensus internally, so a no-response there is INDETERMINATE:
+ *   the commit may have completed with only the response lost. Re-running the write body over
+ *   a write that landed turns a success into a constraint failure (e.g.
+ *   `UNIQUE constraint failed: CadrePeer.PeerId`). Surfacing the transient error instead lets
+ *   the caller re-read committed state and decide.
+ *
+ * The `cause` chain does not discriminate the phases — a commit-phase aggregate carries the
+ * same stream-reset/dial error a pend-phase one does. The per-batch DETAIL text does: `get`
+ * and `pend` format `<peerId>[block:<id>](<status>)`, `commitBlocks` formats
+ * `<peerId>[blocks:<count>](<status>)`. `[block:` cannot occur inside `[blocks:`, so the two
+ * tokens are disjoint and separate the phases.
+ *
+ * NOTE: the discriminator is a formatting detail of another repo. If Optimystic ever reformats
+ * those per-batch details, this fails CLOSED — the aggregate stops matching and control writes
+ * simply stop being retried, silently losing the absorption rather than doing anything unsafe.
+ * The guard against that is a scenario asserting the classifier against a live cluster failure
+ * (`control-write-retry-scenario-coverage`); if that lands and later reddens here, an upstream
+ * reformat is the first thing to check.
+ *
+ * Conservative on both edges: any `[blocks:` occurrence disqualifies the whole message, even
+ * alongside a `[block:` (the trailing `root: <cause message>` is free text and could in
+ * principle carry either token, and an indeterminate commit anywhere in the message is reason
+ * enough not to re-run). An aggregate whose details came out EMPTY (possible when
+ * `formatBatchStatuses` has no batches to format) carries neither token and is likewise not
+ * retried — an unattributable failure is not a proven non-commit.
+ */
+function isUncommittedTransactorAggregate(message: string): boolean {
+	if (!TRANSACTOR_AGGREGATE.test(message)) {
+		return false;
+	}
+	if (message.includes(COMMIT_BATCH_TOKEN)) {
+		return false;
+	}
+	return message.includes(SINGLE_BLOCK_BATCH_TOKEN);
+}
+
+/**
+ * The error messages that mean "the cohort did not answer AND nothing committed", and nothing
+ * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
+ * a read/pend-phase transactor aggregate with `cause=The stream has been reset`.
  *
  * Deliberately NOT matched: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
@@ -89,9 +145,9 @@ const CONTROL_WRITE_RETRY_DELAYS_MS: readonly number[] = [250, 1_000];
  * (`isLostUseNumberRace` in `control-database.ts`) are constraint failures, so this
  * classifier and that one are DISJOINT and the two retry loops can never multiply.
  */
-const RETRIABLE_CONTROL_WRITE_PATTERNS = [
-	/Some peers did not complete:/,
-	/Failed to get super-majority: \d+\/\d+ approvals \(needed \d+, 0 rejections\)/,
+const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [
+	isUncommittedTransactorAggregate,
+	message => SUPER_MAJORITY_SHORTFALL_UNANSWERED.test(message),
 ];
 
 /**
@@ -105,17 +161,18 @@ const RETRIABLE_CONTROL_WRITE_PATTERNS = [
  * is `QuereusError` → `Error` → `Error`), so the match must work at any depth. Anything
  * that is not an `Error` is never retried.
  *
- * NOTE: this depends on engine/transactor error TEXT. The literal-string classifier table
- * lives in `control-write-retry.spec.ts`; producing these messages from the real engine so
- * a rewording fails a spec instead of silently disabling the retry is the follow-up ticket
- * `control-write-retry-real-error-coverage`.
+ * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
+ * network are driven from the REAL engine in `control-formation-use-number-retry.spec.ts`, so
+ * a rewording reddens a spec rather than silently disabling the retry. The two RETRIABLE
+ * messages need a real multi-node cluster to produce and are still literals in
+ * `control-write-retry.spec.ts`; `control-write-retry-scenario-coverage` closes that gap.
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
 	return unwrapError(error).some(({ message }) =>
-		RETRIABLE_CONTROL_WRITE_PATTERNS.some(pattern => pattern.test(message)));
+		RETRIABLE_CONTROL_WRITE_MATCHERS.some(matches => matches(message)));
 }
 
 /**

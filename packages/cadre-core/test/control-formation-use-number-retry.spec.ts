@@ -12,6 +12,7 @@ import {
   isLostUseNumberRace,
 } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
+import { isRetriableControlWriteFailure } from '../src/control-write-retry.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
 import { signFormationApproval } from '../src/formation-approval.js';
 import type { FormationApprovalRequest, FormationApproval } from '../src/formation-approval.js';
@@ -46,7 +47,9 @@ import type { JoinerConsent } from './formation-consent-helper.js';
  * Boots a real `CadreNode` (empty bootstrap, transaction profile) so every constraint,
  * rollback, and engine error message below is the real one — the classifier's whole risk is
  * that it depends on error TEXT, so nothing here may be a string literal standing in for
- * what the engine emits.
+ * what the engine emits. That real-error material serves BOTH text-reading classifiers: the
+ * use-number one this suite is named for, and `isRetriableControlWriteFailure`'s negative
+ * half (last describe below).
  */
 
 /** The approval material for one redemption, alongside the fields it is bound to. */
@@ -176,6 +179,36 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
     return await captureError(rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId }));
   }
 
+  /**
+   * A REAL DEFERRED `Monotonic` CHECK failure. Skipping ahead of max+1 on an UNCAPPED invite
+   * leaves `Monotonic` as the only clause that can refuse the row — `Authorized`'s seat clause
+   * has no cap to enforce, and no row sits at #7 to collide with.
+   */
+  async function realMonotonicFailureError(): Promise<unknown> {
+    const { token, strandId, strandStampId } = await boundInvite('monotonic');
+    return await captureError(rawInsertFormationUsage({ token, useNumber: 7, strandId, strandStampId }));
+  }
+
+  /** A REAL `Authorized` CHECK failure: a second seat on a single-use invite. */
+  async function realAuthorizedFailureError(): Promise<unknown> {
+    const { token, strandId, strandStampId } = await boundInvite('authorized', { totalUses: 1 });
+    await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId });
+    return await captureError(rawInsertFormationUsage({ token, useNumber: 2, strandId, strandStampId }));
+  }
+
+  /**
+   * A REAL `FormationUsage.UsageStampId` uniqueness violation: the same nonce replayed under a
+   * fresh use number, on an uncapped invite, so the repeated nonce is the only possible refusal.
+   */
+  async function realDuplicateNonceError(): Promise<unknown> {
+    const { token, strandId, strandStampId } = await boundInvite('nonce-dup');
+    const consent = mintConsent(token);
+    await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId, consent });
+    return await captureError(
+      rawInsertFormationUsage({ token, useNumber: 2, strandId, strandStampId, consent }),
+    );
+  }
+
   beforeAll(async () => {
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
     ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
@@ -218,26 +251,13 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       // commit and throws it as a BARE `QuereusError`, not a `ConstraintError`. A classifier
       // gated on `instanceof ConstraintError` passes the case above and silently drops this
       // one — which is the surface a concurrent row our key probe never saw arrives on.
-      // Reproduced here by skipping ahead of max+1 on an uncapped invite, so `Authorized`
-      // (which would also reject an over-limit use number) cannot be what answers.
-      const { token, strandId, strandStampId } = await boundInvite('monotonic');
-      const error = await captureError(
-        rawInsertFormationUsage({ token, useNumber: 7, strandId, strandStampId }),
-      );
+      const error = await realMonotonicFailureError();
       expect(String(error)).toMatch(/CHECK constraint failed: Monotonic\b/);
       expect(isLostUseNumberRace(error)).toBe(true);
     });
 
     it('REJECTS a real duplicate-nonce violation — replay is not a race', async () => {
-      const { token, strandId, strandStampId } = await boundInvite('nonce-dup');
-      const consent = mintConsent(token);
-      await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId, consent });
-
-      // Use #2 is monotonic and within the (uncapped) invite, so the repeated nonce is the
-      // only thing that can refuse this row.
-      const error = await captureError(
-        rawInsertFormationUsage({ token, useNumber: 2, strandId, strandStampId, consent }),
-      );
+      const error = await realDuplicateNonceError();
       expect(String(error)).toMatch(/UNIQUE constraint failed: FormationUsage\.UsageStampId/i);
       expect(isLostUseNumberRace(error)).toBe(false);
     });
@@ -245,16 +265,58 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
     it('rejects a real `Authorized` CHECK failure and non-Error values', async () => {
       // `Authorized` renders with the same `CHECK constraint failed:` prefix as `Monotonic`,
       // so a prefix-only match would retry an expired/exhausted/unapproved invite forever.
-      const { token, strandId, strandStampId } = await boundInvite('authorized', { totalUses: 1 });
-      await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId });
-      const error = await captureError(
-        rawInsertFormationUsage({ token, useNumber: 2, strandId, strandStampId }),
-      );
+      const error = await realAuthorizedFailureError();
       expect(String(error)).toMatch(/CHECK constraint failed: Authorized\b/);
       expect(isLostUseNumberRace(error)).toBe(false);
 
       expect(isLostUseNumberRace(undefined)).toBe(false);
       expect(isLostUseNumberRace('UNIQUE constraint failed: FormationUsage.Token, FormationUsage.UseNumber')).toBe(false);
+    });
+  });
+
+  /**
+   * The OTHER classifier that reads error text: `isRetriableControlWriteFailure`, which decides
+   * whether a failed control write is re-presented to the cluster. Its unit spec
+   * (`control-write-retry.spec.ts`) can only assert against message literals, so the half of its
+   * contract that a real engine can produce is pinned here instead — against the same real
+   * objects, not transcriptions of them.
+   *
+   * Only the NEGATIVE half is producible without a network. Every error below MUST classify
+   * non-retriable: re-presenting a write the cohort actually REFUSED would re-present a spent
+   * signature, and on a capped invite it could manufacture a seat the invite does not have.
+   *
+   * The two RETRIABLE messages — the network transactor's `Some peers did not complete:`
+   * aggregate and the cluster coordinator's super-majority shortfall — cannot be produced here
+   * at all. Both need a real multi-node cluster to fail mid-write; this suite boots ONE
+   * `CadreNode` with an empty bootstrap list. Faking them as literals here would be a literal
+   * dressed as real coverage, which is exactly what this spec exists to avoid.
+   * `control-write-retry-scenario-coverage` produces them from a real cluster.
+   */
+  describe('isRetriableControlWriteFailure (classifier, against real engine errors)', () => {
+    it('never retries a real constraint or authorization failure', async () => {
+      const failures = [
+        await realLostRaceError(),
+        await realMonotonicFailureError(),
+        await realDuplicateNonceError(),
+        await realAuthorizedFailureError(),
+      ];
+      for (const failure of failures) {
+        expect(isRetriableControlWriteFailure(failure)).toBe(false);
+      }
+    });
+
+    /**
+     * The property that keeps the two retry loops from multiplying: no error is claimed by both
+     * classifiers, so any failure is retried by exactly one loop (or neither). `control-write-
+     * retry.spec.ts` asserts this over literals; here it is asserted over the REAL errors, so a
+     * rewording upstream reddens a case rather than silently letting one classifier's claim
+     * drift into the other's.
+     */
+    it('is disjoint from isLostUseNumberRace on the real lost-race surfaces', async () => {
+      for (const lostRace of [await realLostRaceError(), await realMonotonicFailureError()]) {
+        expect(isLostUseNumberRace(lostRace)).toBe(true);
+        expect(isRetriableControlWriteFailure(lostRace)).toBe(false);
+      }
     });
   });
 
