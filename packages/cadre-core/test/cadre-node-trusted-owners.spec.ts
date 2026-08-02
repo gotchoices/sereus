@@ -46,7 +46,10 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 	it('seeds config pins, adopts an injected store, anchors genesis on initializeSeedBootstrap, and keeps the anchor across stop()→start()', async () => {
 		const partyId = 'anchor-' + Math.random().toString(36).slice(2);
 		const injected = new MemoryTrustedOwnerStore(partyId);
-		const pinned = 'PINNED_INVITE_KEY';
+		const pinnedPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+		const pinned = getPublicKey(pinnedPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		const runtimePrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+		const runtimeKey = getPublicKey(runtimePrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 		const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
 		const ownerPublicKey = getPublicKey(ownerPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
 		const node = makeNode(partyId, { store: injected, pinnedKeys: [pinned], pinnedSource: 'invite' });
@@ -57,8 +60,8 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 			expect(injected.has(pinned)).toBe(true);
 
 			// Runtime enrollment seam.
-			await node.trustOwnerKeys(['RUNTIME_KEY'], 'operator');
-			expect(injected.has('RUNTIME_KEY')).toBe(true);
+			await node.trustOwnerKeys([runtimeKey], 'operator');
+			expect(injected.has(runtimeKey)).toBe(true);
 
 			// Genesis self-trust: wiring seed-bootstrap with an owner private key
 			// anchors the derived public key.
@@ -69,7 +72,7 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 			await node.stop();
 			await startClean(node);
 			expect(node.getTrustedOwnerStore()).toBe(injected);
-			expect(injected.all()).toEqual(new Set([pinned, 'RUNTIME_KEY', ownerPublicKey]));
+			expect(injected.all()).toEqual(new Set([pinned, runtimeKey, ownerPublicKey]));
 		} finally {
 			await node.stop();
 		}
@@ -79,6 +82,25 @@ describe('CadreNode trusted-owner anchor wiring', () => {
 		const node = makeNode('anchor-' + Math.random().toString(36).slice(2));
 		await expect(node.trustOwnerKeys(['K'], 'invite')).rejects.toThrow(/started before trusting/i);
 	});
+
+	it('trustOwnerKeys rejects a malformed key and anchors none of the batch', async () => {
+		const partyId = 'anchor-' + Math.random().toString(36).slice(2);
+		const goodPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+		const goodKey = getPublicKey(goodPrivateKey, 'ed25519', 'base64url', 'base64url') as string;
+		const node = makeNode(partyId);
+		try {
+			await startClean(node);
+			await expect(node.trustOwnerKeys([goodKey, 'not-a-key'], 'invite')).rejects.toThrow(/owner key/i);
+			expect(node.getTrustedOwnerStore()!.has(goodKey)).toBe(false);
+		} finally {
+			await node.stop();
+		}
+	}, 60_000);
+
+	it('a malformed config pin fails start() closed', async () => {
+		const node = makeNode('anchor-' + Math.random().toString(36).slice(2), { pinnedKeys: ['not-a-key'] });
+		await expect(node.start()).rejects.toThrow(/owner key/i);
+	}, 60_000);
 
 	it('an injected store scoped to a different party fails start() closed', async () => {
 		const node = makeNode('anchor-' + Math.random().toString(36).slice(2), {

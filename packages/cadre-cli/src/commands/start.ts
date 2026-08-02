@@ -5,6 +5,7 @@ import {
   CadreNode,
   ed25519KeyPairFromLibp2p,
   pinnedKeyTrustPolicy,
+  requireEd25519PublicKeyB64,
   type CadreNodeConfig,
   type ControlNetworkSeed,
   type SeedTrustPolicy,
@@ -40,9 +41,9 @@ function collectPinKey(value: string, previous: string[]): string[] {
  * env var. Trims each entry, drops empties, and dedupes — so the same key via
  * both sources appears once and a whitespace-only env (`",, "`) yields `[]`.
  *
- * Keys are NOT validated here: a malformed (non-base64url / wrong-length) pin
- * simply never matches a real `signerKey`, so the seed is rejected by the trust
- * policy with its reason rather than silently accepted.
+ * Does not validate key shape — see {@link validatePinnedOwnerKeys}, applied
+ * separately so this function's trim/dedupe contract stays easy to unit-test
+ * against plain placeholder strings.
  */
 export function collectPinnedOwnerKeys(
   flagKeys: string[] | undefined,
@@ -50,6 +51,17 @@ export function collectPinnedOwnerKeys(
 ): string[] {
   const fromEnv = (env ?? '').split(',');
   return [...new Set([...(flagKeys ?? []), ...fromEnv].map(k => k.trim()).filter(k => k.length > 0))];
+}
+
+/**
+ * Reject a malformed pinned owner key at startup, naming the bad value, instead
+ * of letting it sit in the trust anchor un-diagnosed: previously a typo'd
+ * `--pin-owner-key` / `CADRE_OWNER_KEYS` entry never matched a real signer key,
+ * so the node started fine and only failed much later — as an opaque "seed
+ * signer not anchored" rejection — with nothing pointing at the typo.
+ */
+export function validatePinnedOwnerKeys(keys: string[]): string[] {
+  return keys.map(key => requireEd25519PublicKeyB64(key, 'pinned owner key (--pin-owner-key / CADRE_OWNER_KEYS)'));
 }
 
 export const startCommand = new Command('start')
@@ -104,7 +116,7 @@ export const startCommand = new Command('start')
       // policy BEFORE constructing CadreNode so every later service-construction
       // site (seed listener, temp-service for applySeed / POST /seed) captures
       // it as the node-wide default — it is read at construction time.
-      const pinnedKeys = collectPinnedOwnerKeys(options.pinOwnerKey, process.env.CADRE_OWNER_KEYS);
+      const pinnedKeys = validatePinnedOwnerKeys(collectPinnedOwnerKeys(options.pinOwnerKey, process.env.CADRE_OWNER_KEYS));
       const seedTrustPolicy: SeedTrustPolicy | undefined =
         pinnedKeys.length > 0 ? pinnedKeyTrustPolicy(pinnedKeys) : undefined;
       if (pinnedKeys.length > 0) {

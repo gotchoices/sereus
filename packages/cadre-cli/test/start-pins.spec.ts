@@ -1,6 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
-import { collectPinnedOwnerKeys, startCommand } from '../src/commands/start.js';
+import { collectPinnedOwnerKeys, startCommand, validatePinnedOwnerKeys } from '../src/commands/start.js';
+
+/** A well-formed (but not necessarily on-curve) base64url 32-byte Ed25519 public key, for shape tests. */
+const VALID_KEY_A = Buffer.alloc(32, 1).toString('base64url');
+const VALID_KEY_B = Buffer.alloc(32, 2).toString('base64url');
 
 describe('--pin-owner-key option wiring', () => {
   // Exercises the actual registered commander option (not a stand-in), so the
@@ -73,5 +77,21 @@ describe('pinnedKeyTrustPolicy wiring contract', () => {
     const decision = await policy.evaluate({ partyId, signerKey: 'some-other-key', knownOwnerKeys });
     expect(decision.trusted).toBe(false);
     expect(decision.reason).toBeTruthy();
+  });
+});
+
+describe('validatePinnedOwnerKeys', () => {
+  it('passes through well-formed base64url Ed25519-shaped keys unchanged', () => {
+    expect(validatePinnedOwnerKeys([VALID_KEY_A, VALID_KEY_B])).toEqual([VALID_KEY_A, VALID_KEY_B]);
+  });
+
+  it('rejects a malformed --pin-owner-key / CADRE_OWNER_KEYS entry, naming the bad value', () => {
+    expect(() => validatePinnedOwnerKeys([VALID_KEY_A, 'not-a-real-key']))
+      .toThrow(/not-a-real-key/);
+  });
+
+  it('rejects a non-base64url pin with a message pointing at pinned owner keys', () => {
+    expect(() => validatePinnedOwnerKeys(['has+slash/and=pad']))
+      .toThrow(/pinned owner key/i);
   });
 });

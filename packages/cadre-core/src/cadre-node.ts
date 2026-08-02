@@ -875,7 +875,11 @@ export class CadreNode implements SAppIdLookup {
       }
       this.trustedOwnerStore = store;
     }
-    for (const key of trustedOwners?.pinnedKeys ?? []) {
+    // Validate every pin before trusting any: a malformed entry must not leave
+    // earlier, valid pins anchored while start() then fails on a later one —
+    // config pins land all-or-nothing, same as the runtime seam below.
+    const pinnedKeys = (trustedOwners?.pinnedKeys ?? []).map(key => requireEd25519PublicKeyB64(key, 'pinned owner key'));
+    for (const key of pinnedKeys) {
       await this.trustedOwnerStore.trust(key, trustedOwners?.pinnedSource ?? 'operator');
     }
   }
@@ -933,12 +937,22 @@ export class CadreNode implements SAppIdLookup {
    * holds the pins when seed trust consults it), or with an operator-supplied
    * pin. Idempotent. ('genesis' provenance is reserved for the node's own
    * founding key, seeded internally by {@link initializeSeedBootstrap}.)
+   *
+   * Validates every key's shape before trusting any of them (all-or-nothing):
+   * a malformed entry anywhere in `keys` rejects the whole call before a
+   * single key is anchored. For the invite route this means a `CadreInvite`
+   * carrying one malformed `ownerKeys` entry fails the redemption outright —
+   * consistent with the anchor's existing whole-record-or-nothing policy for
+   * a corrupt persisted entry (see `trusted-owner-store.ts`'s
+   * `unusableEntry: 'discard-all'`) — rather than silently anchoring a subset
+   * and leaving the caller to notice a key went missing.
    */
   async trustOwnerKeys(keys: Iterable<string>, source: Exclude<TrustSource, 'genesis'>): Promise<void> {
     if (!this.trustedOwnerStore) {
       throw new Error('CadreNode must be started before trusting owner keys');
     }
-    for (const key of keys) {
+    const validated = Array.from(keys, key => requireEd25519PublicKeyB64(key, 'pinned owner key'));
+    for (const key of validated) {
       await this.trustedOwnerStore.trust(key, source);
     }
   }
