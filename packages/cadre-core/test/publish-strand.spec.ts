@@ -3,9 +3,9 @@ import { generateKeyPair } from '@libp2p/crypto/keys';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
 import { CadreNode } from '../src/cadre-node.js';
-import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
+import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
@@ -27,36 +27,13 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
-  async function startSelfOwnerNode(enrollOwner: boolean): Promise<CadreNode> {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
-
-    const n = new CadreNode({
-      controlNetwork: {
-        partyId: 'publish-strand-' + rand(),
-        bootstrapNodes: [],
-      },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
-    await n.start();
-
-    if (enrollOwner) {
-      const db = n.getControlDatabase();
-      expect(db).not.toBeNull();
-      // Enroll the node's own key so its self-signed Strand insert is authorised.
-      await db!.insertOwnerKey(publicKeyB64);
-    }
-    return n;
-  }
-
   afterEach(async () => {
     await node?.stop();
     node = undefined;
   });
 
   it('happy path: lands a Strand row queryable from the control DB', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-' + rand();
 
@@ -75,7 +52,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   }, 60_000);
 
   it('closed strand: persists the member key so an invitee can later attach', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-c-' + rand();
     const memberKey = 'member-key-' + rand();
@@ -91,7 +68,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
     // Self-signing key is present (past the "no signing key" guard), but it is
     // not enrolled in OwnerKey, so the Strand.AuthorizedInsert gate rejects the
     // insert and the rejection must surface (no silent local-only strand).
-    node = await startSelfOwnerNode(false);
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: false }));
     const db = node.getControlDatabase()!;
     const before = await db.getDatabase().get('select count(1) as c from CadreControl.Strand');
 
@@ -112,7 +89,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   });
 
   it('rejects an empty or whitespace-only id before any write', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
 
     for (const blank of ['', '   ', '\t\n']) {
@@ -123,7 +100,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   }, 60_000);
 
   it('trims the id it stores, so unpublishStrand can round-trip the same string', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-strand-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-pad-' + rand();
 
@@ -160,26 +137,13 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
 
   const rand2 = (): string => Math.random().toString(36).slice(2);
 
-  async function startNode(): Promise<CadreNode> {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
-    const n = new CadreNode({
-      controlNetwork: { partyId: 'addstrand-founder-' + rand2(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
-    await n.start();
-    await n.getControlDatabase()!.insertOwnerKey(publicKeyB64);
-    return n;
-  }
-
   afterEach(async () => {
     await node?.stop();
     node = undefined;
   });
 
   it('founder of a closed strand: Header=1, Member=1, Manager=1 with derived key', async () => {
-    node = await startNode();
+    ({ node } = await startSelfOwnerNode('addstrand-founder-', { enrollOwner: true }));
     const strandId = 'addstrand-closed-' + rand2();
     const memberPrivateKey = await generateStrandMemberKey();
 
@@ -203,7 +167,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
   }, 60_000);
 
   it('founder of an open strand: Header=1, Member=0, Manager=0, Header.Type=o', async () => {
-    node = await startNode();
+    ({ node } = await startSelfOwnerNode('addstrand-founder-', { enrollOwner: true }));
     const strandId = 'addstrand-open-' + rand2();
 
     const instance = await node.addStrand({
@@ -223,7 +187,7 @@ describe('CadreNode.addStrand founder bootstrap (node-level seam)', () => {
   }, 60_000);
 
   it('closed founder with null MemberPrivateKey rejects', async () => {
-    node = await startNode();
+    ({ node } = await startSelfOwnerNode('addstrand-founder-', { enrollOwner: true }));
     const strandId = 'addstrand-closed-nokey-' + rand2();
 
     await expect(

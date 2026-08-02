@@ -1,8 +1,8 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { CadreNode } from '../src/cadre-node.js';
-import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
+import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises {@link CadreNode.publishFormationInvite} — the node-level method the
@@ -23,36 +23,13 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
 
   const rand = (): string => Math.random().toString(36).slice(2);
 
-  async function startSelfOwnerNode(enrollOwner: boolean): Promise<CadreNode> {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const { publicKeyB64 } = ed25519KeyPairFromLibp2p(nodeKey);
-
-    const n = new CadreNode({
-      controlNetwork: {
-        partyId: 'publish-fi-' + rand(),
-        bootstrapNodes: [],
-      },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
-    await n.start();
-
-    if (enrollOwner) {
-      const db = n.getControlDatabase();
-      expect(db).not.toBeNull();
-      // Enroll the node's own key so its self-signed FormationInvite insert is authorised.
-      await db!.insertOwnerKey(publicKeyB64);
-    }
-    return n;
-  }
-
   afterEach(async () => {
     await node?.stop();
     node = undefined;
   });
 
   it('happy path: lands a FormationInvite row that validates via the recorder', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
     const db = node.getControlDatabase()!;
     const token = 'invite-' + rand();
 
@@ -80,7 +57,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     // minted elsewhere must open it WITHOUT waiting for the durable row to be
     // readable, so the service is wired with no recorder here: a `true` answer
     // can only have come from the in-memory mint registry.
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
     node.initializeStrandSolicitation();
     const service = node.getStrandSolicitationService()!;
     expect(await service.hasOutstandingInvitation()).toBe(false);
@@ -93,7 +70,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
   }, 60_000);
 
   it('does not open the gate for an invite published already expired', async () => {
-    node = await startSelfOwnerNode(true);
+    ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: true }));
     node.initializeStrandSolicitation();
     const service = node.getStrandSolicitationService()!;
 
@@ -108,7 +85,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
     // Self-signing key is present (so it gets past the "no signing key" guard),
     // but it is not enrolled in OwnerKey, so the
     // FormationInvite.AuthorizedAddOrRemove gate rejects the insert.
-    node = await startSelfOwnerNode(false);
+    ({ node } = await startSelfOwnerNode('publish-fi-', { enrollOwner: false }));
     const db = node.getControlDatabase()!;
     const before = await db.getDatabase().get('select count(1) as c from CadreControl.FormationInvite');
 

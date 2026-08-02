@@ -2,12 +2,12 @@ import { describe, it, expect, afterEach, vi } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode } from '../src/cadre-node.js';
-import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
-import type { StrandConfig, StrandFilter } from '../src/types.js';
+import type { StrandConfig } from '../src/types.js';
+import { startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises the node-level strand removal surface — `unpublishStrand`, the owner-signed
@@ -37,6 +37,8 @@ import type { StrandConfig, StrandFilter } from '../src/types.js';
  */
 describe('CadreNode strand unpublish', () => {
   let node: CadreNode | undefined;
+  /** Owner keypair the current `node` self-signs with, so a test can drive a control writer directly. */
+  let ownerKey: Ed25519KeyPair | undefined;
 
   /** Poll interval for the watcher-driven tests: short enough to assert in well under a second. */
   const WATCH_INTERVAL_MS = 200;
@@ -56,39 +58,6 @@ describe('CadreNode strand unpublish', () => {
     new Promise((resolve) => setTimeout(resolve, QUIET_WINDOW_MS));
 
   /**
-   * Owner keypair each node self-signs with, so a test can drive a control writer directly
-   * without `startSelfOwnerNode` having to change its return type.
-   */
-  const ownerKeys = new WeakMap<CadreNode, Ed25519KeyPair>();
-
-  /**
-   * @param overrides - The `CadreNodeConfig` fields the watcher-removal tests need. Both
-   *   default to the production values, so existing call sites are unaffected.
-   *   NOTE: carry this parameter across when the duplicated copies of this helper are
-   *   consolidated into a shared harness (`debt-self-owner-node-test-harness-duplicated`).
-   */
-  async function startSelfOwnerNode(
-    overrides: { strandWatchInterval?: number; strandFilter?: StrandFilter } = {},
-  ): Promise<CadreNode> {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const ownerKey = ed25519KeyPairFromLibp2p(nodeKey);
-
-    const n = new CadreNode({
-      controlNetwork: { partyId: 'strand-unpublish-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-      ...overrides,
-    });
-    await n.start();
-
-    const db = n.getControlDatabase();
-    expect(db).not.toBeNull();
-    await db!.insertOwnerKey(ownerKey.publicKeyB64);
-    ownerKeys.set(n, ownerKey);
-    return n;
-  }
-
-  /**
    * Remove a `Strand` row the way somebody ELSE's removal arrives here: straight through the
    * owner-signed writer, with no local stop. `unpublishStrand` cannot stand in — it
    * force-stops the local instance itself, masking the watcher path under test. What is left
@@ -96,15 +65,13 @@ describe('CadreNode strand unpublish', () => {
    * gone from this node's view, its instance is still running, and only the next poll can
    * notice.
    */
-  async function deleteStrandRow(n: CadreNode, strandId: string): Promise<boolean> {
-    const ownerKey = ownerKeys.get(n);
-    if (!ownerKey) throw new Error('deleteStrandRow requires a node started by startSelfOwnerNode');
+  async function deleteStrandRow(n: CadreNode, key: Ed25519KeyPair, strandId: string): Promise<boolean> {
     return await n.getControlDatabase()!.deleteStrand(
       strandId,
-      ownerKey.publicKeyB64,
+      key.publicKeyB64,
       // ed25519 over the raw canonical bytes (no pre-hash), as every control writer expects.
       (message: Uint8Array): string =>
-        cryptoSign(message, ownerKey.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
+        cryptoSign(message, key.privateKeyB64, 'ed25519', 'bytes', 'base64url', 'base64url') as string,
     );
   }
 
@@ -153,7 +120,7 @@ describe('CadreNode strand unpublish', () => {
   });
 
   it('publish → unpublish removes the row and files a Revocation tombstone retiring its stamp', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-unpub-' + rand();
 
@@ -173,7 +140,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('unpublishing a never-published id is a silent no-op (no throw, no tombstone)', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
 
     await expect(node.unpublishStrand('never-published-' + rand())).resolves.toBeUndefined();
@@ -183,7 +150,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('rejects an empty or whitespace-only id before any write', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
 
     for (const blank of ['', '   ', '\t\n']) {
@@ -211,7 +178,7 @@ describe('CadreNode strand unpublish', () => {
   });
 
   it('unpublishing a closed strand destroys the row and its MemberPrivateKey', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-closed-' + rand();
     const memberKey = await generateStrandMemberKey();
@@ -230,7 +197,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('re-publishing after unpublish succeeds on a fresh stamp (the id is not blacklisted)', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-republish-' + rand();
 
@@ -248,7 +215,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('stops a locally-running instance by the time the promise resolves, emitting strand:stopped once', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-running-' + rand();
 
@@ -271,7 +238,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('stops a locally-running instance the watcher never tracked (never-published id)', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-unwatched-' + rand();
 
@@ -293,7 +260,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('re-emits strand:started on a genuine restart, and strand:stopped only once per instance', async () => {
-    node = await startSelfOwnerNode();
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
     const strandId = 'strand-restart-' + rand();
     const events = collectStrandEvents(node);
 
@@ -318,7 +285,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('stops a watched instance when the row vanishes from under it (the sibling-side removal path)', async () => {
-    node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-', { strandWatchInterval: WATCH_INTERVAL_MS }));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-vanished-' + rand();
     const events = collectStrandEvents(node);
@@ -337,7 +304,7 @@ describe('CadreNode strand unpublish', () => {
     expect(events.started).toEqual([strandId]);
     expect(events.discovered).toEqual([]);
 
-    expect(await deleteStrandRow(node, strandId)).toBe(true);
+    expect(await deleteStrandRow(node, ownerKey!, strandId)).toBe(true);
     expect(await db.queryStrands()).toEqual([]);
 
     await vi.waitFor(() => expect(events.stopped).toEqual([strandId]), WAIT_OPTS);
@@ -364,7 +331,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('never emits strand:stopped for a strand this node published but never ran locally', async () => {
-    node = await startSelfOwnerNode({ strandWatchInterval: WATCH_INTERVAL_MS });
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-', { strandWatchInterval: WATCH_INTERVAL_MS }));
     const strandId = 'strand-publish-only-' + rand();
     const events = collectStrandEvents(node);
 
@@ -389,12 +356,12 @@ describe('CadreNode strand unpublish', () => {
   it('keeps running a strand its strandFilter excluded, even after the row vanishes', async () => {
     const excludedId = 'strand-filtered-out-' + rand();
     const admittedId = 'strand-watched-instead-' + rand();
-    node = await startSelfOwnerNode({
+    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-', {
       strandWatchInterval: WATCH_INTERVAL_MS,
       // The `strandId` form rather than `{ mode: 'none' }`: it is the shape a real app uses,
       // and it keeps the test honest about WHICH strand was excluded.
       strandFilter: { mode: 'strandId', strandId: admittedId },
-    });
+    }));
     const db = node.getControlDatabase()!;
     const events = collectStrandEvents(node);
 
@@ -413,7 +380,7 @@ describe('CadreNode strand unpublish', () => {
     await node.addStrand(createStrandConfig(excludedId));
     expect(node.getStrand(excludedId)).toBeDefined();
 
-    expect(await deleteStrandRow(node, excludedId)).toBe(true);
+    expect(await deleteStrandRow(node, ownerKey!, excludedId)).toBe(true);
     // The row really is gone party-wide — otherwise "still running" below proves nothing.
     expect((await db.queryStrands()).map((row) => row.Id)).toEqual([admittedId]);
     await quietWindow();
