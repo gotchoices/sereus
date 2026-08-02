@@ -1,16 +1,15 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import {
   generatePrivateKey,
   getPublicKey,
   sign as cryptoSign,
 } from '@optimystic/quereus-plugin-crypto';
-import { CadreNode } from '../src/cadre-node.js';
+import type { CadreNode } from '../src/cadre-node.js';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { formationVouchMessage } from '../src/control-database.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { mintJoiner, mintConsent } from './formation-consent-helper.js';
-import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises the node-level approver-key surface — `enrollValidationKey` /
@@ -213,12 +212,7 @@ describe('CadreNode validation-key enrollment', () => {
   }, 60_000);
 
   it('throws the named error when the node has not been started', async () => {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const stopped = new CadreNode({
-      controlNetwork: { partyId: 'validation-key-stopped-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
+    const { node: stopped } = await newUnstartedNode('validation-key-stopped-');
     const approver = makeApprover();
 
     await expect(stopped.enrollValidationKey(approver.publicKey)).rejects.toThrow(

@@ -1,11 +1,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
-import { CadreNode } from '../src/cadre-node.js';
+import type { CadreNode } from '../src/cadre-node.js';
 import { signSchema } from '../src/schema-verification.js';
 import { generateStrandMemberKey, strandMemberKeyPair } from '../src/strand-member-key.js';
-import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises {@link CadreNode.publishStrand} — the node-level method the RN chat
@@ -79,12 +78,7 @@ describe('CadreNode.publishStrand (node-level discoverable-strand publish)', () 
   }, 60_000);
 
   it('throws if the node has not been started', async () => {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const stopped = new CadreNode({
-      controlNetwork: { partyId: 'publish-strand-stopped-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
+    const { node: stopped } = await newUnstartedNode('publish-strand-stopped-');
     await expect(stopped.publishStrand('strand-' + rand(), 'o')).rejects.toThrow(/must be started/i);
   });
 

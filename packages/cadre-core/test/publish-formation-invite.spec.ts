@@ -1,8 +1,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
-import { CadreNode } from '../src/cadre-node.js';
+import type { CadreNode } from '../src/cadre-node.js';
 import { ControlFormationUsageRecorder } from '../src/control-formation-recorder.js';
-import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises {@link CadreNode.publishFormationInvite} — the node-level method the
@@ -98,12 +97,7 @@ describe('CadreNode.publishFormationInvite (node-level redeemable-invite publish
   }, 60_000);
 
   it('throws if the node has not been started', async () => {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const stopped = new CadreNode({
-      controlNetwork: { partyId: 'publish-fi-stopped-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
+    const { node: stopped } = await newUnstartedNode('publish-fi-stopped-');
     await expect(stopped.publishFormationInvite('invite-' + rand(), 'sapp-x')).rejects.toThrow(
       /must be started/i,
     );

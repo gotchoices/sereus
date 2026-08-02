@@ -1,13 +1,12 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
-import { generateKeyPair } from '@libp2p/crypto/keys';
 import { generatePrivateKey, getPublicKey, sign as cryptoSign } from '@optimystic/quereus-plugin-crypto';
-import { CadreNode } from '../src/cadre-node.js';
+import type { CadreNode } from '../src/cadre-node.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import { signSchema } from '../src/schema-verification.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { StrandConfig } from '../src/types.js';
-import { startSelfOwnerNode } from './self-owner-node-helpers.js';
+import { newUnstartedNode, startSelfOwnerNode } from './self-owner-node-helpers.js';
 
 /**
  * Exercises the node-level strand removal surface — `unpublishStrand`, the owner-signed
@@ -117,10 +116,13 @@ describe('CadreNode strand unpublish', () => {
   afterEach(async () => {
     await node?.stop();
     node = undefined;
+    // Cleared with the node it belongs to: a stale key surviving into the next test would
+    // sign a write with the previous node's identity and fail somewhere far from the cause.
+    ownerKey = undefined;
   });
 
   it('publish → unpublish removes the row and files a Revocation tombstone retiring its stamp', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-unpub-' + rand();
 
@@ -140,7 +142,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('unpublishing a never-published id is a silent no-op (no throw, no tombstone)', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
 
     await expect(node.unpublishStrand('never-published-' + rand())).resolves.toBeUndefined();
@@ -150,7 +152,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('rejects an empty or whitespace-only id before any write', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
 
     for (const blank of ['', '   ', '\t\n']) {
@@ -162,12 +164,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('throws the named error shapes when the node has not been started', async () => {
-    const nodeKey = await generateKeyPair('Ed25519');
-    const stopped = new CadreNode({
-      controlNetwork: { partyId: 'strand-unpublish-stopped-' + rand(), bootstrapNodes: [] },
-      privateKey: nodeKey,
-      profile: 'transaction',
-    });
+    const { node: stopped } = await newUnstartedNode('strand-unpublish-stopped-');
 
     // stopStrand keeps its pre-existing local-lifecycle error; unpublishStrand goes
     // through requireOwnerSigningKey and reports the started-guard shape.
@@ -178,7 +175,7 @@ describe('CadreNode strand unpublish', () => {
   });
 
   it('unpublishing a closed strand destroys the row and its MemberPrivateKey', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-closed-' + rand();
     const memberKey = await generateStrandMemberKey();
@@ -197,7 +194,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('re-publishing after unpublish succeeds on a fresh stamp (the id is not blacklisted)', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-republish-' + rand();
 
@@ -215,7 +212,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('stops a locally-running instance by the time the promise resolves, emitting strand:stopped once', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-running-' + rand();
 
@@ -238,7 +235,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('stops a locally-running instance the watcher never tracked (never-published id)', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const db = node.getControlDatabase()!;
     const strandId = 'strand-unwatched-' + rand();
 
@@ -260,7 +257,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('re-emits strand:started on a genuine restart, and strand:stopped only once per instance', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-'));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-'));
     const strandId = 'strand-restart-' + rand();
     const events = collectStrandEvents(node);
 
@@ -331,7 +328,7 @@ describe('CadreNode strand unpublish', () => {
   }, 60_000);
 
   it('never emits strand:stopped for a strand this node published but never ran locally', async () => {
-    ({ node, ownerKey } = await startSelfOwnerNode('strand-unpublish-', { strandWatchInterval: WATCH_INTERVAL_MS }));
+    ({ node } = await startSelfOwnerNode('strand-unpublish-', { strandWatchInterval: WATCH_INTERVAL_MS }));
     const strandId = 'strand-publish-only-' + rand();
     const events = collectStrandEvents(node);
 
