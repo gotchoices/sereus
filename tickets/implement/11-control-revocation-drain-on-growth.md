@@ -6,11 +6,89 @@ difficulty: hard
 ----
 
 <!-- resume-note -->
-## Resume note (2026-08-01 run 3, ended on BUDGET_WARNING)
+## Resume note (2026-08-01 run 4, ended on BUDGET_WARNING)
+
+### Run 4 progress (in working tree, uncommitted — do not redo)
+
+- `packages/cadre-core/test/control-database-offline-peers.spec.ts` — DONE, GREEN.
+  Rewritten to the new contract: `pendingPeerWrites` helper narrowed to
+  `Map<string, 'authorize'>`; new `pendingRevocations(node)` peek helper;
+  `runRemoveWrite` captures `queryCadrePeerStampId(doomedPeerId)` BEFORE the
+  remove, then asserts the `pendingPeerWrites` entry is ABSENT and
+  `pendingRevocations.get(stampId)` equals `{tableName:'CadrePeer', rowKey:
+  doomedPeerId, stampId}`; the second (no-op) remove asserts queue size
+  unchanged. Verified: `npx vitest run test/control-database-offline-peers.spec.ts
+  test/cadre-node-control-replication.spec.ts` in `packages/cadre-core` →
+  **2 files, 33/33 passed** (112 s). `yarn build` in cadre-core clean.
+- `packages/integration-tests/src/scenarios/control-delete-while-alone-convergence.integration.ts`
+  — WRITTEN (both tests per the original Tests section, all run-1 recipe
+  corrections applied: stamp captured before remove, seed bootstrap re-wired
+  before any sibling connect after each A restart, no OwnerKey re-insert, vouch
+  before connect; shared `removeWhileAlone()` phases 1–3 + shared
+  `expectRemovalConverges()` phase 4). **Both tests FAIL on the predicted
+  pre-existing fingerprint**, NOT on this ticket's code:
+  `SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10
+  retries: stale revision: block … at rev 3 (resp. 4), requested rev 1` — the
+  exact headline signature of `tickets/blocked/control-db-cross-node-convergence-halted`.
+  Both die symmetrically at ~15 s, i.e. inside shared Phase 1 (the
+  `authorizePeer(X)`/converge machinery, same as the already-listed
+  `control-write-while-alone-convergence` "both tests" entry) — **before the
+  delete or any drain code runs**. A drain-thrown error could not surface this
+  way (drain catches and logs). Classification per this ticket's own rules:
+  belongs under `control-db-cross-node-convergence-halted` in
+  `.pre-existing-known.md`. Do not skip/loosen/delete the scenario. Log:
+  scratchpad `delete-alone-run1.log` (gone next session — fingerprint quoted
+  above is the substance).
+
+### Remaining work (in order) — board/docs reconcile only, no product code left
+
+- `tickets/.pre-existing-known.md`: add
+  `control-delete-while-alone-convergence.integration.ts (both tests) → control-db-cross-node-convergence-halted | blocked | 2026-08-01`
+  (note: fails in Phase 1 setup, before the delete-drain path is reached, so the
+  scenario currently proves nothing about this feature either way); REMOVE the
+  `zz-scratch-delete-alone` line (~27) and its explanatory paragraph
+  ("The third (`zz-scratch-delete-alone`)…", ~88–95) once the scratch file is
+  deleted.
+- Delete `packages/integration-tests/src/scenarios/zz-scratch-delete-alone.integration.ts`.
+- `tickets/blocked/control-db-cross-node-convergence-halted.md`: add the new
+  scenario to `files:` and to "The failing tests" table (symptom: both tests,
+  `SyncRetryExhaustedError default/CadrePeer at rev 3/4, requested rev 1`,
+  measured 2026-08-01 solo run, quereus v4.6.0 `f620aade`).
+- `tickets/blocked/forked-control-collection-sync-livelocks.md`: (a) `files:` —
+  replace the deleted scratch path with the new scenario path, and fix the stale
+  `tickets/plan/10-control-delete-while-alone-tombstone.md` reference (that plan
+  ticket became the shipped `control-revocation-reissuable-tombstone` +
+  `control-revocation-drain-on-growth` implement work); (b) rewrite the
+  "Alternative unblock" paragraph — WRONG as written: the shipped work converges
+  the *Revocation tombstone*, it does NOT stop `removePeer` committing a
+  local-only `CadrePeer` delete while alone, so the fork it describes is still
+  constructed and the livelock is NOT unblocked from this repo; (c) "The failing
+  test" / "What the scenario builds" / "Do not" sections reference the scratch
+  file — point them at the new scenario, noting it currently dies EARLIER (in
+  Phase 1, the halted class) and so does not currently reach the fork the ticket
+  is about.
+- `docs/architecture.md` ~198–204 rewrite (see "Docs" below + kept run-1 notes:
+  intro line ~198 AND the bullet; honest residuals — row not physically deleted
+  on holders, clear-on-exec ≠ broadcast →
+  `tickets/backlog/control-rereplication-broadcast-confirmation` (exists,
+  verified); fix stale `tickets/backlog/control-delete-while-alone-tombstone.md`
+  path reference).
+- `yarn lint` (root). Then move this ticket to review/ with an honest handoff:
+  unit layer fully green (33/33 across the two specs); integration proof of the
+  end-to-end path BLOCKED on `control-db-cross-node-convergence-halted`
+  (upstream optimystic) — and the re-issue DB layer additionally depends on the
+  quereus-v4.6.0 UNIQUE-collision triage
+  (`10-revocation-reissue-same-pk-update-unique-collision`, blocked;
+  `10-control-revocation-reissue-test-fixes` in implement), so the whole feature
+  path is unproven end-to-end until both clear. Also carry the run-1 note:
+  confirm/state in the handoff whether anything clears a `DeviceToken` without
+  an owner signature (not yet checked in any run).
+
+## Resume note (2026-08-01 run 3)
 
 Runs 2+3 together have landed **all of Phase 1 and Phase 2, plus the primary unit
 spec**. Run 2's `ControlDatabase` seam is already COMMITTED (20cf4f8). Run 3's edits
-are in the working tree, build-clean (`yarn build` OK in cadre-core), and its rewritten
+are COMMITTED (1902c65), build-clean, and its rewritten
 spec passes in the whole-suite run. Do not redo any of this:
 
 - `src/cadre-node.ts`: `pendingPeerWrites` narrowed to `Map<string, 'authorize'>`;
@@ -64,22 +142,7 @@ Two distinct classes — do NOT conflate:
    `ConstraintError: UNIQUE constraint failed: Revocation…` inside the drain log);
    classify such a failure against the triage ticket, not the two livelock slugs.**
 
-### Remaining work (in order)
-
-- Fix `control-database-offline-peers.spec.ts` per above; re-run it + the replication
-  spec.
-- Integration scenario `control-delete-while-alone-convergence.integration.ts` (recipe
-  + both tests per the original Tests section below, plus the run-1 corrections kept
-  below); then delete `zz-scratch-delete-alone.integration.ts` and remove its line
-  from `.pre-existing-known.md`.
-- `docs/architecture.md` ~198–204 rewrite (both the intro line and the bullet; honest
-  residuals: row not physically deleted on holders, clear-on-exec ≠ broadcast →
-  `tickets/backlog/control-rereplication-broadcast-confirmation`).
-- `tickets/blocked/forked-control-collection-sync-livelocks.md`: fix "Alternative
-  unblock" paragraph (this work converges the *tombstone*; the `CadrePeer` fork
-  remains) and its `files:`/scenario references to the deleted scratch file.
-- `yarn lint`; then move this ticket to review/ with an honest handoff (call out the
-  quereus-v4.6.0 dependency of the whole feature path).
+### Remaining work — SUPERSEDED by the run-4 list above (first two items DONE in run 4)
 
 ### Kept from run 1 (still needed; the seams/design sections are dropped — implemented, the code is the reference)
 

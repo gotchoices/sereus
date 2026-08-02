@@ -75,8 +75,15 @@ const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
 const short = (peerId: string) => peerId.slice(-8);
 
 /** Peek the private write-while-alone queue (same cast pattern as `cadre-node-control-cohort.spec.ts`). */
-function pendingPeerWrites(node: CadreNode): Map<string, 'authorize' | 'remove'> {
-	return (node as unknown as { pendingPeerWrites: Map<string, 'authorize' | 'remove'> }).pendingPeerWrites;
+function pendingPeerWrites(node: CadreNode): Map<string, 'authorize'> {
+	return (node as unknown as { pendingPeerWrites: Map<string, 'authorize'> }).pendingPeerWrites;
+}
+
+/** Peek the private delete-while-alone tombstone queue (keyed by the retired StampId). */
+function pendingRevocations(node: CadreNode): Map<string, { tableName: string; rowKey: string; stampId: string }> {
+	return (node as unknown as {
+		pendingRevocations: Map<string, { tableName: string; rowKey: string; stampId: string }>;
+	}).pendingRevocations;
 }
 
 interface OwnerNode {
@@ -304,6 +311,11 @@ async function runRemoveWrite(owner: OwnerNode, expectedAfter: ReadonlySet<strin
 	expect(await within(`isMember(${short(doomedPeerId)}) (pre-remove)`, OP_TIMEOUT_MS,
 		() => node.isMember(doomedPeerId))).toBe(true);
 
+	// The stamp the delete will retire — captured BEFORE the row disappears.
+	const doomedStampId = await within(`queryCadrePeerStampId(${short(doomedPeerId)})`, OP_TIMEOUT_MS,
+		() => db.queryCadrePeerStampId(doomedPeerId));
+	expect(doomedStampId).not.toBeNull();
+
 	await within(`removePeer(${short(doomedPeerId)})`, OP_TIMEOUT_MS, () => node.removePeer(doomedPeerId));
 
 	// Read-back is again a separate assertion from the write's resolution.
@@ -311,13 +323,23 @@ async function runRemoveWrite(owner: OwnerNode, expectedAfter: ReadonlySet<strin
 	expect(new Set(afterRemove.map((p) => p.peerId))).toEqual(new Set(expectedAfter));
 	expect(await within(`isMember(${short(doomedPeerId)}) (post-remove)`, OP_TIMEOUT_MS,
 		() => node.isMember(doomedPeerId))).toBe(false);
-	// A delete that commits alone is queued under its own kind — see
-	// `CadreNode.noteControlWrite`, which logs it loudly as a durability gap.
-	expect(pendingPeerWrites(node).get(doomedPeerId)).toBe('remove');
+	// A delete that commits alone queues its re-issuable `Revocation` tombstone
+	// (keyed by the retired stamp) via the committed-delete seam
+	// (`CadreNode.noteGuardedDelete`) — NOT the peer-write queue, whose remove arm
+	// only clears a stale authorize (re-issuing the insert would resurrect the row).
+	expect(pendingPeerWrites(node).get(doomedPeerId)).toBeUndefined();
+	expect(pendingRevocations(node).get(doomedStampId!)).toEqual({
+		tableName: 'CadrePeer',
+		rowKey: doomedPeerId,
+		stampId: doomedStampId
+	});
 
-	// A second remove of an absent peer must also answer locally, not dial.
+	// A second remove of an absent peer must also answer locally, not dial —
+	// and, being a no-op delete, must not queue a second tombstone.
+	const queuedBefore = pendingRevocations(node).size;
 	await within(`removePeer(${short(doomedPeerId)}) (already absent)`, OP_TIMEOUT_MS,
 		() => node.removePeer(doomedPeerId));
+	expect(pendingRevocations(node).size).toBe(queuedBefore);
 }
 
 /**
