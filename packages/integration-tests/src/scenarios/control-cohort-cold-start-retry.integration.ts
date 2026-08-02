@@ -31,74 +31,12 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { webSockets } from '@libp2p/websockets';
-import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
-import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
-import { waitUntil, waitForCadrePeerConverged } from '../harness/index.js';
-
-// ── Helpers ───────────────────────────────────────────────────────────────────
-
-/** WebSocket + circuit-relay transports, matching the other e2e scenarios. */
-function wsTransports() {
-	return [webSockets(), circuitRelayTransport()];
-}
-
-interface NodeOpts {
-	partyId: string;
-	privateKey: PrivateKey;
-	profile?: 'storage' | 'transaction';
-	enableRelay?: boolean;
-	listenAddrs?: string[];
-	/** Override the proactive control-cohort reconcile cadence (ms). */
-	reconcileMs?: number;
-}
-
-/** Build a `CadreNodeConfig` for one control-network node. */
-function nodeConfig(opts: NodeOpts): CadreNodeConfig {
-	return {
-		controlNetwork: { partyId: opts.partyId, bootstrapNodes: [] },
-		profile: opts.profile ?? 'transaction',
-		strandFilter: { mode: 'all' },
-		storage: { provider: () => new MemoryRawStorage() },
-		privateKey: opts.privateKey,
-		network: {
-			transports: wsTransports(),
-			listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
-			...(opts.reconcileMs ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {})
-		},
-		hibernation: { enabled: false }
-	};
-}
-
-/**
- * Make a freshly-started node its own control owner (genesis): enroll its
- * derived public key in `OwnerKey` and wire seed-bootstrap with the matching
- * private key, so it can owner-sign `CadrePeer` inserts and mint seeds.
- */
-async function makeOwnOwner(node: CadreNode, key: PrivateKey): Promise<void> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const db = node.getControlDatabase();
-	if (!db) throw new Error('control database missing after start');
-	await db.insertOwnerKey(publicKeyB64);
-	node.initializeSeedBootstrap(privateKeyB64);
-}
-
-/** A real Ed25519 peer id for a peer that is NEVER started (a pure row subject). */
-async function randomPeerId(): Promise<string> {
-	return peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
-}
-
-/** This node's live connections to `remotePeerId`, on the control network. */
-function connectionsTo(node: CadreNode, remotePeerId: string) {
-	return (node.getControlNode()?.getConnections() ?? [])
-		.filter((c) => c.remotePeer.toString() === remotePeerId);
-}
+import {
+	waitUntil, waitForCadrePeerConverged,
+	controlNodeConfig, makeOwnOwner, randomPeerId, connectionsTo,
+} from '../harness/index.js';
 
 // ═══════════════════════════════════════════════════════════════════════════════
 
@@ -111,7 +49,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 
 			// A: owner + storage (holds the CadrePeer blocks) + relay.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(nodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
 			await A.start();
 			await makeOwnOwner(A, aKey);
 			const aPeerId = A.peerId!.toString();
@@ -120,7 +58,7 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			// connection) with a short reconcile cadence, so the cold-start branch
 			// fires several times inside the convergence window.
 			const bKey = await generateKeyPair('Ed25519');
-			B = new CadreNode(nodeConfig({
+			B = new CadreNode(controlNodeConfig({
 				partyId, privateKey: bKey, profile: 'transaction', listenAddrs: [], reconcileMs: 2_000
 			}));
 			await B.start();

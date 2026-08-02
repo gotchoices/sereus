@@ -4,163 +4,127 @@ files: packages/integration-tests/src/harness/node-fixtures.ts, packages/integra
 difficulty: easy
 ----
 
-## Background
+<!-- resume-note -->
+Continuation of the same-slug ticket, re-filed again after hitting a token-budget
+warning mid-run — this time during final test validation, not the code edits
+themselves. **All five files' code edits are done.** What's left is purely running
+the validation commands and reading the results; no further code changes are
+expected unless validation surfaces a real regression.
 
-This is a continuation of `10-integration-test-harness-helper-consolidation-remaining-files`
-(same slug, re-filed after a run stopped partway through on a token-budget warning). That
-ticket found five scenario files still defining private copies of helpers that had already
-been moved into the shared harness (`packages/integration-tests/src/harness/node-fixtures.ts`,
-re-exported through `packages/integration-tests/src/harness/index.ts`).
+## What's actually done (code-complete, do not re-edit)
 
-**Two of the five are already done** — do not re-touch them:
+All five files listed under `files:` now import from `../harness/index.js` and
+define no local copies of harness-provided helpers:
+
 - `packages/integration-tests/src/scenarios/membership-connection-gater.integration.ts`
+  — done in an earlier pass (before this run started).
 - `packages/integration-tests/src/scenarios/control-stream-authz.integration.ts`
+  — done in an earlier pass (before this run started).
+- `packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts`
+  — done THIS run: swapped in `controlNodeConfig`, `createSignedSAppConfig`,
+  `makeOwnOwner`, `connectControlNodes`, `controlAddrs` from
+  `../harness/index.js`; removed the stale "copy, don't refactor" note; kept
+  only the file-local `SIMPLE_SCHEMA` constant (not a harness concern).
+- `packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts`
+  — done THIS run: deleted the local `bootTrio`/`stopTrio`/`Trio`/`TrioHandles`/
+  `wsTransports`/`nodeConfig`/`makeOwnOwner`/`connectionsTo`/`hasOutboundTo`/
+  `peerStoreAddrsFor`; now imports `bootControlTrio`, `stopControlTrio`,
+  `ControlTrioHandles`, `hasOutboundTo`, `connectionsTo`, `peerStoreAddrsFor`,
+  `waitUntil`, `sleep` from `../harness/index.js`. Both call sites updated
+  (`bootControlTrio({ reconcileMsB, handles })` / `stopControlTrio(handles)`),
+  destructuring only `{ B, C, cPeerId }` or `{ B, cPeerId }` as each test body
+  needs. Updated `packages/integration-tests/src/harness/control-trio.ts`'s
+  file-header note (it no longer says "awaiting the harness-consolidation
+  ticket" — it now just credits the scenario as the sequence's origin).
+- `packages/integration-tests/src/scenarios/control-cohort-cold-start-retry.integration.ts`
+  — done THIS run: swapped in `controlNodeConfig`, `makeOwnOwner`, `randomPeerId`,
+  `connectionsTo` from `../harness/index.js`; kept `ed25519KeyPairFromLibp2p`
+  imported from `@serfab/cadre-core` directly (still needed at its one call site
+  for `pinnedKeyTrustPolicy`'s owner-key argument — that's not a harness helper).
 
-Both now import `controlNodeConfig`, `makeOwnOwner`, `waitForControlConnection` (and, for the
-stream-authz file, `waitUntil`) from `../harness/index.js` and no longer define local
-`wsTransports`/`nodeConfig`/`makeOwnOwner`/`waitForConnection`. Verified clean (no leftover
-references to `ed25519KeyPairFromLibp2p`, `MemoryRawStorage`, `CadreNodeConfig`, `webSockets`,
-`circuitRelayTransport` in either file — those imports were all removed along with the local
-helpers they supported). Neither file's tests were re-run after the edit (stopped on the
-budget warning before validation) — worth a quick typecheck/test pass early in this ticket to
-confirm they're actually green, since that wasn't verified.
+Confirmed via grep: no scenario file in `files:` above contains any leftover
+reference to `nodeConfig`, `wsTransports`, `CadreNodeConfig`, `MemoryRawStorage`,
+`webSockets`, `circuitRelayTransport`, `TrioHandles`, `bootTrio`, or `stopTrio`.
 
-**The harness itself already gained what the remaining three files need:**
-- `ControlNodeOpts` (`node-fixtures.ts`) now has a `strandFilter?: 'all' | 'none'` option
-  (default `'all'`); `controlNodeConfig` passes it through as `strandFilter: { mode: ... }`.
-- `node-fixtures.ts` now exports `controlAddrs(node): string[]` (was missing before; added
-  for the strand-addr-seed-convergence file below).
-- `node-fixtures.ts` now exports `waitForControlConnection` (was a private helper before).
-- `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`, `randomPeerId`, `makeOwnOwner`,
-  `connectControlNodes`, `createSignedSAppConfig`, `wsTransports` were already exported (from
-  earlier ticket passes) and need no further changes.
-- `bootControlTrio` / `stopControlTrio` already exist in
-  `packages/integration-tests/src/harness/control-trio.ts` and are exported through
-  `harness/index.ts`.
+## Validation status — what's confirmed and what's not
 
-## What's left
+**Confirmed green:**
+- `yarn workspace @serfab/integration-tests typecheck` — exit 0, no errors.
+- `yarn lint` (repo-wide) — exit 0, no errors.
 
-| File | Local copies it still has |
-| --- | --- |
-| `strand-addr-seed-convergence` | `wsTransports`, `createSignedSAppConfig`, `nodeConfig`, `makeOwnOwner`, `connectControlNodes`, `controlAddrs` |
-| `control-cohort-three-node-isolation` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`, and its whole private `bootTrio` |
-| `control-cohort-cold-start-retry` | `wsTransports`, `nodeConfig`, `makeOwnOwner`, `randomPeerId`, `connectionsTo` |
+**Not yet confirmed — this is the remaining work:**
+- The full `vitest run` suite was attempted twice and neither run produced a
+  usable result:
+  1. First attempt failed at the harness's stale-build guard
+     (`test-harness/build-freshness.ts`): `@quereus/quereus`'s `dist` was stale
+     relative to its `src`. Fixed by rebuilding it directly (the
+     `yarn workspace @quereus/quereus build` form silently no-ops from some
+     shells, per this ticket's own note — used
+     `cd C:\projects\quereus\packages\quereus && npx tsc` instead, which
+     succeeded).
+  2. Second attempt (after that fix) hit the SAME stale-build guard again, this
+     time flagging a DIFFERENT sibling workspace: `@optimystic/db-core`'s
+     `dist` is stale relative to its `src`. This was not rebuilt — ran out of
+     run budget before getting to it. Fix the same way:
+     `cd C:\projects\optimystic\packages\db-core && npx tsc` (verify the exact
+     package path and build command first — don't assume it mirrors quereus's
+     layout without checking `package.json`).
+  3. Separately: a full-suite `vitest run` across the whole
+     `integration-tests` package takes longer than the 10-minute hard cap on a
+     single foreground shell command in this environment. Once the stale-build
+     guard is clear, don't retry the whole suite in one shot — either target
+     just the changed/relevant files (see command below) or split the full run
+     some other way that respects the timeout.
 
-All five swap-in helpers above (`wsTransports`, `createSignedSAppConfig`, `makeOwnOwner`,
-`randomPeerId`, `connectControlNodes`) are character-identical to the shared versions already
-in the harness (modulo `makeOwnOwner`'s return type: some local copies return nothing, the
-shared one returns the owner public key — source-compatible, callers may discard it).
+## Validation — what to run next
 
-`strand-addr-seed-convergence.integration.ts` ALSO carries a stale in-file note (near its local
-helpers, around the "NOTE: copied verbatim from push-wake-e2e..." comment) saying its helpers
-are copied on purpose "until [the harness-consolidation ticket] lands" — remove that note as
-part of swapping the helpers in, since it will no longer be true.
+1. Fix the `@optimystic/db-core` staleness (see above), confirming with
+   `npx tsc` output that it built clean.
+2. Run the targeted subset covering everything this ticket touched:
+   ```
+   cd packages/integration-tests && npx vitest run --reporter=verbose \
+     src/scenarios/membership-connection-gater.integration.ts \
+     src/scenarios/control-stream-authz.integration.ts \
+     src/scenarios/strand-addr-seed-convergence.integration.ts \
+     src/scenarios/control-cohort-three-node-isolation.integration.ts \
+     src/scenarios/control-cohort-cold-start-retry.integration.ts
+   ```
+   Two of these five are known PRE-EXISTING failures unrelated to this refactor
+   (see `tickets/.pre-existing-known.md`):
+   - `control-cohort-three-node-isolation.integration.ts` — blocked ticket
+     `transactor-key-network-ignores-network-scoping`.
+   - `control-cohort-cold-start-retry.integration.ts` — blocked ticket
+     `control-db-cross-node-convergence-halted`.
+   A continued failure in those two with the SAME fingerprint as before this
+   refactor is expected and NOT a regression — do not re-triage them. The other
+   three (`membership-connection-gater`, `control-stream-authz`,
+   `strand-addr-seed-convergence`) must pass; any failure there (or a NEW
+   failure mode/fingerprint in the two known-failing ones) means the refactor
+   broke something and must be fixed before handoff.
+3. If time/budget allows, also do a full
+   `cd packages/integration-tests && npx vitest run --reporter=dot` pass (may
+   need to be split into chunks to stay under the 10-minute command cap) to
+   catch anything outside this five-file set that could plausibly be affected
+   — unlikely given the change is confined to these files' own imports, but
+   cheap to confirm if budget allows. Not required to close this ticket if
+   budget is tight; the five-file targeted run above is the load-bearing check.
+4. Once the targeted run is clean (three files passing, two known failures with
+   unchanged fingerprint), this ticket is done — write it up as a `review/`
+   ticket (this work no longer needs a `plan/`-stage design pass; it was fully
+   scoped and the code is already written and typechecked/linted clean).
 
-### `strand-addr-seed-convergence.integration.ts`
+## Edge cases & interactions (carried over, already verified during the edits)
 
-Its local `nodeConfig` already uses `strandFilter: { mode: 'all' }` and
-`hibernation: { enabled: opts.hibernation ?? false }` — both already match
-`controlNodeConfig`'s defaults, so this is a straight swap, no new harness option needed.
-Replace the local `wsTransports`, `createSignedSAppConfig`, `nodeConfig`, `makeOwnOwner`,
-`connectControlNodes`, and `controlAddrs` with harness imports (`controlNodeConfig`,
-`createSignedSAppConfig`, `makeOwnOwner`, `connectControlNodes`, `controlAddrs` from
-`../harness/index.js`), and delete the stale "copy, don't refactor" note.
-
-### `control-cohort-three-node-isolation.integration.ts`
-
-This file's private `bootTrio` (~150 lines, roughly lines 181-320) is a byte-for-byte twin of
-`bootControlTrio` in `harness/control-trio.ts` — the latter is a **port** made by a different
-ticket (`debt-cohort-edge-carries-data-coverage`) specifically so this file could be migrated
-later without that other ticket touching it. That migration is this ticket's job:
-
-- Delete the local `bootTrio`, `Trio`/`TrioHandles` interfaces, `stopTrio`, `wsTransports`,
-  `nodeConfig`, `makeOwnOwner`, `connectionsTo`, `hasOutboundTo`, `peerStoreAddrsFor`.
-- Import `bootControlTrio`, `stopControlTrio`, `ControlTrioHandles`, `hasOutboundTo`,
-  `connectionsTo`, `peerStoreAddrsFor` from `../harness/index.js`.
-- Both call sites (`bootTrio({ reconcileMsB, handles })`) become
-  `bootControlTrio({ reconcileMsB, handles })` — the isolation scenario never needs `gaterB`,
-  so that option is simply omitted (it's optional on `ControlTrioOptions`).
-- `bootControlTrio` returns `{ A, B, C, aPeerId, bPeerId, cPeerId }` (the local `bootTrio`
-  returned only `{ B, C, cPeerId }`) — destructure only what each test body uses.
-- `control-trio.ts`'s file header currently says it's "a port of the private `bootTrio` in
-  `control-cohort-three-node-isolation.integration.ts` (which deliberately keeps its own copy
-  until the harness-consolidation ticket lands there)" — update or remove that note once the
-  isolation scenario calls the shared version instead of keeping its own.
-
-Note: this scenario is currently a known pre-existing failure (blocked ticket
-`transactor-key-network-ignores-network-scoping`, see `tickets/.pre-existing-known.md`) for
-reasons unrelated to this refactor. It will very likely still fail after this change — that is
-expected and NOT a regression to chase here. Confirm with a git stash / pre-change run if you
-need a baseline, but do not attempt to fix the underlying failure in this ticket.
-
-### `control-cohort-cold-start-retry.integration.ts`
-
-Its local `nodeConfig` uses `strandFilter: { mode: 'all' }` and
-`hibernation: { enabled: false }`, both matching the shared defaults. Replace local
-`wsTransports`, `nodeConfig`, `makeOwnOwner`, `randomPeerId`, `connectionsTo` with harness
-imports.
-
-Note: this scenario is ALSO a currently known pre-existing failure (blocked ticket
-`control-db-cross-node-convergence-halted`) for reasons unrelated to this refactor — same
-caveat as above, do not chase it here.
-
-## Edge cases & interactions
-
-- `makeOwnOwner`'s shared version returns `Promise<string>` (the owner public key) where some
-  local copies returned `Promise<void>`. Every call site in these three files already discards
-  the return value (`await makeOwnOwner(A, aKey);` with no destructuring), so this is a no-op
-  swap — but grep each file's call sites to confirm none was relying on `void`-typed inference
-  before you swap the import.
-- `control-cohort-three-node-isolation`'s `bootTrio` and the harness's `bootControlTrio` must
-  stay behaviorally identical for the isolation proof's ordering claims to still hold — diff
-  them side by side before deleting the local copy, not just at the type level. Pay particular
-  attention to the ordering comments (steps 1-6) in both files; they encode a real invariant
-  (see the file headers), not just documentation.
-- After deleting `control-cohort-three-node-isolation`'s local `Trio`/`TrioHandles` types,
-  check nothing else in that file still references them by name (e.g. a leftover type
-  annotation) — the shared `control-trio.ts` names its equivalents `ControlTrio` /
-  `ControlTrioHandles`.
-- `strand-addr-seed-convergence`'s local `connectControlNodes` uses `expect(...)` internally
-  (via vitest) for one of its assertions (`expect(writerAddrs.length).toBeGreaterThan(0)`);
-  the shared harness version in `node-fixtures.ts` throws a plain `Error` instead (harness
-  modules have no `vitest` import, per `control-trio.ts`'s header convention). Confirm the
-  test still fails informatively if that precondition is ever violated — an `Error` throw is
-  the intended shared-harness pattern, not a regression.
-
-## Expected outcome
-
-No scenario file in `files:` above defines any helper that the harness already provides — all
-three import from `../harness/index.js`. Behavior must be unchanged — every node config these
-files produce must be byte-for-byte the same object shape as before the swap.
-
-## Validation
-
-```
-cd packages/integration-tests && npx vitest run --reporter=dot
-```
-
-Also run `yarn workspace @serfab/integration-tests typecheck` and `yarn lint`.
-
-Two scenarios in this file set (`control-cohort-three-node-isolation`,
-`control-cohort-cold-start-retry`) are pre-existing failures unrelated to this refactor — see
-`tickets/.pre-existing-known.md`. Do not re-triage them; a continued failure with the SAME
-fingerprint after your change is expected. A NEW failure mode (different error, different
-scenario) means the refactor broke something and needs to be fixed before handoff.
-
-Note: the suite's stale-build guard checks the sibling `C:\projects\quereus` workspace. If it
-trips, rebuild with `cd C:\projects\quereus\packages\quereus && npx tsc` — the
-`yarn workspace @quereus/quereus build` form silently no-ops from some shells.
-
-## TODO
-
-- Sanity-check the two already-converted files (`membership-connection-gater.integration.ts`,
-  `control-stream-authz.integration.ts`) actually typecheck and pass — they were edited but
-  not re-validated before this handoff.
-- Swap `strand-addr-seed-convergence.integration.ts`'s local helpers for harness imports;
-  remove the stale "copy, don't refactor" note.
-- Migrate `control-cohort-three-node-isolation.integration.ts` off its private `bootTrio` onto
-  `bootControlTrio`/`stopControlTrio` from `harness/control-trio.ts`; update or remove
-  `control-trio.ts`'s "port, awaiting this ticket" header note.
-- Swap `control-cohort-cold-start-retry.integration.ts`'s local helpers for harness imports.
-- Run the validation commands above and confirm no new failures (the two listed pre-existing
-  ones are expected to persist).
+- `makeOwnOwner`'s shared version returns `Promise<string>` where some local
+  copies returned `Promise<void>` — confirmed every call site in the three
+  files edited this run discards the return value, so this was a no-op swap.
+- `control-cohort-three-node-isolation`'s deleted `bootTrio` and the harness's
+  `bootControlTrio` were diffed side-by-side (not just at the type level)
+  before deletion — the step 1-6 ordering comments match; behavior preserved.
+- Confirmed nothing in `control-cohort-three-node-isolation.integration.ts`
+  still references the deleted local `Trio`/`TrioHandles` types by name (grep
+  clean — see above).
+- `strand-addr-seed-convergence`'s local `connectControlNodes` used `expect(...)`
+  internally; the shared harness version throws a plain `Error` instead. Left
+  as-is per the original ticket's guidance — this is the intended
+  shared-harness pattern, not a regression.

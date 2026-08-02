@@ -37,9 +37,9 @@
  * original scenario asserted with `expect(...)` throws an explicit `Error`
  * naming what was violated — the checkpoints are the proof, not decoration.
  *
- * This is a port of the private `bootTrio` in
- * `control-cohort-three-node-isolation.integration.ts` (which deliberately
- * keeps its own copy until the harness-consolidation ticket lands there).
+ * Shared by `control-cohort-three-node-isolation.integration.ts`, which
+ * originated this boot sequence as a private `bootTrio` before it was ported
+ * here.
  */
 
 import { generateKeyPair } from '@libp2p/crypto/keys';
