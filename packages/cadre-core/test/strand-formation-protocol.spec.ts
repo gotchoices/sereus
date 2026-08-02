@@ -12,6 +12,7 @@ import {
 } from '../src/strand-formation-protocol.js';
 import type { StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
+import { MockStream, captureHandler } from './formation-stream-helpers.js';
 
 // ── Frame helpers (mirror the on-wire 4-byte big-endian length prefix) ─────────
 
@@ -31,38 +32,6 @@ function decodeFirstFrame<T>(chunks: Uint8Array[]): T {
   for (const c of chunks) { all.set(c, off); off += c.length; }
   const length = new DataView(all.buffer, all.byteOffset, all.byteLength).getUint32(0, false);
   return JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + length))) as T;
-}
-
-/**
- * Minimal in-memory libp2p stream: yields the supplied inbound frames to the
- * reader and records everything the listener writes back via `send()`.
- */
-class MockStream {
-  readonly sent: Uint8Array[] = [];
-  closed = false;
-  constructor(private readonly inbound: Uint8Array[]) {}
-  async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    for (const chunk of this.inbound) yield chunk;
-  }
-  send(data: Uint8Array): boolean { this.sent.push(data); return true; }
-  async close(): Promise<void> { this.closed = true; }
-  abort(): void {}
-}
-
-/** A mock node that captures the registered protocol handler so we can drive it directly. */
-function captureHandler(): { node: Libp2p; invoke: (stream: MockStream) => Promise<void> } {
-  let handler: ((stream: unknown, conn: unknown) => Promise<void>) | undefined;
-  const node = {
-    handle: (_id: string, fn: (stream: unknown, conn: unknown) => Promise<void>) => { handler = fn; },
-    unhandle: () => {}
-  } as unknown as Libp2p;
-  return {
-    node,
-    invoke: async (stream: MockStream) => {
-      if (!handler) throw new Error('handler not registered');
-      await handler(stream, {});
-    }
-  };
 }
 
 const realDisclosure: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'real' };
@@ -270,8 +239,9 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
   });
 
   it('clamps provisionTimeoutMs when it would outlive the session, so a slow hook still gets a reply', async () => {
-    // provisionTimeoutMs (5000) >= sessionTimeoutMs (1000) must clamp to
-    // sessionTimeoutMs - stepTimeoutMs (900). A provisioning hook that takes longer than the
+    // provisionTimeoutMs (5000) >= sessionTimeoutMs (1000) must clamp to the responder
+    // ceiling: session - step = 900, minus the travel margin held back for the initiator
+    // (capped at half the room) = 450. A provisioning hook that takes longer than the
     // clamped budget but would fit under the UNCLAMPED one must still see a clean rejection
     // frame — not silence from the outer session timeout firing first.
     const { options } = baseOptions({
@@ -296,9 +266,10 @@ describe('FormationListener disclosure timing (no responder cadre on rejection)'
 
   it('clamps a provisionTimeoutMs that leaves no room for the preceding wire step', async () => {
     // 800ms fits under the 1000ms session on its own, but the session budget also has to
-    // cover the contact read (stepTimeoutMs 400), so it clamps to session - step = 600ms.
-    // A 700ms hook therefore gets a rejection frame; without the headroom in the guard it
-    // would have run to 800ms and raced the session timeout instead.
+    // cover the contact read (stepTimeoutMs 400), so it clamps to session - step = 600ms,
+    // less the initiator's travel margin (half of 600) = 300ms. A 700ms hook therefore gets
+    // a rejection frame; without the headroom in the guard it would have run to 800ms and
+    // raced the session timeout instead.
     const { options } = baseOptions({
       provisionStrand: slowProvision(700, 'strand-no-headroom')
     });

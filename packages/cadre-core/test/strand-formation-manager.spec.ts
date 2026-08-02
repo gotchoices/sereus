@@ -9,123 +9,24 @@
  * Unlike `strand-formation-protocol.spec.ts` (drives `FormationListener`/`dialFormation`
  * directly) and `strand-formation-consent.spec.ts` (drives ONE `StrandFormationManager` as a
  * responder only, via a captured libp2p handler + a canned inbound `MockStream`), this file
- * drives a SINGLE manager as BOTH roles over a real in-memory duplex bridge — `QueueStream` +
- * `makePair` below — so `formStrand`'s outbound write actually reaches the manager's OWN
- * `registerResponder` handler and the handler's reply actually reaches back.
+ * drives a SINGLE manager as BOTH roles over the live in-memory duplex bridge in
+ * `formation-stream-helpers.ts`, so `formStrand`'s outbound write actually reaches the
+ * manager's OWN `registerResponder` handler and the handler's reply actually reaches back.
  *
  * Covers:
  *  - the host's `provisionTimeoutMs` clean-timeout reply beats the initiator's own (larger,
  *    derived) await-response timeout — i.e. the initiator is still listening when it arrives,
+ *  - the same holds in the CLAMPED regime, where a budget too large for the session forces
+ *    both roles down to their ceilings,
  *  - `provisionTimeoutMs` omitted and `0` both fall back to independent per-role defaults.
  */
 import { describe, it, expect } from 'vitest';
-import type { Libp2p } from '@libp2p/interface';
-import type { ControlStream } from '../src/control-stream.js';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
+import type { StrandFormationManagerConfig } from '../src/strand-formation-manager.js';
 import type { OpenInvitation, StrandFormationDisclosure } from '../src/types.js';
 import { mintContactJoiner, mintContactConsent, type JoinerConsent } from './formation-consent-helper.js';
-
-// ── In-memory duplex bridge: a live libp2p-shaped stream pair, not a canned frame list ──
-
-/**
- * One end of an in-memory duplex pipe. `send()` delivers straight into the PEER's inbox (a
- * live push, not a canned reply list), so a real caller on one end can write and a real
- * handler on the other end can read — needed here because `formStrand` must actually see the
- * manager's OWN responder reply, not a pre-scripted frame.
- */
-class QueueStream implements ControlStream {
-  readonly sent: Uint8Array[] = [];
-  closed = false;
-  peer!: QueueStream;
-  private readonly inbox: Uint8Array[] = [];
-  private pendingResolve?: (result: IteratorResult<Uint8Array>) => void;
-  private ended = false;
-
-  private deliver(data: Uint8Array): void {
-    if (this.pendingResolve) {
-      const resolve = this.pendingResolve;
-      this.pendingResolve = undefined;
-      resolve({ value: data, done: false });
-      return;
-    }
-    this.inbox.push(data);
-  }
-
-  private endInbox(): void {
-    this.ended = true;
-    if (this.pendingResolve) {
-      const resolve = this.pendingResolve;
-      this.pendingResolve = undefined;
-      resolve({ value: undefined as unknown as Uint8Array, done: true });
-    }
-  }
-
-  send(data: Uint8Array): boolean {
-    this.sent.push(data);
-    this.peer.deliver(data);
-    return true;
-  }
-
-  async close(): Promise<void> {
-    this.closed = true;
-    this.peer.endInbox();
-  }
-
-  abort(_err: Error): void {
-    this.closed = true;
-    this.peer.endInbox();
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    return {
-      next: (): Promise<IteratorResult<Uint8Array>> => {
-        if (this.inbox.length > 0) {
-          return Promise.resolve({ value: this.inbox.shift()!, done: false });
-        }
-        if (this.ended) {
-          return Promise.resolve({ value: undefined as unknown as Uint8Array, done: true });
-        }
-        return new Promise((resolve) => { this.pendingResolve = resolve; });
-      }
-    };
-  }
-}
-
-/** Two cross-wired `QueueStream`s: `a.send()` reaches `b`'s reader and vice versa. */
-function makePair(): [QueueStream, QueueStream] {
-  const a = new QueueStream();
-  const b = new QueueStream();
-  a.peer = b;
-  b.peer = a;
-  return [a, b];
-}
-
-/** A mock node that captures the registered protocol handler so it can be driven directly. */
-function captureHandler(): { node: Libp2p; invoke: (stream: unknown, conn: unknown) => Promise<void> } {
-  let handler: ((stream: unknown, conn: unknown) => Promise<void>) | undefined;
-  const node = {
-    handle: (_id: string, fn: (stream: unknown, conn: unknown) => Promise<void>) => { handler = fn; },
-    unhandle: () => {}
-  } as unknown as Libp2p;
-  return {
-    node,
-    invoke: async (stream: unknown, conn: unknown) => {
-      if (!handler) throw new Error('handler not registered');
-      await handler(stream, conn);
-    }
-  };
-}
-
-/** A `Libp2p` double whose `dialProtocol` bridges straight into the responder's OWN handler. */
-function bridgingDialer(invoke: (stream: unknown, conn: unknown) => Promise<void>): Libp2p {
-  return {
-    dialProtocol: async () => {
-      const [respEnd, initEnd] = makePair();
-      void invoke(respEnd, {});
-      return initEnd;
-    }
-  } as unknown as Libp2p;
-}
+import { captureHandler, bridgingDialer } from './formation-stream-helpers.js';
+import type { StrandProvisioner } from '../src/strand-solicitation.js';
 
 const RESPONDER_CADRE = ['/ip4/10.0.0.1/tcp/2/p2p/both-roles'];
 
@@ -148,7 +49,42 @@ async function formationArgs(
   return { invitation, disclosure, consent };
 }
 
-const rand = (): string => Math.random().toString(36).slice(2);
+/** Run one formation with this manager acting as BOTH responder and initiator. */
+async function formBothRoles(
+  purpose: string,
+  strandProvisioner: StrandProvisioner,
+  config?: StrandFormationManagerConfig
+): Promise<{ strandId: string }> {
+  const manager = new StrandFormationManager({
+    strandProvisioner,
+    partyId: 'both-roles-party',
+    cadrePeerAddrs: RESPONDER_CADRE,
+    config
+  });
+  const { node: respNode, invoke } = captureHandler();
+  manager.registerResponder(respNode);
+
+  const { invitation, disclosure, consent } = await formationArgs(`invite-${purpose}`, purpose);
+  return manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
+}
+
+/** A provisioner that never settles — forces the responder onto its own timeout path. */
+const stuckProvisioner: StrandProvisioner = {
+  provisionStrand: () => new Promise<{ strandId: string }>(() => { /* never settles */ })
+};
+
+/** A provisioner that settles well inside any budget under test. */
+function quickProvisioner(strandId: string): StrandProvisioner {
+  return {
+    provisionStrand: async () => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { strandId };
+    }
+  };
+}
+
+/** The responder's own clean timeout reply, as the initiator surfaces it. */
+const RESPONDER_TIMEOUT_REPLY = /Formation rejected: Formation provisioning timed out/;
 
 describe('StrandFormationManager: one provisionTimeoutMs config drives both roles', () => {
   it("the host's own provisionTimeoutMs beats the derived (larger) initiator await-response budget", async () => {
@@ -159,64 +95,35 @@ describe('StrandFormationManager: one provisionTimeoutMs config drives both role
     // when that clean reply arrives — the assertion below is that specific rejection, not
     // dialFormation's OWN generic 'Formation await-response timed out after Nms', which is
     // what a same-budget bug (initiator sharing the host's 200ms) would produce instead.
-    const token = `invite-budget-${rand()}`;
-    const manager = new StrandFormationManager({
-      strandProvisioner: { provisionStrand: () => new Promise<{ strandId: string }>(() => { /* never settles */ }) },
-      partyId: 'both-roles-party',
-      cadrePeerAddrs: RESPONDER_CADRE,
-      config: { provisionTimeoutMs: 200 }
-    });
-    const { node: respNode, invoke } = captureHandler();
-    manager.registerResponder(respNode);
-
-    const { invitation, disclosure, consent } = await formationArgs(token, 'budget');
-
     await expect(
-      manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke))
-    ).rejects.toThrow(/Formation rejected: Formation provisioning timed out/);
+      formBothRoles('budget', stuckProvisioner, { provisionTimeoutMs: 200 })
+    ).rejects.toThrow(RESPONDER_TIMEOUT_REPLY);
+  });
+
+  it('keeps the responder ahead of the initiator even when BOTH budgets are clamped', async () => {
+    // 9000ms is far above what a 1200ms session can hold, so both roles hit their ceiling.
+    // The ceilings are NOT the same number: the responder holds back the travel margin
+    // (capped at half its room), so it lands at (1200-200)/2 = 500ms while the initiator
+    // waits the full 1200-200 = 1000ms. Without that reserve both clamp to 1000ms and the
+    // responder's clean reply races the initiator's own timeout — the exact collapse the
+    // derived budget exists to prevent, reintroduced by the clamp.
+    await expect(
+      formBothRoles('clamped', stuckProvisioner, {
+        sessionTimeoutMs: 1200,
+        stepTimeoutMs: 200,
+        provisionTimeoutMs: 9000
+      })
+    ).rejects.toThrow(RESPONDER_TIMEOUT_REPLY);
   });
 
   it('provisionTimeoutMs omitted: both sides fall back to their own independent defaults', async () => {
-    const token = `invite-unset-${rand()}`;
-    const manager = new StrandFormationManager({
-      strandProvisioner: {
-        provisionStrand: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          return { strandId: 'strand-unset-ok' };
-        }
-      },
-      partyId: 'both-roles-party',
-      cadrePeerAddrs: RESPONDER_CADRE
-      // config omitted entirely — must not throw/hang deriving the initiator budget from nothing.
-    });
-    const { node: respNode, invoke } = captureHandler();
-    manager.registerResponder(respNode);
-
-    const { invitation, disclosure, consent } = await formationArgs(token, 'unset');
-
-    const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
+    // config omitted entirely — must not throw/hang deriving the initiator budget from nothing.
+    const result = await formBothRoles('unset', quickProvisioner('strand-unset-ok'));
     expect(result.strandId).toBe('strand-unset-ok');
   });
 
   it('provisionTimeoutMs: 0 behaves as unset, same as omitting it', async () => {
-    const token = `invite-zero-${rand()}`;
-    const manager = new StrandFormationManager({
-      strandProvisioner: {
-        provisionStrand: async () => {
-          await new Promise((resolve) => setTimeout(resolve, 20));
-          return { strandId: 'strand-zero-ok' };
-        }
-      },
-      partyId: 'both-roles-party',
-      cadrePeerAddrs: RESPONDER_CADRE,
-      config: { provisionTimeoutMs: 0 }
-    });
-    const { node: respNode, invoke } = captureHandler();
-    manager.registerResponder(respNode);
-
-    const { invitation, disclosure, consent } = await formationArgs(token, 'zero');
-
-    const result = await manager.formStrand(invitation, disclosure, consent, bridgingDialer(invoke));
+    const result = await formBothRoles('zero', quickProvisioner('strand-zero-ok'), { provisionTimeoutMs: 0 });
     expect(result.strandId).toBe('strand-zero-ok');
   });
 });

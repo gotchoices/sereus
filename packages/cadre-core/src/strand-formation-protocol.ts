@@ -89,7 +89,14 @@ const PROVISION_SETTLE_GRACE_MS = 2_000;
  * after the responder finishes (see {@link DEFAULT_PROVISION_TIMEOUT_MS}).
  * `StrandFormationManager` reuses this constant so a CONFIGURED budget preserves the same
  * margin the defaults do, instead of applying the same number to both sides and racing the
- * initiator's own timeout against the responder's clean rejection reply.
+ * initiator's own timeout against the responder's clean rejection reply. The responder's
+ * clamp ({@link provisionCeilingMs}) holds the same margin back, so the ordering survives a
+ * budget large enough that BOTH roles get clamped.
+ *
+ * NOTE: 3 s is a fixed assumption about how long the result frame takes to travel back. If
+ * formation ever runs over paths where that frame can take longer (a slow circuit relay, a
+ * congested mobile link), the margin is too thin and the initiator's timeout races the
+ * responder's reply again — raise it, or derive it from an observed round-trip.
  */
 export const PROVISION_RESPONSE_TRAVEL_MARGIN_MS = 3_000;
 /** Default initiator await-response budget (ms); see {@link DEFAULT_PROVISION_TIMEOUT_MS}. */
@@ -270,30 +277,46 @@ export function isValidResponderCreatesResult(response: FormationResultMessage):
 }
 
 /**
+ * Ceiling for a resolved provisioning budget.
+ *
+ * The session budget also has to cover the wire step that PRECEDES provisioning (the
+ * responder's contact read, the initiator's dial-connect), so a whole step is held back
+ * rather than triggering only on a literal overrun.
+ *
+ * `reserveMs` is the EXTRA room only the responder holds back, so its own budget still
+ * lands strictly before the initiator's larger await-response budget even when both are
+ * clamped — without it, any configured budget at or above `sessionTimeoutMs -
+ * stepTimeoutMs` clamps both roles onto the same number and the responder's clean
+ * rejection races the initiator's timeout again. Capped at half the remaining room (like
+ * {@link splitProvisionBudget}) so a small session config still spends most of it working.
+ */
+function provisionCeilingMs(sessionTimeoutMs: number, stepTimeoutMs: number, reserveMs: number): number {
+  const roomMs = sessionTimeoutMs - stepTimeoutMs;
+  return Math.max(1, roomMs - Math.min(reserveMs, Math.floor(roomMs / 2)));
+}
+
+/**
  * Resolve a caller-supplied provisioning budget: `0`/negative means "unset" (use
  * `defaultMs`). If the result would let provisioning outlive the session — no result
  * frame is ever sent, exactly the failure this budget exists to prevent — clamp it to
- * `sessionTimeoutMs - stepTimeoutMs` and log a warning.
- *
- * The session budget also has to cover the wire step that PRECEDES provisioning (the
- * responder's contact read, the initiator's dial-connect), so the guard leaves a whole
- * step of headroom rather than triggering only on a literal overrun.
+ * {@link provisionCeilingMs} and log a warning.
  */
 function resolveProvisionTimeoutMs(
   configured: number | undefined,
   defaultMs: number,
   sessionTimeoutMs: number,
   stepTimeoutMs: number,
-  role: string
+  role: string,
+  reserveMs = 0
 ): number {
   const requested = configured && configured > 0 ? configured : defaultMs;
-  if (requested + stepTimeoutMs >= sessionTimeoutMs) {
-    const clamped = Math.max(1, sessionTimeoutMs - stepTimeoutMs);
+  const ceilingMs = provisionCeilingMs(sessionTimeoutMs, stepTimeoutMs, reserveMs);
+  if (requested >= ceilingMs) {
     log(
-      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (step %dms); clamping to %dms',
-      role, requested, sessionTimeoutMs, stepTimeoutMs, clamped
+      '%s provisionTimeoutMs %dms leaves no room under sessionTimeoutMs %dms (step %dms, reserve %dms); clamping to %dms',
+      role, requested, sessionTimeoutMs, stepTimeoutMs, reserveMs, ceilingMs
     );
-    return clamped;
+    return ceilingMs;
   }
   return requested;
 }
@@ -338,7 +361,9 @@ export interface FormationListenerOptions {
   /**
    * Budget for the `provisionStrand` hook call — distinct from `stepTimeoutMs` because
    * provisioning is real work, not a bare wire read/write. Default 12 s; `0`/unset uses
-   * the default. See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering rationale.
+   * the default; a value that would outlive the session is clamped ({@link
+   * provisionCeilingMs}). See {@link DEFAULT_PROVISION_TIMEOUT_MS} for the full ordering
+   * rationale.
    */
   provisionTimeoutMs?: number;
   maxConcurrentSessions?: number;
@@ -367,7 +392,8 @@ export class FormationListener {
     this.stepTimeoutMs = options.stepTimeoutMs ?? DEFAULT_STEP_TIMEOUT_MS;
     const split = splitProvisionBudget(resolveProvisionTimeoutMs(
       options.provisionTimeoutMs, DEFAULT_PROVISION_TIMEOUT_MS,
-      this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener'
+      this.sessionTimeoutMs, this.stepTimeoutMs, 'FormationListener',
+      PROVISION_RESPONSE_TRAVEL_MARGIN_MS
     ));
     this.provisionWorkMs = split.workMs;
     this.provisionGraceMs = split.graceMs;

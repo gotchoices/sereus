@@ -5,7 +5,6 @@ import {
   sign as cryptoSign,
 } from '@optimystic/quereus-plugin-crypto';
 import type { Database } from '@quereus/quereus';
-import type { Libp2p } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { ControlDatabase } from '../src/control-database.js';
 import { InvitationExhaustedError } from '../src/control-database.js';
@@ -22,6 +21,7 @@ import { canonicalJson } from '../src/canonical-json.js';
 import { StrandFormationManager } from '../src/strand-formation-manager.js';
 import { generateStrandMemberKey } from '../src/strand-member-key.js';
 import { mintContactJoiner, mintContactConsent, invalidConsentContacts } from './formation-consent-helper.js';
+import { MockStream, captureHandler } from './formation-stream-helpers.js';
 import type {
   FormationContactMessage,
   FormationResultMessage,
@@ -89,38 +89,6 @@ function decodeFirstFrame<T>(chunks: Uint8Array[]): T {
   for (const c of chunks) { all.set(c, off); off += c.length; }
   const length = new DataView(all.buffer, all.byteOffset, all.byteLength).getUint32(0, false);
   return JSON.parse(new TextDecoder().decode(all.subarray(4, 4 + length))) as T;
-}
-
-/**
- * Minimal in-memory libp2p stream: yields the supplied inbound frames to the
- * reader and records everything the listener writes back via `send()`.
- */
-class MockStream {
-  readonly sent: Uint8Array[] = [];
-  closed = false;
-  constructor(private readonly inbound: Uint8Array[]) {}
-  async *[Symbol.asyncIterator](): AsyncIterator<Uint8Array> {
-    for (const chunk of this.inbound) yield chunk;
-  }
-  send(data: Uint8Array): boolean { this.sent.push(data); return true; }
-  async close(): Promise<void> { this.closed = true; }
-  abort(): void {}
-}
-
-/** A mock node that captures the registered protocol handler so we can drive it directly. */
-function captureHandler(): { node: Libp2p; invoke: (stream: MockStream) => Promise<void> } {
-  let handler: ((stream: unknown, conn: unknown) => Promise<void>) | undefined;
-  const node = {
-    handle: (_id: string, fn: (stream: unknown, conn: unknown) => Promise<void>) => { handler = fn; },
-    unhandle: () => {}
-  } as unknown as Libp2p;
-  return {
-    node,
-    invoke: async (stream: MockStream) => {
-      if (!handler) throw new Error('handler not registered');
-      await handler(stream, {});
-    }
-  };
 }
 
 const REAL_DISCLOSURE: StrandFormationDisclosure = { partyId: 'initiator-key', purpose: 'consent-test' };

@@ -243,6 +243,8 @@ export class StrandFormationManager {
    * `resolveProvisionTimeoutMs`'s own "`0`/negative means unset" rule so an unset config
    * still lets both sides fall back to their own independent defaults; must NOT hardcode
    * `DEFAULT_PROVISION_TIMEOUT_MS` here, or the per-role clamping downstream is defeated.
+   * A value too large for the session is clamped per role, and the responder's ceiling holds
+   * the same margin back, so the ordering survives there too.
    */
   private initiatorProvisionTimeoutMs(): number | undefined {
     const host = this.config.provisionTimeoutMs;
