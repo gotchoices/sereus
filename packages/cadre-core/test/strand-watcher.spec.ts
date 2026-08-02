@@ -199,5 +199,228 @@ describe('StrandWatcher', () => {
       await watcher.stop();
     });
   });
+
+  describe('failed launch retry', () => {
+    // pollInterval is the backoff base: first retry is due `pollInterval` ms after
+    // the failure, then 2x, 4x, ... A small interval keeps the injected clock readable.
+    const INTERVAL = 1000;
+
+    it('should retry a strand whose onStrandAdded threw', async () => {
+      const strands = [createStrand('flaky-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; throw new Error('launch failed'); },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      await watcher.forcePoll(0);
+      expect(addCount).toBe(1);
+      // A failed launch must not leave the strand marked as known/added.
+      expect(watcher.getKnownStrands().size).toBe(0);
+
+      // Backoff of one interval has elapsed - retry.
+      await watcher.forcePoll(INTERVAL);
+      expect(addCount).toBe(2);
+
+      await watcher.stop();
+    });
+
+    it('should defer the retry until the backoff has elapsed', async () => {
+      const strands = [createStrand('flaky-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; throw new Error('launch failed'); },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      await watcher.forcePoll(0);
+      expect(addCount).toBe(1);
+
+      // Still inside the first backoff window - no retry.
+      await watcher.forcePoll(INTERVAL - 1);
+      expect(addCount).toBe(1);
+
+      // Second failure doubles the window: due at INTERVAL + 2*INTERVAL.
+      await watcher.forcePoll(INTERVAL);
+      expect(addCount).toBe(2);
+      await watcher.forcePoll(INTERVAL * 2);
+      expect(addCount).toBe(2);
+      await watcher.forcePoll(INTERVAL * 3);
+      expect(addCount).toBe(3);
+
+      await watcher.stop();
+    });
+
+    it('should not re-add a strand whose launch succeeded', async () => {
+      const strands = [createStrand('good-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      await watcher.forcePoll(0);
+      await watcher.forcePoll(INTERVAL * 100);
+      expect(addCount).toBe(1);
+      expect(watcher.getKnownStrands().size).toBe(1);
+
+      await watcher.stop();
+    });
+
+    it('should reset the backoff after a successful add', async () => {
+      const strands = [createStrand('recovering-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      let failNext = true;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => {
+          addCount++;
+          if (failNext) throw new Error('launch failed');
+        },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      await watcher.forcePoll(0);
+      expect(addCount).toBe(1);
+
+      failNext = false;
+      await watcher.forcePoll(INTERVAL);
+      expect(addCount).toBe(2);
+      expect(watcher.getKnownStrands().size).toBe(1);
+
+      // Row disappears then returns: the successful add cleared the failure state,
+      // so the re-add is a fresh first attempt with no backoff to wait out.
+      strands.length = 0;
+      await watcher.forcePoll(INTERVAL);
+      expect(watcher.getKnownStrands().size).toBe(0);
+
+      strands.push(createStrand('recovering-strand'));
+      failNext = true;
+      await watcher.forcePoll(INTERVAL);
+      expect(addCount).toBe(3);
+
+      await watcher.stop();
+    });
+
+    it('should clear failure state when the strand row disappears', async () => {
+      const strands = [createStrand('vanishing-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; throw new Error('launch failed'); },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      // Two failures -> next attempt would otherwise be due at 3 * INTERVAL.
+      await watcher.forcePoll(0);
+      await watcher.forcePoll(INTERVAL);
+      expect(addCount).toBe(2);
+
+      // Row vanishes; the pruning pass drops the backoff entry.
+      strands.length = 0;
+      await watcher.forcePoll(INTERVAL);
+
+      // Row returns well before the old window would have expired - attempted anyway.
+      strands.push(createStrand('vanishing-strand'));
+      await watcher.forcePoll(INTERVAL + 1);
+      expect(addCount).toBe(3);
+
+      await watcher.stop();
+    });
+
+    it('should never fire onStrandRemoved for a strand that never launched', async () => {
+      const strands = [createStrand('never-launched')];
+      const queryable = createMockQueryable(() => strands);
+
+      const removedIds: string[] = [];
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { throw new Error('launch failed'); },
+        onStrandRemoved: async (id) => { removedIds.push(id); }
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+
+      await watcher.forcePoll(0);
+      strands.length = 0;
+      await watcher.forcePoll(INTERVAL);
+
+      expect(removedIds).toHaveLength(0);
+
+      await watcher.stop();
+    });
+
+    it('should clear failure state on stop', async () => {
+      const strands = [createStrand('restart-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; throw new Error('launch failed'); },
+        onStrandRemoved: async () => {}
+      };
+
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, INTERVAL);
+      await watcher.start();
+      await watcher.forcePoll(0);
+      expect(addCount).toBe(1);
+
+      await watcher.stop();
+      await watcher.start();
+
+      // Fresh watcher state: the attempt is made immediately, not after a backoff.
+      await watcher.forcePoll(0);
+      expect(addCount).toBe(2);
+
+      await watcher.stop();
+    });
+
+    it('should cap the backoff at five minutes', async () => {
+      const strands = [createStrand('hopeless-strand')];
+      const queryable = createMockQueryable(() => strands);
+
+      let addCount = 0;
+      const callbacks: StrandWatcherCallbacks = {
+        onStrandAdded: async () => { addCount++; throw new Error('launch failed'); },
+        onStrandRemoved: async () => {}
+      };
+
+      // 60 s interval: uncapped, the 10th failure would schedule 60s * 2^9 = ~8.5 hours.
+      const watcher = new StrandWatcher(queryable, callbacks, { mode: 'all' }, 60_000);
+      await watcher.start();
+
+      let now = 0;
+      for (let i = 0; i < 12; i++) {
+        await watcher.forcePoll(now);
+        now += 5 * 60 * 1000; // one full cap window
+      }
+      expect(addCount).toBe(12);
+
+      await watcher.stop();
+    });
+  });
 });
 

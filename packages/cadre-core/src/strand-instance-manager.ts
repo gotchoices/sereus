@@ -172,7 +172,16 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Start a new strand instance
+   * Start a new strand instance.
+   *
+   * A failed launch leaves NOTHING tracked: the instance and its retained launch
+   * config are both dropped before the error is rethrown, so the strand id is
+   * free for a genuine retry. This matches the pre-registration failure path
+   * (a rejected schema signature, which throws before anything is recorded) —
+   * both failure modes of this call leave the same residue: none. Callers learn
+   * of the failure from the rejected promise (and, on the control-discovered
+   * path, from CadreNode's `strand:error` event), not from an error record left
+   * behind in `instances`.
    */
   async startStrand(config: StartStrandConfig): Promise<StrandInstance> {
     const { strandRow, sAppConfig } = config;
@@ -228,9 +237,15 @@ export class StrandInstanceManager {
       log('Strand %s started successfully with sApp %s', strandId, sAppConfig.id);
       return instance;
     } catch (error) {
+      // Status/error first — the (now discarded) record is still what `log` reports on.
       instance.status = 'error';
       instance.error = error instanceof Error ? error.message : String(error);
       log('Failed to start strand %s: %s', strandId, instance.error);
+      // Drop the dead record so this strand id can be launched again. Keep the
+      // `launchConfigs` has an entry iff `instances` does invariant — resumeStrand
+      // reads both, and a config without an instance would strand the config.
+      this.instances.delete(strandId);
+      this.launchConfigs.delete(strandId);
       throw error;
     }
   }

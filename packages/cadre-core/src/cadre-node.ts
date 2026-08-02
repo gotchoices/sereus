@@ -2722,6 +2722,13 @@ export class CadreNode implements SAppIdLookup {
         strandId: strand.Id,
         error: error instanceof Error ? error : new Error(String(error))
       });
+      // Rethrow after the event: the only caller is the StrandWatcher's
+      // onStrandAdded callback, which uses the rejection to decide whether the
+      // strand was really added. Swallowing it here would have the watcher mark
+      // the strand as known-and-added, so no later poll would ever retry it.
+      // The watcher catches and logs, so this never escapes as an unhandled
+      // rejection.
+      throw error;
     }
   }
 

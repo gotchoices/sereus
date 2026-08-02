@@ -18,6 +18,13 @@ describe('StrandInstanceManager', () => {
 
   const testSchema = 'create table Test (id text primary key);';
   const testVersion = '1.0.0';
+  /**
+   * Unparseable sApp DDL (no table name): StrandDatabase.initialize() throws
+   * "Expected table name in declaration" while applying it. Used to drive a
+   * failure AFTER the instance is registered — the schema-signature rejections
+   * below fail earlier, before anything is recorded.
+   */
+  const BAD_SCHEMA = 'create table (id text primary key);';
 
   // Helper to create test strand rows
   function createStrandRow(id: string, type: 'o' | 'c' = 'o'): StrandRow {
@@ -223,6 +230,59 @@ describe('StrandInstanceManager', () => {
       expect(instance.status).toBe('active');
 
       await manager.stopAll();
+    }, 30000);
+
+    it('should leave nothing tracked when the runtime build fails', async () => {
+      const manager = new StrandInstanceManager();
+      // An unparseable sApp schema makes StrandDatabase.initialize() throw, i.e.
+      // a failure AFTER the instance has been registered - the schema-signature
+      // rejections above fail before registration. Both must leave no residue.
+      const config = createStartConfig('doomed-strand', {
+        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        requireSignedSchemas: false,
+        mode: 'bootstrap'
+      });
+
+      await expect(manager.startStrand(config)).rejects.toThrow();
+
+      expect(manager.getInstance('doomed-strand')).toBeUndefined();
+      expect(manager.hasStrand('doomed-strand')).toBe(false);
+      expect(manager.getInstances().size).toBe(0);
+    }, 30000);
+
+    it('should allow a retry after a failed launch to reach active', async () => {
+      const manager = new StrandInstanceManager();
+      const strandId = 'retry-strand';
+
+      await expect(manager.startStrand(createStartConfig(strandId, {
+        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        requireSignedSchemas: false,
+        mode: 'bootstrap'
+      }))).rejects.toThrow();
+
+      // Same id, now with a valid schema: the retry must actually build a runtime
+      // rather than hand back the dead record from the first attempt.
+      const instance = await manager.startStrand(createStartConfig(strandId, { mode: 'bootstrap' }));
+
+      expect(instance.status).toBe('active');
+      expect(instance.error).toBeUndefined();
+      expect(instance.libp2pNode).toBeDefined();
+      expect(instance.database).toBeDefined();
+
+      await manager.stopAll();
+    }, 30000);
+
+    it('should drop the retained launch config when the runtime build fails', async () => {
+      const manager = new StrandInstanceManager();
+      // The `launchConfigs has an entry iff instances does` invariant: a config left
+      // behind would let resumeStrand rebuild a strand nothing tracks.
+      await expect(manager.startStrand(createStartConfig('orphan-config-strand', {
+        sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
+        requireSignedSchemas: false,
+        mode: 'bootstrap'
+      }))).rejects.toThrow();
+
+      await expect(manager.resumeStrand('orphan-config-strand')).rejects.toThrow(/not tracked/);
     }, 30000);
   });
 

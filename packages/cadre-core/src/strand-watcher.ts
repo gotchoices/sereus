@@ -12,6 +12,22 @@ const log = debug('sereus:cadre:strand-watcher');
 type FilterDecision = 'pass' | 'reject' | 'defer';
 
 /**
+ * Ceiling on the retry delay for a strand whose launch keeps failing. Attempts
+ * are never abandoned — the failure this backoff exists for (a transient network
+ * or storage fault) can last a long time — but a permanently-unlaunchable strand
+ * must not re-attempt on every poll and storm the host app with `strand:error`.
+ */
+const MAX_RETRY_BACKOFF_MS = 5 * 60 * 1000;
+
+/** Per-strand consecutive-failure state driving the launch retry backoff. */
+interface StrandFailureState {
+  /** Consecutive `onStrandAdded` failures since the last success. */
+  failures: number;
+  /** Earliest wall-clock time (ms) at which the next attempt may run. */
+  nextAttemptAt: number;
+}
+
+/**
  * Extended strand row that includes the sAppId for filtering purposes.
  * The sAppId is provided by the hosting application, not from the control network.
  */
@@ -59,6 +75,8 @@ export class StrandWatcher {
   private knownStrands: Map<string, StrandRow> = new Map();
   /** Ids admitted under a `defer` decision; re-evaluated each poll until they resolve. */
   private provisional: Set<string> = new Set();
+  /** Ids whose last launch attempt threw, with the backoff gating their retry. */
+  private failureStates: Map<string, StrandFailureState> = new Map();
   private pollTimer: ReturnType<typeof setInterval> | null = null;
   private initialPollTimer: ReturnType<typeof setTimeout> | null = null;
   private running = false;
@@ -113,9 +131,23 @@ export class StrandWatcher {
   }
 
   /**
-   * Poll for strand changes
+   * Record a failed launch attempt and schedule when the strand may be retried:
+   * `pollInterval * 2^(failures-1)`, capped at {@link MAX_RETRY_BACKOFF_MS}.
    */
-  private async poll(): Promise<void> {
+  private recordFailure(strandId: string, now: number): void {
+    const failures = (this.failureStates.get(strandId)?.failures ?? 0) + 1;
+    const delay = Math.min(this.pollInterval * 2 ** (failures - 1), MAX_RETRY_BACKOFF_MS);
+    this.failureStates.set(strandId, { failures, nextAttemptAt: now + delay });
+    log('Strand %s launch failed (%d consecutive) - next attempt in %dms', strandId, failures, delay);
+  }
+
+  /**
+   * Poll for strand changes.
+   *
+   * @param now - Wall-clock reference for the retry backoff. Injectable so tests
+   *   can advance time deterministically without fake timers.
+   */
+  private async poll(now: number = Date.now()): Promise<void> {
     if (!this.running) return;
 
     try {
@@ -125,9 +157,13 @@ export class StrandWatcher {
       // Find added strands
       for (const strand of currentStrands) {
         if (this.knownStrands.has(strand.Id)) continue;
+        const failure = this.failureStates.get(strand.Id);
+        if (failure && now < failure.nextAttemptAt) continue; // backing off after a failed launch
         const decision = this.evaluateFilter(strand);
         if (decision === 'reject') continue;
         log('Strand added: %s', strand.Id);
+        // Set BEFORE the await: this doubles as the in-flight guard that stops the
+        // interval timer from starting a second concurrent launch for the same strand.
         this.knownStrands.set(strand.Id, strand);
         if (decision === 'defer') {
           // Provisional admission: sAppId unknown, re-check on later polls.
@@ -135,8 +171,15 @@ export class StrandWatcher {
         }
         try {
           await this.callbacks.onStrandAdded(strand);
+          this.failureStates.delete(strand.Id);
         } catch (error) {
           log('Error handling strand add for %s: %o', strand.Id, error);
+          // A failed launch leaves nothing running (StrandInstanceManager drops the
+          // record), so forget the strand and let a later poll retry it — gated by
+          // the backoff recorded here.
+          this.knownStrands.delete(strand.Id);
+          this.provisional.delete(strand.Id);
+          this.recordFailure(strand.Id, now);
         }
       }
 
@@ -163,7 +206,9 @@ export class StrandWatcher {
         // decision === 'defer': still unknown, leave provisional for next poll.
       }
 
-      // Find removed strands
+      // Find removed strands. A strand whose launch failed is no longer in
+      // knownStrands, so it correctly never fires onStrandRemoved — nothing was
+      // ever started for it.
       for (const [strandId] of this.knownStrands) {
         if (!currentMap.has(strandId)) {
           log('Strand removed: %s', strandId);
@@ -174,6 +219,14 @@ export class StrandWatcher {
           } catch (error) {
             log('Error handling strand remove for %s: %o', strandId, error);
           }
+        }
+      }
+
+      // Drop backoff state for strands whose control-network row is gone; a row
+      // that reappears is a fresh strand and gets a fresh first attempt.
+      for (const strandId of [...this.failureStates.keys()]) {
+        if (!currentMap.has(strandId)) {
+          this.failureStates.delete(strandId);
         }
       }
     } catch (error) {
@@ -231,6 +284,7 @@ export class StrandWatcher {
 
     this.knownStrands.clear();
     this.provisional.clear();
+    this.failureStates.clear();
     log('StrandWatcher stopped');
   }
 
@@ -243,9 +297,12 @@ export class StrandWatcher {
 
   /**
    * Force an immediate poll (useful for testing)
+   *
+   * @param now - Optional wall-clock reference, forwarded to the retry backoff so
+   *   a test can advance past a strand's next-attempt time without fake timers.
    */
-  async forcePoll(): Promise<void> {
-    await this.poll();
+  async forcePoll(now?: number): Promise<void> {
+    await this.poll(now);
   }
 }
 

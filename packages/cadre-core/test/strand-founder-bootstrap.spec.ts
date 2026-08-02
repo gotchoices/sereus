@@ -114,9 +114,9 @@ describe('founder bootstrap plumbing (StrandInstanceManager)', () => {
     await expect(manager.startStrand(startConfig(strandRow, true))).rejects.toThrow(/MemberPrivateKey/i);
 
     // The failed bring-up rolled back: no live database handle leaks (releaseRuntime
-    // ran via buildStrandRuntime's catch), and the instance is marked errored.
-    const instance = manager.getInstance('founder-closed-nokey');
-    expect(instance?.status).toBe('error');
-    expect(instance?.database).toBeUndefined();
+    // ran via buildStrandRuntime's catch) and the dead record is dropped, so the
+    // strand id is free for a retry rather than latched at status 'error'.
+    expect(manager.getInstance('founder-closed-nokey')).toBeUndefined();
+    expect(manager.getInstances().size).toBe(0);
   }, 30_000);
 });
