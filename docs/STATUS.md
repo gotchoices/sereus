@@ -981,7 +981,10 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   path (including that the hook is posted the five signed fields and nothing else), hook refusal
   with the seat provably still spendable, an unenrolled approver key, a key removed after the
   invitation went out, and a replayed sign-off. Enrollment also accepts any non-blank text as a
-  key (no base64url/length check), so a typo enrolls silently — `backlog/debt-control-key-enrollment-accepts-malformed-keys`.
+  key with a base64url/32-byte shape check (`requireEd25519PublicKeyB64`), so a typo is rejected at
+  enrollment naming the bad value instead of enrolling silently; the same check now also guards every
+  pinned owner key (`--pin-owner-key` / `CADRE_OWNER_KEYS`, `trustedOwners.pinnedKeys`, an invite's
+  `ownerKeys`), all-or-nothing per batch. Curve membership is still unchecked in both places.
   Invitations without a `ValidationUrl` (every e2e above) are unaffected.
 - [x] **A party owner can now remove a shared strand party-wide (2026-07-30).**
   `CadreNode.unpublishStrand` — the first caller of `ControlDatabase.deleteStrand` — deletes the

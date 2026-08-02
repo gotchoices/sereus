@@ -68,13 +68,30 @@ export function ed25519PublicKeyFromPrivate(privateKeyB64: string): string {
   return getPublicKey(privateKeyB64, 'ed25519', 'base64url', 'base64url') as string;
 }
 
+/** Longest rejected key value echoed back in an error — a real key is 43 base64url chars. */
+const REJECTED_VALUE_ECHO_LIMIT = 64;
+
+/**
+ * Render a rejected value for an error message, capped: owner keys now reach this check
+ * from remote-supplied fields (a `CadreInvite`'s `ownerKeys`, a donation request's
+ * `ownerKeys`), so an unbounded echo would let a peer turn one junk string into a
+ * megabyte of log line.
+ */
+function describeRejected(value: string): string {
+  return value.length <= REJECTED_VALUE_ECHO_LIMIT
+    ? value
+    : `${value.slice(0, REJECTED_VALUE_ECHO_LIMIT)}… (${value.length} chars)`;
+}
+
 /**
  * Reject a value that isn't shaped like a base64url-encoded 32-byte Ed25519 public key
  * before it reaches the control database, where a malformed key would otherwise sit
  * indistinguishable from a real one until some later, unrelated signature check fails.
  *
  * Trims first, reusing the blank-value message for an empty result so that case keeps its
- * existing wording instead of a confusing base64url error. Does not check the decoded bytes
+ * existing wording instead of a confusing base64url error. Every rejection names the offending
+ * value (capped, see {@link describeRejected}) — with several keys in one batch, the message is
+ * the only thing that says WHICH one. Does not check the decoded bytes
  * are a valid point on the Ed25519 curve — a well-formed-but-off-curve key still fails
  * signature verification later exactly like any other wrong key.
  *
@@ -92,17 +109,16 @@ export function requireEd25519PublicKeyB64(value: string, label: string): string
   try {
     decoded = uint8ArrayFromString(trimmed, 'base64url');
   } catch (error) {
-    // NOTE: echoes the whole rejected value so an operator can see their typo. Every caller
-    // today is a key typed or pasted at a terminal; if one ever takes the value from a remote
-    // peer, cap the echo so a megabyte of junk cannot become a megabyte of log line.
     throw new Error(
-      `A ${label} must be a base64url-encoded Ed25519 public key (could not decode "${trimmed}" as base64url)`,
+      `A ${label} must be a base64url-encoded Ed25519 public key (could not decode "${describeRejected(trimmed)}" as base64url)`,
       { cause: error },
     );
   }
 
   if (decoded.length !== 32) {
-    throw new Error(`A ${label} must be a base64url-encoded 32-byte Ed25519 public key (decoded to ${decoded.length} bytes)`);
+    throw new Error(
+      `A ${label} must be a base64url-encoded 32-byte Ed25519 public key ("${describeRejected(trimmed)}" decoded to ${decoded.length} bytes)`,
+    );
   }
 
   return trimmed;

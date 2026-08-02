@@ -191,7 +191,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_HIBERNATION_ENABLED` | `hibernation.enabled` | Enable strand hibernation |
 | `CADRE_NODE_STATE_DIR` | `nodeState.dir` | Directory for this node's durable node-local state (trusted-owner anchor, retained cold-start dial targets). Defaults to the directory holding the config file — override when that directory is not writable by the node's user |
 | `CADRE_SEED_TOKEN` | _(env only)_ | Bearer token gating `POST /seed`. **Unset = seed endpoint disabled**; when set, `POST /seed` requires `Authorization: Bearer <token>` |
-| `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor |
+| `CADRE_OWNER_KEYS` | _(env only)_ | Comma-separated base64url owner keys pinned as cold-start seed-trust anchors (unions with repeatable `--pin-owner-key`). A cold node (empty `OwnerKey` table) **rejects** `--seed` / `POST /seed` unless the seed's signer is pinned here or already DB-known. Independent of `CADRE_SEED_TOKEN`: bearer is the *delivery* gate, this is the *trust* anchor. Each entry must be a base64url 32-byte Ed25519 public key; a malformed entry fails startup naming the bad value, rather than sitting in the anchor and silently matching no signer |
 
 Environment variables override config file values. A variable that is **set but
 empty** (or whitespace-only) counts as unspecified and is ignored — this is what

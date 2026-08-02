@@ -38,10 +38,14 @@ function redactContainer(container: Container): Omit<Container, 'seedToken'> {
 
 /**
  * Validate the optional `pinnedOwnerKeys` field of a create request: absent, or
- * an array of strings. The key *contents* are deliberately not checked — a
- * malformed pin simply never matches a real seed signer, so the node refuses the
- * seed with the trust policy's reason rather than failing to start, and the
- * provider does not need to know the ed25519 encoding to accept a request.
+ * an array of strings. The key *contents* are not checked here — the provider
+ * does not depend on `@serfab/cadre-core` and so does not know the Ed25519
+ * encoding.
+ *
+ * NOTE: since `cadre-cli start` began rejecting a malformed `CADRE_OWNER_KEYS`
+ * entry outright, a create request carrying a typo'd pin is accepted with 201
+ * and then produces a container that fails to boot, instead of a 400 naming the
+ * bad key. Tracked as `backlog/bug-hosted-owner-key-pins-unchecked-at-api-boundary`.
  */
 function validatePinnedOwnerKeys(value: unknown): { keys?: string[] } | { error: string } {
   if (value === undefined) return {};

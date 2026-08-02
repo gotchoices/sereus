@@ -92,11 +92,26 @@ describe('requireEd25519PublicKeyB64', () => {
     expect((caught as Error).cause).toBeInstanceOf(Error);
   });
 
-  it('rejects a value that decodes to the wrong byte length', () => {
+  it('rejects a value that decodes to the wrong byte length, naming the offending value', () => {
     const tooShort = u8ToString(new Uint8Array(16), 'base64url');
     expect(() => requireEd25519PublicKeyB64(tooShort, 'validation key')).toThrow(
-      /A validation key must be a base64url-encoded 32-byte Ed25519 public key \(decoded to 16 bytes\)/,
+      new RegExp(`A validation key must be a base64url-encoded 32-byte Ed25519 public key \\("${tooShort}" decoded to 16 bytes\\)`),
     );
+  });
+
+  // Owner keys reach this check from remote-supplied fields (an invite's ownerKeys, a
+  // donation request's), so a peer must not be able to turn one junk string into an
+  // arbitrarily long log line.
+  it('caps the echoed value for an over-long rejected key', () => {
+    const flood = 'A'.repeat(5000);
+    let message = '';
+    try {
+      requireEd25519PublicKeyB64(flood, 'validation key');
+    } catch (error) {
+      message = (error as Error).message;
+    }
+    expect(message).toContain('(5000 chars)');
+    expect(message.length).toBeLessThan(200);
   });
 
   it('accepts a well-formed but off-curve 32-byte value (curve validation is out of scope)', () => {

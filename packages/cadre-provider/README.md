@@ -227,9 +227,10 @@ curl -X POST $URL/api/v1/containers \
 
 The keys flow only from a tenant's own create request into that tenant's own
 container; there is **no provider-level default**, because a provider-wide pin would
-let one tenant's owner seed another tenant's node. Keys are not validated for
-encoding — a malformed pin never matches a real signer, so the node refuses the seed
-rather than failing to start — but the list is trimmed, blank entries dropped and
+let one tenant's owner seed another tenant's node. Key *encoding* is not validated by
+the provider API — but the node itself now rejects a malformed pin at startup, so a
+typo'd key is accepted here with `201` and surfaces as a container that fails to boot
+rather than as a `400` naming the bad key. The list is trimmed, blank entries dropped and
 duplicates collapsed, so the container record shows exactly the pins the node got and
 a list of only blanks is the same as omitting the field. The first accepted seed
 anchors the key in `/data`, so
