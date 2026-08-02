@@ -260,3 +260,88 @@ Phase 4 — tests
   and the package type check. Do not run the integration suite here — it belongs to the
   follow-up ticket, and several of its scenarios are already failing upstream
   (`tickets/.pre-existing-known.md`).
+
+## Context map (prior run — budget-stopped before any code change)
+
+A previous agent run spent its budget on discovery only. **No file was modified; the
+tree is clean of this ticket's work.** Everything below is verified against the code as
+of commit 03a1045 — start implementing directly from this map.
+
+### Schema sites
+- `schemas/control.qsql`: `Revocation` table lines 632–699 (`Immutable` at 646,
+  `RowIsGone` 657–663, `Authorized` 696–698, block comment 615–631).
+- `packages/cadre-core/src/control-schema.ts`: identical text at lines 643–710 inside
+  the `CONTROL_SCHEMA` template literal (ends line 713 with `apply schema CadreControl;`).
+- Drift spec (`control-schema-drift.spec.ts`) normalizes ONLY CRLF and trailing
+  whitespace — the two edits must be textually identical, comments included.
+
+### Database layer (`packages/cadre-core/src/control-database.ts`)
+- `queryCadrePeers` 655, `queryValidationKeys` 679, `queryStampId` 697 (private; wrappers
+  715–736), `queryRevokedStamps` 752, `queryPeerRecord` 771, `queryDeviceToken` 837.
+- `deleteGuardedRow` 1265; its tombstone INSERT is at 1293–1297
+  (`insert into CadreControl.Revocation (TableName, RowKey, StampId) ... values (?, ?, ?)`)
+  — add `ReissuedAt` column with literal `0` param here.
+- `inTransaction` 1326 (private, bare — no lock), `withWriteLock` 1436,
+  `lockedWithRetry` 1458, `execWrite` 1472. Pattern for the new public
+  `reissueRevocations`: mirror `deleteDeviceToken` (line 1224) —
+  `this.lockedWithRetry(() => { ...sign per row...; return this.inTransaction('reissue revocations', body) })`.
+  Do NOT call `execWrite` from inside a locked body (non-re-entrant lock).
+- `queryRevocations` needs no lock (reads are unlocked by design).
+- Imports/type re-exports at top (lines 10–19): `CadrePeerRow` etc. come from
+  `./types.js`; put `RevocationRow` in `types.ts` next to `CadrePeerRow` (line 821) and
+  import it here.
+
+### Action tag
+- `control-authorization.ts`: `ControlAction` union at line 92 with a doc comment
+  enumerating each tag (lines 74–91) — add `'reissue'` to both union and doc.
+- `peer-authorization.ts`: `revocationDigest` at line 146 signs the `'remove'` tombstone
+  digest (docs at 131–145). The reissue digest has one MORE field (`ReissuedAt`), so if a
+  helper is added, it is a new `revocationReissueDigest(tableName, rowKey, stampId, reissuedAt)`
+  — but `ControlDatabase.reissueRevocations` can just use `buildAuthorizationMessage`
+  (exported from control-database.ts) like `deleteGuardedRow` does. Note: SQL `digest()`
+  coerces args to text; pass `ReissuedAt` as a string in the TS field vector
+  (`String(reissuedAt)`) and confirm equality against the SQL side in the spec.
+
+### Read paths (`packages/cadre-core/src/cadre-node.ts`)
+- `listAuthorizedMembers` 3842–3862: revoked-stamp filter at 3848–3851 (drop it), doc
+  bullet 5 at 3824–3828 (rewrite to "exclusion happens in queryCadrePeers").
+- `queryCadrePeers` consumers that inherit the new filter: `listMembers` 3794,
+  `reconstructAuthoredMembership` 2150 (its sweep then skips revoked rows — correct),
+  `resolveCohortSeed` 3327, plus `strand-cohort.ts` (deriveCohortMembers),
+  integration harness `test-network.ts:324`, reference-app-web diagnostics.
+- `queryPeerRecord` consumers: cadre-node 1337/1371/1578/2179/2237/2469. The 1337/1371
+  sites are the CadrePeer upsert path — CHECK they only use the record for
+  publish/refresh decisions, not as the insert-if-absent guard (the guard uses
+  `queryStampId`, which stays raw). `resolveDeviceToken`'s own revoked check is at 2500
+  (DeviceToken — untouched).
+- `reissuePeerAuthorize` 2263 is the monotonic-bump precedent:
+  `Math.max(Date.now(), (current ?? 0) + 1)`.
+
+### Tests
+- `control-revocation-replay.spec.ts` (1367 lines): fixture boots a CadreNode per test
+  (beforeEach 453–469), helpers `rawTombstone` 300, `tombstoneStamp` 322,
+  `inTransaction` 333, `admitPeer` 359, `removeCadrePeer` 378, `signAs`/`signB64` 83/88,
+  `expectConstraintFailure` from `./control-constraint-helpers.js`.
+  - The `Immutable` test is at 1040–1065 ("a tombstone is permanent"): its unsigned
+    DELETE must re-point to `'NoDelete'`; its unsigned UPDATE (`set StampId = ?`) will
+    now fail a different constraint — determine empirically which fires first
+    (`ReissueOnly` vs `AuthorizedReissue`) and pin that name, or restructure into two
+    probes each pinned unambiguously (preferred: a signed update changing StampId →
+    `ReissueOnly`; an unsigned counter-only bump → `AuthorizedReissue`).
+  - Header comment lines 40–50 name `RowIsGone` / `Immutable` — update the wording.
+  - Existing tombstone INSERTs omit `ReissuedAt` (default 0) — they keep passing;
+    `FreshTombstone` only rejects explicit non-zero.
+  - File is >1200 lines and its own header says split rather than grow — put the reissue
+    + read-path suites in a NEW `control-revocation-reissue.spec.ts`, reusing the same
+    fixture shape (copy the minimal helpers needed; the header blesses lifting shared
+    helpers into `control-constraint-helpers.ts`).
+- `control-database-solo.spec.ts` uses tabs + `control-db-node-helpers.js`; read-path
+  cases fit better in the new spec (it already has admit/remove helpers).
+- Production-path test precedent for `removePeer` end-to-end: replay spec 1317–1329
+  (`node.initializeSeedBootstrap(founder.privateKey)` then `node.authorizePeer` /
+  `node.removePeer`) — reuse for the re-add-after-removal read-path case.
+
+### Commands
+`cd packages/cadre-core && yarn test 2>&1 | tee /tmp/cadre-core.log`, then `yarn lint`
+and `yarn tsc --noEmit` (check package.json for the exact typecheck script name). No
+integration suite.
