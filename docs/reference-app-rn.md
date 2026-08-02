@@ -19,7 +19,7 @@ This document describes the architecture for `packages/reference-app-rn`, a mini
 │  Expo / React Native     │                          │  Node.js CLI           │
 │  cadre-core              │     libp2p protocols     │  cadre-core            │
 │  db-p2p (RN entrypoint)  │◄──────────────────────►│  db-p2p (TCP)          │
-│  db-p2p-storage-rn (MMKV)│                          │  db-p2p-storage-fs     │
+│  db-p2p-storage-rn (LevelDB)│                       │  db-p2p-storage-fs     │
 │  quereus + plugins       │                          │  quereus + plugins     │
 │  Chat sApp schema        │     shared strand        │  Chat sApp schema      │
 └──────────────────────────┘                          └────────────────────────┘
@@ -33,7 +33,7 @@ Both nodes are members of the same **cadre** (party). They share a **control net
 
 | Role | Runtime | Transport | Storage | Profile |
 |------|---------|-----------|---------|---------|
-| **Phone** | React Native (Expo) | WebSocket + circuit relay | MMKV (`db-p2p-storage-rn`) | `transaction` |
+| **Phone** | React Native (Expo) | WebSocket + circuit relay | LevelDB (`db-p2p-storage-rn`) | `transaction` |
 | **Drone** | Node.js (`cadre-cli`) | TCP + WebSocket listener | File system (`db-p2p-storage-fs`) | `storage` |
 
 The drone runs `cadre start` with a config that:
@@ -331,11 +331,11 @@ packages/reference-app-rn/
 |---------|--------|---------|
 | `@serfab/cadre-core` | `workspace:^` | CadreNode, seed bootstrap, strand management |
 | `@optimystic/db-p2p` | npm | libp2p node creation (Metro resolves RN entrypoint) |
-| `@optimystic/db-p2p-storage-rn` | npm | MMKV-backed `IRawStorage` |
+| `@optimystic/db-p2p-storage-rn` | npm | LevelDB-backed `IRawStorage` |
 | `@quereus/quereus` | npm | SQL engine for sApp schema |
 | `@libp2p/websockets` | npm | WebSocket transport |
 | `@libp2p/circuit-relay-v2` | npm | Circuit relay transport |
-| `react-native-mmkv` | npm | Native KV store (requires native compilation) |
+| `rn-leveldb` | npm | Native KV store (requires native compilation) |
 | `expo` | npm | Framework, dev client, EAS Build |
 | `expo-router` | npm | File-based routing |
 
@@ -518,7 +518,7 @@ Messages from the drone (if any are inserted programmatically) replicate back to
 ### First-Time Setup
 
 1. `yarn install` at repo root (workspace hoists dependencies)
-2. `npx eas build --profile development --platform android` (or ios) — cloud-compiles a dev client with MMKV native module
+2. `npx eas build --profile development --platform android` (or ios) — cloud-compiles a dev client with `rn-leveldb` native module
 3. Install the dev client APK/IPA on a device or emulator
 
 ### Iterating
@@ -529,7 +529,7 @@ Messages from the drone (if any are inserted programmatically) replicate back to
 
 ### When Native Rebuild Is Needed
 
-Only when `react-native-mmkv` or another native dependency version changes. Otherwise, JS-only iteration via the dev client.
+Only when `rn-leveldb` or another native dependency version changes. Otherwise, JS-only iteration via the dev client.
 
 ## Testing Strategy
 

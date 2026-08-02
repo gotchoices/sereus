@@ -313,7 +313,7 @@ export class StrandInstanceManager {
 
       // Create and initialize the StrandDatabase. In bootstrap mode the same
       // strandStorage instance also backs the optimystic local transactor so
-      // DML lands on the host's persistent storage (e.g. MMKV on RN). Sharing
+      // DML lands on the host's persistent storage (e.g. LevelDB on RN). Sharing
       // the instance — not creating a second one over the same id+prefix —
       // avoids cache divergence between the libp2p and database paths.
       //

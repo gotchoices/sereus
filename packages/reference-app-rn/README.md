@@ -70,7 +70,7 @@ $env:JAVA_HOME = "C:\Program Files\Android\Android Studio\jbr"
 2. Tap **Create Chat Strand**
 3. Switch to the **Chat** tab and start messaging
 
-Messages are stored locally in MMKV. The node operates solo in "forming" mode — no network required yet.
+Messages are stored locally in LevelDB. The node operates solo in "forming" mode — no network required yet.
 
 ### 4. Add a drone later
 
@@ -296,7 +296,7 @@ reference-app-rn/
 │   ├── index.tsx           #   Chat screen — message list & input
 │   └── settings.tsx        #   Settings — connect, dial peers, create strands
 ├── src/
-│   ├── cadre-phone.ts      #   CadreNode singleton (WebSocket + MMKV config)
+│   ├── cadre-phone.ts      #   CadreNode singleton (WebSocket + LevelDB config)
 │   ├── use-cadre.ts        #   React hook: node lifecycle & strand events
 │   ├── use-chat.ts         #   React hook: message polling & send
 │   ├── chat-strand.ts      #   Strand creation with embedded chat schema
