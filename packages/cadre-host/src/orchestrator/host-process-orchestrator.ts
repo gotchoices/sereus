@@ -21,6 +21,7 @@ import type {
   OrchestratorCreateResult,
   OrchestratorStats,
 } from '@serfab/cadre-provider';
+import { ENV_MAPPINGS } from '@serfab/cadre-cli';
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
@@ -53,6 +54,33 @@ const DEFAULTS = {
 const STARTUP_TOKEN_FILE = '.startup-token';
 const CONFIG_FILE = 'cadre.json';
 const LIVENESS_POLL_MS = 100;
+
+/**
+ * Env vars the orchestrator itself sets per child (below) that have no
+ * `ENV_MAPPINGS` config-file equivalent, so they need their own scrub entry.
+ */
+const ORCHESTRATOR_ENV_VARS = [
+  'CADRE_STARTUP_TOKEN',
+  'CADRE_HEALTH_PORT',
+  'CADRE_METRICS_PORT',
+  'CADRE_SEED_TOKEN',
+  'CADRE_OWNER_KEYS',
+];
+
+/**
+ * Manager's own `process.env` with every `CADRE_*` config-override key
+ * removed. `ENV_MAPPINGS` vars turn into config overrides that beat the
+ * per-child config file this orchestrator writes, so inheriting them
+ * unscrubbed would let a var set on the manager (e.g. CADRE_PARTY_ID)
+ * silently reconfigure every spawned child. Non-CADRE vars (PATH, DEBUG,
+ * proxy/TLS settings, etc.) still pass through untouched.
+ */
+function scrubbedParentEnv(): NodeJS.ProcessEnv {
+  const env = { ...process.env };
+  for (const key of Object.keys(ENV_MAPPINGS)) delete env[key];
+  for (const key of ORCHESTRATOR_ENV_VARS) delete env[key];
+  return env;
+}
 
 /** Fixed friendly id for the admin's owner node. */
 export const OWNER_CONTAINER_ID = 'owner';
@@ -434,9 +462,12 @@ export class HostProcessOrchestrator implements Orchestrator {
     const heapMB = heapBytes !== undefined ? Math.max(64, Math.floor(heapBytes / (1024 * 1024))) : undefined;
 
     const env: NodeJS.ProcessEnv = {
-      ...process.env,
-      // Caller-supplied extras first — the fixed per-child vars below always win
-      // so extraEnv can never clobber the seed/startup tokens or port wiring.
+      // Scrubbed, not raw process.env: every CADRE_* config-override key is
+      // stripped so a var set on the manager can't silently reconfigure every
+      // child (see scrubbedParentEnv). Caller-supplied extras come next — the
+      // fixed per-child vars below always win so extraEnv can never clobber
+      // the seed/startup tokens or port wiring.
+      ...scrubbedParentEnv(),
       ...opts.extraEnv,
       CADRE_STARTUP_TOKEN: token,
       CADRE_HEALTH_PORT: String(ports.health),
@@ -446,10 +477,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the
       // cli would derive by default (the config file lives here too), but stated
-      // explicitly so a CADRE_NODE_STATE_DIR set on the HOST process — inherited
-      // via the `...process.env` spread above — cannot collapse every child's
-      // state into one shared directory, where same-party children would
-      // snapshot-clobber each other's files.
+      // explicitly rather than relying on the scrub above (belt and suspenders).
       CADRE_NODE_STATE_DIR: workdir,
     };
     if (heapMB !== undefined) {
