@@ -19,9 +19,9 @@
  * `node:fs` edge never reaches a bundler that cannot satisfy it (same
  * isolation pattern as `key-store-file.ts`).
  */
-import { FileDurableSlot } from './fs-atomic.js';
+import { FileDurableSlot } from './file-durable-slot.js';
 import { PersistentTrustedOwnerStore } from './trusted-owner-store.js';
-import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
+import type { TrustedOwnerStore } from './trusted-owner-store.js';
 
 /** Base name of the anchor file: `<dir>/trusted-owners.<encoded partyId>.json`. */
 const SLOT_NAME = 'trusted-owners';
@@ -33,29 +33,9 @@ const SLOT_NAME = 'trusted-owners';
  * and their reasoning live on `NodeLocalSnapshot.open` — they are properties of
  * every persistent backend, not of this one.
  */
-export class FileTrustedOwnerStore implements TrustedOwnerStore {
-	private constructor(private readonly inner: PersistentTrustedOwnerStore) {}
-
+export const FileTrustedOwnerStore = {
 	/** Load (or cold-start) the party's anchor from a file in `dir`. */
-	static async open(dir: string, partyId: string): Promise<FileTrustedOwnerStore> {
-		return new FileTrustedOwnerStore(
-			await PersistentTrustedOwnerStore.open(new FileDurableSlot(dir, SLOT_NAME, partyId), partyId)
-		);
+	async open(dir: string, partyId: string): Promise<TrustedOwnerStore> {
+		return PersistentTrustedOwnerStore.open(new FileDurableSlot(dir, SLOT_NAME, partyId), partyId);
 	}
-
-	get partyId(): string {
-		return this.inner.partyId;
-	}
-
-	has(ownerKey: string): boolean {
-		return this.inner.has(ownerKey);
-	}
-
-	all(): ReadonlySet<string> {
-		return this.inner.all();
-	}
-
-	trust(ownerKey: string, source: TrustSource): Promise<void> {
-		return this.inner.trust(ownerKey, source);
-	}
-}
+};

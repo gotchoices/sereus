@@ -16,8 +16,8 @@
  * here.
  *
  * This module is cross-platform (no `node:` imports), so it is safe in the
- * package's default entry — the Node-only `FileDurableSlot` (`fs-atomic.ts`)
- * is what stays behind the `*-store-file` subpaths.
+ * package's default entry — the Node-only `FileDurableSlot`
+ * (`file-durable-slot.ts`) is what stays behind the `*-store-file` subpaths.
  */
 import debug from 'debug';
 

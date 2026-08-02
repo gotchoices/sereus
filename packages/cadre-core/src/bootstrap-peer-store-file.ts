@@ -21,9 +21,9 @@
  * `node:fs` edge never reaches a bundler that cannot satisfy it (same isolation
  * pattern as `trusted-owner-store-file.ts` / `key-store-file.ts`).
  */
-import { FileDurableSlot } from './fs-atomic.js';
+import { FileDurableSlot } from './file-durable-slot.js';
 import { PersistentBootstrapPeerStore } from './bootstrap-peer-store.js';
-import type { BootstrapPeerEntry, BootstrapPeerStore } from './bootstrap-peer-store.js';
+import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 
 /** Base name of the store file: `<dir>/bootstrap-peers.<encoded partyId>.json`. */
 const SLOT_NAME = 'bootstrap-peers';
@@ -36,25 +36,9 @@ const SLOT_NAME = 'bootstrap-peers';
  * `NodeLocalSnapshot.open` — including the in-process-only write serialisation,
  * which two nodes sharing one directory for one party would defeat.
  */
-export class FileBootstrapPeerStore implements BootstrapPeerStore {
-	private constructor(private readonly inner: PersistentBootstrapPeerStore) {}
-
+export const FileBootstrapPeerStore = {
 	/** Load (or cold-start) the party's retained dial targets from a file in `dir`. */
-	static async open(dir: string, partyId: string): Promise<FileBootstrapPeerStore> {
-		return new FileBootstrapPeerStore(
-			await PersistentBootstrapPeerStore.open(new FileDurableSlot(dir, SLOT_NAME, partyId), partyId)
-		);
+	async open(dir: string, partyId: string): Promise<BootstrapPeerStore> {
+		return PersistentBootstrapPeerStore.open(new FileDurableSlot(dir, SLOT_NAME, partyId), partyId);
 	}
-
-	get partyId(): string {
-		return this.inner.partyId;
-	}
-
-	all(): ReadonlyMap<string, BootstrapPeerEntry> {
-		return this.inner.all();
-	}
-
-	record(peerId: string, addrs: readonly string[]): Promise<void> {
-		return this.inner.record(peerId, addrs);
-	}
-}
+};

@@ -1,18 +1,14 @@
 /**
- * Node-only filesystem helpers shared by the file-backed stores
- * (`key-store-file.ts`, `trusted-owner-store-file.ts`,
- * `bootstrap-peer-store-file.ts`).
+ * Node-only filesystem helpers: atomic file write, filename-safe encoding, and
+ * the ENOENT check, shared by `key-store-file.ts` and `file-durable-slot.ts`.
  *
  * This module imports `node:fs/promises`, so — like its consumers — it is kept
  * OUT of the package's cross-platform default entry and is not itself an
  * exported subpath; it is only reachable through the Node-only store modules.
  */
 import debug from 'debug';
-import { mkdir, rm, rename, open, readFile } from 'node:fs/promises';
+import { mkdir, rm, rename, open } from 'node:fs/promises';
 import type { FileHandle } from 'node:fs/promises';
-import { join } from 'node:path';
-import { randomBytes } from 'node:crypto';
-import type { DurableSlot } from './node-local-snapshot.js';
 
 const log = debug('sereus:cadre:fs-atomic');
 
@@ -90,59 +86,6 @@ export async function writeFileAtomically(
 		throw error;
 	}
 	await syncDirBestEffort(dir);
-}
-
-/**
- * The Node {@link DurableSlot}: one JSON file per party under `dir`, at
- * `<dir>/<name>.<encoded partyId>.json` (0600, atomically replaced on every
- * save), so one directory can hold the same node-local record for several
- * parties without cross-party leakage.
- *
- * This is the whole platform-specific part of the file-backed node-local
- * stores; the load policy, envelope and write chain are cross-platform in
- * `node-local-snapshot.ts`.
- */
-export class FileDurableSlot implements DurableSlot {
-	/** Filename-safe form of the party id, shared by the record and temp paths. */
-	private readonly encodedParty: string;
-
-	constructor(
-		private readonly dir: string,
-		private readonly name: string,
-		partyId: string
-	) {
-		this.encodedParty = encodeFileSafeComponent(partyId);
-	}
-
-	/**
-	 * The record's bytes as text. An absent file (ENOENT — including an absent
-	 * directory) is `undefined`, a cold start. Every other read failure
-	 * (EACCES, EISDIR, EIO, …) THROWS, per {@link DurableSlot.load}: the caller
-	 * must not mistake an unreadable file for an empty one and snapshot-write
-	 * over it.
-	 */
-	async load(): Promise<string | undefined> {
-		try {
-			return (await readFile(this.filePath())).toString('utf8');
-		} catch (error) {
-			if (isNotFound(error)) return undefined;
-			throw new Error(`FileDurableSlot: ${this.filePath()} is present but unreadable`, { cause: error });
-		}
-	}
-
-	async save(text: string): Promise<void> {
-		await writeFileAtomically(this.dir, this.tempPath(), this.filePath(), new TextEncoder().encode(text));
-	}
-
-	private filePath(): string {
-		return join(this.dir, `${this.name}.${this.encodedParty}.json`);
-	}
-
-	/** Sibling temp path for the atomic replace (random component: collide-free). */
-	private tempPath(): string {
-		const unique = randomBytes(6).toString('hex');
-		return join(this.dir, `${this.name}.${this.encodedParty}.${unique}.tmp`);
-	}
 }
 
 /**

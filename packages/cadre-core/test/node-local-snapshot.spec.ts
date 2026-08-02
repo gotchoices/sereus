@@ -45,6 +45,41 @@ function envelope(payloadKey: string, partyId: string, entries: Record<string, u
 	return JSON.stringify({ version: 1, partyId, [payloadKey]: entries });
 }
 
+/**
+ * A {@link DurableSlot} whose `save()` blocks until the test explicitly
+ * releases it (FIFO), so overlapping `put()` calls can be driven one save at a
+ * time — standing in for a real backend where a save is genuinely in flight
+ * when the next `put()` arrives.
+ */
+class GatedSlot implements DurableSlot {
+	text: string | undefined;
+	readonly saveCalls: string[] = [];
+	private readonly pendingReleases: Array<() => void> = [];
+
+	async load(): Promise<string | undefined> {
+		return this.text;
+	}
+
+	async save(text: string): Promise<void> {
+		this.saveCalls.push(text);
+		await new Promise<void>((resolve) => this.pendingReleases.push(resolve));
+		this.text = text;
+	}
+
+	/** Let the oldest in-flight save land. */
+	releaseNext(): void {
+		const release = this.pendingReleases.shift();
+		if (!release) throw new Error('GatedSlot: no in-flight save to release');
+		release();
+	}
+}
+
+/** Poll (microtask-only, no real delay) until `slot` has received `count` save() calls. */
+async function untilSaveCount(slot: GatedSlot, count: number): Promise<void> {
+	for (let i = 0; i < 1000 && slot.saveCalls.length < count; i++) await Promise.resolve();
+	expect(slot.saveCalls.length).toBe(count);
+}
+
 describe('PersistentTrustedOwnerStore over a DurableSlot', () => {
 	it('an unwritten slot is a cold start (empty), not a throw', async () => {
 		const store = await PersistentTrustedOwnerStore.open(new FakeSlot(), PARTY);
@@ -145,6 +180,35 @@ describe('PersistentTrustedOwnerStore over a DurableSlot', () => {
 
 		expect(slot.saves).toBe(1);
 		expect(store.all()).toEqual(new Set([KEY_A]));
+	});
+
+	it('overlapping trust() calls persist in order, one save at a time, and a reopen sees them all', async () => {
+		const slot = new GatedSlot();
+		const store = await PersistentTrustedOwnerStore.open(slot, PARTY);
+		const KEY_C = 'CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC';
+
+		const first = store.trust(KEY_A, 'genesis');
+		const second = store.trust(KEY_B, 'invite');
+		const third = store.trust(KEY_C, 'invite');
+
+		// Only the first put's save is in flight; the second and third are chained
+		// behind it and must not have started their own save yet.
+		await untilSaveCount(slot, 1);
+		slot.releaseNext();
+
+		await untilSaveCount(slot, 2);
+		slot.releaseNext();
+
+		await untilSaveCount(slot, 3);
+		slot.releaseNext();
+
+		await Promise.all([first, second, third]);
+		expect(slot.saveCalls).toHaveLength(3);
+		// Each landed snapshot is the full set as of that put, so the last one holds all three.
+		expect(Object.keys(JSON.parse(slot.saveCalls[2]).owners).sort()).toEqual([KEY_A, KEY_B, KEY_C].sort());
+
+		const reloaded = await PersistentTrustedOwnerStore.open(slot, PARTY);
+		expect(reloaded.all()).toEqual(new Set([KEY_A, KEY_B, KEY_C]));
 	});
 });
 
