@@ -7,7 +7,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { StrandRow, PeerAddressRecord, CadrePeerRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
+import type { StrandRow, PeerAddressRecord, CadrePeerRow, RevocationRow, DeviceTokenRecord, DeviceTokenRow, PushPlatform } from './types.js';
 import { CONTROL_SCHEMA } from './control-schema.js';
 import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
@@ -651,15 +651,32 @@ export class ControlDatabase {
    * Enumerate the CadrePeer rows (cadre membership) for admin/membership reads.
    * Includes the persisted voucher columns, which
    * {@link CadreNode.listAuthorizedMembers} re-checks against its node-local anchor.
+   *
+   * Rows whose `StampId` is retired in `CadreControl.Revocation` are excluded HERE, so
+   * every membership reader inherits the exclusion — a revoked peer is neither
+   * authorizable nor addressable (a replayed row planted at a retired stamp must not
+   * be RPC'd or handed out as an address). Reads the retired set through
+   * {@link queryRevokedStamps} rather than inlining the SQL, so tests can interpose on
+   * that seam to model the replicated live-row-plus-tombstone merge state.
+   *
+   * NOTE: runs a second query (the retired-stamp set) per call, and this sits on the
+   * membership-gate refresh path; control tables are a handful of rows today, so this
+   * is cheap — if they ever grow, fold the exclusion into one statement or cache the
+   * retired-stamp set.
    */
   async queryCadrePeers(): Promise<CadrePeerRow[]> {
     this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('CadrePeer');
     const rows: CadrePeerRow[] = [];
     for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
+      const stampId = (row.StampId as string | null) ?? null;
+      if (stampId !== null && revoked.has(stampId)) {
+        continue;
+      }
       rows.push({
         peerId: row.PeerId as string,
         multiaddr: (row.Multiaddr as string | null) ?? null,
-        stampId: (row.StampId as string | null) ?? null,
+        stampId,
         vouchOwner: (row.VouchOwner as string | null) ?? null,
         vouchSig: (row.VouchSig as string | null) ?? null,
       });
@@ -689,6 +706,12 @@ export class ControlDatabase {
    * Read one guarded row's single-use `StampId` nonce (null when the row does not
    * exist). Every owner-signed delete / re-touch path must bind its signature to the
    * row's CURRENT nonce, so they all read through here first.
+   *
+   * Deliberately RAW — no `Revocation` filtering (unlike {@link queryCadrePeers} /
+   * {@link queryPeerRecord}): {@link deleteGuardedRow} and the insert-if-absent guard
+   * in the `CadrePeer` upsert need to see a physically present row. Filtering here
+   * would make an insert-if-absent guard read "absent" for a row that exists and
+   * collide on the primary key.
    *
    * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
    * come from closed literal unions — no caller-supplied string can reach the statement
@@ -740,10 +763,12 @@ export class ControlDatabase {
    * {@link RevocableTable}. A stamp
    * lands here when its row is removed ({@link SeedBootstrapService.removePeer},
    * {@link deleteValidationKey}, {@link deleteStrand}), and retirement is permanent —
-   * the table is append-only. Read-side mitigation for the write-time race: the
+   * rows are never deleted (only their `ReissuedAt` counter moves, via
+   * {@link reissueRevocations}). Read-side mitigation for the write-time race: the
    * schema's `NotRevoked` CHECK only sees locally visible tombstones, so a node that
    * converged on a resurrected row before its tombstone can hold both; readers
-   * ({@link CadreNode.listAuthorizedMembers}) drop any row whose stamp appears here.
+   * ({@link queryCadrePeers}, {@link queryPeerRecord},
+   * {@link CadreNode.resolveDeviceToken}) drop any row whose stamp appears here.
    *
    * NOTE: re-reads the whole retired set on every call, and the caller runs per inbound
    * gate request while the table only ever grows. Cheap today (a cadre removes peers
@@ -759,9 +784,39 @@ export class ControlDatabase {
   }
 
   /**
+   * Every locally-held `CadreControl.Revocation` tombstone — identity triple plus its
+   * `ReissuedAt` counter. Consumed by the cohort-growth re-issue sweep, which
+   * enumerates what this node holds before {@link reissueRevocations} re-broadcasts
+   * it. Plain scan with no `where`, so the composite-primary-key point-lookup hazard
+   * (see the statement comment in {@link reissueRevocations}) does not arise. Unlocked,
+   * like every other read.
+   */
+  async queryRevocations(): Promise<RevocationRow[]> {
+    this.ensureInitialized();
+    const rows: RevocationRow[] = [];
+    for await (const row of this.db!.eval('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation')) {
+      rows.push({
+        tableName: row.TableName as RevocableTable,
+        rowKey: row.RowKey as string,
+        stampId: row.StampId as string,
+        reissuedAt: (row.ReissuedAt as number | null) ?? 0,
+      });
+    }
+    return rows;
+  }
+
+  /**
    * Read a single peer's address record (the full `CadrePeer` row) by PeerId.
    *
-   * Returns null when no row exists. Missing/legacy column values are coalesced
+   * Returns null when no row exists, or when the row's `StampId` is retired in
+   * `CadreControl.Revocation` — a revoked peer reads as absent, so the resolver
+   * ({@link CadreNode.resolvePeerAddrs}) never hands out a revoked peer's addresses.
+   * The stamp is read for that check only and then dropped; the returned
+   * {@link PeerAddressRecord} shape is unchanged. Reads the retired set through
+   * {@link queryRevokedStamps} rather than inlining the SQL, so tests can interpose on
+   * that seam (see {@link queryCadrePeers}).
+   *
+   * Missing/legacy column values are coalesced
    * to their empty form (`''` key/sig, `[]` addrs, `0` stamp) so the caller's
    * verify/freshness gates uniformly reject an unpublished or malformed row.
    * The split `addrs` re-join to the exact stored `Multiaddr` (split-on-`,` is
@@ -770,10 +825,15 @@ export class ControlDatabase {
    */
   async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
     this.ensureInitialized();
+    const revoked = await this.queryRevokedStamps('CadrePeer');
     for await (const row of this.db!.eval(
-      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig from CadreControl.CadrePeer where PeerId = ?',
+      'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
       [peerId]
     )) {
+      const stampId = (row.StampId as string | null) ?? null;
+      if (stampId !== null && revoked.has(stampId)) {
+        return null;
+      }
       const multiaddr = (row.Multiaddr as string | null) ?? '';
       return {
         peerId: row.PeerId as string,
@@ -1290,15 +1350,96 @@ export class ControlDatabase {
           with context OwnerKey = ?, Signature = ?
           where ${GUARDED_KEY_COLUMN[table]} = ?
       `, [ownerKey, signature, keyValue]);
+      // ReissuedAt named explicitly at 0 (the only value FreshTombstone accepts) rather
+      // than leaning on the column default — the seat-at-zero rule is load-bearing for
+      // reissueRevocations' monotonic bump, so state it at the write site.
       await this.db!.exec(`
-        insert into CadreControl.Revocation (TableName, RowKey, StampId)
+        insert into CadreControl.Revocation (TableName, RowKey, StampId, ReissuedAt)
           with context OwnerKey = ?, Signature = ?
-          values (?, ?, ?)
+          values (?, ?, ?, 0)
       `, [ownerKey, revocationSignature, table, keyValue, stampId]);
     });
 
     log('%s deleted: %s (stamp retired)', table, keyValue);
     return true;
+  }
+
+  /**
+   * Owner-signed re-issue of a batch of `Revocation` tombstones: bump each row's
+   * `ReissuedAt` to `reissuedAt` in ONE transaction. Re-writing the row is what makes
+   * the storage layer re-broadcast it — a tombstone that committed while the node was
+   * alone is local-only, and unlike an insert a delete cannot be replayed (the guarded
+   * row is already gone locally), so the tombstone is the half of a removal that can
+   * still carry it to the rest of the party.
+   *
+   * One transaction, not one per row: a sweep may cover every tombstone in the table,
+   * and each separate commit is a separate round of network work. One owner signature
+   * per row: `AuthorizedReissue`'s digest binds (TableName, RowKey, StampId,
+   * ReissuedAt). `reissuedAt` must be STRICTLY above every affected row's current
+   * value (`ReissueOnly`); callers derive it as `Math.max(Date.now(), max(existing) + 1)`,
+   * mirroring {@link CadreNode.reissuePeerAuthorize}'s monotonic bump. Re-issuing a
+   * tombstone whose guarded row was never present locally is the normal case (a node
+   * that converged on the tombstone but never held the row) — a re-issue files no
+   * delete, so `RowIsGone` / `RevocationRecorded` are not involved.
+   *
+   * A constraint failure on any row rolls the WHOLE batch back and propagates —
+   * {@link lockedWithRetry}'s classifier only re-presents transient cluster failures,
+   * so a real refusal (non-owner signer, or a stale counter when two owner devices
+   * sweep concurrently and the loser's `ReissueOnly` CHECK fails) surfaces to the
+   * caller, which retries with a fresh counter on its next sweep. A row whose
+   * `StampId` matches nothing locally is a silent no-op statement; callers enumerate
+   * via {@link queryRevocations} first, so they only name stamps they hold.
+   *
+   * Returns how many UPDATE statements ran (`rows.length` on success).
+   */
+  reissueRevocations(
+    rows: readonly RevocationRow[],
+    reissuedAt: number,
+    ownerKey: string,
+    signMessage: (message: Uint8Array) => string
+  ): Promise<number> {
+    this.ensureInitialized();
+    // Signatures minted OUTSIDE the locked body: a retried attempt must re-present the
+    // exact signed message, never re-mint (the contract on withWriteLock). ReissuedAt
+    // rides in the digest as a string — SQL-side it is cast(new.ReissuedAt as text),
+    // and every digest field is TEXT on both sides (see buildAuthorizationMessage).
+    const signed = rows.map((row) => ({
+      row,
+      signature: signMessage(buildAuthorizationMessage(
+        'CadreControl.Revocation', 'reissue',
+        [row.tableName, row.rowKey, row.stampId, String(reissuedAt)]
+      )),
+    }));
+    return this.lockedWithRetry(async () => {
+      // Counter lives INSIDE the locked body so a lockedWithRetry re-run (which
+      // re-executes the whole body) starts from zero instead of double-counting.
+      let executed = 0;
+      await this.inTransaction('reissue revocations', async () => {
+        for (const { row, signature } of signed) {
+          // Keyed on StampId ALONE, deliberately. Equality on every column of the
+          // composite primary key (TableName, StampId) makes the optimystic vtab claim
+          // the predicate as a point lookup with no engine-side re-check, and that
+          // descent has been observed returning zero rows for a row that provably
+          // exists (tickets/backlog/debt-composite-pk-point-lookup-unreliable-untracked).
+          // A re-issue that silently matched nothing would report success and
+          // replicate nothing — the exact failure this path exists to remove. StampId
+          // alone is a non-leading subset of the key, which the module declines, so
+          // the read is a scan the engine filters; a StampId is 128 bits of CSPRNG
+          // output minted per row incarnation (generateStampId), so it identifies one
+          // row across all TableName values. Do NOT "fix" this by adding TableName to
+          // the where clause.
+          await this.db!.exec(`
+            update CadreControl.Revocation
+              with context OwnerKey = ?, Signature = ?
+              set ReissuedAt = ?
+              where StampId = ?
+          `, [ownerKey, signature, reissuedAt, row.stampId]);
+          executed++;
+        }
+      });
+      log('Reissued %d revocation tombstone(s) at %d', executed, reissuedAt);
+      return executed;
+    });
   }
 
   /**

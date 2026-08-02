@@ -30,7 +30,9 @@
  * `Revocation` is here for the same two reasons as every other entry: it
  * derives a `'CadreControl.Revocation'` domain tag — its `Authorized` CHECK
  * verifies an owner signature over the `'remove'`-tagged digest that
- * `peer-authorization.ts`'s `revocationDigest` mints — and `countRows` counts it.
+ * `peer-authorization.ts`'s `revocationDigest` mints, and its `AuthorizedReissue`
+ * CHECK the `'reissue'`-tagged digest `ControlDatabase.reissueRevocations`
+ * signs — and `countRows` counts it.
  */
 export const CONTROL_TABLES = [
   'OwnerKey',
@@ -88,8 +90,12 @@ export type ControlDomain = `CadreControl.${ControlTable}` | 'Cadre.Enrollment';
  *    joiner proving it agreed to join), with its own key. Distinct from the
  *    approver's `'vouch'` over the same table so the two stored signatures are
  *    never interchangeable.
+ *  - `'reissue'` — an owner re-writes an existing `Revocation` tombstone,
+ *    bumping its `ReissuedAt` counter so a tombstone committed while the node
+ *    was alone can be re-broadcast. Distinct from `'remove'` so a tombstone
+ *    append approval can never be replayed as a re-issue and vice versa.
  */
-export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent';
+export type ControlAction = 'add' | 'remove' | 'vouch' | 'publish' | 'consent' | 'reissue';
 
 /**
  * The full ordered field vector a control-plane signature covers. Digest this

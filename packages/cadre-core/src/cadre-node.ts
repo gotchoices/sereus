@@ -3785,7 +3785,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Enumerate the cadre's `CadrePeer` membership.
+   * Enumerate the cadre's `CadrePeer` membership — the ADDRESSABLE surface (see
+   * {@link isMember}). Rows whose stamp is retired in `CadreControl.Revocation`
+   * never reach here: {@link ControlDatabase.queryCadrePeers} excludes them, so a
+   * revoked peer is not addressable either.
    */
   async listMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
     if (!this.controlDatabase) {
@@ -3799,7 +3802,12 @@ export class CadreNode implements SAppIdLookup {
    *
    * This is the ADDRESSABLE surface ("do I have a dialable address record for this
    * peer") — it includes this node's own self-published row. Address resolution and
-   * push fan-out use this. The trust-facing gate is {@link isAuthorizedMember}.
+   * push fan-out use this. A peer whose stamp is retired in `CadreControl.Revocation`
+   * is excluded here too (the filter lives in
+   * {@link ControlDatabase.queryCadrePeers}): revocation removes a peer from the
+   * addressable surface, not only the trust-facing one, so a revoked peer is no
+   * longer dialed, RPC'd, or handed out as an address. The trust-facing gate is
+   * {@link isAuthorizedMember}.
    */
   async isMember(peerId: string): Promise<boolean> {
     const members = await this.listMembers();
@@ -3821,9 +3829,10 @@ export class CadreNode implements SAppIdLookup {
    *  4. `VouchSig` verifies as that owner's signature over the row's voucher
    *     digest ({@link verifyCadrePeerVoucher}), so the anchored owner really
    *     vouched THIS peer id under THIS row's nonce; and
-   *  5. the row's `StampId` is NOT retired in `CadreControl.Revocation` — a removed
-   *     peer's stamp is tombstoned there permanently, so a row resurrected by
-   *     replaying the captured admission approval on a node that had not yet
+   *  5. the row's `StampId` is NOT retired in `CadreControl.Revocation` — enforced
+   *     upstream in {@link ControlDatabase.queryCadrePeers}, which drops retired rows
+   *     before ANY reader (this predicate included) sees them, so a row resurrected
+   *     by replaying the captured admission approval on a node that had not yet
    *     converged on the tombstone (the write-time `NotRevoked` CHECK only sees
    *     local rows) is still inert to every reader that has the tombstone.
    *
@@ -3845,11 +3854,8 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.peerId?.toString();
     const rows = await this.controlDatabase.queryCadrePeers();
-    const revokedStamps = await this.controlDatabase.queryRevokedStamps('CadrePeer');
     const authorized = rows
-      .filter(row => row.peerId !== selfPeerId
-        && (row.stampId === null || !revokedStamps.has(row.stampId))
-        && this.hasAnchoredVoucher(row))
+      .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));
     // A node whose anchor was never seeded (no invite pin, no operator pin, not a
     // founder) refuses every wake and strand-addr request, which from the outside

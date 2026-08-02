@@ -634,12 +634,15 @@ declare schema CadreControl {
     -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so a node
     -- that has not yet converged on a Revocation row can still accept the replayed add, and the
     -- resurrected row coexists with the tombstone after merge — same class as the MinOneOwner
-    -- note on OwnerKey. The read-side mitigation is CadreNode.listAuthorizedMembers, which
-    -- drops any CadrePeer row whose StampId appears here.
+    -- note on OwnerKey. The read-side mitigation is ControlDatabase.queryCadrePeers, which
+    -- drops any CadrePeer row whose StampId appears here; every membership reader inherits it.
     -- NOTE: append-only, so this table only ever grows. Every append is owner-signed
     -- (Authorized below), so the growth surface is the owner keys, not every writer that can
     -- reach the control database. Cadres are a handful of peers and owner rotation is rare, so
     -- unbounded growth is fine today; revisit if either changes.
+    -- A tombstone committed while the node was alone is local-only (never broadcast); the
+    -- ReissuedAt counter below exists so an owner can re-write — and therefore re-broadcast —
+    -- such a tombstone once peers are reachable, without changing what it means.
     table Revocation (
         TableName text,             -- 'OwnerKey' | 'CadrePeer' | 'ValidationKey' | 'Strand' | 'DeviceToken' (confined by RowIsGone below)
         RowKey text not null,       -- primary key of the removed row: OwnerKey.Key / ValidationKey.Key /
@@ -649,12 +652,30 @@ declare schema CadreControl {
                                     -- a REMOVAL cannot file a misnamed tombstone. A tombstone with no
                                     -- accompanying delete is not covered by that (see Authorized).
         StampId text,               -- the retired nonce
+        -- Bumped by an owner-signed re-issue so a tombstone written while the node was alone
+        -- (committed local-only, never broadcast) can be re-written and therefore re-broadcast
+        -- on cohort growth. Carries NO semantics: nothing reads it, and retirement is decided
+        -- by the row's existence, not by this value.
+        ReissuedAt integer not null default 0,
         -- Keyed on the stamp, not the RowKey: stamps are unique per row incarnation, and one
         -- name may legitimately carry several tombstones over its life (seat -> delete ->
         -- owner re-seat -> delete).
         primary key (TableName, StampId),
-        -- Retirement is permanent: clearing or re-pointing a tombstone would restore the replay.
-        constraint Immutable check on update, delete (false),
+        -- Retirement is permanent: a tombstone may never be withdrawn.
+        constraint NoDelete check on delete (false),
+        -- Pinned at 0 on insert so an owner cannot seat a tombstone at a saturated counter and
+        -- thereby freeze its own later re-issues (ReissueOnly below). Deliberately NOT folded
+        -- into the Authorized digest: the value is fixed by this rule, so signing over it would
+        -- only widen the signed surface for no gain, and would invalidate every existing
+        -- insert-side digest.
+        constraint FreshTombstone check on insert (new.ReissuedAt = 0),
+        -- A re-issue may move NOTHING but the counter, and only upward. Without the identity
+        -- clause an "update" would be a way to re-point a tombstone at a different row,
+        -- restoring exactly the replay this table exists to stop.
+        constraint ReissueOnly check on update (
+            new.TableName = old.TableName and new.RowKey = old.RowKey
+                and new.StampId = old.StampId and new.ReissuedAt > old.ReissuedAt
+        ),
         -- A stamp may only be retired once its row is actually gone. Deferred (subquery), so a
         -- delete in the same transaction has already landed. Retiring a stamp that never
         -- existed is permitted and harmless: a stamp carries 128 bits of CSPRNG output
@@ -702,10 +723,20 @@ declare schema CadreControl {
         -- achieves the same thing under committed.*, so consistency with the siblings is
         -- worth more than the distinction — do not "tighten" this without a reason other
         -- than that one.
-        -- RowIsGone and Immutable are unchanged: they guard an owner retiring a stamp early
+        -- RowIsGone and NoDelete are unchanged: they guard an owner retiring a stamp early
         -- or withdrawing one later, which authorization does not cover.
         constraint Authorized check on insert (
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Revocation', 'remove', new.TableName, new.RowKey, new.StampId), context.Signature, A.Key, 'ed25519'))
+        ),
+        -- A re-issue is an OWNER action, like the original append. Distinct 'reissue' action
+        -- tag, so an append approval can never be replayed as a re-issue and vice versa. The
+        -- digest adds ReissuedAt so a captured re-issue signature cannot bump the counter to
+        -- any other value. Reads LIVE OwnerKey, matching Authorized above.
+        constraint AuthorizedReissue check on update (
+            exists (select 1 from OwnerKey A where A.Key = context.OwnerKey
+                and verify(digest('CadreControl.Revocation', 'reissue',
+                                  new.TableName, new.RowKey, new.StampId, cast(new.ReissuedAt as text)),
+                           context.Signature, A.Key, 'ed25519'))
         )
     ) with context (OwnerKey text, Signature text);
 }

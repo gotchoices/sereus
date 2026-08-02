@@ -7,6 +7,7 @@ import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
 import type { PushNotifier } from './push-notifier.js';
+import type { RevocableTable } from './control-authorization.js';
 
 /**
  * Extended Libp2p node with the coordinatedRepo attached by db-p2p's
@@ -833,6 +834,23 @@ export interface CadrePeerRow {
 
 /** The voucher-bearing subset of a {@link CadrePeerRow} — what the authorized-membership predicate reads. */
 export type CadrePeerVoucherFields = Pick<CadrePeerRow, 'peerId' | 'stampId' | 'vouchOwner' | 'vouchSig'>;
+
+/**
+ * One `CadreControl.Revocation` tombstone as read by
+ * `ControlDatabase.queryRevocations`: the identity triple plus the `ReissuedAt`
+ * counter an owner bumps (`ControlDatabase.reissueRevocations`) to re-write — and
+ * therefore re-broadcast — a tombstone that committed while the node was alone.
+ */
+export interface RevocationRow {
+  /** Which guarded table's stamp was retired. */
+  tableName: RevocableTable;
+  /** Primary key of the removed row (peer id / key / strand id). */
+  rowKey: string;
+  /** The retired single-use nonce — the tombstone's identity. */
+  stampId: string;
+  /** Monotonic re-issue counter; carries no semantics (see the schema comment). */
+  reissuedAt: number;
+}
 
 /**
  * Outcome of {@link CadreNode.registerSelf}, surfaced so callers (e.g. the CLI
