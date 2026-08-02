@@ -15,6 +15,12 @@ import type { SAppConfig } from '../src/types.js';
  * bootstrap mode (libp2p node + MemoryRawStorage + the optimystic local
  * transactor) via `connectToStrand` — the same path `StrandDatabase` uses —
  * and the small raw-write/read helpers those suites build on.
+ *
+ * IMPORTING THIS MODULE HAS A SIDE EFFECT: it registers a file-level `afterEach`
+ * that shuts down every strand {@link openStrand} / {@link openRawStrand} handed
+ * out, so no suite has to write its own teardown. Vitest's default
+ * `isolate: true` gives each spec FILE its own module registry, so the `opened`
+ * list below is per-file, never shared across files.
  */
 
 const log = debug('sereus:cadre:test:strand-spec-helpers');
@@ -50,18 +56,27 @@ interface ShutdownHandle {
   shutdown: () => Promise<void>;
 }
 
-export interface Strand extends ShutdownHandle {
-  db: Database;
-  strandId: string;
-  /** The founder keypair — Member #1 and the sole founding Manager. */
-  founder: Ed25519KeyPair;
-}
-
+/** A strand DB with no founder bootstrap run — no Header, no Member, no Manager. */
 export interface RawStrand extends ShutdownHandle {
   db: Database;
   strandId: string;
 }
 
+export interface Strand extends RawStrand {
+  /**
+   * The founder keypair. For a closed strand (`type: 'c'`) it is Member #1 and
+   * the sole founding Manager; for an open strand (`type: 'o'`) the bootstrap
+   * seats no member at all, so this is an unrelated fresh key with no rows
+   * behind it.
+   */
+  founder: Ed25519KeyPair;
+}
+
+// NOTE: this list is per-spec-file only because vitest's default `isolate: true`
+// gives each file its own module registry. If cadre-core's vitest config ever
+// sets `isolate: false`, files sharing a worker would share this array and one
+// file's afterEach would tear down another's strands mid-run — move the state
+// into a per-file factory then.
 const opened: ShutdownHandle[] = [];
 
 afterEach(async () => {
@@ -71,37 +86,12 @@ afterEach(async () => {
   }
 });
 
-/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
-export async function openStrand(type: 'o' | 'c' = 'c'): Promise<Strand> {
-  const strandId = randomUUID();
-  const storage = new MemoryRawStorage();
-  const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
-  const founder = strandMemberKeyPair(await generateStrandMemberKey());
-  await bootstrapFounderMembership(db, {
-    strandId,
-    type,
-    sApp: makeSAppConfig(),
-    founderKeyPair: type === 'c' ? founder : undefined,
-  });
-  const strand: Strand = {
-    db,
-    strandId,
-    founder,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
-  return strand;
-}
-
 /**
  * Open a strand DB in bootstrap mode WITHOUT the founder bootstrap — no Header,
- * no Member, no Manager. For tests that need a member set with NO manager at
- * all (`bootstrapFounderMembership` always seats a founding Manager, and any
- * Manager row makes `NotAManager` fire alongside the floor under test).
+ * no Member, no Manager. For tests that seed those rows themselves (to vary the
+ * founding order), or that need a member set with NO manager at all
+ * (`bootstrapFounderMembership` always seats a founding Manager, and any Manager
+ * row makes `NotAManager` fire alongside the floor under test).
  */
 export async function openRawStrand(): Promise<RawStrand> {
   const strandId = randomUUID();
@@ -118,6 +108,21 @@ export async function openRawStrand(): Promise<RawStrand> {
   };
   opened.push(strand);
   return strand;
+}
+
+/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
+export async function openStrand(type: 'o' | 'c' = 'c'): Promise<Strand> {
+  const raw = await openRawStrand();
+  const founder = strandMemberKeyPair(await generateStrandMemberKey());
+  await bootstrapFounderMembership(raw.db, {
+    strandId: raw.strandId,
+    type,
+    sApp: makeSAppConfig(),
+    founderKeyPair: type === 'c' ? founder : undefined,
+  });
+  // `opened` already holds `raw`, and this copy shares its `shutdown` closure —
+  // teardown runs exactly once either way.
+  return { ...raw, founder };
 }
 
 /**
