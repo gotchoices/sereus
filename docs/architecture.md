@@ -542,9 +542,10 @@ number, so the approval hook above is asked **once per join, never once per writ
 joins landing on the *same* node never reach that retry — the local write queue serializes them
 and each reads a use number the other has already committed — so the retry exists for the writers
 that queue does not reach: another node of the cadre, or another `Database` handle over the same
-store. Only a retry that runs out — the invite has no seat left — reaches
-`StrandFormationManager.provisionAsResponder`'s catch-all as `InvitationExhaustedError`, reported
-to the joiner as the same `'Invalid token'` a spent invite would give.
+store. Whenever the use number an attempt would take is past the invite's seat budget — the loser
+of a same-node race on its FIRST attempt, or a retry that has run out — the redemption is refused
+as `InvitationExhaustedError`, which `StrandFormationManager.provisionAsResponder` reports to the
+joiner as the same `'Invalid token'` a spent invite would give, never as a retryable conflict.
 
 ```mermaid
 sequenceDiagram

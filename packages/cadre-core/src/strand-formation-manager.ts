@@ -350,8 +350,8 @@ export class StrandFormationManager {
       }
       if (err instanceof InvitationExhaustedError) {
         // Shares `INVALID_TOKEN_REASON` with the up-front `validateToken` rejection so the loser
-        // of the race that triggered this retry-then-exhaustion sees exactly what a non-racing
-        // latecomer sees. No wire-visible distinction between "invalid" and "exhausted" — the
+        // of the race that exposed the spent invite — same-node, first attempt, or a retry that
+        // ran out — sees exactly what a non-racing latecomer sees. No wire-visible distinction between "invalid" and "exhausted" — the
         // operator signal lives in this log line instead.
         // NOTE: if a joining client ever has to tell "never valid" from "used up" WITHOUT node
         // logs, that is a new protocol reason string, not a local change here.

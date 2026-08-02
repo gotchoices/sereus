@@ -2063,6 +2063,12 @@ export class ControlDatabase {
    * `knownTotalUses` lets a caller that already read the `FormationInvite` row (both
    * production callers in `ControlFormationUsageRecorder` do) skip a second read on the common,
    * non-racing path. `undefined` falls back to a fresh read here.
+   *
+   * NOTE: a passed-in budget is a value read BEFORE the write lock (and, for a validating
+   * invite, before an outbound approval call). Safe today because `FormationInvite` is
+   * insert/delete only (its `Immutable` constraint), so the only way to stale it is an owner
+   * revoking the token and re-issuing it with MORE seats mid-redemption; if invites ever gain
+   * an update path, drop the parameter and read here on every attempt instead.
    */
   private async assertSeatRemains(
     token: string,

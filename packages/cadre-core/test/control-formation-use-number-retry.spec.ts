@@ -374,6 +374,58 @@ describe('ControlDatabase — use-number assignment and lost-race retry', () => 
       expect(await usageCount()).toBe(before + 1);
       expect(await useNumbersFor(token)).toEqual([1]);
     });
+
+    /**
+     * The two cases below race the RECORDER, which is the production shape: it has already read
+     * the invite, so it hands `totalUses` down and no attempt re-reads it. The case above races
+     * `ControlDatabase` directly, omitting that parameter and falling back to the read inside
+     * `assertSeatRemains` — so without these, a recorder that threaded the wrong budget (or
+     * dropped it to `null`) would leave every case green and quietly restore the generic
+     * `CHECK constraint failed: Authorized` the joiner is told to retry.
+     */
+    const refuseApproval = {
+      requestApproval: async (): Promise<FormationApproval> => {
+        throw new Error('An invite with no ValidationUrl must never reach the approver');
+      },
+    };
+
+    it('reports the loser of a record-only race as exhausted, on the budget the recorder passed down', async () => {
+      const { token, strandId } = await boundInvite('recorder-single-seat', { totalUses: 1 });
+      const recorder = new ControlFormationUsageRecorder(db, { approver: refuseApproval });
+
+      const results = await Promise.allSettled([
+        recorder.recordUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) }),
+        recorder.recordUsage({ token, strandId, disclosure: '', ...toConsent(redemption(token, strandId)) }),
+      ]);
+
+      expect(results.filter(r => r.status === 'fulfilled')).toHaveLength(1);
+      const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+      expect(rejected.reason).toBeInstanceOf(InvitationExhaustedError);
+      expect((rejected.reason as InvitationExhaustedError).totalUses).toBe(1);
+      expect(await useNumbersFor(token)).toEqual([1]);
+    });
+
+    it('reports the loser of an unbound provision race as exhausted, seating exactly one strand', async () => {
+      // The other threaded call site: an UNBOUND invite redeems through `redeemInvitation`,
+      // which seats the strand and the usage in ONE transaction — so the loser must leave no
+      // orphan strand behind either.
+      const token = 'invite-recorder-unbound-' + rand();
+      await db.insertFormationInvite(token, 'sapp-recorder-unbound', ownerPublicKey, signMessage, { totalUses: 1 });
+      const recorder = new ControlFormationUsageRecorder(db, { approver: refuseApproval });
+      const provision = (): Promise<{ strandId: string }> => recorder.provisionAndRecord({
+        token, sAppId: 'sapp-recorder-unbound', disclosure: '', ...mintConsent(token),
+      });
+
+      const results = await Promise.allSettled([provision(), provision()]);
+
+      const seated = results.filter(r => r.status === 'fulfilled') as PromiseFulfilledResult<{ strandId: string }>[];
+      expect(seated).toHaveLength(1);
+      const rejected = results.find(r => r.status === 'rejected') as PromiseRejectedResult;
+      expect(rejected.reason).toBeInstanceOf(InvitationExhaustedError);
+      expect((rejected.reason as InvitationExhaustedError).useNumber).toBe(2);
+      expect(await useNumbersFor(token)).toEqual([1]);
+      expect(await db.queryStrand(seated[0]!.value.strandId)).not.toBeNull();
+    });
   });
 
   describe('retrying a lost use number', () => {

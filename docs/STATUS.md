@@ -852,11 +852,12 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
 - Recovery from a lost race is also covered for `FormationUsage.UseNumber`: two redemptions of one
   invitation racing for the same use number are retried under `ControlDatabase.withUseNumberRetry`,
   re-presenting the SAME approver sign-off rather than asking a second time — see
-  `packages/cadre-core/test/control-formation-use-number-retry.spec.ts` (15 cases: the classifier
+  `packages/cadre-core/test/control-formation-use-number-retry.spec.ts` (19 cases: the classifier
   against real engine errors, concurrent `recordUsage`/`redeemInvitation` races landing sequential
   use numbers with the hook asked exactly once, rollback on both a pre-commit and a commit-time
   loss, attempts bounded at 3, and an exhausted invite raising `InvitationExhaustedError` instead
-  of retrying forever).
+  of retrying forever — on a first attempt for a same-node race as well as on a spent retry, and
+  through the recorder, which passes the seat budget down rather than re-reading it).
 - The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
   own: control writes are fast in-memory statements and Quereus serializes each one internally
   (`Database._withMutex`), so a unit-scale race between two of them completes the first before the
