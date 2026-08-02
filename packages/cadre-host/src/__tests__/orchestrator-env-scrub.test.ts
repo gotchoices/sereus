@@ -5,10 +5,10 @@
  * `launchChild` used to build each child's environment as
  * `{ ...process.env, ...extraEnv, <fixed per-child vars> }`, so ANY `CADRE_*`
  * var set on the manager (not just the ones the orchestrator deliberately
- * sets) reached every child. Because `@serfab/cadre-cli`'s `ENV_MAPPINGS`
- * turns an inherited var into a config override that beats the per-child
- * config file, a `CADRE_PARTY_ID` set on the manager could silently pull
- * every child into that party.
+ * sets) reached every child. Because `@serfab/cadre-cli` treats an inherited
+ * `CADRE_*` var as a config override that beats the per-child config file, a
+ * `CADRE_PARTY_ID` set on the manager could silently pull every child into
+ * that party.
  *
  * A fake CLI records the vars under test from its environment to a file so
  * the scrub is observable without a real cadre node.
@@ -34,6 +34,7 @@ if (tokenPath) {
   const record = {
     CADRE_PARTY_ID: process.env.CADRE_PARTY_ID ?? null,
     CADRE_STORAGE_PATH: process.env.CADRE_STORAGE_PATH ?? null,
+    CADRE_ADMIN_PORT: process.env.CADRE_ADMIN_PORT ?? null,
     DEBUG: process.env.DEBUG ?? null,
   };
   try { fs.writeFileSync(path.join(dir, 'env-seen.json'), JSON.stringify(record), 'utf8'); } catch (e) { console.error(e); }
@@ -55,6 +56,7 @@ beforeEach(() => {
   savedEnv = {
     CADRE_PARTY_ID: process.env.CADRE_PARTY_ID,
     CADRE_STORAGE_PATH: process.env.CADRE_STORAGE_PATH,
+    CADRE_ADMIN_PORT: process.env.CADRE_ADMIN_PORT,
     DEBUG: process.env.DEBUG,
   };
 });
@@ -103,6 +105,9 @@ describe('HostProcessOrchestrator child env scrub', () => {
   it('does not leak manager CADRE_* config-override vars into children, but passes through non-CADRE vars', async () => {
     process.env.CADRE_PARTY_ID = 'conflicting-party';
     process.env.CADRE_STORAGE_PATH = '/tmp/should-not-leak';
+    // Not an ENV_MAPPINGS config override — read directly by the cli's `start`
+    // command — so it only stays scrubbed if the scrub is prefix-wide.
+    process.env.CADRE_ADMIN_PORT = '19999';
     process.env.DEBUG = 'some:value';
 
     const rootDir = join(tmpRoot, 'a');
@@ -128,6 +133,7 @@ describe('HostProcessOrchestrator child env scrub', () => {
     for (const seen of [seen1, seen2]) {
       expect(seen.CADRE_PARTY_ID).toBeNull();
       expect(seen.CADRE_STORAGE_PATH).toBeNull();
+      expect(seen.CADRE_ADMIN_PORT).toBeNull();
       expect(seen.DEBUG).toBe('some:value');
     }
   });

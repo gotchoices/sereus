@@ -21,7 +21,6 @@ import type {
   OrchestratorCreateResult,
   OrchestratorStats,
 } from '@serfab/cadre-provider';
-import { ENV_MAPPINGS } from '@serfab/cadre-cli';
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
@@ -55,30 +54,24 @@ const STARTUP_TOKEN_FILE = '.startup-token';
 const CONFIG_FILE = 'cadre.json';
 const LIVENESS_POLL_MS = 100;
 
-/**
- * Env vars the orchestrator itself sets per child (below) that have no
- * `ENV_MAPPINGS` config-file equivalent, so they need their own scrub entry.
- */
-const ORCHESTRATOR_ENV_VARS = [
-  'CADRE_STARTUP_TOKEN',
-  'CADRE_HEALTH_PORT',
-  'CADRE_METRICS_PORT',
-  'CADRE_SEED_TOKEN',
-  'CADRE_OWNER_KEYS',
-];
+const CADRE_ENV_PREFIX = 'CADRE_';
 
 /**
- * Manager's own `process.env` with every `CADRE_*` config-override key
- * removed. `ENV_MAPPINGS` vars turn into config overrides that beat the
- * per-child config file this orchestrator writes, so inheriting them
- * unscrubbed would let a var set on the manager (e.g. CADRE_PARTY_ID)
- * silently reconfigure every spawned child. Non-CADRE vars (PATH, DEBUG,
- * proxy/TLS settings, etc.) still pass through untouched.
+ * Manager's own `process.env` with every `CADRE_*` key removed. A child node
+ * takes its whole configuration from the config file this orchestrator writes
+ * plus the vars set explicitly below, and `@serfab/cadre-cli` treats inherited
+ * `CADRE_*` vars as overrides that BEAT that config file — so inheriting them
+ * would let a var set on the manager (e.g. CADRE_PARTY_ID) silently
+ * reconfigure every spawned child. Scrubbing the whole prefix rather than a
+ * list of known keys means a new cli env var can't reintroduce the leak by
+ * being forgotten here. Non-CADRE vars (PATH, DEBUG, proxy/TLS settings, etc.)
+ * still pass through untouched.
  */
 function scrubbedParentEnv(): NodeJS.ProcessEnv {
   const env = { ...process.env };
-  for (const key of Object.keys(ENV_MAPPINGS)) delete env[key];
-  for (const key of ORCHESTRATOR_ENV_VARS) delete env[key];
+  for (const key of Object.keys(env)) {
+    if (key.startsWith(CADRE_ENV_PREFIX)) delete env[key];
+  }
   return env;
 }
 
