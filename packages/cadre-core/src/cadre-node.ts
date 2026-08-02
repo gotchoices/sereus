@@ -4026,6 +4026,14 @@ export class CadreNode implements SAppIdLookup {
   /**
    * The single in-flight refresh loop behind {@link refreshMembershipGate}: read
    * until the stale flag stays clear, then release the slot.
+   *
+   * NOTE: correct only because {@link membershipGateDirty} is guaranteed TRUE at
+   * entry — its sole caller sets it synchronously, with no await in between. Were
+   * this ever invoked with the flag already clear, the body would never suspend,
+   * so the `finally` would null the slot BEFORE the caller's `??=` filled it, and
+   * the slot would be left holding an already-settled drain that every later
+   * refresh reuses — an unbreakable await/re-check spin. If a second caller is
+   * ever added, have it mark the flag first (or assert it here).
    */
   private async drainMembershipGate(reason: string): Promise<void> {
     try {

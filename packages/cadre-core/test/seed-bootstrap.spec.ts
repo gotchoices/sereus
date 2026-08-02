@@ -1018,6 +1018,15 @@ describe('SeedBootstrapService Helper Methods', () => {
     });
   });
 
+  /**
+   * The node's materialized per-stream-gate snapshot (`authorizedControlPeers`).
+   * Private, and deliberately read WITHOUT any refresh call: the point of the
+   * assertions below is that a committed `CadrePeer` write refreshes it on its own.
+   */
+  function gateSnapshot(node: CadreNode): Set<string> {
+    return (node as unknown as { authorizedControlPeers: Set<string> }).authorizedControlPeers;
+  }
+
   async function readCadrePeer(
     node: CadreNode,
     peerId: string
@@ -1080,6 +1089,10 @@ describe('SeedBootstrapService Helper Methods', () => {
         const after = await readCadrePeer(node, dronePeerId);
         expect(after).toBeDefined();
         expect(after!.Multiaddr).toBe(multiaddrs.join(','));
+        // …and the per-stream gate already knows about it. No test code refreshed
+        // it: the committed write notified the control DB's membership hub, which
+        // is wired to the gate in `start()`.
+        expect(gateSnapshot(node).has(dronePeerId)).toBe(true);
 
         // Capture the row's stamp before removal: removePeer must retire it into
         // CadreControl.Revocation in the same transaction as the delete.
@@ -1090,6 +1103,8 @@ describe('SeedBootstrapService Helper Methods', () => {
 
         const removed = await readCadrePeer(node, dronePeerId);
         expect(removed).toBeUndefined();
+        // The delete notifies the same hub, so the gate has already dropped it.
+        expect(gateSnapshot(node).has(dronePeerId)).toBe(false);
         expect((await db!.queryRevokedStamps('CadrePeer')).has(removedStampId!)).toBe(true);
 
         // Re-authorize the same peer to exercise the insert→delete→insert
@@ -1100,6 +1115,7 @@ describe('SeedBootstrapService Helper Methods', () => {
         const reAuthorized = await readCadrePeer(node, dronePeerId);
         expect(reAuthorized).toBeDefined();
         expect(reAuthorized!.Multiaddr).toBe(multiaddrs.join(','));
+        expect(gateSnapshot(node).has(dronePeerId)).toBe(true);
       } finally {
         await node.stop();
       }

@@ -14,9 +14,10 @@ import {
  * `authorizeInboundStream` on the control node, gating the four Optimystic
  * control-DB protocols) and `refreshAuthorizedControlPeers` (the out-of-band
  * snapshot refresh that keeps its materialized authorized set current without
- * a live control-DB read on the stream path), plus its public face
- * `refreshMembershipGate` — the obligation a caller that writes a `CadrePeer`
- * row below the membership wrappers takes on. The fail-open connection layer
+ * a live control-DB read on the stream path), plus the coalescing refresh in
+ * front of it — `refreshMembershipGate`, which the control DB's membership hub
+ * drives after every committed `CadrePeer` write, so no writer owes the gate
+ * anything. The fail-open connection layer
  * is covered by `membership-connection-gater.spec.ts`; the row builders and
  * node injector both suites share live in `membership-gate-helpers.ts`. The
  * wire-level effect (a HELD connection whose repo stream is refused) is proven
@@ -24,6 +25,9 @@ import {
  */
 
 const REPO_PROTOCOL = '/optimystic/control-p/repo/1.0.0';
+
+/** The injected node's own peerId (the `inject` default) — never its own authorized member. */
+const SELF = 'self-peer';
 
 function authorize(node: CadreNode, remotePeerId: string): boolean {
   return (node as unknown as {
@@ -222,7 +226,7 @@ describe('CadreNode.refreshAuthorizedControlPeers', () => {
   });
 });
 
-describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', () => {
+describe('CadreNode.refreshMembershipGate (write-driven, coalescing)', () => {
   /** Anchored node holding one member, snapshot materialized; `members` stays writable. */
   async function nodeWithMutableRows(): Promise<{ node: CadreNode; owner: Owner; members: PeerRow[] }> {
     const node = new CadreNode(createConfig());
@@ -231,6 +235,15 @@ describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', (
     inject(node, { members, anchor: await anchorWith('p', owner.publicKey) });
     await refresh(node);
     return { node, owner, members };
+  }
+
+  /**
+   * One committed `CadrePeer` write, as every writer performs it: the row change
+   * runs inside `mutateCadrePeer`, which notifies the membership hub afterwards.
+   * `body` is synchronous because the fake's "commit" is just an array edit.
+   */
+  function write(node: CadreNode, body: () => void, reason = 'peer-insert'): Promise<void> {
+    return fakeDb(node).mutateCadrePeer(reason, async () => { body(); });
   }
 
   it('admits a peer whose row was written BELOW the membership wrappers — denied until it is called', async () => {
@@ -301,5 +314,171 @@ describe('CadreNode.refreshMembershipGate (the below-the-wrapper obligation)', (
 
     expect(authorize(node, PHONE)).toBe(true);
     expect(authorize(node, STRANGER)).toBe(false);
+  });
+
+  it('admits a peer written by a service built OUTSIDE CadreNode, with no explicit refresh', async () => {
+    // The historically-missed shape, and the reason the hub (not the event
+    // callbacks) is the seam: a `SeedBootstrapService` a CALLER constructed never
+    // gets CadreNode's seed callbacks wired, but it still writes through the
+    // ControlDatabase it was handed — so the notify still fires.
+    const { node, owner, members } = await nodeWithMutableRows();
+    const LATE = 'peer-outside';
+    expect(authorize(node, LATE)).toBe(false);
+
+    const externalService = {
+      insertPeer: (peerId: string) => write(node, () => { members.push(vouchedRow(peerId, owner)); })
+    };
+    await externalService.insertPeer(LATE);
+
+    expect(authorize(node, LATE)).toBe(true);
+    expect(authorize(node, STRANGER)).toBe(false);
+  });
+
+  it('drops a removed peer from the snapshot by the time the write resolves', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const SURVIVOR = 'peer-survivor';
+    members.push(vouchedRow(SURVIVOR, owner));
+    await node.refreshMembershipGate();
+    expect(authorize(node, MEMBER)).toBe(true);
+
+    // The notify sits AFTER the commit, so the caller's `await` already sees the
+    // post-removal snapshot. (The hub's own post-commit ordering against a real
+    // control DB is `control-membership-hub.spec.ts`' job, not this suite's.)
+    await write(node, () => { members.splice(members.findIndex((r) => r.peerId === MEMBER), 1); }, 'peer-remove');
+
+    expect(snapshot(node).has(MEMBER)).toBe(false);
+    expect(authorize(node, MEMBER)).toBe(false);
+    expect(authorize(node, SURVIVOR)).toBe(true);
+  });
+
+  it('fires no refresh when the mutation body throws', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    const before = db.peerQueries;
+
+    // The fake deliberately leaves the row behind after the throw (a real control
+    // DB would roll it back) so "no membership read was issued" is provable from
+    // the gate as well as from the counter.
+    await expect(db.mutateCadrePeer('peer-insert', async () => {
+      members.push(vouchedRow('peer-doomed', owner));
+      throw new Error('AuthorizedInsert rejected the row');
+    })).rejects.toThrow('AuthorizedInsert rejected the row');
+
+    expect(db.peerQueries).toBe(before);
+    expect([...snapshot(node)]).toEqual([MEMBER]);
+    expect(authorize(node, 'peer-doomed')).toBe(false);
+  });
+
+  it('a failing refresh does not make the write reject, and keeps the previous snapshot', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    db.queryCadrePeers = async () => { db.peerQueries++; throw new Error('control DB read failed'); };
+
+    await expect(write(node, () => { members.push(vouchedRow('peer-late', owner)); })).resolves.toBeUndefined();
+
+    expect(db.peerQueries).toBeGreaterThan(0);
+    expect([...snapshot(node)]).toEqual([MEMBER]);
+    expect(authorize(node, 'peer-late')).toBe(false);
+  });
+
+  it('coalesces a burst of concurrent writes, and still admits every writer own peer', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    const before = db.peerQueries;
+    const ids = ['peer-a', 'peer-b', 'peer-c', 'peer-d'];
+
+    // Hold every membership read open until the test releases it, so the burst is
+    // deterministic rather than dependent on microtask ordering.
+    const blocked: Array<() => void> = [];
+    const read = db.queryCadrePeers;
+    db.queryCadrePeers = async () => {
+      await new Promise<void>((resolve) => blocked.push(resolve));
+      return read();
+    };
+
+    // Count listener entries so the test can release the first read only once ALL
+    // four writes have marked the snapshot stale.
+    let notified = 0;
+    const listener = db.listener!;
+    db.setMembershipChangeListener(async (reason) => { notified++; return listener(reason); });
+
+    const observed = new Map<string, boolean>();
+    const writes = ids.map((id) =>
+      write(node, () => { members.push(vouchedRow(id, owner)); })
+        .then(() => { observed.set(id, snapshot(node).has(id)); }));
+
+    await vi.waitFor(() => expect(notified).toBe(ids.length));
+    expect(blocked.length).toBe(1);       // one drain, not one per writer
+    blocked.shift()!();
+
+    // The drain re-reads once because the flag went stale again mid-read; after
+    // that pass nothing is dirty, so the burst costs two reads, not four.
+    await vi.waitFor(() => expect(blocked.length).toBe(1));
+    blocked.shift()!();
+    await Promise.all(writes);
+
+    expect(db.peerQueries - before).toBe(2);
+    expect(db.peerQueries - before).toBeLessThan(ids.length);
+    // Each writer sees its OWN peer admitted when its promise resolves — the
+    // property that makes the automatic refresh usable without an explicit await.
+    expect([...observed.entries()].sort()).toEqual(ids.map((id) => [id, true]));
+  });
+
+  it('collapses a whole write-while-alone drain into ONE refresh', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    const queued = ['peer-q1', 'peer-q2', 'peer-q3'];
+
+    // Each re-issue is a notifying `CadrePeer` write; without the defer scope the
+    // drain would cost one full membership read per queued entry.
+    (db as unknown as {
+      queryPeerRecord: (peerId: string) => Promise<{ updatedAt: number; sig: string | null } | null>;
+    }).queryPeerRecord = async () => ({ updatedAt: 1, sig: null });
+    (node as unknown as { seedBootstrapService: unknown }).seedBootstrapService = {
+      canAuthorize: () => true,
+      reauthorizePeer: async (peerId: string) =>
+        db.mutateCadrePeer('peer-reauthorize', async () => { members.push(vouchedRow(peerId, owner)); })
+    };
+    (node as unknown as { pendingPeerWrites: Map<string, 'authorize' | 'remove'> }).pendingPeerWrites =
+      new Map(queued.map((id) => [id, 'authorize' as const]));
+
+    const before = db.peerQueries;
+    await (node as unknown as { drainPendingPeerWrites(): Promise<void> }).drainPendingPeerWrites();
+
+    expect(db.peerQueries - before).toBe(1);
+    for (const id of queued) {
+      expect(authorize(node, id)).toBe(true);
+    }
+  });
+
+  it('raises no refresh once the membership listener is detached', async () => {
+    const { node, owner, members } = await nodeWithMutableRows();
+    const db = fakeDb(node);
+    // What `cleanup()` does before closing the control DB, so a teardown-time write
+    // cannot drive a gate refresh against a database the node no longer owns.
+    db.setMembershipChangeListener(null);
+    const before = db.peerQueries;
+
+    await write(node, () => { members.push(vouchedRow('peer-after-detach', owner)); });
+
+    expect(db.peerQueries).toBe(before);
+    expect(authorize(node, 'peer-after-detach')).toBe(false);
+  });
+
+  it('a self-row insert leaves the cold-start snapshot empty (self is never authorized)', async () => {
+    const node = new CadreNode(createConfig());
+    const owner = makeOwner();
+    const members: PeerRow[] = [];
+    inject(node, { selfPeerId: SELF, members, anchor: await anchorWith('p', owner.publicKey) });
+    await refresh(node);
+    expect(snapshot(node).size).toBe(0);
+
+    // `registerSelf`'s self-insert notifies like any other `CadrePeer` write, but the
+    // authorized predicate filters self out — so the automatic refresh must NOT turn
+    // an empty snapshot non-empty and close the cold-start admit-all carve-out.
+    await write(node, () => { members.push(vouchedRow(SELF, owner)); });
+
+    expect(snapshot(node).size).toBe(0);
+    expect(authorize(node, STRANGER)).toBe(true);
   });
 });

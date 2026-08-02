@@ -7,6 +7,76 @@ difficulty: hard
 
 # Real-network coverage for the control-write retry
 
+<!-- resume-note -->
+## Progress (agent run 1, 2026-08-01 — stopped on BUDGET_WARNING before any code changes)
+
+**No source files were edited.** Everything below is environment verification and baseline
+measurement; the whole TODO list is still open. One build artifact changed:
+`packages/cadre-core` dist was stale (source newer than dist) and was rebuilt with
+`yarn workspace @serfab/cadre-core build` — source untouched.
+
+**Environment state verified (do not redo):**
+- `../optimystic` is clean at HEAD `c24e2fe` (repo-reports-unavailable-vs-absent). The
+  coordinator-cache fix (`coordinator-cache-poisoned-by-boot-time-self-selection`,
+  implement `ee725c9`, review `892ac32`) is in `tickets/complete/` and predates `bf7e3d2` —
+  so the unblock condition of sereus `blocked/transactor-key-network-ignores-network-scoping`
+  ("that optimystic ticket lands and `../optimystic` is rebuilt") appears MET.
+- All optimystic dists (db-core, db-p2p, quereus-plugin-optimystic, quereus-plugin-crypto)
+  are fresh (dist newer than src, checked file-by-file, not dir mtime).
+- `../quereus` carries uncommitted in-flight planner edits (cost/index, rule-key-set-seek,
+  rule-select-access-path, rule-join-physical-selection) but its dist was rebuilt AFTER
+  those edits, so the stale-build guard passes. Runs bake in that in-flight work — note it
+  in any measurement you record.
+
+**Baseline attempt: the scenario does NOT boot at current HEADs — 0 of 2 runs.** Both runs
+died in `beforeAll`, BEFORE `forceFullCohort`/`pinCoordinator`, at 45 s `waitUntil` gates:
+- Run 1 (no DEBUG): `Timeout waiting for B self-publishes its CadrePeer record after 45000ms`
+  (`…integration.ts:398`). ~61 s total.
+- Run 2 (`DEBUG='sereus:cadre:node,sereus:cadre:control-db,sereus:integration:wait'`):
+  same shape one gate later — `C self-publishes its CadrePeer record`. Every poll for the
+  full 45 s threw the SAME persistent error:
+  `QuereusError: Error during query on table 'CadrePeer': Query failed: Missing block (UkyVOfbwD-RgeWkGdx2TIcJ9yCTP9dsPHznr-q4Fg18)`
+  (raised from `optimystic-module.ts:552` runQuery), alongside the already-documented
+  fingerprint `resolvePeerAddrs: signature verification failed for 12D3KooW… (updatedAt=…,
+  addrs=[], sig=(empty))` and `reconcileControlCohort: peerStore lookup … NotFoundError`.
+  `registerSelf` itself also failed with the same Missing block on its pre-write read
+  (`cadre-node.ts:1337` → `queryPeerRecord`).
+
+**Triage per the pre-existing-failure procedure:** this scenario is already listed in
+`tickets/.pre-existing-known.md` → `transactor-key-network-ignores-network-scoping`
+(blocked), so it was NOT re-reported and no `.pre-existing-error.md` was written. Two
+things a triager/human should know, parked here rather than re-filed:
+- The observed gate differs from that ticket's run-4 fingerprint (self-publish gate +
+  persistent `Missing block` on reads, vs. resolve gate + `sig=(empty)`), though
+  `sig=(empty)` also appears. A stable never-healing `Missing block` on every read of the
+  same block id for 45 s also matches the `control-db-cross-node-convergence-halted`
+  class (blocked), which was confirmed against clean `bf7e3d2` — i.e. this may be that
+  defect, not the (now-fixed) coordinator cache. Since the network-scoping ticket's
+  unblock condition looks met yet the suite still cannot boot, whoever unblocks it should
+  re-measure with this in mind.
+- Full logs were in the session scratchpad (gone by now); the exact error text above is
+  the durable record.
+
+**Consequence for THIS ticket:** every runtime deliverable (tuning the reset count,
+measuring the transient-reset case, re-asserting elapsed bounds, re-measuring the header
+table) is unrunnable until the scenario boots again. The static arms are NOT blocked:
+section 4 (read `network-transactor.ts` sites 243/528/718 + `TransactorSource.transact`;
+update/delete the NOTE in `control-write-retry.ts`), writing `resetFirstClusterStreams`,
+adding the classifier assertions, and the negative-half constraint-error assertion (which
+can live in a runnable single-node `cadre-core` spec per the section-1 escape hatch —
+e.g. alongside `control-formation-use-number-retry.spec.ts`, which produces real engine
+constraint errors without any network).
+
+**Suggested order for the next run:** do section 4 static analysis first, then write all
+scenario/harness code (typecheck + lint it), land the negative-half classifier assertion
+in the runnable cadre-core spec, THEN attempt ~3 scenario runs. If boot still fails with
+the fingerprint above, hand off to review/ with the code landed, the cadre-core-side
+validation green, and the scenario-side measurements explicitly deferred behind the two
+blocked slugs — do not update the scenario header's measured table with numbers you did
+not measure, and say so in the handoff.
+<!-- /resume-note -->
+
+
 The retry that ticket `control-write-transient-failure-retry` adds is classified by error
 **message text** produced by Optimystic, not by an error type. That is the same dependency
 `isLostUseNumberRace` carries, and the codebase's answer to it is a test that produces the messages
