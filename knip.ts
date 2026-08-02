@@ -52,9 +52,6 @@ const config: KnipConfig = {
 				// Resolved at runtime via `req.resolve('@serfab/cadre-cli/bin/cadre.js')`
 				// to spawn the CLI as a child process; never statically imported.
 				'@serfab/cadre-cli',
-				// Svelte toolchain for the embedded host UI: `@tsconfig/svelte` is
-				// referenced from tsconfig `extends`, never imported.
-				'@tsconfig/svelte',
 			],
 		},
 

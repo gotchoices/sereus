@@ -89,17 +89,25 @@ function describeError(error) {
 	return error instanceof Error ? error.message : String(error);
 }
 
+function readManifest(packageDir) {
+	const manifest = readJson(join(packageDir, 'package.json'));
+	if (manifest === null || typeof manifest !== 'object' || Array.isArray(manifest)) {
+		throw new Error('package.json is not a JSON object');
+	}
+	return manifest;
+}
+
 /**
  * Resolves one package into `{ collected, orphans }`, or an `error` string when the package cannot
- * be resolved at all (broken Vitest config, no `tsc` typecheck script, missing tsconfig). Never
- * throws: one broken package must report as that package's failure, not abort the sweep.
+ * be resolved at all (unreadable manifest, broken Vitest config, no `tsc` typecheck script, missing
+ * tsconfig). Never throws: one broken package must report as that package's failure, not abort the
+ * sweep — so the manifest read is inside the guard too, not ahead of it.
  */
 async function gatherPackage(packageDir) {
-	const manifest = readJson(join(packageDir, 'package.json'));
 	const record = {
-		packageName: manifest.name ?? displayPath(packageDir),
+		packageName: displayPath(packageDir),
 		packageDir,
-		typecheckScript: manifest.scripts?.typecheck ?? '',
+		typecheckScript: '',
 		tsconfigPaths: [],
 		collected: [],
 		collectedAbs: new Set(),
@@ -107,6 +115,15 @@ async function gatherPackage(packageDir) {
 		orphanAbs: new Set(),
 		error: null,
 	};
+
+	try {
+		const manifest = readManifest(packageDir);
+		record.packageName = typeof manifest.name === 'string' ? manifest.name : record.packageName;
+		record.typecheckScript = typeof manifest.scripts?.typecheck === 'string' ? manifest.scripts.typecheck : '';
+	} catch (error) {
+		record.error = `package.json could not be read: ${describeError(error)}`;
+		return record;
+	}
 
 	try {
 		record.collected = (await collectRunFiles(packageDir))
@@ -144,7 +161,7 @@ async function gatherPackage(packageDir) {
 }
 
 function readAllowlist() {
-	const allowlistPath = join(rootDir, 'scripts', 'test-typecheck-allowlist.json');
+	const allowlistPath = join(rootDir, ALLOWLIST_NAME);
 	if (!existsSync(allowlistPath)) {
 		return { allowlist: {}, error: null };
 	}
@@ -289,4 +306,10 @@ async function main() {
 	return 1;
 }
 
+// `process.exit` rather than `process.exitCode`: Vitest is heavy enough that a stray handle would
+// hang the gate, and every instance has already been closed by here.
+// NOTE: stdout/stderr writes are asynchronous for pipes on macOS (synchronous on Linux and Windows),
+// so a very long failure list piped to another process could in principle be truncated by the exit.
+// Fine today — the list is capped at ten files per package. If the cap ever grows, await a drain
+// instead of exiting straight away.
 process.exit(await main());

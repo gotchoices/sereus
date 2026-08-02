@@ -612,13 +612,15 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   one is the point — a package that gets fixed fails until its justification is deleted, which is
   exactly the drift that left this document wrong in both directions at once.
   `scripts/check-test-file-typecheck-coverage.test.mjs` (`yarn test:test-file-typecheck-coverage`,
-  chained into root `yarn test`) proves it catches drift rather than merely passing today, with 29
+  chained into root `yarn test`) proves it catches drift rather than merely passing today, with 30
   throwaway-fixture workspaces covering: the `src/**/__tests__/**` exclusion reintroduced, `typecheck`
   repointed at a build config that omits `test/`, a file collected by only one `projects:` entry,
   `setupFiles`/`globalSetup` left outside the program, a spec collected from outside the package (both
-  covered and uncovered), a Vitest config that throws on load, a `.mts` config, two `-p` flags (covered
-  by the second, and by neither), a bare `tsc --noEmit`, a package collecting zero files, the ten-file
-  output cap, and every allowlist shape and staleness case above.
+  covered and uncovered), a Vitest config that throws on load, an unreadable `package.json`, a `.mts`
+  config, two `-p` flags (covered by the second, and by neither), a bare `tsc --noEmit`, a package
+  collecting zero files, the ten-file output cap, and every allowlist shape and staleness case above.
+  Every one of those per-package failure modes is *contained*: a package that cannot be resolved is
+  reported by name and the sweep continues to the rest, rather than aborting on the first bad one.
   Shared mechanics for both gates (workspace discovery, `-p` scraping, program resolution, and path
   normalization — Vitest reports forward-slashed `C:/…` paths, TypeScript reports platform separators)
   now live in `scripts/lib/typecheck-programs.mjs`; the config gate's 16 fixtures pass unmodified across
@@ -696,7 +698,11 @@ root against a single config (`knip.ts`, Option A) covering the workspaces liste
   platform runtime and the global `ns` CLI binary (reference-app-ns), dynamic-`import()`/runtime-`resolve` deps
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
   (integration-tests). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
-- Only `warn`-class output remains on a green run: the dead-code backlog above, plus one `Duplicate exports` hit
+- Only `warn`-class output remains on a green run — **zero configuration hints**, which is itself part of the
+  gate's value: a hint means `knip.ts` is carrying an exemption reality no longer needs. Two were retired that
+  way (`test-harness/**` from the root `ignore`, `@tsconfig/svelte` from `cadre-host`'s `ignoreDependencies` —
+  knip resolves the tsconfig `extends` on its own now). The remaining output is the dead-code backlog above,
+  plus one `Duplicate exports` hit
   on `reference-app-ns/src/shims/noise-crypto.js` — intentional, since that shim binds all four of upstream's
   export names (`pureJsCrypto`/`nodeCrypto`/`asCrypto`/`defaultCrypto`) to the same pure-JS object so it can
   stand in for `@chainsafe/libp2p-noise`'s node-crypto module.

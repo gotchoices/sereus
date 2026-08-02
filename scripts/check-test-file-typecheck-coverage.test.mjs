@@ -8,6 +8,10 @@ import { fileURLToPath } from 'node:url';
 
 const scriptPath = join(dirname(fileURLToPath(import.meta.url)), 'check-test-file-typecheck-coverage.mjs');
 
+// NOTE: every case spawns the gate, which boots Vitest — roughly half a second each, so the suite
+// costs ~0.5 s per test and nothing else. Fine at this size; if it ever grows past a minute, share
+// one fixture root across the cases that only differ in their allowlist.
+
 /**
  * `packages` maps a package directory name to its files; `rootFiles` writes files at the fixture
  * root (used for the allowlist, and for a `test-harness/` sibling above `packages/` that mirrors the
@@ -357,6 +361,30 @@ test('typecheck script pointing at a missing tsconfig fails with a readable reas
 	const result = run(root);
 	assert.equal(result.status, 1);
 	assert.match(result.stderr, /missing config/);
+});
+
+test('a package with an unreadable package.json is named, not left to abort the sweep', () => {
+	const root = makeFixture({
+		'pkg-broken': {
+			'package.json': '{ not json',
+			'vitest.config.ts': vitestConfig({ include: ['test/**/*.spec.ts'] }),
+		},
+		'pkg-a': {
+			'package.json': JSON.stringify({ name: 'pkg-a', scripts: { typecheck: TYPECHECK_SCRIPT } }),
+			'tsconfig.json': JSON.stringify({ compilerOptions: {} }),
+			'tsconfig.typecheck.json': JSON.stringify({ extends: './tsconfig.json', include: ['src', 'test', 'vitest.config.ts'] }),
+			'src/index.ts': SRC_FILE,
+			'test/a.spec.ts': SPEC_FILE,
+			'vitest.config.ts': vitestConfig({ include: ['test/**/*.spec.ts'] }),
+		},
+	});
+	const result = run(root);
+	assert.equal(result.status, 1);
+	assert.match(result.stderr, /pkg-broken/);
+	assert.match(result.stderr, /package\.json could not be read/);
+	// The sweep still reached the healthy package rather than dying on the broken one.
+	assert.doesNotMatch(result.stderr, /at JSON\.parse/);
+	assert.match(result.stderr, /1 package\(s\) run test files that are never type-checked/);
 });
 
 test('no packages directory at all is treated as nothing to check', () => {
