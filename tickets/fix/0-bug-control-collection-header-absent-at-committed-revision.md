@@ -178,6 +178,12 @@ fingerprint, failing step 3 and step 5 — both of which are `addDrone` inserts)
 **not** deterministic for this defect, but it is majority-red and it is cheap: the failure is a poll
 timeout at 60 s, and the underlying insert throws in milliseconds.
 
+Three more runs in that day's review pass came out 1 green / 1 this fingerprint / 1 a *different*
+tracked fingerprint (node B dying in control-schema DDL with `Self-coordination blocked:
+grace-period-not-elapsed`, now the second arm of
+`fix/1-bug-rejoining-node-cannot-self-coordinate-after-reconnect`). So a red here is worth checking
+against both before attributing it to this ticket.
+
 Repro (from sereus root; needs `../quereus` buildable — see caveat below):
 
 ```

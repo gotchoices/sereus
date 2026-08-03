@@ -24,14 +24,13 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { createServer as createNetServer, type AddressInfo } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 
 import {
   OWNER_CONTAINER_ID,
@@ -43,19 +42,12 @@ import {
   type ManagedNodeInfo,
 } from '@serfab/cadre-host';
 
-import { waitUntil } from '../harness/index.js';
+import { waitUntil, writeIdentity } from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
 /** Per-op budget for admin round-trips once the node is up. */
 const OP_MS = 30_000;
-
-/** Write the installer-style protobuf identity.key and return its peer id. */
-async function writeIdentity(path: string): Promise<{ key: PrivateKey; peerId: string }> {
-  const key = await generateKeyPair('Ed25519');
-  writeFileSync(path, privateKeyToProtobuf(key));
-  return { key, peerId: peerIdFromPrivateKey(key).toString() };
-}
 
 /** A shape-valid (but offline) peer id from a throwaway Ed25519 key. */
 async function freshPeerId(): Promise<string> {

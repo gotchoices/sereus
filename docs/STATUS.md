@@ -387,9 +387,22 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   and still succeeds, but that container accepts no seed. First accepted seed anchors the key on the
   durable `/data` volume, so later seeds need no pin. Tested: `docker-orchestrator-push.test.ts` (env
   injection + omission), `container-owner-keys.test.ts` (forwarding, no default, cross-tenant),
-  `create-container-owner-keys.test.ts` (route accept/validate). **Not yet covered**: a real node
-  actually accepting a provider-delivered seed — `container-seed-endpoint.test.ts` stubs `fetch`, so no
-  test exercises a live `SeedTrustPolicy` decision on the provider path.
+  `create-container-owner-keys.test.ts` (route accept/validate). A live `SeedTrustPolicy` decision on
+  the provider path is now covered too, by
+  `packages/integration-tests/src/scenarios/provider-seed-accepted.integration.ts` — real `cadre-cli`
+  children started from the provider's own `buildNodeEnv()` (via the in-process
+  `ProviderProcessOrchestrator`), no `fetch` stub anywhere: a node pinned to the owner accepts the
+  provider-delivered seed, a node pinned to a stranger refuses it (400, trust gate) while a wrong
+  bearer on the same endpoint gets 401 (delivery gate), and the first node restarted from its volume
+  with **no** pin still accepts a second seed — proving the first seed anchored the owner key
+  durably. ⚠️ That scenario is currently majority-red on the control-database defect tracked by
+  `fix/0-bug-control-collection-header-absent-at-committed-revision` (its reds are `addDrone` insert
+  failures on the owner, not seed-path failures) and, less often, on
+  `fix/1-bug-rejoining-node-cannot-self-coordinate-after-reconnect` (node B dies in control-schema DDL
+  and never provisions). Measured 2026-08-03: 1 green of 4 runs in the implement pass, 1 green of 3 in
+  the review pass. A green run takes ~43 s. **Still not covered**: the real Docker image and its `docker/entrypoint.sh`
+  — the orchestrator reproduces the image env and the entrypoint's derivations in process, so a drift
+  in the script itself passes everything above.
 - [x] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`
   reap sweep + `DonationService` unit tests (`donation/__tests__/donation-service.test.ts`, a fake
   orchestrator over a real on-disk store).

@@ -1,7 +1,7 @@
 ----
-description: After a machine drops off the network and comes back, it can refuse to answer its own queries for a while, reporting that no one is available to coordinate — even though it has reconnected.
+description: A machine can refuse to answer its own queries for a while, reporting that no one is available to coordinate. Seen both after a machine drops off the network and comes back, and on a brand-new machine that has never been on the network before — the new machine fails to start at all.
 prereq:
-files: packages/integration-tests/src/scenarios/convergence-stress.integration.ts ("Disconnection Resilience" block), ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (canSelfCoordinate ~line 240-300, the throw at ~line 539)
+files: packages/integration-tests/src/scenarios/convergence-stress.integration.ts ("Disconnection Resilience" block), packages/integration-tests/src/scenarios/provider-seed-accepted.integration.ts (step 4, node B), ../optimystic/packages/db-p2p/src/libp2p-key-network.ts (canSelfCoordinate ~line 240-300, the throw at ~line 539)
 difficulty: medium
 ----
 
@@ -52,6 +52,55 @@ reconnects. That is the contradiction to resolve, and it splits the outcome clea
 Do not guess between those. `canSelfCoordinate` has a `this.log` on every branch it takes; run with
 `DEBUG='optimystic:*'` (the package exposes `test:debug` for exactly this) and read which branch
 fires, then log `libp2p.getConnections().length` and `lastConnectedTime` at the moment of the throw.
+
+## Second arm: a COLD-START node hits the same block during schema creation
+
+Added 2026-08-03 by the review of `29.5-provider-seed-accepted-by-real-node`. Same message, same
+throw site, but the node is not rejoining anything — it has never been on the network before, and
+it never finishes starting.
+
+`provider-seed-accepted.integration.ts` step 4 provisions node B as the **third** real `cadre-cli`
+child in a party that already has the owner node and node A running. B's own log:
+
+```
+✓ Pinned 1 owner key(s) for cold-start seed trust
+✓ Health server on port 59711, metrics on port 59712
+✓ Seed endpoint authenticated (POST /seed requires bearer token)
+Failed to start cadre node: Failed to execute DDL: create table CadreControl.Revocation (…)
+Error: Module 'optimystic' create failed for table 'Revocation': Failed to initialize Optimystic
+table: Self-coordination blocked: grace-period-not-elapsed. No coordinator available for key.
+```
+
+Note what is missing: no `✓ Connected to control network`. The process dies inside control-schema
+DDL, so the container never reports healthy and the provider's enrollment poll times out at 90 s.
+
+Three things this arm adds:
+
+- **It is a startup failure, not a query failure.** The first arm's node is up and answering; this
+  one never gets there. A user-visible symptom (a hosted node that simply will not provision) that
+  no amount of retrying at the query layer can reach.
+- **It is not covered by the control-write retry.** `retryControlWrite`
+  (`packages/cadre-core/src/control-write-retry.ts`) classifies only transactor aggregates and
+  unanswered super-majority shortfalls as transient; `Self-coordination blocked: …` matches neither,
+  so the DDL is never re-presented. Whether it *should* be is a real question for this ticket:
+  unlike a commit-phase aggregate, a DDL that failed to find a coordinator is a proven non-commit,
+  so re-presenting it is safe. Decide that deliberately rather than by omission.
+- **Which of the two `grace-period-not-elapsed` branches fires here is NOT established** — inferred
+  from the message alone (`repro: static` for this arm specifically). Both documented branches
+  require `connections.length === 0`, and a node that has just dialled two bootstrap peers should
+  not be at zero, so the same "resolve the contradiction with `DEBUG='optimystic:*'`" instruction
+  above applies here, on the cheaper of the two repros.
+
+Frequency: 1 of 3 runs on 2026-08-03 (of the other two, one failed steps 3 and 5 on
+`fix/0-bug-control-collection-header-absent-at-committed-revision` with step 4 never reached, and one
+was fully green in 43 s). A red run costs ~2 minutes:
+
+```
+yarn workspace @serfab/integration-tests test src/scenarios/provider-seed-accepted.integration.ts
+```
+
+`convergence-stress` remains the cheaper repro for the first arm; use this one only if a fix needs
+to be proven against the cold-start path too.
 
 ## Constraints
 

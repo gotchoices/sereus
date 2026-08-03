@@ -32,13 +32,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateKeyPair, privateKeyFromProtobuf, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 
 import { ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import {
@@ -53,47 +52,12 @@ import {
   type OwnerSpawnConfig,
 } from '@serfab/cadre-host';
 
-import { waitUntil } from '../harness/index.js';
+import { readNodeLocalStore, waitUntil, withPeerId, writeIdentity } from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
-
-/** Write the installer-style protobuf identity.key and return the libp2p key. */
-async function writeIdentity(path: string): Promise<{ key: PrivateKey; peerId: string }> {
-  const key = await generateKeyPair('Ed25519');
-  writeFileSync(path, privateKeyToProtobuf(key));
-  return { key, peerId: peerIdFromPrivateKey(key).toString() };
-}
-
-/** Ensure a control-bootstrap multiaddr carries the peer id needed to dial it. */
-function withPeerId(addr: string, peerId: string): string {
-  return addr.includes('/p2p/') ? addr : `${addr}/p2p/${peerId}`;
-}
-
-/** A node-local store envelope as `@serfab/cadre-core` snapshot-writes it. */
-interface NodeLocalEnvelope {
-  version: number;
-  partyId: string;
-  owners?: Record<string, unknown>;
-  peers?: Record<string, unknown>;
-}
-
-/**
- * The single `<name>.<encoded party>.json` node-local store in `dir`, parsed —
- * or undefined while it has not been written yet. The party component is
- * filename-encoded by cadre-core, so match on the name prefix and check the
- * envelope's own `partyId` instead of rebuilding the encoding here.
- *
- * NOTE: takes the first prefix match; a donated node serves exactly one party
- * today. If a workdir ever holds several parties' stores, select by encoded
- * party rather than by prefix.
- */
-function readNodeLocalStore(dir: string, name: string): NodeLocalEnvelope | undefined {
-  const file = readdirSync(dir).find((f) => f.startsWith(`${name}.`) && f.endsWith('.json'));
-  return file ? (JSON.parse(readFileSync(join(dir, file), 'utf8')) as NodeLocalEnvelope) : undefined;
-}
 
 describe('cadre-host donates a node into a requester’s cadre (real cadre-cli)', () => {
   let tmpRoot: string;

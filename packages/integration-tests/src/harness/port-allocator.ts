@@ -14,6 +14,17 @@
 // listen multiaddrs after start.
 const EPHEMERAL_PORT = 0;
 
+// NOTE: `HostProcessOrchestrator` cannot use port 0 — it hands its children
+// concrete health/metrics ports — so the child-process scenarios each hard-code
+// a disjoint band by convention, and nothing enforces the split:
+//   19600-19899  cadre-host-owner-node
+//   19900-20039  cadre-host-node-donation (requester)
+//   20040-20199  cadre-host-node-donation (donor)
+//   20200-20339  provider-seed-accepted
+// Disjoint today. If a new child-process scenario lands, or two of these ever
+// run in the same worker window on overlapping ranges, move the claim into a
+// single exported table here so the bands are allocated rather than remembered.
+
 /**
  * Allocate a single available port
  */

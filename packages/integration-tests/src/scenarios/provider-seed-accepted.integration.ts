@@ -38,13 +38,12 @@
  */
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
+import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import type { PrivateKey } from '@libp2p/interface';
 
 import { ed25519KeyPairFromLibp2p } from '@serfab/cadre-core';
 import {
@@ -55,44 +54,18 @@ import {
 } from '@serfab/cadre-host';
 import { ContainerService, MemoryStore } from '@serfab/cadre-provider';
 
-import { ProviderProcessOrchestrator, waitUntil } from '../harness/index.js';
+import {
+  ProviderProcessOrchestrator,
+  readNodeLocalStore,
+  waitUntil,
+  withPeerId,
+  writeIdentity,
+} from '../harness/index.js';
 
 /** Generous startup budget — real libp2p + optimystic control DB in a child. */
 const STARTUP_MS = 90_000;
 /** Per-op budget for round-trips once a node is up. */
 const OP_MS = 30_000;
-
-/** Write the installer-style protobuf identity.key and return the libp2p key. */
-async function writeIdentity(path: string): Promise<{ key: PrivateKey; peerId: string }> {
-  const key = await generateKeyPair('Ed25519');
-  writeFileSync(path, privateKeyToProtobuf(key));
-  return { key, peerId: peerIdFromPrivateKey(key).toString() };
-}
-
-/** Ensure a control-bootstrap multiaddr carries the peer id needed to dial it. */
-function withPeerId(addr: string, peerId: string): string {
-  return addr.includes('/p2p/') ? addr : `${addr}/p2p/${peerId}`;
-}
-
-/** A node-local store envelope as `@serfab/cadre-core` snapshot-writes it. */
-interface NodeLocalEnvelope {
-  version: number;
-  partyId: string;
-  owners?: Record<string, unknown>;
-  peers?: Record<string, unknown>;
-}
-
-/**
- * The single `<name>.<encoded party>.json` node-local store in `dir`, parsed —
- * or undefined while it has not been written yet. Same prefix-match approach as
- * the donation scenario: the party component is filename-encoded by cadre-core,
- * so match on the name prefix and check the envelope's own `partyId` instead of
- * rebuilding the encoding here.
- */
-function readNodeLocalStore(dir: string, name: string): NodeLocalEnvelope | undefined {
-  const file = readdirSync(dir).find((f) => f.startsWith(`${name}.`) && f.endsWith('.json'));
-  return file ? (JSON.parse(readFileSync(join(dir, file), 'utf8')) as NodeLocalEnvelope) : undefined;
-}
 
 describe('provider-started node accepts the seed the provider delivers (real cadre-cli)', () => {
   let tmpRoot: string;
@@ -156,7 +129,7 @@ describe('provider-started node accepts the seed the provider delivers (real cad
   /** A message for anything a poll can have thrown, `undefined` included. */
   function reasonOf(err: unknown): string {
     if (err === undefined) return 'none';
-    return err instanceof Error ? `${err.message}` : String(err);
+    return err instanceof Error ? err.message : String(err);
   }
 
   /**
@@ -411,6 +384,12 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     });
     // Patch the provider record so the service's seed path targets the new
     // endpoints/token (a real provider restart would re-record the same way).
+    //
+    // NOTE: this is test-side surgery on a production record shape, and it is
+    // silent if that shape changes — a renamed or added field is simply not
+    // patched, and the step fails as a seed-path failure. If `ContainerService`
+    // ever grows a restart-in-place path (one that reuses the ctr_ id instead of
+    // minting a fresh one), call it here instead of hand-patching.
     record.dockerId = fresh.dockerId;
     record.healthEndpoint = fresh.healthEndpoint;
     record.metricsEndpoint = fresh.metricsEndpoint;
