@@ -1,6 +1,7 @@
 import type { ConnectionGater, Libp2p, PeerId, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
-import type { IRepo } from '@optimystic/db-core';
+import type { IPeerNetwork, IRepo } from '@optimystic/db-core';
+import type { StrandBackfillConfig } from './strand-backfill.js';
 import type { StrandDatabase } from './strand-database.js';
 import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
@@ -15,6 +16,14 @@ import type { RevocableTable } from './control-authorization.js';
  */
 export interface Libp2pNodeWithRepo extends Libp2p {
   coordinatedRepo: IRepo;
+  /**
+   * The node's key-addressed peer network, attached by db-p2p's factory alongside
+   * `coordinatedRepo` (`libp2p-node-base.ts`). Optional deliberately: the base
+   * factory always assigns it, but it is not part of the upstream node type, so
+   * declaring it required would be a claim this repo cannot enforce. The strand
+   * backfill (`strand-backfill.ts`) logs once and stays inert when it is absent.
+   */
+  keyNetwork?: IPeerNetwork;
 }
 
 /**
@@ -375,6 +384,19 @@ export interface CadreNodeConfig {
    * corroborator's stale answer is accepted as the cluster's truth.
    */
   strandClusterSize?: number;
+
+  /**
+   * Tuning for the strand peer-join block catch-up (see `strand-backfill.ts`):
+   * when a strand's libp2p node connects to a peer this runtime has not yet
+   * caught up, every block in the strand's own raw store is pushed to that peer,
+   * so a machine that joined the strand after blocks were committed still ends
+   * up physically holding them. Applies to every strand this node starts;
+   * strand-only — the control network has its own row-level re-issue queue
+   * (`drainPendingControlReplication`). Omit for the defaults
+   * (`DEFAULT_STRAND_BACKFILL`); `{ enabled: false }` restores the
+   * no-backfill behaviour.
+   */
+  strandBackfill?: StrandBackfillConfig;
 
   /** Hibernation configuration */
   hibernation?: HibernationConfig;

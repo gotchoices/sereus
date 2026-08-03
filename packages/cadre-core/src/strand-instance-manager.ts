@@ -2,6 +2,7 @@ import debug from 'debug';
 import type { PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { StrandDatabase } from './strand-database.js';
+import { StrandBackfill, type StrandBackfillConfig } from './strand-backfill.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import type {
   StrandInstance,
@@ -65,6 +66,15 @@ export interface StartStrandConfig {
    * control network's breadth is the fixed `CONTROL_REPLICATION_BREADTH`.
    */
   clusterSize?: number;
+  /**
+   * Tuning for the strand peer-join block catch-up ({@link StrandBackfill}),
+   * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
+   * libp2p node connects to a peer this runtime has not yet caught up, every
+   * block in the strand's own raw store is pushed to it. Runs only on
+   * `networked` strands with per-strand storage; `{ enabled: false }` restores
+   * the pre-existing no-backfill behaviour.
+   */
+  backfill?: StrandBackfillConfig;
 }
 
 /**
@@ -144,6 +154,15 @@ export class StrandInstanceManager {
    * without the caller re-threading storage/network/profile/key/sApp config.
    */
   private launchConfigs: Map<string, StartStrandConfig> = new Map();
+  /**
+   * The per-strand peer-join block catch-up, keyed by strand id. Private (not on
+   * the public {@link StrandInstance}) because it is runtime plumbing with the
+   * same lifetime as the strand's libp2p node: created in `buildStrandRuntime`,
+   * stopped and dropped in `releaseRuntime` — so quiesce → resume rebuilds it
+   * with a fresh caught-up-peer memo, which is intended (a resumed node may have
+   * missed writes).
+   */
+  private backfills: Map<string, StrandBackfill> = new Map();
   private stopping = false;
 
   constructor() {
@@ -346,6 +365,28 @@ export class StrandInstanceManager {
       await strandDb.initialize();
       timing('[buildStrandRuntime:%s] strandDatabase.initialize: %dms', strandId, Math.round(performance.now() - t0));
 
+      // Peer-join block catch-up: push this strand's own blocks to each newly
+      // connected peer, so a machine that joined after blocks were committed
+      // still ends up physically holding them (a bootstrap strand has no mesh
+      // to catch up, and without per-strand storage there is nothing to copy).
+      if (mode === 'networked' && strandStorage && config.backfill?.enabled !== false) {
+        if (node.keyNetwork) {
+          const backfill = new StrandBackfill({
+            strandId,
+            libp2p: node,
+            peerNetwork: node.keyNetwork,
+            storage: strandStorage,
+            // MUST match the prefix the receiver registered its block-transfer
+            // handler under (db-p2p namespaces every service by networkName).
+            protocolPrefix: `/optimystic/strand-${strandId}`
+          }, config.backfill);
+          backfill.start();
+          this.backfills.set(strandId, backfill);
+        } else {
+          log('Strand %s: libp2p node exposes no keyNetwork; peer-join block catch-up is inert', strandId);
+        }
+      }
+
       instance.status = 'active';
       instance.lastActivity = new Date();
     } catch (error) {
@@ -368,6 +409,13 @@ export class StrandInstanceManager {
    * Shared by `quiesceStrand`, `stopStrand`, and that rollback path.
    */
   private async releaseRuntime(instance: StrandInstance): Promise<void> {
+    // Backfill first — before the database closes and the libp2p node stops —
+    // so no catch-up push is issued against a torn-down transport.
+    const backfill = this.backfills.get(instance.strandId);
+    if (backfill) {
+      backfill.stop();
+      this.backfills.delete(instance.strandId);
+    }
     if (instance.database) {
       await instance.database.close();
       instance.database = undefined;

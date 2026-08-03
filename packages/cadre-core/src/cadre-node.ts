@@ -3511,6 +3511,7 @@ export class CadreNode implements SAppIdLookup {
       mode,
       requireSignedSchemas: this.config.requireSignedSchemas,
       clusterSize: this.config.strandClusterSize,
+      backfill: this.config.strandBackfill,
       founder
     });
 

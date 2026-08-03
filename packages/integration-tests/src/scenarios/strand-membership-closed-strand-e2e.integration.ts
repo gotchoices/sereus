@@ -82,8 +82,9 @@
  * those four assert.
  * Physical replication is proven separately by the FOURTH test, which writes only on
  * the founder and then reads the joiner's raw block store directly, never its database.
- * Its own comment states exactly which blocks that claim covers (post-dial ones) and
- * which measurably never arrive.
+ * It gates both halves: post-dial blocks arriving as part of each commit, and pre-dial
+ * blocks arriving via the peer-join catch-up (cadre-core's `strand-backfill.ts`) — see
+ * its WHAT IS AND IS NOT CLAIMED comment.
  *
  * Rejection floor: per the optimystic deferred-constraint-rollback gap (backlog),
  * rejected writes assert via `rejects.toThrow()` ("throws" is the floor) and do NOT
@@ -858,33 +859,37 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	// joiner's strand-scoped raw block store.
 	//
 	// ── WHAT IS AND IS NOT CLAIMED (measured, not assumed) ────────────────────
-	// The claim is scoped to blocks the founder authored or advanced AFTER the two
-	// strand nodes were dialled together. It is not a whole-store claim, because a
-	// measured run showed the founder's store is NOT a subset of the joiner's:
-	//   • 18 blocks in the founder's store when the dial completed; 27 after the writes
-	//     below; 13 of those new or at a higher revision. All 13 were already in the
-	//     joiner's own store on the FIRST poll — 1 ms after the last write returned, so
-	//     the push happens as part of the commit, not on a later sweep.
-	//   • The 9 that never landed were all committed BEFORE the dial: the bootstrap
-	//     Header/Member/Manager data blocks and their `default/*/index/_uniq_*` index
-	//     blocks, written to a cohort of one, and two collection ROOT blocks that can
-	//     never match by construction — a root's id is a fresh 256-bit random value
-	//     (`db-core` → `blocks/structs.ts`, minted by `generateId()` in
-	//     `transactor/transactor-source.ts` whenever no id is supplied), so each node's
-	//     locally-created root carries a different id even for the same collection.
-	//     Nothing backfills a peer that joins the cohort after a block was committed; the
-	//     joiner reads those rows over the wire from the founder instead, which is why the
-	//     three visibility tests above pass. Recorded as
-	//     `backlog/debt-strand-no-backfill-of-pre-membership-blocks`.
-	// So this test proves ONGOING replication, not retroactive replication. Do not widen
-	// the comparison back to the whole store to "strengthen" it — it would fail on the
-	// pre-dial blocks and on the node-local roots, neither of which is this test's claim.
+	// TWO physical claims, gated separately because different mechanisms carry them:
 	//
-	// NOTE: coverage has been complete on the FIRST poll every run so far, so the GATE
-	// budget below has never been exercised as a wait. A regression that made replication
-	// merely slow rather than absent would still pass here, indistinguishably. If strand
-	// replication ever grows an asynchronous path, this test needs a latency bound (assert
-	// the elapsed ms, not just eventual coverage) to keep saying anything about it.
+	//   1. ONGOING replication (first gate, narrowed by `authoredSinceDial`): every
+	//      block the founder authors or advances AFTER the two strand nodes are dialled
+	//      together lands in the joiner's own store as part of the commit. Measured:
+	//      complete on the FIRST poll every run — ~1 ms after the last write returns —
+	//      so this gate has never been exercised as a wait. A regression that made
+	//      commit replication merely slow rather than absent would still pass it; if
+	//      that path ever grows an asynchronous leg, add a latency bound (assert the
+	//      elapsed ms) to keep the gate saying anything about it.
+	//
+	//   2. PEER-JOIN CATCH-UP (second gate, NO narrowing — `founder ⊆ joiner`): the
+	//      blocks committed BEFORE the dial reach the joiner too, pushed by cadre-core's
+	//      `strand-backfill.ts` one debounce (~1 s) after the strand connection opens.
+	//      Before that module existed, a measured run showed 9 of the founder's 27
+	//      blocks never reached the joiner — the bootstrap Header/Member/Manager data
+	//      blocks, their `default/*/index/_uniq_*` index blocks, and the founder's
+	//      collection ROOT blocks, all committed to a cohort of one before the dial.
+	//      The catch-up closes exactly that gap. Collection roots are covered as well:
+	//      each node mints its own random root id, so the joiner's locally-minted root
+	//      differs from the founder's — but the push copies the founder's root under
+	//      the FOUNDER's id, which is the block the founder's collections are actually
+	//      traversed through. Measured with the catch-up live (2026-08-03): the founder
+	//      holds 29 committed blocks after the writes below and the joiner's own store
+	//      covered all 29 on the FIRST poll — the debounce elapsed while the writes ran,
+	//      so the gate did not wait in that run, though unlike the first gate it MAY
+	//      legitimately wait up to a debounce-plus-push.
+	//
+	// If a residue ever reappears here, narrow the second gate only with an EXPLICIT,
+	// measured exclusion naming exactly which ids and why — never a blanket narrowing
+	// back to post-dial blocks; that would silently un-prove the catch-up.
 	//
 	// ⚠ THE JOINER'S DATABASE IS OFF LIMITS FROM HERE ON — `joinerDb` is deliberately not
 	// destructured below, and no read of any kind may be issued against it. A read through
@@ -899,11 +904,11 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	// "From here on", precisely: `bringUpClosedStrand` DOES read `joinerDb` — its
 	// bootstrap-row gate counts Strand.Header/Member/Manager there. Every one of those
 	// reads precedes the founder-only writes below, so none of them can have pre-placed a
-	// block this test then credits to replication. (Empirically they backfill nothing at
-	// all: the pre-dial blocks those gates read stay absent from the joiner's raw store for
-	// the whole run — see the measurement above. The confound is a sound caution, not an
-	// observed behaviour.) The rule that is load-bearing is ordering: no `joinerDb` read at
-	// or after the writes.
+	// block this test then credits to replication. (Pre-dial blocks DO now land on the
+	// joiner — that is the peer-join catch-up the second gate proves — but they arrive by
+	// the founder PUSHING them on connection:open, not by anything a joiner read pulls in;
+	// the read-side confound remains a sound caution, not an observed behaviour.) The rule
+	// that is load-bearing is ordering: no `joinerDb` read at or after the writes.
 	it("replicates the founder's blocks PHYSICALLY into the joiner's own block store", async () => {
 		const {
 			founderNode, joinerNode, founderDb, founderKeyPair,
@@ -949,9 +954,9 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// ── Anti-vacuity floor C: the writes above really produced blocks ─────
 			// An empty compared-set makes coverage trivially satisfied, so the size of the
 			// post-dial set is asserted separately from — and before — the coverage gate.
-			// Observed: 27 founder blocks total, of which 13 are new-or-advanced since the
-			// baseline (9 new — Invite/ConsumedInvite/Items and their index and data blocks —
-			// plus 4 pre-existing blocks pushed to a higher revision). The floor sits at 6, so
+			// Observed 2026-08-03: 29 founder blocks total, of which 15 are new-or-advanced
+			// since the baseline (Invite/ConsumedInvite/Items and their index and data blocks,
+			// plus pre-existing blocks pushed to a higher revision). The floor sits at 6, so
 			// it pins "more than one table's worth of work" without pinning the storage layout.
 			const founderIndex = await readBlockIndex(founderStore);
 			const authored = new Map([...founderIndex].filter(([id, rev]) => authoredSinceDial(id, rev)));
@@ -989,6 +994,36 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				`[closed-strand:physical] founder holds ${founderIndex.size} committed blocks, ` +
 				`${authored.size} of them authored or advanced since the dial; joiner's own store ` +
 				`covered those in ${Date.now() - startedAt}ms (joiner store holds ${(await readBlockIndex(joinerStore)).size})`,
+			);
+
+			// ── THE CATCH-UP PROOF: the founder's WHOLE store, pre-dial blocks included ──
+			// No `include` narrowing — founder ⊆ joiner, at revisions no older than the
+			// founder's, with content bytes present. This is the gap the first gate cannot
+			// see and the very thing cadre-core's strand-backfill.ts exists for: the
+			// bootstrap blocks committed before the dial must be physically on the joiner.
+			// Still a raw-store poll — the ⚠ joinerDb rule above holds here too.
+			const wholeStoreStartedAt = Date.now();
+			try {
+				await waitUntil(
+					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
+					{ ...GATE, description: "the founder's WHOLE store (pre-dial blocks included) lands physically in the joiner's block store" },
+				);
+			} catch (timeout) {
+				// Same rescue as above: name the exact ids the joiner never got, or rethrow
+				// the real per-attempt error a bare timeout would have swallowed.
+				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
+				throw new Error(
+					`joiner's block store never covered the founder's WHOLE store within ${GATE.timeoutMs}ms ` +
+					'(peer-join catch-up failed — see cadre-core/src/strand-backfill.ts) — ' +
+					formatBlockCoverageGap(finalGap),
+					{ cause: timeout },
+				);
+			}
+			console.log(
+				`[closed-strand:physical] whole-store coverage (peer-join catch-up) complete ` +
+				`${Date.now() - wholeStoreStartedAt}ms after the gate started: founder holds ` +
+				`${(await readBlockIndex(founderStore)).size} committed blocks, joiner holds ` +
+				`${(await readBlockIndex(joinerStore)).size}`,
 			);
 		} finally {
 			await stopBoth(founderNode, joinerNode);
