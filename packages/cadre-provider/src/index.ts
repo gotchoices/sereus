@@ -82,6 +82,7 @@ export { DockerOrchestrator } from './service/docker-orchestrator.js';
 export {
   type NodeEnvPorts,
   type NodeEnvSpec,
+  CONTAINER_PORTS,
   buildNodeEnv,
 } from './service/container-env.js';
 

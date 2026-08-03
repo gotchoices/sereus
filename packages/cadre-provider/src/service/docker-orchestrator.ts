@@ -12,7 +12,7 @@ import type {
   OrchestratorCreateResult,
   OrchestratorStats,
 } from './orchestrator.js';
-import { buildNodeEnv } from './container-env.js';
+import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -207,9 +207,9 @@ export class DockerOrchestrator implements Orchestrator {
           // route to the network. The p2p port (4001) intentionally stays on all
           // interfaces — libp2p peers must reach it remotely.
           PortBindings: {
-            '8080/tcp': [{ HostIp: '127.0.0.1', HostPort: String(healthPort) }],
-            '9090/tcp': [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
-            '4001/tcp': [{ HostPort: String(p2pPort) }],
+            [`${CONTAINER_PORTS.health}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(healthPort) }],
+            [`${CONTAINER_PORTS.metrics}/tcp`]: [{ HostIp: '127.0.0.1', HostPort: String(metricsPort) }],
+            [`${CONTAINER_PORTS.p2p}/tcp`]: [{ HostPort: String(p2pPort) }],
           },
           // Durable per-tenant state (identity key, generated config,
           // bootstrap-peer store, trusted-owner anchor, storage) all live under

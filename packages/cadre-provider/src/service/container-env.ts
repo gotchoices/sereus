@@ -16,18 +16,23 @@ import type { OrchestratorCreateRequest } from './orchestrator.js';
 
 /** Ports as seen INSIDE the container (the image's EXPOSE set), not host ports. */
 export interface NodeEnvPorts {
-  health: number;    // 8080 in the image
-  metrics: number;   // 9090 in the image
-  p2p: number;        // 4001 in the image
+  health: number;
+  metrics: number;
+  p2p: number;
 }
 
-const DEFAULT_PORTS: NodeEnvPorts = { health: 8080, metrics: 9090, p2p: 4001 };
+/**
+ * The image's fixed in-container ports — the default for `NodeEnvSpec.ports`,
+ * and the same set `DockerOrchestrator` publishes host ports against, so the
+ * env vars and the `PortBindings` keys cannot drift apart.
+ */
+export const CONTAINER_PORTS: NodeEnvPorts = { health: 8080, metrics: 9090, p2p: 4001 };
 
 export interface NodeEnvSpec {
   request: OrchestratorCreateRequest;
   /** Per-container secret gating POST /seed. */
   seedToken: string;
-  /** Defaults to { health: 8080, metrics: 9090, p2p: 4001 }. */
+  /** Defaults to `CONTAINER_PORTS` (the image's in-container ports). */
   ports?: NodeEnvPorts;
   /** Effective resources (request.resources merged with the config default). */
   resources?: ContainerResources;
@@ -36,7 +41,7 @@ export interface NodeEnvSpec {
 /** `KEY=value` entries, empty ones already dropped — Docker `Env` order preserved. */
 export function buildNodeEnv(spec: NodeEnvSpec): string[] {
   const { request, seedToken } = spec;
-  const ports = spec.ports ?? DEFAULT_PORTS;
+  const ports = spec.ports ?? CONTAINER_PORTS;
   const resources = spec.resources ?? {};
 
   return [
@@ -46,6 +51,10 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
     `CADRE_HEALTH_PORT=${ports.health}`,
     `CADRE_METRICS_PORT=${ports.metrics}`,
     `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/${ports.p2p}`,
+    // NOTE: emitted unconditionally — the provider always mints a token. A
+    // caller passing '' would ship a present-but-empty var, which cadre-cli
+    // reads as "seed endpoint disabled"; guard it here if a consumer ever
+    // legitimately wants a node with no seed route.
     `CADRE_SEED_TOKEN=${seedToken}`,
     request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
     resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
