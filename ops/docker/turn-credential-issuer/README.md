@@ -1,6 +1,6 @@
 ## Docker: turn-credential-issuer (dynamic ICE manifest)
 
-This folder runs a tiny, dependency-free Node HTTP service that serves the
+This folder runs a tiny Node HTTP service that serves the
 **dynamic ICE-config manifest** (`/ice-servers.json`) Sereus WebRTC clients fetch
 at startup. It is the missing piece that lets you turn on the self-hosted coturn
 **TURN** relay: browsers and phones can't be handed long-lived TURN passwords, so
@@ -18,6 +18,9 @@ this service mints **short-lived, per-request** TURN credentials on demand.
 - It is **not** a TLS terminator and **not** a libp2p node. It listens plain HTTP;
   you front it with your existing reverse proxy (nginx/caddy), exactly like the
   relay/bootstrap nodes and the static manifest.
+- It has **one runtime dependency**, `@libp2p/crypto` — the same library the
+  clients sign with, used to verify peer assertions (below). Everything else is
+  Node built-ins.
 
 ### Client wiring (the only client-side change)
 The existing client helper `loadIceConfig()`
@@ -83,8 +86,126 @@ Issuance is **never unbounded**, layered defense:
    (set in `../coturn/`) cap bandwidth/allocations regardless of how many
    credentials are minted.
 
-A stronger libp2p-peer-id-bound issuance is filed as backlog
-`turn-issuer-peer-bound-auth`.
+For **per-node** attribution and allow/deny, see "Peer-bound issuance" below.
+
+### Peer-bound issuance (`PEER_AUTH_MODE`)
+The layers above bound abuse but bind a credential to **nobody**: a shared token
+shipped in a browser bundle is effectively public, and per-IP limits are coarse
+(carrier NAT, proxies). Peer-bound issuance closes that: a Sereus node signs a
+short statement with the libp2p Ed25519 **identity key it already has**, the issuer
+verifies it and derives the peer id, and that peer id becomes the credential's
+`<id>` label — so the peer id in coturn's logs matches the one in relay logs.
+
+The issuer **never trusts a client-supplied peer id**; it derives the id from the
+presented public key and rebuilds the signed message with the derived value, so a
+mismatch simply fails verification.
+
+#### Wire format
+Five request headers on `GET /ice-servers.json`. All values are ASCII and
+header-safe by construction:
+
+| Header | Value |
+|---|---|
+| `X-Sereus-Peer-Key`   | base64url of the libp2p **protobuf-encoded** Ed25519 public key (48 chars) |
+| `X-Sereus-Peer-Aud`   | the audience string the client signed |
+| `X-Sereus-Peer-Ts`    | issued-at, unix **seconds**, decimal digits |
+| `X-Sereus-Peer-Nonce` | exactly 32 lowercase hex chars (16 random bytes) |
+| `X-Sereus-Peer-Sig`   | base64url Ed25519 signature over the signed message |
+
+The **signed message** is the UTF-8 bytes of exactly five LF-separated lines, no
+trailing newline:
+
+```
+sereus.turn-issuer.v1
+<audience>
+<peerId>
+<issuedAtUnixSeconds>
+<nonce>
+```
+
+`<audience>` is the manifest URL the client fetched with **query and fragment
+stripped** (e.g. `https://turn-issuer.example.org/ice-servers.json`); it binds the
+assertion to one issuer so a harvested signature cannot be replayed elsewhere. Set
+`PEER_AUTH_AUDIENCE` to that exact string. Line 1 is the domain tag — it is bumped
+if any line's meaning changes.
+
+**No challenge round trip.** The client picks the timestamp and nonce itself; the
+issuer accepts `|now − issuedAt| ≤ PEER_AUTH_SKEW_SECONDS` and refuses a repeated
+`(peerId, nonce)` inside that window. That is the same replay property a
+server-minted challenge would buy, without shared state across replicas or an extra
+round trip on every node start. The tradeoff: a device with a badly wrong clock is
+rejected and falls back to the unauthenticated path.
+
+#### Admission order
+Gates run in this order; the first one that fires wins:
+
+1. Shared bearer token (`ISSUER_AUTH_TOKEN`, when set) — miss → `401 unauthorized`.
+2. Per-IP rate limit — over → `429 rate_limited` + `Retry-After: 60`. This runs
+   **before** signature verification, so an unauthenticated flood cannot burn
+   Ed25519 verification CPU.
+3. `PEER_AUTH_MODE=off` → peer headers ignored; manifest carries `peerAuth: "off"`.
+4. All five headers absent → unverified (see the table below).
+5. Headers partially present, malformed, or over the length caps →
+   `400 invalid_peer_assertion`.
+6. Verification (key decodes, type is Ed25519, timestamp within skew,
+   `(peerId, nonce)` unseen, audience matches when configured, signature verifies).
+   Any failure → `401 invalid_peer_assertion`.
+7. Deny list hit → `403 peer_denied`, before the per-peer bucket is touched.
+8. Allow list non-empty and peer absent from it → `200` STUN-only,
+   `peerAuth: "verified"`, no TURN entry. Verified-but-not-vetted is not an error.
+9. Per-peer rate limit — over → `429 rate_limited` + `Retry-After: 60`.
+10. Mint with `<id>` = peer id; manifest carries `peerAuth: "verified"` + `peerId`.
+
+| `PEER_AUTH_MODE` | no assertion | valid assertion | invalid assertion |
+|---|---|---|---|
+| `off` | token + IP limit (as before) | headers ignored | headers ignored |
+| `optional` | token + IP limit (as before) | peer-labelled TURN | 400 / 401 |
+| `required` | `200` STUN-only | peer-labelled TURN | 400 / 401 |
+
+`required` deliberately serves a STUN-only `200` rather than a `401` to an
+assertion-less client: `loadIceConfig()` turns a non-OK response into `[]`, which
+would strip STUN too and leave the node worse off than it needs to be.
+
+The **TURN gating matrix above still wins over all of this**: if TURN is disabled,
+the secret or URLs are empty, or `TURN_POLICY=off`, the manifest is STUN-only no
+matter how good the assertion was.
+
+#### Manifest additions
+`peerAuth` (`"off"` | `"none"` | `"verified"`) and, when verified, `peerId`. Both
+are purely informational — the client's `parseIceServers` reads only `iceServers`,
+so older clients are unaffected.
+
+#### Per-process state (the caveat that matters)
+The replay cache and **both** rate limiters live in process memory, exactly like the
+existing per-IP limiter. With two replicas behind a load balancer, each admits a
+given replayed assertion once and each keeps its own per-peer counters. That is
+bounded by the per-peer limit and by coturn's quotas, and is a deliberate trade
+against needing shared state (Redis) in an ops service this small. `REPLAY_CACHE_MAX`
+caps the cache; at the cap the issuer returns `503` rather than accept an unrecorded
+nonce — it will **not** silently disable replay protection under load.
+
+#### `<id>` semantics in coturn
+Per-peer usernames change what appears in coturn's logs — nothing else. In
+`use-auth-secret` mode the username already varies per mint (the expiry ticks), so
+`user-quota` semantics are unchanged by peer labelling; `total-quota` / `max-bps`
+remain the hard backstop.
+
+#### Trying it by hand
+Signing needs the node's Ed25519 identity key, so this is a sketch of the shape
+rather than a copy-paste one-liner — the client signers do it for real:
+
+```bash
+curl -sS https://turn-issuer.example.org/ice-servers.json \
+  -H "X-Sereus-Peer-Key:   $PEER_KEY_B64URL" \
+  -H "X-Sereus-Peer-Aud:   https://turn-issuer.example.org/ice-servers.json" \
+  -H "X-Sereus-Peer-Ts:    $(date +%s)" \
+  -H "X-Sereus-Peer-Nonce: $(openssl rand -hex 16)" \
+  -H "X-Sereus-Peer-Sig:   $SIG_B64URL"
+```
+
+The five headers are listed in `Access-Control-Allow-Headers`, so the browser
+preflight (`OPTIONS` → `204`) passes. There is **no** `?query=` fallback for the
+assertion fields: signatures in URLs land in proxy access logs.
 
 ### Reverse proxy & client IP (`TRUST_PROXY`)
 Behind a proxy, the socket IP the service sees is the **proxy's**, which would
@@ -110,7 +231,16 @@ issuer's `TURN_SECRET` to the new value, then remove the old coturn line after t
 old TTL window has drained.
 
 ### Validate
-A self-contained scheme check (no network, agent-runnable):
+The issuer's own self-test — pins the peer-assertion wire format against a fixed
+vector and drives every row of the admission table (no network, no socket):
+
+```bash
+npm --prefix sereus/ops/docker/turn-credential-issuer install
+npm --prefix sereus/ops/docker/turn-credential-issuer run selftest
+```
+
+A self-contained credential-scheme check (no network, agent-runnable), mirroring
+the scheme from the operator-tooling side:
 
 ```bash
 node sereus/ops/test/check-turn-creds.mjs --self-test

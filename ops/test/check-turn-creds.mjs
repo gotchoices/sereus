@@ -56,6 +56,23 @@ const PINNED = {
   credential: 'zjHGi3Op+GDVwe3+VlIssA1POfs=',
 }
 
+// Second pinned vector: the PEER-LABELLED form. When a caller proves control of a
+// libp2p node identity (PEER_AUTH_MODE, see the issuer README), the `<id>` label is
+// the caller's base58btc peer id instead of CRED_ID. A base58btc peer id is
+// alphanumeric, so it must survive sanitizeId byte-for-byte — a mangled id would
+// silently break attribution in coturn's logs. Same peer id as the issuer's own
+// src/self-test.ts, at expiry 1735689600 + CRED_TTL_SECONDS=300.
+//
+// Signature verification itself is NOT mirrored here (it needs @libp2p/crypto);
+// that lives in the issuer's self-test. This file locks only the label rule.
+const PINNED_PEER = {
+  secret: 'test-secret-do-not-use',
+  expiry: 1735689900,
+  id: '12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5',
+  username: '1735689900:12D3KooWK99VoVxNE7XzyBwXEzW7xhK7Gpv85r9F3V3fyKSUKPH5',
+  credential: '/5Zf2yVO7Zf/TsGiAGb48vQuB8I=',
+}
+
 function assert (cond, msg) {
   if (!cond) throw new Error(`assertion failed: ${msg}`)
 }
@@ -78,6 +95,13 @@ function selfTest () {
   check(malicious.username.split(':').length === 2, 'sanitized id cannot inject a `:` separator')
   const empty = mintCredential(PINNED.secret, 100, '!!!')
   check(empty.username === '100:client', 'empty-after-sanitize id falls back to `client`')
+
+  // 3b. Peer-labelled vector — a base58btc peer id must pass the sanitizer intact.
+  const peer = mintCredential(PINNED_PEER.secret, PINNED_PEER.expiry, PINNED_PEER.id)
+  check(peer.username === PINNED_PEER.username, `peer-labelled username = ${PINNED_PEER.username}`)
+  check(peer.credential === PINNED_PEER.credential, `peer-labelled credential = ${PINNED_PEER.credential}`)
+  check(sanitizeId(PINNED_PEER.id) === PINNED_PEER.id, 'base58btc peer id survives sanitizeId byte-for-byte')
+  check(peer.username.split(':').length === 2, 'peer-labelled username still parses as <expiry>:<id>')
 
   // 4. Gating matrix — TURN entry emitted ONLY when enabled+secret+urls+policy(gated|on).
   const url = ['turn:turn.sereus.org:3478?transport=udp']

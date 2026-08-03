@@ -4,9 +4,13 @@
   "type": "module",
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "selftest": "tsc -p tsconfig.json && node dist/self-test.js",
     "start": "node --enable-source-maps dist/main.js"
   },
-  "dependencies": {},
+  "dependencies": {
+    "@libp2p/crypto": "^5.1.7",
+    "@libp2p/interface": "^3.2.5"
+  },
   "devDependencies": {
     "@types/node": "^22",
     "typescript": "^5.8.3"

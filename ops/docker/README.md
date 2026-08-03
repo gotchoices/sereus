@@ -97,7 +97,7 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 
 `coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 
-`turn-credential-issuer` builds its **own** local image (`sereus-turn-credential-issuer:local`) from `turn-credential-issuer/` — a tiny dependency-free Node service (Node built-ins only). `./svc up` builds and runs it. It listens plain HTTP; front it with a TLS reverse proxy. See `turn-credential-issuer/README.md`.
+`turn-credential-issuer` builds its **own** local image (`sereus-turn-credential-issuer:local`) from `turn-credential-issuer/` — a tiny Node service (Node built-ins plus `@libp2p/crypto`, used to verify peer assertions). `./svc up` builds and runs it. It listens plain HTTP; front it with a TLS reverse proxy. See `turn-credential-issuer/README.md`.
 
 ### Key persistence (Peer ID stability)
 - See `../docs/keys.md`.

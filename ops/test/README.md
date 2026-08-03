@@ -56,12 +56,18 @@ Validate the TURN credential scheme served by the dynamic ICE manifest
 (`ops/docker/turn-credential-issuer/`). Two modes:
 
 **Self-test (agent-runnable, no network)** — pins the credential scheme
-(base64-not-base64url, `<expiry>:<id>` username, HMAC-SHA1 digest) against a fixed
-vector and drives the TURN gating matrix:
+(base64-not-base64url, `<expiry>:<id>` username, HMAC-SHA1 digest) against fixed
+vectors and drives the TURN gating matrix. Two `<id>` forms are pinned: the plain
+`CRED_ID` label and the base58btc **peer id** label used by peer-bound issuance
+(which must survive the sanitizer byte-for-byte, or attribution silently breaks):
 
 ```bash
 yarn workspace @serfab/ops-test check-turn-creds -- --self-test
 ```
+
+> Signature verification for peer assertions is **not** mirrored here — that needs
+> `@libp2p/crypto` and lives in the issuer's own self-test:
+> `npm --prefix ops/docker/turn-credential-issuer run selftest`.
 
 **Live check (requires a deployed issuer)** — fetch a deployed issuer's manifest,
 assert a STUN entry is present, and (when a TURN entry is present) parse the

@@ -28,6 +28,13 @@ services:
       - RATE_LIMIT_PER_MIN=${RATE_LIMIT_PER_MIN:-30}
       - TRUST_PROXY=${TRUST_PROXY:-false}
       - CORS_ALLOW_ORIGIN=${CORS_ALLOW_ORIGIN:-*}
+      - PEER_AUTH_MODE=${PEER_AUTH_MODE:-off}
+      - PEER_AUTH_AUDIENCE=${PEER_AUTH_AUDIENCE:-}
+      - PEER_AUTH_SKEW_SECONDS=${PEER_AUTH_SKEW_SECONDS:-60}
+      - PEER_ALLOW_LIST=${PEER_ALLOW_LIST:-}
+      - PEER_DENY_LIST=${PEER_DENY_LIST:-}
+      - RATE_LIMIT_PER_PEER_PER_MIN=${RATE_LIMIT_PER_PEER_PER_MIN:-10}
+      - REPLAY_CACHE_MAX=${REPLAY_CACHE_MAX:-50000}
     ports:
       # Bind to localhost by default — the TLS reverse proxy (same host) fronts it.
       # Set HOST_BIND_IP=0.0.0.0 only if the proxy lives on another host. The

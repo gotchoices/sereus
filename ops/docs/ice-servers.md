@@ -15,9 +15,12 @@ rotate, scale, or fail over STUN/TURN servers **without an app rebuild**.
 - **TURN is a relay by another name.** A TURN-relayed media path burns server
   bandwidth for the life of the connection — the exact cost the WebRTC effort
   removes. So TURN stays **off** by default and the manifest advertises STUN only.
-- `turnPolicy` records the intent: `"off"` (default), `"gated"` (TURN exists but
-  only issued to vetted clients), or `"on"`. It is **informational** — clients use
-  whatever `iceServers` entries are present; `turnPolicy` is for operators/telemetry.
+- `turnPolicy` records the intent: `"off"` (default), `"gated"` (TURN exists but is
+  only issued to callers the issuer admits), or `"on"`. It is **informational** —
+  clients use whatever `iceServers` entries are present; `turnPolicy` is for
+  operators/telemetry. How strict `gated` actually is depends on the issuer's
+  admission knobs: rate-limit-only at one end, and `PEER_AUTH_MODE=required` plus a
+  non-empty `PEER_ALLOW_LIST` — the real "vetted clients only" setup — at the other.
 
 ### Manifest schema
 The manifest is deliberately shaped like the W3C `RTCIceServer[]` so it drops
@@ -87,6 +90,34 @@ issuer config and the shared `TURN_SECRET`).
 - **Abuse posture** — issuance is never unbounded: always-on per-IP rate limit +
   short TTL + optional bearer token, with coturn's quotas as the hard backstop.
 
+#### Peer-bound issuance (per-node attribution)
+The posture above bounds abuse but binds a credential to **nobody** — a shared token
+in a browser bundle is effectively public, and per-IP limits are coarse. Setting
+`PEER_AUTH_MODE` to `optional` or `required` turns on **peer-bound issuance**: the
+client signs a short, domain-separated statement with the libp2p Ed25519 identity
+key its node already has, and presents it in five `X-Sereus-Peer-*` request headers.
+
+The issuer verifies the signature, derives the peer id **from the presented public
+key** (never from a client-supplied id), and uses that peer id as the credential's
+`<id>` label — so `username` becomes `<unixExpiry>:<peerId>` and coturn's logs
+attribute relayed bytes to the same peer id that appears in relay logs. Operators
+get `PEER_ALLOW_LIST` / `PEER_DENY_LIST` and a per-peer issuance limit on top of the
+per-IP one.
+
+Two informational manifest fields come with it — `peerAuth` (`"off"` | `"none"` |
+`"verified"`) and, when verified, `peerId`. Clients read only `iceServers`, so older
+clients are unaffected.
+
+Replay protection is a client-chosen nonce plus a bounded acceptance window
+(`PEER_AUTH_SKEW_SECONDS`), not a server-minted challenge: same property, no
+cross-replica state, no extra round trip per node start. The replay cache and both
+rate limiters are per-process, so replicas do not share them.
+
+The wire format, the full admission order, and the status codes are normative in
+`../docker/turn-credential-issuer/README.md` → "Peer-bound issuance". The client
+half (web + React Native signers wired into `loadIceConfig`) is
+`ice-config-peer-assertion-client`.
+
 See `../docker/turn-credential-issuer/README.md` for the full knob set and the
 reverse-proxy / `TRUST_PROXY` notes.
 
@@ -135,10 +166,12 @@ wiring that consumes it is `rn-webrtc-transport`.
 ### Forward pointers (TURN gaps — do not lose these when TURN is enabled)
 - **`turn-credential-issuer`** (built — `../docker/turn-credential-issuer/`): the
   signing service that mints ephemeral TURN credentials and serves the dynamic
-  manifest. This is what makes a TURN entry possible here.
-- **`turn-issuer-peer-bound-auth`** (backlog): a stronger issuance model that binds
-  a credential to a known libp2p peer id (client signs a challenge with its node
-  key), rather than the issuer's current rate-limit + optional-token posture.
+  manifest. This is what makes a TURN entry possible here. Peer-bound issuance
+  (`PEER_AUTH_MODE`) is built into it — see the section above.
+- **`ice-config-peer-assertion-client`**: the client half of peer-bound issuance —
+  web + React Native signers that attach the five `X-Sereus-Peer-*` headers in
+  `loadIceConfig()`. Until it lands, the server side is dormant: leave
+  `PEER_AUTH_MODE=off` (or `optional`, which still serves unsigned callers).
 - **`turn-relayed-path-metrics`** (backlog): the `connection-path` classifier treats
   a TURN-relayed WebRTC connection as `direct` (it only sees `/webrtc`), so a
   TURN-relayed path is **not** counted as relayed in connectivity observability.
