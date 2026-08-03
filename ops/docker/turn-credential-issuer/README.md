@@ -34,6 +34,10 @@ the build-time env var at this service:
 If you set `ISSUER_AUTH_TOKEN`, you can gate with **zero client change** by baking
 the token into that URL: `…/ice-servers.json?token=<token>`.
 
+Peer-bound issuance (below) is the one exception to "env var only": it needs a
+client that signs, which is `ice-config-peer-assertion-client`. Until that lands no
+client sends the headers, so leave `PEER_AUTH_MODE=off`.
+
 ### How to deploy (Ubuntu)
 Use the common installer-driven workflow documented in `../README.md` (Ops/Docker).
 
@@ -53,8 +57,8 @@ Then put a TLS reverse proxy in front (terminate HTTPS, forward to
   (a cached manifest would serve already-expired credentials) and CORS
   (`Access-Control-Allow-Origin`).
 - `GET /healthz` — liveness, **no auth**, no credential, `200 {"ok":true}`.
-- `OPTIONS *` — CORS preflight → `204` (so a future `Authorization`-header client
-  doesn't break).
+- `OPTIONS *` — CORS preflight → `204`, listing `Authorization` and the five
+  `X-Sereus-Peer-*` headers in `Access-Control-Allow-Headers`.
 - Non-GET → `405`; unknown path → `404`.
 
 ### TURN gating matrix
@@ -170,6 +174,13 @@ The **TURN gating matrix above still wins over all of this**: if TURN is disable
 the secret or URLs are empty, or `TURN_POLICY=off`, the manifest is STUN-only no
 matter how good the assertion was.
 
+**`optional` is attribution, not access control.** Read down the `no assertion`
+column: under `optional`, a node that simply omits the five headers takes the
+unsigned path and still gets a `CRED_ID`-labelled TURN credential, so
+`PEER_DENY_LIST` and `PEER_ALLOW_LIST` are trivially side-stepped. Use `optional`
+while you roll clients out and want the peer ids in coturn's logs; switch to
+`required` before either list is load-bearing.
+
 #### Manifest additions
 `peerAuth` (`"off"` | `"none"` | `"verified"`) and, when verified, `peerId`. Both
 are purely informational — the client's `parseIceServers` reads only `iceServers`,
@@ -232,7 +243,9 @@ old TTL window has drained.
 
 ### Validate
 The issuer's own self-test — pins the peer-assertion wire format against a fixed
-vector and drives every row of the admission table (no network, no socket):
+vector, drives every row of the admission table, and boots the real handler on an
+ephemeral **loopback** port to cover routing, the CORS preflight, and token
+extraction (no outbound network; agent-runnable):
 
 ```bash
 npm --prefix sereus/ops/docker/turn-credential-issuer install

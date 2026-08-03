@@ -22,6 +22,7 @@ import { test } from 'node:test';
 import { generateKeyPair, generateKeyPairFromSeed, publicKeyToProtobuf } from '@libp2p/crypto/keys';
 
 import {
+	createIssuerServer,
 	decideIceServers,
 	fatalConfigError,
 	mintTurnCredential,
@@ -39,6 +40,7 @@ import {
 	HEADER_NONCE,
 	HEADER_SIGNATURE,
 	HEADER_TIMESTAMP,
+	PEER_HEADER_NAMES_CANONICAL,
 	ReplayCache,
 	parsePeerAssertion,
 	peerAssertionMessage,
@@ -47,6 +49,7 @@ import {
 
 import type { RawPeerAssertion } from './peer-assertion.js';
 import type { PrivateKey } from '@libp2p/interface';
+import type { AddressInfo } from 'node:net';
 import type { IncomingHttpHeaders } from 'node:http';
 
 // --- Pinned vector ----------------------------------------------------------
@@ -514,6 +517,131 @@ void test('the TURN gating matrix still wins over a valid assertion', async () =
 		assert.equal(manifest.peerAuth, 'verified');
 		assert.equal(turnEntry(manifest), undefined, `TURN must stay off for ${JSON.stringify(overrides)}`);
 	}
+});
+
+// --- HTTP layer ---------------------------------------------------------------
+// `decideIceServers` above is socket-free, so these drive a real listener on an
+// ephemeral loopback port instead: routing, the CORS preflight, token extraction
+// from both carriers, and the `.catch` that keeps an async rejection from hanging
+// a socket. Loopback only — no outbound network.
+
+/** A context on the real clock, so a freshly signed assertion lands inside the skew window. */
+function liveContext(config: IssuerConfig): RequestContext {
+	return {
+		config,
+		ipLimiter: new FixedWindowRateLimiter(config.rateLimitPerMin, RATE_LIMIT_WINDOW_MS),
+		peerLimiter: new FixedWindowRateLimiter(config.rateLimitPerPeerPerMin, RATE_LIMIT_WINDOW_MS),
+		replay: new ReplayCache(config.replayCacheMax),
+		nowMs: () => Date.now(),
+		nowSec: () => Math.floor(Date.now() / 1000),
+	};
+}
+
+/** Boot the issuer on 127.0.0.1:0, hand `body` its base URL, and always close it. */
+async function withServer(ctx: RequestContext, body: (baseUrl: string) => Promise<void>): Promise<void> {
+	const server = createIssuerServer(ctx);
+	await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
+	try {
+		const { port } = server.address() as AddressInfo;
+		await body(`http://127.0.0.1:${port}`);
+	} finally {
+		await new Promise<void>((resolve, reject) => server.close((err) => (err ? reject(err) : resolve())));
+	}
+}
+
+/** Sign against the wall clock (the pinned timestamp is decades stale for a live server). */
+function liveHeaders(nonce: string): Promise<IncomingHttpHeaders> {
+	return signHeaders(pinnedKey, { audience: PINNED.audience, issuedAtSec: Math.floor(Date.now() / 1000), nonce });
+}
+
+/** `IncomingHttpHeaders` values are `string | string[]`; fetch wants plain strings. */
+function fetchHeaders(headers: IncomingHttpHeaders): Record<string, string> {
+	return Object.fromEntries(Object.entries(headers).map(([name, value]) => [name, String(value)]));
+}
+
+void test('HTTP: routing, preflight, and liveness', async () => {
+	await withServer(liveContext(baseConfig({ peerAuthMode: 'required' })), async (baseUrl) => {
+		const health = await fetch(`${baseUrl}/healthz`, { method: 'POST' });
+		assert.equal(health.status, 200);
+		assert.deepEqual(await health.json(), { ok: true });
+
+		const preflight = await fetch(`${baseUrl}/ice-servers.json`, { method: 'OPTIONS' });
+		assert.equal(preflight.status, 204);
+		const allowed = preflight.headers.get('access-control-allow-headers') ?? '';
+		for (const name of PEER_HEADER_NAMES_CANONICAL) {
+			// A missing name here fails the browser preflight and silently downgrades a
+			// signing client to the unauthenticated path.
+			assert.ok(allowed.includes(name), `preflight must allow ${name}`);
+		}
+		assert.ok(allowed.includes('Authorization'));
+		assert.equal(preflight.headers.get('access-control-allow-origin'), '*');
+
+		const wrongMethod = await fetch(`${baseUrl}/ice-servers.json`, { method: 'POST' });
+		assert.equal(wrongMethod.status, 405);
+		assert.equal(wrongMethod.headers.get('allow'), 'GET, OPTIONS');
+
+		const missing = await fetch(`${baseUrl}/nope`);
+		assert.equal(missing.status, 404);
+		assert.deepEqual(await missing.json(), { error: 'not_found' });
+	});
+});
+
+void test('HTTP: an unsigned caller in required mode gets a no-store STUN-only 200', async () => {
+	await withServer(liveContext(baseConfig({ peerAuthMode: 'required' })), async (baseUrl) => {
+		const res = await fetch(`${baseUrl}/ice-servers.json`);
+		assert.equal(res.status, 200);
+		assert.equal(res.headers.get('cache-control'), 'no-store');
+		const manifest = (await res.json()) as IceConfigManifest;
+		assert.equal(manifest.peerAuth, 'none');
+		assert.ok(stunEntry(manifest), 'STUN must survive the unsigned path');
+		assert.equal(turnEntry(manifest), undefined);
+	});
+});
+
+void test('HTTP: a signed request is peer-labelled and its replay is 401', async () => {
+	await withServer(liveContext(baseConfig({ peerAuthMode: 'required' })), async (baseUrl) => {
+		const headers = fetchHeaders(await liveHeaders('1'.repeat(32)));
+
+		const first = await fetch(`${baseUrl}/ice-servers.json`, { headers });
+		assert.equal(first.status, 200);
+		const manifest = (await first.json()) as IceConfigManifest;
+		assert.equal(manifest.peerAuth, 'verified');
+		assert.equal(manifest.peerId, PINNED.peerId);
+		assert.equal(turnEntry(manifest)?.username?.split(':')[1], PINNED.peerId);
+
+		const replayed = await fetch(`${baseUrl}/ice-servers.json`, { headers });
+		assert.equal(replayed.status, 401);
+		assert.deepEqual(await replayed.json(), { error: 'invalid_peer_assertion' });
+	});
+});
+
+void test('HTTP: the bearer token is accepted from the header and the ?token= query alike', async () => {
+	await withServer(liveContext(baseConfig({ authToken: 'sekrit' })), async (baseUrl) => {
+		assert.equal((await fetch(`${baseUrl}/ice-servers.json`)).status, 401);
+		assert.equal((await fetch(`${baseUrl}/ice-servers.json?token=wrong`)).status, 401);
+		assert.equal((await fetch(`${baseUrl}/ice-servers.json?token=sekrit`)).status, 200);
+		const viaHeader = await fetch(`${baseUrl}/ice-servers.json`, { headers: { authorization: 'Bearer sekrit' } });
+		assert.equal(viaHeader.status, 200);
+	});
+});
+
+void test('HTTP: a throwing handler answers 500 instead of hanging the socket', async () => {
+	// The only way to reach the `.catch` without a contrived route: a context whose
+	// clock throws. Expect one `request handler error` line in this test's output.
+	const ctx = liveContext(baseConfig());
+	const broken: RequestContext = {
+		...ctx,
+		nowSec: () => {
+			throw new Error('clock failure (expected: this test drives the error path)');
+		},
+	};
+	await withServer(broken, async (baseUrl) => {
+		const res = await fetch(`${baseUrl}/ice-servers.json`);
+		assert.equal(res.status, 500);
+		assert.deepEqual(await res.json(), { error: 'internal_error' });
+		// /healthz never touches the clock, so the server is still serving.
+		assert.equal((await fetch(`${baseUrl}/healthz`)).status, 200);
+	});
 });
 
 // --- Boot-time config validation ---------------------------------------------

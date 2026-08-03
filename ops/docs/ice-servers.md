@@ -172,7 +172,7 @@ wiring that consumes it is `rn-webrtc-transport`.
   web + React Native signers that attach the five `X-Sereus-Peer-*` headers in
   `loadIceConfig()`. Until it lands, the server side is dormant: leave
   `PEER_AUTH_MODE=off` (or `optional`, which still serves unsigned callers).
-- **`turn-relayed-path-metrics`** (backlog): the `connection-path` classifier treats
+- **`web-turn-relayed-path-detection`** (backlog): the `connection-path` classifier treats
   a TURN-relayed WebRTC connection as `direct` (it only sees `/webrtc`), so a
   TURN-relayed path is **not** counted as relayed in connectivity observability.
   Dormant while TURN is off; must be fixed when TURN is switched on.

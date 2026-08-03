@@ -27,7 +27,7 @@
  * See `ops/docs/ice-servers.md` and `ops/docker/coturn/README.md`.
  */
 import { createHmac, timingSafeEqual } from 'node:crypto';
-import { createServer, type IncomingHttpHeaders, type IncomingMessage, type ServerResponse } from 'node:http';
+import { createServer, type IncomingHttpHeaders, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { argv } from 'node:process';
 import { pathToFileURL } from 'node:url';
 
@@ -535,6 +535,24 @@ async function handleRequest(req: IncomingMessage, res: ServerResponse, ctx: Req
 	sendJson(res, 404, { error: 'not_found' });
 }
 
+/**
+ * Wrap `handleRequest` in a server. Exported so the self-test can drive the real
+ * socket path (routing, CORS preflight, token extraction, the error path) rather
+ * than only `decideIceServers`.
+ */
+function createIssuerServer(ctx: RequestContext): Server {
+	return createServer((req, res) => {
+		// handleRequest is async, so a synchronous throw surfaces as a rejection too —
+		// this .catch is the only error path, and without it an async rejection would
+		// escape as an unhandled rejection and hang the socket.
+		handleRequest(req, res, ctx).catch((err: unknown) => {
+			console.error(`${LOG_PREFIX} request handler error`, err);
+			if (!res.headersSent) sendJson(res, 500, { error: 'internal_error' });
+			else res.end();
+		});
+	});
+}
+
 // --- Boot -------------------------------------------------------------------
 
 function maskSecret(s: string): string {
@@ -636,16 +654,7 @@ function main(): void {
 	}, RATE_LIMIT_WINDOW_MS);
 	evictTimer.unref();
 
-	const server = createServer((req, res) => {
-		// handleRequest is async, so a synchronous throw surfaces as a rejection too —
-		// this .catch is the only error path, and without it an async rejection would
-		// escape as an unhandled rejection and hang the socket.
-		handleRequest(req, res, ctx).catch((err: unknown) => {
-			console.error(`${LOG_PREFIX} request handler error`, err);
-			if (!res.headersSent) sendJson(res, 500, { error: 'internal_error' });
-			else res.end();
-		});
-	});
+	const server = createIssuerServer(ctx);
 
 	server.listen(config.port, () => {
 		console.log(`${LOG_PREFIX} listening on http://0.0.0.0:${config.port} (front with a TLS reverse proxy)`);
@@ -673,6 +682,7 @@ export {
 	FixedWindowRateLimiter,
 	readConfig,
 	decideIceServers,
+	createIssuerServer,
 	fatalConfigError,
 	RATE_LIMIT_WINDOW_MS,
 };
