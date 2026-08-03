@@ -5140,7 +5140,7 @@ __metadata:
   languageName: node
   linkType: hard
 
-"@serfab/cadre-cli@workspace:^, @serfab/cadre-cli@workspace:packages/cadre-cli":
+"@serfab/cadre-cli@workspace:*, @serfab/cadre-cli@workspace:^, @serfab/cadre-cli@workspace:packages/cadre-cli":
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-cli@workspace:packages/cadre-cli"
   dependencies:
@@ -5237,7 +5237,7 @@ __metadata:
   languageName: unknown
   linkType: soft
 
-"@serfab/cadre-provider@workspace:^, @serfab/cadre-provider@workspace:packages/cadre-provider":
+"@serfab/cadre-provider@workspace:*, @serfab/cadre-provider@workspace:^, @serfab/cadre-provider@workspace:packages/cadre-provider":
   version: 0.0.0-use.local
   resolution: "@serfab/cadre-provider@workspace:packages/cadre-provider"
   dependencies:
@@ -5279,8 +5279,10 @@ __metadata:
     "@optimystic/quereus-plugin-crypto": "npm:^0.18.0"
     "@optimystic/quereus-plugin-optimystic": "npm:^0.18.0"
     "@quereus/quereus": "npm:^4.6.0"
+    "@serfab/cadre-cli": "workspace:*"
     "@serfab/cadre-core": "workspace:*"
     "@serfab/cadre-host": "workspace:*"
+    "@serfab/cadre-provider": "workspace:*"
     "@types/debug": "npm:^4.1.12"
     "@types/node": "npm:^25.0.10"
     "@vitest/coverage-v8": "npm:^4.0.17"

@@ -36,8 +36,10 @@
     "@optimystic/quereus-plugin-crypto": "^0.18.0",
     "@optimystic/quereus-plugin-optimystic": "^0.18.0",
     "@quereus/quereus": "^4.6.0",
+    "@serfab/cadre-cli": "workspace:*",
     "@serfab/cadre-core": "workspace:*",
     "@serfab/cadre-host": "workspace:*",
+    "@serfab/cadre-provider": "workspace:*",
     "debug": "^4.4.3",
     "libp2p": "^3.1.3",
     "uint8arrays": "^5.1.0"
