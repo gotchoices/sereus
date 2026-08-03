@@ -725,7 +725,7 @@ root against a single config (`knip.ts`, Option A) covering the workspaces liste
   (reference-app-rn), Vite-config-implicit (reference-app-web), webpack-config-implicit plus the NativeScript
   platform runtime and the global `ns` CLI binary (reference-app-ns), dynamic-`import()`/runtime-`resolve` deps
   (cadre-host: nat-port-mapper, qrcode-terminal, cadre-cli bin), and runtime-registered Quereus plugins
-  (integration-tests). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
+  plus the same `req.resolve`d cadre-cli bin (integration-tests — its harness spawns real CLI children). Non-workspace trees (`tess/`, `ops/`, `docs/`, `scripts/`) are ignored.
 - Only `warn`-class output remains on a green run — **zero configuration hints**, which is itself part of the
   gate's value: a hint means `knip.ts` is carrying an exemption reality no longer needs. Two were retired that
   way (`test-harness/**` from the root `ignore`, `@tsconfig/svelte` from `cadre-host`'s `ignoreDependencies` —

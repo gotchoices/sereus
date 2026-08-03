@@ -58,9 +58,16 @@ const config: KnipConfig = {
 		'packages/cadre-provider': {},
 
 		'packages/integration-tests': {
-			// Quereus plugins are registered by name at runtime; cadre-core pulls
-			// this in transitively, but it's listed here for explicit test setup.
-			ignoreDependencies: ['@optimystic/quereus-plugin-optimystic'],
+			ignoreDependencies: [
+				// Quereus plugins are registered by name at runtime; cadre-core pulls
+				// this in transitively, but it's listed here for explicit test setup.
+				'@optimystic/quereus-plugin-optimystic',
+				// Same reason as cadre-host above: the harness resolves the CLI's bin
+				// via `req.resolve('@serfab/cadre-cli/bin/cadre.js')` to spawn it as a
+				// child process (src/harness/provider-process-orchestrator.ts); never
+				// statically imported.
+				'@serfab/cadre-cli',
+			],
 		},
 
 		'packages/quereus-plugin-sereus': {},
