@@ -153,6 +153,67 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     }
   }
 
+  /** A message for anything a poll can have thrown, `undefined` included. */
+  function reasonOf(err: unknown): string {
+    if (err === undefined) return 'none';
+    return err instanceof Error ? `${err.message}` : String(err);
+  }
+
+  /**
+   * Mint a seed on the owner for `peer` and deliver it through the provider's
+   * real `applySeed`, retrying both halves together until the node accepts.
+   *
+   * Both halves are transiently flaky for reasons that are not this suite's
+   * subject: the owner's `addDrone` can fail with an internal error while
+   * cluster membership is in flux (and, after a restart, while it lacks read
+   * quorum on the collection the restarted node holds replicas of), and the
+   * node's seed route can lag the /status readiness that got us here. A node
+   * whose trust source never reached it keeps refusing, so a broken env
+   * contract still (correctly) times out — but with the mint error, the last
+   * delivery result and the child's node.log attached, since `waitUntil` alone
+   * reports a bare timeout with the cause swallowed.
+   */
+  async function deliverSeed(
+    id: string,
+    peer: { peerId: string; multiaddrs: string[] },
+    description: string,
+    timeoutMs: number,
+  ): Promise<{ encodedSeed: string; peersAdded: number }> {
+    let minted: string | undefined;
+    let mintError: unknown;
+    let result: { success: boolean; peersAdded?: number; error?: string } | undefined;
+    try {
+      await waitUntil(async () => {
+        try {
+          const drone = await ownerClient.addDrone({
+            dronePeerId: peer.peerId,
+            droneMultiaddrs: peer.multiaddrs,
+          });
+          minted = drone.encodedSeed;
+          mintError = undefined;
+        } catch (err) {
+          mintError = err;
+          throw err;
+        }
+        result = await containers.applySeed(id, minted);
+        return result.success === true;
+      }, { timeoutMs, intervalMs: 1_000, description });
+    } catch (err) {
+      const record = await store.getContainer(id);
+      throw new Error(
+        [
+          (err as Error).message,
+          `last mint error: ${reasonOf(mintError)}`,
+          `last delivery result: ${JSON.stringify(result ?? null)}`,
+          '--- node.log ---',
+          await tailNodeLog(record?.dockerId),
+        ].join('\n'),
+        { cause: err },
+      );
+    }
+    return { encodedSeed: minted!, peersAdded: result?.peersAdded ?? 0 };
+  }
+
   beforeAll(async () => {
     tmpRoot = mkdtempSync(join(tmpdir(), 'provider-seed-'));
 
@@ -267,27 +328,24 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     expect(peerInfoA.peerId).toMatch(/^12D3Koo/); // Ed25519 libp2p peer id prefix
     expect(peerInfoA.multiaddrs.length).toBeGreaterThanOrEqual(1);
 
-    const drone = await ownerClient.addDrone({
-      dronePeerId: peerInfoA.peerId,
-      droneMultiaddrs: peerInfoA.multiaddrs,
-    });
-    encodedSeed = drone.encodedSeed;
+    const delivered = await deliverSeed(
+      idA,
+      peerInfoA,
+      'node A accepts the delivered seed',
+      OP_MS * 2,
+    );
+    encodedSeed = delivered.encodedSeed;
     expect(encodedSeed.length).toBeGreaterThan(0);
-
-    // applySeed may briefly race the node's seed-route readiness — poll until
-    // accepted. A node whose CADRE_OWNER_KEYS pin never reached it keeps
-    // rejecting, so this (correctly) times out if the env contract is broken.
-    let result: { success: boolean; peersAdded?: number; error?: string } | undefined;
-    await waitUntil(async () => {
-      result = await containers.applySeed(idA, encodedSeed);
-      return result.success === true;
-    }, { timeoutMs: OP_MS, intervalMs: 1_000, description: 'node A accepts the delivered seed' });
-
-    expect(result?.success).toBe(true);
-    expect(result?.peersAdded ?? 0).toBeGreaterThanOrEqual(1);
-  }, STARTUP_MS + OP_MS);
+    expect(delivered.peersAdded).toBeGreaterThanOrEqual(1);
+  }, STARTUP_MS + OP_MS * 2 + 10_000);
 
   it('step 4: node B pinned to a stranger refuses the same seed — and the token gate fails independently', async () => {
+    // Guard the cross-test dependency before anything expensive. Without step
+    // 3's minted seed the POST body serializes to `{}` and the node refuses
+    // with its own 'seed is required' — a refusal that has nothing to do with
+    // the trust policy this step exists to prove, and reads as a step-4 defect.
+    expect(encodedSeed, 'step 3 must have minted a seed for this step to mean anything').toBeTruthy();
+
     // A well-formed but foreign pin: validatePinnedOwnerKeys runs at node
     // startup, so a garbage pin would keep B from ever starting (and a node
     // that never started must not masquerade as a trust refusal).
@@ -381,21 +439,13 @@ describe('provider-started node accepts the seed the provider delivers (real cad
     // Second seed: multiaddrs changed (new OS-assigned p2p port), so mint a
     // fresh one. With no CADRE_OWNER_KEYS this restart, acceptance proves the
     // anchor written by the first seed is what the node now trusts.
-    //
-    // The mint itself is inside the poll: while A was down the owner can lose
-    // read quorum on its CadrePeer collection (A holds replicas), so addDrone
-    // transiently errors until the restarted node re-establishes its control
-    // connection. waitUntil treats a throwing condition as "keep waiting".
-    let result: { success: boolean; peersAdded?: number; error?: string } | undefined;
-    await waitUntil(async () => {
-      const drone = await ownerClient.addDrone({
-        dronePeerId: info!.peerId,
-        droneMultiaddrs: info!.multiaddrs,
-      });
-      result = await containers.applySeed(idA, drone.encodedSeed);
-      return result.success === true;
-    }, { timeoutMs: STARTUP_MS, intervalMs: 2_000, description: 'restarted node A accepts a second seed' });
-    expect(result?.peersAdded ?? 0).toBeGreaterThanOrEqual(1);
+    const second = await deliverSeed(
+      idA,
+      info!,
+      'restarted node A accepts a second seed',
+      STARTUP_MS,
+    );
+    expect(second.peersAdded).toBeGreaterThanOrEqual(1);
     // Budget: anchor wait + restart + liveness poll + seed poll, each generous.
   }, OP_MS + STARTUP_MS * 2 + 10_000);
 });

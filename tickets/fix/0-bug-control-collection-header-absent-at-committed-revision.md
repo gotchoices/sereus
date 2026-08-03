@@ -143,6 +143,57 @@ Optimystic message and the header-absent errors predate the quereus rebuild, so 
 is plausibly quereus's — but if something here refuses to reproduce, that rebuild is the other thing
 that changed.
 
+## Sharper fingerprint from `provider-seed-accepted` (measured 2026-08-03, 4 runs)
+
+This scenario's entry above (line "chain variant, cascading into `Timeout waiting for node A peer
+identity`") is now out of date, and the replacement is a *better* probe than the old one.
+
+The chain/DDL half is gone — `29.4-verify-ddl-retry-engages` landed the schema-init retry, so all
+three real nodes now start cleanly every run. What is left is this defect, and it surfaces
+**directly on a write** rather than as a startup cascade:
+
+```
+insert failed: collection default/CadrePeer/index/_uniq_5 holds committed revision 2,
+but its header block read as absent — storage reported that nothing was ever committed under this id
+```
+
+Three things this adds:
+
+- **It is a unique-index sub-collection, not a table collection.** Every fingerprint recorded above
+  is a top-level collection (`default/CadrePeer`, `default/OwnerKey`). `default/CadrePeer/index/_uniq_5`
+  is the index tree beneath one. Same message, same absent-vs-unavailable distinction, one level
+  down — which strengthens the "cause is below `Collection`, in block placement or id derivation"
+  reading already in this ticket, since index trees and table trees share that layer and little else.
+- **It is on the writer, at insert time.** The throw comes out of the owner node's `addDrone`
+  (`OwnerNodeClient.addDrone` → the owner's own `insert` into `CadrePeer`), not out of a reader
+  querying a collection someone else wrote. Every earlier fingerprint here was a read
+  (`ControlDatabase.queryStampId`). So the inconsistent state is observable by the process that owns
+  the write path, which should make instrumenting it much cheaper than the two-node read cases.
+- **Revision 2, with a known concurrent writer.** Node A self-publishes its own `CadrePeer` record
+  during enrollment while the owner is inserting the drone row for that same node. Two writers, one
+  index tree, second commit.
+
+Frequency: 3 of 4 runs at HEAD on 2026-08-03 (run 1 green end to end; runs 2-4 red, identical
+fingerprint, failing step 3 and step 5 — both of which are `addDrone` inserts). So the scenario is
+**not** deterministic for this defect, but it is majority-red and it is cheap: the failure is a poll
+timeout at 60 s, and the underlying insert throws in milliseconds.
+
+Repro (from sereus root; needs `../quereus` buildable — see caveat below):
+
+```
+yarn workspace @serfab/integration-tests test src/scenarios/provider-seed-accepted.integration.ts
+```
+
+The scenario now prints the mint error, the last delivery result and the child's `node.log` on a
+poll timeout, so a red run states this fingerprint outright instead of reporting a bare timeout.
+
+Caveat on the 2026-08-03 measurement: after those four runs, `../quereus` acquired uncommitted
+in-flight edits from its own owner that do not compile
+(`rule-cte-optimization.ts(89,12): error TS2339: Property 'tableDescriptor' does not exist on type
+'CTECapable'`), so its `dist` cannot be refreshed and the integration suite's stale-build guard
+refuses to start. That is transient and belongs to that workspace, but anyone re-measuring this
+class today will hit it before they hit this defect.
+
 ## Repro update
 
 The command in the header still reproduces, but not on every run of the whole suite. Deterministic

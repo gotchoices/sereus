@@ -229,6 +229,14 @@ export class ContainerService {
       await new Promise(resolve => setTimeout(resolve, pollInterval));
     }
 
+    // NOTE: a timeout leaves the record on 'enrolling' forever — it is neither
+    // promoted to 'running' nor failed to 'error', and nothing re-enters this
+    // loop. Deliberate today: 'enrolling' is still seedable (`applySeed` accepts
+    // it), so a node that is merely slow past the 60 s budget still works, and
+    // the only cost is a status field that never settles. If anything ever
+    // treats 'enrolling' as terminal-failure-free (an SLA sweep, a UI that waits
+    // on the record rather than polling /status, or an operator dashboard), set
+    // 'error' here instead and give the budget its own named constant.
     log('Container %s enrollment timeout', containerId);
   }
 
