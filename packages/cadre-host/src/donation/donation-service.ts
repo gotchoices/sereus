@@ -152,6 +152,9 @@ interface SpawnedHandles {
   seedToken: string;
 }
 
+/** A respawn's attempt counters — the record's `respawn` block, never absent. */
+type RespawnAttempt = NonNullable<Donation['respawn']>;
+
 /**
  * Orchestrator capability `reapStaleProvisioning` needs beyond the base
  * `Orchestrator`: resolve a spawn's friendly containerId (== a donation's id)
@@ -500,12 +503,12 @@ export class DonationService {
       return { outcome: 'not_respawnable' };
     }
 
-    const attempted: Donation = {
-      ...donation,
-      respawn: {
-        attempts: (donation.respawn?.attempts ?? 0) + 1,
-        lastAttemptAt: this.now().toISOString(),
-      },
+    // Just the counters, never a whole row copy: both exits below merge these
+    // onto whatever the store holds *after* the spawn, and an entry-time
+    // `Donation` in scope is a standing invitation to write the stale row back.
+    const attempt: RespawnAttempt = {
+      attempts: (donation.respawn?.attempts ?? 0) + 1,
+      lastAttemptAt: this.now().toISOString(),
     };
 
     let spawned: SpawnedHandles | undefined;
@@ -537,7 +540,7 @@ export class DonationService {
       const respawned: Donation = {
         ...current,
         // Merge only the attempt counters forward off the entry-time copy.
-        respawn: attempted.respawn,
+        respawn: attempt,
         dockerId: result.dockerId,
         seedEndpoint: result.seedEndpoint,
         seedToken: result.seedToken,
@@ -560,7 +563,7 @@ export class DonationService {
       // The new handles go onto the record below, so it names the child that
       // actually exists and a later `terminate()` reclaims that one.
       if (spawned) await this.safeStop(spawned.dockerId);
-      this.storeRespawnAttempt(id, attempted.respawn, spawned);
+      this.storeRespawnAttempt(id, attempt, spawned);
       throw new DonationError('orchestrator_error', `Failed to respawn donated node: ${message}`);
     }
   }
@@ -776,12 +779,13 @@ export class DonationService {
    */
   private storeRespawnAttempt(
     id: string,
-    respawn: Donation['respawn'],
+    respawn: RespawnAttempt,
     spawned?: SpawnedHandles,
   ): void {
     try {
+      // A row that vanished (terminate + delete) must not be recreated.
       const current = this.store.get(id);
-      if (!current || !respawn) return;
+      if (!current) return;
       this.store.put({ ...current, respawn, ...spawned });
     } catch (err) {
       log('failed to record respawn attempt for %s: %s', id, errorMessage(err));

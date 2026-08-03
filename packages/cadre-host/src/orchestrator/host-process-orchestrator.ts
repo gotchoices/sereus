@@ -175,13 +175,7 @@ export class HostProcessOrchestrator implements Orchestrator {
       };
       this.handles.set(handle.dockerId, handle);
       // Always reserve ports — even for dead handles, until the caller cleans them up
-      this.portAllocator.markUsed(persisted.ports.health);
-      this.portAllocator.markUsed(persisted.ports.metrics);
-      this.portAllocator.markUsed(persisted.ports.p2p);
-      // `admin` is absent on handles persisted before this build.
-      if (typeof persisted.ports.admin === 'number') {
-        this.portAllocator.markUsed(persisted.ports.admin);
-      }
+      this.reservePorts(persisted.ports);
     }
     log('init: re-attached %d handles', state.handles.length);
   }
@@ -349,6 +343,11 @@ export class HostProcessOrchestrator implements Orchestrator {
     // synchronous (see restoreDroppedHandles).
     const push = await this.resolvePush();
 
+    // NOTE: the short-circuit above matches via `findOwnerHandle` (owner flag OR
+    // containerId), this drop only by containerId. Equivalent today — every
+    // owner handle is launched with OWNER_CONTAINER_ID. If an owner spawn ever
+    // takes a different containerId, the two would disagree and the handle the
+    // short-circuit found would survive here, leaking it and its ports.
     const dropped = this.dropStaleHandle(OWNER_CONTAINER_ID);
     let ports: NodePorts | undefined;
     try {
@@ -424,6 +423,10 @@ export class HostProcessOrchestrator implements Orchestrator {
    * method never releases them, so every caller must release on any throw out
    * of here (it has to unwind its handle drop on the same path anyway — see
    * `restoreDroppedHandles`).
+   *
+   * That contract holds because this method throws only *before* the child is
+   * spawned and its handle stored — everything after that point is
+   * best-effort. Anything new added at the tail must keep it that way.
    *
    * Entirely synchronous, which is what makes that unwind sound. Do not add an
    * `await` here.
@@ -558,7 +561,19 @@ export class HostProcessOrchestrator implements Orchestrator {
     });
 
     this.handles.set(dockerId, handle);
-    this.persist();
+    // Past this line the launch has SUCCEEDED: the child is running and this
+    // handle owns its ports. So the state mirror is best-effort — a throw here
+    // would reach the caller's unwind, which would release ports the live child
+    // is bound to and restore the handle this spawn just replaced, leaving two
+    // handles for one container and one of them holding unreserved ports. A
+    // lost write self-heals: the next persist() (any stop/remove/spawn)
+    // rewrites the whole map. Until then a manager restart would fail to
+    // re-attach this child, hence the log.
+    try {
+      this.persist();
+    } catch (err) {
+      log('failed to persist state after launching container %s: %o', containerId, err);
+    }
     this.emitStateChange(handle);
 
     log('created container %s -> pid %d ports=%j', containerId, child.pid, handle.ports);
@@ -620,8 +635,10 @@ export class HostProcessOrchestrator implements Orchestrator {
    * **Precondition: the drop → launch window is synchronous.** Restoring is
    * sound only because nothing can have taken those ports or run cleanup
    * against the handle in between — `launchChild` contains no `await` and both
-   * callers resolve push credentials *before* their drop. An `await`
-   * introduced into that window silently breaks this.
+   * callers resolve push credentials *before* their drop. `launchChild`'s half
+   * is enforced: its declared return type is not a Promise, so adding an
+   * `await` there is a compile error. The callers' half is not — an `await`
+   * slipped between a drop and its launch silently breaks this.
    *
    * No `persist()` here: `state.json` is rewritten only by `launchChild` and
    * only *after* the new handle is stored, so throughout the failure window the
@@ -638,10 +655,7 @@ export class HostProcessOrchestrator implements Orchestrator {
     for (const h of dropped) {
       log('restoring dropped handle %s for container %s after failed launch', h.dockerId, h.containerId);
       this.handles.set(h.dockerId, h);
-      this.portAllocator.markUsed(h.ports.health);
-      this.portAllocator.markUsed(h.ports.metrics);
-      this.portAllocator.markUsed(h.ports.p2p);
-      this.portAllocator.markUsed(h.ports.admin);
+      this.reservePorts(h.ports);
     }
   }
 
@@ -656,6 +670,20 @@ export class HostProcessOrchestrator implements Orchestrator {
       if (h.owner || h.containerId === OWNER_CONTAINER_ID) return h;
     }
     return undefined;
+  }
+
+  /**
+   * Inverse of {@link releasePorts} — hold a handle's whole port set against
+   * the allocator. Used both to rehydrate on `init` and to undo a drop whose
+   * launch then failed.
+   */
+  private reservePorts(ports: NodePorts): void {
+    this.portAllocator.markUsed(ports.health);
+    this.portAllocator.markUsed(ports.metrics);
+    this.portAllocator.markUsed(ports.p2p);
+    // `admin` is absent on handles persisted before this build; markUsed would
+    // otherwise put `undefined` in the used-set.
+    if (typeof ports.admin === 'number') this.portAllocator.markUsed(ports.admin);
   }
 
   private releasePorts(ports: NodePorts): void {

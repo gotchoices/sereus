@@ -322,6 +322,32 @@ describe('HostProcessOrchestrator failed launch', () => {
     expect(respawned.ports).toEqual(owner.ports);
     expect(orch.listNodes().filter((n) => n.owner)).toHaveLength(1);
   });
+
+  // The caller's unwind is only correct for failures that happen BEFORE the
+  // child exists. A state.json write failure happens after it — if that were
+  // allowed to propagate, the unwind would release the ports the live child is
+  // bound to and put the replaced handle back beside it.
+  it('does not unwind a launch that already spawned when the state write fails', async () => {
+    const orch = makeOrchestrator();
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    await orch.stopContainer(first.dockerId);
+
+    const stateStore = (orch as unknown as { stateStore: StateStore }).stateStore;
+    const save = stateStore.save.bind(stateStore);
+    stateStore.save = () => { throw new Error('ENOSPC: no space left on device'); };
+    const second = await orch.createContainer(makeRequest('c1'));
+    stateStore.save = save;
+
+    // One handle for the container, and it is the new one.
+    expect(orch.listNodes()).toHaveLength(1);
+    expect(orch.getNode('c1')?.dockerId).toBe(second.dockerId);
+
+    // Its ports are still held: a fresh container gets four different ones.
+    const other = await orch.createContainer(makeRequest('c2'));
+    expect(other.p2pPort).not.toBe(second.p2pPort);
+    expect(orch.getNode('c2')!.ports).not.toEqual(orch.getNode('c1')!.ports);
+  });
 });
 
 describe('HostProcessOrchestrator.isRunning', () => {
