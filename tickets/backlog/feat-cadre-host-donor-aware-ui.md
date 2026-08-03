@@ -51,6 +51,15 @@ Make the SPA aware of which role the host is in and adapt:
   scope it here or split, planner's call.
 - Keep the founder path untouched; this is purely additive gating on the client.
 
+## Also covers: the Strands page
+
+`feat-cadre-host-strand-removal-screen` adds a third founder-only nav page, **Strands**
+(`#/strands`, backed by `/api/strands`). It has the same problem for the same reason: on a
+donor-only install the route is unmounted, so opening the page 404s into an error toast. That
+ticket deliberately does *not* invent its own gating — it follows the existing Trust Circle /
+Connectivity pattern so there is one problem with one fix. When this ticket is worked, treat
+Strands as a third member of the founder-only set, not a separate case.
+
 ## Why backlog, not fix
 
 No functional breakage and no crash — the server surface is already honest (404s +
