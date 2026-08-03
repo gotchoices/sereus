@@ -807,6 +807,17 @@ sequenceDiagram
 
 Once multiple nodes with public IPs exist in the cadre, the control network becomes more resilient and less dependent on relays.
 
+The relay container `ops/docker/libp2p-infra` deploys (`src/main.ts`) runs
+`circuitRelayServer()` with libp2p's default per-reservation `Limit` (~128 KiB
+/ 2 min) turned **off** and its concurrent-reservation cap raised well past
+libp2p's default of 15 — without that, every relayed connection is treated as
+"limited" and is refused by any protocol handler that does not opt in with
+`runOnLimitedConnection: true` (none of `@optimystic/db-p2p`'s services or
+sereus's control protocols do), so relayed control/strand traffic would be
+silently dropped. Both settings are environment-configurable
+(`RELAY_APPLY_DEFAULT_LIMIT`, `RELAY_MAX_RESERVATIONS`) — see
+`ops/docker/libp2p-infra/README.md`.
+
 ## Deployment Configurations
 
 ### Minimal (Single Phone)

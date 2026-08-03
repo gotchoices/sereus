@@ -28,6 +28,24 @@ function parseAnnounceAddrs (): string[] | undefined {
   return raw.split(',').map(s => s.trim()).filter(Boolean)
 }
 
+function parseBooleanEnv (name: string, defaultValue: boolean): boolean {
+  const raw = (process.env[name] ?? '').trim()
+  if (!raw) return defaultValue
+  if (raw.toLowerCase() === 'true') return true
+  if (raw.toLowerCase() === 'false') return false
+  throw new Error(`Invalid ${name}. Expected true|false (got ${JSON.stringify(process.env[name])})`)
+}
+
+function parsePositiveIntEnv (name: string, defaultValue: number): number {
+  const raw = (process.env[name] ?? '').trim()
+  if (!raw) return defaultValue
+  const n = Number(raw)
+  if (!Number.isInteger(n) || n <= 0) {
+    throw new Error(`Invalid ${name}. Expected a positive integer (got ${JSON.stringify(process.env[name])})`)
+  }
+  return n
+}
+
 async function loadOrCreatePrivateKey () {
   await fs.mkdir(DATA_DIR, { recursive: true })
   try {
@@ -42,13 +60,28 @@ async function loadOrCreatePrivateKey () {
 
 const announce = parseAnnounceAddrs()
 
+// @libp2p/circuit-relay-v2 defaults to applyDefaultLimit: true, which stamps every
+// reservation with a data/duration cap and marks the resulting connection "limited" -
+// libp2p then refuses newStream()/inbound streams on it unless the caller opts in with
+// runOnLimitedConnection, which none of the db-p2p services or sereus control protocols do.
+// This relay is unauthenticated, so lifting the cap trades a bandwidth brake for usable
+// relayed traffic; RELAY_APPLY_DEFAULT_LIMIT=true restores libp2p's default for a public
+// deployment that wants the brake back.
+const RELAY_APPLY_DEFAULT_LIMIT = parseBooleanEnv('RELAY_APPLY_DEFAULT_LIMIT', false)
+const RELAY_MAX_RESERVATIONS = parsePositiveIntEnv('RELAY_MAX_RESERVATIONS', 500)
+
 const services: Record<string, any> = {
   identify: identify(),
   ping: ping()
 }
 
 if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
-  services.relay = circuitRelayServer()
+  services.relay = circuitRelayServer({
+    reservations: {
+      applyDefaultLimit: RELAY_APPLY_DEFAULT_LIMIT,
+      maxReservations: RELAY_MAX_RESERVATIONS
+    }
+  })
 }
 
 if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
@@ -70,6 +103,9 @@ const node = await createLibp2p({
 await node.start()
 
 console.log(`${ROLE} peerId=${node.peerId.toString()}`)
+if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
+  console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
+}
 console.log('listening/advertising on:')
 node.getMultiaddrs().forEach(ma => console.log(ma.toString()))
 
