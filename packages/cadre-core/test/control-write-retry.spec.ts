@@ -94,9 +94,37 @@ const LOST_USE_NUMBER_DEFERRED = 'CHECK constraint failed: Monotonic';
  * so ONE flaky peer response is fatal where a two-node party would have tolerated it.
  * Transcribed from the failing `provider-seed-accepted` run recorded in
  * `tickets/implement/29.3-third-node-join-ddl-init.md`.
+ *
+ * A RECONSTRUCTION, and knowingly a partial one: the transcription kept this inner sentence
+ * but elided the surrounding transactor aggregate, which is where the `[block:`/`[blocks:`
+ * token that decides retriability lives (see the two aggregate forms below). Twelve runs of
+ * `provider-seed-accepted.integration.ts` on 2026-08-02/03 failed to re-capture the failure —
+ * every DDL death in those runs was `Missing block` instead — so the elided segment is still
+ * unrecorded.
  */
 const SUPER_MAJORITY_THIRD_NODE_JOIN =
 	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+/**
+ * How the coordinator's shortfall actually reaches this classifier: NOT as a bare sentence but
+ * inline, as one batch's `cause=` inside a transactor aggregate, with the same text repeated as
+ * the aggregate's `root:`. `ClusterCoordinator.executeClusterTransaction` raises the shortfall
+ * and BOTH `CoordinatorRepo.pend` and `.commit` call it, so the identical sentence can arrive
+ * from either phase — and only the bracket token tells them apart.
+ *
+ * This pend-phase form is retried twice over: `isUncommittedTransactorAggregate` claims it on
+ * `[block:`, and `isUnansweredSuperMajorityShortfall` claims the inline sentence.
+ */
+const SUPER_MAJORITY_IN_PEND_AGGREGATE =
+	'Some peers did not complete: 12D3KooWa[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections), 12D3KooWb[block:PaWaynQLVfuwhcw4tGh0uX](in-flight) cause=The stream has been reset; root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+/**
+ * The SAME shortfall sentence carried by a COMMIT-phase aggregate. Vetoed, and this is the case
+ * that decides whether the schema-init retry does anything at all: if a joining node's real
+ * failure looks like this, the retry silently never engages. Do not widen
+ * `reportsIndeterminateCommit` to make this pass — the veto is there because re-running a write
+ * that may have landed turns a success into a constraint failure.
+ */
+const SUPER_MAJORITY_IN_COMMIT_AGGREGATE =
+	'Some peers did not complete: 12D3KooWa[blocks:2](in-flight) cause=Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections); root: Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
 /**
  * A durable convergence fault, not a transient one: a collection reports a committed
  * revision whose header block reads as affirmatively ABSENT. Tracked separately in
@@ -157,6 +185,27 @@ describe('isRetriableControlWriteFailure', () => {
 
 	it('never retries a super-majority shortfall carrying a rejection — somebody voted no', () => {
 		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_REJECTED))).toBe(false);
+	});
+
+	/**
+	 * The shape a third node's join failure ACTUALLY has: the shortfall inline inside a
+	 * transactor aggregate, not on its own. Same sentence, same `cause` chain, opposite verdicts
+	 * — the per-batch bracket token is the whole discriminator, so this pair is what makes the
+	 * schema-init retry either useful or a no-op. Asserted bare and through the `Failed to
+	 * execute DDL:` wrapper a joining node actually prints.
+	 *
+	 * Which token a real joining node carries is still UNCAPTURED (see
+	 * {@link SUPER_MAJORITY_THIRD_NODE_JOIN}). If a capture ever arrives and it is `[blocks:`,
+	 * the second half of this case is the proof that the retry never engages for it.
+	 */
+	it('separates the pend- and commit-phase forms of the SAME super-majority shortfall', () => {
+		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_IN_PEND_AGGREGATE))).toBe(true);
+		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_IN_COMMIT_AGGREGATE))).toBe(false);
+
+		expect(isRetriableControlWriteFailure(
+			nested(ddlFailure(SUPER_MAJORITY_IN_PEND_AGGREGATE)))).toBe(true);
+		expect(isRetriableControlWriteFailure(
+			nested(ddlFailure(SUPER_MAJORITY_IN_COMMIT_AGGREGATE)))).toBe(false);
 	});
 
 	/**
@@ -374,34 +423,46 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  * behaviour.
  */
 describe('ControlDatabase.loadSchema — transient-failure retry', () => {
+	/**
+	 * Driven from both faces of the shortfall: the bare sentence, and the pend-phase aggregate
+	 * that actually carries it on the wire. The aggregate form is the one that matters — the
+	 * bare form would still be retried even if a real joining node never produced it.
+	 */
 	it('re-presents the whole DDL after a third-node-join super-majority shortfall', async () => {
-		let runs = 0;
-		const executed: string[] = [];
-		const harness = schemaInitHarness(async (sql) => {
-			runs++;
-			executed.push(sql);
-			if (runs === 1) {
-				throw nested(ddlFailure(SUPER_MAJORITY_THIRD_NODE_JOIN));
-			}
-		});
+		for (const causeMessage of [SUPER_MAJORITY_THIRD_NODE_JOIN, SUPER_MAJORITY_IN_PEND_AGGREGATE]) {
+			let runs = 0;
+			const executed: string[] = [];
+			const harness = schemaInitHarness(async (sql) => {
+				runs++;
+				executed.push(sql);
+				if (runs === 1) {
+					throw nested(ddlFailure(causeMessage));
+				}
+			});
 
-		await harness.loadSchema();
+			await harness.loadSchema();
 
-		expect(runs).toBe(2);
-		// The retry re-presents the SAME schema text: Quereus diffs it against the live
-		// catalog, so the tables that landed on attempt 1 emit no DDL the second time.
-		expect(executed[1]).toBe(executed[0]);
-		expect(executed[0]).toContain('CadreControl');
+			expect(runs).toBe(2);
+			// The retry re-presents the SAME schema text: Quereus diffs it against the live
+			// catalog, so the tables that landed on attempt 1 emit no DDL the second time.
+			expect(executed[1]).toBe(executed[0]);
+			expect(executed[0]).toContain('CadreControl');
+		}
 	});
 
 	/**
-	 * The two failure faces observed from the same joining node, only one of which this
-	 * retry is for. A commit-phase batch is INDETERMINATE (the write may have landed), and
-	 * `Missing block` is durable. Both must reach the caller from the first attempt — a
-	 * silent extra ~2 s of retry before the identical error would be pure cost.
+	 * The failure faces observed from the same joining node that this retry is NOT for. A
+	 * commit-phase batch is INDETERMINATE (the write may have landed) whether or not it also
+	 * carries a super-majority shortfall, and `Missing block` is durable — it was the ONLY DDL
+	 * death seen across twelve scenario runs on 2026-08-02/03. All must reach the caller from
+	 * the first attempt: a silent extra ~2 s of retry before the identical error is pure cost.
 	 */
 	it('never re-presents an indeterminate commit or a durable convergence fault', async () => {
-		for (const causeMessage of [TRANSACTOR_AGGREGATE_COMMIT_PHASE, MISSING_BLOCK]) {
+		for (const causeMessage of [
+			TRANSACTOR_AGGREGATE_COMMIT_PHASE,
+			SUPER_MAJORITY_IN_COMMIT_AGGREGATE,
+			MISSING_BLOCK,
+		]) {
 			let runs = 0;
 			const failure = nested(ddlFailure(causeMessage));
 			const harness = schemaInitHarness(async () => {

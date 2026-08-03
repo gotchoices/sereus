@@ -245,6 +245,13 @@ export async function retryControlWrite<T>(
 			return result;
 		} catch (error) {
 			if (!isRetriableControlWriteFailure(error)) {
+				// The ONLY trace that this funnel saw a failure and declined it. Without it the
+				// log is silent either way, so "the classifier vetoed this one" is
+				// indistinguishable from "the retry is not wired into this path at all" — the
+				// exact ambiguity that made verifying the schema-init retry against a live
+				// cluster cost a dozen scenario runs.
+				log('Control write failed non-transiently on attempt %d/%d, not retried: %s',
+					attemptNumber, CONTROL_WRITE_ATTEMPTS, error);
 				throw error;
 			}
 			lastError = error;
