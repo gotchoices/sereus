@@ -11,11 +11,20 @@ import type {
   ContainerStatusResponse,
 } from '../types.js';
 import type { ProviderStore } from './store.js';
-import type { Orchestrator } from './orchestrator.js';
+import type { ContainerRunState, RecoverableOrchestrator } from './orchestrator.js';
 import type { ProviderPushConfig, PushCredentials } from '../config/types.js';
 import { fetchContainerHealthStatus } from './container-health.js';
 
 const log = debug('cadre:provider:container');
+
+/** How long a freshly-created container has to report healthy before the wait gives up. */
+export const CONTAINER_ENROLLMENT_TIMEOUT_MS = 60_000;
+
+/** How often the enrollment wait re-reads the container's `/status`. */
+export const CONTAINER_ENROLLMENT_POLL_MS = 2_000;
+
+/** Lines of container log tailed into the operator's debug log when enrollment fails. */
+const ENROLLMENT_FAILURE_LOG_LINES = 50;
 
 /**
  * Resolve the push credentials for ONE tenant: the per-tenant override keyed by
@@ -53,12 +62,16 @@ export interface ContainerServiceOptions {
   /** Store for persisting container state */
   store: ProviderStore;
   /** Container orchestrator (Docker, K8s, etc.) */
-  orchestrator: Orchestrator;
+  orchestrator: RecoverableOrchestrator;
   /**
    * Per-tenant push (FCM/APNs) credentials. Resolved by `customerId` at provision
    * time and injected into that tenant's node only. Omit to disable push.
    */
   push?: ProviderPushConfig;
+  /** Override the enrollment give-up window; defaults to `CONTAINER_ENROLLMENT_TIMEOUT_MS`. */
+  enrollmentTimeoutMs?: number;
+  /** Override the enrollment poll interval; defaults to `CONTAINER_ENROLLMENT_POLL_MS`. */
+  enrollmentPollMs?: number;
 }
 
 /**
@@ -67,13 +80,17 @@ export interface ContainerServiceOptions {
  */
 export class ContainerService {
   private readonly store: ProviderStore;
-  private readonly orchestrator: Orchestrator;
+  private readonly orchestrator: RecoverableOrchestrator;
   private readonly push?: ProviderPushConfig;
+  private readonly enrollmentTimeoutMs: number;
+  private readonly enrollmentPollMs: number;
 
   constructor(options: ContainerServiceOptions) {
     this.store = options.store;
     this.orchestrator = options.orchestrator;
     this.push = options.push;
+    this.enrollmentTimeoutMs = options.enrollmentTimeoutMs ?? CONTAINER_ENROLLMENT_TIMEOUT_MS;
+    this.enrollmentPollMs = options.enrollmentPollMs ?? CONTAINER_ENROLLMENT_POLL_MS;
     log('ContainerService initialized');
   }
 
@@ -177,8 +194,10 @@ export class ContainerService {
 
       log('Container %s provisioned, waiting for enrollment', container.id);
 
-      // Wait for enrollment (health check shows healthy)
-      await this.waitForEnrollment(container.id, 60000);
+      // Wait for enrollment (health check shows healthy). Throws when the
+      // container's process is found dead — the catch below records the failure
+      // and reclaims, so there is exactly one failure path.
+      await this.waitForEnrollment(container.id);
 
     } catch (error) {
       log('Container %s provisioning error: %O', container.id, error);
@@ -204,14 +223,25 @@ export class ContainerService {
     }
   }
 
-  /** Wait for container to become healthy */
-  private async waitForEnrollment(containerId: string, timeoutMs: number): Promise<void> {
+  /**
+   * Wait for a freshly-created container to report healthy.
+   *
+   * Throws when the container's own process is found dead, so `provisionContainer`'s
+   * catch records the failure and reclaims; returns normally when the container
+   * enrolled, when the record went away, or when the window ran out on a node
+   * that is merely slow.
+   */
+  private async waitForEnrollment(containerId: string): Promise<void> {
     const startTime = Date.now();
-    const pollInterval = 2000;
 
-    while (Date.now() - startTime < timeoutMs) {
+    while (Date.now() - startTime < this.enrollmentTimeoutMs) {
       const container = await this.store.getContainer(containerId);
-      if (!container || container.status === 'error') return;
+      // The record entered this loop as 'enrolling' and only this loop promotes
+      // it. Anything else — gone, failed, or a concurrent DELETE that moved it to
+      // 'stopping'/'stopped' — means someone else now owns its fate. Bailing here
+      // also keeps the liveness probe below from reading a deliberate teardown
+      // (stop, then remove) as a crash.
+      if (container?.status !== 'enrolling') return;
 
       // Read `/status` rather than `/health`: it reports the same `status` field
       // and additionally carries the node's `peerId`, which we record once here.
@@ -230,16 +260,70 @@ export class ContainerService {
         return;
       }
 
-      await new Promise(resolve => setTimeout(resolve, pollInterval));
+      // Health is read FIRST on purpose: a container that crashed once and came
+      // back healthy must still enrol. Only an unhealthy read asks whether the
+      // process behind it is even alive.
+      // NOTE: one extra orchestrator inspect per poll per enrolling container,
+      // bounded by the enrollment window. If many simultaneous provisions ever
+      // become normal, probe every Nth poll instead of every poll.
+      if (container.dockerId) await this.assertChildAlive(containerId, container.dockerId);
+
+      await new Promise(resolve => setTimeout(resolve, this.enrollmentPollMs));
     }
 
-    // NOTE: a timeout strands the record on 'enrolling' — never promoted to
-    // 'running', never failed to 'error', and nothing re-enters this loop.
-    // Harmless while 'enrolling' stays seedable (`applySeed` accepts it), so a
-    // merely-slow node still works. If anything ever reads 'enrolling' as
-    // not-failed (an SLA sweep, a UI waiting on the record instead of polling
+    // NOTE: the timeout still strands a record on 'enrolling', but now only for a
+    // container whose process is alive and simply not healthy yet — a dead child
+    // fails above. Harmless while 'enrolling' stays seedable (`applySeed` accepts
+    // it), so a merely-slow node still works. If anything ever reads 'enrolling'
+    // as not-failed (an SLA sweep, a UI waiting on the record instead of polling
     // /status, an operator dashboard), fail to 'error' here instead.
     log('Container %s enrollment timeout', containerId);
+  }
+
+  /**
+   * Throw when the orchestrator reports the container's process has died.
+   *
+   * Silent (keeps the caller waiting) for every ambiguous answer: an
+   * orchestrator with no `inspectRunState`, a container the orchestrator no
+   * longer knows (a concurrent terminate removed it), or a probe that failed —
+   * a Docker API blip must not fail an otherwise fine provision.
+   */
+  private async assertChildAlive(containerId: string, dockerId: string): Promise<void> {
+    const probe = this.orchestrator.inspectRunState;
+    if (!probe) return;
+
+    let state: ContainerRunState | undefined;
+    try {
+      state = await probe.call(this.orchestrator, dockerId);
+    } catch (err) {
+      log('Container %s liveness probe failed (still waiting): %O', containerId, err);
+      return;
+    }
+    if (!state) return;
+
+    // `running === false` alone is NOT death: with `RestartPolicy: unless-stopped`
+    // a container reads not-running for the moment between restarts. Only an
+    // observed exit — a restart having happened, or an exit timestamp — is proof.
+    if (state.restartCount === 0 && state.exitedAt === undefined) return;
+
+    await this.logContainerTail(containerId, dockerId);
+    throw new Error(
+      `container process exited during enrollment (restarts=${state.restartCount}, exitCode=${state.exitCode ?? 'unknown'})`
+    );
+  }
+
+  /**
+   * Tail the dead container's own output into the operator's debug log — the
+   * only view of *why* the node died. Deliberately not stored on the record:
+   * it is tenant output, and the record is provider-side metadata.
+   */
+  private async logContainerTail(containerId: string, dockerId: string): Promise<void> {
+    try {
+      const logs = await this.orchestrator.getLogs(dockerId, ENROLLMENT_FAILURE_LOG_LINES);
+      log('Container %s died during enrollment; last output:\n%s', containerId, logs);
+    } catch (err) {
+      log('Container %s died during enrollment; logs unavailable: %O', containerId, err);
+    }
   }
 
   /** Update container status, optionally stamping additional fields in the same save. */

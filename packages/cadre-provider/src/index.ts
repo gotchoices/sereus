@@ -70,10 +70,12 @@ export {
 } from './service/store.js';
 
 export {
+  type ContainerRunState,
   type Orchestrator,
   type OrchestratorCreateRequest,
   type OrchestratorCreateResult,
   type OrchestratorStats,
+  type RecoverableOrchestrator,
   MockOrchestrator,
 } from './service/orchestrator.js';
 
@@ -89,6 +91,8 @@ export {
 export {
   ContainerService,
   type ContainerServiceOptions,
+  CONTAINER_ENROLLMENT_TIMEOUT_MS,
+  CONTAINER_ENROLLMENT_POLL_MS,
 } from './service/container-service.js';
 
 // Wire types for a container's live `/status` payload (referenced by

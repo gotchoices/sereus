@@ -38,10 +38,11 @@ import debug from 'debug';
 
 import {
 	buildNodeEnv,
-	type Orchestrator,
+	type ContainerRunState,
 	type OrchestratorCreateRequest,
 	type OrchestratorCreateResult,
 	type OrchestratorStats,
+	type RecoverableOrchestrator,
 } from '@serfab/cadre-provider';
 
 const log = debug('sereus:integration:provider-orchestrator');
@@ -58,6 +59,8 @@ export interface ProviderProcessHandle {
 	volumeDir: string;
 	ports: { health: number; metrics: number; p2p: number };
 	child: ChildProcess;
+	/** Stamped by the child's own `exit` event; absent while it is still up. */
+	exitedAt?: Date;
 }
 
 export interface ProviderProcessOrchestratorOptions {
@@ -79,6 +82,11 @@ function scrubbedParentEnv(): NodeJS.ProcessEnv {
 		if (key.startsWith('CADRE_')) delete env[key];
 	}
 	return env;
+}
+
+/** A spawned child that has neither exited nor been signalled is still up. */
+function isChildUp(child: ChildProcess): boolean {
+	return child.exitCode === null && child.signalCode === null;
 }
 
 /** Ask the OS for a free TCP port (bind 0, read back, close). */
@@ -113,7 +121,7 @@ function resolveCadreCliBin(): string {
 	}
 }
 
-export class ProviderProcessOrchestrator implements Orchestrator {
+export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	private readonly rootDir: string;
 	private readonly cliBin: string;
 	private readonly handles = new Map<string, ProviderProcessHandle>();
@@ -179,13 +187,18 @@ export class ProviderProcessOrchestrator implements Orchestrator {
 		}
 
 		const dockerId = `proc_${request.containerId}_${++this.spawnCounter}`;
-		this.handles.set(dockerId, {
+		const handle: ProviderProcessHandle = {
 			dockerId,
 			containerId: request.containerId,
 			volumeDir,
 			ports,
 			child,
-		});
+		};
+		// The child carries its exit code but not WHEN it exited, and a caller
+		// asking "did this die during enrollment?" needs the latter. Stamped here
+		// rather than derived, because nothing else observes the transition.
+		child.once('exit', () => { handle.exitedAt = new Date(); });
+		this.handles.set(dockerId, handle);
 		log('spawned %s pid=%d ports=%j volume=%s', dockerId, child.pid, ports, volumeDir);
 
 		return {
@@ -201,7 +214,7 @@ export class ProviderProcessOrchestrator implements Orchestrator {
 	async stopContainer(dockerId: string): Promise<void> {
 		const handle = this.requireHandle(dockerId);
 		const { child } = handle;
-		if (child.exitCode !== null || child.signalCode !== null) return;
+		if (!isChildUp(child)) return;
 
 		const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()));
 		child.kill('SIGTERM');
@@ -236,7 +249,28 @@ export class ProviderProcessOrchestrator implements Orchestrator {
 
 	async isRunning(dockerId: string): Promise<boolean> {
 		const handle = this.handles.get(dockerId);
-		return !!handle && handle.child.exitCode === null && handle.child.signalCode === null;
+		return !!handle && isChildUp(handle.child);
+	}
+
+	/**
+	 * Never respawns a child, so `restartCount` is always 0 — a dead child here
+	 * stays dead, which is exactly the "node crashed during its own startup"
+	 * case the provider's enrollment wait has to notice.
+	 *
+	 * `undefined` once the handle is forgotten (`removeContainer`), matching
+	 * Docker's "no such container" rather than claiming the child died.
+	 */
+	async inspectRunState(dockerId: string): Promise<ContainerRunState | undefined> {
+		const handle = this.handles.get(dockerId);
+		if (!handle) return undefined;
+		const { child } = handle;
+		return {
+			running: isChildUp(child),
+			restartCount: 0,
+			...(handle.exitedAt
+				? { exitedAt: handle.exitedAt, ...(child.exitCode !== null ? { exitCode: child.exitCode } : {}) }
+				: {}),
+		};
 	}
 
 	async getLogs(dockerId: string, tail = 100): Promise<string> {

@@ -7,10 +7,11 @@ import debug from 'debug';
 import { randomBytes } from 'node:crypto';
 import type { DockerConfig } from '../config/types.js';
 import type {
-  Orchestrator,
+  ContainerRunState,
   OrchestratorCreateRequest,
   OrchestratorCreateResult,
   OrchestratorStats,
+  RecoverableOrchestrator,
 } from './orchestrator.js';
 import { CONTAINER_PORTS, buildNodeEnv } from './container-env.js';
 
@@ -33,6 +34,20 @@ const DATA_MOUNT_TARGET = '/data';
  */
 export function volumeNameFor(containerId: string): string {
   return `cadre-${containerId}-data`;
+}
+
+/**
+ * Docker's `State.FinishedAt` for a container that has never exited is Go's
+ * zero time (`0001-01-01T00:00:00Z`), not an empty string — parsing it naively
+ * yields a valid `Date` in year 1 and would report a phantom exit. Anything at
+ * or before the Unix epoch is that sentinel (no container exits in 1969), as is
+ * an absent or unparseable value.
+ */
+function parseDockerFinishedAt(finishedAt: string | undefined): Date | undefined {
+  if (!finishedAt) return undefined;
+  const at = new Date(finishedAt);
+  const ms = at.getTime();
+  return Number.isNaN(ms) || ms <= 0 ? undefined : at;
 }
 
 /** Port allocation tracker */
@@ -62,7 +77,7 @@ class PortAllocator {
 /**
  * Docker orchestrator using dockerode.
  */
-export class DockerOrchestrator implements Orchestrator {
+export class DockerOrchestrator implements RecoverableOrchestrator {
   private readonly docker: Docker;
   private readonly config: DockerConfig;
   private readonly portAllocator: PortAllocator;
@@ -316,6 +331,32 @@ export class DockerOrchestrator implements Orchestrator {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Live run state from a single `inspect` — the same call `isRunning` makes,
+   * but reporting the restart/exit history too so a caller can tell "still
+   * starting" from "died and is being restarted forever".
+   *
+   * `undefined` means the daemon no longer has the container (404); every other
+   * inspect failure rethrows, because a Docker outage read as "the child is
+   * fine" is the far more expensive mistake.
+   */
+  async inspectRunState(dockerId: string): Promise<ContainerRunState | undefined> {
+    let info: Docker.ContainerInspectInfo;
+    try {
+      info = await this.docker.getContainer(dockerId).inspect();
+    } catch (err) {
+      if ((err as { statusCode?: number }).statusCode === 404) return undefined;
+      throw err;
+    }
+
+    const exitedAt = parseDockerFinishedAt(info.State.FinishedAt);
+    return {
+      running: info.State.Running,
+      restartCount: info.RestartCount ?? 0,
+      ...(exitedAt ? { exitedAt, exitCode: info.State.ExitCode } : {}),
+    };
   }
 
   async getLogs(dockerId: string, tail = 100): Promise<string> {

@@ -1365,6 +1365,7 @@ Maestro Studio, with Appium as the documented fallback.
 - Provider API: container CRUD, billing plans/status, seed delivery, peer info
 - Billing integration: usage metering, Stripe-ready hooks, quota enforcement
 - Orchestration: Docker orchestrator, mock orchestrator, pluggable interface
+- **Enrollment liveness**: after creating a container the provider polls its `/status` until healthy. When a poll is not healthy it also asks the orchestrator how the container's own process is doing (`RecoverableOrchestrator.inspectRunState`, an optional extension of `Orchestrator` so implementations that cannot answer keep working). A container that has restarted or already exited fails the provision immediately — the record goes to `error` with the exit recorded and the orchestrator resources are reclaimed — instead of waiting out the fixed window and stranding the record on `enrolling` (which would hold a plan slot forever while never being metered). Health is read *before* liveness, so a container that crashed once and came back healthy still enrols. A probe failure, or an orchestrator that no longer knows the container (a concurrent terminate), keeps waiting rather than failing. The window and poll interval are `CONTAINER_ENROLLMENT_TIMEOUT_MS` / `CONTAINER_ENROLLMENT_POLL_MS`, overridable per `ContainerService`.
 
 ### `@serfab/cadre-host` (Founder role complete; donor `DonationService` landed, `/grants` routes in progress)
 
