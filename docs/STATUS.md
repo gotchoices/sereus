@@ -570,9 +570,15 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   `globalSetup` is wired into the **`node`** project block of its two-project `vitest.config.ts` only:
   the `react` project's single spec (`test/react/use-cadre.spec.ts`) `vi.mock`s `@serfab/cadre-core`
   and `../../src/cadre-phone` — the only module reaching `@optimystic/db-p2p-storage-rn` — so it loads
-  no compiled output at all. `cadre-provider` (no `workspace:`/`link:` dependencies) and
-  `reference-app-ns` (no `vitest.config.ts` yet) remain the two packages with no guard, both for the
-  reason that there is nothing yet to guard.
+  no compiled output at all. `cadre-provider` (no `workspace:`/`link:` dependencies) is now the only
+  package with no guard, for the reason that there is nothing to guard.
+- [x] **`reference-app-ns` guarded from its first suite.** Its Vitest harness landed with the
+  `test/global-setup.ts` + `build-targets.spec.ts` pair already in place — the same eight targets as
+  `reference-app-rn` with `@optimystic/db-p2p-storage-ns` in place of the `-rn` one. Both its suites
+  run real `@serfab/cadre-core` values (`node-local-slots.spec.ts` composes `kvSlot` with the real
+  `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`; `cadre-phone.spec.ts` mocks only
+  cadre-core's `CadreNode` export and keeps both stores real over a faked `SqliteKVStore`), so the
+  guard covers every spec the single-project config collects.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
@@ -594,9 +600,10 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   unnoticed for a whole major-version upgrade — see "Sequential integration runs restored" above).
   Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
   `quereus-plugin-sereus`, `strand-proto`, `integration-tests`) or the package's main `tsconfig.json`
-  (`reference-app-rn`, `reference-app-web`). `reference-app-ns` is the tenth workspace and has no
-  `vitest.config.ts` at all yet (see `debt-ns-unit-test-harness`), so nothing to include there.
-  Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
+  (`reference-app-ns`, `reference-app-rn`, `reference-app-web`). All ten workspaces are covered:
+  `reference-app-ns` was the last holdout and now carries a `vitest.config.ts` listed in its main
+  `tsconfig.json` `include` alongside `test/**/*.ts`.
+  Verified by injecting an unknown key into each of the nine configs that existed then and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
   (`ProjectConfig`), which is where the `poolOptions` precedent lived.
   Enforced going forward by `scripts/check-vitest-typecheck-coverage.mjs` (`yarn check:vitest-typecheck-coverage`,
@@ -668,8 +675,10 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
     import extensions, `TS2339` `Stream.stream`, plus `BootstrapMode` widening), and the package is not
     being revived — so those three files are explicitly allowlisted in
     `scripts/test-typecheck-allowlist.json` with that reason recorded there
-  - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`) and has
-    no test files yet (see `debt-ns-unit-test-harness`)
+  - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`), whose
+    `include` now lists `test/**/*.ts` and `vitest.config.ts` beside `app/` and `src/`. That program keeps
+    `customConditions: ["react-native", "browser"]`, which turned out not to disturb resolution of
+    `vitest`/`vitest/config` types — so no separate test tsconfig was needed
 - Known coverage gaps:
   - `cadre-host` `ui/` (Svelte) and `reference-app-web` `.svelte` files are **not** covered — `tsc` can't type-check
     `.svelte`; that needs `svelte-check` (already a devDependency in both). Not wired into `typecheck` yet.

@@ -5358,6 +5358,7 @@ __metadata:
     rimraf: "npm:^6.1.2"
     typescript: "npm:~5.9.3"
     util: "npm:^0.12.5"
+    vitest: "npm:^4.0.17"
     web-streams-polyfill: "npm:^4.1.0"
   languageName: unknown
   linkType: soft
