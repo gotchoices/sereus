@@ -1,5 +1,5 @@
 <script lang="ts">
-	import { typedConfirmationMatches } from '../lib/strand-confirm.js';
+	import { typedConfirmationMatches } from '../lib/typed-confirm.js';
 
 	interface Props {
 		open: boolean;
@@ -13,7 +13,6 @@
 		 * costs one reflexive click, typing costs deliberate attention.
 		 */
 		requireText?: string;
-		requireTextLabel?: string;
 		confirmLabel?: string;
 		cancelLabel?: string;
 		danger?: boolean;
@@ -27,7 +26,6 @@
 		message,
 		note,
 		requireText,
-		requireTextLabel,
 		confirmLabel = 'Confirm',
 		cancelLabel = 'Cancel',
 		danger = false,
@@ -89,7 +87,7 @@
 		{/if}
 		{#if gated}
 			<div class="gate">
-				<label for="confirm-typed">{requireTextLabel ?? `Type ${requireText} to confirm:`}</label>
+				<label for="confirm-typed">Type <code>{requireText}</code> to confirm:</label>
 				<input
 					id="confirm-typed"
 					type="text"

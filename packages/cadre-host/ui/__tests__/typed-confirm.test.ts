@@ -1,13 +1,6 @@
 import { describe, expect, it } from 'vitest';
 
-import { requiresTypedConfirmation, typedConfirmationMatches } from '../src/lib/strand-confirm.js';
-
-describe('requiresTypedConfirmation', () => {
-	it('demands a typed confirmation only for closed strands', () => {
-		expect(requiresTypedConfirmation('c')).toBe(true);
-		expect(requiresTypedConfirmation('o')).toBe(false);
-	});
-});
+import { typedConfirmationMatches } from '../src/lib/typed-confirm.js';
 
 describe('typedConfirmationMatches', () => {
 	it('accepts an exact match', () => {
@@ -44,5 +37,11 @@ describe('typedConfirmationMatches', () => {
 		// Ids are arbitrary caller-chosen strings; only the ends are trimmed.
 		expect(typedConfirmationMatches('a/b c', 'a/b c')).toBe(true);
 		expect(typedConfirmationMatches('a/b c', 'a/bc')).toBe(false);
+	});
+
+	it('matches a percent-escape literally rather than decoding it', () => {
+		// The dialog compares what the row shows, not what the URL will carry.
+		expect(typedConfirmationMatches('ns%2Fstrand', 'ns/strand')).toBe(false);
+		expect(typedConfirmationMatches('ns/strand', 'ns/strand')).toBe(true);
 	});
 });

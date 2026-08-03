@@ -9,7 +9,11 @@
 		type StrandRemovalResult,
 		type StrandSummary,
 	} from '../lib/state.svelte.js';
-	import { requiresTypedConfirmation } from '../lib/strand-confirm.js';
+	import {
+		removalFeedback,
+		requiresTypedConfirmation,
+		type RemovalFeedback,
+	} from '../lib/strand-removal.js';
 
 	import ConfirmDialog from '../components/ConfirmDialog.svelte';
 
@@ -48,6 +52,16 @@
 	/** With no strand selected the dialog is closed, so the type is immaterial. */
 	const gated = $derived(requiresTypedConfirmation(confirmStrand?.type ?? 'o'));
 
+	/**
+	 * What the card shows under any error line. An unfetched list is not an empty
+	 * one, and a fetch that failed before any success has nothing to show at all —
+	 * the error line above already speaks for it.
+	 */
+	const listView = $derived.by((): 'loading' | 'empty' | 'list' | 'none' => {
+		if (app.strands.loaded) return app.strands.list.length === 0 ? 'empty' : 'list';
+		return app.strands.error ? 'none' : 'loading';
+	});
+
 	onMount(() => {
 		void refreshStrands();
 	});
@@ -67,7 +81,7 @@
 			const result = await apiDelete<StrandRemovalResult>(
 				`/api/strands/${encodeURIComponent(strand.id)}${query}`,
 			);
-			reportRemoval(strand.id, result);
+			report(removalFeedback(result));
 			await refreshStrands();
 		} catch (err) {
 			const msg = err instanceof Error ? err.message : String(err);
@@ -84,24 +98,10 @@
 		}
 	}
 
-	/**
-	 * Turn one removal result into exactly one piece of feedback.
-	 *
-	 * `alone` is sampled on every call, including one that wrote nothing, so it
-	 * only warrants the banner alongside a delete this call actually issued. The
-	 * banner is an inline dismissable element rather than a toast because it is the
-	 * one outcome an owner may need to act on after reading it.
-	 */
-	function reportRemoval(id: string, result: StrandRemovalResult): void {
-		if (!result.published) {
-			pushToast('info', `${id} was already removed`);
-			return;
-		}
-		if (result.removed && result.alone) {
-			aloneNotice = id;
-			return;
-		}
-		pushToast('success', `Left ${id}`);
+	/** Show the one piece of feedback `removalFeedback` chose. */
+	function report(feedback: RemovalFeedback): void {
+		if (feedback.kind === 'banner') aloneNotice = feedback.strandId;
+		else pushToast(feedback.tone, feedback.text);
 	}
 </script>
 
@@ -128,13 +128,16 @@
 	{/if}
 
 	<div class="card">
+		<!-- The error line sits above the list rather than replacing it: a failed
+		     refresh should not discard the last list that did load. -->
 		{#if app.strands.error}
-			<p class="muted">Couldn’t load strands: {app.strands.error}</p>
-		{:else if !app.strands.loaded}
+			<p class="error">Couldn’t load strands: {app.strands.error}</p>
+		{/if}
+		{#if listView === 'loading'}
 			<p class="muted">Loading…</p>
-		{:else if app.strands.list.length === 0}
+		{:else if listView === 'empty'}
 			<p class="muted">This party doesn’t take part in any shared networks yet.</p>
-		{:else}
+		{:else if listView === 'list'}
 			<ul class="list">
 				{#each app.strands.list as strand (strand.id)}
 					<li>
@@ -165,7 +168,6 @@
 	message={gated ? closedMessage(confirmStrand?.id ?? '') : openMessage(confirmStrand?.id ?? '')}
 	note={app.strands.loaded && app.strands.controlConnections === 0 ? NO_CONNECTIONS_NOTE : undefined}
 	requireText={gated ? (confirmStrand?.id ?? '') : undefined}
-	requireTextLabel={`Type ${confirmStrand?.id ?? ''} to confirm:`}
 	confirmLabel="Leave"
 	danger
 	onConfirm={leaveStrand}
@@ -203,6 +205,7 @@
 		overflow-wrap: anywhere;
 		user-select: text;
 	}
+	.error { color: var(--color-danger); }
 	.meta { gap: 0.5rem; }
 	.small { font-size: 0.85rem; }
 	.warning {

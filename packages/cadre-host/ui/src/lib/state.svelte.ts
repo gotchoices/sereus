@@ -311,6 +311,10 @@ export async function refreshTrustCircle(): Promise<void> {
  * every donor-only dashboard before the user has opened anything.
  */
 export async function refreshStrands(): Promise<void> {
+	// NOTE: overlapping refreshes are last-response-wins, so a slow earlier fetch
+	// could land after a newer one and briefly re-show a removed row. Today the only
+	// overlap is a removal's own refresh racing its SSE echo, and both are
+	// post-delete; if these calls ever get slow, sequence them behind a token.
 	try {
 		const r = await apiFetch<{ strands: StrandSummary[]; controlConnections: number }>(
 			'/api/strands',
