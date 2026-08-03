@@ -50,3 +50,8 @@ override that lands inside the managed range cannot be handed out twice.
 
 Anything about *which* ports get chosen, the size of the default range, or
 persisting reservations across restarts. This is a de-duplication only.
+
+The restart case is now filed separately as
+`bug-provider-port-allocator-forgets-live-ports-on-restart` — it wants the
+shared tracker's `markUsed`, so this ticket landing first makes it smaller, but
+it stays out of scope here.
