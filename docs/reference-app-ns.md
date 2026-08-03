@@ -309,20 +309,38 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, and `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`. Guarded by the shared stale-build check (`test/global-setup.ts`). NativeScript-coupled modules (pages, view models, `ns-storage.ts`) are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, and the two `Observable` view models on the seed/invite path (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). `src/chat-vm.ts`, `src/ns-storage.ts` and the pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
 
 ### Unit suite
 
-`vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`. Only the
-modules that reach no NativeScript API are targeted: `src/node-local-slots.ts` and
-`src/cadre-phone.ts`, the latter with `@optimystic/db-p2p-storage-ns` (SQLite,
-identity) and `src/ns-storage.ts` mocked, and cadre-core mocked **only** in its
-`CadreNode` export so the two node-local store classes stay real. `ns-storage.ts`
-itself, the view models, and the pages have no unit coverage — they need the
-device harness below.
+`vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`.
+
+Two groups are targeted. The first reaches no NativeScript API at all:
+`src/node-local-slots.ts` and `src/cadre-phone.ts`, the latter with
+`@optimystic/db-p2p-storage-ns` (SQLite, identity) and `src/ns-storage.ts`
+mocked, and cadre-core mocked **only** in its `CadreNode` export so the two
+node-local store classes stay real.
+
+The second is the two `Observable` view models on the seed/invite path —
+`src/cadre-vm.ts` and `app/settings/settings-view-model.ts`. They import
+`@nativescript/core`, whose entry point cannot load under plain Node (it reaches
+`@nativescript/core/globals` as a *directory* import, which Node's ESM loader
+refuses). `resolve.alias` therefore redirects that exact specifier — anchored
+regex, so the subpaths are untouched — to `test/stubs/nativescript-core.ts`,
+which re-exports the **real** `Observable` from the one submodule that does load
+(`data/observable`). Both suites drive one shared fake `CadreNode`
+(`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
+array, because the behaviour under test is an ordering: an enrollment invite's
+owner keys must be anchored via `trustOwnerKeys` strictly *before* the seed is
+applied.
+
+Still uncovered here: `src/chat-vm.ts` (it needs `ObservableArray`, which the
+same directory-import rule puts out of reach by this route —
+`tickets/backlog/debt-ns-chat-vm-unit-tests.md`), `src/ns-storage.ts`, and the
+pages. They need the device harness below.
 
 `test/global-setup.ts` runs the shared stale-build guard
 (`test-harness/build-freshness.ts`) first, because those specs execute real
