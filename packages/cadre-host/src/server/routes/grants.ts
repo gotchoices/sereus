@@ -119,6 +119,12 @@ export function registerGrantsRoutes(app: FastifyInstance, opts: GrantsRoutesOpt
     if (!Array.isArray(body.ownerKeys) || body.ownerKeys.length === 0) {
       return errorResponse(reply, 'invalid_request', 'ownerKeys is required', 400);
     }
+    // Element types too, not just the array: `provision`'s shape check trims each
+    // entry, so a non-string reaches the caller as an internal `.trim is not a
+    // function` rather than as a message naming what is wrong with the request.
+    if (!body.ownerKeys.every(key => typeof key === 'string')) {
+      return errorResponse(reply, 'invalid_request', 'ownerKeys must be an array of strings', 400);
+    }
     if (body.profile !== undefined && body.profile !== 'storage' && body.profile !== 'transaction') {
       return errorResponse(reply, 'invalid_request', 'profile must be "storage" or "transaction"', 400);
     }

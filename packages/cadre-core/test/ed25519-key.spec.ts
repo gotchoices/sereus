@@ -59,6 +59,13 @@ describe('ed25519PublicKeyFromPrivate', () => {
   });
 });
 
+/**
+ * This table is restated once outside the package — cadre-provider's
+ * `validatePinnedOwnerKeys` (`packages/cadre-provider/src/server/__tests__/`
+ * `create-container-owner-keys.test.ts`) pins its local copy of the rule to the same
+ * accept/reject cases. Neither suite can see the other, so if a case here changes,
+ * change it there too.
+ */
 describe('requireEd25519PublicKeyB64', () => {
   it('accepts a valid base64url-encoded 32-byte key and returns it trimmed', () => {
     const publicKeyB64 = ed25519PublicKeyFromPrivate(generatePrivateKey('ed25519', 'base64url') as string);

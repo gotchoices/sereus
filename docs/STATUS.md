@@ -1125,8 +1125,10 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   `cadre-host`'s `POST /grants` → `DonationService.provision` (`ownerKeys` → `400 invalid_request`,
   checked ahead of the grant so no quota slot is burned). cadre-provider declares no `workspace:`
   dependencies, so it restates the rule locally over `uint8arrays` rather than importing
-  `requireEd25519PublicKeyB64`; a test asserting the same accept/reject table as
-  `cadre-core/test/ed25519-key.spec.ts` is what keeps the two from drifting. Replaying pins already
+  `requireEd25519PublicKeyB64`; the two copies are kept in step by hand, each pinned by its own
+  suite to the same accept/reject table (`cadre-core/test/ed25519-key.spec.ts` and
+  `create-container-owner-keys.test.ts`) so an edit to either fails that package's tests and lands
+  on the comment naming the other copy — no test compares the two. Replaying pins already
   on a donation record (`DonationService.respawn`) is deliberately exempt.
 - [x] **A party owner can now remove a shared strand party-wide (2026-07-30).**
   `CadreNode.unpublishStrand` — the first caller of `ControlDatabase.deleteStrand` — deletes the

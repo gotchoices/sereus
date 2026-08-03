@@ -859,6 +859,11 @@ function redact(donation: Donation): DonationView {
  * are already inside the trust boundary. Validating the boundary is the point.
  */
 function validateOwnerKeys(keys: string[] | undefined): string[] {
+  // NOTE: every throw out of this `try` is reported to the caller as their fault.
+  // True while `requireEd25519PublicKeyB64` rejects only bad input (and while the
+  // route ahead of it has already established the entries are strings); if it ever
+  // grows a failure of its own — a key-server lookup, a curve check needing crypto
+  // — narrow this catch, or a host-side fault answers 400.
   try {
     return (keys ?? []).map((key) => requireEd25519PublicKeyB64(key, 'donation owner key (ownerKeys)'));
   } catch (err) {

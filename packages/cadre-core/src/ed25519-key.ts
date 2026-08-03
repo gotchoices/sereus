@@ -96,11 +96,13 @@ function describeRejected(value: string): string {
  * signature verification later exactly like any other wrong key.
  *
  * **This rule is restated once outside this package**, in `validateOwnerKey`
- * (`packages/cadre-provider/src/server/routes.ts`): cadre-provider declares no
+ * (`packages/cadre-provider/src/server/owner-key-validation.ts`): cadre-provider declares no
  * `workspace:` dependencies and validates `POST /containers` pins over `uint8arrays`
- * directly. Change the rule here and change it there. `create-container-owner-keys.test.ts`
- * asserts the same accept/reject table as `test/ed25519-key.spec.ts`, so a divergence
- * fails a test rather than passing silently.
+ * directly. Change the rule here and change it there — the copies are kept in step by
+ * hand, since neither package can import the other's. Each side pins its own copy to the
+ * same accept/reject table (`test/ed25519-key.spec.ts` here,
+ * `create-container-owner-keys.test.ts` there), so a change fails the suite of the
+ * package it was made in and lands the editor on this pointer.
  *
  * @param value - Candidate base64url-encoded Ed25519 public key.
  * @param label - Human-readable name of the field, used in error messages.

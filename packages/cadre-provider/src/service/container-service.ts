@@ -39,7 +39,7 @@ export function resolveTenantPush(
  * record says the node was told to trust.
  *
  * A request that arrived through `POST /containers` never reaches here with a blank
- * or malformed entry — `validatePinnedOwnerKeys` (`server/routes.ts`) answers 400
+ * or malformed entry — `validatePinnedOwnerKeys` (`server/owner-key-validation.ts`) answers 400
  * first, including for `[""]`, which a caller only sends by mistake (trusting nobody
  * is spelled by omitting the field). This filter therefore stands as the guard for
  * *direct* `ContainerService` callers, which have no route in front of them.

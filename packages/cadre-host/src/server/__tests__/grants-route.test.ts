@@ -141,6 +141,19 @@ describe('POST /grants', () => {
     expect(error.message).toContain('this-is-not-a-key');
   });
 
+  // Element types are the route's job: the service's shape check assumes strings,
+  // so a number here would come back as an internal `.trim is not a function`.
+  it('rejects a non-string ownerKeys entry → 400 naming the field, not a decoder error', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants', headers: bearer(token),
+      payload: { ...body, ownerKeys: [42] },
+    });
+    expect(res.statusCode).toBe(400);
+    const error = (res.json() as { error: { code: string; message: string } }).error;
+    expect(error.code).toBe('invalid_request');
+    expect(error.message).toBe('ownerKeys must be an array of strings');
+  });
+
   it('enforces the grant quota → 429 quota_exceeded once maxNodes is reached', async () => {
     const g = grants.issue({ label: 'Bob', maxNodes: 1 }).token;
     const first = await app.inject({ method: 'POST', url: '/grants', headers: bearer(g), payload: body });

@@ -5,11 +5,13 @@
  * malformed field is refused here rather than surfacing later as a container that
  * dies at boot.
  *
- * The second suite is the drift alarm for the deliberate duplication described on
- * `validateOwnerKey` in `../routes.ts`: cadre-provider restates
- * `requireEd25519PublicKeyB64` locally instead of depending on
- * `@serfab/cadre-core`, so this file asserts the same accept/reject table as
- * `packages/cadre-core/test/ed25519-key.spec.ts`. Keep the two in step.
+ * The second suite pins the provider's local restatement of
+ * `requireEd25519PublicKeyB64` (the deliberate duplication described on
+ * `validateOwnerKey` in `../owner-key-validation.ts`) to the same accept/reject table
+ * `packages/cadre-core/test/ed25519-key.spec.ts` pins cadre-core's copy to. It
+ * cannot observe cadre-core — nothing here imports it — so it does not detect a
+ * change made over there; what it does is fail if this copy is changed, which is
+ * how an editor is landed on the pointer to the other one.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -19,7 +21,7 @@ import { DEFAULT_CONFIG } from '../../config/types.js';
 import { MemoryStore } from '../../service/store.js';
 import { MockOrchestrator } from '../../service/orchestrator.js';
 import { createProviderServer, type ProviderServer } from '../server.js';
-import { validatePinnedOwnerKeys } from '../routes.js';
+import { validatePinnedOwnerKeys } from '../owner-key-validation.js';
 
 /**
  * A well-formed, distinct 32-byte base64url owner key. Real bytes rather than a
