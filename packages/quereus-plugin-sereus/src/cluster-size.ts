@@ -150,15 +150,18 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * a party, not a machine; cohort width consumes machines. Full reasoning in
  * `docs/architecture.md` → "Replication cluster size".
  *
- * **Four machines, not four parties.** This number counts machines, and today that is never
- * the same as counting independent holders. Cohort selection upstream is owner-blind — it
+ * **Four machines, not four parties.** This number counts machines, and today that is not the
+ * same as counting independent holders. Cohort selection upstream is owner-blind — it
  * picks nodes by hash proximity with no concept of which peer belongs to which party
- * (`optimystic/tickets/backlog/feat-cohort-selection-owner-aware-placement`) — and in
- * production a strand's libp2p mesh is seeded from exactly one party's own control-database
- * peer rows (`CadreNode.resolveCohortSeed`), so the cohort actually formed is always that one
- * party's machines. Four copies are, today, four machines belonging to one party — one failure
- * domain, one witness. Tracked: `backlog/feat-strand-party-identity`. Full reasoning:
- * `docs/architecture.md` → "Replication cluster size".
+ * (`optimystic/tickets/backlog/feat-cohort-selection-owner-aware-placement`) — and on the
+ * cadre-driven path, the one that resolves a seed for itself, a strand's libp2p mesh is seeded
+ * from exactly one party's own control-database peer rows (`CadreNode.resolveCohortSeed`), so
+ * the cohort actually formed is that one party's machines. Four copies are, on that path, four
+ * machines belonging to one party — one failure domain, one witness. A cross-party mesh is not
+ * forbidden, only undiscoverable: it takes hand-supplied addresses
+ * (`StrandConnectionOptions.bootstrapNodes`) or a hand-written dial (see the doc). Tracked:
+ * `backlog/feat-strand-party-identity`. Full reasoning: `docs/architecture.md` →
+ * "Replication cluster size".
  *
  * Raising or lowering it per strand is still the embedder's call
  * ({@link resolveStrandClusterSize}, `CadreNodeConfig.strandClusterSize`,
