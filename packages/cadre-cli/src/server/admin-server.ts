@@ -94,7 +94,12 @@ export interface AdminStrandRemoval {
    * gets the outcome they asked for.
    */
   removed: boolean;
-  /** Whether 0 control connections were sampled right after the write. */
+  /**
+   * Whether 0 control connections were sampled at the end of the call. Sampled on
+   * EVERY call, including one that found no row and wrote nothing — read it as "this
+   * machine currently sees no siblings", and only as "your delete may not have
+   * travelled" when `removed` is also true.
+   */
   alone: boolean;
 }
 
@@ -209,7 +214,7 @@ export class AdminServer {
     }
 
     const resource = segments[1];
-    const id = segments[2] !== undefined ? decodeURIComponent(segments[2]) : undefined;
+    const id = segments[2] !== undefined ? decodePathSegment(segments[2]) : undefined;
 
     if (resource === 'identity' && method === 'GET') {
       return { peerId: node.peerId?.toString() ?? null, partyId: node.partyId };
@@ -245,12 +250,14 @@ export class AdminServer {
     // running instances — because a strand this node's `strandFilter` excluded, or one
     // whose launch failed, is still this party's participation and is still removable.
     if (resource === 'strands') {
-      // `route()` splits on `/`, so an id containing one arrives as a fourth segment.
-      // Refuse rather than reassemble: a half-reconstructed id would remove the wrong row.
+      // `url.pathname` leaves `%2F` encoded, so a percent-encoded id survives the split
+      // and `decodePathSegment` restores it. A LITERAL `/` does not — it arrives as a
+      // fourth segment. Refuse rather than reassemble: a half-reconstructed id would
+      // remove the wrong row.
       if (segments.length > 3) {
         throw new AdminError(
           'bad_request',
-          'Strand ids containing "/" are not addressable over this channel; use `cadre strand remove`'
+          'A strand id must be one path segment — percent-encode any "/" as %2F'
         );
       }
       if (method === 'GET' && id === undefined) {
@@ -353,6 +360,19 @@ export class AdminServer {
 }
 
 /**
+ * Decode one addressable path segment. `decodeURIComponent` throws `URIError` on a
+ * malformed escape (`%ZZ`), which would otherwise classify as `internal` and answer
+ * 500 — a caller's typo is a `bad_request`, not a node fault.
+ */
+function decodePathSegment(raw: string): string {
+  try {
+    return decodeURIComponent(raw);
+  } catch {
+    throw new AdminError('bad_request', `Malformed percent-encoding in path: ${raw}`);
+  }
+}
+
+/**
  * The control database, or a `not_ready` refusal. A node that never started has none;
  * that is a "come back later", not an internal fault, so it must not fall through to
  * a null property access classified as `internal`.
@@ -428,6 +448,12 @@ function isConfirmed(raw: string | null): boolean {
  * that cares. A CLOSED row without `confirm` writes nothing and throws
  * `confirmation_required`: that row carries this party's membership key for the strand
  * and it is stored nowhere else. `confirm` on an open strand is accepted and ignored.
+ *
+ * NOTE: the "closed needs confirmation" rule lives here AND in `planRemove`
+ * (`src/commands/strands.ts`) — two surfaces over one policy, each shaped by its own
+ * output (exit codes and warning text there, HTTP codes here). Fine while the rule is
+ * one comparison on `Type`; if the strand types or the gate ever grow, hoist the
+ * decision into a shared predicate rather than editing both.
  */
 async function removeStrand(node: CadreNode, rawId: string, confirm: string | null): Promise<AdminStrandRemoval> {
   const strandId = rawId.trim();

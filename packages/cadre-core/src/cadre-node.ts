@@ -2080,11 +2080,11 @@ export class CadreNode implements SAppIdLookup {
    * replicated row is harmless (an idempotent monotonic bump), so the coarse proxy
    * is acceptable as the agreed first cut.
    *
-   * The public {@link getControlConnectionCount} reads the same expression for
-   * embedder-facing reporting — change one, change both.
+   * Reads {@link getControlConnectionCount} — the public, embedder-facing form of
+   * the same sample — so the two cannot drift.
    */
   private committedAlone(): boolean {
-    return (this.controlNode?.getConnections().length ?? 0) === 0;
+    return this.getControlConnectionCount() === 0;
   }
 
   /**
@@ -3944,17 +3944,15 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Open control-network connections right now. A lower-bound proxy for replication
-   * reach: 0 connections ⇒ a control write commits local-only (see
-   * {@link committedAlone}, which reads the same expression for the write-while-alone
-   * seam — keep the two in step). Read-only reporting; drives no behavior here.
+   * reach: 0 connections ⇒ a control write commits local-only. The private
+   * `committedAlone` write-while-alone seam is defined in terms of this.
    *
-   * Both this and `committedAlone` are approximations of the precise signal (the
-   * block's cluster size), and a caller that samples this AFTER a write samples a
-   * slightly wider window than `committedAlone` does inside the write itself. It
-   * exists so an embedder can warn an owner before a control write that this machine
-   * currently sees none of its siblings, and report after one that the write may not
-   * have travelled — a warning shown unconditionally is a warning people learn to
-   * ignore.
+   * It approximates the precise signal (the block's cluster size), and a caller that
+   * samples it AFTER a write samples a slightly wider window than `committedAlone`
+   * does inside the write itself. It exists so an embedder can warn an owner before a
+   * control write that this machine currently sees none of its siblings, and report
+   * after one that the write may not have travelled — a warning shown unconditionally
+   * is a warning people learn to ignore.
    */
   getControlConnectionCount(): number {
     return this.controlNode?.getConnections().length ?? 0;

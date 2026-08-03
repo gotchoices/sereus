@@ -430,6 +430,29 @@ describe('CadreNode write-while-alone re-replication', () => {
     });
   });
 
+  // The public read of the same sample the write-while-alone seam is defined on
+  // (`committedAlone` calls it), exposed so an embedder — the admin channel's
+  // `controlConnections` / `alone` fields — can report replication reach.
+  describe('getControlConnectionCount', () => {
+    it('is 0 on a node that never started (no control node)', () => {
+      expect(new CadreNode(createConfig()).getControlConnectionCount()).toBe(0);
+    });
+
+    it('reports the live connection count', () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 3 });
+      expect(node.getControlConnectionCount()).toBe(3);
+    });
+
+    it('agrees with the write-while-alone seam: 0 connections queues the write', async () => {
+      const node = new CadreNode(createConfig());
+      inject(node, { connections: 0 });
+      expect(node.getControlConnectionCount()).toBe(0);
+      await node.authorizePeer('peer-X');
+      expect(pending(node).has('peer-X')).toBe(true);
+    });
+  });
+
   describe('connection-growth transition', () => {
     function withTransitionFake(node: CadreNode, connections: { value: number }): { drains: () => number } {
       let drains = 0;

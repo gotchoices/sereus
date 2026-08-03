@@ -425,6 +425,12 @@ describe('AdminServer', () => {
         expect((await res.json()).error.code).toBe('not_ready');
       });
 
+      it('lists nothing for a party that belongs to no strands', async () => {
+        node.strandRows = [];
+        const body = await (await fetch(url(), { headers: auth() })).json();
+        expect(body.data.strands).toEqual([]);
+      });
+
       it('with an id is not a route (400 bad_request)', async () => {
         const res = await fetch(url('/strand-open'), { headers: auth() });
         expect(res.status).toBe(400);
@@ -500,13 +506,28 @@ describe('AdminServer', () => {
         expect(node.calls.some((c) => c.method === 'queryStrand')).toBe(false);
       });
 
-      it('rejects an id containing a slash, naming the limitation (400)', async () => {
+      it('rejects an id containing a literal slash, naming the encoding (400)', async () => {
         const res = await del('/a/b');
         expect(res.status).toBe(400);
         const body = await res.json();
         expect(body.error.code).toBe('bad_request');
-        expect(body.error.message).toMatch(/cadre strand remove/);
+        expect(body.error.message).toMatch(/%2F/);
         expect(unpublished()).toEqual([]);
+      });
+
+      it('removes a slash-bearing id when it is percent-encoded', async () => {
+        node.strandRows.push({ Id: 'ns/strand', MemberPrivateKey: null, Type: 'o' });
+        const res = await del('/ns%2Fstrand');
+        expect(res.status).toBe(200);
+        expect((await res.json()).data.strandId).toBe('ns/strand');
+        expect(unpublished()).toEqual(['ns/strand']);
+      });
+
+      it('rejects a malformed percent-escape as bad_request, not internal (400)', async () => {
+        const res = await del('/%ZZ');
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('bad_request');
+        expect(node.calls.some((c) => c.method === 'queryStrand')).toBe(false);
       });
 
       it('reports alone:true when the node has no control connections', async () => {
@@ -535,6 +556,13 @@ describe('AdminServer', () => {
         const raw = await (await del('/strand-closed?confirm=1')).text();
         expect(raw).not.toContain('MemberPrivateKey');
         expect(raw).not.toContain(CLOSED_STRAND_KEY);
+      });
+
+      it('without an id is not a route (400 bad_request), and writes nothing', async () => {
+        const res = await del('');
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('bad_request');
+        expect(unpublished()).toEqual([]);
       });
 
       it('requires a bearer token (401)', async () => {
