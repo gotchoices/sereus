@@ -884,9 +884,11 @@ where local rows exist.
   `expectDialRouting`, which asserts via `dialTransportForMultiaddr` WHICH transport claims each
   address before the operation set runs (listing `webRTC()` while dialing a `/ws` address would
   prove nothing), plus a dial-queue identity check on the relay hop, which is queued only if the
-  WebRTC dial path really ran. Still uncovered: the browser's **listening** posture
-  (`listenAddrs: ['/p2p-circuit', '/webrtc']`) needs a live relay to reserve against, so it is an
-  integration-suite shape, not a unit one.
+  WebRTC dial path really ran. The browser's **listening** posture
+  (`listenAddrs: ['/p2p-circuit', '/webrtc']`) is now covered as a unit shape after all:
+  `test/relay-reservation.spec.ts` stands up a loopback `circuitRelayServer` and drives a bare
+  `/p2p-circuit` search listener against it (reserve, lose the relay, reserve alongside a dead one).
+  What remains integration-only is the same posture over real WAN transports.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of

@@ -90,6 +90,12 @@ import {
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { resolveListenAddrs } from './relay-addrs.js';
+import {
+  driveRelayReservation,
+  resolveRelayReservationState,
+  type RelayReservationState,
+  type RelayReserveOptions
+} from './relay-reservation.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
 import {
@@ -211,6 +217,23 @@ export class CadreNode implements SAppIdLookup {
    */
   private windowWaiters: Set<{ timer: ReturnType<typeof setTimeout>; resolve: () => void }> = new Set();
   private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<never>>> = new Map();
+
+  /**
+   * Relay multiaddrs the caller asked {@link reserveRelays} to reserve through.
+   * Empty (the default) means nobody asked, so {@link getRelayReservationState}
+   * reports `none` — this whole surface is opt-in and dormant for the CLI/host
+   * nodes, which use the configured `network.relayAddrs` route instead.
+   */
+  private relayReserveAddrs: string[] = [];
+  /** Reason the last {@link reserveRelays} drive produced no reservation. */
+  private relayReserveError: string | null = null;
+  /**
+   * In-flight {@link reserveRelays} drives. A COUNT, not a boolean, so two
+   * overlapping calls cannot leave the status stuck at `dialing` when the first
+   * finishes (the boolean version would be cleared by whichever returns first,
+   * or left set by whichever returns last).
+   */
+  private relayReserveDriving = 0;
 
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
   private sAppConfigs: Map<string, SAppConfig> = new Map();
@@ -756,6 +779,10 @@ export class CadreNode implements SAppIdLookup {
 
     log('Stopping CadreNode');
     await this.cleanup();
+    // Drop the relay-reservation posture: a stopped node holds no reservation, so
+    // a restarted instance must not report the previous run's `reserved`.
+    this.relayReserveAddrs = [];
+    this.relayReserveError = null;
     this._running = false;
     this.emit('control:disconnected', undefined);
     log('CadreNode stopped');
@@ -3837,6 +3864,65 @@ export class CadreNode implements SAppIdLookup {
    */
   getControlNode(): Libp2p | null {
     return this.controlNode;
+  }
+
+  /**
+   * Dial the given relay(s) from the control node and wait until a
+   * `/p2p-circuit` reservation makes this node dialable.
+   *
+   * For nodes that listen on the bare `/p2p-circuit` SEARCH addr (a browser tab)
+   * rather than a configured `network.relayAddrs` circuit listener — see
+   * `relay-reservation.ts` for why the two are alternatives and why configuring
+   * both is a regression. Opt-in: nothing calls this for the CLI/host nodes.
+   *
+   * Fail-soft — never throws. An unreachable relay, a missing control node, or a
+   * timeout all resolve to `status: 'error'`, so a caller can await this during
+   * startup without a dead relay aborting the node.
+   *
+   * Passing an empty list resets the posture to `none` without dialing or waiting.
+   */
+  async reserveRelays(addrs: string[], opts?: RelayReserveOptions): Promise<RelayReservationState> {
+    // NOTE: two overlapping calls with DIFFERENT lists leave the last caller's
+    // list recorded (the drives themselves both run, and the reservation is read
+    // live either way, so only the reported `addrs` is affected). Every caller
+    // today passes one node-wide list once at startup; if a second relay source
+    // ever appears, union the lists here instead of overwriting.
+    this.relayReserveAddrs = [...addrs];
+    if (addrs.length === 0) {
+      this.relayReserveError = null;
+      return this.getRelayReservationState();
+    }
+    if (!this.controlNode) {
+      this.relayReserveError = 'control node unavailable';
+      return this.getRelayReservationState();
+    }
+    this.relayReserveDriving++;
+    try {
+      const { error } = await driveRelayReservation(this.controlNode, addrs, opts);
+      this.relayReserveError = error;
+    } finally {
+      this.relayReserveDriving--;
+    }
+    return this.getRelayReservationState();
+  }
+
+  /**
+   * The node's CURRENT relay-reservation posture, recomputed from the control
+   * node's live multiaddrs on every call.
+   *
+   * Deliberately not memoised: a reservation can be lost after
+   * {@link reserveRelays} succeeds (the relay restarts, the connection drops) and
+   * a cached `reserved` would let a caller mint invitations carrying circuit
+   * addresses that no longer route. It self-heals the other way too — a relay
+   * that comes back flips this to `reserved` with no second drive.
+   */
+  getRelayReservationState(): RelayReservationState {
+    return resolveRelayReservationState(
+      this.controlNode,
+      this.relayReserveAddrs,
+      this.relayReserveError,
+      this.relayReserveDriving > 0
+    );
   }
 
   /**

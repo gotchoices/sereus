@@ -14,6 +14,14 @@
  * So `relayAddrs` is a second, friendlier door onto an existing mechanism:
  *
  *   effective listen addrs = listenAddrs ++ relayAddrs.map(a => a + '/p2p-circuit')
+ *
+ * NOTE: this is the FAIL-FAST route to a reservation — libp2p's transport manager
+ * throws when a configured circuit listener cannot listen, so naming a relay that
+ * is down means the node does not start. The fail-soft route is the bare
+ * `/p2p-circuit` search listener driven by `relay-reservation.ts`. The two are
+ * ALTERNATIVES, not layers: configuring `relayAddrs` on a node that already
+ * reserves via the search listener adds the fatal listener back and the node
+ * stops booting when its relay is down.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';

@@ -42,6 +42,7 @@ import type {
 	StrandFormationDisclosure,
 	TrustedOwnerStore,
 	BootstrapPeerStore,
+	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
 import type { IRawStorage, Libp2pTransports } from '@optimystic/db-p2p';
@@ -83,22 +84,15 @@ type TransportFactory = Libp2pTransports[number];
 export type OwnerState = 'pending' | 'genesis' | 'existing' | 'error';
 
 /**
- * Relay-reservation posture for the dialable side of formation.
- *  - `none`    — no relay configured; the tab is solo/undialable (Phase-1 posture).
- *  - `dialing` — a relay is configured and a reservation is in flight.
- *  - `reserved`— a `/p2p-circuit` address is held, so the tab is dialable.
- *  - `error`   — the relay dial/reservation failed (see {@link RelayState.error}).
+ * Relay-reservation posture for the dialable side of formation — cadre-core owns
+ * both the drive and the status derivation (`relay-reservation.ts`); this app
+ * only supplies the relay addrs and renders the result. Re-exported under the
+ * local names the store/diagnostics already use.
  */
-export type RelayStatus = 'none' | 'dialing' | 'reserved' | 'error';
+export type RelayState = RelayReservationState;
 
-export interface RelayState {
-	status: RelayStatus;
-	/** Configured relay multiaddrs (from the runtime relay manifest). */
-	addrs: string[];
-	/** This tab's `/p2p-circuit` listen addresses once reserved (dialable side). */
-	circuitAddrs: string[];
-	error: string | null;
-}
+/** The posture of a tab with no node running (or no relay configured). */
+const NO_RELAY_STATE: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 
 /** A strand this tab joined via the consent/invitation formation flow. */
 export interface FormedStrand {
@@ -156,10 +150,6 @@ export interface ControlAuthorizationState {
 const PARTY_ID_KEY = 'party-id';
 const IDENTITY_FIRST_SEEN_KEY = 'identity-first-seen';
 
-/** How long to wait for a circuit-relay reservation before giving up. */
-const RELAY_RESERVE_TIMEOUT_MS = 10_000;
-const RELAY_RESERVE_POLL_MS = 250;
-
 let node: CadreNode | null = null;
 let controlStorage: IRawStorage | null = null;
 let partyId: string | null = null;
@@ -167,7 +157,6 @@ let activeStrandId: string | null = null;
 let identityFirstSeenMs: number | null = null;
 let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
-let relayState: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
 let solicitationReady = false;
@@ -215,9 +204,14 @@ export function getOwnerState(): { state: OwnerState; error: string | null } {
 	return { state: ownerState, error: ownerError };
 }
 
-/** Relay-reservation posture (dialability for formation). */
+/**
+ * Relay-reservation posture (dialability for formation). Read LIVE from the node
+ * on every call — a reservation lost after start (relay restart, dropped
+ * connection) shows up as `error` here, so nothing mints an invitation carrying
+ * circuit addresses that no longer route.
+ */
 export function getRelayState(): RelayState {
-	return relayState;
+	return node?.getRelayReservationState() ?? NO_RELAY_STATE;
 }
 
 /** Node-local trusted-owner anchor — durable across reload once `startCadre` resolves. */
@@ -298,12 +292,6 @@ export async function startCadre(): Promise<CadreNode> {
 	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation
 	// and become dialable for strand formation. Empty → Phase-1 solo posture.
 	const relayAddrs = resolveRelayAddrs();
-	relayState = {
-		status: relayAddrs.length > 0 ? 'dialing' : 'none',
-		addrs: relayAddrs,
-		circuitAddrs: [],
-		error: null,
-	};
 
 	// Durable node-local records, in the same control IndexedDB database as the
 	// identity/party-id above (shared fate — see `node-local-slots.ts`). No
@@ -340,6 +328,16 @@ export async function startCadre(): Promise<CadreNode> {
 			],
 			// Dialable side of formation listens via circuit relay + WebRTC; solo
 			// tabs (no relay configured) keep the Phase-1 no-listen posture.
+			//
+			// The BARE `/p2p-circuit` entry is load-bearing and deliberate: it puts
+			// libp2p's circuit-relay listener in search/discovery mode, which never
+			// throws when a relay is unreachable. `network.relayAddrs` is the other
+			// route to a reservation — it builds a `<relay>/p2p-circuit` CONFIGURED
+			// listener that is fatal at start when the relay is down (libp2p's
+			// transport manager defaults to FATAL_ALL). A browser tab must still boot
+			// solo when its relay is down, and strand nodes inherit the resolved
+			// listen addrs verbatim, so do NOT set `network.relayAddrs` here — the two
+			// are alternatives, not layers. See cadre-core `relay-reservation.ts`.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 			// Permissive dial gater. libp2p's browser default denies dialing
 			// insecure-WebSocket and private/loopback addresses, which blocks the
@@ -363,7 +361,9 @@ export async function startCadre(): Promise<CadreNode> {
 
 	exposeDebugHook(node);
 	await runOwnerGenesis(node, privateKey);
-	await reserveRelay(node, relayAddrs);
+	// Fail-soft in cadre-core: an unreachable relay resolves to `status:'error'`
+	// and leaves the tab in the solo posture rather than aborting startup.
+	await node.reserveRelays(relayAddrs);
 
 	return node;
 }
@@ -403,66 +403,6 @@ async function runOwnerGenesis(cadre: CadreNode, privateKey: PrivateKey): Promis
 		ownerError = err instanceof Error ? err.message : String(err);
 		console.warn('[reference-app-web] owner self-genesis failed:', err);
 	}
-}
-
-/**
- * Dial the configured relay(s) and wait until a `/p2p-circuit` reservation makes
- * this tab dialable. Fail-soft: a missing/unreachable relay leaves the tab in
- * the solo posture (formation create/join then surface a clear "not dialable"
- * error) rather than aborting node startup. A no-op when no relay is configured.
- */
-async function reserveRelay(cadre: CadreNode, relayAddrs: string[]): Promise<void> {
-	if (relayAddrs.length === 0) {
-		relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
-		return;
-	}
-	const control = cadre.getControlNode();
-	if (!control) {
-		relayState = { status: 'error', addrs: relayAddrs, circuitAddrs: [], error: 'control node unavailable' };
-		return;
-	}
-	try {
-		for (const addr of relayAddrs) {
-			await control.dial(multiaddr(addr));
-		}
-		const circuitAddrs = await waitForCircuitReservation(control);
-		if (circuitAddrs.length > 0) {
-			relayState = { status: 'reserved', addrs: relayAddrs, circuitAddrs, error: null };
-		} else {
-			relayState = {
-				status: 'error',
-				addrs: relayAddrs,
-				circuitAddrs: [],
-				error: `no circuit reservation within ${RELAY_RESERVE_TIMEOUT_MS}ms`,
-			};
-		}
-	} catch (err) {
-		relayState = {
-			status: 'error',
-			addrs: relayAddrs,
-			circuitAddrs: [],
-			error: err instanceof Error ? err.message : String(err),
-		};
-		console.warn('[reference-app-web] relay reservation failed:', err);
-	}
-}
-
-/** Poll the control node's multiaddrs until a `/p2p-circuit` address appears. */
-async function waitForCircuitReservation(control: Libp2p): Promise<string[]> {
-	const deadline = Date.now() + RELAY_RESERVE_TIMEOUT_MS;
-	while (Date.now() < deadline) {
-		const circuit = control
-			.getMultiaddrs()
-			.map((ma) => ma.toString())
-			.filter((s) => s.includes('/p2p-circuit'));
-		if (circuit.length > 0) return circuit;
-		await delay(RELAY_RESERVE_POLL_MS);
-	}
-	return [];
-}
-
-function delay(ms: number): Promise<void> {
-	return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 // ── Strand formation (consent / invitation flow) ──────────────────────────────
@@ -572,12 +512,16 @@ export async function createInvitation(
 	expirationMs: number = 24 * 60 * 60 * 1000,
 ): Promise<CreatedInvitation> {
 	const cadre = ensureSolicitation();
-	if (relayState.status !== 'reserved') {
+	// Live read: a reservation lost since start now fails this guard, so the
+	// invitation is refused with a clear message instead of embedding circuit
+	// addresses that no longer route.
+	const relay = getRelayState();
+	if (relay.status !== 'reserved') {
 		throw new Error(
 			'This tab is not dialable — strand formation needs a circuit-relay ' +
 				'reservation. Configure a relay (VITE_RELAY_ADDR or localStorage ' +
-				`"relay-addr"). Relay status: ${relayState.status}` +
-				(relayState.error ? ` (${relayState.error})` : ''),
+				`"relay-addr"). Relay status: ${relay.status}` +
+				(relay.error ? ` (${relay.error})` : ''),
 		);
 	}
 	const { strandId, memberPrivateKey } = await createClosedChatStrand(cadre);
@@ -792,7 +736,6 @@ export async function stopCadre(): Promise<void> {
 	identityFirstSeenMs = null;
 	ownerState = 'pending';
 	ownerError = null;
-	relayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
 	solicitationReady = false;
 	formedStrands.clear();
 	// The slot closures captured `controlHandle`, now closed by `closeStores()`
@@ -924,7 +867,8 @@ function exposeDebugHook(cadre: CadreNode): void {
 		getStrandStatus: () => getChatStrand()?.status ?? null,
 		getOwnerState: () => ownerState,
 		// Phase 2 — formation + RBAC, surfaced for e2e drive/assert.
-		getRelayState: () => relayState,
+		// Delegate, never capture — the posture is derived live from the node.
+		getRelayState: () => getRelayState(),
 		getFormedStrands: () => getFormedStrands(),
 		createInvitation: (expirationMs?: number) => createInvitation(expirationMs),
 		joinViaInvitation: (encoded: string, disclosure?: StrandFormationDisclosure) =>

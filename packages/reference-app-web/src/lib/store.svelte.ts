@@ -52,7 +52,7 @@ export interface CadreEvent {
 }
 
 const EVENT_LIMIT = 50;
-const STRAND_POLL_MS = 4_000;
+const REFRESH_POLL_MS = 4_000;
 
 const state = $state<NodeState>({
 	status: 'idle',
@@ -71,7 +71,7 @@ const state = $state<NodeState>({
 const events = $state<{ list: CadreEvent[] }>({ list: [] });
 
 let subscribed = false;
-let strandPoll: ReturnType<typeof setInterval> | null = null;
+let refreshPoll: ReturnType<typeof setInterval> | null = null;
 
 export function nodeState(): NodeState {
 	return state;
@@ -128,15 +128,39 @@ function syncStrand(): void {
 	state.strandError = strand?.error ?? state.strandError;
 }
 
-function startStrandPoll(): void {
-	if (strandPoll) return;
-	strandPoll = setInterval(syncStrand, STRAND_POLL_MS);
+/**
+ * Pull the current relay posture into reactive state, recording a transition.
+ * `getRelayState()` reads the node's live circuit addresses, so a reservation
+ * lost (or regained) after start shows up here — Home's dialability badge would
+ * otherwise keep rendering the boot-time snapshot forever.
+ */
+function syncRelay(): void {
+	const next = getRelayState();
+	const changed = next.status !== state.relay.status || next.error !== state.relay.error;
+	state.relay = next;
+	if (changed && next.status !== 'none') {
+		record(`relay:${next.status}`, next.error ?? next.circuitAddrs[0] ?? '');
+	}
 }
 
-function stopStrandPoll(): void {
-	if (strandPoll) {
-		clearInterval(strandPoll);
-		strandPoll = null;
+// NOTE: relay posture refreshes on this 4s tick, so a lost reservation shows up
+// in the UI up to 4s late. If a formation flow ever needs it sooner, read
+// `getRelayState()` directly at the decision point (createInvitation already
+// does) rather than shortening the tick for everyone.
+function pollTick(): void {
+	syncStrand();
+	syncRelay();
+}
+
+function startRefreshPoll(): void {
+	if (refreshPoll) return;
+	refreshPoll = setInterval(pollTick, REFRESH_POLL_MS);
+}
+
+function stopRefreshPoll(): void {
+	if (refreshPoll) {
+		clearInterval(refreshPoll);
+		refreshPoll = null;
 	}
 }
 
@@ -161,19 +185,14 @@ export async function start(): Promise<void> {
 			record(`owner:${state.owner}`);
 		}
 
-		// Relay reservation (dialability for formation) settles inside start().
-		state.relay = getRelayState();
-		if (state.relay.status !== 'none') {
-			record(
-				`relay:${state.relay.status}`,
-				state.relay.error ?? state.relay.circuitAddrs[0] ?? '',
-			);
-		}
+		// Relay reservation (dialability for formation) settles inside start(); the
+		// poll below keeps it current if the reservation is later lost or regained.
+		syncRelay();
 
 		// Bring up the signed chat strand. SchemaVerificationError surfaces here.
 		await addChatStrand();
 		syncStrand();
-		startStrandPoll();
+		startRefreshPoll();
 
 		state.status = 'running';
 	} catch (err) {
@@ -187,7 +206,7 @@ export async function start(): Promise<void> {
 export async function stop(): Promise<void> {
 	if (state.status !== 'running') return;
 	try {
-		stopStrandPoll();
+		stopRefreshPoll();
 		subscribed = false;
 		await stopCadre();
 		state.peerId = null;

@@ -353,6 +353,17 @@ export {
   type InboundAdmissionPolicy
 } from './membership-connection-gater.js';
 
+// Relay reservation via the bare `/p2p-circuit` search listener (fail-soft;
+// the fail-fast alternative is `network.relayAddrs`, see relay-reservation.ts)
+export {
+  circuitMultiaddrs,
+  DEFAULT_RELAY_RESERVE_TIMEOUT_MS,
+  DEFAULT_RELAY_RESERVE_POLL_MS,
+  type RelayReservationStatus,
+  type RelayReservationState,
+  type RelayReserveOptions
+} from './relay-reservation.js';
+
 // Connection-path diagnostics (relayed vs direct classification + summary)
 export {
   classifyTransport,

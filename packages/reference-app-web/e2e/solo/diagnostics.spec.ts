@@ -80,6 +80,15 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 			timeout: 30_000,
 		});
 
+		// Relay posture. No relay is configured in this suite, so the reservation
+		// driver must take the empty-addrs path and report `none` — never `dialing`
+		// (a drive that never started) and never `error` (a timeout nobody asked
+		// for). Now sourced live from cadre-core, so it must also STAY `none` across
+		// subsequent diagnostics ticks rather than drifting.
+		await expect(page.getByTestId('diag-relay-status')).toHaveText('none', {
+			timeout: 30_000,
+		});
+
 		// Recent errors list — after a clean boot we expect zero entries.
 		const errCount = await page.getByTestId('diag-errors').getAttribute('data-error-count');
 		expect(errCount).toBe('0');

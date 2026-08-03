@@ -886,6 +886,15 @@ interface CadreNodeConfig {
     // which is what makes libp2p dial the relay and hold the reservation. A relay named
     // here also becomes a delegate-announce target, so this node's strand nodes can
     // reserve on it too. A malformed entry throws at start.
+    //
+    // FAIL-FAST: a configured circuit listener that cannot listen aborts node
+    // start (libp2p's transport manager defaults to FATAL_ALL), so naming a relay
+    // that is down means the node does not come up. The FAIL-SOFT alternative is a
+    // bare `/p2p-circuit` listen entry — libp2p's relay *search* listener, which
+    // never throws — driven by `CadreNode.reserveRelays()` / `relay-reservation.ts`.
+    // Browser tabs take that route so a dead relay leaves them solo rather than
+    // dead. The two are ALTERNATIVES, not layers: setting both on one node puts the
+    // fatal listener back.
     relayAddrs?: string[];
     enableRelay?: boolean;        // Enable circuit relay (default: true for storage profile)
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)
