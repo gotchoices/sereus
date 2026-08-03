@@ -429,6 +429,24 @@ describe('driveRelayReservation legible failures', () => {
     expect(error).toContain('is not a relay');
     expect(error).toContain(addr);
   });
+
+  it('moves past a connected non-relay to reserve on a real relay later in the list', async () => {
+    // The dead-relay spec above only proves the DIAL loop survives a bad entry.
+    // This one proves the RESERVATION loop does: the first peer connects fine and
+    // then rejects the hop request, so the loop must keep going and discard that
+    // error once the second relay accepts.
+    const notARelay = await startPlainTcpListener();
+    const relay = await startRelay();
+    const client = await startSearchClient();
+
+    const { error } = await driveRelayReservation(
+      client,
+      [notARelay.getMultiaddrs()[0].toString(), relay.getMultiaddrs()[0].toString()],
+      { timeoutMs: 10_000, pollMs: 100 }
+    );
+    expect(error).toBeNull();
+    expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
+  });
 });
 
 describe('CadreNode relay reservation against a live relay', () => {

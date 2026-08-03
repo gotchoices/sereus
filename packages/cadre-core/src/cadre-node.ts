@@ -3914,8 +3914,14 @@ export class CadreNode implements SAppIdLookup {
    * Deliberately not memoised: a reservation can be lost after
    * {@link reserveRelays} succeeds (the relay restarts, the connection drops) and
    * a cached `reserved` would let a caller mint invitations carrying circuit
-   * addresses that no longer route. It self-heals the other way too — a relay
-   * that comes back flips this to `reserved` with no second drive.
+   * addresses that no longer route.
+   *
+   * Reading live does NOT mean the reservation comes back on its own: libp2p
+   * re-fills a freed search-listener slot from relay discovery, which a cadre
+   * node's namespaced identify puts out of reach (`relay-reservation.ts`), and
+   * nothing re-drives. A relay that restarts leaves this at `error` until some
+   * caller calls {@link reserveRelays} again — tracked by
+   * `tickets/backlog/bug-relay-reservation-not-redriven-after-loss`.
    */
   getRelayReservationState(): RelayReservationState {
     return resolveRelayReservationState(

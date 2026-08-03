@@ -384,6 +384,13 @@ async function requestOneReservation(
  * `/p2p-circuit` search address — so the real cause is a missing listen address.
  */
 function describeReservationFailure(err: unknown, addr: string): string {
+  // NOTE: libp2p adds a peer to the reservation store's `relayFilter` when a
+  // request fails with `DialError` or `UnsupportedProtocolError`, and the failure
+  // path does not reset that filter (it only resets when a reservation is actually
+  // removed). So a SECOND drive against the same relay in the same process reports
+  // `ListenError: The relay was previously invalid` even if the relay has since
+  // recovered. Harmless today — every caller drives once at startup. If a retry or
+  // re-drive loop is ever added, that filter has to be dealt with first.
   const name = err instanceof Error ? err.name : '';
   const message = err instanceof Error ? err.message : String(err);
   switch (name) {
@@ -439,9 +446,16 @@ function delay(ms: number): Promise<void> {
  * | a drive is in flight     | `dialing`                                       |
  * | otherwise                | `error`                                         |
  *
- * `reserved` is checked BEFORE `error` on purpose: a relay that comes back after
- * a failed drive self-heals to `reserved` with no second drive, because the
- * circuit addrs are read live and a live reservation supersedes a stale error.
+ * `reserved` is checked BEFORE `error` on purpose: the circuit addrs are read
+ * live, so a reservation that lands by ANY route supersedes a stale error string
+ * without a second drive.
+ *
+ * That precedence is not a promise that a lost reservation comes back. libp2p
+ * re-fills a search listener's freed reservation slot from relay DISCOVERY, which
+ * a cadre node's namespaced identify puts permanently out of reach (see the module
+ * header), and nothing re-runs {@link driveRelayReservation} on its own. So once a
+ * relay restarts or its connection drops, this reports `error` until some caller
+ * drives again — tracked by `tickets/backlog/bug-relay-reservation-not-redriven-after-loss`.
  */
 export function resolveRelayReservationState(
   node: Libp2p | null,
