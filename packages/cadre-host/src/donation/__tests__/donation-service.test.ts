@@ -552,6 +552,9 @@ describe('DonationService.respawn', () => {
 
   it('stops — but never reclaims — the new child when the post-spawn write fails', async () => {
     const orch = new FakeOrchestrator();
+    // Fails exactly once, on the write that follows the second createContainer.
+    // It must fail only once, or the merge write below fails too and the test
+    // proves nothing.
     const store = new FlakyDonationStore(join(tmpRoot, 'donations'));
     const { grants, token } = makeGrants();
     const svc = new DonationService({ orchestrator: orch, grants, store });
@@ -565,10 +568,17 @@ describe('DonationService.respawn', () => {
     // workdir is the identity key that makes a later respawn the SAME node.
     expect(orch.stopped).toEqual(['dock_2']);
     expect(orch.removed).toEqual([]);
-    // The record still points at the old spawn, with the attempt recorded.
+    // The record names the child that actually exists. `createContainer`
+    // already dropped the handle `dock_1` named, so leaving it there would aim
+    // every later stop/reclaim at an id the orchestrator cannot resolve — and
+    // strand the node's workdir on disk forever.
     const stored = store.get(provisioned.id)!;
-    expect(stored.dockerId).toBe('dock_1');
+    expect(stored.dockerId).toBe('dock_2');
+    expect(stored.seedEndpoint).toBe('http://127.0.0.1:9002/seed');
+    expect(stored.seedToken).toBe('seed-token-2');
+    // The attempt failed, so status and the reap clock are left alone.
     expect(stored.status).toBe('awaiting_seed');
+    expect(stored.updatedAt).toBe(provisioned.updatedAt);
     expect(stored.respawn?.attempts).toBe(1);
   });
 

@@ -372,9 +372,11 @@ export class DonationSupervisor {
       try {
         await this.orchestrator.stopContainer(donation.dockerId);
       } catch (err) {
-        // Expected when the failed respawn already dropped the handle
-        // (`backlog/debt-failed-respawn-strands-donated-workdir`); the child is
-        // dead either way, which is why we are here.
+        // The record names a live handle in the ordinary case — a failed respawn
+        // restores the handle it dropped, and a respawn that spawned but failed
+        // to record writes the new one onto the record. Still guarded: a handle
+        // can be lost to a host restart (state.json gone, or the child already
+        // reaped), and the child is dead either way, which is why we are here.
         log('failed to stop container %s while giving up: %s', donation.dockerId, errorMessage(err));
       }
     }

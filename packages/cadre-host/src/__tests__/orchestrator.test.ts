@@ -14,7 +14,7 @@ import { dirname, join, resolve as resolvePath } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { HostProcessOrchestrator } from '../orchestrator/host-process-orchestrator.js';
-import { PortAllocator } from '../orchestrator/port-allocator.js';
+import { allocateNodePorts, PortAllocator } from '../orchestrator/port-allocator.js';
 import { rotateOnDisk } from '../orchestrator/log-rotator.js';
 import { decodeDockerId, encodeDockerId } from '../orchestrator/types.js';
 import { StateStore } from '../orchestrator/state-store.js';
@@ -196,6 +196,131 @@ describe('HostProcessOrchestrator re-spawn of the same containerId', () => {
     // Same workdir, same key → same peer id. This is what makes a respawn the
     // same node rather than a new one the borrower's cadre has never approved.
     expect(loadIdentity(identityPath).peerId).toBe(peerBefore);
+  });
+});
+
+/**
+ * A launch that fails must leave host state exactly as it found it. The drop of
+ * the previous handle happens before the child is launched, so without an
+ * explicit restore a failed re-spawn would leave the donation record naming a
+ * dockerId the orchestrator can no longer resolve — and the node's workdir
+ * (identity key, node-local stores, storage) stranded on disk with nothing able
+ * to delete it.
+ *
+ * Inducing a launch failure portably: replace the workdir's `storage`
+ * directory with a plain file. `mkdirSync(path, { recursive: true })` throws
+ * EEXIST when the path exists as a non-directory on every platform, and it is
+ * the second statement in `launchChild` — after the handle drop, before the
+ * spawn.
+ */
+describe('HostProcessOrchestrator failed launch', () => {
+  /** Replace `<workdir>/storage` with a file so the next launch throws EEXIST. */
+  function sabotageWorkdir(workdir: string): string {
+    const storage = join(workdir, 'storage');
+    rmSync(storage, { recursive: true, force: true });
+    writeFileSync(storage, 'not-a-directory', 'utf8');
+    return storage;
+  }
+
+  it('keeps the prior handle addressable, so a later terminate still reclaims the workdir', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    await orch.stopContainer(first.dockerId);
+
+    const workdir = join(rootDir, 'c1');
+    sabotageWorkdir(workdir);
+
+    await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow(/EEXIST|exists/i);
+
+    // The record's dockerId still resolves, and no ghost handle was added.
+    expect(orch.getNode('c1')?.dockerId).toBe(first.dockerId);
+    expect(orch.resolveDockerId('c1')).toBe(first.dockerId);
+    expect(orch.listNodes()).toHaveLength(1);
+
+    // Which is the whole point: cleanup can still find and delete the node.
+    await orch.removeContainer(first.dockerId);
+    expect(existsSync(workdir)).toBe(false);
+    expect(orch.listNodes()).toHaveLength(0);
+  });
+
+  it('does not shift the ports a successful retry comes back on', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    await orch.stopContainer(first.dockerId);
+
+    const workdir = join(rootDir, 'c1');
+    const storage = sabotageWorkdir(workdir);
+    await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow();
+
+    rmSync(storage, { force: true });
+    const second = await orch.createContainer(makeRequest('c1'));
+
+    // The restored handle held its four ports across the failure, and the
+    // allocator hands back the lowest free port — so identical ports prove the
+    // failed attempt neither leaked nor stole them.
+    expect(second.p2pPort).toBe(first.p2pPort);
+    expect(second.healthEndpoint).toBe(first.healthEndpoint);
+    expect(second.metricsEndpoint).toBe(first.metricsEndpoint);
+
+    // And the successful spawn's own drop still stands: exactly one handle.
+    const handles = new StateStore(rootDir).load().handles.filter((h) => h.containerId === 'c1');
+    expect(handles).toHaveLength(1);
+    expect(handles[0]!.dockerId).toBe(second.dockerId);
+  });
+
+  it('releases every port a failed FIRST spawn reserved', async () => {
+    const orch = makeOrchestrator({ portRange: { start: 12000, end: 12100 } });
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    await orch.createContainer(makeRequest('c1'));
+    expect(orch.getNode('c1')!.ports).toEqual({ health: 12000, metrics: 12001, p2p: 12002, admin: 12003 });
+
+    // No prior handle to restore here — the four ports are simply released.
+    mkdirSync(join(rootDir, 'c2'), { recursive: true });
+    writeFileSync(join(rootDir, 'c2', 'storage'), 'not-a-directory', 'utf8');
+    await expect(orch.createContainer(makeRequest('c2'))).rejects.toThrow();
+
+    await orch.createContainer(makeRequest('c3'));
+    // With the leak these would start at 12008.
+    expect(orch.getNode('c3')!.ports).toEqual({ health: 12004, metrics: 12005, p2p: 12006, admin: 12007 });
+  });
+
+  it('leaves the owner node addressable on its original ports', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const ownerConfig = {
+      identityPath: join(tmpRoot, 'identity.key'),
+      partyId: 'party-owner',
+      libp2pPort: 14001,
+    };
+
+    const owner = await orch.ensureOwnerNode(ownerConfig);
+    await waitFor(() => orch.isRunning(owner.dockerId));
+    const endpointBefore = orch.getOwnerAdminEndpoint();
+
+    // ensureOwnerNode short-circuits on a live child, so kill it first.
+    const { pid } = decodeDockerId(owner.dockerId);
+    process.kill(pid, 'SIGKILL');
+    await waitFor(() => !isPidAlive(pid));
+
+    const storage = sabotageWorkdir(join(rootDir, 'owner'));
+    await expect(orch.ensureOwnerNode()).rejects.toThrow();
+
+    // The admin channel still resolves — a manager that lost this endpoint
+    // could no longer delegate to its own node.
+    expect(orch.getOwnerAdminEndpoint()).toEqual(endpointBefore);
+    expect(orch.listNodes().some((n) => n.dockerId === owner.dockerId)).toBe(true);
+
+    rmSync(storage, { force: true });
+    const respawned = await orch.ensureOwnerNode();
+    expect(respawned.ports).toEqual(owner.ports);
+    expect(orch.listNodes().filter((n) => n.owner)).toHaveLength(1);
   });
 });
 
@@ -427,6 +552,45 @@ describe('PortAllocator', () => {
     expect(a.allocate()).toBe(100);
     expect(a.allocate()).toBe(102);
     expect(() => a.allocate()).toThrow();
+  });
+});
+
+describe('allocateNodePorts', () => {
+  it('allocates the four ports in a fixed order', () => {
+    const a = new PortAllocator(10000, 10010);
+    expect(allocateNodePorts(a)).toEqual({ health: 10000, metrics: 10001, p2p: 10002, admin: 10003 });
+  });
+
+  // A partial set left reserved would leak from a bounded range on every failed
+  // provision — the whole reason this helper exists rather than four allocates.
+  it('is all-or-nothing: an exhausted range releases everything it took', () => {
+    const a = new PortAllocator(13000, 13002);
+    expect(() => allocateNodePorts(a)).toThrow(/No available ports/);
+    expect(a.has(13000)).toBe(false);
+    expect(a.has(13001)).toBe(false);
+    expect(a.has(13002)).toBe(false);
+  });
+
+  // The owner node's p2p port is pinned by the NAT mapping, not allocated.
+  it('honours an override and reserves it', () => {
+    const a = new PortAllocator(10000, 10010);
+    expect(allocateNodePorts(a, { p2p: 10005 })).toEqual({
+      health: 10000,
+      metrics: 10001,
+      p2p: 10005,
+      admin: 10002,
+    });
+    // Reserved, so no later allocation can hand it out again.
+    expect(a.has(10005)).toBe(true);
+  });
+
+  // An out-of-range override is the production case for the owner node: its
+  // libp2p port is chosen by NAT config, not by the allocator, so reserving it
+  // is a documented no-op rather than an error.
+  it('accepts an override outside the managed range without reserving it', () => {
+    const a = new PortAllocator(10000, 10010);
+    expect(allocateNodePorts(a, { p2p: 40000 })).toMatchObject({ p2p: 40000, health: 10000 });
+    expect(a.has(40000)).toBe(false);
   });
 });
 

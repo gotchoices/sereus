@@ -24,7 +24,7 @@ import type {
 
 import { defaultLogPath, rotateOnDisk } from './log-rotator.js';
 import { ensureNodeIdentity } from './node-identity.js';
-import { PortAllocator } from './port-allocator.js';
+import { allocateNodePorts, PortAllocator } from './port-allocator.js';
 import { StateStore, type PersistedHandle, type PersistedState } from './state-store.js';
 import { isPidAlive } from './pid-liveness.js';
 import type { PushCredentials } from '@serfab/cadre-core';
@@ -248,18 +248,6 @@ export class HostProcessOrchestrator implements Orchestrator {
     const workdir = this.workdirFor(request.containerId);
     const identity = await ensureNodeIdentity(workdir);
     log('container %s identity peerId=%s', request.containerId, identity.peerId);
-    this.dropStaleHandle(request.containerId);
-    const ports: NodePorts = {
-      health: this.portAllocator.allocate(),
-      metrics: this.portAllocator.allocate(),
-      // NOTE: the p2p port is re-allocated per spawn, so a re-spawned donated
-      // node keeps its peer id but may announce a different port. Recoverable —
-      // it dials out to its retained bootstrap peers and republishes its own
-      // CadrePeer row once connected. If that reconnect ever proves too slow,
-      // pin the p2p port per containerId (see donated-node-respawn-core).
-      p2p: this.portAllocator.allocate(),
-      admin: this.portAllocator.allocate(),
-    };
     // A node started with pinned owner keys belongs to a FOREIGN cadre (the
     // node-donation flow: it trusts the requester's owner key, not the host's).
     // The host's FCM/APNs credentials are minted for the host owner's own app
@@ -267,7 +255,9 @@ export class HostProcessOrchestrator implements Orchestrator {
     // block. (Per-grantee push creds would be a future ticket; none in v1.)
     const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
     // Only storage-profile nodes participate in strands and thus fan out push
-    // wakes — a transaction-only node need not carry credentials.
+    // wakes — a transaction-only node need not carry credentials. Resolved
+    // BEFORE the drop below: it is the last `await` on this path, which is what
+    // keeps the drop → launch window synchronous (see restoreDroppedHandles).
     const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
     // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
     // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
@@ -275,17 +265,35 @@ export class HostProcessOrchestrator implements Orchestrator {
     const extraEnv = request.pinnedOwnerKeys?.length
       ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
       : undefined;
-    return this.launchChild({
-      containerId: request.containerId,
-      partyId: request.partyId,
-      profile: request.profile,
-      ports,
-      owner: false,
-      buildConfig: () => this.buildChildConfig(request, workdir, push),
-      extraArgs: ['--identity-protobuf', identity.path],
-      ...(extraEnv ? { extraEnv } : {}),
-      ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
-    });
+
+    const dropped = this.dropStaleHandle(request.containerId);
+    let ports: NodePorts | undefined;
+    try {
+      // NOTE: the p2p port is re-allocated per spawn, so a re-spawned donated
+      // node keeps its peer id but may announce a different port. Recoverable —
+      // it dials out to its retained bootstrap peers and republishes its own
+      // CadrePeer row once connected. If that reconnect ever proves too slow,
+      // pin the p2p port per containerId (see donated-node-respawn-core).
+      ports = allocateNodePorts(this.portAllocator);
+      return this.launchChild({
+        containerId: request.containerId,
+        partyId: request.partyId,
+        profile: request.profile,
+        ports,
+        owner: false,
+        buildConfig: () => this.buildChildConfig(request, workdir, push),
+        extraArgs: ['--identity-protobuf', identity.path],
+        ...(extraEnv ? { extraEnv } : {}),
+        ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
+      });
+    } catch (err) {
+      // Release BEFORE restoring: a re-spawn allocates the very ports the drop
+      // just freed, so restoring first and releasing second would hand the
+      // restored handle's own ports straight back to the allocator.
+      if (ports) this.releasePorts(ports);
+      this.restoreDroppedHandles(dropped);
+      throw err;
+    }
   }
 
   /**
@@ -333,40 +341,37 @@ export class HostProcessOrchestrator implements Orchestrator {
       this.persist();
       return toNodeInfo(existing);
     }
-    if (existing) {
-      // Drop the stale handle and release its ports — but DO NOT delete the
-      // workdir: the owner node's control-DB storage lives there and must
-      // survive a restart. launchChild reuses the same workdir.
-      this.releasePorts(existing.ports);
-      this.handles.delete(existing.dockerId);
-    }
 
     const profile = config.profile ?? 'storage';
     // Re-resolve push credentials from the secret store on every (re-)spawn so a
     // restart picks up rotated keys and nothing raw is replayed from state.json.
+    // Resolved BEFORE the drop below so the drop → launch window stays
+    // synchronous (see restoreDroppedHandles).
     const push = await this.resolvePush();
-    const ports: NodePorts = {
-      health: this.portAllocator.allocate(),
-      metrics: this.portAllocator.allocate(),
-      admin: this.portAllocator.allocate(),
-      // The owner node must listen on the configured libp2p port so the
-      // NAT mapping (external → internal) lands on it. That port is outside
-      // the managed range, so markUsed is a harmless no-op.
-      p2p: config.libp2pPort,
-    };
-    this.portAllocator.markUsed(config.libp2pPort);
 
-    const result = this.launchChild({
-      containerId: OWNER_CONTAINER_ID,
-      partyId: config.partyId,
-      profile,
-      ports,
-      owner: true,
-      buildConfig: (workdir) => this.buildOwnerChildConfig(config, profile, workdir, push),
-      extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
-    });
-    const handle = this.handles.get(result.dockerId)!;
-    return toNodeInfo(handle);
+    const dropped = this.dropStaleHandle(OWNER_CONTAINER_ID);
+    let ports: NodePorts | undefined;
+    try {
+      // The owner node must listen on the configured libp2p port so the NAT
+      // mapping (external → internal) lands on it — hence the p2p override.
+      ports = allocateNodePorts(this.portAllocator, { p2p: config.libp2pPort });
+      const result = this.launchChild({
+        containerId: OWNER_CONTAINER_ID,
+        partyId: config.partyId,
+        profile,
+        ports,
+        owner: true,
+        buildConfig: (workdir) => this.buildOwnerChildConfig(config, profile, workdir, push),
+        extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
+      });
+      const handle = this.handles.get(result.dockerId)!;
+      return toNodeInfo(handle);
+    } catch (err) {
+      // Release before restoring — see the same note in createContainer.
+      if (ports) this.releasePorts(ports);
+      this.restoreDroppedHandles(dropped);
+      throw err;
+    }
   }
 
   /** Endpoint + bearer for the owner node's admin channel, if spawned. */
@@ -414,8 +419,14 @@ export class HostProcessOrchestrator implements Orchestrator {
 
   /**
    * Core spawn mechanics shared by `createContainer` and `ensureOwnerNode`.
-   * The caller has already allocated `ports`. Releases the ports on a
-   * synchronous spawn failure.
+   *
+   * The caller has already allocated `ports` and **owns their lifetime**: this
+   * method never releases them, so every caller must release on any throw out
+   * of here (it has to unwind its handle drop on the same path anyway — see
+   * `restoreDroppedHandles`).
+   *
+   * Entirely synchronous, which is what makes that unwind sound. Do not add an
+   * `await` here.
    */
   private launchChild(opts: {
     containerId: string;
@@ -506,18 +517,17 @@ export class HostProcessOrchestrator implements Orchestrator {
         env,
       });
     } catch (err) {
-      // Synchronous spawn failure — release the fd and the reserved ports
-      // before propagating, so a bad-args bug doesn't leak resources.
+      // Synchronous spawn failure — close the fd before propagating. This is
+      // the ONLY fd-leak guard on this path: nothing between the `openSync`
+      // above and the `spawn` can throw, so no other catch is needed. Keep it
+      // that way, or add one. (The ports are the caller's to release.)
       closeSync(logFd);
-      this.releasePorts(ports);
       throw err;
     }
     // Always release the parent's copy of the fd — the child has its own.
     closeSync(logFd);
 
     if (!child.pid) {
-      // Spawn returned without a pid — release reservations and report.
-      this.releasePorts(ports);
       throw new Error(`Failed to spawn child for container ${containerId}`);
     }
 
@@ -582,16 +592,56 @@ export class HostProcessOrchestrator implements Orchestrator {
    * (`DonationService.respawn`, `ensureOwnerNode`). If a caller ever needs to
    * replace a live child, stop it first — or hold the ports until its exit.
    *
-   * The drop happens before the launch can fail, so a failed re-spawn leaves the
-   * caller holding a dockerId this orchestrator no longer knows — see
-   * `backlog/debt-failed-respawn-strands-donated-workdir`.
+   * **The drop is reversible.** It happens before the launch can fail, so the
+   * dropped handles are returned and every caller restores them via
+   * {@link restoreDroppedHandles} when the launch throws — otherwise the caller
+   * would be left holding a dockerId this orchestrator no longer knows, and the
+   * node's workdir could never be reclaimed. On a *successful* spawn the drop
+   * stands: `DonationService.abandonRespawn` depends on the old handle being
+   * gone by then.
    */
-  private dropStaleHandle(containerId: string): void {
+  private dropStaleHandle(containerId: string): Handle[] {
+    const dropped: Handle[] = [];
     for (const h of this.handles.values()) {
       if (h.containerId !== containerId) continue;
       log('dropping stale handle %s for container %s', h.dockerId, containerId);
       this.releasePorts(h.ports);
       this.handles.delete(h.dockerId);
+      dropped.push(h);
+    }
+    return dropped;
+  }
+
+  /**
+   * Inverse of {@link dropStaleHandle}, for a spawn that then failed: put each
+   * handle back in the map and re-reserve its four ports, leaving host state
+   * exactly as the failed attempt found it.
+   *
+   * **Precondition: the drop → launch window is synchronous.** Restoring is
+   * sound only because nothing can have taken those ports or run cleanup
+   * against the handle in between — `launchChild` contains no `await` and both
+   * callers resolve push credentials *before* their drop. An `await`
+   * introduced into that window silently breaks this.
+   *
+   * No `persist()` here: `state.json` is rewritten only by `launchChild` and
+   * only *after* the new handle is stored, so throughout the failure window the
+   * on-disk state still lists the dropped handle — this restore realigns memory
+   * to disk rather than diverging from it.
+   *
+   * NOTE: a restored handle keeps `alive: true` even if its child exited while
+   * it was out of the map (`launchChild`'s exit listener looks the handle up by
+   * dockerId and finds nothing). Only reachable by re-spawning a container
+   * whose child is still live, which `dropStaleHandle`'s note above already
+   * forbids.
+   */
+  private restoreDroppedHandles(dropped: Handle[]): void {
+    for (const h of dropped) {
+      log('restoring dropped handle %s for container %s after failed launch', h.dockerId, h.containerId);
+      this.handles.set(h.dockerId, h);
+      this.portAllocator.markUsed(h.ports.health);
+      this.portAllocator.markUsed(h.ports.metrics);
+      this.portAllocator.markUsed(h.ports.p2p);
+      this.portAllocator.markUsed(h.ports.admin);
     }
   }
 

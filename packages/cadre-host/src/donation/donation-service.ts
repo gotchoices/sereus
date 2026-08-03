@@ -141,6 +141,18 @@ export type RespawnResult =
   | { outcome: 'abandoned'; status?: DonationStatus };
 
 /**
+ * The three per-spawn fields a donation record carries for the child that
+ * currently exists. Whatever the record names here is what every later cleanup
+ * (`terminate` → stop + reclaim) acts on, so a spawn that succeeded must land
+ * these on the record even when the surrounding operation then fails.
+ */
+interface SpawnedHandles {
+  dockerId: string;
+  seedEndpoint: string;
+  seedToken: string;
+}
+
+/**
  * Orchestrator capability `reapStaleProvisioning` needs beyond the base
  * `Orchestrator`: resolve a spawn's friendly containerId (== a donation's id)
  * back to its current dockerId, so a stuck-`provisioning` reap can find and
@@ -318,7 +330,7 @@ export class DonationService {
    * ending and must not be rewritten as a host fault; a row that vanished must
    * not be recreated.
    *
-   * Best-effort (mirroring {@link storeAttempt}): we are already unwinding a
+   * Best-effort (mirroring {@link storeRespawnAttempt}): we are already unwinding a
    * provision failure, and a store error here must not mask the error being
    * reported to the caller.
    */
@@ -496,7 +508,7 @@ export class DonationService {
       },
     };
 
-    let dockerId: string | undefined;
+    let spawned: SpawnedHandles | undefined;
     try {
       const result = await this.orchestrator.createContainer({
         containerId: id,
@@ -505,7 +517,11 @@ export class DonationService {
         profile: donation.profile,
         pinnedOwnerKeys: donation.ownerKeys,
       });
-      dockerId = result.dockerId;
+      spawned = {
+        dockerId: result.dockerId,
+        seedEndpoint: result.seedEndpoint,
+        seedToken: result.seedToken,
+      };
 
       // Re-read: `donation` predates the orchestrator round-trip (seconds of
       // wall clock) and `store.put` replaces the whole row, so writing that copy
@@ -541,10 +557,10 @@ export class DonationService {
       // Stop — never reclaim — a child we spawned but failed to record:
       // `removeContainer` deletes the workdir, which holds the identity key and
       // node-local stores that are the whole reason a respawn is the same node.
-      // The orphaned handle's ports are released by the next createContainer for
-      // this containerId, so the leak is self-healing.
-      if (dockerId) await this.safeStop(dockerId);
-      this.storeAttempt(attempted);
+      // The new handles go onto the record below, so it names the child that
+      // actually exists and a later `terminate()` reclaims that one.
+      if (spawned) await this.safeStop(spawned.dockerId);
+      this.storeRespawnAttempt(id, attempted.respawn, spawned);
       throw new DonationError('orchestrator_error', `Failed to respawn donated node: ${message}`);
     }
   }
@@ -736,23 +752,39 @@ export class DonationService {
   }
 
   /**
-   * Persist a failed respawn's attempt counters — and ONLY those. The caller's
+   * Persist a failed respawn's attempt counters — plus, when the spawn itself
+   * succeeded and it was the record write that failed, the new child's handles.
+   * Merged onto whatever is on disk now, never written wholesale: the caller's
    * copy predates the orchestrator round-trip and `store.put` replaces the whole
-   * row, so writing it back wholesale would undo a `terminate` that landed while
-   * the spawn was in flight and resurrect a loan the borrower just ended. Merge
-   * the counters onto whatever is on disk now instead.
+   * row, so writing it back would undo a `terminate` that landed while the spawn
+   * was in flight and resurrect a loan the borrower just ended.
    *
-   * Best-effort: we are already unwinding an orchestrator failure, and a store
-   * error here must not mask it. Losing the counter only costs the caller one
-   * extra attempt before backoff.
+   * `status` and `updatedAt` are deliberately untouched — the attempt did not
+   * succeed, and `updatedAt` is what defers the stale-`awaiting_seed` reap.
+   *
+   * Recording `spawned` is what keeps the record pointing at the child that
+   * actually exists: `createContainer` already dropped the handle the record
+   * previously named, so leaving the old `dockerId` there would send every later
+   * stop/reclaim at an id the orchestrator cannot resolve — stranding the node's
+   * workdir on disk forever.
+   *
+   * Best-effort: we are already unwinding a respawn failure, and a store error
+   * here must not mask it. Losing the write costs the caller one extra attempt
+   * before backoff; the supervisor's next pass re-reads the record, finds the
+   * named child not running, and respawns again — which drops whatever handle is
+   * current, so the ports self-heal either way.
    */
-  private storeAttempt(donation: Donation): void {
+  private storeRespawnAttempt(
+    id: string,
+    respawn: Donation['respawn'],
+    spawned?: SpawnedHandles,
+  ): void {
     try {
-      const current = this.store.get(donation.id);
-      if (!current || !donation.respawn) return;
-      this.store.put({ ...current, respawn: donation.respawn });
+      const current = this.store.get(id);
+      if (!current || !respawn) return;
+      this.store.put({ ...current, respawn, ...spawned });
     } catch (err) {
-      log('failed to record respawn attempt for %s: %s', donation.id, errorMessage(err));
+      log('failed to record respawn attempt for %s: %s', id, errorMessage(err));
     }
   }
 
