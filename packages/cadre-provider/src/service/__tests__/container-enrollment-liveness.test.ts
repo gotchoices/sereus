@@ -84,6 +84,12 @@ function stubOrchestrator(
   return { orchestrator, removeContainer, getLogs, inspectRunState };
 }
 
+/** Orchestrator whose `inspectRunState` walks the given readings, then repeats the last. */
+function stubOrchestratorSequence(readings: ContainerRunState[]): Stub {
+  let index = 0;
+  return stubOrchestrator(async () => readings[Math.min(index++, readings.length - 1)]);
+}
+
 /**
  * Store standing in for a `DELETE /containers/:id` that lands the instant the
  * enrollment wait starts: the first read of an `enrolling` record hands back a
@@ -114,7 +120,9 @@ const originalFetch = globalThis.fetch;
 afterEach(() => { globalThis.fetch = originalFetch; vi.restoreAllMocks(); });
 
 describe('ContainerService enrollment liveness probe', () => {
-  it('fails the provision and reclaims when the child exited during enrollment', async () => {
+  // Two restarts inside one enrollment window is a loop, not the restart policy
+  // recovering a blip — condemned on the reading that shows it.
+  it('fails the provision and reclaims when the child is crash looping', async () => {
     const store = new MemoryStore();
     const container = pendingContainer();
     await store.saveContainer(container);
@@ -169,6 +177,89 @@ describe('ContainerService enrollment liveness probe', () => {
     expect(removeContainer).not.toHaveBeenCalled();
     // Health is read first, so a healthy poll never reaches the probe at all.
     expect(inspectRunState).not.toHaveBeenCalled();
+  });
+
+  // Nodes run under `RestartPolicy: unless-stopped`; the whole point of that
+  // policy is that a transient first-boot failure recovers by itself. The node
+  // needs several polls to come back up, and reads unhealthy on every one of
+  // them — so a single restart must not be enough to condemn it.
+  it('keeps waiting for a container that restarted once and is booting again', async () => {
+    const store = new MemoryStore();
+    const container = pendingContainer();
+    await store.saveContainer(container);
+    stubStatus(); // never healthy within the window
+
+    const { orchestrator, removeContainer } = stubOrchestratorSequence([
+      // Docker's window between the exit and the restart, then the fresh child.
+      { running: false, restartCount: 0, exitedAt: new Date('2026-06-01T00:00:02.000Z'), exitCode: 1 },
+      { running: true, restartCount: 1, exitedAt: new Date('2026-06-01T00:00:02.000Z'), exitCode: 1 },
+    ]);
+    const service = new ContainerService({
+      store, orchestrator, enrollmentTimeoutMs: 40, enrollmentPollMs: 5,
+    });
+
+    await provision(service, container);
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('enrolling');
+    expect(stored?.error).toBeUndefined();
+    expect(removeContainer).not.toHaveBeenCalled();
+  });
+
+  // The shape a never-restarting orchestrator (the integration harness, and a
+  // Docker container whose restart policy has given up) can reach: down, exited,
+  // and staying that way. Two readings apart is the proof.
+  it('fails a container that stays down-and-exited across polls, with no restarts', async () => {
+    const store = new MemoryStore();
+    const container = pendingContainer();
+    await store.saveContainer(container);
+    stubStatus();
+
+    const { orchestrator, removeContainer } = stubOrchestrator(async () => ({
+      running: false,
+      restartCount: 0,
+      exitedAt: new Date('2026-06-01T00:00:02.000Z'),
+    }));
+    const service = new ContainerService({
+      store, orchestrator, enrollmentTimeoutMs: 60_000, enrollmentPollMs: 5,
+    });
+
+    await provision(service, container);
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('error');
+    // No exit code reported (a signal kill, or an orchestrator that cannot say).
+    expect(stored?.error).toBe(
+      'container process exited during enrollment (restarts=0, exitCode=unknown)'
+    );
+    expect(removeContainer).toHaveBeenCalledWith('docker-xyz');
+  });
+
+  // A failed probe is not evidence of anything, so it must not be allowed to
+  // pair with a genuine down reading to make up a two-poll "proof".
+  it('does not condemn a container on one down reading either side of a probe failure', async () => {
+    const store = new MemoryStore();
+    const container = pendingContainer();
+    await store.saveContainer(container);
+    stubStatus();
+
+    const down: ContainerRunState = {
+      running: false, restartCount: 0, exitedAt: new Date('2026-06-01T00:00:02.000Z'), exitCode: 1,
+    };
+    let poll = 0;
+    const { orchestrator, removeContainer } = stubOrchestrator(async () => {
+      if (poll++ % 2 === 1) throw new Error('docker daemon unreachable');
+      return down;
+    });
+    const service = new ContainerService({
+      store, orchestrator, enrollmentTimeoutMs: 40, enrollmentPollMs: 5,
+    });
+
+    await provision(service, container);
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('enrolling');
+    expect(removeContainer).not.toHaveBeenCalled();
   });
 
   it('leaves a slow-but-alive container on enrolling and does not reclaim', async () => {

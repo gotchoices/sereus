@@ -27,6 +27,35 @@ export const CONTAINER_ENROLLMENT_POLL_MS = 2_000;
 const ENROLLMENT_FAILURE_LOG_LINES = 50;
 
 /**
+ * Restarts tolerated during enrollment before the wait calls it a crash loop.
+ * `DockerOrchestrator` runs tenant nodes under `RestartPolicy: unless-stopped`
+ * precisely so a transient first-boot failure recovers by itself, so one restart
+ * is the policy working; a second inside the same enrollment window is a loop.
+ */
+const ENROLLMENT_TOLERATED_RESTARTS = 1;
+
+/** The container's process is down right now and has already exited at least once. */
+function isChildDown(state: ContainerRunState): boolean {
+  return !state.running && state.exitedAt !== undefined;
+}
+
+/**
+ * Whether the orchestrator's readings prove the container's process is gone for
+ * good — judged across two consecutive polls, not one.
+ *
+ * One reading cannot separate "crashed once and is booting again" from "crash
+ * looping": under `unless-stopped` both report `restartCount > 0` and a finish
+ * time, and a node takes several polls to come up, so it reads unhealthy in
+ * between either way. Two readings can — a restart count past the tolerated one
+ * is a loop, and a container that was down-and-exited a poll ago and still is
+ * (the only state a never-restarting orchestrator can reach) will not come back.
+ */
+function hasChildDied(state: ContainerRunState, previous: ContainerRunState | undefined): boolean {
+  if (state.restartCount > ENROLLMENT_TOLERATED_RESTARTS) return true;
+  return isChildDown(state) && previous !== undefined && isChildDown(previous);
+}
+
+/**
  * Resolve the push credentials for ONE tenant: the per-tenant override keyed by
  * `customerId`, else the provider-level default, else none. This is the single
  * cross-tenant boundary — a tenant only ever sees its own override or the shared
@@ -233,6 +262,8 @@ export class ContainerService {
    */
   private async waitForEnrollment(containerId: string): Promise<void> {
     const startTime = Date.now();
+    /** Last liveness reading, so death is judged on a trend rather than one sample. */
+    let previousRunState: ContainerRunState | undefined;
 
     while (Date.now() - startTime < this.enrollmentTimeoutMs) {
       const container = await this.store.getContainer(containerId);
@@ -266,7 +297,9 @@ export class ContainerService {
       // NOTE: one extra orchestrator inspect per poll per enrolling container,
       // bounded by the enrollment window. If many simultaneous provisions ever
       // become normal, probe every Nth poll instead of every poll.
-      if (container.dockerId) await this.assertChildAlive(containerId, container.dockerId);
+      if (container.dockerId) {
+        previousRunState = await this.checkChildAlive(containerId, container.dockerId, previousRunState);
+      }
 
       await new Promise(resolve => setTimeout(resolve, this.enrollmentPollMs));
     }
@@ -281,35 +314,40 @@ export class ContainerService {
   }
 
   /**
-   * Throw when the orchestrator reports the container's process has died.
-   *
-   * Silent (keeps the caller waiting) for every ambiguous answer: an
-   * orchestrator with no `inspectRunState`, a container the orchestrator no
-   * longer knows (a concurrent terminate removed it), or a probe that failed —
-   * a Docker API blip must not fail an otherwise fine provision.
+   * Throw when this reading and the previous one together prove the container's
+   * process has died; otherwise hand the reading back to become the next poll's
+   * `previous`.
    */
-  private async assertChildAlive(containerId: string, dockerId: string): Promise<void> {
-    const probe = this.orchestrator.inspectRunState;
-    if (!probe) return;
-
-    let state: ContainerRunState | undefined;
-    try {
-      state = await probe.call(this.orchestrator, dockerId);
-    } catch (err) {
-      log('Container %s liveness probe failed (still waiting): %O', containerId, err);
-      return;
-    }
-    if (!state) return;
-
-    // `running === false` alone is NOT death: with `RestartPolicy: unless-stopped`
-    // a container reads not-running for the moment between restarts. Only an
-    // observed exit — a restart having happened, or an exit timestamp — is proof.
-    if (state.restartCount === 0 && state.exitedAt === undefined) return;
+  private async checkChildAlive(
+    containerId: string,
+    dockerId: string,
+    previous: ContainerRunState | undefined,
+  ): Promise<ContainerRunState | undefined> {
+    const state = await this.probeRunState(containerId, dockerId);
+    if (!state || !hasChildDied(state, previous)) return state;
 
     await this.logContainerTail(containerId, dockerId);
     throw new Error(
       `container process exited during enrollment (restarts=${state.restartCount}, exitCode=${state.exitCode ?? 'unknown'})`
     );
+  }
+
+  /**
+   * The orchestrator's current reading of the container's process.
+   *
+   * `undefined` for every ambiguous answer, which keeps the caller waiting and
+   * discards the accumulated evidence: an orchestrator with no `inspectRunState`,
+   * a container the orchestrator no longer knows (a concurrent terminate removed
+   * it), or a probe that failed — a Docker API blip must not fail an otherwise
+   * fine provision.
+   */
+  private async probeRunState(containerId: string, dockerId: string): Promise<ContainerRunState | undefined> {
+    try {
+      return await this.orchestrator.inspectRunState?.(dockerId);
+    } catch (err) {
+      log('Container %s liveness probe failed (still waiting): %O', containerId, err);
+      return undefined;
+    }
   }
 
   /**

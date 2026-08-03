@@ -273,6 +273,14 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		};
 	}
 
+	/**
+	 * NOTE: throws once `removeContainer` has forgotten the handle, mirroring
+	 * `docker logs` on a removed container. A scenario that tails a node AFTER a
+	 * failed provision therefore gets nothing — the provision's own reclaim
+	 * removed the handle. The output is not lost: the file survives under
+	 * `<volumeDir>/node.log` (this class never deletes it) and `ContainerService`
+	 * already tails it into `debug` before failing the provision.
+	 */
 	async getLogs(dockerId: string, tail = 100): Promise<string> {
 		const handle = this.requireHandle(dockerId);
 		const logPath = join(handle.volumeDir, LOG_FILE);
