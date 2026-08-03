@@ -996,8 +996,9 @@ export class CadreNode implements SAppIdLookup {
       // Fixed, and deliberately above any party's node count: every member reads the
       // whole control database, so a cohort that excludes a member leaves it dependent
       // on read repair — which cannot converge at a two-member cohort. Not a knob;
-      // see CONTROL_REPLICATION_BREADTH. `assumedClusterSize` is deliberately left at
-      // Optimystic's default of 2 (a party may genuinely run two nodes).
+      // see CONTROL_REPLICATION_BREADTH. `assumedClusterSize: 2` is declared explicitly in
+      // CONTROL_CLUSTER_POLICY: only the admission gate defaults to 2, while the read-repair
+      // corroboration floor would otherwise fall back to this clusterSize of 16.
       clusterSize: CONTROL_REPLICATION_BREADTH,
       clusterPolicy: CONTROL_CLUSTER_POLICY,
       arachnode: { enableRingZulu: profile === 'storage' },

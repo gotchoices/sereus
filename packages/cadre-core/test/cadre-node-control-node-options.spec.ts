@@ -98,9 +98,11 @@ describe('CadreNode control-network node options', () => {
       const options = controlOptions(new CadreNode(createConfig()));
 
       expect(options.clusterPolicy?.allowDownsize).toBe(true);
-      // Left at Optimystic's default of 2: the admission gate measures declared peers
-      // against this, not against clusterSize (see CONTROL_REPLICATION_BREADTH).
-      expect(options.clusterPolicy?.assumedClusterSize).toBeUndefined();
+      // Declared, not left to default. The admission gate would default to this same 2, but
+      // the read-repair corroboration floor falls back to `clusterSize` instead — 16 for the
+      // control network — which makes two distinct non-self corroborators mandatory and so
+      // makes repair impossible for a two-node party. See CONTROL_CLUSTER_POLICY.
+      expect(options.clusterPolicy?.assumedClusterSize).toBe(2);
     });
 
     it('builds a control-scoped network, keeping it distinct from any strand network', () => {

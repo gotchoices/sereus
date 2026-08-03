@@ -72,6 +72,23 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * literal for a different network with different reasoning. The shape match is a coincidence;
  * keep them separate.
  *
+ * `assumedClusterSize` is REQUIRED here, and 2 is not a guess — it is the smallest party we
+ * support. The field feeds two Optimystic consumers with opposite failure modes, and only one
+ * of them defaults to something workable for us:
+ *
+ * - The membership admission gate already defaults to 2 (`minAbsoluteClusterSize`), so naming
+ *   it changes nothing there.
+ * - The read-repair / reconcile corroboration floor does NOT. Absent this field it falls back
+ *   to `clusterSize` — which for the control network is {@link CONTROL_REPLICATION_BREADTH},
+ *   16. `corroboratorCapacity(peers, 16)` is then `max(peers, 15)`, so the floor of two
+ *   distinct non-self corroborators binds. A two-node party fields exactly one, can never
+ *   reach two, and so can never repair a block: `cluster-fetch:no-quorum` forever.
+ *
+ * Declaring 2 does NOT lower the replication factor — that stays at
+ * {@link CONTROL_REPLICATION_BREADTH}. It states the cohort size we can genuinely field, which
+ * is what the corroboration floor is asking. See Optimystic's `cluster/cluster-policy.ts`
+ * ("Why two size yardsticks, not one") and `corroboratorCapacity` in `cluster/quorum-restore.ts`.
+ *
  * The `satisfies` is load-bearing: without it a mistyped or obsolete key would compile at both
  * this definition and every consumer, because TypeScript only excess-property-checks fresh
  * object literals, not a shared constant handed to `clusterPolicy`.
@@ -79,6 +96,7 @@ export const CONTROL_REPLICATION_BREADTH = 16;
 export const CONTROL_CLUSTER_POLICY = Object.freeze({
 	allowDownsize: true,
 	sizeTolerance: 0.5,
+	assumedClusterSize: 2,
 } satisfies NonNullable<NodeOptions['clusterPolicy']>);
 
 /**
