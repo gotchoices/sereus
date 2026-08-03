@@ -30,6 +30,11 @@ export const MIN_CLUSTER_SIZE = 2;
  * value at libp2p-node construction, before the `ControlDatabase` holding the `CadrePeer`
  * rows exists, and because a per-node derivation lets two members disagree.
  *
+ * A cadre is one party by construction, so the owner-blind cohort-selection question that
+ * applies to strand networks (see {@link DEFAULT_STRAND_CLUSTER_SIZE} below) is not a question
+ * here: "replicate to the whole party" already is the whole intent, and there is no party
+ * diversity for this breadth to buy or fail to buy.
+ *
  * Canonical explanation of all of the above — the read-repair mechanics, what whole-party
  * breadth does and does not remove, and what the wider cohort costs in write availability —
  * is `docs/architecture.md` → "Replication cluster size". Keep it there, not here.
@@ -143,6 +148,16 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * restarted after someone joined derives a wider expected cohort than one that did not, and the
  * membership admission gate's confident path is what rejects the *wider* view. And a `Member` is
  * a party, not a machine; cohort width consumes machines. Full reasoning in
+ * `docs/architecture.md` → "Replication cluster size".
+ *
+ * **Four machines, not four parties.** This number counts machines, and today that is never
+ * the same as counting independent holders. Cohort selection upstream is owner-blind — it
+ * picks nodes by hash proximity with no concept of which peer belongs to which party
+ * (`optimystic/tickets/backlog/feat-cohort-selection-owner-aware-placement`) — and in
+ * production a strand's libp2p mesh is seeded from exactly one party's own control-database
+ * peer rows (`CadreNode.resolveCohortSeed`), so the cohort actually formed is always that one
+ * party's machines. Four copies are, today, four machines belonging to one party — one failure
+ * domain, one witness. Tracked: `backlog/feat-strand-party-identity`. Full reasoning:
  * `docs/architecture.md` → "Replication cluster size".
  *
  * Raising or lowering it per strand is still the embedder's call
