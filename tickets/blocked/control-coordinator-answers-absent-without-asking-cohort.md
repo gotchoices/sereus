@@ -206,3 +206,48 @@ Two measurement hazards worth knowing before re-running:
   unchanged), so `dist/src/index.js` keeps an older mtime and the guard trips forever. After
   confirming `yarn build` is a no-op in `../quereus/packages/quereus`, `touch dist/src/index.js`
   clears it.
+
+## Caution 2026-08-03: the neutralization does NOT clear the full suite
+
+The "Blast radius" table above measures three hand-picked scenario sets. Re-ran the same
+neutralization harness (verbatim, from this ticket) against the **whole** integration suite,
+`../optimystic` rebuilt at `610d6d1`, `../quereus` fresh:
+
+| | at HEAD | flag neutralized |
+| --- | --- | --- |
+| test files red | 8 of 41 | 8 of 41 |
+| tests red | 14 of 241 | 13 of 241 (+6 skipped) |
+| dominant fingerprint | `header block read as absent` x23 | `peers-unreachable` x21 |
+
+So the flag is not a net win across the suite — it **trades one failure class for another**, and a
+largely different set of scenarios fails. Newly red only with the flag off:
+`control-cohort-three-node-isolation` (both tests, 113 s and 12.8 s), `strand-formation-e2e` Phase 2
+three-parties, `harness-party-control-cohort` (second test), `provider-seed-accepted` steps 3/5
+(60 s and 92 s timeouts — these are **green** at HEAD since the grace-period fix). Newly green:
+everything that carried the header-absent fingerprint.
+
+**This does not refute the diagnosis, and it is not an argument against the upstream fix.** The
+trace in "The trace" above is solid and independently reproducible: B really does answer an
+authoritative absence without consulting A. What this measurement undercuts is only the *blast
+radius* claim, and there is a strong reason to think the harness is at fault rather than the
+proposed change:
+
+The harness forces `skipClusterFetch: false` on **every** `CoordinatorRepo.get` in the process —
+local reads included — whereas proposed shape 1 drops the flag only at `service.ts:264`, i.e. only
+for reads arriving over the repo protocol. The failures it introduces are dominated by long
+timeouts (113 s, 92 s, 60 s) rather than errors, which is the signature of exactly the recursion
+`skipClusterFetch` was introduced to prevent. A targeted change may well not do this.
+
+**What this means for whoever lands the upstream fix:** do not treat the three-file set as the
+acceptance criterion. Validate against the full suite, and specifically watch
+`control-cohort-three-node-isolation`, `strand-formation-e2e` Phase 2, and `provider-seed-accepted`
+steps 3/5 — all green at HEAD today, all red under the crude neutralization. If shape 1 reproduces
+those timeouts, shape 2 (keep the skip, but report the skipped-consult absence as `unavailable` so
+`NetworkTransactor.get` retries against another peer) is the better bet, because it never widens
+what a repo-protocol read is allowed to do.
+
+Also worth knowing: `peers-unreachable` is very likely the next wall either way. It is already the
+fingerprint of `control-cohort-edge-carries-data` at HEAD (`Block default/Revocation is unavailable
+(peers-unreachable)`), which is currently ticketed under `fix/control-read-over-fresh-edge-stream-resets`
+against an older stream-reset fingerprint that no longer matches. That ticket needs re-measuring
+regardless of what happens here.
