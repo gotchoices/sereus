@@ -95,3 +95,36 @@ Full argument, with the branch-level detail, is in the optimystic ticket named a
 - `blocked/control-coordinator-answers-absent-without-asking-cohort` — the other failure
   fingerprint in `provider-seed-accepted.integration.ts`. Different message, different site; do
   not merge.
+
+## Unblocked and verified 2026-08-03
+
+The upstream fix landed. `../optimystic` at `610d6d1` ("ticket(review):
+isolated-node-can-serve-its-own-keys", preceded by `c86a28b` implement and `64dbada` fix) resolves
+`../optimystic/tickets/fix/self-coordination-grace-period-denies-a-lone-node-its-own-keys.md`,
+which was this ticket's stated unblock condition.
+
+Rebuilt `../optimystic` (`yarn build`, clean tree at `610d6d1`) and re-ran the repro this ticket
+specifies:
+
+```
+cd packages/integration-tests
+npx vitest run --reporter=dot convergence-stress -t "Disconnection"
+```
+
+**3 of 3 runs green.** It was 4 of 4 red on 2026-08-03 before the fix. The isolated form is the one
+this ticket names as authoritative — the whole-file form was already green and could not
+distinguish. `yarn build` and `yarn workspace @serfab/cadre-core typecheck` both exit 0 against the
+rebuilt sibling.
+
+No Sereus change was needed or made: the defect and its fix were entirely in
+`libp2p-key-network.ts`, and the `SelfCoordinationConfig.gracePeriodMs` knob this ticket noted as
+unplumbed is still unplumbed — it simply no longer matters for a lone node reading its own keys.
+
+Closed. Two follow-ons deliberately left open:
+
+- `implement/1-control-write-retry-covers-self-coordination-blocked` — the Sereus-side half, making
+  schema-init DDL retry instead of killing start-up rather than depending on the guard never
+  firing. Still worth doing; a node can still legitimately be told no by a partition check.
+- `provider-seed-accepted` step 4 listed this as one of its two fingerprints
+  (`tickets/.pre-existing-known.md`). Whether that fingerprint is gone is settled by the full-suite
+  re-measurement recorded in that file, not by this ticket.
