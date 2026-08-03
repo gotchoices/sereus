@@ -35,3 +35,30 @@ This is dormant, not yet observed causing a real quota lockout in this
 repo — filed as forward-looking debt because the code shape is the same
 crash window cadre-host had, not because it has been reproduced in
 cadre-provider specifically.
+
+## Second arm, same file: enrollment never notices the child died (observed)
+
+Added from the `third-node-join-ddl-init` fix pass, which observed this for real
+rather than by analogy. Same file, same class of stuck record, so it belongs
+here rather than in its own ticket — but note it is a *different* window from
+the one above: the provider is alive and healthy throughout, and the thing that
+dies is the container's child process.
+
+`ContainerService.waitForEnrollment` polls for a hard-coded 60 seconds and then
+gives up **silently**. When the hosted node crashes during its own startup, the
+container record is left reading `enrolling` forever: nothing re-polls it,
+nothing marks it failed, and nothing surfaces the child's death to the tenant or
+to an operator. The information needed is already available — the orchestrator
+knows the process exited (`isRunning`) — but the service never asks it.
+
+This is what turned a node-side startup crash into a silent, permanent
+`enrolling` record during the provider-seed-accepted work, which is how it was
+noticed. The node-side crash itself is a separate defect and is being fixed
+under `third-node-join-ddl-init`; fixing it does not fix this, because *any*
+cause of a dead child produces the same stuck record.
+
+What a fix looks like: have the enrollment wait ask the orchestrator whether the
+process is still running rather than only waiting out the clock, and give up
+early with a recorded failure when it is not. The 60-second constant is also
+hard-coded and undocumented — worth naming while in there, the way
+`DONATION_PROVISIONING_TTL_MS` is on the cadre-host side.
