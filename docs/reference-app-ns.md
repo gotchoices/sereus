@@ -95,6 +95,11 @@ clears it. A pin sticks even if the seed that motivated it is then *rejected*:
 pasting the invite is itself the out-of-band trust act. A seed that cannot even
 be *decoded* fails earlier than the pin, so that one case leaves the anchor
 untouched — the fields are kept on failure, so the retry costs no re-paste.
+Both fields decode through a raw base64url → `JSON.parse` in cadre-core, so
+`CadreViewModel` rewraps either failure with copy naming *which* paste was
+unreadable; the alert would otherwise read `SyntaxError: Unexpected token …` and
+name neither. (RN surfaces the bare parse error; this is a deliberate NS-only
+improvement, not a parity gap to close in the other direction.)
 
 The app wires **no owner private key**, so there is no genesis self-anchor. It
 does not need one — it either forms a cadre solo or enrolls into an existing one
@@ -309,7 +314,7 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
-| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, and the two `Observable` view models on the seed/invite path (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`). Guarded by the shared stale-build check (`test/global-setup.ts`). `src/chat-vm.ts`, `src/ns-storage.ts` and the pages are **not** covered here. |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`, and the two `Observable` view models behind the Settings screen (`src/cadre-vm.ts`, `app/settings/settings-view-model.ts`) — the seed/invite path in depth, plus every other button on that screen. Guarded by the shared stale-build check (`test/global-setup.ts`). `src/chat-vm.ts`, `src/ns-storage.ts` and the pages are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
@@ -324,7 +329,7 @@ Two groups are targeted. The first reaches no NativeScript API at all:
 mocked, and cadre-core mocked **only** in its `CadreNode` export so the two
 node-local store classes stay real.
 
-The second is the two `Observable` view models on the seed/invite path —
+The second is the two `Observable` view models behind the Settings screen —
 `src/cadre-vm.ts` and `app/settings/settings-view-model.ts`. They import
 `@nativescript/core`, whose entry point cannot load under plain Node (it reaches
 `@nativescript/core/globals` as a *directory* import, which Node's ESM loader
@@ -335,7 +340,10 @@ which re-exports the **real** `Observable` from the one submodule that does load
 (`test/stubs/fake-cadre-node.ts`) that records every call into a single ordered
 array, because the behaviour under test is an ordering: an enrollment invite's
 owner keys must be anchored via `trustOwnerKeys` strictly *before* the seed is
-applied.
+applied. That fake declares `implements` against a `Pick<CadreNode, …>` of the
+methods it stands in for, so a cadre-core signature change fails `typecheck`
+instead of leaving the suites green while the app breaks on device — a `vi.mock`
+factory is not otherwise checked against the module it replaces.
 
 Still uncovered here: `src/chat-vm.ts` (it needs `ObservableArray`, which the
 same directory-import rule puts out of reach by this route —

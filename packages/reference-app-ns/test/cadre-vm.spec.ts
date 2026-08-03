@@ -105,13 +105,15 @@ describe('the @nativescript/core stub', () => {
 describe('the constructor', () => {
 	it('adopts a running node, reading its peer id, strands and events', async () => {
 		const { mod, H } = await loadModule();
-		H.presentRunningNode().strands.set('strand-1', { status: 'active' });
+		H.presentRunningNode().strands.set('strand-1', H.fakeStrand());
 
 		const vm = new mod.CadreViewModel();
 
 		expect(vm.status).toBe('connected');
 		expect(vm.connected).toBe(true);
 		expect(vm.peerId).toBe('peer-abc');
+		// What the Chat VM reads — `null` rather than `''` when there is no node.
+		expect(vm.getPeerId()).toBe('peer-abc');
 		expect(vm.strandCount).toBe(1);
 		expect(H.calls).toEqual(['getStrands', 'on:strand:started', 'on:strand:stopped', 'on:strand:error']);
 	});
@@ -121,6 +123,8 @@ describe('the constructor', () => {
 
 		expect(vm.status).toBe('idle');
 		expect(vm.peerIdDisplay).toBe('—');
+		expect(vm.getPeerId()).toBeNull();
+		expect(vm.getFirstStrand()).toBeNull();
 		expect(vm.strandCount).toBe(0);
 		expect(H.state.node.boundHandlerCount()).toBe(0);
 	});
@@ -251,7 +255,7 @@ describe('applySeed with pinned owner keys', () => {
 		await vm.applySeed(SEED, [H.KEY_A]);
 
 		expect(H.state.node.decodedSeeds).toEqual([SEED]);
-		expect<unknown>(H.state.node.applied[0]!.seed).toBe(H.sentinels.decodedSeed);
+		expect(H.state.node.applied[0]!.seed).toBe(H.sentinels.decodedSeed);
 	});
 
 	it('keeps the pin when the node refuses the seed', async () => {
@@ -259,7 +263,7 @@ describe('applySeed with pinned owner keys', () => {
 		// separate artifact that may be stale, for another party, or corrupt.
 		// Rolling the anchor back here would cost the user a re-paste on every retry.
 		const { vm, H } = await adoptedVm();
-		H.state.node.applySeedResult = { success: false, error: 'not for this party', peersAdded: 0 };
+		H.state.node.applySeedResult = H.refusal('not for this party');
 
 		await expect(vm.applySeed(SEED, [H.KEY_A])).rejects.toThrow('not for this party');
 		expect(H.state.node.trusted).toEqual([{ keys: [H.KEY_A], source: 'invite' }]);
@@ -296,14 +300,14 @@ describe('applySeed without pinned owner keys', () => {
 describe('applySeed failures', () => {
 	it("surfaces the node's own rejection text", async () => {
 		const { vm, H } = await adoptedVm();
-		H.state.node.applySeedResult = { success: false, error: 'signer key is not an anchored owner', peersAdded: 0 };
+		H.state.node.applySeedResult = H.refusal('signer key is not an anchored owner');
 
 		await expect(vm.applySeed(SEED)).rejects.toThrow('signer key is not an anchored owner');
 	});
 
 	it('falls back to generic copy when the node gave no reason', async () => {
 		const { vm, H } = await adoptedVm();
-		H.state.node.applySeedResult = { success: false, peersAdded: 0 };
+		H.state.node.applySeedResult = H.refusal();
 
 		await expect(vm.applySeed(SEED)).rejects.toThrow('Seed application failed');
 	});
@@ -314,6 +318,28 @@ describe('applySeed failures', () => {
 		await expect(vm.applySeed(SEED, [H.KEY_A])).rejects.toThrow('Node not started');
 		expect(H.state.node.decodedSeeds).toEqual([]);
 		expect(H.calls).toEqual([]);
+	});
+
+	it('rewraps an unreadable seed with copy naming the seed', async () => {
+		// Same raw base64url → `JSON.parse` → cast as `decodeInvite`, so the same
+		// bare `SyntaxError` would otherwise reach the Settings modal.
+		const { vm, H } = await adoptedVm();
+		const parseFailure = new SyntaxError('Unexpected token < in JSON at position 0');
+		H.state.node.decodeSeedError = parseFailure;
+
+		await expect(vm.applySeed('not-a-seed')).rejects.toThrow(/cold-start seed/i);
+		await expect(vm.applySeed('not-a-seed')).rejects.toMatchObject({ cause: parseFailure });
+	});
+
+	it('anchors nothing when the seed cannot even be decoded', async () => {
+		// The pin sticks past an APPLY rejection (above), but a seed that never
+		// decoded is not an apply attempt — nothing about it was trusted.
+		const { vm, H } = await adoptedVm();
+		H.state.node.decodeSeedError = new SyntaxError('Unexpected token < in JSON at position 0');
+
+		await expect(vm.applySeed('not-a-seed', [H.KEY_A])).rejects.toThrow(/cold-start seed/i);
+		expect(H.state.node.trusted).toEqual([]);
+		expect(H.calls).toEqual(['decodeSeed']);
 	});
 });
 
@@ -338,7 +364,7 @@ describe('start', () => {
 		const { vm, H } = await coldVm();
 
 		await vm.start({ partyId: 'party-x', bootstrapAddrs: [] });
-		H.state.node.strands.set('strand-1', { status: 'active' });
+		H.state.node.strands.set('strand-1', H.fakeStrand());
 		H.state.node.emit('strand:started', { strandId: 'strand-1' });
 
 		expect(vm.strandCount).toBe(1);
@@ -361,13 +387,58 @@ describe('stop', () => {
 
 	it('clears the view model back to idle', async () => {
 		const { mod, H } = await loadModule();
-		H.presentRunningNode().strands.set('strand-1', { status: 'active' });
+		H.presentRunningNode().strands.set('strand-1', H.fakeStrand());
 		const vm = new mod.CadreViewModel();
 
 		await vm.stop();
 
 		expect(vm.status).toBe('idle');
 		expect(vm.peerId).toBe('');
+		expect(vm.strandCount).toBe(0);
+	});
+});
+
+// ── The strand list the Settings repeater binds to ────────────────────────────
+
+describe('the strand list', () => {
+	it('shortens the id for display while keeping the full one for lookup', async () => {
+		// `title` is what the repeater renders; `id` is what a tap resolves against.
+		// A test whose id is already 8 characters long cannot tell them apart.
+		const { mod, H } = await loadModule();
+		H.presentRunningNode().strands.set('strand-abcdef-0123456789', H.fakeStrand('idle'));
+
+		const vm = new mod.CadreViewModel();
+
+		expect(vm.strandItems).toEqual([{ id: 'strand-abcdef-0123456789', title: 'strand-a', status: 'idle' }]);
+		expect(vm.strandSummary).toBe('1 strand(s)');
+	});
+
+	it('refreshes itself when a strand reports an error, and says so', async () => {
+		// The noisiest of the three handlers: it logs before refreshing, and a
+		// refresh that stopped happening here would leave a dead strand showing
+		// `active` in the list.
+		const { vm, H } = await adoptedVm();
+		const warn = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+		try {
+			H.state.node.strands.set('strand-1', H.fakeStrand('error'));
+			H.state.node.emit('strand:error', { strandId: 'strand-1', error: new Error('runtime gone') });
+
+			expect(vm.strandItems).toEqual([{ id: 'strand-1', title: 'strand-1', status: 'error' }]);
+			expect(warn).toHaveBeenCalledOnce();
+		} finally {
+			warn.mockRestore();
+		}
+	});
+
+	it('ignores a strand event that arrives after the node stopped running', async () => {
+		// `refreshStrands` is guarded on `isRunning`, so a late event from a node
+		// being torn down cannot repopulate the list from it.
+		const { vm, H } = await adoptedVm();
+		H.state.node.strands.set('strand-1', H.fakeStrand());
+		H.state.node.isRunning = false;
+
+		H.state.node.emit('strand:started', { strandId: 'strand-1' });
+
 		expect(vm.strandCount).toBe(0);
 	});
 });
@@ -380,9 +451,9 @@ describe('createStrand', () => {
 
 		const instance = await vm.createStrand('strand-9');
 
-		expect<unknown>(instance).toBe(H.sentinels.strandInstance);
+		expect(instance).toBe(H.sentinels.strandInstance);
 		expect(vm.strandCount).toBe(1);
-		expect<unknown>(vm.getFirstStrand()).toBe(H.sentinels.strandInstance);
+		expect(vm.getFirstStrand()).toBe(H.sentinels.strandInstance);
 	});
 
 	it('refuses before the node is started', async () => {

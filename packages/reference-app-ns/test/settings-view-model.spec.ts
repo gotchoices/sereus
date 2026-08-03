@@ -37,10 +37,22 @@ const INVITE = 'encoded-invite';
  * previous test's cadre view model (and its node) would be handed straight back.
  */
 async function loadSettings(): Promise<{ vm: SettingsViewModel; H: Stubs }> {
+	return loadWith({ nodeRunning: true });
+}
+
+/**
+ * The same, minus the running node — the state the app is in before the user has
+ * ever pressed Connect, and the only one in which `onConnect` does any work.
+ */
+async function loadColdSettings(): Promise<{ vm: SettingsViewModel; H: Stubs }> {
+	return loadWith({ nodeRunning: false });
+}
+
+async function loadWith({ nodeRunning }: { nodeRunning: boolean }): Promise<{ vm: SettingsViewModel; H: Stubs }> {
 	const H = await stubs;
 	H.reset();
+	if (nodeRunning) H.presentRunningNode();
 	vi.resetModules();
-	H.presentRunningNode();
 	const { SettingsViewModel } = await import('../app/settings/settings-view-model');
 	const vm = new SettingsViewModel();
 	H.clearCalls();
@@ -144,7 +156,7 @@ describe('onApplySeed without an enrollment invite', () => {
 describe('onApplySeed when the node refuses the seed', () => {
 	it('keeps both fields so the user can retry without re-pasting', async () => {
 		const { vm, H } = await withInvite();
-		H.state.node.applySeedResult = { success: false, error: 'not for this party', peersAdded: 0 };
+		H.state.node.applySeedResult = H.refusal('not for this party');
 		vm.seedInput = SEED;
 		vm.enrollInviteInput = INVITE;
 
@@ -156,7 +168,7 @@ describe('onApplySeed when the node refuses the seed', () => {
 
 	it('raises the failure modal with the node text', async () => {
 		const { vm, H } = await withInvite();
-		H.state.node.applySeedResult = { success: false, error: 'not for this party', peersAdded: 0 };
+		H.state.node.applySeedResult = H.refusal('not for this party');
 		vm.seedInput = SEED;
 		vm.enrollInviteInput = INVITE;
 
@@ -200,6 +212,26 @@ describe('onApplySeed when the invite cannot be read', () => {
 	});
 });
 
+describe('onApplySeed when the seed cannot be read', () => {
+	it('keeps both fields and names the seed, not the invite', async () => {
+		// The third failure source. It happens INSIDE `applySeed`, after the invite
+		// already decoded, so a reader of the modal must still be told which of the
+		// two pasted fields was the bad one.
+		const { vm, H } = await withInvite();
+		H.state.node.decodeSeedError = new SyntaxError('Unexpected token < in JSON at position 0');
+		vm.seedInput = 'not-a-seed';
+		vm.enrollInviteInput = INVITE;
+
+		await vm.onApplySeed();
+
+		expect(vm.modalTitle).toBe('Seed failed');
+		expect(vm.modalMessage).toMatch(/cold-start seed/i);
+		expect(vm.modalMessage).not.toMatch(/SyntaxError/);
+		expect(vm.seedInput).toBe('not-a-seed');
+		expect(vm.enrollInviteInput).toBe(INVITE);
+	});
+});
+
 // ── The blank-seed guard ──────────────────────────────────────────────────────
 
 describe('onApplySeed with no usable seed', () => {
@@ -225,5 +257,137 @@ describe('onApplySeed with no usable seed', () => {
 		expect(H.calls).toEqual([]);
 		expect(vm.modalVisibility).toBe('collapse');
 		expect(vm.enrollInviteInput).toBe(INVITE);
+	});
+});
+
+// ── The rest of the screen ────────────────────────────────────────────────────
+
+describe('onConnect', () => {
+	it('mints a party id when the field is blank and shows it back to the user', async () => {
+		// The demo's join-nothing path: no pasted party, so one is generated and
+		// written back into the bound field — otherwise the user could not tell the
+		// second phone which party to join.
+		const { vm, H } = await loadColdSettings();
+
+		await vm.onConnect();
+
+		expect(vm.partyId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+		expect(H.state.startOpts).toEqual([{ partyId: vm.partyId, bootstrapAddrs: [] }]);
+		expect(vm.cadre.connected).toBe(true);
+	});
+
+	it('passes the pasted party id and bootstrap address through, trimmed', async () => {
+		const { vm, H } = await loadColdSettings();
+		vm.partyId = '  party-x  ';
+		vm.bootstrapAddr = ' /ip4/1.2.3.4/tcp/4001/ws \n';
+
+		await vm.onConnect();
+
+		expect(H.state.startOpts).toEqual([{ partyId: 'party-x', bootstrapAddrs: ['/ip4/1.2.3.4/tcp/4001/ws'] }]);
+	});
+
+	it('raises the failure modal when the node will not start', async () => {
+		// `CadreViewModel.start` reports through `status`/`error` rather than
+		// throwing, so this screen has to read them back — a `try/catch` here would
+		// silently never fire.
+		const { vm, H } = await loadColdSettings();
+		H.state.startError = new Error('control network unreachable');
+
+		await vm.onConnect();
+
+		expect(vm.modalTitle).toBe('Connection failed');
+		expect(vm.modalMessage).toBe('control network unreachable');
+		expect(vm.modalVisibility).toBe('visible');
+	});
+});
+
+describe('onDisconnect', () => {
+	it('stops the node and leaves nothing bound to it', async () => {
+		const { vm, H } = await loadSettings();
+
+		await vm.onDisconnect();
+
+		expect(H.calls).toContain('stopPhoneNode');
+		expect(H.state.node.boundHandlerCount()).toBe(0);
+		expect(vm.cadre.status).toBe('idle');
+		expect(vm.modalVisibility).toBe('collapse');
+	});
+});
+
+describe('onDialPeer', () => {
+	it('dials the trimmed address and clears the field on success', async () => {
+		const { vm, H } = await loadSettings();
+		vm.peerAddr = '  /ip4/1.2.3.4/tcp/4001/ws  ';
+
+		expect(vm.canDialPeer).toBe(true);
+		await vm.onDialPeer();
+
+		expect(H.calls).toEqual(['dialPeer:/ip4/1.2.3.4/tcp/4001/ws']);
+		expect(vm.peerAddr).toBe('');
+		expect(vm.modalTitle).toBe('Peer connected');
+	});
+
+	it('keeps the address when the dial fails, so it can be retried', async () => {
+		const { vm, H } = await loadSettings();
+		H.state.dialError = new Error('dial refused');
+		vm.peerAddr = '/ip4/1.2.3.4/tcp/4001/ws';
+
+		await vm.onDialPeer();
+
+		expect(vm.peerAddr).toBe('/ip4/1.2.3.4/tcp/4001/ws');
+		expect(vm.modalTitle).toBe('Dial failed');
+		expect(vm.modalMessage).toContain('dial refused');
+	});
+
+	it('does nothing on a blank address', async () => {
+		const { vm, H } = await loadSettings();
+		vm.peerAddr = '   ';
+
+		expect(vm.canDialPeer).toBe(false);
+		await vm.onDialPeer();
+
+		expect(H.calls).toEqual([]);
+		expect(vm.modalVisibility).toBe('collapse');
+	});
+});
+
+describe('onCreateStrand', () => {
+	it('creates a strand under a fresh id and reports it shortened', async () => {
+		const { vm, H } = await loadSettings();
+
+		await vm.onCreateStrand();
+
+		expect(H.calls).toEqual(['createChatStrand', 'getStrands']);
+		expect(vm.cadre.strandCount).toBe(1);
+		const [id] = [...H.state.node.strands.keys()];
+		expect(vm.modalTitle).toBe('Strand created');
+		expect(vm.modalMessage).toBe(`ID: ${id!.slice(0, 8)}…`);
+	});
+
+	it('raises the failure modal when the strand cannot be created', async () => {
+		const { vm, H } = await loadSettings();
+		H.state.createStrandError = new Error('no runtime available');
+
+		await vm.onCreateStrand();
+
+		expect(vm.modalTitle).toBe('Strand creation failed');
+		expect(vm.modalMessage).toContain('no runtime available');
+		expect(vm.cadre.strandCount).toBe(0);
+	});
+});
+
+describe('onModalOk', () => {
+	it('dismisses the modal but leaves its text alone', async () => {
+		// Only visibility is bound to the dismiss — the title/message properties are
+		// overwritten by the next `showAlert`, so clearing them here would only add
+		// a second notification per dismissal.
+		const { vm } = await loadSettings();
+		vm.seedInput = SEED;
+		await vm.onApplySeed();
+
+		vm.onModalOk();
+
+		expect(vm.modalVisibility).toBe('collapse');
+		expect(vm.modalTitle).toBe('Seed applied');
 	});
 });

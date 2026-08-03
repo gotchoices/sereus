@@ -10,7 +10,7 @@
 
 import { Observable } from '@nativescript/core';
 import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
-import type { CadreNode, StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
+import type { CadreNode, ControlNetworkSeed, StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
 import {
 	startPhoneNode,
 	stopPhoneNode,
@@ -249,15 +249,35 @@ export class CadreViewModel extends Observable {
 	}
 
 	/**
+	 * `CadreNode.decodeSeed` is the same raw base64url → `JSON.parse` → cast as
+	 * `decodeInvite`, so the same rewrap applies: the Settings modal renders
+	 * `String(err)`, and a typo'd paste must name the field that was wrong rather
+	 * than read `SyntaxError: Unexpected token …`. Only the decode is wrapped —
+	 * a rejection from `applySeed` itself already carries the node's own text.
+	 */
+	private decodeSeedOrThrow(node: CadreNode, encoded: string): ControlNetworkSeed {
+		try {
+			return node.decodeSeed(encoded);
+		} catch (err) {
+			throw new Error(
+				'Cold-start seed could not be read (expected a base64url seed)',
+				{ cause: err },
+			);
+		}
+	}
+
+	/**
 	 * Decode + apply a base64url seed, optionally pinning owner keys taken from a
 	 * pasted `CadreInvite`; throws if the node rejects it.
 	 */
 	async applySeed(encoded: string, pinnedOwnerKeys?: string[]): Promise<void> {
 		const node = this._node;
 		if (!node) throw new Error('Node not started');
-		const seed = node.decodeSeed(encoded);
-		const trustPolicy = pinnedOwnerKeys?.length ? pinnedKeyTrustPolicy(pinnedOwnerKeys) : undefined;
-		if (pinnedOwnerKeys?.length) {
+		const seed = this.decodeSeedOrThrow(node, encoded);
+		// One place decides whether this is an enrollment apply — an empty pin list
+		// (what an older invite yields) must read exactly as "no pins".
+		const pins = pinnedOwnerKeys?.length ? pinnedOwnerKeys : undefined;
+		if (pins) {
 			// Enrollment seam: the invite's owner keys are out-of-band trust — anchor
 			// them in the node-local trusted-owner store BEFORE the seed is applied,
 			// so the anchor already holds them when seed trust consults it. The
@@ -268,9 +288,9 @@ export class CadreViewModel extends Observable {
 			// is a separate artifact that may be stale, for another party, or
 			// corrupt. Rolling the anchor back on a seed failure would make the user
 			// re-paste the invite on every retry.
-			await node.trustOwnerKeys(pinnedOwnerKeys, 'invite');
+			await node.trustOwnerKeys(pins, 'invite');
 		}
-		const result = await node.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
+		const result = await node.applySeed(seed, pins ? { trustPolicy: pinnedKeyTrustPolicy(pins) } : undefined);
 		if (!result.success) {
 			throw new Error(result.error ?? 'Seed application failed');
 		}

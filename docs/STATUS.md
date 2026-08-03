@@ -574,11 +574,12 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   package with no guard, for the reason that there is nothing to guard.
 - [x] **`reference-app-ns` guarded from its first suite.** Its Vitest harness landed with the
   `test/global-setup.ts` + `build-targets.spec.ts` pair already in place — the same eight targets as
-  `reference-app-rn` with `@optimystic/db-p2p-storage-ns` in place of the `-rn` one. Both its suites
-  run real `@serfab/cadre-core` values (`node-local-slots.spec.ts` composes `kvSlot` with the real
-  `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`; `cadre-phone.spec.ts` mocks only
-  cadre-core's `CadreNode` export and keeps both stores real over a faked `SqliteKVStore`), so the
-  guard covers every spec the single-project config collects.
+  `reference-app-rn` with `@optimystic/db-p2p-storage-ns` in place of the `-rn` one. Every one of its
+  suites runs real `@serfab/cadre-core` values (`node-local-slots.spec.ts` composes `kvSlot` with the
+  real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`; `cadre-phone.spec.ts` mocks only
+  cadre-core's `CadreNode` export and keeps both stores real over a faked `SqliteKVStore`; the two
+  view-model suites leave cadre-core wholly unmocked so `applySeed` receives a real
+  `pinnedKeyTrustPolicy`), so the guard covers every spec the single-project config collects.
 - [x] **Sequential integration runs restored.** `packages/integration-tests/vitest.config.ts` used
   `test.poolOptions.forks.singleFork`, which **Vitest 4 removed** — the setting was silently ignored
   and scenario files ran in parallel despite binding real network ports. Now expressed as top-level
