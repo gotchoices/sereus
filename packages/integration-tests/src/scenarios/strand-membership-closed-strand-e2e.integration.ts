@@ -140,6 +140,7 @@ import {
 	readBlockIndex,
 	newOrAdvancedSince,
 	type RawStorageCapture,
+	type BlockCoverageOptions,
 } from '../harness/index.js';
 import { loadSimpleSApp } from '../fixtures/index.js';
 
@@ -272,6 +273,49 @@ async function managerGeneration(db: Database, memberKey: string): Promise<numbe
 		if (row.MemberKey === memberKey) return Number(row.Generation);
 	}
 	return undefined;
+}
+
+// ── Raw block-store coverage gate ────────────────────────────────────────────
+
+/**
+ * Poll `target`'s raw store until it covers `source`'s, on the shared {@link GATE} budget.
+ *
+ * `waitUntil` swallows a throwing condition (header note), so a probe that ERRORED on every
+ * attempt would otherwise report a bare timeout. On expiry the comparison is re-run OUTSIDE
+ * the wait: that either rethrows the real per-attempt error or names the exact block ids the
+ * target never got.
+ *
+ * ⚠ Both stores are read directly — never through either node's database, per the confound
+ * `block-store-probe.ts` documents.
+ *
+ * NOTE: every 250 ms poll re-indexes BOTH stores and does one content-bytes lookup per
+ * source block, so the gate costs O(blocks) per attempt. Free at the 20-29 blocks these
+ * tests hold; if a scenario ever gates on a store with thousands of blocks, compare
+ * incrementally against the previous attempt's index instead of re-reading both in full.
+ *
+ * @param description - What the poll is waiting for, for the timeout message.
+ * @param failure - What a timeout MEANS, phrased so a reader cannot mistake a catch-up
+ *   failure for the property the calling test is actually about.
+ */
+async function awaitBlockCoverage(
+	source: IRawStorage,
+	target: IRawStorage,
+	description: string,
+	failure: string,
+	options: BlockCoverageOptions = {},
+): Promise<void> {
+	try {
+		await waitUntil(
+			async () => blockCoverageIsComplete(await compareBlockCoverage(source, target, options)),
+			{ ...GATE, description },
+		);
+	} catch (timeout) {
+		const finalGap = await compareBlockCoverage(source, target, options);
+		throw new Error(
+			`${failure} within ${GATE.timeoutMs}ms — ${formatBlockCoverageGap(finalGap)}`,
+			{ cause: timeout },
+		);
+	}
 }
 
 // ── App.Items signed-write helpers (reused shape from rbac-signed-write) ───────
@@ -979,24 +1023,12 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// `authoredSinceDial` re-evaluates against that fresh read, so a block first
 			// written mid-poll is included rather than skipped.
 			const startedAt = Date.now();
-			const coverage = { include: authoredSinceDial };
-			try {
-				await waitUntil(
-					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore, coverage)),
-					{ ...GATE, description: "the founder's post-dial blocks land physically in the joiner's block store" },
-				);
-			} catch (timeout) {
-				// `waitUntil` swallows a throwing condition (header note), so a probe that
-				// ERRORED every attempt would otherwise report a bare timeout. Re-running the
-				// comparison outside the wait either rethrows that real error or names the
-				// exact block ids the joiner never got.
-				const finalGap = await compareBlockCoverage(founderStore, joinerStore, coverage);
-				throw new Error(
-					`joiner's block store never covered the founder's post-dial blocks within ${GATE.timeoutMs}ms — ` +
-					formatBlockCoverageGap(finalGap),
-					{ cause: timeout },
-				);
-			}
+			await awaitBlockCoverage(
+				founderStore, joinerStore,
+				"the founder's post-dial blocks land physically in the joiner's block store",
+				"joiner's block store never covered the founder's post-dial blocks",
+				{ include: authoredSinceDial },
+			);
 			console.log(
 				`[closed-strand:physical] founder holds ${founderIndex.size} committed blocks, ` +
 				`${authored.size} of them authored or advanced since the dial; joiner's own store ` +
@@ -1010,22 +1042,12 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// bootstrap blocks committed before the dial must be physically on the joiner.
 			// Still a raw-store poll — the ⚠ joinerDb rule above holds here too.
 			const wholeStoreStartedAt = Date.now();
-			try {
-				await waitUntil(
-					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
-					{ ...GATE, description: "the founder's WHOLE store (pre-dial blocks included) lands physically in the joiner's block store" },
-				);
-			} catch (timeout) {
-				// Same rescue as above: name the exact ids the joiner never got, or rethrow
-				// the real per-attempt error a bare timeout would have swallowed.
-				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
-				throw new Error(
-					`joiner's block store never covered the founder's WHOLE store within ${GATE.timeoutMs}ms ` +
-					'(peer-join catch-up failed — see cadre-core/src/strand-backfill.ts) — ' +
-					formatBlockCoverageGap(finalGap),
-					{ cause: timeout },
-				);
-			}
+			await awaitBlockCoverage(
+				founderStore, joinerStore,
+				"the founder's WHOLE store (pre-dial blocks included) lands physically in the joiner's block store",
+				"joiner's block store never covered the founder's WHOLE store " +
+				'(peer-join catch-up failed — see cadre-core/src/strand-backfill.ts)',
+			);
 			console.log(
 				`[closed-strand:physical] whole-store coverage (peer-join catch-up) complete ` +
 				`${Date.now() - wholeStoreStartedAt}ms after the gate started: founder holds ` +
@@ -1253,24 +1275,13 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 		let founderStopped = false;
 		try {
 			// ── 1. Catch-up, observed through the RAW STORE alone ────────────────
-			try {
-				await waitUntil(
-					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
-					{ ...GATE, description: "the founder's whole store lands physically in the joiner's block store" },
-				);
-			} catch (timeout) {
-				// `waitUntil` swallows a throwing condition (header note), so re-run the
-				// comparison outside the wait: either the real per-attempt error resurfaces or
-				// the exact block ids the joiner never got are named.
-				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
-				throw new Error(
-					`joiner's block store never covered the founder's whole store within ${GATE.timeoutMs}ms, ` +
-					'so this run says nothing about offline durability — this is a PEER-JOIN CATCH-UP failure ' +
-					'(cadre-core/src/strand-backfill.ts), not an offline-read failure — ' +
-					formatBlockCoverageGap(finalGap),
-					{ cause: timeout },
-				);
-			}
+			await awaitBlockCoverage(
+				founderStore, joinerStore,
+				"the founder's whole store lands physically in the joiner's block store",
+				"joiner's block store never covered the founder's whole store, so this run says nothing " +
+				'about offline durability — this is a PEER-JOIN CATCH-UP failure ' +
+				'(cadre-core/src/strand-backfill.ts), not an offline-read failure',
+			);
 
 			// What the joiner was holding at the moment it went solo, for a future reader.
 			const founderBlocks = (await readBlockIndex(founderStore)).size;
@@ -1327,6 +1338,11 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				.toBe(founderKeyPair.publicKeyB64);
 			expect(await memberKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
 			expect(await managerKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+
+			// Still alone AFTER the reads, not merely before them. The step-2 poll proves the
+			// joiner was isolated when the reads began; without this it could have been rescued
+			// by a connection landing mid-test and every assertion above would still pass.
+			expect(joinerStrand.libp2pNode!.getConnections(), 'joiner strand connections during the reads').toHaveLength(0);
 		} finally {
 			await stopBoth(founderStopped ? undefined : founderNode, joinerNode);
 		}
