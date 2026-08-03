@@ -413,3 +413,39 @@ This ticket stays in `blocked/` as the record for the class and for the siblings
 genuinely upstream (`forked-control-collection-sync-livelocks`,
 `strand-unique-index-sync-stale-revision`, `control-reads-blocked-by-stalled-write`). If the fix
 ticket's trace lands upstream after all, fold its findings back in here.
+
+## Configuration fix applied 2026-08-02 — validation pending
+
+`CONTROL_CLUSTER_POLICY` declared no `assumedClusterSize`, so Optimystic's read-repair /
+reconcile **corroboration floor** fell back to `clusterSize` — which for the control network is
+`CONTROL_REPLICATION_BREADTH`, 16. `corroboratorCapacity(peers, 16)` is then `max(peers, 15)`, so
+the floor of two distinct non-self corroborators binds. A two-node party fields exactly one peer,
+can never reach two, and therefore can never repair a block: `cluster-fetch:no-quorum`,
+`reconcile:no-rev-quorum`, `reconcile:no-content-quorum`, forever. Every scenario in this class is
+a two-node or joining-second-node case, which is what makes this a candidate for the whole class
+rather than one member of it.
+
+Fixed in `42cd12c` by naming `assumedClusterSize: 2` in `CONTROL_CLUSTER_POLICY`. The field feeds
+two consumers with different fallbacks — the membership admission gate already defaults to 2
+(`minAbsoluteClusterSize`), so the change is a no-op there. It does **not** lower the replication
+factor, which stays at `CONTROL_REPLICATION_BREADTH`. The comment at `cadre-node.ts:999` claiming
+the field was "deliberately left at Optimystic's default of 2" was true of the admission gate and
+false of the corroboration floor; that half-truth is what hid this for as long as it did. The unit
+spec pinned the same mistake with `expect(assumedClusterSize).toBeUndefined()`.
+
+Credit: diagnosed by the agent working `../optimystic`, verified here against both codebases
+before applying.
+
+**Not yet validated.** The decisive run — `control-db-two-node-convergence` solo, then the class —
+has not happened: `@quereus/quereus`'s `dist` is stale against a sibling repo under concurrent
+automation, and the freshness guard correctly refuses to run compiled output that predates its
+source. Do not close anything in this class on the strength of the reasoning alone.
+
+Expect this to fix some of the class, not obviously all of it: the corroboration floor explains
+the `no-quorum` family directly, but the header-absent symptom recorded in the 08-02 measurement
+is a different shape and may survive. `fix/bug-control-collection-header-absent-at-committed-revision`
+stays open until a green run says otherwise.
+
+If a scenario is still red after this, `StaleFailure.staleAt` (new in Optimystic v0.18.0) carries
+the coordinator's actual revision in the `SyncRetryExhaustedError` message. Capture that number —
+upstream asked for it specifically, and it is worth more than the surrounding trace.
