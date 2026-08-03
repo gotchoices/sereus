@@ -3867,8 +3867,9 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Dial the given relay(s) from the control node and wait until a
-   * `/p2p-circuit` reservation makes this node dialable.
+   * Dial the given relay(s) from the control node, ask the first one that answers
+   * for a reservation slot, and wait until the resulting `/p2p-circuit` address
+   * makes this node dialable.
    *
    * For nodes that listen on the bare `/p2p-circuit` SEARCH addr (a browser tab)
    * rather than a configured `network.relayAddrs` circuit listener — see

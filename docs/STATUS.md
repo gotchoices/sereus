@@ -890,10 +890,13 @@ where local rows exist.
   `/p2p-circuit` search listener against it (reserve, lose the relay, reserve alongside a dead one,
   give up at the deadline rather than at libp2p's per-dial timeout), plus one `CadreNode`-level
   reservation that also pins the `stop()` posture reset. That spec is where the **search route's
-  identify mismatch** was found — a cadre node cannot discover a stock-identify relay, so its
-  `CadreNode` case has to match the namespaced prefix to reserve at all
-  (`tickets/fix/relay-search-listener-cannot-discover-stock-relay`).
-  What remains integration-only is the same posture over real WAN transports.
+  identify mismatch** was found — a cadre node's namespaced identify means libp2p's relay discovery
+  can never nominate a stock-identify relay — and it is now the acceptance gate for the fix: its
+  `CadreNode` case reserves against a **stock** `identify()` relay because the reservation is
+  requested explicitly rather than waited for. Three more specs there pin the legible failures
+  (no `/p2p-circuit` listen addr, no circuit-relay transport, peer that is not a relay) and one pins
+  the libp2p internal seam the explicit request reaches through, so a libp2p bump that moves it
+  fails loudly. What remains integration-only is the same posture over real WAN transports.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of

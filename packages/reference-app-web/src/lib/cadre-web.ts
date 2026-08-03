@@ -337,8 +337,11 @@ export async function startCadre(): Promise<CadreNode> {
 			// tabs (no relay configured) keep the Phase-1 no-listen posture.
 			//
 			// The BARE `/p2p-circuit` entry is load-bearing and deliberate: it puts
-			// libp2p's circuit-relay listener in search/discovery mode, which never
-			// throws when a relay is unreachable. `network.relayAddrs` is the other
+			// libp2p's circuit-relay listener in SEARCH mode, which registers a pending
+			// reservation and never throws when a relay is unreachable. It does NOT make
+			// the tab depend on libp2p's relay *discovery* — cadre-core fills that pending
+			// reservation by asking the relay directly (discovery could never see this
+			// relay; see `relay-reservation.ts`). `network.relayAddrs` is the other
 			// route to a reservation — it builds a `<relay>/p2p-circuit` CONFIGURED
 			// listener that is fatal at start when the relay is down (libp2p's
 			// transport manager defaults to FATAL_ALL). A browser tab must still boot

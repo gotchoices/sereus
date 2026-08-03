@@ -807,6 +807,44 @@ sequenceDiagram
 
 Once multiple nodes with public IPs exist in the cadre, the control network becomes more resilient and less dependent on relays.
 
+#### Reservations are requested explicitly, not discovered
+
+A node reserves its relay slot one of two ways, and both come down to a listen
+address (`packages/cadre-core/src/relay-addrs.ts`,
+`packages/cadre-core/src/relay-reservation.ts`):
+
+| listen addr | route | unreachable relay |
+| --- | --- | --- |
+| `<relay addr>/p2p/<relayPeerId>/p2p-circuit` — what `network.relayAddrs` builds | names the relay, reserves on it at start | **fatal**: node does not start |
+| bare `/p2p-circuit` | registers a *pending* reservation for someone to fill | nothing throws; node stays solo |
+
+The second route is what browser tabs and other must-still-boot nodes use, and
+`CadreNode.reserveRelays()` is what fills its pending reservation.
+
+It cannot rely on libp2p's built-in relay *discovery* to do that. Discovery
+nominates a peer as a relay only once the relay-hop protocol id appears in that
+peer's peer-store protocol list, and that list is written exclusively by the
+**identify** handshake. `@optimystic/db-p2p` namespaces identify per network
+(`/optimystic/control-<partyId>/id/1.0.0`) so that nodes from different parties
+cannot cross-talk, while the relay `ops/docker/libp2p-infra` deploys runs stock
+identify (`/ipfs/id/1.0.0`). Neither side can open the other's identify protocol,
+so neither learns anything about the other and discovery never nominates the
+relay. The transport connection itself is fine, which is why this used to surface
+as a plain reservation timeout.
+
+Identify is incidental to relaying, though. The reservation
+(`/libp2p/circuit/relay/0.2.0/hop`), a third peer's CONNECT through the relay, and
+the STOP handler on the reserving node all use stock, un-namespaced protocol ids
+that the deployed relay already serves. Discovery's only job is to *guess* which
+connected peer is a relay — and a node that was configured with the relay's
+address does not need to guess. So `relay-reservation.ts` dials the configured
+relays and asks the first one that answers for a slot directly, through the
+circuit-relay transport's own reservation store. There is no public libp2p API for
+"reserve on this specific relay", so that reach is internal-by-necessity: it fails
+soft (a missing seam yields a plain error, never a throw) and a spec in
+`packages/cadre-core/test/relay-reservation.spec.ts` pins the shape so a libp2p
+upgrade that moves it fails loudly.
+
 The relay container `ops/docker/libp2p-infra` deploys (`src/main.ts`) runs
 `circuitRelayServer()` with libp2p's default per-reservation `Limit` (~128 KiB
 / 2 min) turned **off** and its concurrent-reservation cap raised well past
@@ -903,18 +941,11 @@ interface CadreNodeConfig {
     // start (libp2p's transport manager defaults to FATAL_ALL), so naming a relay
     // that is down means the node does not come up. The FAIL-SOFT alternative is a
     // bare `/p2p-circuit` listen entry — libp2p's relay *search* listener, which
-    // never throws — driven by `CadreNode.reserveRelays()` / `relay-reservation.ts`.
+    // never throws — driven by `CadreNode.reserveRelays()` / `relay-reservation.ts`,
+    // which asks the named relay for a slot explicitly (see "Relay Integration").
     // Browser tabs take that route so a dead relay leaves them solo rather than
     // dead. The two are ALTERNATIVES, not layers: setting both on one node puts the
     // fatal listener back.
-    //
-    // ⚠️ The search route does not yet reach `reserved` against the relay `ops/`
-    // deploys: relay discovery keys on the IDENTIFY-learned protocol list, and a
-    // cadre node's identify is network-namespaced (`/optimystic/control-<partyId>/
-    // id/1.0.0`) while that relay runs stock identify — so no reservation is ever
-    // attempted and the node reports a generic timeout. The configured route above
-    // is unaffected (it names the relay, so it needs no discovery). Tracked by
-    // `tickets/fix/relay-search-listener-cannot-discover-stock-relay`.
     relayAddrs?: string[];
     enableRelay?: boolean;        // Enable circuit relay (default: true for storage profile)
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)

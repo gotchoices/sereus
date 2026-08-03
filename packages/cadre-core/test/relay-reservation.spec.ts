@@ -13,6 +13,7 @@ import type { CadreNodeConfig } from '../src/types.js';
 import {
   circuitMultiaddrs,
   driveRelayReservation,
+  findCircuitRelayTransport,
   resolveRelayReservationState
 } from '../src/relay-reservation.js';
 
@@ -179,6 +180,49 @@ async function startSearchClient(): Promise<Libp2p> {
   return node;
 }
 
+/**
+ * A client with the circuit-relay transport but NO bare `/p2p-circuit` listen
+ * addr, so libp2p never registers a pending reservation for it — the
+ * misconfiguration that used to surface as a plain timeout.
+ */
+async function startNonSearchingClient(): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+    transports: [tcp(), circuitRelayTransport()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/** A client with no circuit-relay transport at all: it can never hold a reservation. */
+async function startPlainTcpClient(): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: [] },
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/** A dialable libp2p node that is NOT a relay — no `circuitRelayServer()`. */
+async function startPlainTcpListener(): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() }
+  });
+  nodes.push(node);
+  return node;
+}
+
 /** A syntactically valid relay addr with nothing listening behind it (refused fast). */
 async function deadRelayAddr(): Promise<string> {
   const key = await generateKeyPair('Ed25519');
@@ -311,43 +355,99 @@ describe('driveRelayReservation deadline', () => {
   }, 30_000);
 });
 
-describe('CadreNode relay reservation against a live relay', () => {
-  /**
-   * A relay whose identify protocol id matches what a cadre CONTROL node speaks:
-   * `@optimystic/db-p2p` namespaces identify per network
-   * (`/optimystic/control-<partyId>/id/1.0.0`), and circuit-relay-v2's search
-   * listener only reserves on a peer whose identify-learned protocol list carries
-   * the hop codec. A stock `identify()` relay — which is what `ops/` deploys —
-   * therefore never gets discovered, so this test would sit at `error`.
-   *
-   * That is a real defect in the deployed path, NOT a test artifact: see
-   * `tickets/fix/relay-search-listener-cannot-discover-stock-relay.md`. Matching
-   * the prefix here isolates THIS spec to the reservation driver; drop the
-   * override once that ticket lands and this should still pass.
-   */
-  async function startNamespacedRelay(partyId: string): Promise<Libp2p> {
-    const relay = await createLibp2p({
-      addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
-      transports: [tcp()],
-      connectionEncrypters: [noise()],
-      streamMuxers: [yamux()],
-      services: {
-        identify: identify({ protocolPrefix: `optimystic/control-${partyId}` }),
-        relay: circuitRelayServer()
-      }
-    });
-    nodes.push(relay);
-    return relay;
-  }
+describe('findCircuitRelayTransport (libp2p seam)', () => {
+  // TRIPWIRE for a libp2p upgrade. `driveRelayReservation` reaches through
+  // `node.components.transportManager` to the circuit-relay transport's
+  // `reservationStore` because libp2p exposes no public "reserve on THIS relay"
+  // API. If a bump moves or renames that seam, the module falls back to `null`,
+  // fails soft, and would silently revert to the discovery wait that never fires
+  // against a stock-identify relay — so pin the shape here and fail loudly.
+  it('finds the circuit-relay transport and its reservation store', async () => {
+    const node = await startSearchClient();
 
+    const transport = findCircuitRelayTransport(node);
+    expect(transport).not.toBeNull();
+    expect(typeof transport?.reservationStore.addRelay).toBe('function');
+    expect(typeof transport?.reservationStore.hasReservation).toBe('function');
+  });
+
+  it('returns null for a node with no circuit-relay transport', async () => {
+    const node = await startPlainTcpClient();
+
+    expect(findCircuitRelayTransport(node)).toBeNull();
+  });
+});
+
+describe('driveRelayReservation legible failures', () => {
+  // The drive used to report `no circuit reservation within 10000ms` for every
+  // one of these — the clock, not the cause. Each spec pins the real reason.
+  const BOUND_MS = 2_000;
+
+  it('names the missing /p2p-circuit listen address rather than timing out', async () => {
+    // No bare `/p2p-circuit` listen addr means libp2p registered no pending
+    // reservation, so `addRelay(_, 'discovered')` is refused with
+    // `HadEnoughRelaysError` — whose own message ("we do not need any more
+    // relays") says the opposite of what happened.
+    const relay = await startRelay();
+    const client = await startNonSearchingClient();
+
+    const { error } = await driveRelayReservation(client, [relay.getMultiaddrs()[0].toString()], {
+      timeoutMs: BOUND_MS,
+      pollMs: 100
+    });
+    expect(error).toContain('/p2p-circuit');
+    expect(error).not.toContain('do not need any more relays');
+    expect(error).not.toMatch(/within \d+ms/);
+  });
+
+  it('names the missing circuit-relay transport rather than timing out', async () => {
+    const relay = await startRelay();
+    const client = await startPlainTcpClient();
+
+    const started = Date.now();
+    const { error } = await driveRelayReservation(client, [relay.getMultiaddrs()[0].toString()], {
+      timeoutMs: 10_000,
+      pollMs: 100
+    });
+    expect(error).toContain('circuit-relay transport');
+    // No transport means no `/p2p-circuit` addr can EVER appear, so the drive
+    // reports at once instead of burning the whole deadline polling.
+    expect(Date.now() - started).toBeLessThan(5_000);
+  });
+
+  it('names a peer that is not a relay rather than timing out', async () => {
+    // A live libp2p node with no `circuitRelayServer()`: the dial succeeds, the
+    // hop protocol does not exist, so `addRelay` rejects `UnsupportedProtocolError`.
+    const notARelay = await startPlainTcpListener();
+    const client = await startSearchClient();
+    const addr = notARelay.getMultiaddrs()[0].toString();
+
+    const { error } = await driveRelayReservation(client, [addr], {
+      timeoutMs: BOUND_MS,
+      pollMs: 100
+    });
+    expect(error).toContain('is not a relay');
+    expect(error).toContain(addr);
+  });
+});
+
+describe('CadreNode relay reservation against a live relay', () => {
   /**
    * The wiring the free-function specs above cannot reach: `CadreNode` handing its
    * own control node to the driver, reporting `reserved` off it, and dropping the
    * posture on `stop()` so a restarted instance never reports a dead run.
+   *
+   * The relay here runs STOCK `identify()`, exactly like the one
+   * `ops/docker/libp2p-infra` deploys, while the control node's identify is
+   * network-namespaced (`/optimystic/control-<partyId>/id/1.0.0`) — so the two
+   * never identify each other and libp2p's relay discovery can never nominate
+   * this relay. This spec passing anyway is the whole point of driving the
+   * reservation explicitly; if it regresses to a timeout, the driver went back to
+   * waiting on discovery.
    */
   it('reserves through the control node and clears the posture on stop', async () => {
     const partyId = `relay-reservation-live-${Math.random().toString(36).slice(2)}`;
-    const relay = await startNamespacedRelay(partyId);
+    const relay = await startRelay();
     const node = new CadreNode({
       controlNetwork: {
         partyId,
