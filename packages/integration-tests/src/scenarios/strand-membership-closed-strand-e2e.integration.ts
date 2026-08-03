@@ -10,13 +10,15 @@
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
  * tests in `strand-formation-e2e.integration.ts`.
  *
- * FIVE independent tests, each with its OWN two-node strand via
+ * SIX independent tests, each with its OWN two-node strand via
  * {@link bringUpClosedStrand}: the admission/rotation lifecycle, device-record
- * (`MemberPeer`) removal, a JOINER-AUTHORED join, PHYSICAL block replication, and
- * MANAGER-AUTHORIZED writers run from the second node. They are deliberately NOT one
- * narrative — the removal test asserts enumerations, the physical-replication test may
- * not read the joiner's database at all, and four of the five end with rejected writes
- * whose post-state this file does not assert (see the rejection floor below).
+ * (`MemberPeer`) removal, a JOINER-AUTHORED join, PHYSICAL block replication,
+ * MANAGER-AUTHORIZED writers run from the second node, and OFFLINE DURABILITY — the
+ * founder STOPPED, the joiner answering out of its own copy. They are deliberately NOT
+ * one narrative — the removal test asserts enumerations, the physical-replication test
+ * may not read the joiner's database at all, the durability test may not read it until
+ * the founder is down, and four of the six end with rejected writes whose post-state
+ * this file does not assert (see the rejection floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
  * This asserts the SQL-LAYER membership lifecycle using the writer APIs against the
@@ -74,8 +76,8 @@
  * log (`Wait condition threw: …`) before concluding it is a convergence failure.
  *
  * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the four
- * database-driven tests (all but the fourth) proves a row is VISIBLE from the other
- * node's database, not that its block lives there. A read on either node resolves one
+ * CONVERGENCE tests (the first, second, third and fifth) proves a row is VISIBLE from the
+ * other node's database, not that its block lives there. A read on either node resolves one
  * coordinator peer per block; when that resolves to the authoring node, the other node's
  * `select` is a remote call against the author's storage and nothing needs to live
  * locally. Visibility is the property an application actually observes, and it is what
@@ -85,6 +87,11 @@
  * It gates both halves: post-dial blocks arriving as part of each commit, and pre-dial
  * blocks arriving via the peer-join catch-up (cadre-core's `strand-backfill.ts`) — see
  * its WHAT IS AND IS NOT CLAIMED comment.
+ * PHYSICAL PRESENCE IS NOT USABILITY, and the SIXTH test closes that last step: it waits
+ * for whole-store coverage through the raw store alone, STOPS the founder, proves the
+ * joiner holds zero strand connections, and only then reads `joinerDb`. With nobody left
+ * to answer remotely, those reads are the first in this file that the joiner must serve
+ * out of its own storage.
  *
  * Rejection floor: per the optimystic deferred-constraint-rollback gap (backlog),
  * rejected writes assert via `rejects.toThrow()` ("throws" is the floor) and do NOT
@@ -1202,4 +1209,126 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 		// Roughly twice as many convergence gates as the other tests. Bring-up still
 		// dominates the wall clock — this is headroom, not an expectation of slowness.
 	}, 90_000);
+
+	// ── OFFLINE DURABILITY: the founder stops, the joiner answers alone ───────
+	//
+	// The fourth test proves the BYTES moved — the founder's whole store is covered by the
+	// joiner's own store. That is a storage claim, and it is the reason the peer-join
+	// catch-up was built, but on its own it does not show the joiner can USE what it
+	// holds: every read in this file so far ran while the founder was up, and a read
+	// resolves one coordinator peer per block, so any of them could have been answered
+	// out of the founder's storage (see the visibility note in the header).
+	//
+	// This test removes that possibility by removing the founder. Sequence, and why each
+	// step is in this order:
+	//
+	//   1. WAIT FOR CATCH-UP THROUGH THE RAW STORE ONLY. Whole-store coverage,
+	//      `founder ⊆ joiner`, no `include` narrowing. It must be the raw store and not a
+	//      `joinerDb` read, for the reason `block-store-probe.ts` documents: a read issued
+	//      through the joiner can itself pull the block in (`CoordinatorRepo.get` →
+	//      `restoreCorroborated` → `acquireBlockFromCohort` → `saveReplicatedBlock`), which
+	//      would place the bytes this step is supposed to be waiting for. Failing this poll
+	//      is a failure of the CATCH-UP (`cadre-core/src/strand-backfill.ts`), not of
+	//      offline durability — the message says so, because proceeding past it would make
+	//      the second half meaningless.
+	//   2. STOP THE FOUNDER, then POLL until the joiner's strand node reports ZERO
+	//      connections. Polled, not asserted once: the founder's transport teardown is not
+	//      instantaneous, and a single leftover connection would let the reads below be
+	//      answered over the wire — exactly the trap the disconnection scenario in
+	//      `convergence-stress.integration.ts` fell into (see
+	//      `tickets/blocked/offline-node-cannot-serve-its-own-data.md`). Self-coordination
+	//      is decided per key-network, i.e. per strand libp2p node, so the joiner's control
+	//      connections neither rescue nor contaminate this.
+	//   3. ONLY NOW read `joinerDb`. From here it is not merely allowed, it is the whole
+	//      point: nobody else is left to answer.
+	//
+	// The founder is never restarted. Convergence-after-reconnect is a different
+	// scenario's job and adding it here would blur what a red result means.
+	it("serves the strand's founding membership from the joiner alone after the founder stops", async () => {
+		const { founderNode, joinerNode, joinerStrand, joinerDb, founderKeyPair, founderStore, joinerStore } =
+			await bringUpClosedStrand('offline-founder');
+
+		// The teardown must not stop a node that is already down: `founderNode.stop()` is
+		// a step of the test itself, not only of the cleanup.
+		let founderStopped = false;
+		try {
+			// ── 1. Catch-up, observed through the RAW STORE alone ────────────────
+			try {
+				await waitUntil(
+					async () => blockCoverageIsComplete(await compareBlockCoverage(founderStore, joinerStore)),
+					{ ...GATE, description: "the founder's whole store lands physically in the joiner's block store" },
+				);
+			} catch (timeout) {
+				// `waitUntil` swallows a throwing condition (header note), so re-run the
+				// comparison outside the wait: either the real per-attempt error resurfaces or
+				// the exact block ids the joiner never got are named.
+				const finalGap = await compareBlockCoverage(founderStore, joinerStore);
+				throw new Error(
+					`joiner's block store never covered the founder's whole store within ${GATE.timeoutMs}ms, ` +
+					'so this run says nothing about offline durability — this is a PEER-JOIN CATCH-UP failure ' +
+					'(cadre-core/src/strand-backfill.ts), not an offline-read failure — ' +
+					formatBlockCoverageGap(finalGap),
+					{ cause: timeout },
+				);
+			}
+
+			// What the joiner was holding at the moment it went solo, for a future reader.
+			const founderBlocks = (await readBlockIndex(founderStore)).size;
+			const joinerBlocks = (await readBlockIndex(joinerStore)).size;
+			console.log(
+				`[closed-strand:offline-founder] before the stop: founder holds ${founderBlocks} committed blocks, ` +
+				`joiner holds ${joinerBlocks} (joiner covers all of the founder's)`,
+			);
+
+			// ── 2. The founder goes away, and the joiner is proven alone ─────────
+			await founderNode.stop();
+			founderStopped = true;
+			await waitUntil(
+				() => joinerStrand.libp2pNode!.getConnections().length === 0,
+				{ ...GATE, description: "the joiner's strand node drops to zero connections" },
+			);
+			console.log(
+				`[closed-strand:offline-founder] founder stopped; joiner strand connections = ` +
+				`${joinerStrand.libp2pNode!.getConnections().length}`,
+			);
+
+			// ── 3. THE CLAIM: the joiner answers the founding membership by itself ──
+			// Elapsed time of the FIRST post-stop read is logged because that read is the one
+			// that has to resolve the joiner itself as coordinator. Optimystic refuses
+			// self-coordination for 30 s after the last connection drops, EXCEPT for a
+			// deferrable denial on a read with zero connections, which is admitted as a
+			// degraded read (`libp2p-key-network.ts`, `findCoordinator:fret-self-degraded`).
+			// This test sits squarely in that escape. If it is ever removed the read dies with
+			// `Self-coordination blocked: grace-period-not-elapsed. No coordinator available
+			// for key.` — the fingerprint tracked by
+			// `tickets/blocked/offline-node-cannot-serve-its-own-data.md`, and a dependency
+			// failure rather than anything this file can fix. Do NOT sleep past the guard: the
+			// point of this test is that an isolated node answers NOW.
+			const firstReadStartedAt = Date.now();
+			const headerCount = await strandCount(joinerDb, 'Header');
+			const firstReadMs = Date.now() - firstReadStartedAt;
+			console.log(`[closed-strand:offline-founder] first post-stop read took ${firstReadMs}ms`);
+			expect(headerCount).toBeGreaterThanOrEqual(1);
+			expect(await strandCount(joinerDb, 'Member')).toBeGreaterThanOrEqual(1);
+			expect(await strandCount(joinerDb, 'Manager')).toBeGreaterThanOrEqual(1);
+
+			// The strand is still the CLOSED one it was founded as.
+			expect((await joinerDb.get('select Type from Strand.Header'))?.Type).toBe('c');
+
+			// A KEYED lookup, deliberately a shape the bring-up gate never issued. That gate
+			// read only `count(1)`, so a collection-level cache could satisfy a repeat of it
+			// from memory and hide a block the joiner does not actually hold. Resolving the
+			// founder's key by equality forces the read down a path the earlier count did not
+			// take. Presence-by-equality is allowed by this file's lookup-shape rule (a point
+			// lookup that misses FAILS this assertion rather than passing it); the scan-based
+			// `managerKeys` below covers the same claim from the other direction, so a
+			// disagreement between the two is itself the finding.
+			expect((await joinerDb.get('select Key from Strand.Member where Key = ?', [founderKeyPair.publicKeyB64]))?.Key)
+				.toBe(founderKeyPair.publicKeyB64);
+			expect(await memberKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+			expect(await managerKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+		} finally {
+			await stopBoth(founderStopped ? undefined : founderNode, joinerNode);
+		}
+	}, 60_000);
 });
