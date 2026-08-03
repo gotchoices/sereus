@@ -782,13 +782,16 @@ export class CadreNode implements SAppIdLookup {
     }
 
     log('Stopping CadreNode');
-    await this.cleanup();
-    // Drop the relay-reservation posture: a stopped node holds no reservation, so
-    // a restarted instance must not report the previous run's `reserved`. Stopping
-    // the supervisor matters most — a live retry timer would re-dial a torn-down
-    // node and keep the process alive past stop().
+    // Stop the retry loop BEFORE tearing the node down, not after: `cleanup()`
+    // stops the control node partway through, and a tick that fires during it
+    // would dial and then poll a half-torn-down node for the whole reserve
+    // timeout — logging spurious dial failures and holding the process open.
     this.relayReserveSupervisor?.stop();
     this.relayReserveSupervisor = null;
+    await this.cleanup();
+    // Drop the rest of the relay-reservation posture: a stopped node holds no
+    // reservation, so a restarted instance must not report the previous run's
+    // `reserved`.
     this.relayReserveAddrs = [];
     this.relayReserveError = null;
     this._running = false;

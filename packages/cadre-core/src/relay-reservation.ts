@@ -213,11 +213,12 @@ interface ConnectedRelay {
  * Dial every relay in `addrs`, ask the first one that answers for a reservation
  * slot, then wait until a `/p2p-circuit` address appears.
  *
- * Never throws — a dial rejection, a rejected reservation, or a timeout comes
- * back as an `error` string. A dial that throws does NOT cost the rest of the
- * list: one dead relay among two must not cost the reservation on the live one,
- * so every addr is dialed and the first error (in list order) is kept. A
- * reservation that lands wins over any earlier error (`error: null`).
+ * Never throws — a dial rejection, a rejected reservation, a MALFORMED address,
+ * or a timeout all come back as an `error` string. A dial that throws does NOT
+ * cost the rest of the list: one dead relay among two must not cost the
+ * reservation on the live one, so every addr is dialed and the first error (in
+ * list order) is kept. A reservation that lands wins over any earlier error
+ * (`error: null`).
  *
  * `timeoutMs` bounds the WHOLE drive — dials, reservation requests and the wait
  * share one deadline.
@@ -274,12 +275,29 @@ async function dialRelays(
   const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
   try {
     const results = await Promise.allSettled(
-      addrs.map((addr) => node.dial(multiaddr(addr), { signal: controller.signal }))
+      addrs.map((addr) => dialOne(node, addr, controller.signal))
     );
     return { connected: connectedRelays(addrs, results), error: firstDialError(addrs, results) };
   } finally {
     clearTimeout(timer);
   }
+}
+
+/**
+ * One dial, with the address PARSED INSIDE the promise.
+ *
+ * `multiaddr()` throws SYNCHRONOUSLY on a malformed string, and a throw out of
+ * the `map` callback escapes `Promise.allSettled` altogether — it would reject
+ * the whole drive (breaking the never-throws contract) and discard the dials to
+ * the other, perfectly good, addrs. `async` demotes it to a settled rejection,
+ * which is already exactly how a dial failure is reported.
+ */
+async function dialOne(
+  node: Libp2p,
+  addr: string,
+  signal: AbortSignal
+): Promise<{ remotePeer: PeerId }> {
+  return node.dial(multiaddr(addr), { signal });
 }
 
 function connectedRelays(
@@ -524,8 +542,9 @@ export interface RelayReservationSupervisor {
  *  - a reservation is held → reset the backoff, clear the error, re-check in
  *    `checkMs`. No drive: a healthy node must not re-request every few seconds.
  *  - otherwise → un-poison the reservation store's relay filter (see
- *    {@link clearRelayFilterEntry}), run ONE {@link driveRelayReservation}, then
- *    sleep the current backoff and double it up to `maxBackoffMs`.
+ *    {@link clearRelayFilterEntry}) and run ONE {@link driveRelayReservation}.
+ *    If that lands a reservation, rejoin the healthy path above; if not, sleep
+ *    the current backoff and double it up to `maxBackoffMs`.
  *
  * Starts immediately; the first tick runs before this returns.
  */
@@ -566,6 +585,11 @@ export function clearRelayFilterEntry(store: RelayReservationStoreLike, addr: st
     // The peer id is in the multiaddr, so this costs no dial and can run before one.
     const peerId = trailingPeerId(multiaddr(addr));
     if (peerId === null) {
+      // NOTE: an addr with no `/p2p/` component can still be dialed and reserved
+      // through (the peer id comes off the connection), but it can never be
+      // un-poisoned — so for THAT addr a poisoned filter is permanent again. No
+      // caller supplies such an addr today; if one ever does, resolve the peer id
+      // from the live connection instead of the multiaddr.
       return false;
     }
     return filter.remove(peerIdFromString(peerId).toMultihash().bytes);
@@ -640,7 +664,7 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       return;
     }
     this.nextTickAtMs = null;
-    if (circuitMultiaddrs(this.node).length > 0) {
+    if (this.reservationHeld()) {
       this.onReservationHeld();
       return;
     }
@@ -649,7 +673,19 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       return;
     }
     this.settleFirst();
+    // A drive that LANDED a reservation resumes the healthy cadence immediately.
+    // Backing off here instead would leave the first liveness check after a long
+    // outage a fully grown backoff away (up to `maxBackoffMs`), so a reservation
+    // lost again right after recovery would go unnoticed for that whole window.
+    if (this.reservationHeld()) {
+      this.onReservationHeld();
+      return;
+    }
     this.scheduleBackoff();
+  }
+
+  private reservationHeld(): boolean {
+    return circuitMultiaddrs(this.node).length > 0;
   }
 
   /** Healthy tick: nothing to request, so only reset and re-check later. */
@@ -667,6 +703,17 @@ class RelayReservationLoop implements RelayReservationSupervisor {
       const { error } = await driveRelayReservation(this.node, this.addrs, this.opts);
       if (!this.stopped) {
         this.failure = error;
+      }
+    } catch (err) {
+      // `driveRelayReservation` is fail-soft by contract, so reaching here means
+      // that contract broke. The loop must survive it anyway: an escaping
+      // rejection would leave `firstAttempt` pending FOREVER (hanging every
+      // caller that awaits a reservation at startup) and schedule no further
+      // attempt, which is the failure this whole supervisor exists to prevent.
+      const message = err instanceof Error ? err.message : String(err);
+      log('Relay reservation drive threw, which it should not: %s', message);
+      if (!this.stopped) {
+        this.failure = message;
       }
     } finally {
       this.inFlight = false;

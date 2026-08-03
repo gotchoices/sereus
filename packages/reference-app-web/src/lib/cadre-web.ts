@@ -371,8 +371,10 @@ export async function startCadre(): Promise<CadreNode> {
 
 	exposeDebugHook(node);
 	await runOwnerGenesis(node, privateKey);
-	// Fail-soft in cadre-core: an unreachable relay resolves to `status:'error'`
-	// and leaves the tab in the solo posture rather than aborting startup.
+	// Fail-soft in cadre-core: an unreachable relay leaves the tab in the solo
+	// posture rather than aborting startup. This resolves once the FIRST attempt
+	// settles — `retrying` if it failed — and cadre-core keeps a supervisor going
+	// that recovers the reservation on its own if the relay shows up later.
 	await node.reserveRelays(relayAddrs);
 
 	return node;

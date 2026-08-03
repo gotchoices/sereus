@@ -625,6 +625,33 @@ describe('driveRelayReservation legible failures', () => {
     expect(error).toBeNull();
     expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
   });
+
+  it('reports a malformed addr instead of throwing out of the drive', async () => {
+    // `multiaddr()` throws SYNCHRONOUSLY, so parsing outside the dial promise
+    // escaped `Promise.allSettled` and rejected the whole drive — breaking the
+    // never-throws contract every caller here relies on.
+    const client = await startSearchClient();
+    const { error } = await driveRelayReservation(client, ['not-a-multiaddr'], {
+      timeoutMs: BOUND_MS,
+      pollMs: 100
+    });
+    expect(error).toBeTruthy();
+  });
+
+  it('still reserves on a good relay when another addr is malformed', async () => {
+    // Same rule as the dead-relay and non-relay entries above: one bad entry in
+    // the list must not cost the reservation on the live one.
+    const relay = await startRelay();
+    const client = await startSearchClient();
+
+    const { error } = await driveRelayReservation(
+      client,
+      ['not-a-multiaddr', relay.getMultiaddrs()[0].toString()],
+      { timeoutMs: 10_000, pollMs: 100 }
+    );
+    expect(error).toBeNull();
+    expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
+  });
 });
 
 describe('superviseRelayReservation', () => {
@@ -720,6 +747,69 @@ describe('superviseRelayReservation', () => {
       await waitFor(() => circuitMultiaddrs(client).length > 0, 'the first reservation', 30_000);
       // A held reservation clears the error rather than leaving a stale one.
       await waitFor(() => supervisor.lastError === null, 'the error to clear');
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  it('settles the first attempt on a malformed addr rather than hanging', async () => {
+    // A typo'd `VITE_RELAY_ADDR` / `localStorage["relay-addr"]` reaches here as a
+    // string `multiaddr()` cannot parse. That used to reject out of the drive,
+    // which left `firstAttempt` pending FOREVER — so `CadreNode.reserveRelays()`
+    // never resolved and the tab hung at startup instead of booting solo.
+    const client = await startSearchClient();
+    const supervisor = superviseRelayReservation(client, ['not-a-multiaddr'], FAST_SUPERVISOR);
+    try {
+      const settled = await Promise.race([
+        supervisor.firstAttempt.then(() => 'settled'),
+        sleep(10_000).then(() => 'hung')
+      ]);
+      expect(settled).toBe('settled');
+      // And it keeps trying, rather than reporting a resting failure.
+      expect(supervisor.lastError).toBeTruthy();
+      expect(
+        resolveRelayReservationState(
+          client,
+          ['not-a-multiaddr'],
+          supervisor.lastError,
+          supervisor.driving,
+          supervisor.retryAtMs
+        ).status
+      ).toBe('retrying');
+    } finally {
+      supervisor.stop();
+    }
+  }, 60_000);
+
+  it('drops back to the liveness cadence as soon as an attempt lands, not the grown backoff', async () => {
+    // After a long outage the backoff has grown to `maxBackoffMs`. Scheduling the
+    // post-success tick on THAT would leave the first liveness check a full
+    // backoff away, so a reservation lost again right after recovery would go
+    // unnoticed for that whole window before anything even tried.
+    const id = await fixedIdentity();
+    const client = await startSearchClient();
+    const slowBackoff: RelayReservationSupervisorOptions = {
+      checkMs: 250,
+      minBackoffMs: 250,
+      maxBackoffMs: 8_000,
+      timeoutMs: 1_000,
+      pollMs: 100
+    };
+
+    // Nothing at `id.addr` yet, so attempts fail and the backoff climbs.
+    const supervisor = superviseRelayReservation(client, [id.addr], slowBackoff);
+    try {
+      await supervisor.firstAttempt;
+      await waitFor(
+        () => (supervisor.retryAtMs ?? 0) - Date.now() > 2_000,
+        'the backoff to grow past 2s',
+        30_000
+      );
+
+      await startFixedRelay(id);
+      await waitFor(() => circuitMultiaddrs(client).length > 0, 'the reservation to land', 30_000);
+      // Generous bound: the point is `checkMs`-scale, not `maxBackoffMs`-scale.
+      expect((supervisor.retryAtMs ?? 0) - Date.now()).toBeLessThan(2_000);
     } finally {
       supervisor.stop();
     }

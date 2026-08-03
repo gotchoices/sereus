@@ -911,8 +911,13 @@ where local rows exist.
   a fixed (but OS-assigned) port so it can be stopped and brought back as the same peer: the
   reservation returns with no manual re-drive; it returns even after a first attempt hit a live
   peer that was not a relay and poisoned libp2p's `relayFilter`; and a stopped supervisor really
-  stops (a relay appearing afterwards is ignored). What remains integration-only is the same
-  posture over real WAN transports.
+  stops (a relay appearing afterwards is ignored). Two further specs pin the loop's **fail-soft
+  contract** against a malformed relay address (`multiaddr()` throws synchronously): the drive
+  reports it instead of rejecting, a good relay later in the list still reserves, and the
+  supervisor's first attempt settles rather than leaving a startup `await` pending forever. One
+  more pins that a drive which lands a reservation resumes the `checkMs` liveness cadence instead
+  of the backoff it had grown to. What remains integration-only is the same posture over real WAN
+  transports.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
