@@ -44,6 +44,15 @@ screens.
   chat screen's title bar and a Back button to return. The forward tap happens to
   match the action's label; the return tap has nothing to match.
 
+- **The seed section grew two elements and the flow never scrolls.** The shared
+  setup now types an enrollment invite into a second box before pressing Apply
+  Seed. Both apps gained that box, but the NativeScript settings screen is one
+  long scrolling column with no tab bar, so the button may sit below the visible
+  area on a short emulator screen — and the flow taps it directly rather than
+  scrolling to it first. Unproven either way (device-only), but it is the kind of
+  thing that reads as a mysterious tap failure. Whoever does the device run should
+  check it, and add a scroll-to-element step if it bites.
+
 - **The documentation still describes the abandoned tab layout.**
   `docs/reference-app-ns.md` describes the app shell as a two-tab view in several
   places, contradicting the app's own root file and its explanatory comment.

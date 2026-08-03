@@ -1,5 +1,5 @@
 description: The NativeScript phone app has no unit tests at all, so small pieces of its own glue code — like the bit that saves records into the phone's database — are only ever checked by hand on a device.
-files: packages/reference-app-ns/package.json, packages/reference-app-ns/src/node-local-slots.ts, packages/reference-app-ns/src/ns-storage.ts, packages/reference-app-rn/test/node-local-slots.test.ts
+files: packages/reference-app-ns/package.json, packages/reference-app-ns/src/node-local-slots.ts, packages/reference-app-ns/src/ns-storage.ts, packages/reference-app-ns/src/cadre-vm.ts, packages/reference-app-rn/test/node-local-slots.test.ts
 difficulty: medium
 ---
 
@@ -35,6 +35,37 @@ what keeps the stored keys equal to those literal strings.
 - Coverage for the shared-handle lifecycle in `cadre-phone.ts` if it can be
   reached without the native plugin — at minimum, that stopping the node releases
   the database handle even when the node's own shutdown throws.
+- Coverage for the invite-trust glue in `src/cadre-vm.ts` (see next section) —
+  the only code in this app that writes the trusted-owner anchor, and today the
+  only way to check it is a two-device run by hand.
+
+## Second arm: the invite-trust glue in `src/cadre-vm.ts`
+
+Added by the review of `feat-ns-invite-trust-pinning`, which landed
+`ownerKeysFromInvite` + a widened `applySeed` with **no test of any kind** —
+purely because this package has no runner. Same root cause, same fix; listing the
+cases here so they are not rediscovered.
+
+Against a fake node object (the view model only ever calls `decodeInvite`,
+`decodeSeed`, `trustOwnerKeys`, `applySeed` on it):
+
+- An invite carrying two owner keys yields both, in order.
+- An invite with no owner keys yields none.
+- Unreadable invite text raises an error whose wording names the enrollment
+  invite (not a bare JSON parse failure), and keeps the original as its cause.
+- Applying a seed *with* pinned keys anchors them **before** the seed is applied
+  — assert the call *order*, not merely that both calls happened. This ordering
+  is what makes the pin visible to seed trust, and is easy to "tidy" away.
+- Applying a seed with no pins anchors nothing and overrides no trust policy.
+- An empty pin list behaves exactly as no pins at all.
+- A seed the node refuses surfaces the node's own refusal text to the caller.
+
+Screen-level (the Settings view model), same fake:
+
+- Success clears both the seed and the invite field; any failure clears neither,
+  so a mistyped seed does not cost the user the pasted invite.
+- The success message distinguishes "keys were pinned" from "nothing pinned" —
+  it must never claim a pin that did not happen.
 
 ## Notes
 

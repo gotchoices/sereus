@@ -227,12 +227,13 @@ export class CadreViewModel extends Observable {
 	 * `SyntaxError: Unexpected token …`. Rewrap it with app-level copy naming what
 	 * was expected; the original rides along as `cause`.
 	 *
-	 * NOTE: a hand-crafted invite whose `ownerKeys` is a non-array (e.g. a number)
-	 * yields a falsy `.length`, so no pin is attempted and the seed is then
-	 * rejected by the default anchored policy — safe, but the error names the
-	 * anchor rather than the bad invite. If that ever confuses a real user, the fix
-	 * is shape validation inside `CadreNode.decodeInvite` (one site, both apps),
-	 * not a second guard here.
+	 * NOTE: a hand-crafted invite whose `ownerKeys` is not an array of keys is
+	 * safe but reports poorly. A number yields a falsy `.length`, so no pin is
+	 * attempted and the seed is then rejected by the default anchored policy —
+	 * naming the anchor rather than the bad invite. A bare string has a truthy
+	 * `.length`, so `trustOwnerKeys` rejects it all-or-nothing, naming its first
+	 * character. If either ever confuses a real user, the fix is shape validation
+	 * inside `CadreNode.decodeInvite` (one site, both apps), not a second guard here.
 	 */
 	ownerKeysFromInvite(encodedInvite: string): string[] {
 		const node = this._node;

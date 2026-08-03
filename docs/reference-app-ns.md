@@ -91,8 +91,10 @@ Bootstrap section carries an optional "Paste enrollment invite (for trust)" fiel
 the apply itself (`CadreViewModel.ownerKeysFromInvite` + `applySeed`, mirroring
 reference-app-rn). The pin persists, so a *later* seed from the same owner is
 accepted with the invite field blank — the default `anchoredTrustPolicy` now
-clears it. A pin sticks even if the seed that motivated it is rejected: pasting
-the invite is itself the out-of-band trust act.
+clears it. A pin sticks even if the seed that motivated it is then *rejected*:
+pasting the invite is itself the out-of-band trust act. A seed that cannot even
+be *decoded* fails earlier than the pin, so that one case leaves the anchor
+untouched — the fields are kept on failure, so the retry costs no re-paste.
 
 The app wires **no owner private key**, so there is no genesis self-anchor. It
 does not need one — it either forms a cadre solo or enrolls into an existing one
