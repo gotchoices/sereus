@@ -398,8 +398,9 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   durably. ⚠️ That scenario is currently majority-red on the control-database defect tracked by
   `fix/0-bug-control-collection-header-absent-at-committed-revision` (its reds are `addDrone` insert
   failures on the owner, not seed-path failures) and, less often, on
-  `fix/1-bug-rejoining-node-cannot-self-coordinate-after-reconnect` (node B dies in control-schema DDL
-  and never provisions). Measured 2026-08-03: 1 green of 4 runs in the implement pass, 1 green of 3 in
+  `implement/1-control-write-retry-covers-self-coordination-blocked` (node B dies in control-schema
+  DDL and never provisions; root cause is optimystic's self-coordination guard, tracked by
+  `blocked/offline-node-cannot-serve-its-own-data`). Measured 2026-08-03: 1 green of 4 runs in the implement pass, 1 green of 3 in
   the review pass. A green run takes ~43 s. **Still not covered**: the real Docker image and its `docker/entrypoint.sh`
   — the orchestrator reproduces the image env and the entrypoint's derivations in process, so a drift
   in the script itself passes everything above.
