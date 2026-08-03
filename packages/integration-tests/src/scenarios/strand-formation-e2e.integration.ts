@@ -10,7 +10,7 @@
  * - Three-party strand formation
  * - Real-recorder consent enforcement, real-approval-hook redemption, provisioning abort
  *
- * NOTE: 1557 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
+ * NOTE: 1742 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
  * 1170. Still one cohesive subject, and each `Phase N` describe owns its own `TestCadreNetwork`,
  * so the phases are already independent. If another phase lands here, split per phase into
  * sibling files and move the module-scope helpers above (`ownerSigner` … `readFormationUsage`)
@@ -1012,11 +1012,14 @@ describe('E2E Strand Formation', () => {
 	// approver, and the schema's `FormationUsage.Authorized` rule is unit-tested. What has never
 	// run in one go is the whole chain: real HTTP hook → real approval client (the
 	// `ControlFormationUsageRecorder` default, NOT an injected fake) → real control database →
-	// real libp2p formation handshake. That is what these cases pin, plus the four ways a
-	// redemption must be refused.
+	// real libp2p formation handshake. That is what these cases pin, for both invitation shapes
+	// (unbound, and bound to an existing strand) plus all five ways a redemption must be refused.
 	//
-	// Not re-tested here: transport behaviour (redirects, body cap, timeouts, dead socket) —
-	// see the real-fetch spec for the full transport decision table.
+	// Not re-tested here: transport behaviour (redirects, body cap, timeouts, dead socket) — see
+	// the real-fetch spec for the full transport decision table. Case (vi) does drive two
+	// transport outcomes, but only because they are the two that carry a distinct joiner-visible
+	// reason: an unreachable hook and a hook that answers a non-2xx both surface as
+	// `Formation approval unavailable, retry`.
 
 	describe('Phase 5: ValidationUrl redemption (real approval hook)', () => {
 		let network: TestCadreNetwork;
@@ -1044,15 +1047,23 @@ describe('E2E Strand Formation', () => {
 			return party.controlDatabase.insertValidationKey(validationKey, party.ownerPublicKey, ownerSigner(party));
 		}
 
-		/** Publish an owner-signed, single-use, unbound invite gated on `validationUrl`. */
-		function publishGatedInvite(party: TestParty, token: string, sAppId: string, validationUrl: string): Promise<void> {
-			// No `strandId`: the unbound / responder-provisions path, so the redemption runs through
-			// `ControlFormationUsageRecorder.provisionAndRecord`, which mints the strand id and
-			// obtains the approval over it in one go — the shortest real path to a committed
-			// `FormationUsage` row that the schema only accepts with a valid sign-off.
+		/**
+		 * Publish an owner-signed, single-use invite gated on `validationUrl`.
+		 *
+		 * Unbound by default (no `strandId`): the redemption then runs through
+		 * `ControlFormationUsageRecorder.provisionAndRecord`, which mints the strand id and obtains
+		 * the approval over it in one go — the shortest real path to a committed `FormationUsage`
+		 * row that the schema only accepts with a valid sign-off. Pass `strandId` for the BOUND
+		 * shape, which routes through `recordUsage` → `ControlDatabase.recordFormationUsage`
+		 * against a strand that must already exist on the responder.
+		 */
+		function publishGatedInvite(
+			party: TestParty, token: string, sAppId: string, validationUrl: string, strandId?: string,
+		): Promise<void> {
 			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerPublicKey, ownerSigner(party), {
 				totalUses: 1,
 				validationUrl,
+				...(strandId ? { strandId } : {}),
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
 		}
@@ -1296,6 +1307,172 @@ describe('E2E Strand Formation', () => {
 				// Both redemptions really went out to the hook: the replay was refused on the ANSWER,
 				// not because the second attempt short-circuited before asking.
 				expect(hook.requestCount).toBe(2);
+
+				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			} finally {
+				await hook.close();
+			}
+		}, 30_000);
+
+		it('(vi) refuses when the approver cannot be asked, and again when it answers broken', async () => {
+			const alice = await network.createParty({ name: 'alice-hook-down' });
+			const bob = await network.createParty({ name: 'bob-hook-down' });
+			// One live, ENROLLED hook. Arm A's invite deliberately does not name it — its zero
+			// request count is what proves arm A failed on the URL under test rather than somewhere
+			// else — and arm B's invite does, so arm B can flip the verdict and re-redeem.
+			let verdict: 'approve' | 'unavailable' = 'unavailable';
+			const hook = await startApprovalHook({ decide: () => verdict });
+			try {
+				const aliceService = responderService(alice);
+				// Enrolled even though neither arm gets far enough to consult enrollment: if a future
+				// reordering of the recorder's pre-checks moves that check earlier, these cases fail on
+				// a changed reason string instead of quietly having failed for the wrong reason all along.
+				await enrollApprover(alice, hook.validationKey);
+				// A second recorder purely to READ: `isTokenUsed` is the predicate the responder itself
+				// consults on the next redemption, so asserting it is asserting the seat, not a proxy.
+				const recorder = new ControlFormationUsageRecorder(alice.controlDatabase);
+				const bobService = joinerService(bob);
+
+				// ── Arm A: nothing is listening ────────────────────────────────────────────────
+				// Port 1 is privileged, so no test process can be holding it and a loopback connect is
+				// refused immediately — landing in the approval client's catch-all. (An environment
+				// that silently DROPS instead of refusing falls to the client's own 10 s budget, which
+				// reports the same category; the case then takes ~10 s and still passes.)
+				const deadToken = `invite-hook-dead-${Date.now()}`;
+				await publishGatedInvite(alice, deadToken, 'sapp-hook-dead', 'http://127.0.0.1:1/hook');
+
+				await expect(
+					bobService.formStrand(
+						invitationFor(deadToken, 'sapp-hook-dead', alice),
+						{ partyId: bob.partyId, purpose: 'approver-unreachable' },
+						bob.ownerNode.libp2p,
+					),
+				).rejects.toThrow(/Formation approval unavailable, retry/);
+
+				expect(hook.requestCount).toBe(0);
+				expect(await alice.controlDatabase.countFormationUsage(deadToken)).toBe(0);
+				// Arm A cannot prove the seat by re-redeeming the way (ii) does: the dead `ValidationUrl`
+				// is inside the owner-signed `FormationInvite` row and cannot be repointed at a live hook
+				// afterwards. So it asserts the predicate directly, and arm B carries the re-redemption.
+				expect(await recorder.isTokenUsed(deadToken)).toBe(false);
+
+				// ── Arm B: the hook answered, badly ────────────────────────────────────────────
+				// HTTP 503 is the same `unavailable` category by a different route (a non-2xx status,
+				// not a failed connect), and the hook stays live on the URL its invite published.
+				const brokenToken = `invite-hook-broken-${Date.now()}`;
+				await publishGatedInvite(alice, brokenToken, 'sapp-hook-broken', hook.validationUrl);
+				const invitation = invitationFor(brokenToken, 'sapp-hook-broken', alice);
+
+				await expect(
+					bobService.formStrand(invitation, { partyId: bob.partyId, purpose: 'approver-broken' }, bob.ownerNode.libp2p),
+				).rejects.toThrow(/Formation approval unavailable, retry/);
+				expect(hook.requestCount).toBe(1);
+				expect(await alice.controlDatabase.countFormationUsage(brokenToken)).toBe(0);
+
+				// Redeeming the SAME single-use token once the hook recovers is the real proof the seat
+				// was never consumed — the shape case (ii) uses for `refused`.
+				verdict = 'approve';
+				const result = await bobService.formStrand(
+					invitation, { partyId: bob.partyId, purpose: 'approver-recovered' }, bob.ownerNode.libp2p,
+				);
+				expect(result.strandId).toBeDefined();
+				expect(hook.requestCount).toBe(2);
+				expect(await alice.controlDatabase.countFormationUsage(brokenToken)).toBe(1);
+
+				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			} finally {
+				await hook.close();
+			}
+		}, 30_000);
+
+		it('(vii) refuses a ValidationUrl the redeeming node cannot use at all', async () => {
+			const alice = await network.createParty({ name: 'alice-hook-scheme' });
+			const bob = await network.createParty({ name: 'bob-hook-scheme' });
+			// Live and enrolled, and deliberately not what the invite names: the scheme check runs
+			// BEFORE any HTTP, so a hook that was asked at all means the check never fired.
+			const hook = await startApprovalHook();
+			try {
+				const aliceService = responderService(alice);
+				await enrollApprover(alice, hook.validationKey);
+				const recorder = new ControlFormationUsageRecorder(alice.controlDatabase);
+
+				// Nothing on the WRITE side validates the scheme — `insertFormationInvite` stores the
+				// string verbatim (`schemas/control.qsql`: `ValidationUrl text null`) — so an operator
+				// really can publish this, and the mistake surfaces only at redemption time.
+				const token = `invite-hook-scheme-${Date.now()}`;
+				await publishGatedInvite(alice, token, 'sapp-hook-scheme', 'ftp://127.0.0.1:9/hook');
+
+				await expect(
+					joinerService(bob).formStrand(
+						invitationFor(token, 'sapp-hook-scheme', alice),
+						{ partyId: bob.partyId, purpose: 'approver-misconfigured' },
+						bob.ownerNode.libp2p,
+					),
+				).rejects.toThrow(/Formation approval misconfigured/);
+
+				// The URL parsed fine and was rejected on its scheme, before any request went out.
+				expect(hook.requestCount).toBe(0);
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
+				expect(await recorder.isTokenUsed(token)).toBe(false);
+
+				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			} finally {
+				await hook.close();
+			}
+		}, 30_000);
+
+		it('(viii) redeems a gated invitation BOUND to an existing closed strand', async () => {
+			const alice = await network.createParty({ name: 'alice-hook-bound' });
+			const bob = await network.createParty({ name: 'bob-hook-bound' });
+			const hook = await startApprovalHook();
+			try {
+				const aliceService = responderService(alice);
+				await enrollApprover(alice, hook.validationKey);
+
+				// CLOSED (`'c'`) and inserted BEFORE the redemption: the `FormationUsage` insert carries
+				// a deferred `StrandExists` CHECK, and an absent row is Phase 4 (ii)'s rejection
+				// (`Host strand not yet available on this responder`), not a write failure. Closed
+				// rather than open so the membership secret exists to be delivered at all.
+				const strandId = `strand-hook-bound-${Date.now()}`;
+				const memberPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+				await alice.controlDatabase.insertStrand(
+					strandId, 'c', alice.ownerPublicKey, ownerSigner(alice), memberPrivateKey,
+				);
+
+				const token = `invite-hook-bound-${Date.now()}`;
+				await publishGatedInvite(alice, token, 'sapp-hook-bound', hook.validationUrl, strandId);
+
+				const result = await joinerService(bob).formStrand(
+					invitationFor(token, 'sapp-hook-bound', alice),
+					{ partyId: bob.partyId, purpose: 'approval-bound-path' },
+					bob.ownerNode.libp2p,
+				);
+
+				// The joiner was seated on the PRE-EXISTING strand rather than a freshly minted one —
+				// the whole difference between this write path (`recordFormationUsage`) and the unbound
+				// one (`redeemInvitation`) every other Phase 5 case drives.
+				expect(result.strandId).toBe(strandId);
+				// ...and received the closed strand's read-gating secret, exactly as the owner inserted
+				// it. Only a joiner the responder validated ever gets this.
+				expect(result.memberPrivateKey).toBe(memberPrivateKey);
+
+				expect(hook.requestCount).toBe(1);
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+
+				const posted = hook.lastRequest;
+				expect(posted).not.toBeNull();
+				// Still exactly the five signed fields on this path too: the membership secret is
+				// disclosed to the JOINER after sign-off and never to the APPROVER.
+				expect(Object.keys(posted!).sort()).toEqual(
+					['disclosure', 'peerKey', 'strandId', 'token', 'usageStampId'],
+				);
+				// The approver signed off on the strand the invite named, not on a minted id.
+				expect(posted!.strandId).toBe(strandId);
+
+				const row = await readFormationUsage(alice, token);
+				expect(row).not.toBeNull();
+				expect(verifyFormationConsent(row!)).toBe(true);
+				expect(ed25519PublicKeyB64FromPeerId(result.memberKey)).toBe(row!.peerKey);
 
 				aliceService.unregisterResponder(alice.ownerNode.libp2p);
 			} finally {

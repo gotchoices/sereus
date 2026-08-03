@@ -9,7 +9,7 @@
  * Scenario-level counterpart to `test/formation-approval-real-fetch.spec.ts`, which drives the
  * HTTP client alone against its own `startLoopbackHttpServer` handlers. Transport behaviour
  * (redirects, caps, timeouts) belongs there; this fixture exists so a scenario can stand up an
- * approver that approves, refuses, or replays a previous sign-off.
+ * approver that approves, refuses, answers broken, or replays a previous sign-off.
  */
 
 import type { IncomingHttpHeaders, IncomingMessage, ServerResponse } from 'node:http';
@@ -62,12 +62,15 @@ export interface ApprovalHookServer {
 
 export interface ApprovalHookOptions {
 	/**
-	 * Decide each request. Defaults to approving, signing over the posted fields.
+	 * Decide each request. Defaults to approving, signing over the posted fields. The three
+	 * string verdicts are the hook's three answer classes — yes, no, and broken:
 	 * - `'approve'` → 200 + a fresh signature over those fields
 	 * - `'refuse'` → 403 (the hook answered, and the answer is no)
+	 * - `'unavailable'` → 503 (the hook is up but broken, so it cannot answer either way; the
+	 *   client reports `unavailable`, exactly as it does for a hook it never reached at all)
 	 * - a {@link FormationApproval} → 200 with exactly that body (used to replay a prior sign-off)
 	 */
-	decide?: (fields: FormationVouchFields) => 'approve' | 'refuse' | FormationApproval;
+	decide?: (fields: FormationVouchFields) => 'approve' | 'refuse' | 'unavailable' | FormationApproval;
 	/** Sign with this key instead of a freshly generated one — lets a caller pre-sign the same way. */
 	privateKeyB64?: string;
 	/**
@@ -125,6 +128,11 @@ export async function startApprovalHook(options: ApprovalHookOptions = {}): Prom
 		if (verdict === 'refuse') {
 			res.writeHead(403, { 'content-type': 'application/json' });
 			res.end(JSON.stringify({ error: 'no' }));
+			return;
+		}
+		if (verdict === 'unavailable') {
+			res.writeHead(503, { 'content-type': 'application/json' });
+			res.end(JSON.stringify({ error: 'down' }));
 			return;
 		}
 		const approval = verdict === 'approve'

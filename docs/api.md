@@ -143,14 +143,19 @@ rejection reasons on the formation result:
 None of these write a `FormationUsage` row, so a rejected redemption does not consume the
 invitation — the same token can be presented again.
 
-Most of this contract is executable: `strand-formation-e2e.integration.ts` Phase 5 stands up a
+All of this contract is executable: `strand-formation-e2e.integration.ts` Phase 5 stands up a
 real hook (`harness/fixtures/approval-hook-server.ts`) and redeems a `ValidationUrl` invitation
 through it over real libp2p — asserting the request is a `POST` of those five fields and nothing
-else, at the `ValidationUrl`'s own path with the JSON content/accept headers above; that an
-approved redemption commits a usage row; and that refusal, an unenrolled key, a key removed after
-the invitation went out, and a replayed sign-off each yield the reason above while leaving the
-seat unspent. The remaining two reasons (`unavailable`, `misconfigured`) are covered only at the
-HTTP-client level, in `test/formation-approval-real-fetch.spec.ts`.
+else, at the `ValidationUrl`'s own path with the JSON content/accept headers above. It runs both
+invitation shapes: unbound (the responder mints the strand) and bound to a pre-existing closed
+strand (whose membership key reaches the joiner after sign-off and never reaches the approver).
+And it drives all five rejection reasons end to end — refusal, an unenrolled key, a key removed
+after the invitation went out, a replayed sign-off, an approver that cannot be asked (unreachable,
+and answering a non-2xx), and a `ValidationUrl` the node cannot use at all — each yielding the
+reason above while leaving the seat unspent, which is what makes the sentence before this one
+checkable rather than merely asserted. The transport decision table itself (redirects, body cap,
+timeouts, dead socket) stays covered at the HTTP-client level, in
+`test/formation-approval-real-fetch.spec.ts`.
 
 The `disclosure` field is capped at **8 KiB** of UTF-8 (a hook is never asked to review more
 than that; an over-size disclosure is rejected before the hook is contacted). Size a review UI
