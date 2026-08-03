@@ -73,9 +73,9 @@ export const CONTROL_REPLICATION_BREADTH = 16;
  * {@link CONTROL_REPLICATION_BREADTH}-wide target is unsatisfiable by any real (2-7 node)
  * party, so the cohort must be allowed to shrink to the party that actually exists.
  *
- * NOT for strand networks: `strand-instance-manager.ts` passes a structurally identical
- * literal for a different network with different reasoning. The shape match is a coincidence;
- * keep them separate.
+ * NOT for strand networks: {@link STRAND_CLUSTER_POLICY} is a structurally identical object
+ * for a different network with different reasoning. The shape match is a coincidence; keep
+ * them separate.
  *
  * `assumedClusterSize` is REQUIRED here, and 2 is not a guess — it is the smallest party we
  * support. The field feeds two Optimystic consumers with opposite failure modes, and only one
@@ -130,16 +130,20 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * phones and laptops is the ordinary case, not the rare one. Six buys no more fault tolerance
  * than four and costs more overfetch (see the NOTE below).
  *
- * **It is also a correctness floor, not only a durability one.** At breadth 2 a node that has
- * fallen behind asks exactly one peer whether it is current, and Optimystic accepts that single
- * answer as the cluster's truth (`corroboratorCapacity` in `db-p2p/src/cluster/quorum-restore.ts`
- * lowers the corroboration floor to one when the cohort cannot hold a second voter). If that
- * peer is also behind it honestly reports the stale revision, the reader concludes it is
- * current, and re-arms its repair window forever. Measured on the control-DB replication
- * scenario: 4 failures in 10 runs at breadth 2, 0 in 20 at breadth 3, 0 in 10 at breadth 8.
- * Any value above 2 lifts the floor off a single voter. The underlying Optimystic behaviour is
- * unfixed — `backlog/debt-read-repair-single-voter-corroboration` — so a caller that configures
- * 2 explicitly still takes the exposure.
+ * **It is also a correctness floor, not only a durability one — but the floor is measured in
+ * machines, not in this number.** A node that has fallen behind and can ask exactly one peer
+ * whether it is current has Optimystic accept that single answer as the cluster's truth
+ * (`corroboratorCapacity` in `db-p2p/src/cluster/quorum-restore.ts` lowers the corroboration
+ * floor to one when the cohort cannot hold a second voter). If that peer is also behind it
+ * honestly reports the stale revision, the reader concludes it is current, and re-arms its
+ * repair window forever. Measured on the control-DB replication scenario: 4 failures in 10 runs
+ * at breadth 2, 0 in 20 at breadth 3, 0 in 10 at breadth 8. What lifts the floor off a single
+ * voter is a *third machine*, not a wider target: `corroboratorCapacity` takes the cohort peers
+ * actually present against {@link STRAND_CLUSTER_POLICY}'s declared `assumedClusterSize`, so a
+ * three-machine strand needs two corroborators whatever this number says, and a two-machine one
+ * cannot supply them however wide the target is. The underlying Optimystic behaviour is unfixed
+ * — `backlog/debt-read-repair-single-voter-corroboration` — so a two-machine strand still takes
+ * the exposure. Raising this number does not buy the way out; adding a machine does.
  *
  * **Why not derived from the party or member count.** The strand's `Member` rows live *in* the
  * strand database, which runs on the strand libp2p node, whose cluster size is frozen at
@@ -175,6 +179,45 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * look here first.
  */
 export const DEFAULT_STRAND_CLUSTER_SIZE = 4;
+
+/**
+ * Cluster consensus policy every STRAND-network libp2p node runs — production
+ * (`StrandInstanceManager.buildStrandRuntime`) and the plugin's own networked e2e mesh alike.
+ * One definition so the two cannot drift; the literal used to be hand-copied at both sites.
+ *
+ * Structurally identical to {@link CONTROL_CLUSTER_POLICY} and deliberately separate from it:
+ * that one is the control database's, whose breadth is fixed at
+ * {@link CONTROL_REPLICATION_BREADTH} for reasons that do not apply to application data.
+ *
+ * `superMajorityThreshold` is ABSENT for the same reason it is absent there: omitting it is how
+ * both the coordinator and the cluster member select Optimystic's
+ * `DEFAULT_SUPER_MAJORITY_THRESHOLD` (0.75), the bar {@link DEFAULT_STRAND_CLUSTER_SIZE}'s
+ * copies/approvals table is computed against.
+ *
+ * `sizeTolerance` only makes sense alongside `allowDownsize`: a {@link
+ * DEFAULT_STRAND_CLUSTER_SIZE}-wide target is unsatisfiable by a strand of one, two or three
+ * machines, so the cohort must be allowed to shrink to the mesh that actually exists.
+ *
+ * `assumedClusterSize` is REQUIRED, and {@link MIN_CLUSTER_SIZE} is not a guess — it is the
+ * smallest strand that reaches the cluster path at all. Absent this field the read-repair /
+ * reconcile corroboration floor falls back to `clusterSize`, so
+ * `corroboratorCapacity(peers, 4)` is `max(peers, 3)` and two distinct non-self corroborators
+ * become mandatory. A two-machine strand fields exactly one peer, can never reach two, and so
+ * can never repair a block — `cluster-fetch:no-quorum` forever, which is a read that never
+ * catches up and a `create table` that dies with `Missing block` on the joining node. Declaring
+ * the honest floor does NOT lower the replication factor (that stays at
+ * {@link DEFAULT_STRAND_CLUSTER_SIZE}) and does not relax anything a strand with three or more
+ * machines does: `corroboratorCapacity` takes the MAX of the cohort actually present and this
+ * number, so the relaxed branch is reachable only by a cohort that is genuinely that small. See
+ * Optimystic's `cluster/cluster-policy.ts` ("Why two size yardsticks, not one").
+ *
+ * The `satisfies` is load-bearing for the same reason as {@link CONTROL_CLUSTER_POLICY}'s.
+ */
+export const STRAND_CLUSTER_POLICY = Object.freeze({
+	allowDownsize: true,
+	sizeTolerance: 0.5,
+	assumedClusterSize: MIN_CLUSTER_SIZE,
+} satisfies NonNullable<NodeOptions['clusterPolicy']>);
 
 /**
  * Resolve the cluster size to hand `createLibp2pNode` for a **strand** network, applying

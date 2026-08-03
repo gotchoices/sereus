@@ -2,7 +2,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
 import { signSchema } from '../src/schema-verification.js';
-import { DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
+import { DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE, STRAND_CLUSTER_POLICY } from '../src/types.js';
 import type { StrandRow, SAppConfig } from '../src/types.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 
@@ -116,5 +116,31 @@ describe('StrandInstanceManager cluster size wiring', () => {
     ).rejects.toThrow(/clusterSize must be an integer >= 2/);
 
     expect(mocks.createLibp2pNode).not.toHaveBeenCalled();
+  });
+
+  it('passes the shared STRAND_CLUSTER_POLICY, declaring the corroboration floor rather than defaulting it', async () => {
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy'));
+
+    // The shared constant itself, not an equal-looking copy: a hand-copied literal here is
+    // exactly how this site and the plugin's networked e2e mesh drifted apart before.
+    expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
+      expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
+    );
+
+    // Declared, not left to default. The membership admission gate would default to this
+    // same 2, but the read-repair corroboration floor falls back to `clusterSize` instead —
+    // 4 for a strand — which makes two distinct non-self corroborators mandatory and so makes
+    // repair impossible for a two-machine strand. See STRAND_CLUSTER_POLICY.
+    expect(STRAND_CLUSTER_POLICY.assumedClusterSize).toBe(MIN_CLUSTER_SIZE);
+
+    // A DEFAULT_STRAND_CLUSTER_SIZE-wide target is unsatisfiable by a strand of one to three
+    // machines, so the cohort must be allowed to shrink to the mesh that exists.
+    expect(STRAND_CLUSTER_POLICY.allowDownsize).toBe(true);
+    expect(STRAND_CLUSTER_POLICY.sizeTolerance).toBe(0.5);
+
+    // Absent on purpose: omitting it is what selects Optimystic's
+    // DEFAULT_SUPER_MAJORITY_THRESHOLD (0.75) at both the coordinator and the cluster member.
+    expect(STRAND_CLUSTER_POLICY).not.toHaveProperty('superMajorityThreshold');
   });
 });

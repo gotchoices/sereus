@@ -1,7 +1,7 @@
 ----
 description: When a second machine joins a cadre, reads of a shared-settings table can be answered "nothing was ever saved here" by whichever machine the lookup lands on — even when another machine in the group holds the data. That machine never asks its peers before answering. The fault is one line in the shared database library kept in the sibling `optimystic` checkout, so it cannot be fixed in this repository.
 prereq:
-files: ../optimystic/packages/db-p2p/src/repo/service.ts (line 264 — THE site), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (get, lines 299-388), ../optimystic/packages/db-core/src/transactor/network-transactor.ts (get, lines 134-168), ../optimystic/packages/db-core/src/collection/collection.ts (updateInternal, throw at line 236), packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/harness/block-store-probe.ts
+files: ../optimystic/packages/db-p2p/src/repo/service.ts (line 264 — THE site), ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts (get, lines 299-388), ../optimystic/packages/db-core/src/transactor/network-transactor.ts (get, lines 134-168), ../optimystic/packages/db-core/src/collection/collection.ts (updateInternal, throw at line 236), packages/integration-tests/src/scenarios/control-db-two-node-convergence.integration.ts, packages/integration-tests/src/scenarios/strand-addr-seed-convergence.integration.ts, packages/integration-tests/src/harness/block-store-probe.ts, packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts
 difficulty: hard
 repro: verified
 ----
@@ -152,6 +152,22 @@ block also lands physically in B's raw store (`default/CadrePeer@1`,
 | `control-db-two-node-convergence`, `strand-addr-seed-convergence`, `strand-unpublish-sibling-convergence` | 2 of 3 files red | **3 of 3 green** |
 | the 5-file deterministic set from the old ticket, plus `push-wake-e2e` | 4 files red | 1 file red (`push-wake-e2e` only) |
 | `convergence-stress` disconnect/reconnect | red | green in the patched run — but see below, it is tracked elsewhere and is timing-dependent |
+
+**Added 2026-08-03 — the class is not confined to `integration-tests`, or to the control database.**
+`packages/quereus-plugin-sereus/test/e2e/networked.e2e.spec.ts` (the plugin's own two-real-libp2p-peer
+strand mesh, `--project e2e`) carries the same fingerprint on the *strand* schema: the joining peer's
+`composeStrand` DDL dies applying the `Strand` membership tables with
+`Module 'optimystic' create failed for table '<Member|MemberPeer|Manager|Revocation|CancelledInvite>':
+Failed to initialize Optimystic table: Missing block (<id>)` — or, less often, the sibling
+`Cannot add to non-existent chain` — reading a block the founding peer demonstrably holds. It is a
+routing race like the control-side one: *which* test lands on it moves between runs, and roughly
+one test of the nine fails per run. This suite had a second, unrelated cause on top of it
+(`STRAND_CLUSTER_POLICY` omitting `assumedClusterSize`, so the corroboration floor demanded two
+corroborators a two-peer strand can never field); that half was fixed in this repo on 2026-08-03
+and took the suite from 4-6 red per run to ~1, with `cluster-fetch:no-quorum` dropping from
+`required: 2` to `required: 1` and `cluster-fetch:synced` appearing for the first time. What is
+left is this ticket's defect, attributed by fingerprint — the neutralized-flag experiment above has
+**not** been repeated against this suite.
 
 `push-wake-e2e` fails 3 of 4 tests either way. What changes is the fingerprint: at HEAD it is the
 header-absent one; with the flag neutralized it becomes `Block default/CadrePeer is unavailable

@@ -288,21 +288,23 @@ export interface ControlNetworkConfig {
 }
 
 /**
- * Replication-breadth constants, the control network's cluster policy, and the
- * strand resolver, re-exported so cadre embedders, the SQL plugin and the
- * integration harness share one definition. Defined in
- * `@serfab/quereus-plugin-sereus` because that package also creates libp2p nodes
- * and cannot depend on this one. The control network's breadth is fixed
- * ({@link CONTROL_REPLICATION_BREADTH}, not configurable) and so is its consensus
- * policy ({@link CONTROL_CLUSTER_POLICY} — notably the super-majority threshold,
- * which it leaves at Optimystic's default by omission); the strand default is
- * {@link CadreNodeConfig.strandClusterSize}.
+ * Replication-breadth constants, both networks' cluster policies, and the strand
+ * resolver, re-exported so cadre embedders, the SQL plugin and the integration
+ * harness share one definition. Defined in `@serfab/quereus-plugin-sereus`
+ * because that package also creates libp2p nodes and cannot depend on this one.
+ * The control network's breadth is fixed ({@link CONTROL_REPLICATION_BREADTH},
+ * not configurable) and so is its consensus policy ({@link CONTROL_CLUSTER_POLICY}
+ * — notably the super-majority threshold, which it leaves at Optimystic's default
+ * by omission); the strand breadth defaults to
+ * {@link CadreNodeConfig.strandClusterSize} while its policy is the fixed
+ * {@link STRAND_CLUSTER_POLICY}.
  */
 export {
   MIN_CLUSTER_SIZE,
   CONTROL_REPLICATION_BREADTH,
   CONTROL_CLUSTER_POLICY,
   DEFAULT_STRAND_CLUSTER_SIZE,
+  STRAND_CLUSTER_POLICY,
   resolveStrandClusterSize
 } from '@serfab/quereus-plugin-sereus';
 
