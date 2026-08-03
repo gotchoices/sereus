@@ -1299,4 +1299,265 @@ describe('E2E Strand Formation', () => {
 			}
 		}, 30_000);
 	});
+
+	// ═════════════════════════════════════════════════════════════════════════════
+	// Phase 6: Provisioning abort and settle grace
+	// ═════════════════════════════════════════════════════════════════════════════
+	//
+	// An invitation can be single-use, and redeeming one writes a `FormationUsage` row into the
+	// host's control database. When the host's provisioning budget runs out mid-redemption, two
+	// behaviours have to hold together:
+	//
+	//   (i)  CANCEL BEFORE WRITE — the host aborts the in-flight work and every layer below
+	//        checks that abort before issuing the insert, so an invitation that was not yet
+	//        redeemed stays unredeemed and the joiner's retry with the SAME token works.
+	//   (ii) ADOPT IF IT LANDS — if the work lands anyway inside the settle grace, the host
+	//        adopts the outcome and tells the joiner the join succeeded, rather than reporting
+	//        a timeout over an invitation that is in fact spent.
+	//
+	// Both shipped, and both are covered per-layer only (`FormationListener` against a fake hook,
+	// the manager against a fake recorder, the recorder against a fake approver). Nothing ran the
+	// COMPOSED path, so deleting the `signal` argument from any single hop still passed every
+	// existing test. The chain these two cases drive end to end:
+	//
+	//   FormationListener.provision()                       strand-formation-protocol.ts
+	//     → AbortController.abort() at workMs, then settleWithinGrace()
+	//     → StrandFormationManager.provisionAsResponder(contact, signal)
+	//       → ControlFormationUsageRecorder.recordUsage({ ..., signal })
+	//         → obtainApproval(..., signal) → askApprover(..., signal)   (relays onto the HTTP call)
+	//         → ControlDatabase.recordFormationUsage({ ..., signal })
+	//
+	// Both cases use the BOUND (provision-then-record) invite shape — an owner-signed `Strand`
+	// row inserted up front and an invite naming it — because that is the shape production
+	// publishes and it routes through `recordUsage` → `recordFormationUsage`, the path carrying
+	// the real abort checks.
+	//
+	// NOT covered here, deliberately: `ControlDatabase`'s own in-lock abort check is reached only
+	// AFTER the recorder's earlier checks, so dropping the `signal` on the
+	// `controlDatabase.recordFormationUsage({ ..., signal })` call ALONE would not fail either
+	// case. Driving that seam end to end needs the write lock held from outside, which has no
+	// public handle; it stays covered off-network by
+	// `packages/cadre-core/test/control-formation-invite.spec.ts` (~line 361).
+
+	describe('Phase 6: Provisioning abort and settle grace', () => {
+		let network: TestCadreNetwork;
+
+		beforeAll(() => {
+			network = new TestCadreNetwork({ verbose: true, defaultTimeoutMs: 20_000 });
+		});
+
+		afterAll(async () => {
+			await network.shutdown();
+		});
+
+		/**
+		 * Responder provisioning budget. Not clamped (`resolveProvisionTimeoutMs`'s ceiling here is
+		 * 22 s), and `splitProvisionBudget` halves it into a 1500 ms WORK budget — when the abort
+		 * fires — plus a 1500 ms settle grace. The joiner is left unconfigured, so it waits out the
+		 * 15 s initiator default and never times out first.
+		 */
+		const RESPONDER_PROVISION_MS = 3000;
+
+		/** Upper bound on {@link waitForAbort}, so a regression fails an assertion instead of hanging. */
+		const ABORT_WAIT_CAP_MS = 10_000;
+
+		/** Owner-signed open host strand — the row a bound invite's `StrandId` must resolve to. */
+		function insertHostStrand(party: TestParty, strandId: string): Promise<void> {
+			return party.controlDatabase.insertStrand(strandId, 'o', party.ownerPublicKey, ownerSigner(party));
+		}
+
+		/** Owner-signed single-use invite BOUND to `strandId`, optionally gated on an approval hook. */
+		function publishBoundInvite(
+			party: TestParty, token: string, sAppId: string, strandId: string, validationUrl?: string,
+		): Promise<void> {
+			return party.controlDatabase.insertFormationInvite(token, sAppId, party.ownerPublicKey, ownerSigner(party), {
+				totalUses: 1,
+				strandId,
+				...(validationUrl ? { validationUrl } : {}),
+				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
+			});
+		}
+
+		/**
+		 * Resolve true once `signal` aborts (immediately if it already has), false after `capMs`.
+		 *
+		 * The cap is what keeps a regression honest: a build that stopped cancelling would otherwise
+		 * park here until the vitest timeout killed the whole file, reporting nothing useful. An
+		 * absent signal — the plumbing dropped it somewhere up the chain — reports false at once.
+		 */
+		function waitForAbort(signal: AbortSignal | undefined, capMs: number): Promise<boolean> {
+			if (!signal) {
+				return Promise.resolve(false);
+			}
+			if (signal.aborted) {
+				return Promise.resolve(true);
+			}
+			return new Promise<boolean>((resolve) => {
+				// Ordering: each closure captures the other's binding, and the listener is registered
+				// LAST — after both bindings are initialized — so neither can run before the other
+				// exists. Whichever settles first tears down the loser, leaving no timer holding the
+				// event loop open and no listener on a signal the test has finished with.
+				const onAbort = (): void => {
+					clearTimeout(timer);
+					resolve(true);
+				};
+				const timer = setTimeout(() => {
+					signal.removeEventListener('abort', onAbort);
+					resolve(false);
+				}, capMs);
+				signal.addEventListener('abort', onAbort, { once: true });
+			});
+		}
+
+		/** A joiner-side service for a party that is redeeming, not hosting. */
+		function joinerService(party: TestParty): StrandSolicitationService {
+			return new StrandSolicitationService({
+				partyId: party.partyId,
+				cadrePeerAddrs: party.ownerNode.multiaddrs,
+			});
+		}
+
+		it('(i) a cancelled redemption leaves the invitation unspent, and the same token then works', async () => {
+			const alice = await network.createParty({ name: 'alice-abort-cancel' });
+			const bob = await network.createParty({ name: 'bob-abort-cancel' });
+
+			// The lever is fully real: an approval hook that goes QUIET on the first ask, which is
+			// what a queue behind a human approver looks like when it stalls. No test shim sits
+			// anywhere on the path — the responder's own work deadline fires at 1500 ms, its abort is
+			// relayed onto the outgoing `fetch`, and the held request dies on the wire.
+			let releaseHold!: () => void;
+			const held = new Promise<void>((resolve) => { releaseHold = resolve; });
+			const hook = await startApprovalHook({
+				beforeAnswer: (_fields, requestIndex) => (requestIndex === 1 ? held : Promise.resolve()),
+			});
+			const aliceService = responderService(alice, {
+				formationConfig: { provisionTimeoutMs: RESPONDER_PROVISION_MS },
+			});
+			try {
+				await alice.controlDatabase.insertValidationKey(hook.validationKey, alice.ownerPublicKey, ownerSigner(alice));
+
+				const hostStrandId = `strand-abort-cancel-${Date.now()}`;
+				await insertHostStrand(alice, hostStrandId);
+				const token = `invite-abort-cancel-${Date.now()}`;
+				await publishBoundInvite(alice, token, 'sapp-abort-cancel', hostStrandId, hook.validationUrl);
+
+				const bobService = joinerService(bob);
+				const invitation = invitationFor(token, 'sapp-abort-cancel', alice);
+
+				// The listener's OWN retryable reason. Asserting the exact string — not merely that
+				// something threw — is what keeps a joiner-side timeout, an `Internal formation error`,
+				// or a dial read-error from being mistaken for the responder's deliberate rejection.
+				await expect(
+					bobService.formStrand(invitation, { partyId: bob.partyId, purpose: 'abort-cancel' }, bob.ownerNode.libp2p),
+				).rejects.toThrow(/Formation provisioning timed out/);
+
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(0);
+				expect(hook.requestCount).toBe(1);
+
+				// The cancellation reached the WIRE and killed the outbound HTTP call — without this the
+				// case would also pass if the reply had come from some unrelated timeout. The server
+				// observes the hang-up a few ticks after the client aborts, hence the short wait.
+				await waitUntil(
+					() => hook.abortedCount === 1,
+					{ timeoutMs: 5000, intervalMs: 50, description: 'approval hook observes the client abort' },
+				);
+				expect(hook.abortedCount).toBe(1);
+
+				// A zero count alone would also be satisfied by an invite consumed and then rolled back
+				// into an unusable state. Redeeming the SAME single-use token, once the approver stops
+				// stalling, is the assertion that carries this case.
+				releaseHold();
+
+				const result = await bobService.formStrand(
+					invitation, { partyId: bob.partyId, purpose: 'abort-cancel-retry' }, bob.ownerNode.libp2p,
+				);
+				expect(result.strandId).toBe(hostStrandId);
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+				expect(hook.requestCount).toBe(2);
+
+				const row = await readFormationUsage(alice, token);
+				expect(row).not.toBeNull();
+				expect(verifyFormationConsent(row!)).toBe(true);
+			} finally {
+				// Released here too: the assertions above can throw while the hook is still held, and a
+				// forgotten hold would leave the handler parked forever.
+				releaseHold();
+				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+				await hook.close();
+			}
+		}, 30_000);
+
+		it('(ii) a redemption that lands inside the settle grace is adopted', async () => {
+			const alice = await network.createParty({ name: 'alice-abort-adopt' });
+			const bob = await network.createParty({ name: 'bob-abort-adopt' });
+
+			/**
+			 * A TIMING SHIM, not a fake. Every method delegates to a REAL
+			 * `ControlFormationUsageRecorder` over the REAL control database, and the consent row is
+			 * written by the real write path. The only thing changed is WHEN `recordUsage`'s promise
+			 * settles: the row is written first, then the call parks until the listener's work budget
+			 * expires and aborts — so it settles just inside the 1500 ms settle grace, on purpose and
+			 * without a timer race.
+			 *
+			 * Why a shim at all: a real commit finishes in milliseconds, and no production lever lands
+			 * a write inside the grace on demand. The approval hook cannot be that lever here — the
+			 * caller-abort is relayed onto the outgoing HTTP request and kills it, which is case (i).
+			 */
+			const inner = new ControlFormationUsageRecorder(alice.controlDatabase);
+			let observedAbort = false;
+			const gracefullyLateRecorder: FormationUsageRecorder = {
+				recordUsage: async (params) => {
+					await inner.recordUsage(params);
+					observedAbort = await waitForAbort(params.signal, ABORT_WAIT_CAP_MS);
+				},
+				isTokenUsed: (token) => inner.isTokenUsed(token),
+				isTokenValid: (token) => inner.isTokenValid(token),
+				resolveStrand: (token) => inner.resolveStrand(token),
+				provisionAndRecord: (params) => inner.provisionAndRecord(params),
+				hasOutstandingInvitation: () => inner.hasOutstandingInvitation(),
+			};
+
+			const aliceService = responderService(alice, {
+				formationConfig: { provisionTimeoutMs: RESPONDER_PROVISION_MS },
+				formationUsageRecorder: gracefullyLateRecorder,
+			});
+			try {
+				// No `validationUrl` and no hook: the abort must come from the listener's work deadline
+				// alone, so nothing else can be what the decorator observes.
+				const hostStrandId = `strand-abort-adopt-${Date.now()}`;
+				await insertHostStrand(alice, hostStrandId);
+				const token = `invite-abort-adopt-${Date.now()}`;
+				await publishBoundInvite(alice, token, 'sapp-abort-adopt', hostStrandId);
+
+				const bobService = joinerService(bob);
+				const invitation = invitationFor(token, 'sapp-abort-adopt', alice);
+
+				// RESOLVES — the joiner is told the truth about a spent invitation, not "timed out".
+				const result = await bobService.formStrand(
+					invitation, { partyId: bob.partyId, purpose: 'abort-adopt' }, bob.ownerNode.libp2p,
+				);
+				expect(result.strandId).toBe(hostStrandId);
+
+				// Without this the case degenerates into an ordinary happy path and would pass even if
+				// cancellation were removed entirely. The assignment is safely ordered: the `await`
+				// completes before `recordUsage` returns, which is before the result frame goes out.
+				expect(observedAbort).toBe(true);
+
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+				const row = await readFormationUsage(alice, token);
+				expect(row).not.toBeNull();
+				expect(verifyFormationConsent(row!)).toBe(true);
+				expect(ed25519PublicKeyB64FromPeerId(result.memberKey)).toBe(row!.peerKey);
+
+				// The adopted redemption really did consume the seat — an adoption that reported success
+				// without spending the invite would sail past everything above and fail only here.
+				await expect(
+					bobService.formStrand(invitation, { partyId: bob.partyId, purpose: 'abort-adopt-again' }, bob.ownerNode.libp2p),
+				).rejects.toThrow(/Invalid token/);
+				expect(await alice.controlDatabase.countFormationUsage(token)).toBe(1);
+			} finally {
+				aliceService.unregisterResponder(alice.ownerNode.libp2p);
+			}
+		}, 30_000);
+	});
 });
