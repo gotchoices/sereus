@@ -133,67 +133,77 @@ describe('CadreNode.reserveRelays before start', () => {
   });
 });
 
-describe('driveRelayReservation over a loopback relay', () => {
-  const nodes: Libp2p[] = [];
+const nodes: Libp2p[] = [];
 
-  afterEach(async () => {
-    // A relay stopped mid-test is already down; swallow the second stop.
-    await Promise.all(
-      nodes.map(async (node) => {
-        try {
-          await node.stop();
-        } catch {
-          /* already stopped */
-        }
-      })
-    );
-    nodes.length = 0;
+afterEach(async () => {
+  // A relay stopped mid-test is already down; swallow the second stop.
+  await Promise.all(
+    nodes.map(async (node) => {
+      try {
+        await node.stop();
+      } catch {
+        /* already stopped */
+      }
+    })
+  );
+  nodes.length = 0;
+});
+
+async function startRelay(): Promise<Libp2p> {
+  const relay = await createLibp2p({
+    addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify(), relay: circuitRelayServer() }
   });
+  nodes.push(relay);
+  return relay;
+}
 
-  async function startRelay(): Promise<Libp2p> {
-    const relay = await createLibp2p({
-      addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
-      transports: [tcp()],
-      connectionEncrypters: [noise()],
-      streamMuxers: [yamux()],
-      services: { identify: identify(), relay: circuitRelayServer() }
-    });
-    nodes.push(relay);
-    return relay;
+/**
+ * A browser-shaped client: listens on the BARE `/p2p-circuit` search addr, so
+ * it never fails to start when a relay is unreachable and it only reserves once
+ * something dials a relay into its peer store — which is what
+ * {@link driveRelayReservation} does.
+ */
+async function startSearchClient(): Promise<Libp2p> {
+  const node = await createLibp2p({
+    addresses: { listen: ['/p2p-circuit'] },
+    transports: [tcp(), circuitRelayTransport()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()],
+    services: { identify: identify() }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/** A syntactically valid relay addr with nothing listening behind it (refused fast). */
+async function deadRelayAddr(): Promise<string> {
+  const key = await generateKeyPair('Ed25519');
+  return `/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(key).toString()}`;
+}
+
+/**
+ * A relay addr in RFC 5737 TEST-NET-1, which is routed nowhere: a dial to it
+ * HANGS rather than being refused, so it exercises the deadline instead of the
+ * connection-refused path {@link deadRelayAddr} takes.
+ */
+async function blackholeRelayAddr(port: number): Promise<string> {
+  const key = await generateKeyPair('Ed25519');
+  return `/ip4/192.0.2.1/tcp/${port}/p2p/${peerIdFromPrivateKey(key).toString()}`;
+}
+
+async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (!cond()) {
+    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
+    await new Promise((resolve) => setTimeout(resolve, 100));
   }
+}
 
-  /**
-   * A browser-shaped client: listens on the BARE `/p2p-circuit` search addr, so
-   * it never fails to start when a relay is unreachable and it only reserves once
-   * something dials a relay into its peer store — which is what
-   * {@link driveRelayReservation} does.
-   */
-  async function startSearchClient(): Promise<Libp2p> {
-    const node = await createLibp2p({
-      addresses: { listen: ['/p2p-circuit'] },
-      transports: [tcp(), circuitRelayTransport()],
-      connectionEncrypters: [noise()],
-      streamMuxers: [yamux()],
-      services: { identify: identify() }
-    });
-    nodes.push(node);
-    return node;
-  }
-
-  /** A syntactically valid relay addr with nothing listening behind it. */
-  async function deadRelayAddr(): Promise<string> {
-    const key = await generateKeyPair('Ed25519');
-    return `/ip4/127.0.0.1/tcp/1/p2p/${peerIdFromPrivateKey(key).toString()}`;
-  }
-
-  async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
-    const deadline = Date.now() + timeoutMs;
-    while (!cond()) {
-      if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-      await new Promise((resolve) => setTimeout(resolve, 100));
-    }
-  }
-
+describe('driveRelayReservation over a loopback relay', () => {
   it('reserves through a live relay and reports it live', async () => {
     const relay = await startRelay();
     const client = await startSearchClient();
@@ -256,4 +266,118 @@ describe('driveRelayReservation over a loopback relay', () => {
     expect(error).toBeNull();
     expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
   });
+});
+
+describe('driveRelayReservation deadline', () => {
+  // `timeoutMs` must bound the WHOLE drive, dials included. A browser tab awaits
+  // this on its startup path, and libp2p's own per-dial timeout is far longer than
+  // the reservation timeout — so a drive that only bounded the post-dial wait would
+  // stall the tab for one dial timeout per unreachable relay.
+  const BOUND_MS = 1_500;
+  // Generous enough that a fast connection-refused still passes, tight enough that
+  // even ONE unbounded libp2p dial timeout (seconds) would fail it.
+  const SLACK_MS = 6_000;
+
+  it('gives up on a blackholed relay at the deadline rather than at libp2p dial timeout', async () => {
+    const client = await startSearchClient();
+
+    const started = Date.now();
+    const { error } = await driveRelayReservation(client, [await blackholeRelayAddr(4001)], {
+      timeoutMs: BOUND_MS,
+      pollMs: 100
+    });
+    expect(error).not.toBeNull();
+    expect(Date.now() - started).toBeLessThan(SLACK_MS);
+    expect(client.status).toBe('started');
+  }, 30_000);
+
+  it('does not stack per-relay dial timeouts across a list', async () => {
+    // Serial dialing made three unreachable relays cost three dial timeouts before
+    // the wait even started; dialing them concurrently under one deadline does not.
+    const client = await startSearchClient();
+    const addrs = [
+      await blackholeRelayAddr(4001),
+      await blackholeRelayAddr(4002),
+      await blackholeRelayAddr(4003)
+    ];
+
+    const started = Date.now();
+    const { error } = await driveRelayReservation(client, addrs, {
+      timeoutMs: BOUND_MS,
+      pollMs: 100
+    });
+    expect(error).not.toBeNull();
+    expect(Date.now() - started).toBeLessThan(SLACK_MS);
+  }, 30_000);
+});
+
+describe('CadreNode relay reservation against a live relay', () => {
+  /**
+   * A relay whose identify protocol id matches what a cadre CONTROL node speaks:
+   * `@optimystic/db-p2p` namespaces identify per network
+   * (`/optimystic/control-<partyId>/id/1.0.0`), and circuit-relay-v2's search
+   * listener only reserves on a peer whose identify-learned protocol list carries
+   * the hop codec. A stock `identify()` relay — which is what `ops/` deploys —
+   * therefore never gets discovered, so this test would sit at `error`.
+   *
+   * That is a real defect in the deployed path, NOT a test artifact: see
+   * `tickets/fix/relay-search-listener-cannot-discover-stock-relay.md`. Matching
+   * the prefix here isolates THIS spec to the reservation driver; drop the
+   * override once that ticket lands and this should still pass.
+   */
+  async function startNamespacedRelay(partyId: string): Promise<Libp2p> {
+    const relay = await createLibp2p({
+      addresses: { listen: ['/ip4/127.0.0.1/tcp/0'] },
+      transports: [tcp()],
+      connectionEncrypters: [noise()],
+      streamMuxers: [yamux()],
+      services: {
+        identify: identify({ protocolPrefix: `optimystic/control-${partyId}` }),
+        relay: circuitRelayServer()
+      }
+    });
+    nodes.push(relay);
+    return relay;
+  }
+
+  /**
+   * The wiring the free-function specs above cannot reach: `CadreNode` handing its
+   * own control node to the driver, reporting `reserved` off it, and dropping the
+   * posture on `stop()` so a restarted instance never reports a dead run.
+   */
+  it('reserves through the control node and clears the posture on stop', async () => {
+    const partyId = `relay-reservation-live-${Math.random().toString(36).slice(2)}`;
+    const relay = await startNamespacedRelay(partyId);
+    const node = new CadreNode({
+      controlNetwork: {
+        partyId,
+        bootstrapNodes: []
+      },
+      privateKey: await generateKeyPair('Ed25519'),
+      profile: 'transaction',
+      // The browser tab's posture: the BARE search listener, no `relayAddrs`.
+      network: { listenAddrs: ['/p2p-circuit'] }
+    });
+    await node.start();
+
+    try {
+      const relayAddr = relay.getMultiaddrs()[0].toString();
+      const state = await node.reserveRelays([relayAddr], { timeoutMs: 15_000, pollMs: 100 });
+      expect(state.status).toBe('reserved');
+      expect(state.addrs).toEqual([relayAddr]);
+      expect(state.circuitAddrs.length).toBeGreaterThan(0);
+      expect(state.error).toBeNull();
+      // Recomputed per call, not memoised.
+      expect(node.getRelayReservationState().status).toBe('reserved');
+    } finally {
+      await node.stop();
+    }
+
+    expect(node.getRelayReservationState()).toEqual({
+      status: 'none',
+      addrs: [],
+      circuitAddrs: [],
+      error: null
+    });
+  }, 90_000);
 });

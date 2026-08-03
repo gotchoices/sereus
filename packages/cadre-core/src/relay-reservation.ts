@@ -26,6 +26,17 @@
  * that reserves this way — that re-introduces the fatal configured listener
  * alongside the search listener and the tab stops booting when the relay is down.
  *
+ * ⚠️ SEARCH MODE DOES NOT WORK AGAINST THE RELAY THIS REPO DEPLOYS. Discovery
+ * reserves only on a connected peer whose IDENTIFY-learned protocol list carries
+ * the relay-hop codec, and `@optimystic/db-p2p` namespaces identify per network
+ * (`/optimystic/control-<partyId>/id/1.0.0`) while `ops/docker/libp2p-infra` runs
+ * stock identify — so the two never identify each other and no reservation is ever
+ * attempted. The dial still succeeds, so this surfaces as a generic timeout.
+ * Tracked by `tickets/fix/relay-search-listener-cannot-discover-stock-relay.md`;
+ * reproduced in `test/relay-reservation.spec.ts`. Nothing below is wrong — this
+ * module drives and reports correctly — but `reserved` is currently unreachable
+ * in production.
+ *
  * Status is derived from the node's LIVE multiaddrs on every read rather than
  * cached at drive time: when a relay restarts or the connection drops, libp2p's
  * listener clears its listening addrs and the circuit multiaddr disappears, so a
@@ -85,10 +96,12 @@ export function circuitMultiaddrs(node: Libp2p): string[] {
  * listener can reserve on one), then wait until a `/p2p-circuit` address appears.
  *
  * Never throws — a dial rejection or a timeout comes back as an `error` string.
- * A dial that throws does NOT abort the rest of the list: one dead relay among
- * two must not cost the reservation on the live one, so the first error is kept
- * and the loop continues. A reservation that lands wins over any earlier dial
- * error (`error: null`).
+ * A dial that throws does NOT cost the rest of the list: one dead relay among two
+ * must not cost the reservation on the live one, so every addr is dialed and the
+ * first error (in list order) is kept. A reservation that lands wins over any
+ * dial error (`error: null`).
+ *
+ * `timeoutMs` bounds the WHOLE drive — dials and wait share one deadline.
  */
 export async function driveRelayReservation(
   node: Libp2p,
@@ -99,23 +112,61 @@ export async function driveRelayReservation(
     return { error: null };
   }
   const timeoutMs = opts?.timeoutMs ?? DEFAULT_RELAY_RESERVE_TIMEOUT_MS;
-  const pollMs = opts?.pollMs ?? DEFAULT_RELAY_RESERVE_POLL_MS;
+  // Clamped: a caller-supplied 0 would spin the poll loop hot until the deadline.
+  const pollMs = Math.max(1, opts?.pollMs ?? DEFAULT_RELAY_RESERVE_POLL_MS);
+  const deadline = Date.now() + timeoutMs;
 
-  let firstError: string | null = null;
-  for (const addr of addrs) {
-    try {
-      await node.dial(multiaddr(addr));
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      log('Relay dial failed (%s): %s', addr, message);
-      firstError ??= message;
-    }
-  }
-
-  if (await waitForCircuitReservation(node, timeoutMs, pollMs)) {
+  const dialError = await dialRelays(node, addrs, deadline);
+  if (await waitForCircuitReservation(node, deadline, pollMs)) {
     return { error: null };
   }
-  return { error: firstError ?? `no circuit reservation within ${timeoutMs}ms` };
+  return { error: dialError ?? `no circuit reservation within ${timeoutMs}ms` };
+}
+
+/**
+ * Dial every relay CONCURRENTLY under the drive's shared deadline, and report the
+ * first failure in LIST order (`null` when every dial connected).
+ *
+ * Concurrent and deadline-bound because this whole drive is awaited on a browser
+ * tab's startup path: dialing serially with libp2p's own (much longer) per-dial
+ * timeout meant N unreachable relays cost N dial timeouts before the reservation
+ * wait even began, so `timeoutMs` bounded only the tail of the operation.
+ *
+ * Aborting a dial at the deadline is not a lost reservation — the wait that
+ * follows has no time left either, so the drive would report `error` regardless.
+ */
+async function dialRelays(
+  node: Libp2p,
+  addrs: readonly string[],
+  deadline: number
+): Promise<string | null> {
+  // An explicit controller, not `AbortSignal.timeout` — the latter is not
+  // reliably present on React Native/Hermes, which runs this same module.
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), Math.max(0, deadline - Date.now()));
+  try {
+    const results = await Promise.allSettled(
+      addrs.map((addr) => node.dial(multiaddr(addr), { signal: controller.signal }))
+    );
+    return firstDialError(addrs, results);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Log every dial rejection; return the first one in list order. */
+function firstDialError(
+  addrs: readonly string[],
+  results: readonly PromiseSettledResult<unknown>[]
+): string | null {
+  let first: string | null = null;
+  results.forEach((result, index) => {
+    if (result.status !== 'rejected') return;
+    const message = result.reason instanceof Error ? result.reason.message : String(result.reason);
+    log('Relay dial failed (%s): %s', addrs[index], message);
+    first ??= message;
+  });
+  return first;
 }
 
 /**
@@ -127,10 +178,9 @@ export async function driveRelayReservation(
  */
 async function waitForCircuitReservation(
   node: Libp2p,
-  timeoutMs: number,
+  deadline: number,
   pollMs: number
 ): Promise<boolean> {
-  const deadline = Date.now() + timeoutMs;
   for (;;) {
     if (circuitMultiaddrs(node).length > 0) {
       return true;

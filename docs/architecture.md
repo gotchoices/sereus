@@ -895,6 +895,14 @@ interface CadreNodeConfig {
     // Browser tabs take that route so a dead relay leaves them solo rather than
     // dead. The two are ALTERNATIVES, not layers: setting both on one node puts the
     // fatal listener back.
+    //
+    // ⚠️ The search route does not yet reach `reserved` against the relay `ops/`
+    // deploys: relay discovery keys on the IDENTIFY-learned protocol list, and a
+    // cadre node's identify is network-namespaced (`/optimystic/control-<partyId>/
+    // id/1.0.0`) while that relay runs stock identify — so no reservation is ever
+    // attempted and the node reports a generic timeout. The configured route above
+    // is unaffected (it names the relay, so it needs no discovery). Tracked by
+    // `tickets/fix/relay-search-listener-cannot-discover-stock-relay`.
     relayAddrs?: string[];
     enableRelay?: boolean;        // Enable circuit relay (default: true for storage profile)
     transports?: Libp2pTransports; // Custom libp2p transports (default: TCP + relay)

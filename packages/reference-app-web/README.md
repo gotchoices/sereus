@@ -123,12 +123,31 @@ at runtime — exactly like the ICE manifest:
 - `VITE_RELAY_ADDR` (build-time, comma-separated), or
 - `localStorage["relay-addr"]` (runtime override).
 
-When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, dials
-the relay, and waits for a reservation (Home "Relay" row → `reserved`). With **no**
-relay configured the tab stays in the Phase-1 solo posture (`listenAddrs: []`);
-*Create invitation* then surfaces a clear "not dialable — configure a relay" error
-instead of failing silently. (Joining still works if the pasted invitation points
-at a dialable responder.)
+When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, and
+`CadreNode.reserveRelays()` dials the relay and waits for a reservation (Home
+"Relay" row → `reserved`). The dial, the wait, and the status all live in
+cadre-core (`relay-reservation.ts`); this app only supplies the addresses and
+renders the result. The status is **recomputed on every read** from the node's live
+`/p2p-circuit` addresses, so a reservation lost after startup (relay restarted,
+connection dropped) flips the badge back to `error` and makes *Create invitation*
+refuse, rather than minting an invitation carrying dead addresses. The Home badge
+refreshes on the 4 s poll; `createInvitation` reads it at the decision point.
+
+`network.relayAddrs` is deliberately NOT set on the browser config: that is the
+fail-fast route (a configured circuit listener that cannot listen aborts node
+start), and a tab must still boot solo when its relay is down. The two are
+alternatives, not layers.
+
+> ⚠️ `reserved` is currently unreachable against the relay in `ops/`: relay
+> discovery keys on libp2p's identify handshake, and a cadre node's identify is
+> network-namespaced while that relay runs the stock one, so the tab never learns
+> the relay is a relay. Tracked by
+> `tickets/fix/relay-search-listener-cannot-discover-stock-relay`.
+
+With **no** relay configured the tab stays in the Phase-1 solo posture
+(`listenAddrs: []`); *Create invitation* then surfaces a clear "not dialable —
+configure a relay" error instead of failing silently. (Joining still works if the
+pasted invitation points at a dialable responder.)
 
 ### Authorization gates ("RBAC")
 

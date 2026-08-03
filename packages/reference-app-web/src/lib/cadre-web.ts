@@ -91,8 +91,15 @@ export type OwnerState = 'pending' | 'genesis' | 'existing' | 'error';
  */
 export type RelayState = RelayReservationState;
 
-/** The posture of a tab with no node running (or no relay configured). */
-const NO_RELAY_STATE: RelayState = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+/**
+ * The posture of a tab with no node running (or no relay configured). A FACTORY,
+ * not a shared const: the store assigns whatever `getRelayState()` returns into a
+ * Svelte `$state` object, which proxies it — a write through that proxy would
+ * otherwise mutate the singleton every later caller receives.
+ */
+function noRelayState(): RelayState {
+	return { status: 'none', addrs: [], circuitAddrs: [], error: null };
+}
 
 /** A strand this tab joined via the consent/invitation formation flow. */
 export interface FormedStrand {
@@ -211,7 +218,7 @@ export function getOwnerState(): { state: OwnerState; error: string | null } {
  * circuit addresses that no longer route.
  */
 export function getRelayState(): RelayState {
-	return node?.getRelayReservationState() ?? NO_RELAY_STATE;
+	return node?.getRelayReservationState() ?? noRelayState();
 }
 
 /** Node-local trusted-owner anchor — durable across reload once `startCadre` resolves. */

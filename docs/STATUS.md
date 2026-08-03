@@ -887,7 +887,12 @@ where local rows exist.
   WebRTC dial path really ran. The browser's **listening** posture
   (`listenAddrs: ['/p2p-circuit', '/webrtc']`) is now covered as a unit shape after all:
   `test/relay-reservation.spec.ts` stands up a loopback `circuitRelayServer` and drives a bare
-  `/p2p-circuit` search listener against it (reserve, lose the relay, reserve alongside a dead one).
+  `/p2p-circuit` search listener against it (reserve, lose the relay, reserve alongside a dead one,
+  give up at the deadline rather than at libp2p's per-dial timeout), plus one `CadreNode`-level
+  reservation that also pins the `stop()` posture reset. That spec is where the **search route's
+  identify mismatch** was found — a cadre node cannot discover a stock-identify relay, so its
+  `CadreNode` case has to match the namespaced prefix to reserve at all
+  (`tickets/fix/relay-search-listener-cannot-discover-stock-relay`).
   What remains integration-only is the same posture over real WAN transports.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
