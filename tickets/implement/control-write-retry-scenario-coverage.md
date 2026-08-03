@@ -152,3 +152,38 @@ numbers in the scenario's header comment the way the current header does.
   At least three runs before trusting new bounds. If the full scenario's wall clock
   approaches ~10 minutes, run the new cases with `-t` filters instead and say so in the
   handoff.
+
+## Arm added by `verify-ddl-retry-engages` review (2026-08-03)
+
+Two things learned while trying — and failing — to capture the retriable failure from a
+real joining node. Both change what section 1 needs to record, so read them before
+writing the assertions.
+
+**The success path has never been observed at ANY real call site.** Every case proving
+the retry absorbs a failure drives a stub. A debug line on the loop's decline branch
+(`control-write-retry.ts`) did prove the wrapper is live on the schema-init path in the
+shipped binary — a real `cadre-cli` child logged `attempt 1/3, not retried here` for its
+DDL failure — but that is the *decline* branch. Section 2 is the only thing that would
+close this, which makes it the highest-value half of this ticket, not the second half.
+
+**The super-majority shortfall can arrive from EITHER phase, and the message text is
+identical.** `ClusterCoordinator.executeClusterTransaction` raises it
+(`db-p2p/src/repo/cluster-coordinator.ts:374`), and `CoordinatorRepo` calls that from
+`pend` (line 774), `cancel` (882) *and* `commit` (916). So the sentence itself carries no
+phase information at all — only the transactor aggregate wrapping it does, via
+`[block:` vs `[blocks:`. When section 1 records the real message, **record the whole
+aggregate, not the shortfall sentence**: a transcription that keeps only the sentence
+(which is what happened in `29.3-third-node-join-ddl-init`) throws away the one segment
+that decides whether the retry engages.
+
+Related detail worth knowing when you read a real aggregate: a per-batch detail can only
+carry a `cause=` segment if that batch's RPC rejected, and a rejected batch always renders
+`(in-flight)` — `Pending.isError` implies `isResponse` is false
+(`db-core/src/utility/pending.ts`). `(no-response)` means the batch had no request at all
+and never prints a cause. So `(no-response) cause=…` in any transcription is a
+transcription error, not a real shape.
+
+Twelve runs of `provider-seed-accepted.integration.ts` on 2026-08-02/03 produced zero
+super-majority failures — every DDL death was `Missing block`
+(`0-bug-control-collection-header-absent-at-committed-revision`). That scenario is not a
+reliable source for this capture; this ticket's own scenario remains the plan.

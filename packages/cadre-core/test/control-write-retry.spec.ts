@@ -73,9 +73,14 @@ const TRANSACTOR_AGGREGATE =
  * block COUNT instead — `<peerId>[blocks:<count>](<status>)`. A no-response there is
  * indeterminate (the coordinator may have committed and only the reply was lost), so this one
  * must never be re-presented.
+ *
+ * The status reads `in-flight`, not `no-response`, because a batch can only carry a `cause=` if
+ * its RPC REJECTED — and `Pending.isError` implies `isResponse` is false, which every one of the
+ * transactor's three formatters renders as `in-flight`. `no-response` means the batch has no
+ * request at all, and those never print a cause.
  */
 const TRANSACTOR_AGGREGATE_COMMIT_PHASE =
-	'Some peers did not complete: 12D3KooWpeer[blocks:3](no-response) cause=The stream has been reset; root: The stream has been reset';
+	'Some peers did not complete: 12D3KooWpeer[blocks:3](in-flight) cause=The stream has been reset; root: The stream has been reset';
 /** The aggregate with no per-batch details at all — `formatBatchStatuses` had nothing to format. */
 const TRANSACTOR_AGGREGATE_NO_DETAILS =
 	'Some peers did not complete: ; root: The stream has been reset';
@@ -223,6 +228,22 @@ describe('isRetriableControlWriteFailure', () => {
 	it('never retries constraint/authorization failures — a retry would re-present a spent signature', () => {
 		expect(isRetriableControlWriteFailure(nested('CHECK constraint failed: Authorized'))).toBe(false);
 		expect(isRetriableControlWriteFailure(nested('UNIQUE constraint failed: FormationUsage.UsageStampId'))).toBe(false);
+	});
+
+	/**
+	 * A `cause` chain link that is not an `Error`. `unwrapError` follows `.cause` blindly and
+	 * reports an `undefined` message for such a link, so matching on it unguarded throws a
+	 * `TypeError` — and it would throw from inside `retryControlWrite`'s catch, replacing the real
+	 * control-write failure with a confusing one. The classifier must ANSWER instead, and must
+	 * still read the levels that ARE strings.
+	 */
+	it('answers instead of throwing when the cause chain carries a non-Error link', () => {
+		expect(isRetriableControlWriteFailure(
+			new Error('control write failed', { cause: 'connection closed' }))).toBe(false);
+		expect(isRetriableControlWriteFailure(
+			new Error(TRANSACTOR_AGGREGATE, { cause: { reason: 'aborted' } }))).toBe(true);
+		expect(isRetriableControlWriteFailure(
+			new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, { cause: 'connection closed' }))).toBe(false);
 	});
 
 	it('never retries a non-Error throw, even one whose text would match', () => {

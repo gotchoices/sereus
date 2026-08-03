@@ -148,6 +148,25 @@ function isUnansweredSuperMajorityShortfall(message: string): boolean {
 }
 
 /**
+ * Every message in the failure's `cause` chain.
+ *
+ * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking what
+ * that holds — a chain link that is not an `Error` (a stream rejected with a bare string reason,
+ * an `AbortSignal.reason` that is a plain object) yields `undefined` there, and calling
+ * `.includes` on it would throw a `TypeError` out of this classifier, INSIDE `retryControlWrite`'s
+ * catch, replacing the real control-write failure with a confusing one. Non-strings are dropped:
+ * a link nobody can read is a link that matches nothing, which is already the conservative answer.
+ *
+ * NOTE: a cause chain with a CYCLE would spin forever inside `unwrapError` itself. No error in
+ * this repo builds one; if a hang ever localises to a control-write failure path, look there.
+ */
+function chainMessages(error: Error): string[] {
+	return unwrapError(error)
+		.map(({ message }) => message)
+		.filter(message => typeof message === 'string');
+}
+
+/**
  * The error messages that mean "the cohort did not answer AND nothing committed", and nothing
  * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
  * a read/pend-phase transactor aggregate with `cause=The stream has been reset`.
@@ -188,7 +207,7 @@ export function isRetriableControlWriteFailure(error: unknown): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
-	const messages = unwrapError(error).map(({ message }) => message);
+	const messages = chainMessages(error);
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
 	}
@@ -247,10 +266,11 @@ export async function retryControlWrite<T>(
 			if (!isRetriableControlWriteFailure(error)) {
 				// The ONLY trace that this funnel saw a failure and declined it. Without it the
 				// log is silent either way, so "the classifier vetoed this one" is
-				// indistinguishable from "the retry is not wired into this path at all" — the
-				// exact ambiguity that made verifying the schema-init retry against a live
-				// cluster cost a dozen scenario runs.
-				log('Control write failed non-transiently on attempt %d/%d, not retried: %s',
+				// indistinguishable from "the retry is not wired into this path at all".
+				// "here" is load-bearing: this fires for every non-transient failure, and some
+				// of them — the lost-use-number constraint failures — ARE retried by the OUTER
+				// loop (`ControlDatabase.withUseNumberRetry`) that this one nests inside.
+				log('Control write failed non-transiently on attempt %d/%d, not retried here: %s',
 					attemptNumber, CONTROL_WRITE_ATTEMPTS, error);
 				throw error;
 			}
