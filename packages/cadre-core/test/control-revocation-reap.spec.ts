@@ -446,6 +446,22 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
         expect(await cadrePeerRow(peerId)).toBeUndefined();
       }, 60_000);
 
+      it('reaps every reapable table in one pass, and counts each row it removed', async () => {
+        // The sweep dispatches on the tombstone's own TableName, so CadrePeer coverage
+        // alone would not show DeviceToken / ValidationKey reaching reapRevokedRow — and
+        // the returned count is what the reconcile pass logs, so it has to aggregate.
+        const sibling = '12D3KooWSweepMultiTableSibling';
+        const { stamp: tokenStamp } = await seatDeviceToken(sibling);
+        const key = 'val-sweep-' + Math.random().toString(36).slice(2);
+        const { stamp: keyStamp } = await enrollValidationKey(key);
+        await tombstoneStamp('DeviceToken', sibling, tokenStamp);
+        await tombstoneStamp('ValidationKey', key, keyStamp);
+
+        expect(await db.reapRevokedRows(SELF)).toBe(2);
+        expect(await db.queryDeviceTokenStampId(sibling)).toBeNull();
+        expect(await validationKeyRow(key)).toBeUndefined();
+      }, 60_000);
+
       it('skips this node\'s OWN CadrePeer and DeviceToken rows while reaping a sibling\'s', async () => {
         // The deliberate limit: a revoked node keeps its own copy of its own rows, so it
         // never fights registerSelf / retouchSelfDeviceToken over an insert the schema

@@ -1802,6 +1802,12 @@ export class CadreNode implements SAppIdLookup {
     // while this consumes them: different tables (Revocation update vs guarded-row
     // delete) and both take the write lock per statement. The two can overlap freely —
     // do not add a mutex.
+    //
+    // NOTE: the gate is sampled ONCE for the whole sweep, so a disconnect landing
+    // mid-sweep lets the remaining rows commit alone — the fork this gate exists to
+    // avoid. Bounded by how long a sweep runs, which is bounded by the backlog of
+    // unreaped rows (0 in steady state). If that backlog can ever be large, move the
+    // check inside reapRevokedRows' loop via an injected predicate.
     if (this.getControlConnectionCount() > 0) {
       try {
         const reaped = await this.controlDatabase.reapRevokedRows(selfPeerId);

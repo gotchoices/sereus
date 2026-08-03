@@ -1519,6 +1519,12 @@ export class ControlDatabase {
       // snapshot cannot actually change — queryCadrePeers already dropped this row via
       // the retired-stamp gate — so the notify is a redundant refresh. Bare exec:
       // already inside the non-re-entrant write lock (see insertCadrePeer).
+      //
+      // NOTE: reapRevokedRows calls this in a loop, so a sweep that clears K CadrePeer
+      // rows fires K redundant gate refreshes (two table scans each), awaited serially.
+      // Harmless today — K is the backlog of unreaped rows, which a party burns down to
+      // 0 on its first connected tick and holds there. If a party ever reaps many rows
+      // in one pass, hoist the notify to one refresh after the sweep instead.
       await this.mutateCadrePeer('peer-reap', () => this.db!.exec(sql, [rowKey, stampId]));
     } else {
       await this.execWrite(sql, [rowKey, stampId]);
