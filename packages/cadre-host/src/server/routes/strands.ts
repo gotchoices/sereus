@@ -26,6 +26,10 @@ export interface StrandRoutesOptions {
  * accepts. Not a general truthiness parser: `yes`, `on` and an empty value all
  * count as NOT confirmed, because a guessy parser here would turn a typo into a
  * destroyed membership key.
+ *
+ * NOTE: deliberately duplicated from cadre-cli's `admin-server.ts` rather than
+ * imported — cadre-host depends on cadre-cli for its bin path only, never its
+ * source. Keep the two in step by hand; do not DRY them into an import.
  */
 const CONFIRM_VALUES = new Set(['1', 'true']);
 

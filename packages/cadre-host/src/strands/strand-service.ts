@@ -68,24 +68,19 @@ export class StrandService {
 }
 
 /**
- * Trim and reject ids this surface cannot carry.
+ * Trim and reject an id this surface cannot act on. Blank is the only such id.
  *
- * A literal `/` is refused because `/api/strands/:id` is a single path segment —
- * this is a limitation of the *manager's* URL shape, not of the node (the admin
- * channel accepts a percent-encoded `%2F` and removes the row). Use
- * `cadre strand remove <id>` for such an id.
+ * A `/` is deliberately NOT refused. `/api/strands/:id` is one path segment, but a
+ * caller that percent-encodes the id reaches this layer with the `/` restored
+ * (Fastify decodes `params`), `OwnerNodeClient` re-encodes it, and the admin channel
+ * splits on the still-encoded `%2F` and decodes it back — so the whole chain carries
+ * it. Refusing here would break the only form that works, while doing nothing about
+ * an UNencoded `/`, which never reaches this handler at all (the router 404s it).
  */
 function validateStrandId(rawId: string): string {
   const strandId = typeof rawId === 'string' ? rawId.trim() : '';
   if (!strandId) {
     throw new StrandError('invalid_id', 'A strand id is required');
-  }
-  if (strandId.includes('/')) {
-    throw new StrandError(
-      'invalid_id',
-      `Strand id ${JSON.stringify(strandId)} contains "/", which this management API cannot ` +
-        'carry in a URL path. Remove it with `cadre strand remove` instead.',
-    );
   }
   return strandId;
 }
@@ -99,6 +94,12 @@ function validateStrandId(rawId: string): string {
  * down" would be actively misleading.
  *
  * Declared to return `never` so callers can `.catch((err) => toDomainError(err))`.
+ *
+ * NOTE: the trust-circle and NAT services translate the SAME error blanket-style —
+ * every `OwnerNodeUnavailableError` becomes `node_unavailable` — because neither has
+ * a code worth distinguishing yet. If a second surface ever needs a code-aware
+ * mapping, hoist this switch into a shared owner-error translator instead of growing
+ * a third copy.
  */
 function toDomainError(err: unknown): never {
   if (!(err instanceof OwnerNodeUnavailableError)) {

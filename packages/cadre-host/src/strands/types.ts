@@ -55,15 +55,17 @@ export interface StrandRemovalResult {
    */
   removed: boolean;
   /**
-   * The node had no control connections at the write — the delete may not have
-   * travelled to siblings yet.
+   * The node saw 0 control connections at the end of the call. Sampled on EVERY
+   * call, including one that found no row and wrote nothing — read it as "this
+   * machine currently sees no siblings", and only as "your delete may not have
+   * travelled" when `removed` is also true.
    */
   alone: boolean;
 }
 
 /** Error codes thrown by StrandService. */
 export type StrandErrorCode =
-  /** The id was blank, whitespace-only, or otherwise unusable as a path segment. */
+  /** The id was blank or whitespace-only, here or at the node. */
   | 'invalid_id'
   /** The node refused a closed-strand removal that carried no confirmation. */
   | 'confirmation_required'

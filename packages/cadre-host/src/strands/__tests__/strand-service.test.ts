@@ -91,18 +91,13 @@ describe('StrandService.remove — id validation', () => {
     expect(node.calls).toEqual([]);
   });
 
-  it('rejects an id containing "/" with invalid_id and never calls the node', async () => {
-    await expect(service.remove('ns/strand', { confirm: true })).rejects.toBeInstanceOf(StrandError);
-    expect(node.calls).toEqual([]);
-  });
-
-  it('blames its own URL shape for a "/" id, not the node, and names the CLI fallback', async () => {
-    // The admin channel accepts a percent-encoded id; only this route cannot carry
-    // one. A message implying the node is at fault would send the operator hunting
-    // in the wrong place.
-    const err = await catchStrandError(service.remove('ns/strand', { confirm: true }));
-    expect(err.message).toContain('management API');
-    expect(err.message).toContain('cadre strand remove');
+  it('forwards an id containing "/" rather than refusing it', async () => {
+    // The whole chain carries it: Fastify decodes `%2F` into `params.id`,
+    // `OwnerNodeClient` re-encodes it, and the admin channel splits on the still
+    // -encoded segment and decodes it back. Refusing here would break the only
+    // form that works. `strands-route.test.ts` pins the Fastify half.
+    await service.remove('ns/strand', { confirm: true });
+    expect(node.calls).toEqual([{ strandId: 'ns/strand', confirm: true }]);
   });
 
   it('trims a padded id before forwarding it', async () => {

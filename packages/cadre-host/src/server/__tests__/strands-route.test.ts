@@ -42,7 +42,7 @@ interface FakeStrands {
   service: StrandService;
   /** Every (id, confirm) the route forwarded. */
   calls: Array<{ strandId: string; confirm: boolean }>;
-  /** Set to make `remove` throw. */
+  /** Set to make `list` and `remove` throw. */
   failWith?: unknown;
   /** Set to make `remove` report a strand that was never published. */
   absent?: boolean;
@@ -55,6 +55,7 @@ function fakeStrandService(): FakeStrands {
   };
   state.service = {
     async list(): Promise<StrandListSnapshot> {
+      if (state.failWith) throw state.failWith;
       return SNAPSHOT;
     },
     async remove(strandId: string, opts: { confirm: boolean }): Promise<StrandRemovalResult> {
@@ -106,6 +107,13 @@ describe('GET /api/strands', () => {
     expect(body.data.strands[0]?.id).toBe('open-one');
     expect(body.data.controlConnections).toBe(3);
   });
+
+  it('maps a service failure through the same error handler as the DELETE arm', async () => {
+    strands.failWith = new StrandError('node_unavailable', 'Owner node unavailable: refused');
+    const res = await server.app.inject({ method: 'GET', url: '/api/strands' });
+    expect(res.statusCode).toBe(503);
+    expect((res.json() as { error: { code: string } }).error.code).toBe('node_unavailable');
+  });
 });
 
 describe('DELETE /api/strands/:id', () => {
@@ -153,6 +161,21 @@ describe('DELETE /api/strands/:id', () => {
   it('ignores query params other than confirm rather than proxying them', async () => {
     await server.app.inject({ method: 'DELETE', url: '/api/strands/a?force=1&confirm=1' });
     expect(strands.calls).toEqual([{ strandId: 'a', confirm: true }]);
+  });
+
+  // The route is one path segment, so an id holding a `/` has to arrive
+  // percent-encoded. Fastify decodes `params`, so the service sees the literal id
+  // and forwards it — nothing in this chain needs to refuse such an id.
+  it('carries a percent-encoded "/" through to the service as a literal', async () => {
+    const res = await server.app.inject({ method: 'DELETE', url: '/api/strands/ns%2Fstrand' });
+    expect(res.statusCode).toBe(200);
+    expect(strands.calls).toEqual([{ strandId: 'ns/strand', confirm: false }]);
+  });
+
+  it('404s an UNencoded "/" at the router, before any handler runs', async () => {
+    const res = await server.app.inject({ method: 'DELETE', url: '/api/strands/ns/strand' });
+    expect(res.statusCode).toBe(404);
+    expect(strands.calls).toEqual([]);
   });
 });
 

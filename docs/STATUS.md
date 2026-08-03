@@ -1139,8 +1139,14 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   connect timeout, a `start()` that settles after the timer, a failing `stop()` — are covered
   over a fake node in `node-session-branches.spec.ts`, including that the timeout's rejection is
   never orphaned into a process crash. Real-node coverage is `strand` only; `validation-key` and
-  `status` share the same `withConnectedNode` seam and stay on the fake-node wiring spec. A
-  cadre-host UI for the same operation is parked in `backlog/feat-cadre-host-strand-removal-ui`.
+  `status` share the same `withConnectedNode` seam and stay on the fake-node wiring spec.
+  **cadre-host now exposes the same operation over its management API** — `GET /api/strands` and
+  `DELETE /api/strands/:id?confirm=1`, founder-role only (404 in donor-only mode), backed by
+  `StrandService` (`packages/cadre-host/src/strands/`) over the owner node's admin channel; it
+  holds no host-local state of its own and exists to validate the id and translate the channel's
+  error codes (`confirmation_required` → 428). See [`docs/cadre-host.md`](cadre-host.md) §
+  Strands. The local-UI screen that drives those routes is still in flight
+  (`tickets/implement/feat-cadre-host-strand-removal-screen`).
 - [x] **`storage` + `storage` cross-network — FIXED & VERIFIED (2026-06-29).** `strand-formation-e2e`
   Phase 2 (`new CadreNode(... profile:'storage')` for *both* parties) and the closed-strand
   membership e2e now **pass** (`strand-formation-e2e` 11/11, closed-strand 1/1 at that date, 3/3

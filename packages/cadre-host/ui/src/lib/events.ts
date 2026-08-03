@@ -13,9 +13,16 @@
 
 export type EventHandler = (event: { type: string; data: string }) => void;
 
+/**
+ * Must list every `LocalUiEvent['type']` the server can send
+ * (`src/server/events/types.ts`). SSE named events only arrive for names we
+ * `addEventListener` on, so a type missing here is dropped silently — subscribe
+ * when the server starts publishing it, not when a screen starts consuming it.
+ */
 const EVENT_TYPES = [
 	'node-state-changed',
 	'trust-circle-changed',
+	'strands-changed',
 	'connectivity-changed',
 	'update-available',
 ] as const;

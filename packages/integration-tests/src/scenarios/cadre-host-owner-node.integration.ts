@@ -227,6 +227,19 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     expect(typeof result.alone).toBe('boolean');
   }, OP_MS);
 
+  // The client's URL construction is otherwise untested against a real node: nothing
+  // else drives `encodeURIComponent` over a character that actually needs escaping,
+  // nor the `?confirm=1` suffix. A `/` in the id is the interesting case — it reaches
+  // the node as `%2F`, and the node must split on the still-encoded segment and decode
+  // it back rather than reading a fourth path segment and refusing. `confirm` on an
+  // absent row is accepted and ignored, so this stays a no-op on a fresh party.
+  it('removeStrand() round-trips a "/"-bearing id and the confirm flag through the real admin channel', async () => {
+    const result = await client.removeStrand('ns/never-published', { confirm: true });
+    expect(result.strandId).toBe('ns/never-published');
+    expect(result.published).toBe(false);
+    expect(result.removed).toBe(false);
+  }, OP_MS);
+
   it('rejects a bad bearer token with not_authorized', async () => {
     const endpoint = orchestrator.getOwnerAdminEndpoint();
     expect(endpoint).toBeDefined();
