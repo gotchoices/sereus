@@ -41,6 +41,12 @@ export const CONTAINER_PROVISIONING_TTL_MS = 15 * 60 * 1000;
  * Age past which an `enrolling` record is no longer owned by an in-process
  * `waitForEnrollment` (which gives up after `CONTAINER_ENROLLMENT_TIMEOUT_MS`),
  * so the sweep may resolve it without two writers racing on the same record.
+ *
+ * NOTE: this is a constant, not a function of the per-service
+ * `enrollmentTimeoutMs` override. A caller that raises that override past this
+ * TTL lets both writers run on the same record; harmless today (they agree on
+ * every outcome, and the waiter re-reads the status each poll), but if the two
+ * ever disagree, derive this floor from the configured timeout instead.
  */
 export const CONTAINER_ENROLLMENT_TTL_MS = 5 * 60 * 1000;
 
@@ -318,12 +324,21 @@ export class ContainerService {
     }
   }
 
-  /** Best-effort orchestrator removal; logs but never throws (already on an error/cleanup path). */
-  private async safeReclaim(dockerId: string): Promise<void> {
+  /**
+   * Best-effort orchestrator removal; logs but never throws (already on an
+   * error/cleanup path).
+   *
+   * @returns whether the container is now gone — removed, or a handle the
+   * orchestrator affirmatively no longer knows. `false` means it may still be
+   * up, which the reap reads as "not safe to write a terminal record yet".
+   */
+  private async safeReclaim(dockerId: string): Promise<boolean> {
     try {
       await this.orchestrator.removeContainer(dockerId);
+      return true;
     } catch (err) {
       log('Failed to reclaim orchestrator resources for %s: %O', dockerId, err);
+      return !(await this.orchestratorKnows(dockerId));
     }
   }
 
@@ -652,29 +667,36 @@ export class ContainerService {
     return reaped;
   }
 
-  /** Resolve one stuck record per its status; returns whether the sweep resolved it. */
+  /**
+   * Resolve one stuck record per its status; returns whether the sweep resolved it.
+   *
+   * Reclaim ALWAYS comes first, and the terminal status is written only once the
+   * container is confirmed gone. A terminal record is the last time the sweep
+   * will ever look at this container, so writing one over a container that is
+   * still up orphans it for good — running under `unless-stopped` with host
+   * ports and a volume held, unbilled, and no record naming it. A crash between
+   * the two leaves the record in its stuck status, which the next sweep simply
+   * retries. The status is read off before the write, since a store may hand
+   * back the record by reference.
+   */
   private async reapOne(container: Container): Promise<boolean> {
     if (container.status === 'enrolling') return this.reapStuckEnrolling(container);
 
-    if (container.status === 'stopping') {
-      // Reclaim first, then terminalize — the same order `terminateContainer`
-      // uses, so a crash mid-reap leaves the record on `stopping` and the next
-      // sweep simply retries it.
-      await this.reclaimStuckContainer(container);
-      await this.updateStatus(container.id, 'stopped');
-      log('Reaped container %s stuck in stopping', container.id);
-      return true;
+    const stuckIn = container.status;
+    if (!(await this.reclaimStuckContainer(container))) {
+      log('Container %s stuck in %s but its container could not be reclaimed; leaving it', container.id, stuckIn);
+      return false;
     }
 
-    // 'pending' / 'creating' — status FIRST, then reclaim, matching `terminate`'s
-    // ordering rule in both packages: a crash mid-reap must leave a terminal
-    // record rather than a repeat of the same stuck state. The status is read off
-    // before the write, since a store may hand back the record by reference.
-    const stuckIn = container.status;
-    await this.updateStatus(container.id, 'error', {
-      error: `stuck in ${stuckIn} past TTL — provider likely restarted mid-provision`,
-    });
-    await this.reclaimStuckContainer(container);
+    if (stuckIn === 'stopping') {
+      await this.updateStatus(container.id, 'stopped');
+    } else {
+      // 'pending' / 'creating' — the provision never finished, so the record
+      // becomes the tenant-visible failure rather than a silent stop.
+      await this.updateStatus(container.id, 'error', {
+        error: `stuck in ${stuckIn} past TTL — provider likely restarted mid-provision`,
+      });
+    }
     log('Reaped container %s stuck in %s', container.id, stuckIn);
     return true;
   }
@@ -703,8 +725,11 @@ export class ContainerService {
       return false;
     }
 
+    if (!(await this.reclaimStuckContainer(container))) {
+      log('Container %s enrolling child is gone but its container could not be reclaimed; leaving it', container.id);
+      return false;
+    }
     await this.updateStatus(container.id, 'error', { error: childDiedMessage(state) });
-    await this.reclaimStuckContainer(container);
     log('Reaped container %s stuck in enrolling; its child is gone', container.id);
     return true;
   }
@@ -716,8 +741,8 @@ export class ContainerService {
    * and that container is otherwise orphaned, running under `unless-stopped` with
    * host ports and a volume held and no record naming it.
    *
-   * The stop/remove halves never throw (see `safeStop`/`safeReclaim`), so a
-   * reclaim failure cannot roll back the terminal status write. A `resolveDockerId`
+   * The stop/remove halves never throw (see `safeStop`/`safeReclaim`), so the
+   * sweep decides on the answer rather than an exception. A `resolveDockerId`
    * that throws does propagate, to the sweep's per-record catch: "the daemon could
    * not answer" is not "there is nothing to reclaim".
    *
@@ -725,12 +750,15 @@ export class ContainerService {
    * reaping a stuck `creating` record destroys that container's node identity.
    * Correct for a container that never enrolled; if the reap is ever widened to a
    * status where the node HAS held an identity, that call needs an opt-out.
+   *
+   * @returns whether nothing (still) needs reclaiming — no handle names a
+   * container at all, or the one that did is now gone.
    */
-  private async reclaimStuckContainer(container: Container): Promise<void> {
+  private async reclaimStuckContainer(container: Container): Promise<boolean> {
     const dockerId = container.dockerId ?? await this.orchestrator.resolveDockerId?.(container.id);
-    if (!dockerId) return;
+    if (!dockerId) return true;
     await this.safeStop(dockerId);
-    await this.safeReclaim(dockerId);
+    return this.safeReclaim(dockerId);
   }
 
   /**

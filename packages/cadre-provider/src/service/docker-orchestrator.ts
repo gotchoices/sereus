@@ -372,6 +372,11 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
    *
    * Errors are NOT swallowed: "the daemon could not answer" must not reach the
    * reap as "there is nothing to reclaim".
+   *
+   * NOTE: returns the FIRST match. Two containers cannot wear the same label
+   * today — `createContainer` names them `cadre-<containerId>` and the daemon
+   * refuses a duplicate name — so a second match means that invariant broke; if
+   * containers ever stop being name-unique, reclaim every match instead.
    */
   async resolveDockerId(containerId: string): Promise<string | undefined> {
     const matches = await this.docker.listContainers({

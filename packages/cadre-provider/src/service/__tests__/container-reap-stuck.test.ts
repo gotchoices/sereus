@@ -192,11 +192,12 @@ describe('ContainerService.reapStuckContainers — abandoned provisions', () => 
     expect(stub.removeContainer).toHaveBeenCalledWith('docker-stopping');
   });
 
-  // A reclaim that fails must not roll back the terminal write or abort the sweep
-  // — the record is what the tenant's quota is counted from.
-  it('still terminalizes and reports the record when the reclaim throws', async () => {
+  // A remove that 404s is the desired end state, not a failure: the container is
+  // already gone, so the record may safely go terminal.
+  it('terminalizes when the reclaim throws but the handle is gone anyway', async () => {
     const stub = stubOrchestrator({
-      removeContainer: async () => { throw new Error('docker daemon unreachable'); },
+      removeContainer: async () => { throw new Error('no such container'); },
+      runState: async () => undefined,
     });
     const { service, store } = await serviceWith(
       record('creating', PAST_TTL, { dockerId: 'docker-gone' }), stub
@@ -204,6 +205,35 @@ describe('ContainerService.reapStuckContainers — abandoned provisions', () => 
 
     expect(await service.reapStuckContainers()).toEqual(['ctr_1']);
     expect((await store.getContainer('ctr_1'))?.status).toBe('error');
+  });
+
+  // A terminal record is the last time the sweep looks at this container. Writing
+  // one over a container that is still up orphans it — running, unbilled, with no
+  // record naming it — so the record stays put and the next sweep retries.
+  it('leaves a creating record stuck when the container is still there after a failed reclaim', async () => {
+    const stub = stubOrchestrator({
+      removeContainer: async () => { throw new Error('docker daemon unreachable'); },
+      runState: async () => ({ running: true, restartCount: 0 }),
+    });
+    const { service, store } = await serviceWith(
+      record('creating', PAST_TTL, { dockerId: 'docker-live' }), stub
+    );
+
+    expect(await service.reapStuckContainers()).toEqual([]);
+    expect((await store.getContainer('ctr_1'))?.status).toBe('creating');
+  });
+
+  it('leaves a stopping record stuck when the container is still there after a failed reclaim', async () => {
+    const stub = stubOrchestrator({
+      removeContainer: async () => { throw new Error('docker daemon unreachable'); },
+      runState: async () => ({ running: true, restartCount: 0 }),
+    });
+    const { service, store } = await serviceWith(
+      record('stopping', PAST_TTL, { dockerId: 'docker-live' }), stub
+    );
+
+    expect(await service.reapStuckContainers()).toEqual([]);
+    expect((await store.getContainer('ctr_1'))?.status).toBe('stopping');
   });
 
   it('terminalizes with nothing to reclaim against an orchestrator with no resolveDockerId', async () => {
@@ -226,6 +256,28 @@ describe('ContainerService.reapStuckContainers — abandoned provisions', () => 
     expect(await service.reapStuckContainers()).toEqual([]);
     expect((await store.getContainer('ctr_1'))?.status).toBe('error');
     expect(stub.removeContainer).not.toHaveBeenCalled();
+  });
+
+  // The sweep is best-effort per record: one record that blows up must not cost
+  // every record behind it in the same pass.
+  it('keeps sweeping the remaining records after one throws', async () => {
+    const stub = stubOrchestrator({
+      resolveDockerId: async containerId => {
+        if (containerId === 'ctr_1') throw new Error('docker daemon unreachable');
+        return `docker-${containerId}`;
+      },
+    });
+    const store = new MemoryStore();
+    await store.saveContainer(record('creating', PAST_TTL));
+    await store.saveContainer(record('creating', PAST_TTL, { id: 'ctr_2' }));
+    await store.saveContainer(record('pending', PAST_TTL, { id: 'ctr_3' }));
+    const service = new ContainerService({ store, orchestrator: stub.orchestrator, now });
+
+    expect(await service.reapStuckContainers()).toEqual(['ctr_2', 'ctr_3']);
+
+    expect((await store.getContainer('ctr_1'))?.status).toBe('creating');
+    expect((await store.getContainer('ctr_2'))?.status).toBe('error');
+    expect((await store.getContainer('ctr_3'))?.status).toBe('error');
   });
 });
 
@@ -270,6 +322,30 @@ describe('ContainerService.reapStuckContainers — abandoned enrollments', () =>
     );
     expect(stub.stopContainer).toHaveBeenCalledWith('docker-dead');
     expect(stub.removeContainer).toHaveBeenCalledWith('docker-dead');
+  });
+
+  // Same rule as the provisioning arms: a dead child whose container could not be
+  // reclaimed keeps its record, so the next sweep can try the reclaim again.
+  it('leaves a dead-child enrolling record stuck when the reclaim fails', async () => {
+    stubStatus();
+    const stub = stubOrchestrator({
+      runState: async () => ({
+        running: false,
+        restartCount: 0,
+        exitedAt: new Date('2026-06-01T11:00:00.000Z'),
+        exitCode: 1,
+      }),
+      removeContainer: async () => { throw new Error('docker daemon unreachable'); },
+    });
+    const { service, store } = await serviceWith(
+      record('enrolling', PAST_ENROLLMENT_TTL, { dockerId: 'docker-dead' }), stub
+    );
+
+    expect(await service.reapStuckContainers()).toEqual([]);
+
+    const stored = await store.getContainer('ctr_1');
+    expect(stored?.status).toBe('enrolling');
+    expect(stored?.error).toBeUndefined();
   });
 
   // An alive container is genuinely consuming its resources and `enrolling` is
