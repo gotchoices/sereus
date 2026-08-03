@@ -58,10 +58,16 @@ let store: DonationStore;
 let token: string;
 const originalFetch = globalThis.fetch;
 
+/**
+ * A well-formed 32-byte base64url owner key. `DonationService.provision`
+ * shape-checks the pins, so a placeholder string is a 400 rather than a fixture.
+ */
+const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
+
 const body = {
   partyId: 'party-P',
   bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-  ownerKeys: ['owner-key-b64url'],
+  ownerKeys: [OWNER_KEY],
 };
 
 const bearer = (t: string) => ({ authorization: `Bearer ${t}` });
@@ -120,6 +126,19 @@ describe('POST /grants', () => {
       payload: { ...body, ownerKeys: [] },
     });
     expect(res.statusCode).toBe(400);
+  });
+
+  // A typo'd pin used to be answered 201 and only fail when the spawned child
+  // tried to decode it at boot — by which point the caller had no way to act on it.
+  it('rejects a malformed ownerKeys entry → 400 invalid_request, naming the bad key', async () => {
+    const res = await app.inject({
+      method: 'POST', url: '/grants', headers: bearer(token),
+      payload: { ...body, ownerKeys: [OWNER_KEY, 'this-is-not-a-key'] },
+    });
+    expect(res.statusCode).toBe(400);
+    const error = (res.json() as { error: { code: string; message: string } }).error;
+    expect(error.code).toBe('invalid_request');
+    expect(error.message).toContain('this-is-not-a-key');
   });
 
   it('enforces the grant quota → 429 quota_exceeded once maxNodes is reached', async () => {

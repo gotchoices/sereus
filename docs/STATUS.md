@@ -1119,6 +1119,15 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   pinned owner key (`--pin-owner-key` / `CADRE_OWNER_KEYS`, `trustedOwners.pinnedKeys`, an invite's
   `ownerKeys`), all-or-nothing per batch. Curve membership is still unchecked in both places.
   Invitations without a `ValidationUrl` (every e2e above) are unaffected.
+  Extended 2026-08-03 to the **two hosted request boundaries** that previously accepted a pin
+  unchecked and let the spawned node die at boot instead: `cadre-provider`'s `POST /containers`
+  (`pinnedOwnerKeys` → `400 INVALID_REQUEST` naming the bad value, no container provisioned) and
+  `cadre-host`'s `POST /grants` → `DonationService.provision` (`ownerKeys` → `400 invalid_request`,
+  checked ahead of the grant so no quota slot is burned). cadre-provider declares no `workspace:`
+  dependencies, so it restates the rule locally over `uint8arrays` rather than importing
+  `requireEd25519PublicKeyB64`; a test asserting the same accept/reject table as
+  `cadre-core/test/ed25519-key.spec.ts` is what keeps the two from drifting. Replaying pins already
+  on a donation record (`DonationService.respawn`) is deliberately exempt.
 - [x] **A party owner can now remove a shared strand party-wide (2026-07-30).**
   `CadreNode.unpublishStrand` — the first caller of `ControlDatabase.deleteStrand` — deletes the
   party's owner-signed `Strand` row (tombstoning its stamp), forces a watcher poll, and stops any

@@ -227,15 +227,21 @@ curl -X POST $URL/api/v1/containers \
 
 The keys flow only from a tenant's own create request into that tenant's own
 container; there is **no provider-level default**, because a provider-wide pin would
-let one tenant's owner seed another tenant's node. Key *encoding* is not validated by
-the provider API — but the node itself now rejects a malformed pin at startup, so a
-typo'd key is accepted here with `201` and surfaces as a container that fails to boot
-rather than as a `400` naming the bad key. The list is trimmed, blank entries dropped and
-duplicates collapsed, so the container record shows exactly the pins the node got and
-a list of only blanks is the same as omitting the field. The first accepted seed
-anchors the key in `/data`, so
-later seeds from the same owner need no pin and survive restarts. A container created
-without keys still provisions (the omission is logged) but refuses every seed.
+let one tenant's owner seed another tenant's node.
+
+Each entry is validated on the way in: it must be base64url and decode to exactly 32
+bytes — the same rule the node applies to `CADRE_OWNER_KEYS` — so anything accepted
+here is something the container can start with. A malformed entry (including a blank
+one) is answered `400 INVALID_REQUEST` with a message naming the offending value, and
+nothing is provisioned; previously such a request got a `201` and the container then
+failed to boot, which the caller could only discover from container status. Curve
+membership is deliberately *not* checked: a well-formed key naming the wrong signer
+fails at seed time like any other wrong key. Omitting the field entirely stays valid
+— that is how a caller says "trust no seed signer" — and the created container simply
+refuses every seed (the omission is logged). Accepted values are stored trimmed and
+deduplicated, so the container record shows exactly the pins the node got. The first
+accepted seed anchors the key in `/data`, so later seeds from the same owner need no
+pin and survive restarts.
 
 ### Kubernetes
 

@@ -39,6 +39,13 @@ import type { Donation } from '../types.js';
 import { DonationError } from '../types.js';
 import { FakeOrchestrator } from './fake-orchestrator.js';
 
+/**
+ * A well-formed 32-byte base64url owner key. `provision` shape-checks the pins at
+ * the boundary, so a placeholder string like `OWNER_KEY` is now a
+ * rejection rather than an opaque fixture.
+ */
+const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
+
 /** A store whose next `put` fails once — the post-spawn write-failure path. */
 class FlakyDonationStore extends DonationStore {
   failNextPut = false;
@@ -89,7 +96,7 @@ const baseRequest = (grantToken: string) => ({
   grantToken,
   partyId: 'party-P',
   bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-  ownerKeys: ['owner-key-b64url'],
+  ownerKeys: [OWNER_KEY],
 });
 
 describe('DonationService.provision', () => {
@@ -111,7 +118,7 @@ describe('DonationService.provision', () => {
 
     // The orchestrator got the requester's pinned owner key (the seed-trust anchor).
     expect(orch.createCalls).toHaveLength(1);
-    expect(orch.createCalls[0].pinnedOwnerKeys).toEqual(['owner-key-b64url']);
+    expect(orch.createCalls[0].pinnedOwnerKeys).toEqual([OWNER_KEY]);
     expect(orch.createCalls[0].containerId).toBe(view.id);
     expect(orch.createCalls[0].partyId).toBe('party-P');
 
@@ -120,6 +127,55 @@ describe('DonationService.provision', () => {
     expect(stored?.seedToken).toBe('seed-token-1');
     expect(stored?.seedEndpoint).toBe('http://127.0.0.1:9001/seed');
     expect(store.liveNodeCount(token)).toBe(1);
+  });
+
+  /**
+   * The pins are checked before the grant is even validated, so a typo costs the
+   * requester nothing: no orchestrator call, no record, and — the point — no quota
+   * slot burned on a node that could never have booted. Previously the request was
+   * answered as provisioned and the child died at startup, leaving an `error`
+   * record and a slot the grantee had to notice and reclaim.
+   */
+  it('rejects a malformed ownerKeys entry without provisioning or burning a quota slot', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    await expect(
+      svc.provision({ ...baseRequest(token), ownerKeys: [OWNER_KEY, 'this-is-not-a-key'] }),
+    ).rejects.toMatchObject({ code: 'invalid_request', message: expect.stringContaining('this-is-not-a-key') });
+
+    expect(orch.createCalls).toEqual([]);
+    expect(store.list()).toEqual([]);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('rejects a blank ownerKeys entry the same way', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    await expect(
+      svc.provision({ ...baseRequest(token), ownerKeys: [''] }),
+    ).rejects.toBeInstanceOf(DonationError);
+
+    expect(orch.createCalls).toEqual([]);
+    expect(store.list()).toEqual([]);
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('threads the trimmed keys onto the record and the child, not the raw input', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const view = await svc.provision({ ...baseRequest(token), ownerKeys: [`  ${OWNER_KEY}\n`] });
+
+    expect(orch.createCalls[0].pinnedOwnerKeys).toEqual([OWNER_KEY]);
+    expect(store.get(view.id)?.ownerKeys).toEqual([OWNER_KEY]);
   });
 
   it('honours an explicit transaction profile', async () => {
@@ -450,7 +506,7 @@ describe('DonationService.respawn', () => {
       containerId: provisioned.id,
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-      pinnedOwnerKeys: ['owner-key-b64url'],
+      pinnedOwnerKeys: [OWNER_KEY],
       profile: 'storage',
     });
 
@@ -860,7 +916,7 @@ describe('DonationService.reapStaleProvisioning', () => {
     grantToken: opts.token,
     partyId: 'party-P',
     bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-    ownerKeys: ['owner-key-b64url'],
+    ownerKeys: [OWNER_KEY],
     profile: 'storage',
     status: 'provisioning',
     createdAt: opts.at,
@@ -903,7 +959,7 @@ describe('DonationService.reapStaleProvisioning', () => {
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
       profile: 'storage',
-      pinnedOwnerKeys: ['owner-key-b64url'],
+      pinnedOwnerKeys: [OWNER_KEY],
     });
     store.put(stuckRecord({ id: 'grn_stuck', token, at: clock.toISOString() }));
     clock = new Date(clock.getTime() + DONATION_PROVISIONING_TTL_MS + 60_000);
@@ -943,7 +999,7 @@ describe('DonationService.reapStaleProvisioning', () => {
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
       profile: 'storage',
-      pinnedOwnerKeys: ['owner-key-b64url'],
+      pinnedOwnerKeys: [OWNER_KEY],
     });
     store.put(stuckRecord({ id: 'grn_first', token, at: clock.toISOString() }));
     store.put(stuckRecord({ id: 'grn_second', token, at: clock.toISOString() }));

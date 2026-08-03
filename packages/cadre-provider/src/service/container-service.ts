@@ -34,11 +34,15 @@ export function resolveTenantPush(
 /**
  * Normalize the tenant-supplied seed-trust anchors to exactly what the node will
  * end up honouring: trimmed, empties dropped, deduped — the same reduction
- * `cadre-cli`'s `collectPinnedOwnerKeys` applies to `CADRE_OWNER_KEYS`. Doing it
- * here means `[""]` (which the CLI parses back to "trust nobody") is recorded and
- * forwarded as no keys at all, rather than as a pin the operator can see but the
- * node does not have. Returns a fresh array, so a later mutation of the caller's
- * array cannot rewrite what the record says the node was told to trust.
+ * `cadre-cli`'s `collectPinnedOwnerKeys` applies to `CADRE_OWNER_KEYS`. Returns a
+ * fresh array, so a later mutation of the caller's array cannot rewrite what the
+ * record says the node was told to trust.
+ *
+ * A request that arrived through `POST /containers` never reaches here with a blank
+ * or malformed entry — `validatePinnedOwnerKeys` (`server/routes.ts`) answers 400
+ * first, including for `[""]`, which a caller only sends by mistake (trusting nobody
+ * is spelled by omitting the field). This filter therefore stands as the guard for
+ * *direct* `ContainerService` callers, which have no route in front of them.
  */
 function normalizePinnedOwnerKeys(keys: string[] | undefined): string[] {
   return [...new Set((keys ?? []).map(key => key.trim()).filter(key => key.length > 0))];

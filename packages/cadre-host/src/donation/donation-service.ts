@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
 import debug from 'debug';
 
+import { requireEd25519PublicKeyB64 } from '@serfab/cadre-core';
 import type { Orchestrator, OrchestratorCreateResult } from '@serfab/cadre-provider';
 
 import type { DonationStore } from './donation-store.js';
@@ -85,6 +86,14 @@ export interface DonationProvisionRequest {
    * seed presented in {@link DonationService.applySeed}. Without these the node's
    * node-local trusted-owner anchor holds no key for the requester's party, and
    * the default anchored policy rejects every seed.
+   *
+   * Shape-validated on the way in ({@link DonationService.provision}): every entry
+   * must decode as a base64url 32-byte Ed25519 public key, the same rule the node
+   * itself applies to `CADRE_OWNER_KEYS`. So everything downstream — the persisted
+   * record, the child's environment, a later respawn replaying it — carries values
+   * the node can actually start with. Curve membership is NOT checked (see
+   * `requireEd25519PublicKeyB64`): a well-formed key naming the wrong signer still
+   * fails at seed time, as any wrong key would.
    */
   ownerKeys: string[];
   /** Node profile; defaults to `storage` so the node participates and is dialable. */
@@ -225,9 +234,17 @@ export class DonationService {
    * Provision a donated node for a validated grant. Serialized per grant token
    * so the quota check and record-create are atomic. On any orchestrator failure
    * the reserved resources are reclaimed and the record is marked `error`.
+   *
+   * The owner-key pins are shape-checked FIRST — ahead of the per-grant lock, the
+   * quota check and the record write — so a malformed request costs nothing: no
+   * waiting behind another provision, no grant quota slot burned, no workdir or
+   * port taken, and no `error` record to explain later. Without it the request is
+   * answered as provisioned and the child dies at boot, which is the one place the
+   * caller cannot act on the typo.
    */
   async provision(request: DonationProvisionRequest): Promise<DonationView> {
-    return this.serializeByGrant(request.grantToken, () => this.provisionLocked(request));
+    const validated = { ...request, ownerKeys: validateOwnerKeys(request.ownerKeys) };
+    return this.serializeByGrant(validated.grantToken, () => this.provisionLocked(validated));
   }
 
   private async provisionLocked(request: DonationProvisionRequest): Promise<DonationView> {
@@ -824,6 +841,29 @@ function generateDonationId(): string {
 function redact(donation: Donation): DonationView {
   const { seedToken: _seedToken, seedEndpoint: _seedEndpoint, ...view } = donation;
   return view;
+}
+
+/**
+ * Shape-check the requester-supplied owner-key pins at the boundary they arrive
+ * on, returning them trimmed so the persisted record and the child's
+ * `CADRE_OWNER_KEYS` carry exactly what was validated — the same discipline
+ * `cadre-cli start` applies to its own `--pin-owner-key` / `CADRE_OWNER_KEYS`.
+ *
+ * `requireEd25519PublicKeyB64` throws a plain `Error`; it is re-thrown as
+ * `invalid_request` so `server/error-handler.ts` renders it as a 400 naming the
+ * bad key rather than a 500.
+ *
+ * Deliberately NOT applied in {@link DonationService.respawn}, which replays
+ * `donation.ownerKeys` off a record written before this check existed: validating
+ * there would make such a record permanently un-respawnable, and by then the pins
+ * are already inside the trust boundary. Validating the boundary is the point.
+ */
+function validateOwnerKeys(keys: string[] | undefined): string[] {
+  try {
+    return (keys ?? []).map((key) => requireEd25519PublicKeyB64(key, 'donation owner key (ownerKeys)'));
+  } catch (err) {
+    throw new DonationError('invalid_request', errorMessage(err));
+  }
 }
 
 /** Map a grant denial to the donation error the routes surface as HTTP status. */

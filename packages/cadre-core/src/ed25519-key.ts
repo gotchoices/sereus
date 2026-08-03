@@ -95,6 +95,13 @@ function describeRejected(value: string): string {
  * are a valid point on the Ed25519 curve — a well-formed-but-off-curve key still fails
  * signature verification later exactly like any other wrong key.
  *
+ * **This rule is restated once outside this package**, in `validateOwnerKey`
+ * (`packages/cadre-provider/src/server/routes.ts`): cadre-provider declares no
+ * `workspace:` dependencies and validates `POST /containers` pins over `uint8arrays`
+ * directly. Change the rule here and change it there. `create-container-owner-keys.test.ts`
+ * asserts the same accept/reject table as `test/ed25519-key.spec.ts`, so a divergence
+ * fails a test rather than passing silently.
+ *
  * @param value - Candidate base64url-encoded Ed25519 public key.
  * @param label - Human-readable name of the field, used in error messages.
  * @returns The trimmed value, so callers write the same bytes they validated.

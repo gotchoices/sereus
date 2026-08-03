@@ -33,6 +33,13 @@ import { FakeOrchestrator } from './fake-orchestrator.js';
 
 let tmpRoot: string;
 
+/**
+ * A well-formed 32-byte base64url owner key. `DonationService.provision`
+ * shape-checks the pins at the boundary, so a placeholder string no longer stands
+ * in for one.
+ */
+const OWNER_KEY = Buffer.alloc(32, 7).toString('base64url');
+
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-donation-sup-'));
 });
@@ -78,7 +85,7 @@ function makeHarness(): Harness {
       grantToken: token,
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-      ownerKeys: ['owner-key-b64url'],
+      ownerKeys: [OWNER_KEY],
     }),
   };
 }
@@ -278,7 +285,7 @@ describe('DonationSupervisor.reconcile', () => {
       grantToken: 'tok',
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-      ownerKeys: ['k'],
+      ownerKeys: [OWNER_KEY],
       profile: 'storage',
       status: 'provisioning',
       dockerId: 'dock_inflight',
@@ -298,7 +305,7 @@ describe('DonationSupervisor.reconcile', () => {
       grantToken: 'tok',
       partyId: 'party-P',
       bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
-      ownerKeys: ['k'],
+      ownerKeys: [OWNER_KEY],
       profile: 'storage',
       status: 'awaiting_seed',
       createdAt: new Date(START_MS).toISOString(),
