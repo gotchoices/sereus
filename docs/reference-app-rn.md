@@ -155,6 +155,8 @@ The phone node maintains a stable PeerId across app restarts:
 2. **Subsequent launches** — the key is loaded from the enclave, producing the same PeerId every time.
 3. **Single identity** — the same key is used for both the control network and all strand networks, matching the one-key-per-device architecture.
 
+`startPhoneNode` resolves the key itself (cadre-core's exported `loadOrCreateIdentityKey`, on the same store and slot the node uses) *before* constructing the `CadreNode`, so it can sign the ICE-manifest request with the identity the node is about to start with — see `ops/docs/ice-servers.md` → "Client side". Ordering is load-bearing: after `migrateLegacyIdentity` (calling it first would see an empty slot, generate a fresh key, and orphan the migrated identity) and before `loadIceConfig`. A locked/refused enclave read propagates and **fails the start** rather than booting on a replacement key.
+
 Gating: the store is opened **ungated** (no `requireAuthentication`) with `keychainAccessible: AFTER_FIRST_UNLOCK`, because the node must come up headless on a push wake while the device is locked, and because a biometric-set change would invalidate the entry. An earlier version of the app kept the key in plaintext MMKV, then plaintext LevelDB; `migrateLegacyIdentity` lifts a pre-existing plaintext identity into the enclave once on upgrade and deletes the legacy database.
 
 ### Trusted-owner anchor (secure enclave)

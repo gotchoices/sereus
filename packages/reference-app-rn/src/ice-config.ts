@@ -139,7 +139,9 @@ export function resolveIceConfigUrl(explicit?: string): string | undefined {
  * The audience string a peer assertion binds to: the target URL with the query
  * and fragment stripped, and **nothing else normalized**. The issuer compares it
  * to its configured `PEER_AUTH_AUDIENCE` character for character, so a trailing
- * slash or an `http`/`https` difference is a mismatch — see `ops/docs/ice-servers.md`.
+ * slash or an `http`/`https` difference is a mismatch. A *relative* manifest URL
+ * signs a relative audience, nothing resolved against a base. See
+ * `ops/docs/ice-servers.md`.
  *
  * Derived from the URL actually fetched (never hoisted to module scope).
  */
@@ -239,7 +241,7 @@ function toIceServer(entry: unknown): IceServer | null {
 	const rec = entry as Record<string, unknown>;
 	if (!isValidUrls(rec.urls)) return null;
 
-	const server: IceServer = { urls: rec.urls as string | string[] };
+	const server: IceServer = { urls: rec.urls };
 	if (typeof rec.username === 'string') server.username = rec.username;
 	if (typeof rec.credential === 'string') server.credential = rec.credential;
 	return server;

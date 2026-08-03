@@ -135,7 +135,16 @@ https://relay.sereus.org/ice-servers.json     ← what to configure
 https://relay.sereus.org/ice-servers.json/    ← trailing slash: mismatch
 http://relay.sereus.org/ice-servers.json      ← scheme: mismatch
 https://relay.sereus.org/ice/servers.json     ← proxy rewrote the path: mismatch
+/ice-servers.json                             ← relative URL: this IS the audience
 ```
+
+That last one is the trap in a same-origin deployment. The client takes the
+audience from the *configured URL string* and normalizes nothing, so a relative
+`VITE_ICE_CONFIG_URL=/ice-servers.json` signs the audience `/ice-servers.json` —
+the browser resolves the fetch against the page origin, but the signed string never
+sees that origin. Either set `PEER_AUTH_AUDIENCE=/ice-servers.json` to match, or
+configure the app with the absolute URL. (Leaving `PEER_AUTH_AUDIENCE` empty
+disables audience binding entirely — see the issuer README before choosing that.)
 
 A mismatch is invisible from the server side (it looks like any other bad
 signature), so the client logs the audience it sent whenever it falls back. Look
@@ -169,7 +178,11 @@ Three client behaviours worth knowing when reading issuer logs:
   entirely (`loadIceConfig` turns a non-OK response into `[]`, which would strip
   STUN too). So expect a paired 401-then-200 in the access log. `429` is
   deliberately **not** in that list: the per-IP limit fires before the assertion is
-  parsed, so an unsigned retry would hit the same wall.
+  parsed, so an unsigned retry would hit the same wall. Note the retry does spend a
+  second token of the per-IP limit `RATE_LIMIT_PER_MIN`: a *persistently* rejected assertion
+  (a misconfigured audience, say) halves the effective per-IP budget, which matters
+  only if many clients share one address behind NAT. Fix by correcting the audience
+  — the fallback is meant to be rare, not steady-state.
 - **A signed request that fails outright** takes the same single retry, for the
   CORS reason above. A genuinely offline device just fails twice inside the one 5 s
   deadline and gets `[]`, as before.

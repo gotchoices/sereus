@@ -165,7 +165,9 @@ export function resolveIceConfigUrl(explicit?: string): string | undefined {
  * The audience string a peer assertion binds to: the target URL with the query
  * and fragment stripped, and **nothing else normalized**. The issuer compares it
  * to its configured `PEER_AUTH_AUDIENCE` character for character, so a trailing
- * slash or an `http`/`https` difference is a mismatch — see `ops/docs/ice-servers.md`.
+ * slash or an `http`/`https` difference is a mismatch. A *relative* manifest URL
+ * signs a relative audience — the page origin the browser resolves the fetch
+ * against never enters the signed string. See `ops/docs/ice-servers.md`.
  *
  * Derived from the URL actually fetched (never hoisted to module scope) so the
  * `localStorage` override repointing the manifest also repoints the audience.

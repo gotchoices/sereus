@@ -249,6 +249,13 @@ describe('iceConfigAudience', () => {
 		expect(iceConfigAudience('https://issuer.example/ice/')).toBe('https://issuer.example/ice/');
 		expect(iceConfigAudience('https://issuer.example')).toBe('https://issuer.example');
 	});
+
+	// Mirrors the web spec: a relative URL signs a relative audience, resolved
+	// against nothing. `PEER_AUTH_AUDIENCE` has to match THIS string
+	// (ops/docs/ice-servers.md → "Client side").
+	it('does not absolutize a relative URL', () => {
+		expect(iceConfigAudience('/ice-servers.json?v=2')).toBe('/ice-servers.json');
+	});
 });
 
 describe('peerAssertionMessage', () => {
