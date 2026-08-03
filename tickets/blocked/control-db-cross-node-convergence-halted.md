@@ -401,3 +401,15 @@ cheap to instrument now that the error names the collection and the revision.
 Which side of the repo boundary the bug sits on is no longer obvious, so do not assume upstream:
 the write path runs through sereus's `ControlDatabase` and the quereus-plugin-optimystic bridge as
 well as `db-core`. Confirm where the header goes missing before filing anywhere.
+
+## Reclassified 2026-08-02 (partial)
+
+The header-absent defect described in the 08-02 measurement above is now tracked as an active
+ticket, `fix/bug-control-collection-header-absent-at-committed-revision`, because nothing
+establishes it as out-of-repo. **Do not investigate it from here** — that ticket carries the repro
+and the constraints.
+
+This ticket stays in `blocked/` as the record for the class and for the siblings that still look
+genuinely upstream (`forked-control-collection-sync-livelocks`,
+`strand-unique-index-sync-stale-revision`, `control-reads-blocked-by-stalled-write`). If the fix
+ticket's trace lands upstream after all, fold its findings back in here.
