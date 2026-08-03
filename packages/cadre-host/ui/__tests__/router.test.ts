@@ -15,6 +15,7 @@ describe('parseHash', () => {
 		expect(parseHash('#/connectivity').name).toBe('connectivity');
 		expect(parseHash('#/nodes').name).toBe('nodes');
 		expect(parseHash('#/settings').name).toBe('settings');
+		expect(parseHash('#/strands')).toEqual({ name: 'strands', params: {} });
 	});
 
 	it('parses node detail with id', () => {
@@ -39,7 +40,14 @@ describe('hrefFor', () => {
 		expect(hrefFor('connectivity')).toBe('#/connectivity');
 		expect(hrefFor('nodes')).toBe('#/nodes');
 		expect(hrefFor('settings')).toBe('#/settings');
+		expect(hrefFor('strands')).toBe('#/strands');
 		expect(hrefFor('node-detail', { id: 'x y' })).toBe('#/nodes/x%20y');
+	});
+
+	it('round-trips every simple route through parseHash', () => {
+		for (const name of ['home', 'trust-circle', 'connectivity', 'nodes', 'settings', 'strands'] as const) {
+			expect(parseHash(hrefFor(name)).name).toBe(name);
+		}
 	});
 });
 

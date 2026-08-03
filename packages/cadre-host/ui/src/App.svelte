@@ -23,6 +23,7 @@
 	import Nodes from './routes/Nodes.svelte';
 	import NodeDetail from './routes/NodeDetail.svelte';
 	import Settings from './routes/Settings.svelte';
+	import Strands from './routes/Strands.svelte';
 	import StatusDot from './components/StatusDot.svelte';
 	import Toast from './components/Toast.svelte';
 
@@ -44,6 +45,7 @@
 		{ name: 'connectivity', label: 'Connectivity' },
 		{ name: 'nodes', label: 'Nodes' },
 		{ name: 'settings', label: 'Settings' },
+		{ name: 'strands', label: 'Strands' },
 	];
 
 	function isActive(name: RouteName): boolean {
@@ -116,6 +118,8 @@
 		<NodeDetail id={route.route.params['id'] ?? ''} />
 	{:else if route.route.name === 'settings'}
 		<Settings />
+	{:else if route.route.name === 'strands'}
+		<Strands />
 	{:else}
 		<Home />
 	{/if}

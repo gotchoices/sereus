@@ -44,6 +44,27 @@ export interface TrustCircleMember {
 	self?: boolean;
 }
 
+/**
+ * Mirror of the server's `StrandSummary` (`src/strands/types.ts`). `status` is a
+ * raw string the manager only forwards — the UI displays it, never branches on it.
+ */
+export interface StrandSummary {
+	id: string;
+	/** `'o'` = open, `'c'` = closed (the row carries this party's membership key). */
+	type: 'o' | 'c';
+	running: boolean;
+	status: string | null;
+}
+
+/** Mirror of the server's `StrandRemovalResult`. */
+export interface StrandRemovalResult {
+	strandId: string;
+	published: boolean;
+	type: 'o' | 'c' | null;
+	removed: boolean;
+	alone: boolean;
+}
+
 export interface PendingInvite {
 	token: string;
 	label: string;
@@ -128,12 +149,31 @@ export interface Toast {
 	expiresAt: number;
 }
 
+/**
+ * The strands slice. `loaded` and `error` exist because an unfetched list is not
+ * an empty one: without them the page would greet a failed fetch with "this party
+ * doesn't take part in any shared networks", which is a different claim entirely.
+ */
+interface StrandsState {
+	list: StrandSummary[];
+	/**
+	 * Open control-network connections the owner node saw at read time. Advisory —
+	 * a snapshot, not a subscription, and possibly stale by the time of a click.
+	 */
+	controlConnections: number;
+	/** True once a fetch has succeeded at least once. */
+	loaded: boolean;
+	/** Message from the most recent failed fetch; cleared by the next success. */
+	error: string | null;
+}
+
 interface AppState {
 	status: OverallStatus;
 	service: StatusResponse['service'] | null;
 	nodes: NodeInfo[];
 	nodeStats: Record<string, NodeStats | null>;
 	trustCircle: { members: TrustCircleMember[]; pending: PendingInvite[] };
+	strands: StrandsState;
 	connectivity: NatStatusSnapshot | null;
 	update: UpdateState | null;
 	settings: HostConfigFile | null;
@@ -146,6 +186,7 @@ const state = $state<AppState>({
 	nodes: [],
 	nodeStats: {},
 	trustCircle: { members: [], pending: [] },
+	strands: { list: [], controlConnections: 0, loaded: false, error: null },
 	connectivity: null,
 	update: null,
 	settings: null,
@@ -261,6 +302,34 @@ export async function refreshTrustCircle(): Promise<void> {
 	}
 }
 
+/**
+ * Fetch this party's strands.
+ *
+ * Called from the Strands page's own `onMount` and from the `strands-changed`
+ * event — deliberately NOT from App.svelte's global mount: `/api/strands` is
+ * mounted only in founder mode, so a boot-time call would put an error toast on
+ * every donor-only dashboard before the user has opened anything.
+ */
+export async function refreshStrands(): Promise<void> {
+	try {
+		const r = await apiFetch<{ strands: StrandSummary[]; controlConnections: number }>(
+			'/api/strands',
+		);
+		state.strands = {
+			list: r.strands,
+			controlConnections: r.controlConnections,
+			loaded: true,
+			error: null,
+		};
+	} catch (err) {
+		reportError('strands', err);
+		state.strands = {
+			...state.strands,
+			error: err instanceof Error ? err.message : String(err),
+		};
+	}
+}
+
 export async function refreshConnectivity(): Promise<void> {
 	try {
 		const r = await apiFetch<NatStatusSnapshot>('/nat/status');
@@ -315,6 +384,13 @@ export function applyEvent(event: { type: string; data: string }): void {
 		}
 		case 'trust-circle-changed':
 			void refreshTrustCircle();
+			break;
+		case 'strands-changed':
+			// NOTE: the tab that issued the removal refreshes twice — once explicitly (so
+			// its feedback never depends on the SSE round-trip) and once from this echo.
+			// Harmless while a party's strand list is small; if lists ever grow big enough
+			// for the second fetch to show, tag locally-issued removals and skip their echo.
+			void refreshStrands();
 			break;
 		case 'connectivity-changed':
 			void refreshConnectivity();
