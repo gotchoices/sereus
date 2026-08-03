@@ -362,6 +362,18 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
 };
 
 /**
+ * Guarded tables a node may reap locally once their tombstone has committed — the
+ * tables whose `AuthorizedDelete` carries the REAP branch (see the constraint comment on
+ * `CadrePeer.AuthorizedDelete` in the schema). `Strand` is deliberately absent: its row
+ * carries `MemberPrivateKey`, the party's own membership secret for that network, stored
+ * nowhere else (tickets/backlog/debt-strand-tombstone-reap.md owns any future change).
+ * `OwnerKey` has no production removal path and `MinOneOwner` makes an automated
+ * owner-key reap a party-bricking hazard.
+ */
+export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as const;
+export type ReapableTable = (typeof REAPABLE_TABLES)[number];
+
+/**
  * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
  *
  * The one hook the party-membership snapshot a node admits control-DB traffic
@@ -1420,6 +1432,76 @@ export class ControlDatabase {
         log('guarded-delete listener threw (committed delete unaffected): %o', error);
       }
     }
+    return true;
+  }
+
+  /**
+   * Delete one guarded row that an ALREADY-COMMITTED `Revocation` tombstone retires —
+   * the local catch-up for a node that converged on a removal's tombstone while still
+   * holding the removed row. That live-row-plus-tombstone state is reachable only by
+   * replication merge (local writes cannot build it: `Revocation.RowIsGone` refuses a
+   * tombstone while the row is live), and replication cannot carry the delete itself —
+   * replaying a delete of a row that is already gone locally is a no-op — so without
+   * this the stale row is permanent garbage on every node that held it at revocation
+   * time. Authorized by the REAP branch of the table's `AuthorizedDelete`: the
+   * tombstone is itself owner-signed (`Revocation.Authorized`), so no owner key is
+   * needed HERE — any node holding row + tombstone may reap, drones included.
+   *
+   * Returns whether a row was removed: `false` without writing when the row is absent
+   * locally (the common case on most nodes), or when its live stamp is not `stampId`
+   * (a fresh incarnation the owner re-seated, which the old tombstone must not touch).
+   *
+   * The delete's WHERE clause binds `StampId` too — required, not belt-and-braces: an
+   * owner may re-seat the row (fresh stamp) between the stamp read below and the
+   * statement, and without the clause the reap would delete the owner's brand-new row.
+   * With it the statement matches nothing and the reap is a silent no-op (the schema
+   * branch would also refuse that delete, but as a constraint error thrown into a
+   * background sweep — matched-nothing is the better failure mode). Like
+   * {@link reauthorizeCadrePeer}, a race lost AFTER the guard still returns `true`;
+   * harmless — nothing was deleted, and the next sweep re-reads.
+   *
+   * Writes NOTHING to `Revocation`: `RevocationRecorded` is satisfied by the same
+   * committed tombstone that authorizes the reap, so a reap files no second tombstone.
+   *
+   * `table` and its {@link GUARDED_KEY_COLUMN} column come from closed literal unions —
+   * no caller-supplied string reaches the statement (same injection-surface discipline
+   * as {@link deleteGuardedRow}). The `with context` clause is PRESENT and bound to
+   * nulls, never omitted: Quereus cannot resolve `context.OwnerKey` at plan time when
+   * the clause is absent while a constraint references `context.*` (nulls through a
+   * present clause are the shape {@link redeemInvitation}'s consent-branch insert ships).
+   *
+   * Nothing calls this automatically yet — the sweep and its scheduling are the
+   * `control-revocation-reap-sweep` ticket's work.
+   */
+  async reapRevokedRow(table: ReapableTable, rowKey: string, stampId: string): Promise<boolean> {
+    this.ensureInitialized();
+    const liveStamp = await this.queryStampId(table, rowKey);
+    if (liveStamp === null) {
+      log('reap %s: no row for %s (nothing to reap)', table, rowKey);
+      return false;
+    }
+    if (liveStamp !== stampId) {
+      log('reap %s: %s holds a fresh incarnation (live stamp differs from the tombstoned one); leaving it', table, rowKey);
+      return false;
+    }
+    const sql = `
+      delete from CadreControl.${table}
+        with context OwnerKey = null, Signature = null
+        where ${GUARDED_KEY_COLUMN[table]} = ? and StampId = ?
+    `;
+    if (table === 'CadrePeer') {
+      // Through mutateCadrePeer so the "EVERY CadrePeer writer goes through here"
+      // invariant keeps holding with no new documented exception. The membership
+      // snapshot cannot actually change — queryCadrePeers already dropped this row via
+      // the retired-stamp gate — so the notify is a redundant refresh. Bare exec:
+      // already inside the non-re-entrant write lock (see insertCadrePeer).
+      await this.mutateCadrePeer('peer-reap', () => this.db!.exec(sql, [rowKey, stampId]));
+    } else {
+      await this.execWrite(sql, [rowKey, stampId]);
+    }
+    // A row leaving the control plane without an owner signature at the write site
+    // should be visible in a log.
+    log('REAPED %s row %s (stamp %s): committed tombstone authorized local removal, no owner signature', table, rowKey, stampId);
     return true;
   }
 

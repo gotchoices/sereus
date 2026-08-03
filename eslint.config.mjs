@@ -144,11 +144,12 @@ export default tseslint.config(
 		files: [
 			// The destination itself — these ARE the wrapped writers.
 			'packages/cadre-core/src/control-database.ts',
-			// Constraint fixtures: both drive raw SQL at a bare Quereus database on purpose,
+			// Constraint fixtures: all drive raw SQL at a bare Quereus database on purpose,
 			// to test the schema's authorization/revocation CHECKs. No membership snapshot
-			// exists in either — there is no ControlDatabase in the picture at all.
+			// exists in any — there is no ControlDatabase in the picture at all.
 			'packages/cadre-core/test/control-authorization-domain-separation.spec.ts',
 			'packages/cadre-core/test/control-revocation-replay.spec.ts',
+			'packages/cadre-core/test/control-revocation-reap.spec.ts',
 		],
 		rules: {
 			'no-restricted-syntax': 'off',

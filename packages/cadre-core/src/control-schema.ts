@@ -127,6 +127,12 @@ declare schema CadreControl {
             -- the STORED row (Key, StampId), so an enrollment approval — which never expires — can
             -- never be replayed as a removal. Same shape as CadrePeer.AuthorizedDelete.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.ValidationKey', 'remove', old.Key, old.StampId), context.Signature, A.Key, 'ed25519'))
+
+                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation, so a node
+                -- that was offline at removal time may delete the stale row locally with no owner key.
+                -- Why committed.* and why the stamp must be bound: stated in full on
+                -- CadrePeer.AuthorizedDelete.
+                or exists (select 1 from committed.Revocation R where R.TableName = 'ValidationKey' and R.RowKey = old.Key and R.StampId = old.StampId)
         )
     ) with context (OwnerKey text, Signature text);
 
@@ -254,6 +260,13 @@ declare schema CadreControl {
             -- the STORED row (Id, StampId), so the add approval — which never expires — can never be
             -- replayed as a removal. Note the consent branch above is deliberately NOT mirrored
             -- here: an invitation authorizes forming a strand, never destroying one.
+            --
+            -- DELIBERATELY no REAP branch (cf. CadrePeer.AuthorizedDelete): this row carries
+            -- MemberPrivateKey — the party's own membership secret for that network, stored nowhere
+            -- else — so this is the one guarded delete whose effect is unrecoverable, and a stale
+            -- row is already inert for the purpose a tombstone serves (the consent branch of
+            -- AuthorizedInsert above refuses any id ever tombstoned). Do not "fix" the asymmetry;
+            -- tickets/backlog/debt-strand-tombstone-reap.md owns any future change.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.Strand', 'remove', old.Id, old.StampId), context.Signature, A.Key, 'ed25519'))
         ),
         constraint MemberKeyClosedOnly check (
@@ -314,6 +327,29 @@ declare schema CadreControl {
             -- the stored voucher (a signature over the 'vouch'-tagged digest) can NEVER be
             -- replayed to authorize a delete. The remove signature rides in context and is never stored.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.CadrePeer', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
+
+                -- or REAP: this node already holds a COMMITTED tombstone retiring THIS EXACT row
+                -- incarnation, so the party owner has already authorized this row's removal and this
+                -- node is merely catching up. That is what lets a node which was offline at
+                -- revocation time delete the stale row locally, with no owner private key
+                -- (control-database.ts:reapRevokedRow). Same shape as the consent branch of
+                -- Strand.AuthorizedInsert: authorization by the EXISTENCE of a row rather than by a
+                -- signature — and that row is itself owner-signed (Revocation.Authorized), so this
+                -- widens WHO may execute a removal, never WHO may decide one. RevocationRecorded is
+                -- satisfied by the same committed tombstone, so a reap files no second one.
+                --
+                -- committed.Revocation, NOT Revocation — and the stamp clause — are both load-bearing:
+                --   * committed.* : this CHECK defers to commit (it has a subquery), by which point a
+                --     tombstone written in the SAME transaction is live. Reading plain Revocation
+                --     would therefore let deleteGuardedRow's own sibling tombstone satisfy this
+                --     branch, making the 'remove'-tagged delete signature above dead weight and
+                --     collapsing two domain-separated approvals into one. committed.* states the rule
+                --     exactly: the tombstone must have existed BEFORE this transaction.
+                --   * R.StampId = old.StampId : binds the ROW INCARNATION, not the name. One name may
+                --     legitimately carry several tombstones over its life (seat -> delete -> owner
+                --     re-seat -> delete). Without this clause a tombstone from a PREVIOUS incarnation
+                --     would authorize deleting the CURRENT row, which the owner never removed.
+                or exists (select 1 from committed.Revocation R where R.TableName = 'CadrePeer' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own addrs + freshness, signing with its OWN ed25519 key
@@ -410,6 +446,12 @@ declare schema CadreControl {
             -- approval can never be replayed as a clear, and a captured clear approval is
             -- dead once the stamp it names is retired.
             exists (select 1 from OwnerKey A where A.Key = context.OwnerKey and verify(digest('CadreControl.DeviceToken', 'remove', old.PeerId, old.StampId), context.Signature, A.Key, 'ed25519'))
+
+                -- or REAP: a COMMITTED tombstone already retires this exact row incarnation, so a node
+                -- that was offline at removal time may delete the stale row locally with no owner key.
+                -- Why committed.* and why the stamp must be bound: stated in full on
+                -- CadrePeer.AuthorizedDelete.
+                or exists (select 1 from committed.Revocation R where R.TableName = 'DeviceToken' and R.RowKey = old.PeerId and R.StampId = old.StampId)
         ),
         constraint AuthorizedUpdate check on update (
             -- Peer self-updates its own token, signing with its OWN ed25519 key (the key
