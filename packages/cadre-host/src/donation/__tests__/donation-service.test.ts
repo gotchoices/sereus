@@ -614,6 +614,41 @@ describe('DonationService.respawn', () => {
     expect(store.liveNodeCount(token)).toBe(0);
   });
 
+  it('reclaims the new child because the terminate could not clean up the old one', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    store.put({ ...store.get(provisioned.id)!, status: 'seeded' });
+
+    // The borrower's DELETE lands in the window *after* the spawn dropped the
+    // old handle — the window `abandonRespawn` was written for. (The test above
+    // drives the same terminate from `onCreate`, i.e. before the drop, where the
+    // terminate's own cleanup still works.) No `createDelayMs` needed: `onSpawned`
+    // fires synchronously and `terminate` writes its `terminated` row before its
+    // first `await`, so the row is terminal by the time `respawn` re-reads.
+    let terminated: Promise<void> | undefined;
+    orch.onSpawned = () => { terminated ??= svc.terminate(provisioned.id); };
+
+    const result = await svc.respawn(provisioned.id);
+    await terminated;
+
+    expect(result).toEqual({ outcome: 'abandoned', status: 'terminated' });
+    // Exact equality, not `toContain`: dock_1's ABSENCE is the whole claim. The
+    // terminate aimed its own stop and reclaim at dock_1 — the handle this spawn
+    // had already dropped — so it cleaned up nothing at all. That is why the
+    // abandoned respawn has to reclaim dock_2 rather than merely stop it: dock_2
+    // is the only thing left holding that spawn's ports and workdir.
+    expect(orch.stopped).toEqual(['dock_2']);
+    expect(orch.removed).toEqual(['dock_2']);
+    // The ending's write stands whole, still naming the child it knew about.
+    expect(store.get(provisioned.id)!.status).toBe('terminated');
+    expect(store.get(provisioned.id)!.dockerId).toBe('dock_1');
+    expect(store.liveNodeCount(token)).toBe(0);
+  });
+
   it('lets a stale-seed reap that lands mid-spawn win without restarting the TTL clock', async () => {
     const orch = new FakeOrchestrator();
     const store = new DonationStore(join(tmpRoot, 'donations'));

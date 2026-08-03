@@ -205,6 +205,12 @@ describe('DonationSupervisor.reconcile', () => {
     expect(stored.error).toContain('spawn boom');
     // The workdir holds the identity key the borrower's cadre approved — the
     // give-up path stops the child but must never reclaim it.
+    //
+    // Doubles as the standing guard on `FakeOrchestrator`'s drop being
+    // success-only (mirroring `restoreDroppedHandles`): every create here fails,
+    // so a fake that dropped the prior handle regardless would leave `giveUp`
+    // with nothing to stop, and this line fails with
+    // `expected [] to include 'dock_1'`.
     expect(h.orch.stopped).toContain(view.dockerId);
     expect(h.orch.removed).toEqual([]);
 
