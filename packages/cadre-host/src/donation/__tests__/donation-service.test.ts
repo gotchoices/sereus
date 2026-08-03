@@ -353,6 +353,10 @@ describe('DonationService reclaim-on-failure', () => {
     await expect(svc.provision(baseRequest(token)))
       .rejects.toMatchObject({ code: 'orchestrator_error' });
     expect(orch.removed).toEqual([]);
+    // Nor does it reclaim the workdir by name: `createContainer`'s own unwind
+    // already removed a directory its failed spawn created, and a second
+    // attempt from here would be redundant.
+    expect(orch.reclaimedWorkdirs).toEqual([]);
     expect(store.list().find((d) => d.grantToken === token)?.status).toBe('error');
     expect(store.liveNodeCount(token)).toBe(0);
   });
@@ -809,7 +813,40 @@ describe('DonationService.terminate', () => {
     expect(statusAtStop).toBe('terminated');
     expect(orch.stopped).toEqual(['dock_1']);
     expect(orch.removed).toEqual(['dock_1']);
+    // `removeContainer` already deleted the workdir — reclaiming by name on top
+    // of that would be redundant, and would race the next spawn of the same id.
+    expect(orch.reclaimedWorkdirs).toEqual([]);
     expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('reclaims the workdir by name for a record that never got a dockerId', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    // A record the host died mid-provision on: `ensureNodeIdentity` created
+    // `<rootDir>/grn_stuck` before anything produced a dockerId. Without this
+    // branch, terminating it would move it to `terminated` — which the
+    // stuck-`provisioning` reap no longer matches — stranding the directory.
+    store.put({
+      id: 'grn_stuck',
+      grantToken: token,
+      partyId: 'party-P',
+      bootstrapNodes: ['/ip4/127.0.0.1/tcp/4001/p2p/12D3KooReq'],
+      ownerKeys: [OWNER_KEY],
+      profile: 'storage',
+      status: 'provisioning',
+      createdAt: '2025-01-01T00:00:00.000Z',
+      updatedAt: '2025-01-01T00:00:00.000Z',
+    });
+
+    await svc.terminate('grn_stuck');
+
+    expect(store.get('grn_stuck')?.status).toBe('terminated');
+    expect(orch.reclaimedWorkdirs).toEqual(['grn_stuck']);
+    expect(orch.stopped).toEqual([]);
+    expect(orch.removed).toEqual([]);
   });
 
   it('swallows the second terminate of the same donation', async () => {
@@ -938,9 +975,13 @@ describe('DonationService.reapStaleProvisioning', () => {
     expect(reaped).toEqual(['grn_stuck']);
     expect(store.get('grn_stuck')?.status).toBe('error');
     expect(store.get('grn_stuck')?.error).toMatch(/provisioning/);
-    // Nothing was ever spawned — no dockerId to resolve, so nothing to stop/reclaim.
+    // Nothing was ever spawned — no dockerId to resolve, so nothing to stop or
+    // remove by handle. The workdir the dead spawn created is still reachable
+    // by container name, though, and this is the only path that will ever
+    // remove it.
     expect(orch.stopped).toEqual([]);
     expect(orch.removed).toEqual([]);
+    expect(orch.reclaimedWorkdirs).toEqual(['grn_stuck']);
     expect(store.liveNodeCount(token)).toBe(0);
   });
 
@@ -970,6 +1011,9 @@ describe('DonationService.reapStaleProvisioning', () => {
     expect(store.get('grn_stuck')?.status).toBe('error');
     expect(orch.stopped).toEqual([spawn.dockerId]);
     expect(orch.removed).toEqual([spawn.dockerId]);
+    // `removeContainer` deletes that child's workdir itself; reclaiming by name
+    // on top of it would be redundant.
+    expect(orch.reclaimedWorkdirs).toEqual([]);
     expect(store.liveNodeCount(token)).toBe(0);
   });
 

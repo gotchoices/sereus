@@ -12,7 +12,7 @@ import {
   readSync,
   closeSync,
 } from 'node:fs';
-import { join, resolve as resolvePath } from 'node:path';
+import { join, resolve as resolvePath, sep } from 'node:path';
 import debug from 'debug';
 import pidusage from 'pidusage';
 import type {
@@ -234,35 +234,48 @@ export class HostProcessOrchestrator implements Orchestrator {
    * both stores go with it.
    */
   async createContainer(request: OrchestratorCreateRequest): Promise<OrchestratorCreateResult> {
-    // Identity BEFORE any port is reserved: it is the one step here that can
-    // fail on its own (an unreadable or undecodable identity.key throws rather
-    // than silently re-keying), and everything past the allocation is either
-    // infallible or releases the ports itself. Allocating first would leak four
-    // ports from a bounded range on every failed provision attempt.
     const workdir = this.workdirFor(request.containerId);
-    const identity = await ensureNodeIdentity(workdir);
-    log('container %s identity peerId=%s', request.containerId, identity.peerId);
-    // A node started with pinned owner keys belongs to a FOREIGN cadre (the
-    // node-donation flow: it trusts the requester's owner key, not the host's).
-    // The host's FCM/APNs credentials are minted for the host owner's own app
-    // and are meaningless to a foreign cadre — so donated nodes get NO push
-    // block. (Per-grantee push creds would be a future ticket; none in v1.)
-    const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
-    // Only storage-profile nodes participate in strands and thus fan out push
-    // wakes — a transaction-only node need not carry credentials. Resolved
-    // BEFORE the drop below: it is the last `await` on this path, which is what
-    // keeps the drop → launch window synchronous (see restoreDroppedHandles).
-    const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
-    // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
-    // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
-    // node will accept the foreign-authority-signed seed presented via POST /seed.
-    const extraEnv = request.pinnedOwnerKeys?.length
-      ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
-      : undefined;
-
-    const dropped = this.dropStaleHandle(request.containerId);
+    // Sampled BEFORE `ensureNodeIdentity`, which brings the directory into
+    // existence as a side effect of writing the key. Only a spawn that found
+    // nothing here may delete anything on its way out — a re-spawn is REUSING
+    // the identity key and node-local stores this directory holds, and they are
+    // the whole reason the node comes back as the same peer. `false` is
+    // therefore the safe default: a directory that exists for any reason
+    // (respawn, an earlier failed provision, an operator's file) is never
+    // touched by the unwind below.
+    const isNewWorkdir = !existsSync(workdir);
+    let dropped: Handle[] = [];
     let ports: NodePorts | undefined;
     try {
+      // Identity BEFORE any port is reserved: it is the one step here that can
+      // fail on its own (an unreadable or undecodable identity.key throws rather
+      // than silently re-keying), and everything past the allocation is either
+      // infallible or releases the ports itself. Allocating first would leak four
+      // ports from a bounded range on every failed provision attempt.
+      const identity = await ensureNodeIdentity(workdir);
+      log('container %s identity peerId=%s', request.containerId, identity.peerId);
+      // A node started with pinned owner keys belongs to a FOREIGN cadre (the
+      // node-donation flow: it trusts the requester's owner key, not the host's).
+      // The host's FCM/APNs credentials are minted for the host owner's own app
+      // and are meaningless to a foreign cadre — so donated nodes get NO push
+      // block. (Per-grantee push creds would be a future ticket; none in v1.)
+      const foreignParty = (request.pinnedOwnerKeys?.length ?? 0) > 0;
+      // Only storage-profile nodes participate in strands and thus fan out push
+      // wakes — a transaction-only node need not carry credentials. Resolved
+      // BEFORE the drop below: it is the last `await` on this path, which is what
+      // keeps the drop → launch window synchronous (see restoreDroppedHandles).
+      const push = request.profile === 'storage' && !foreignParty ? await this.resolvePush() : undefined;
+      // Pinned owner key(s) reach the child via CADRE_OWNER_KEYS (comma-separated);
+      // `cadre-cli start` unions it into its cold-start pinnedKeyTrustPolicy so the
+      // node will accept the foreign-authority-signed seed presented via POST /seed.
+      const extraEnv = request.pinnedOwnerKeys?.length
+        ? { CADRE_OWNER_KEYS: request.pinnedOwnerKeys.join(',') }
+        : undefined;
+
+      // Nothing from here to the launch is `await`ed — which is what keeps
+      // `restoreDroppedHandles`'s documented precondition true even though the
+      // `try` now opens further up. Do not add an `await` past this line.
+      dropped = this.dropStaleHandle(request.containerId);
       // NOTE: the p2p port is re-allocated per spawn, so a re-spawned donated
       // node keeps its peer id but may announce a different port. Recoverable —
       // it dials out to its retained bootstrap peers and republishes its own
@@ -285,8 +298,65 @@ export class HostProcessOrchestrator implements Orchestrator {
       // just freed, so restoring first and releasing second would hand the
       // restored handle's own ports straight back to the allocator.
       if (ports) this.releasePorts(ports);
+      // A no-op for the failures that happen before the drop (`dropped` is
+      // still empty).
       this.restoreDroppedHandles(dropped);
+      // Safe because a throw out of `launchChild` means NO child is running:
+      // its throw surface ends where the child is spawned and its handle stored
+      // (everything past that line is best-effort), and the `if (!child.pid)`
+      // throw is on the no-process side too. So nothing is ever holding the
+      // directory this deletes.
+      if (isNewWorkdir) this.discardWorkdir(workdir);
       throw err;
+    }
+  }
+
+  /**
+   * Remove the working directory a spawn created for `containerId` when no
+   * handle owns it — the cleanup of last resort for a donation record that
+   * never got a `dockerId` (the host died between `ensureNodeIdentity` and the
+   * handle write, so `createContainer`'s own unwind never ran). Returns whether
+   * anything was removed.
+   *
+   * Synchronous, mirroring {@link resolveDockerId}: nothing on this path needs
+   * to await.
+   */
+  reclaimWorkdir(containerId: string): boolean {
+    // The admin's own node is never reclaimed by this route: its workdir is a
+    // single fixed path reused by every restart and it holds the host's own
+    // control-DB storage.
+    if (containerId === OWNER_CONTAINER_ID) return false;
+    // A live handle owns that directory, and `removeContainer` — which stops
+    // the child first — is the only thing allowed to delete it.
+    if (this.resolveDockerId(containerId)) return false;
+    const workdir = this.workdirFor(containerId);
+    // Defence, not a live case: donation ids are `grn_<base64url>` and so can
+    // hold neither a path separator nor a dot. A caller that ever passes
+    // something else must not be able to walk out of `rootDir`.
+    if (!workdir.startsWith(this.rootDir + sep)) {
+      log('refusing to reclaim workdir outside rootDir: %s', workdir);
+      return false;
+    }
+    if (!existsSync(workdir)) return false;
+    this.discardWorkdir(workdir);
+    return true;
+  }
+
+  /**
+   * Best-effort removal of a workdir this host created and no handle owns.
+   * Logs, never throws: every caller is already unwinding a failure and must
+   * report *that* error, not this one.
+   *
+   * Fewer retries than `removeContainer`'s: that one races the OS releasing a
+   * just-killed child's cwd handle (Windows), while every caller here has
+   * established no process ever attached to this directory.
+   */
+  private discardWorkdir(workdir: string): void {
+    try {
+      rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      log('discarded workdir %s', workdir);
+    } catch (err) {
+      log('failed to discard workdir %s: %o', workdir, err);
     }
   }
 
@@ -369,6 +439,10 @@ export class HostProcessOrchestrator implements Orchestrator {
       // Release before restoring — see the same note in createContainer.
       if (ports) this.releasePorts(ports);
       this.restoreDroppedHandles(dropped);
+      // Deliberately NOT `discardWorkdir` — the asymmetry with createContainer
+      // is the point. `<rootDir>/owner` is a single fixed path reused by every
+      // restart and holds the host's own control-DB storage, so it neither
+      // grows without bound nor is safe to delete on a failed spawn.
       throw err;
     }
   }

@@ -123,6 +123,33 @@ describe('FakeOrchestrator handle lifecycle', () => {
     expect(orch.stopped).toEqual([]);
   });
 
+  it('refuses to reclaim the workdir of a container that still resolves (mirrors the live-handle guard)', async () => {
+    const orch = new FakeOrchestrator();
+    await orch.createContainer(request('grn_1'));
+
+    // A live handle owns that directory; only `removeContainer` — which stops
+    // the child first — may delete it.
+    expect(orch.reclaimWorkdir('grn_1')).toBe(false);
+    expect(orch.reclaimedWorkdirs).toEqual([]);
+  });
+
+  it('reclaims the workdir of a container no handle owns', async () => {
+    const orch = new FakeOrchestrator();
+
+    // Never spawned — the stuck-`provisioning` record whose host died before a
+    // handle ever existed.
+    expect(orch.reclaimWorkdir('grn_orphan')).toBe(true);
+    expect(orch.reclaimedWorkdirs).toEqual(['grn_orphan']);
+
+    // …and once the container's own handle is removed, its id becomes
+    // reclaimable too.
+    const { dockerId } = await orch.createContainer(request('grn_1'));
+    expect(orch.reclaimWorkdir('grn_1')).toBe(false);
+    await orch.removeContainer(dockerId);
+    expect(orch.reclaimWorkdir('grn_1')).toBe(true);
+    expect(orch.reclaimedWorkdirs).toEqual(['grn_orphan', 'grn_1']);
+  });
+
   it('fires onSpawned after the drop, with the new handle live and the old one gone', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));

@@ -165,16 +165,25 @@ interface SpawnedHandles {
 type RespawnAttempt = NonNullable<Donation['respawn']>;
 
 /**
- * Orchestrator capability `reapStaleProvisioning` needs beyond the base
- * `Orchestrator`: resolve a spawn's friendly containerId (== a donation's id)
- * back to its current dockerId, so a stuck-`provisioning` reap can find and
- * reclaim a child that was actually spawned before the host died. Optional —
- * only `HostProcessOrchestrator` implements it (see its `resolveDockerId`).
- * Absent on a test double or a future orchestrator, the reap just terminalizes
- * the record with nothing to reclaim.
+ * Orchestrator capabilities the donation cleanup paths need beyond the base
+ * `Orchestrator`. Both are optional — only `HostProcessOrchestrator` implements
+ * them; absent on a test double or a future orchestrator, the cleanup degrades
+ * to terminalizing the record with nothing to reclaim.
  */
 export interface DonationOrchestrator extends Orchestrator {
+  /**
+   * Resolve a spawn's friendly containerId (== a donation's id) back to its
+   * current dockerId, so a stuck-`provisioning` reap can find and reclaim a
+   * child that was actually spawned before the host died.
+   */
   resolveDockerId?(containerId: string): string | undefined;
+  /**
+   * Remove the working directory a spawn created for `containerId` when no
+   * handle owns it — the cleanup of last resort for a record that never got a
+   * `dockerId`. Returns whether anything was removed. Refuses when a handle
+   * still resolves (that child's directory belongs to `removeContainer`).
+   */
+  reclaimWorkdir?(containerId: string): boolean;
 }
 
 /** Constructor options. */
@@ -646,6 +655,21 @@ export class DonationService {
     if (donation.dockerId) {
       await this.safeStop(donation.dockerId);
       await this.safeReclaim(donation.dockerId);
+    } else {
+      // No `dockerId` — the spawn never got far enough to produce one, so the
+      // stop-and-reclaim above has nothing to aim at and the node's working
+      // directory would be stranded on disk with nothing able to name it.
+      // Without this branch the stuck-`provisioning` reap is bypassed entirely:
+      // terminating such a record moves it to `terminated`, which that reap no
+      // longer matches.
+      //
+      // NOTE: this can race an in-flight `provision` for the same record — the
+      // delete may land between that spawn's `mkdirSync` and its `spawn`. The
+      // end state is still correct (`provisionLocked`'s post-spawn re-read sees
+      // a non-`provisioning` record and reclaims the new child, which deletes
+      // the workdir anyway); the interim delete can only make that child fail
+      // to start noisily, which is strictly better than a permanent strand.
+      this.safeReclaimWorkdir(id);
     }
     log('donation %s terminated', id);
   }
@@ -719,14 +743,18 @@ export class DonationService {
    * ordering rule as {@link terminate}): reclaiming fires `onStateChange`, and
    * anything listening must already see a terminal record.
    *
-   * NOTE: the reclaim only reaches a child the orchestrator has a handle for.
+   * NOTE: the stop only reaches a child the orchestrator has a handle for.
    * `HostProcessOrchestrator.launchChild` spawns the process and persists the
    * handle in the same synchronous step, so the only child this misses is one
-   * whose host died between the OS spawn and that write — an orphan process
+   * whose host died between the OS spawn and that write — an orphan *process*
    * this reap terminalizes the record for but cannot kill (its ports stay held
-   * until a reboot). If that window ever widens (an async step added between
-   * spawn and persist), the orchestrator needs its own orphan sweep — a record
-   * that names no handle cannot get one after the fact.
+   * until a reboot). Its working directory is no longer out of reach, though:
+   * with no handle to resolve we fall back to reclaiming by container name,
+   * which also covers the far commoner case of a host that died before any
+   * child existed at all. If the spawn→persist window ever widens (an async
+   * step added between the two), the orchestrator still needs its own orphan
+   * *process* sweep — a record that names no handle cannot get one after the
+   * fact.
    */
   private async reclaimStuckProvisioning(donation: Donation): Promise<void> {
     this.store.put({
@@ -739,6 +767,8 @@ export class DonationService {
     if (dockerId) {
       await this.safeStop(dockerId);
       await this.safeReclaim(dockerId);
+    } else {
+      this.safeReclaimWorkdir(donation.id);
     }
   }
 
@@ -815,6 +845,22 @@ export class DonationService {
       await this.orchestrator.removeContainer(dockerId);
     } catch (err) {
       log('failed to reclaim container %s: %s', dockerId, errorMessage(err));
+    }
+  }
+
+  /**
+   * Best-effort removal of the working directory of a donation whose spawn
+   * never produced a `dockerId`; logs but never throws (cleanup path). A no-op
+   * on an orchestrator without the capability, and on one that refuses because
+   * a live handle still owns the directory.
+   */
+  private safeReclaimWorkdir(id: string): void {
+    try {
+      if (this.orchestrator.reclaimWorkdir?.(id)) {
+        log('reclaimed orphaned workdir for donation %s', id);
+      }
+    } catch (err) {
+      log('failed to reclaim workdir for donation %s: %s', id, errorMessage(err));
     }
   }
 

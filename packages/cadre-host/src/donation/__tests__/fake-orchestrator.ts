@@ -40,7 +40,9 @@ interface FakeChild {
  * - a **failed** `createContainer` leaves those handles exactly as it found them
  *   (the real `restoreDroppedHandles`);
  * - `stopContainer` / `removeContainer` throw `Container not found: <dockerId>`
- *   for a handle this orchestrator no longer knows (the real `requireHandle`).
+ *   for a handle this orchestrator no longer knows (the real `requireHandle`);
+ * - `reclaimWorkdir` refuses a containerId that still resolves to a live
+ *   handle (the real guard — that directory belongs to `removeContainer`).
  *
  * Consequently `stopped` / `removed` mean **"handles this orchestrator actually
  * acted on"**, not "calls attempted" — a stop aimed at a dropped handle is
@@ -51,6 +53,12 @@ export class FakeOrchestrator implements Orchestrator {
   createCalls: OrchestratorCreateRequest[] = [];
   stopped: string[] = [];
   removed: string[] = [];
+  /**
+   * Container ids whose workdir this orchestrator actually removed. Same
+   * "acted on, not attempted" rule as `stopped` / `removed`: a refused reclaim
+   * leaves no entry.
+   */
+  reclaimedWorkdirs: string[] = [];
   failCreate = false;
   createDelayMs = 0;
   /**
@@ -154,6 +162,23 @@ export class FakeOrchestrator implements Orchestrator {
       if (child.containerId === containerId) return dockerId;
     }
     return undefined;
+  }
+
+  /**
+   * Remove the workdir of a container no handle owns, mirroring the real
+   * `reclaimWorkdir`. Refuses (returns `false`, records nothing) while a child
+   * for that containerId still resolves — that directory belongs to
+   * `removeContainer`, which stops the child first.
+   *
+   * There is no directory here to check for existence, so a first reclaim of an
+   * unresolvable id always reports `true`; the real class returns `false` when
+   * the path is already gone. Nothing in the donation layer branches on the
+   * return value, so the gap is unobservable — model it if one starts to.
+   */
+  reclaimWorkdir(containerId: string): boolean {
+    if (this.resolveDockerId(containerId)) return false;
+    this.reclaimedWorkdirs.push(containerId);
+    return true;
   }
 
   async getLogs(): Promise<string> {

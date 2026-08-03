@@ -329,6 +329,7 @@ describe('HostProcessOrchestrator failed launch', () => {
   // bound to and put the replaced handle back beside it.
   it('does not unwind a launch that already spawned when the state write fails', async () => {
     const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
     const first = await orch.createContainer(makeRequest('c1'));
     await waitFor(() => orch.isRunning(first.dockerId));
     await orch.stopContainer(first.dockerId);
@@ -343,10 +344,140 @@ describe('HostProcessOrchestrator failed launch', () => {
     expect(orch.listNodes()).toHaveLength(1);
     expect(orch.getNode('c1')?.dockerId).toBe(second.dockerId);
 
+    // And the workdir the live child is running in is untouched — a swallowed
+    // persist must not reach the unwind that would delete it.
+    expect(existsSync(join(rootDir, 'c1', 'identity.key'))).toBe(true);
+
     // Its ports are still held: a fresh container gets four different ones.
     const other = await orch.createContainer(makeRequest('c2'));
     expect(other.p2pPort).not.toBe(second.p2pPort);
     expect(orch.getNode('c2')!.ports).not.toEqual(orch.getNode('c1')!.ports);
+  });
+
+  // A spawn that CREATED the workdir must take it back down on the way out —
+  // the record it was provisioning never got a dockerId, so nothing else can
+  // ever name that directory. The storage-file sabotage above is unusable here:
+  // pre-creating `<workdir>/storage` makes the directory pre-existing, and the
+  // unwind then correctly declines to delete it. Exhausting the port range
+  // fails the very next step instead, with the workdir genuinely fresh.
+  it('discards the workdir a failed first spawn created', async () => {
+    // Exactly four ports — enough for one node and no more.
+    const orch = makeOrchestrator({ portRange: { start: 13000, end: 13003 } });
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    await orch.createContainer(makeRequest('c1'));
+    await expect(orch.createContainer(makeRequest('c2'))).rejects.toThrow(/No available ports/);
+
+    // `ensureNodeIdentity` had already created it and written the key.
+    expect(existsSync(join(rootDir, 'c2'))).toBe(false);
+    // The first node is untouched.
+    expect(existsSync(join(rootDir, 'c1', 'identity.key'))).toBe(true);
+    expect(orch.listNodes()).toHaveLength(1);
+  });
+
+  // The load-bearing case in the other direction: a re-spawn is REUSING the
+  // directory, and the identity key inside it is the whole reason the node
+  // comes back as the same peer the borrower's cadre approved.
+  it('keeps the workdir when a re-spawn launch fails', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+
+    const first = await orch.createContainer(makeRequest('c1'));
+    await waitFor(() => orch.isRunning(first.dockerId));
+    await orch.stopContainer(first.dockerId);
+
+    const workdir = join(rootDir, 'c1');
+    const identityPath = join(workdir, 'identity.key');
+    const peerBefore = loadIdentity(identityPath).peerId;
+
+    const storage = sabotageWorkdir(workdir);
+    await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow();
+
+    expect(existsSync(workdir)).toBe(true);
+    expect(existsSync(identityPath)).toBe(true);
+
+    // Which is what makes the next attempt the SAME node, not a stranger.
+    rmSync(storage, { force: true });
+    await orch.createContainer(makeRequest('c1'));
+    expect(loadIdentity(identityPath).peerId).toBe(peerBefore);
+  });
+
+  // `ensureNodeIdentity` now runs inside the same `try`, so its own failures
+  // unwind too — and this one must NOT delete anything. The directory was
+  // pre-existing, so the undecodable key is an operator-visible fault to
+  // investigate, not this attempt's mess to clear up.
+  it('keeps a pre-existing workdir whose identity key is undecodable', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const workdir = join(rootDir, 'c1');
+
+    mkdirSync(workdir, { recursive: true });
+    writeFileSync(join(workdir, 'identity.key'), Buffer.from([0xff, 0xff, 0xff, 0xff]));
+
+    await expect(orch.createContainer(makeRequest('c1'))).rejects.toThrow();
+
+    expect(existsSync(workdir)).toBe(true);
+    expect(existsSync(join(workdir, 'identity.key'))).toBe(true);
+    expect(orch.listNodes()).toHaveLength(0);
+  });
+});
+
+/**
+ * The cleanup of last resort: a donation record that never got a `dockerId`
+ * because the host died mid-spawn. `createContainer`'s own unwind cannot help —
+ * it was never reached — so the reap falls back to reclaiming by container name.
+ */
+describe('HostProcessOrchestrator.reclaimWorkdir', () => {
+  it('removes an orphaned workdir no handle owns', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const workdir = join(rootDir, 'grn_orphan');
+    mkdirSync(workdir, { recursive: true });
+    writeFileSync(join(workdir, 'identity.key'), 'key-bytes', 'utf8');
+
+    expect(orch.reclaimWorkdir('grn_orphan')).toBe(true);
+    expect(existsSync(workdir)).toBe(false);
+  });
+
+  it('refuses a container a live handle still owns', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const created = await orch.createContainer(makeRequest('c1'));
+
+    // That directory is the live child's cwd; only `removeContainer`, which
+    // stops the child first, may delete it.
+    expect(orch.reclaimWorkdir('c1')).toBe(false);
+    expect(existsSync(join(rootDir, 'c1'))).toBe(true);
+    expect(orch.resolveDockerId('c1')).toBe(created.dockerId);
+  });
+
+  it('refuses the owner node', async () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    // No owner handle exists, so only the id check can save this directory —
+    // which holds the host's own control-DB storage.
+    const workdir = join(rootDir, 'owner');
+    mkdirSync(workdir, { recursive: true });
+
+    expect(orch.reclaimWorkdir('owner')).toBe(false);
+    expect(existsSync(workdir)).toBe(true);
+  });
+
+  it('reports false for a workdir that is already gone', () => {
+    const orch = makeOrchestrator();
+    expect(orch.reclaimWorkdir('grn_never_existed')).toBe(false);
+  });
+
+  it('refuses an id that would escape rootDir', () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    const sibling = join(rootDir, '..', 'sibling');
+    mkdirSync(sibling, { recursive: true });
+
+    // Unreachable with real `grn_<base64url>` ids; the guard is defence for a
+    // future caller that passes something else.
+    expect(orch.reclaimWorkdir('../sibling')).toBe(false);
+    expect(existsSync(sibling)).toBe(true);
   });
 });
 
