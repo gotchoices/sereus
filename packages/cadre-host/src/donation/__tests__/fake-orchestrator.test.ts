@@ -39,6 +39,44 @@ describe('FakeOrchestrator handle lifecycle', () => {
     expect(orch.stopped).toEqual([second.dockerId]);
   });
 
+  it('drops only the re-spawned container, leaving another container untouched', async () => {
+    const orch = new FakeOrchestrator();
+    const other = await orch.createContainer(request('grn_2'));
+    await orch.createContainer(request('grn_1'));
+    await orch.createContainer(request('grn_1'));
+
+    // The real drop filters on containerId; a fake that cleared the whole map
+    // would still pass every same-container case above.
+    await expect(orch.stopContainer(other.dockerId)).resolves.toBeUndefined();
+    expect(orch.resolveDockerId('grn_2')).toBe(other.dockerId);
+  });
+
+  it('keeps the prior handle live across the whole pre-drop await window', async () => {
+    const orch = new FakeOrchestrator();
+    const first = await orch.createContainer(request('grn_1'));
+
+    // The invariant the donation race tests rest on: a concurrent stop started
+    // from `onCreate` still finds the old handle. Deferring it onto a microtask
+    // puts it strictly after `onCreate` returns and strictly before the
+    // `createDelayMs` timer, so this one case pins the drop behind BOTH — with
+    // no dependence on wall-clock timing. The outcome is captured rather than
+    // rethrown so a regression fails this assertion instead of surfacing as an
+    // unhandled rejection.
+    orch.createDelayMs = 1;
+    let outcome: Promise<string> | undefined;
+    orch.onCreate = () => {
+      outcome ??= Promise.resolve()
+        .then(() => orch.stopContainer(first.dockerId))
+        .then(() => 'stopped', (err: Error) => `rejected: ${err.message}`);
+    };
+
+    const second = await orch.createContainer(request('grn_1'));
+
+    expect(await outcome).toBe('stopped');
+    expect(orch.stopped).toEqual([first.dockerId]);
+    expect(orch.resolveDockerId('grn_1')).toBe(second.dockerId);
+  });
+
   it('leaves the prior handle in place when the re-spawn fails (mirrors restoreDroppedHandles)', async () => {
     const orch = new FakeOrchestrator();
     const first = await orch.createContainer(request('grn_1'));

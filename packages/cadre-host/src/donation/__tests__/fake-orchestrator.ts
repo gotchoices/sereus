@@ -117,17 +117,27 @@ export class FakeOrchestrator implements Orchestrator {
     // Before the check: a test may want to observe that a stop was *attempted*
     // even when this orchestrator rejects it.
     this.onStop?.(dockerId);
-    this.requireChild(dockerId);
+    const child = this.requireChild(dockerId);
     this.stopped.push(dockerId);
-    this.markStopped(dockerId);
+    child.running = false;
   }
 
   async removeContainer(dockerId: string): Promise<void> {
+    // NOTE: the real `removeContainer` stops a still-live child first; this one
+    // only deletes, so a remove aimed at a running child records no `stopped`
+    // entry and emits no state change. Every donation caller stops before it
+    // reclaims, so nothing sees the difference today — if one stops doing that,
+    // stop the child here too.
     this.requireChild(dockerId);
     this.removed.push(dockerId);
     this.children.delete(dockerId);
   }
 
+  /**
+   * NOTE: this and {@link getLogs} take an unknown `dockerId` where the real
+   * class throws (`requireHandle`). No donation path calls either, so the gap is
+   * unobservable — route them through `requireChild` if one starts to.
+   */
   async getStats(): Promise<OrchestratorStats> {
     return { cpuPercent: 0, memoryBytes: 0, networkRxBytes: 0, networkTxBytes: 0 };
   }
@@ -157,7 +167,10 @@ export class FakeOrchestrator implements Orchestrator {
 
   /** Kill a child out from under the host — the crash the supervisor exists for. */
   crash(dockerId: string): void {
-    this.markStopped(dockerId, { emit: true });
+    const child = this.children.get(dockerId);
+    if (!child?.running) return;
+    child.running = false;
+    this.emit(toNodeInfo(dockerId, child));
   }
 
   /** Emit an arbitrary state change (e.g. the owner node stopping). */
@@ -170,13 +183,6 @@ export class FakeOrchestrator implements Orchestrator {
     const child = this.children.get(dockerId);
     if (!child) throw new Error(`Container not found: ${dockerId}`);
     return child;
-  }
-
-  private markStopped(dockerId: string, opts?: { emit?: boolean }): void {
-    const child = this.children.get(dockerId);
-    if (!child?.running) return;
-    child.running = false;
-    if (opts?.emit) this.emit(toNodeInfo(dockerId, child));
   }
 }
 

@@ -13,8 +13,9 @@
  * `applySeed`, and `respawn` each hold an entry-time copy of the record across a
  * slow `await`, and `DonationStore.put` replaces the whole row — so each must
  * re-read before writing or it resurrects a loan the borrower just ended. The
- * three suites drive that race through `FakeOrchestrator.onCreate` (spawn window)
- * and a stubbed `globalThis.fetch` (seed window) respectively.
+ * three suites drive that race through `FakeOrchestrator.onCreate` / `onSpawned`
+ * (the spawn window, before and after the orchestrator drops the old handle) and
+ * a stubbed `globalThis.fetch` (seed window).
  *
  * `applySeed` is exercised here against that `fetch` stub. `getPeer` still does a
  * real `fetch` to a live node, so its happy path lives in the cross-package
@@ -753,6 +754,25 @@ describe('DonationService.terminate', () => {
     expect(orch.stopped).toEqual(['dock_1']);
     expect(orch.removed).toEqual(['dock_1']);
     expect(store.liveNodeCount(token)).toBe(0);
+  });
+
+  it('swallows the second terminate of the same donation', async () => {
+    const orch = new FakeOrchestrator();
+    const store = new DonationStore(join(tmpRoot, 'donations'));
+    const { grants, token } = makeGrants();
+    const svc = new DonationService({ orchestrator: orch, grants, store });
+
+    const provisioned = await svc.provision(baseRequest(token));
+    await svc.terminate(provisioned.id);
+
+    // `terminate` does not gate on status, so the second pass re-aims its stop
+    // and reclaim at a handle the first pass already removed. The orchestrator
+    // rejects both; `safeStop` / `safeReclaim` log and swallow, so a duplicate
+    // DELETE is a no-op rather than a 500. Reaps and retries both land here.
+    await expect(svc.terminate(provisioned.id)).resolves.toBeUndefined();
+    expect(orch.stopped).toEqual(['dock_1']);
+    expect(orch.removed).toEqual(['dock_1']);
+    expect(store.get(provisioned.id)!.status).toBe('terminated');
   });
 });
 
