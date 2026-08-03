@@ -57,10 +57,13 @@ function injectCohort(
      * process (what the file backend gives a restarted node).
      */
     bootstrapStore?: BootstrapPeerStore;
+    /** Make the revoked-row reap sweep reject, to prove the pass survives it. */
+    reapThrows?: boolean;
   }
-): { dialCalls: Array<unknown>; resolvedFor: string[]; queryCalls: () => number } {
+): { dialCalls: Array<unknown>; resolvedFor: string[]; queryCalls: () => number; reapCalls: string[] } {
   const dialCalls: Array<unknown> = [];
   const resolvedFor: string[] = [];
+  const reapCalls: string[] = [];
   let queries = 0;
 
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
@@ -75,12 +78,20 @@ function injectCohort(
     queryCadrePeers: async () => { queries++; return opts.members; },
     // Consulted by the per-stream authz snapshot refresh that rides each pass.
     queryRevokedStamps: async () => new Set<string>(),
-    getOwnerKeys: async () => opts.ownerKeys ?? new Set<string>()
+    getOwnerKeys: async () => opts.ownerKeys ?? new Set<string>(),
+    // The connectivity-gated reap sweep the pass runs before the sibling enumeration.
+    reapRevokedRows: async (selfPeerId: string) => {
+      reapCalls.push(selfPeerId);
+      if (opts.reapThrows) {
+        throw new Error('reap boom');
+      }
+      return 0;
+    }
   };
   (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
     async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
 
-  return { dialCalls, resolvedFor, queryCalls: () => queries };
+  return { dialCalls, resolvedFor, queryCalls: () => queries, reapCalls };
 }
 
 describe('CadreNode.reconcileControlCohort', () => {
@@ -288,6 +299,90 @@ describe('CadreNode.reconcileControlCohort', () => {
     await node.reconcileControlCohort();
 
     expect(dialCalls).toHaveLength(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Revoked-row reap sweep
+//
+// The pass drops guarded rows a committed Revocation tombstone retires, before
+// the sibling enumeration and only while the node holds a control connection.
+// The per-row delete and its authorization live in control-revocation-reap.spec.ts;
+// these cover the scheduling decisions the sweep itself cannot express.
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('CadreNode.reconcileControlCohort — revoked-row reap sweep', () => {
+  it('does NOT reap while alone (zero control connections)', async () => {
+    // The gate, and the reason it is load-bearing: a reap is a write, and a write
+    // committed alone is local-only and forks this node's own revision history —
+    // the exact condition this line of work exists to stop creating. A regression
+    // here is silent, so it gets its own test.
+    const node = new CadreNode(createConfig());
+    const { reapCalls } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: 'sibling-1', multiaddr: null }
+      ],
+      connections: []
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(reapCalls).toEqual([]);
+  });
+
+  it('reaps once per pass, naming this node\'s own control peer id', async () => {
+    const node = new CadreNode(createConfig());
+    const { reapCalls } = injectCohort(node, {
+      selfPeerId: 'self-peer',
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: 'sibling-1', multiaddr: null }
+      ],
+      connections: ['sibling-1']
+    });
+
+    await node.reconcileControlCohort();
+
+    // The peer id is what the sweep's skip-self rule keys on — passing the wrong one
+    // would silently reap this node's own row.
+    expect(reapCalls).toEqual(['self-peer']);
+  });
+
+  it('runs even when the only sibling row is tombstoned (the cold-start early-return branch)', async () => {
+    // listMembers() filters retired stamps, so a cadre whose one sibling has been
+    // revoked reads as zero siblings and the pass early-returns into
+    // dialColdStartBootstrap. Placed after the enumeration the reap would never run
+    // for the smallest and most likely case — this pins the before-step-1 position.
+    const node = new CadreNode(createConfig());
+    const { reapCalls, dialCalls } = injectCohort(node, {
+      members: [],
+      connections: ['some-connected-peer']
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(reapCalls).toEqual(['self-peer']);
+    expect(dialCalls).toEqual([]);
+  });
+
+  it('a throwing reap does not abort the pass — enumeration and dial still run', async () => {
+    // Best-effort by contract: reconnecting siblings outranks garbage collection.
+    const node = new CadreNode(createConfig());
+    const { reapCalls, dialCalls, resolvedFor } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: 'sibling-1', multiaddr: null }
+      ],
+      connections: ['some-other-peer'],
+      reapThrows: true
+    });
+
+    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+
+    expect(reapCalls).toEqual(['self-peer']);
+    expect(resolvedFor).toEqual(['sibling-1']);
+    expect(dialCalls).toHaveLength(1);
   });
 });
 

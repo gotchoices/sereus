@@ -374,6 +374,16 @@ export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as 
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 
 /**
+ * Runtime membership test for {@link REAPABLE_TABLES}, narrowing a tombstone's
+ * `TableName` to the subset {@link ControlDatabase.reapRevokedRow} accepts. A tombstone
+ * naming an excluded table (`Strand`, `OwnerKey`) is skipped silently — `Strand`
+ * tombstones are the common case in a party that has unpublished a strand, so a log line
+ * per skip would be per-pass noise.
+ */
+const REAPABLE_TABLE_SET: ReadonlySet<RevocableTable> = new Set<RevocableTable>(REAPABLE_TABLES);
+const isReapableTable = (table: RevocableTable): table is ReapableTable => REAPABLE_TABLE_SET.has(table);
+
+/**
  * Notified after a `CadreControl.CadrePeer` row write has COMMITTED.
  *
  * The one hook the party-membership snapshot a node admits control-DB traffic
@@ -1484,8 +1494,8 @@ export class ControlDatabase {
    * the clause is absent while a constraint references `context.*` (nulls through a
    * present clause are the shape {@link redeemInvitation}'s consent-branch insert ships).
    *
-   * Nothing calls this automatically yet — the sweep and its scheduling are the
-   * `control-revocation-reap-sweep` ticket's work.
+   * Driven automatically by {@link reapRevokedRows}, which the periodic control-cohort
+   * reconcile pass runs while the node has at least one control connection.
    */
   async reapRevokedRow(table: ReapableTable, rowKey: string, stampId: string): Promise<boolean> {
     this.ensureInitialized();
@@ -1517,6 +1527,85 @@ export class ControlDatabase {
     // should be visible in a log.
     log('REAPED %s row %s (stamp %s): committed tombstone authorized local removal, no owner signature', table, rowKey, stampId);
     return true;
+  }
+
+  /**
+   * Sweep every locally-held `Revocation` tombstone and {@link reapRevokedRow} the guarded
+   * row each one retires, returning how many rows were actually removed.
+   *
+   * This is the enumeration half of the reap: replication carries the tombstone but cannot
+   * carry the delete (replaying a delete of an already-absent row is a no-op), so a node
+   * that converged on a removal while holding the removed row keeps that row as inert
+   * garbage until something walks the tombstones and drops it. `CadreNode`'s periodic
+   * control-cohort reconcile pass is that something, gated on the node having at least one
+   * control connection (a reap is a write, and a write committed alone is local-only).
+   *
+   * Enumerated UNLOCKED, deleted per-row LOCKED: {@link reapRevokedRow} takes the write
+   * lock itself (via {@link mutateCadrePeer} / {@link execWrite}) and the lock is not
+   * re-entrant, so this loop must not hold it. Same structure as
+   * `CadreNode.reissueAuthoredMembershipRows`.
+   *
+   * Two rows are deliberately left alone:
+   *
+   * - **Tables outside {@link REAPABLE_TABLES}** (`Strand`, `OwnerKey`) — no reap branch
+   *   exists on their `AuthorizedDelete`, so the delete would throw rather than no-op.
+   * - **This node's OWN `CadrePeer` / `DeviceToken` row** (`selfPeerId`). Reaping it would
+   *   fight this node's own re-registration: `registerSelf` / `retouchSelfDeviceToken` run
+   *   on the heartbeat and the growth drain, and after a self-reap their insert-if-absent
+   *   guard takes the INSERT path — which needs an owner signature `NotRevoked` refuses for
+   *   a retired stamp, and which a revoked drone cannot produce at all. The trade is
+   *   recurring failure noise every cycle against removing the one stale row nobody else
+   *   reads from this node (every other node already filters it by tombstone). A revoked
+   *   node therefore keeps its own copy of its own row; "a node that learns it has been
+   *   revoked should shut itself down" is a distinct behaviour and its own ticket.
+   *   `ValidationKey` has no self notion and is not special-cased.
+   *
+   * A per-row failure is logged and skipped rather than aborting the sweep: an abort would
+   * starve every tombstone after the failing one on every subsequent pass, and each row is
+   * independent. Returns the count so far if the database is closed mid-sweep.
+   *
+   * `selfPeerId` is a parameter rather than read from the injected libp2p node so the
+   * skip-self rule is exercisable without one.
+   *
+   * NOTE: cost is O(tombstones), not O(live rows) — one {@link queryRevocations} scan plus
+   * one {@link queryStampId} point lookup per tombstone, and the empty-table early return
+   * makes the common case (a party that has never revoked anyone) a single scan per pass.
+   * But `Revocation` is append-only and unbounded, so this is O(all tombstones ever) point
+   * lookups on every reconcile tick. Fine while revocations stay rare for a cadre-sized
+   * party; if the table ever grows, persist a node-local high-water mark of what has
+   * already been reaped instead of re-scanning everything (the same bound the sweep in
+   * `CadreNode.drainPendingRevocations` wants).
+   */
+  async reapRevokedRows(selfPeerId: string): Promise<number> {
+    this.ensureInitialized();
+    const held = await this.queryRevocations();
+    if (held.length === 0) {
+      return 0;
+    }
+    let reaped = 0;
+    for (const tombstone of held) {
+      // Teardown guard, per row: close() can land mid-sweep (the reconcile pass that
+      // drives this outlives no node, but it does not hold the node's lifecycle either).
+      if (!this.initialized || !this.db) {
+        return reaped;
+      }
+      if (!isReapableTable(tombstone.tableName)) {
+        continue;
+      }
+      if (tombstone.rowKey === selfPeerId
+        && (tombstone.tableName === 'CadrePeer' || tombstone.tableName === 'DeviceToken')) {
+        continue;
+      }
+      try {
+        if (await this.reapRevokedRow(tombstone.tableName, tombstone.rowKey, tombstone.stampId)) {
+          reaped++;
+        }
+      } catch (error) {
+        log('reap sweep: %s row %s (stamp %s) failed (continuing): %o',
+          tombstone.tableName, tombstone.rowKey, tombstone.stampId, error);
+      }
+    }
+    return reaped;
   }
 
   /**

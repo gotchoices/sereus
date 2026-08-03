@@ -1782,6 +1782,42 @@ export class CadreNode implements SAppIdLookup {
     }
     const selfPeerId = this.controlNode.peerId.toString();
 
+    // Reap guarded rows this node still holds for incarnations an already-committed
+    // Revocation tombstone retires — the half of a removal replication cannot carry
+    // (a delete of an already-absent row replays as nothing). Connected-only: a reap
+    // is a write, and a write committed alone is local-only and forks this node's own
+    // history, which is the condition this work exists to stop creating
+    // (tickets/blocked/forked-control-collection-sync-livelocks.md). Nothing is urgent
+    // here — the stale row already reads as absent everywhere — so waiting for
+    // connectivity costs nothing and keeps the reap fork-CLOSING rather than
+    // fork-creating.
+    //
+    // BEFORE step 1, not after: the pass early-returns when it finds no siblings, and a
+    // cadre whose only sibling row is the tombstoned one lands in exactly that branch
+    // (listMembers() filters retired stamps, so the row needing the reap is invisible to
+    // the sibling count). Placed after step 1 it would never run for the smallest and
+    // most likely case.
+    //
+    // Shares no mutable state with drainPendingRevocations, which re-issues tombstones
+    // while this consumes them: different tables (Revocation update vs guarded-row
+    // delete) and both take the write lock per statement. The two can overlap freely —
+    // do not add a mutex.
+    if (this.getControlConnectionCount() > 0) {
+      try {
+        const reaped = await this.controlDatabase.reapRevokedRows(selfPeerId);
+        if (reaped > 0) {
+          log('reconcileControlCohort: reaped %d revoked control row(s)', reaped);
+        }
+      } catch (error) {
+        // Best-effort like every other step in this pass: reconnecting siblings
+        // outranks garbage collection, so a reap failure never aborts the reconcile.
+        log('reconcileControlCohort: reap pass failed (continuing): %o', error);
+      }
+      if (!this._running || !this.controlNode || !this.controlDatabase) {
+        return;
+      }
+    }
+
     // 1. Enumerate known siblings. This membership read is itself a pull-on-read
     //    that helps the CadrePeer table converge — a reader-only node converges
     //    purely by these reads.

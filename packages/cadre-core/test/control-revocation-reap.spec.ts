@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeAll, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeAll, beforeEach, afterEach, vi } from 'vitest';
 import debug from 'debug';
 import { mkdtemp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -431,5 +431,96 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       );
       expect(await db.queryCadrePeerStampId(peerId)).toBe(stamp);
     }, 60_000);
+
+    // ── The sweep that drives the per-row reap ──────────────────────────────
+
+    describe('reapRevokedRows: enumerate held tombstones and drop the rows they retire', () => {
+      const SELF = '12D3KooWSweepSelfNode';
+
+      it('reaps the row a matching committed tombstone retires', async () => {
+        const peerId = '12D3KooWSweepTarget';
+        const { stamp } = await admitPeer(peerId);
+        await tombstoneStamp('CadrePeer', peerId, stamp);
+
+        expect(await db.reapRevokedRows(SELF)).toBe(1);
+        expect(await cadrePeerRow(peerId)).toBeUndefined();
+      }, 60_000);
+
+      it('skips this node\'s OWN CadrePeer and DeviceToken rows while reaping a sibling\'s', async () => {
+        // The deliberate limit: a revoked node keeps its own copy of its own rows, so it
+        // never fights registerSelf / retouchSelfDeviceToken over an insert the schema
+        // will refuse for a retired stamp.
+        const { stamp: selfPeerStamp } = await admitPeer(SELF);
+        const { stamp: selfTokenStamp } = await seatDeviceToken(SELF);
+        const sibling = '12D3KooWSweepSibling';
+        const { stamp: siblingStamp } = await admitPeer(sibling);
+        await tombstoneStamp('CadrePeer', SELF, selfPeerStamp);
+        await tombstoneStamp('DeviceToken', SELF, selfTokenStamp);
+        await tombstoneStamp('CadrePeer', sibling, siblingStamp);
+
+        expect(await db.reapRevokedRows(SELF)).toBe(1);
+        expect(await cadrePeerRow(SELF)).toBeDefined();
+        expect(await db.queryDeviceTokenStampId(SELF)).toBe(selfTokenStamp);
+        expect(await cadrePeerRow(sibling)).toBeUndefined();
+      }, 60_000);
+
+      it('skips a Strand tombstone silently and keeps sweeping', async () => {
+        // Strand has no reap branch (its row carries MemberPrivateKey), and its tombstones
+        // are the COMMON case in a party that has unpublished a strand — so the skip must
+        // neither throw nor abort the rest of the pass.
+        const strandId = 'strand-sweep-skip-' + Math.random().toString(36).slice(2);
+        const { stamp: strandStamp } = await seatStrand(strandId);
+        const peerId = '12D3KooWSweepAfterStrand';
+        const { stamp: peerStamp } = await admitPeer(peerId);
+        await tombstoneStamp('Strand', strandId, strandStamp);
+        await tombstoneStamp('CadrePeer', peerId, peerStamp);
+
+        expect(await db.reapRevokedRows(SELF)).toBe(1);
+        expect(await strandRow(strandId)).toBeDefined();
+        expect(await cadrePeerRow(peerId)).toBeUndefined();
+      }, 60_000);
+
+      it('returns 0 without attempting a single reap when Revocation is empty', async () => {
+        // The common case on a party that has never revoked anyone: one scan, no lookups.
+        const perRow = vi.spyOn(db, 'reapRevokedRow');
+        try {
+          expect(await db.reapRevokedRows(SELF)).toBe(0);
+          expect(perRow).not.toHaveBeenCalled();
+        } finally {
+          perRow.mockRestore();
+        }
+      }, 60_000);
+
+      it('returns 0 when every tombstone names a row this node does not hold', async () => {
+        // The majority case on most nodes — every pass walks it, and it must write nothing.
+        await tombstoneStamp('CadrePeer', '12D3KooWSweepNeverHeld', freshStamp());
+        await tombstoneStamp('ValidationKey', 'sweep-never-enrolled', freshStamp());
+
+        expect(await db.reapRevokedRows(SELF)).toBe(0);
+      }, 60_000);
+
+      it('leaves a row re-seated at a fresh stamp alone, and does not abort the pass', async () => {
+        // Stale tombstone (S1) alongside a live incarnation at S2: the per-row guard is a
+        // no-op returning false, NOT a throw — so the sibling tombstone behind it still
+        // gets its reap.
+        const reseated = '12D3KooWSweepReseated';
+        const { stamp: s1 } = await admitPeer(reseated);
+        await removeCadrePeer(reseated, s1);
+        const s2 = freshStamp();
+        await rawDb.exec(
+          `insert into CadreControl.CadrePeer (PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId, VouchOwner, VouchSig)
+             with context OwnerKey = ?, Signature = ?
+             values (?, ?, ?, ?, ?, ?, ?, ?)`,
+          [founder.publicKey, signB64(founder, cadrePeerVoucherDigest(reseated, s2)), reseated, null, '', null, null, s2, founder.publicKey, signB64(founder, cadrePeerVoucherDigest(reseated, s2))],
+        );
+        const other = '12D3KooWSweepBehindReseated';
+        const { stamp: otherStamp } = await admitPeer(other);
+        await tombstoneStamp('CadrePeer', other, otherStamp);
+
+        expect(await db.reapRevokedRows(SELF)).toBe(1);
+        expect(await db.queryCadrePeerStampId(reseated)).toBe(s2);
+        expect(await cadrePeerRow(other)).toBeUndefined();
+      }, 60_000);
+    });
   });
 });
