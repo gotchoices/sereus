@@ -152,8 +152,8 @@ strand (whose membership key reaches the joiner after sign-off and never reaches
 And it drives all five rejection reasons end to end — refusal, an unenrolled key, a key removed
 after the invitation went out, a replayed sign-off, an approver that cannot be asked (unreachable,
 and answering a non-2xx), and a `ValidationUrl` the node cannot use at all — each yielding the
-reason above while leaving the seat unspent, which is what makes the sentence before this one
-checkable rather than merely asserted. The transport decision table itself (redirects, body cap,
+reason above while leaving the seat unspent, which is what makes the "no `FormationUsage` row"
+claim above checkable rather than merely asserted. The transport decision table itself (redirects, body cap,
 timeouts, dead socket) stays covered at the HTTP-client level, in
 `test/formation-approval-real-fetch.spec.ts`.
 

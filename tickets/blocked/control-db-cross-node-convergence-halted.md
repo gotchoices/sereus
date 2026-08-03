@@ -355,6 +355,40 @@ node in this state previously fell through to an invented empty collection and a
 The fault was always there; three rounds of upstream retry/quorum fixes could not have cleared it
 because it is not a retry or quorum problem.
 
+## Folded in 2026-08-02 — `strand-formation-e2e` Phase 2 (re-measured against a clean sibling)
+
+`packages/integration-tests/src/scenarios/strand-formation-e2e.integration.ts` →
+`E2E Strand Formation > Phase 2: Strand instance lifecycle > should form strand, start instances,
+and replicate data` → `Timeout waiting for data replicates from Alice to Bob after 15000ms`.
+
+It sat in the "not re-measured" list above, and `tickets/.pre-existing-known.md` carried it as a
+caution note attributed to build drift from `../optimystic`'s then-uncommitted cluster-policy work,
+with an explicit instruction to re-measure against a clean sibling before concluding drift again.
+**That re-measurement has now been done and the drift attribution is dead.** Measured during
+`debt-approval-gated-redemption-e2e-validate` (validation ticket, then its review pass), with
+`../optimystic` **clean at `092f33f`** (`ticket(review): stale-failure-carries-coordinator-revision`)
+and `../quereus` freshly built so the suite's stale-build guard passed on every run:
+
+| Runs (`yarn workspace @serfab/integration-tests test strand-formation-e2e`) | Result |
+| --- | --- |
+| 5 whole-file runs across the two passes | this test **failed 4, passed 1**; each failure ~15.6-15.9 s, the other 21 tests in the file pass every run |
+
+The single pass was the first run of the validation pass, before two forced clean rebuilds of
+`../quereus`; the four runs after it all failed the same way. So it is **predominantly failing and
+not drift** — the sibling was clean and freshly built for every run, including the failures. Same
+standing class as every other entry here: a cross-node replication that never completes. Treat it
+as reproducible-but-not-certain: budget several runs, and **a single green run proves nothing**,
+the caveat this ticket's other entries already carry. Folded here per this ticket's
+"one upstream defect, one ticket" rule rather than filed anew. It is a cheaper reproduction than
+`strand-membership-closed-strand-e2e` (one test in a file that is otherwise green, ~16 s to the
+failure) and does not require the closed-strand membership machinery, so it is worth trying first
+when instrumenting the header-block question below.
+
+Knock-on for `tickets/blocked/strand-unique-index-sync-stale-revision`: its unblock condition 1
+says to wait for the sibling to settle and "confirm `strand-formation-e2e` Phase 2 is green again
+before judging anything here". The sibling has settled and Phase 2 is **not** green, so that gate
+is not met by waiting — it is met only by fixing this class.
+
 ## Where to look next
 
 A collection holding revision 3 with no header block under its id is either a write that recorded

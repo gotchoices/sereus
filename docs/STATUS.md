@@ -1065,7 +1065,13 @@ required to unblock Sereus, but remains wanted as defense-in-depth on the routin
   (`harness/fixtures/approval-hook-server.ts`) through the recorder's DEFAULT HTTP approver — happy
   path (including that the hook is posted the five signed fields and nothing else), hook refusal
   with the seat provably still spendable, an unenrolled approver key, a key removed after the
-  invitation went out, and a replayed sign-off. Enrollment also accepts any non-blank text as a
+  invitation went out, and a replayed sign-off. Extended 2026-08-02 to **all five** rejection
+  reasons and **both** invitation shapes: an approver that cannot be asked (unreachable, and
+  answering a non-2xx — with the same token re-redeemed successfully once the hook recovers), a
+  `ValidationUrl` the node cannot use at all, and an invitation bound to a pre-existing closed
+  strand (whose membership key reaches the joiner after sign-off and never reaches the approver).
+  Pure transport behaviour (redirects, body cap, timeouts, dead socket) stays at the client level
+  in `test/formation-approval-real-fetch.spec.ts`. Enrollment also accepts any non-blank text as a
   key with a base64url/32-byte shape check (`requireEd25519PublicKeyB64`), so a typo is rejected at
   enrollment naming the bad value instead of enrolling silently; the same check now also guards every
   pinned owner key (`--pin-owner-key` / `CADRE_OWNER_KEYS`, `trustedOwners.pinnedKeys`, an invite's

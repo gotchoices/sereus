@@ -10,7 +10,7 @@
  * - Three-party strand formation
  * - Real-recorder consent enforcement, real-approval-hook redemption, provisioning abort
  *
- * NOTE: 1742 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
+ * NOTE: 1744 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
  * 1170. Still one cohesive subject, and each `Phase N` describe owns its own `TestCadreNetwork`,
  * so the phases are already independent. If another phase lands here, split per phase into
  * sibling files and move the module-scope helpers above (`ownerSigner` … `readFormationUsage`)
@@ -1013,7 +1013,9 @@ describe('E2E Strand Formation', () => {
 	// run in one go is the whole chain: real HTTP hook → real approval client (the
 	// `ControlFormationUsageRecorder` default, NOT an injected fake) → real control database →
 	// real libp2p formation handshake. That is what these cases pin, for both invitation shapes
-	// (unbound, and bound to an existing strand) plus all five ways a redemption must be refused.
+	// (unbound, and bound to an existing strand) plus every one of the five rejection reasons —
+	// six cases, because `unenrolled` is reached two different ways (never enrolled, and enrolled
+	// then removed).
 	//
 	// Not re-tested here: transport behaviour (redirects, body cap, timeouts, dead socket) — see
 	// the real-fetch spec for the full transport decision table. Case (vi) does drive two

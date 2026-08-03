@@ -322,6 +322,15 @@ function linkedRemedy(packageName: string, packageRoot: string): string {
  * without its sources can't be shown stale, and a hard failure there would
  * break for a reason the caller can't act on.
  *
+ * NOTE: mtime is not content. A sibling checkout under concurrent automation can
+ * have a `src` file's mtime bumped by a git operation with its bytes unchanged;
+ * `tsc`'s own change detection is content-based, so an incremental rebuild
+ * no-ops, leaves `.tsbuildinfo` where it was, and the guard still reports stale
+ * — a rebuild that appears not to work. Observed twice on `../quereus` during
+ * `debt-approval-gated-redemption-e2e-validate`. The escape is a forced rewrite
+ * (`yarn workspace <name> clean && yarn workspace <name> build`). If this stops
+ * being rare, teach the `'stale'` remedy to suggest the clean first.
+ *
  * NOTE: this walks every target's whole `src` and output tree on every suite
  * start-up — 6 packages for cadre-core, 11 for integration-tests, unmeasurable
  * against those suites' runtimes today. If it ever shows up in start-up time,
