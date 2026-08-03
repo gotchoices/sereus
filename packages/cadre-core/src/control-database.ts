@@ -13,7 +13,7 @@ import { canonicalDatetime } from './canonical-datetime.js';
 import { controlAuthorizationFields, CONTROL_TABLES } from './control-authorization.js';
 import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
-import { retryControlWrite } from './control-write-retry.js';
+import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
@@ -423,7 +423,8 @@ export class ControlDatabase {
   /**
    * Pacing seams for {@link lockedWithRetry}. Production leaves this empty (real backoff,
    * real clock); specs inject a recorded `sleep` / fake `now` so no test waits out a real
-   * backoff.
+   * backoff. Applied OVER the call site's policy, so it overrides pacing without a spec
+   * having to restate the policy's attempts or classifier.
    */
   private controlWriteRetryPacing: ControlWriteRetryOptions = {};
 
@@ -577,7 +578,16 @@ export class ControlDatabase {
     // Only the "cohort did not answer, nothing committed" class is retried; the classifier
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable
     // convergence fault a retry cannot heal (tracked separately) and must keep propagating.
-    await this.lockedWithRetry(() => this.db!.exec(schemaContent));
+    //
+    // This is the one call site that does NOT take the default policy. Schema init also
+    // absorbs optimystic refusing to let a cold-starting node elect ITSELF coordinator
+    // (`Self-coordination blocked: grace-period-not-elapsed`), which killed startup outright
+    // on a freshly provisioned node whose connection blipped mid-DDL. That class is safe to
+    // re-present HERE — a write refused at coordinator selection never reached a peer — but
+    // NOT for control writes generally, because the same refusal can come out of the commit
+    // phase where something may already have landed. Both halves of the reasoning live on
+    // `RETRIABLE_SCHEMA_INIT_MATCHERS` in `control-write-retry.ts`.
+    await this.lockedWithRetry(() => this.db!.exec(schemaContent), SCHEMA_INIT_RETRY_POLICY);
     log('Schema loaded and executed');
   }
 
@@ -1663,10 +1673,15 @@ export class ControlDatabase {
    * `initialized` is set — so it reaches this method directly rather than through
    * {@link execWrite}, whose {@link ensureInitialized} would reject it. The write queue is
    * necessarily empty at that point, so the lock is uncontended there; it is taken anyway
-   * rather than carving out a lockless path.
+   * rather than carving out a lockless path. It is also the ONLY caller that passes a
+   * `policy` — everything else takes the default, whose classifier and attempt count are
+   * unchanged by that call site existing.
    */
-  private lockedWithRetry<T>(fn: () => Promise<T>): Promise<T> {
-    return retryControlWrite(() => this.withWriteLock(fn), this.controlWriteRetryPacing);
+  private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}): Promise<T> {
+    return retryControlWrite(
+      () => this.withWriteLock(fn),
+      { ...policy, ...this.controlWriteRetryPacing }
+    );
   }
 
   /**

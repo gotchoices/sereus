@@ -21,6 +21,13 @@ const log = debug('sereus:cadre:control-db');
  * A write somebody actually REJECTED is never retried — re-presenting it would re-present
  * a spent signature against a cohort that already said no.
  *
+ * TWO policies ship from here, and the split is deliberate: the default
+ * ({@link isRetriableControlWriteFailure}, {@link CONTROL_WRITE_ATTEMPTS}) sits under every
+ * control write, and {@link SCHEMA_INIT_RETRY_POLICY} is opted into by
+ * `ControlDatabase.loadSchema` alone. The widened one absorbs one extra failure class whose
+ * re-run safety holds for schema DDL and NOT for writes in general; anything added to the default
+ * list must be safe for all ~19 callers.
+ *
  * Lives outside `control-database.ts` so a spec can drive the classifier against real engine
  * errors without importing the whole database class.
  */
@@ -32,6 +39,23 @@ const log = debug('sereus:cadre:control-db');
  * forming when the write fired) with margin.
  */
 export const CONTROL_WRITE_ATTEMPTS = 3;
+
+/**
+ * Attempts allowed for {@link SCHEMA_INIT_RETRY_POLICY}, the one call site that also absorbs a
+ * self-coordination refusal.
+ *
+ * Two more than {@link CONTROL_WRITE_ATTEMPTS} because what this retry buys is wall-clock for a
+ * cold-starting node's bootstrap dials to land, and because the refusal is cheap to re-provoke
+ * relative to a cluster round-trip: `findCoordinator` already spends its own bounded wait before
+ * raising (3 attempts, 500 ms apart, `db-p2p/src/libp2p-key-network.ts` ~422) and then decides
+ * LOCALLY that it may not elect itself, so no peer is contacted and no cohort deadline is
+ * consumed.
+ *
+ * Note that the ~1 s `findCoordinator` spends internally is real, on top of this policy's own
+ * backoff — which is exactly why {@link CONTROL_WRITE_RETRY_BUDGET_MS} and not this count is what
+ * actually terminates the loop in the worst case.
+ */
+export const SCHEMA_INIT_ATTEMPTS = 5;
 
 /**
  * Elapsed-time ceiling on the whole retry loop, measured from the START of the first
@@ -55,6 +79,27 @@ export const CONTROL_WRITE_RETRY_BUDGET_MS = 10_000;
  * substitute, deliberately not plumbing one through every write path.
  */
 const CONTROL_WRITE_RETRY_DELAYS_MS: readonly number[] = [250, 1_000];
+
+/**
+ * Backoff for {@link SCHEMA_INIT_RETRY_POLICY}, jittered and capped the same way. Worst case
+ * ~4.6 s of sleep across four retries (375 + 750 + 1500 + 2000, each capped at the largest base),
+ * which stays inside {@link CONTROL_WRITE_RETRY_BUDGET_MS} — the budget still terminates the loop
+ * first if any single attempt is itself slow.
+ *
+ * Sized against measured facts, not guessed:
+ *
+ *  - the self-coordination guard clears the moment the node has ONE connection again (both
+ *    branches that raise `grace-period-not-elapsed` require `getConnections().length === 0`), not
+ *    when the 30 s grace period expires — so this does NOT need to cover the grace period, only
+ *    the gap until a bootstrap dial completes;
+ *  - the guard's 30 s `gracePeriodMs` cannot be tuned from this repo anyway: no caller in either
+ *    repo passes a `SelfCoordinationConfig`, so the default is always in force;
+ *  - a node that has NEVER connected is waved through as a bootstrap node (network high-water
+ *    mark of 1), so this retry only ever delays a node that HAS seen peers. One whose peers are
+ *    gone for good still fails, ~4.6 s later — which is why the budget stays at the shared
+ *    ceiling rather than stretching to cover the full 30 s window.
+ */
+const SCHEMA_INIT_RETRY_DELAYS_MS: readonly number[] = [250, 500, 1_000, 2_000];
 
 /** The network transactor's aggregate, raised when some cohort peers gave no usable answer. */
 const TRANSACTOR_AGGREGATE = /Some peers did not complete:/;
@@ -148,6 +193,34 @@ function isUnansweredSuperMajorityShortfall(message: string): boolean {
 }
 
 /**
+ * Optimystic refusing to let a node elect ITSELF coordinator because its last connection dropped
+ * less than the guard's grace period ago (`Libp2pKeyPeerNetwork.shouldAllowSelfCoordination` →
+ * `findCoordinator`, `db-p2p/src/libp2p-key-network.ts`).
+ *
+ * Matched ONLY with the `grace-period-not-elapsed` reason. The same sentence is raised with three
+ * other reasons and none of them is worth a retry: `disabled` is static configuration, and
+ * `partition-detected` / `suspicious-shrinkage` describe a network condition that will not resolve
+ * inside a few seconds of backoff. The grace-period one WILL — it clears as soon as the node holds
+ * one connection again, which a cold-starting node dialling its bootstrap peers is actively
+ * working on.
+ *
+ * NOTE: matched by TEXT, not by type, and that is forced rather than chosen.
+ * `FindCoordinatorError` (`code: 'SELF_COORDINATION_BLOCKED'`) is exported from `@optimystic/db-p2p`
+ * and this package depends on it, but the error OBJECT does not survive the trip:
+ * `OptimysticVirtualTable.initialize` catches and rethrows as `new Error(message)` with no `cause`
+ * (`quereus-plugin-optimystic/src/optimystic-module.ts`), so only the text reaches this repo. Like
+ * every matcher here this fails CLOSED — a rewording upstream stops the retry engaging, it never
+ * makes it unsafe.
+ */
+const SELF_COORDINATION_GRACE_REFUSAL =
+	/Self-coordination blocked: grace-period-not-elapsed\. No coordinator available for key\./;
+
+/** Self-coordination refused because the node's last connection dropped moments ago. */
+function isSelfCoordinationGraceRefusal(message: string): boolean {
+	return SELF_COORDINATION_GRACE_REFUSAL.test(message);
+}
+
+/**
  * Every message in the failure's `cause` chain.
  *
  * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking what
@@ -183,6 +256,29 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
 ];
 
 /**
+ * The above PLUS the self-coordination grace refusal — the classifier for schema init ONLY
+ * ({@link SCHEMA_INIT_RETRY_POLICY}), deliberately not folded into the list above.
+ *
+ * Why this class is safe HERE and not everywhere: a write refused at coordinator SELECTION never
+ * reached a peer, so re-presenting it is a proven non-commit. But `findCoordinator` is also
+ * reached from `NetworkTransactor.commitBlock` during PHASE 2 (`resolveCoordinator`,
+ * `db-core/src/transactor/network-transactor.ts`), and `commit()` commits the header block before
+ * the rest — so a general control write refused there can be refused AFTER something already
+ * committed. Worse, that error carries no `[blocks:` batch token, so
+ * {@link reportsIndeterminateCommit} would not veto it, and re-running an insert body over a write
+ * that landed is exactly the `UNIQUE constraint failed: CadrePeer.PeerId` failure that veto exists
+ * to prevent.
+ *
+ * Schema init does not have that problem: `apply schema` is a diff rather than a replay and a
+ * failed `create table` leaves the catalog clean, so a re-run emits only the tables that did not
+ * land (the full argument is at the `loadSchema` call site in `control-database.ts`).
+ */
+const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] = [
+	...RETRIABLE_CONTROL_WRITE_MATCHERS,
+	isSelfCoordinationGraceRefusal,
+];
+
+/**
  * Did this control write fail because the cluster cohort did not ANSWER — i.e. is
  * re-presenting the SAME signed write a moment later the right response?
  *
@@ -204,6 +300,30 @@ const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[
  * `control-write-retry.spec.ts`; `control-write-retry-scenario-coverage` closes that gap.
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
+	return matchesRetriableMessage(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
+}
+
+/**
+ * {@link isRetriableControlWriteFailure} widened by exactly one class — the self-coordination
+ * grace refusal ({@link RETRIABLE_SCHEMA_INIT_MATCHERS}) — for `ControlDatabase.loadSchema`.
+ *
+ * Opt-in per call site, via {@link SCHEMA_INIT_RETRY_POLICY}. Every other control write keeps the
+ * default classifier untouched.
+ */
+export function isRetriableSchemaInitFailure(error: unknown): boolean {
+	return matchesRetriableMessage(error, RETRIABLE_SCHEMA_INIT_MATCHERS);
+}
+
+/**
+ * Shared body of both classifiers: walk the `cause` chain, let
+ * {@link reportsIndeterminateCommit} veto it, then ask `matchers`. The veto runs BEFORE any
+ * matcher for every policy — a chain reporting a commit-phase batch is never retried, however
+ * transient some other level looks.
+ */
+function matchesRetriableMessage(
+	error: unknown,
+	matchers: readonly ((message: string) => boolean)[]
+): boolean {
 	if (!(error instanceof Error)) {
 		return false;
 	}
@@ -211,18 +331,28 @@ export function isRetriableControlWriteFailure(error: unknown): boolean {
 	if (reportsIndeterminateCommit(messages)) {
 		return false;
 	}
-	return messages.some(message =>
-		RETRIABLE_CONTROL_WRITE_MATCHERS.some(matches => matches(message)));
+	return messages.some(message => matchers.some(matches => matches(message)));
 }
 
 /**
- * Test seams for {@link retryControlWrite}'s pacing. Production callers pass nothing;
- * specs inject a recorded `sleep`, a shorter delay list, or a fake clock so no test ever
- * waits out a real backoff.
+ * Policy and pacing for {@link retryControlWrite}. Production callers pass nothing (or a named
+ * policy such as {@link SCHEMA_INIT_RETRY_POLICY}); specs inject a recorded `sleep`, a shorter
+ * delay list, or a fake clock so no test ever waits out a real backoff.
+ *
+ * Every field defaults to the shipped control-write policy, so an omitted field is byte-identical
+ * to the behaviour before per-call-site policies existed.
  */
 export interface ControlWriteRetryOptions {
+	/** Total attempts, first included. Default {@link CONTROL_WRITE_ATTEMPTS}. */
+	attempts?: number;
 	/** Backoff base before retry N (last entry repeats). Default {@link CONTROL_WRITE_RETRY_DELAYS_MS}. */
 	delaysMs?: readonly number[];
+	/**
+	 * Which failures are transient enough to re-present. Default
+	 * {@link isRetriableControlWriteFailure}; the only other shipped value is
+	 * {@link isRetriableSchemaInitFailure}, via {@link SCHEMA_INIT_RETRY_POLICY}.
+	 */
+	isRetriable?: (error: unknown) => boolean;
 	/** The sleep primitive. Default: `setTimeout`. */
 	sleep?: (ms: number) => Promise<void>;
 	/** Clock for the elapsed-budget check. Default: `Date.now`. */
@@ -230,9 +360,22 @@ export interface ControlWriteRetryOptions {
 }
 
 /**
- * Run `attempt` up to {@link CONTROL_WRITE_ATTEMPTS} times, retrying only failures
- * {@link isRetriableControlWriteFailure} classifies as transient and only while
- * {@link CONTROL_WRITE_RETRY_BUDGET_MS} has not elapsed.
+ * The one non-default retry policy: `ControlDatabase.loadSchema`'s distributed DDL, which
+ * additionally absorbs optimystic's self-coordination grace refusal and gets more attempts over a
+ * longer backoff to do it (see {@link SCHEMA_INIT_ATTEMPTS} and
+ * {@link SCHEMA_INIT_RETRY_DELAYS_MS}). Still bounded by the shared
+ * {@link CONTROL_WRITE_RETRY_BUDGET_MS}.
+ */
+export const SCHEMA_INIT_RETRY_POLICY: ControlWriteRetryOptions = {
+	attempts: SCHEMA_INIT_ATTEMPTS,
+	delaysMs: SCHEMA_INIT_RETRY_DELAYS_MS,
+	isRetriable: isRetriableSchemaInitFailure,
+};
+
+/**
+ * Run `attempt` up to {@link CONTROL_WRITE_ATTEMPTS} times (or `options.attempts`), retrying only
+ * failures the policy's classifier — {@link isRetriableControlWriteFailure} by default —
+ * calls transient, and only while {@link CONTROL_WRITE_RETRY_BUDGET_MS} has not elapsed.
  *
  * `attempt` must be atomic and re-runnable: a failed cluster write rolls back (nothing is
  * half-applied), and re-running the body re-runs its reads too — `ControlDatabase`'s
@@ -248,22 +391,24 @@ export async function retryControlWrite<T>(
 	attempt: () => Promise<T>,
 	options: ControlWriteRetryOptions = {}
 ): Promise<T> {
+	const attempts = options.attempts ?? CONTROL_WRITE_ATTEMPTS;
 	const delays = options.delaysMs ?? CONTROL_WRITE_RETRY_DELAYS_MS;
+	const isRetriable = options.isRetriable ?? isRetriableControlWriteFailure;
 	const sleep = options.sleep ?? defaultSleep;
 	const now = options.now ?? Date.now;
 	const start = now();
 	let lastError: unknown;
 	let attemptsMade = 0;
-	for (let attemptNumber = 1; attemptNumber <= CONTROL_WRITE_ATTEMPTS; attemptNumber++) {
+	for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber++) {
 		attemptsMade = attemptNumber;
 		try {
 			const result = await attempt();
 			if (attemptNumber > 1) {
-				log('Control write committed on attempt %d/%d', attemptNumber, CONTROL_WRITE_ATTEMPTS);
+				log('Control write committed on attempt %d/%d', attemptNumber, attempts);
 			}
 			return result;
 		} catch (error) {
-			if (!isRetriableControlWriteFailure(error)) {
+			if (!isRetriable(error)) {
 				// The ONLY trace that this funnel saw a failure and declined it. Without it the
 				// log is silent either way, so "the classifier vetoed this one" is
 				// indistinguishable from "the retry is not wired into this path at all".
@@ -271,11 +416,11 @@ export async function retryControlWrite<T>(
 				// of them — the lost-use-number constraint failures — ARE retried by the OUTER
 				// loop (`ControlDatabase.withUseNumberRetry`) that this one nests inside.
 				log('Control write failed non-transiently on attempt %d/%d, not retried here: %s',
-					attemptNumber, CONTROL_WRITE_ATTEMPTS, error);
+					attemptNumber, attempts, error);
 				throw error;
 			}
 			lastError = error;
-			if (attemptNumber === CONTROL_WRITE_ATTEMPTS) {
+			if (attemptNumber === attempts) {
 				break;
 			}
 			const elapsed = now() - start;
@@ -284,11 +429,11 @@ export async function retryControlWrite<T>(
 			}
 			const delay = jitteredDelay(delays, attemptNumber);
 			log('Control write failed transiently (attempt %d/%d), retrying in %d ms: %s',
-				attemptNumber, CONTROL_WRITE_ATTEMPTS, delay, error);
+				attemptNumber, attempts, delay, error);
 			await sleep(delay);
 		}
 	}
-	log('Control write failed after %d/%d attempt(s): %s', attemptsMade, CONTROL_WRITE_ATTEMPTS, lastError);
+	log('Control write failed after %d/%d attempt(s): %s', attemptsMade, attempts, lastError);
 	throw lastError;
 }
 

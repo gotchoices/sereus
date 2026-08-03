@@ -16,7 +16,10 @@ export { ControlDatabase, MissingHostStrandError, buildAuthorizationMessage, for
 export {
   CONTROL_WRITE_ATTEMPTS,
   CONTROL_WRITE_RETRY_BUDGET_MS,
+  SCHEMA_INIT_ATTEMPTS,
+  SCHEMA_INIT_RETRY_POLICY,
   isRetriableControlWriteFailure,
+  isRetriableSchemaInitFailure,
   retryControlWrite,
   type ControlWriteRetryOptions
 } from './control-write-retry.js';

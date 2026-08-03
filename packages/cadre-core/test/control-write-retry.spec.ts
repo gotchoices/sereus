@@ -2,7 +2,10 @@ import { describe, it, expect } from 'vitest';
 import {
 	CONTROL_WRITE_ATTEMPTS,
 	CONTROL_WRITE_RETRY_BUDGET_MS,
+	SCHEMA_INIT_ATTEMPTS,
+	SCHEMA_INIT_RETRY_POLICY,
 	isRetriableControlWriteFailure,
+	isRetriableSchemaInitFailure,
 	retryControlWrite,
 	type ControlWriteRetryOptions
 } from '../src/control-write-retry.js';
@@ -137,6 +140,39 @@ const SUPER_MAJORITY_IN_COMMIT_AGGREGATE =
  * the classifier must keep letting it through unmatched.
  */
 const MISSING_BLOCK = 'Missing block (jQlkVafUFlI6FzOGGAlViyK5GrgcSm_4SL7HfPKwhis)';
+/**
+ * Optimystic refusing to let a node elect ITSELF coordinator while its last connection is still
+ * within the guard's 30 s grace period — raised by `Libp2pKeyPeerNetwork.findCoordinator`
+ * (`db-p2p/src/libp2p-key-network.ts` ~539). Transcribed verbatim from that throw's template.
+ *
+ * Retriable for SCHEMA INIT only: a write refused at coordinator SELECTION never reached a peer,
+ * so nothing pended and nothing committed. Not retriable in general — `findCoordinator` is also
+ * reached from `NetworkTransactor.commitBlock`'s phase 2, where a refusal can land after the
+ * header block already committed, and carries no `[blocks:` token for
+ * `reportsIndeterminateCommit` to veto on.
+ */
+const SELF_COORDINATION_BLOCKED =
+	'Self-coordination blocked: grace-period-not-elapsed. No coordinator available for key.';
+/**
+ * The same refusal as it actually reaches this repo, wrapped twice on the way out of optimystic
+ * and Quereus — `OptimysticVirtualTable.initialize` rethrows as a bare `new Error(message)` with
+ * NO `cause`, so the text is all that survives. Copied from the node-B startup death recorded in
+ * `tickets/implement/1-control-write-retry-covers-self-coordination-blocked.md`; wrap it in
+ * {@link ddlFailure} for the full startup surface.
+ */
+const SELF_COORDINATION_IN_MODULE_CREATE =
+	`Module 'optimystic' create failed for table 'Revocation': `
+	+ `Failed to initialize Optimystic table: ${SELF_COORDINATION_BLOCKED}`;
+/**
+ * The other three reasons the SAME sentence carries. None is retried: `disabled` is static
+ * configuration, and a detected partition or a suspicious shrinkage will not resolve inside a few
+ * seconds of backoff — so retrying them would add latency before the identical error.
+ */
+const SELF_COORDINATION_OTHER_REASONS = [
+	'Self-coordination blocked: disabled. No coordinator available for key.',
+	'Self-coordination blocked: partition-detected. No coordinator available for key.',
+	'Self-coordination blocked: suspicious-shrinkage. No coordinator available for key.',
+];
 
 describe('isRetriableControlWriteFailure', () => {
 	it('retries the read/pend-phase transactor aggregate ("the cohort did not answer")', () => {
@@ -225,6 +261,17 @@ describe('isRetriableControlWriteFailure', () => {
 		expect(isRetriableControlWriteFailure(nested(ddlFailure(MISSING_BLOCK)))).toBe(false);
 	});
 
+	/**
+	 * The one class the SCHEMA-INIT policy adds and this one deliberately refuses. Asserted here,
+	 * not only in the schema-init block below, because the whole point of the split is that this
+	 * default classifier — the one under all ~19 other control writes — keeps saying no.
+	 */
+	it('never retries a self-coordination refusal — safe only for schema init', () => {
+		expect(isRetriableControlWriteFailure(nested(SELF_COORDINATION_BLOCKED))).toBe(false);
+		expect(isRetriableControlWriteFailure(
+			nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE)))).toBe(false);
+	});
+
 	it('never retries constraint/authorization failures — a retry would re-present a spent signature', () => {
 		expect(isRetriableControlWriteFailure(nested('CHECK constraint failed: Authorized'))).toBe(false);
 		expect(isRetriableControlWriteFailure(nested('UNIQUE constraint failed: FormationUsage.UsageStampId'))).toBe(false);
@@ -266,6 +313,88 @@ describe('isRetriableControlWriteFailure', () => {
 			expect(isRetriableControlWriteFailure(nested(transient))).toBe(true);
 			expect(isLostUseNumberRace(nested(transient))).toBe(false);
 		}
+	});
+});
+
+/**
+ * The widened classifier `ControlDatabase.loadSchema` opts into — the default plus optimystic's
+ * self-coordination grace refusal, and nothing else.
+ *
+ * Message literals again, and here the load-bearing one is CAPTURED rather than reconstructed: the
+ * refusal text comes from a real node-B startup death. The end-to-end proof
+ * (`provider-seed-accepted.integration.ts`) reproduces the fingerprint on roughly 1 run in 3, so
+ * these cases — not that scenario — are what actually pins the behaviour.
+ */
+describe('isRetriableSchemaInitFailure', () => {
+	it('retries the self-coordination grace refusal the default classifier refuses', () => {
+		expect(isRetriableSchemaInitFailure(nested(SELF_COORDINATION_BLOCKED))).toBe(true);
+		// The surface a real startup prints: optimystic's rethrow inside Quereus' module-create
+		// wrapper inside the DDL wrapper. Only the TEXT survives that trip (no `cause` is set on
+		// the rethrow), which is why the classifier matches on text at all.
+		expect(isRetriableSchemaInitFailure(
+			nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE)))).toBe(true);
+	});
+
+	/**
+	 * The reason token is part of the match, not decoration. Only `grace-period-not-elapsed`
+	 * clears on its own (it needs one connection back, not the full 30 s grace period); the others
+	 * would spend the whole budget to reach the same error.
+	 */
+	it('retries only the grace-period reason, not the other three', () => {
+		for (const message of SELF_COORDINATION_OTHER_REASONS) {
+			expect(isRetriableSchemaInitFailure(nested(message))).toBe(false);
+			expect(isRetriableSchemaInitFailure(nested(ddlFailure(message)))).toBe(false);
+		}
+	});
+
+	/**
+	 * The indeterminate-commit veto is NOT relaxed for this policy. A chain carrying a commit-phase
+	 * batch token is refused even when another level shows the retriable refusal — re-running the
+	 * DDL is safe, but only because nothing committed, and `[blocks:` is precisely the evidence
+	 * that something may have.
+	 */
+	it('keeps the commit-phase veto in force', () => {
+		expect(isRetriableSchemaInitFailure(new Error(SELF_COORDINATION_BLOCKED, {
+			cause: new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE),
+		}))).toBe(false);
+		expect(isRetriableSchemaInitFailure(new Error(TRANSACTOR_AGGREGATE_COMMIT_PHASE, {
+			cause: new Error(SELF_COORDINATION_BLOCKED),
+		}))).toBe(false);
+		expect(isRetriableSchemaInitFailure(nested(SUPER_MAJORITY_IN_COMMIT_AGGREGATE))).toBe(false);
+	});
+
+	/**
+	 * Widened, not replaced: every verdict the default classifier reaches, this one reaches too.
+	 * Driven from the same table so a future edit to either list cannot silently diverge.
+	 */
+	it('agrees with the default classifier on every other message', () => {
+		const retriable = [
+			TRANSACTOR_AGGREGATE,
+			SUPER_MAJORITY_NONE_ANSWERED,
+			SUPER_MAJORITY_PARTIAL,
+			SUPER_MAJORITY_IN_PEND_AGGREGATE,
+		];
+		const notRetriable = [
+			TRANSACTOR_AGGREGATE_NO_DETAILS,
+			SUPER_MAJORITY_REJECTED,
+			MISSING_BLOCK,
+			LOST_USE_NUMBER,
+			LOST_USE_NUMBER_DEFERRED,
+			'CHECK constraint failed: Authorized',
+		];
+		for (const message of retriable) {
+			expect(isRetriableControlWriteFailure(nested(message))).toBe(true);
+			expect(isRetriableSchemaInitFailure(nested(message))).toBe(true);
+		}
+		for (const message of notRetriable) {
+			expect(isRetriableControlWriteFailure(nested(message))).toBe(false);
+			expect(isRetriableSchemaInitFailure(nested(message))).toBe(false);
+		}
+	});
+
+	it('never retries a non-Error throw, even one whose text would match', () => {
+		expect(isRetriableSchemaInitFailure(SELF_COORDINATION_BLOCKED)).toBe(false);
+		expect(isRetriableSchemaInitFailure({ message: SELF_COORDINATION_BLOCKED })).toBe(false);
 	});
 });
 
@@ -361,6 +490,49 @@ describe('retryControlWrite', () => {
 	});
 
 	/**
+	 * The named schema-init policy driven through the loop: its own attempt count, its own
+	 * backoff bounds, its own classifier. Bounds are asserted rather than exact values because
+	 * every delay is jittered ±50% and capped at the largest base (2000 ms).
+	 */
+	it('honours SCHEMA_INIT_RETRY_POLICY\'s attempts, backoff and widened classifier', async () => {
+		const delays: number[] = [];
+		let runs = 0;
+		await expect(retryControlWrite(async () => {
+			runs++;
+			throw nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE));
+		}, {
+			...SCHEMA_INIT_RETRY_POLICY,
+			now: () => 0,
+			sleep: (ms) => { delays.push(ms); return Promise.resolve(); },
+		})).rejects.toThrow();
+
+		expect(runs).toBe(SCHEMA_INIT_ATTEMPTS);
+		expect(delays).toHaveLength(SCHEMA_INIT_ATTEMPTS - 1);
+		expect(delays[0]).toBeGreaterThanOrEqual(125);
+		expect(delays[0]).toBeLessThanOrEqual(375);
+		expect(delays[3]).toBeGreaterThanOrEqual(1_000);
+		expect(delays[3]).toBeLessThanOrEqual(2_000);
+		// Worst case still fits the shared ceiling, so the budget only ever bites when an
+		// ATTEMPT is slow — never on this policy's backoff alone.
+		expect(delays.reduce((total, ms) => total + ms, 0)).toBeLessThan(CONTROL_WRITE_RETRY_BUDGET_MS);
+	});
+
+	/**
+	 * Same failure, default policy: one attempt, no retry. The pair is the proof that the widening
+	 * is opt-in per call site rather than a change to what every control write absorbs.
+	 */
+	it('leaves the DEFAULT policy refusing that same failure after one attempt', async () => {
+		let runs = 0;
+		const failure = nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE));
+		await expect(retryControlWrite(async () => {
+			runs++;
+			throw failure;
+		}, immediatePacing())).rejects.toBe(failure);
+
+		expect(runs).toBe(1);
+	});
+
+	/**
 	 * The nesting `withUseNumberRetry` now has in production: its use-number loop wraps
 	 * `lockedWithRetry`, which wraps this loop. Simulated here with the same
 	 * classify-and-rethrow shape to pin the multiplication bound — because the classifiers
@@ -442,6 +614,10 @@ function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarn
  * failed `create table` leaves the catalog clean — so attempt 2 re-emits exactly the failed
  * table and its successors. The reasoning lives at the call site; these cases pin the
  * behaviour.
+ *
+ * It is also the ONE caller on a non-default policy ({@link SCHEMA_INIT_RETRY_POLICY}): same
+ * classifier plus optimystic's self-coordination grace refusal, over more attempts and a longer
+ * backoff. That re-run safety argument is why the extra class is safe HERE and nowhere else.
  */
 describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 	/**
@@ -472,6 +648,33 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 	});
 
 	/**
+	 * The failure that motivated the widened policy: a freshly provisioned node whose connection
+	 * blipped mid-DDL, so optimystic refused to let it elect ITSELF coordinator and startup died
+	 * on the first `create table` that hit it — never reporting healthy, so whoever provisioned it
+	 * timed out waiting.
+	 *
+	 * Driven through the full wrapper stack a real startup prints, because the classifier only has
+	 * TEXT to work with: optimystic's rethrow drops the `cause`, so a match on the error type is
+	 * not available at this seam.
+	 */
+	it('re-presents the whole DDL after a self-coordination grace refusal', async () => {
+		let runs = 0;
+		const executed: string[] = [];
+		const harness = schemaInitHarness(async (sql) => {
+			runs++;
+			executed.push(sql);
+			if (runs === 1) {
+				throw nested(ddlFailure(SELF_COORDINATION_IN_MODULE_CREATE));
+			}
+		});
+
+		await harness.loadSchema();
+
+		expect(runs).toBe(2);
+		expect(executed[1]).toBe(executed[0]);
+	});
+
+	/**
 	 * The failure faces observed from the same joining node that this retry is NOT for. A
 	 * commit-phase batch is INDETERMINATE (the write may have landed) whether or not it also
 	 * carries a super-majority shortfall, and `Missing block` is durable — it was the ONLY DDL
@@ -483,6 +686,9 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 			TRANSACTOR_AGGREGATE_COMMIT_PHASE,
 			SUPER_MAJORITY_IN_COMMIT_AGGREGATE,
 			MISSING_BLOCK,
+			// The self-coordination refusal IS absorbed here, but only for the grace-period
+			// reason — a disabled guard or a detected partition still surfaces immediately.
+			...SELF_COORDINATION_OTHER_REASONS,
 		]) {
 			let runs = 0;
 			const failure = nested(ddlFailure(causeMessage));
@@ -511,7 +717,9 @@ describe('ControlDatabase.loadSchema — transient-failure retry', () => {
 			caught = error;
 		}
 
-		expect(thrown).toHaveLength(CONTROL_WRITE_ATTEMPTS);
+		// Schema init runs on its OWN policy, so the ceiling here is SCHEMA_INIT_ATTEMPTS, not
+		// the default control-write count.
+		expect(thrown).toHaveLength(SCHEMA_INIT_ATTEMPTS);
 		// Identity, not message equality: the LAST attempt's error object, never a wrapper
 		// and never an earlier attempt's — startup diagnostics read this text verbatim.
 		expect(caught).toBe(thrown[thrown.length - 1]);

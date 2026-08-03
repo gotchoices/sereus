@@ -187,3 +187,29 @@ Twelve runs of `provider-seed-accepted.integration.ts` on 2026-08-02/03 produced
 super-majority failures — every DDL death was `Missing block`
 (`0-bug-control-collection-header-absent-at-committed-revision`). That scenario is not a
 reliable source for this capture; this ticket's own scenario remains the plan.
+
+## A THIRD retriable class now exists, on schema init only
+
+Landed by `control-write-retry-covers-self-coordination-blocked` (2026-08-03). Schema init
+(`ControlDatabase.loadSchema`) no longer runs the default policy: it runs
+`SCHEMA_INIT_RETRY_POLICY`, which is the same classifier plus one extra message —
+
+```
+Self-coordination blocked: grace-period-not-elapsed. No coordinator available for key.
+```
+
+— optimystic refusing to let a node elect ITSELF coordinator while its last connection dropped
+less than 30 s ago. That policy also runs 5 attempts over `[250, 500, 1000, 2000]` ms instead of
+3 over `[250, 1000]`.
+
+Two consequences for this ticket:
+
+- Section 2's "the retry absorbs a real failure" capture has a second, likely-easier target. This
+  class needs only ONE node that has seen peers and then lost them mid-DDL — no cohort
+  choreography — whereas the super-majority shortfall needs a real three-machine party.
+- Any assertion here that hard-codes `CONTROL_WRITE_ATTEMPTS` for a schema-init failure is now
+  wrong; use `SCHEMA_INIT_ATTEMPTS` for that path.
+
+The unit-level proof is in `packages/cadre-core/test/control-write-retry.spec.ts`
+(`isRetriableSchemaInitFailure`), against the message text captured verbatim from a real node-B
+startup death — so this one is NOT a reconstruction, unlike the two the classifier already had.
