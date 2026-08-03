@@ -9,6 +9,8 @@ services:
     environment:
       - SEREUS_ROLE=relay
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
+      - RELAY_APPLY_DEFAULT_LIMIT=${RELAY_APPLY_DEFAULT_LIMIT:-}
+      - RELAY_MAX_RESERVATIONS=${RELAY_MAX_RESERVATIONS:-}
     volumes:
       - "${HOST_DATA_DIR:-./data}:/data"
     restart: unless-stopped

@@ -812,9 +812,10 @@ The relay container `ops/docker/libp2p-infra` deploys (`src/main.ts`) runs
 / 2 min) turned **off** and its concurrent-reservation cap raised well past
 libp2p's default of 15 — without that, every relayed connection is treated as
 "limited" and is refused by any protocol handler that does not opt in with
-`runOnLimitedConnection: true` (none of `@optimystic/db-p2p`'s services or
-sereus's control protocols do), so relayed control/strand traffic would be
-silently dropped. Both settings are environment-configurable
+`runOnLimitedConnection: true`. `@optimystic/db-p2p`'s four database services
+and control-network seed delivery do not opt in, so their relayed streams are
+dropped outright; the strand wake/addr protocols do opt in but still die once
+the connection crosses the cap. Both settings are environment-configurable
 (`RELAY_APPLY_DEFAULT_LIMIT`, `RELAY_MAX_RESERVATIONS`) — see
 `ops/docker/libp2p-infra/README.md`.
 

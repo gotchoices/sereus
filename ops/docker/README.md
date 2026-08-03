@@ -87,11 +87,13 @@ Use that `<PEER_ID>` to publish DNSADDR TXT records (see `../docs/dnsaddr.md`).
 - `HOST_BIND_IP`: optional bind IP (default `0.0.0.0`)
 - `HOST_DATA_DIR`: host directory for keys/state (default `./data`)
 - `ANNOUNCE_ADDRS`: advanced; leave empty unless troubleshooting reachability
+- `RELAY_APPLY_DEFAULT_LIMIT` (`relay`, `bootstrap-relay` only): advanced; leave empty. Setting it to `true` re-applies libp2p's per-reservation cap and **breaks relayed cadre traffic** — see `libp2p-infra/README.md`
+- `RELAY_MAX_RESERVATIONS` (`relay`, `bootstrap-relay` only): advanced; concurrent reservation slots (default `500`)
 
 `coturn` uses a different knob set (`STUN_PUBLIC_HOST`, `LISTENING_PORT=3478`, `TURN_ENABLED`, …) — see `coturn/env.example` and `coturn/README.md`.
 
 ### Image/build note
-`relay`, `bootstrap`, and `bootstrap-relay` all run the same image (`sereus-libp2p-infra:local`) built from `ops/docker/libp2p-infra/`.
+`relay`, `bootstrap`, and `bootstrap-relay` all run the same image (`sereus-libp2p-infra:local`) built from `ops/docker/libp2p-infra/`. That folder's `README.md` documents the image's own environment contract (`SEREUS_ROLE`, `ANNOUNCE_ADDRS`, the two `RELAY_*` knobs) — the site-level knobs above (`HOST_*`) are compose-level and never reach the container.
 
 `coturn` is different: it **pulls** the upstream `coturn/coturn` image (no local build context). The installer's `env.example`→`env.local` + `svc` symlink flow is unchanged, but there is nothing to build — `./svc up` just pulls and runs.
 

@@ -1,4 +1,9 @@
 // @ts-nocheck
+// NOTE: the `@ts-nocheck` is load-bearing only for `createLibp2p({ privateKey })`: npm resolves a
+// second, nested `@libp2p/interface` under `@multiformats/dns`, so the key types are nominally
+// incompatible. Everything else in this file type-checks clean with the directive removed - if a
+// future dependency bump collapses that duplicate, drop it rather than keeping the whole file
+// unchecked.
 import fs from 'node:fs/promises'
 import path from 'node:path'
 
@@ -61,13 +66,22 @@ async function loadOrCreatePrivateKey () {
 const announce = parseAnnounceAddrs()
 
 // @libp2p/circuit-relay-v2 defaults to applyDefaultLimit: true, which stamps every
-// reservation with a data/duration cap and marks the resulting connection "limited" -
-// libp2p then refuses newStream()/inbound streams on it unless the caller opts in with
-// runOnLimitedConnection, which none of the db-p2p services or sereus control protocols do.
+// reservation with a ~128 KiB / 2 min cap and marks the resulting connection "limited" -
+// libp2p then refuses newStream()/inbound streams on it unless BOTH sides opt in with
+// runOnLimitedConnection. Only the sereus strand wake/addr protocols opt in; db-p2p's four
+// database services (repo, cluster, sync, block-transfer) register their handlers without it,
+// as does seed delivery, so their relayed streams are aborted outright - and even the
+// opted-in protocols still die once a relayed connection crosses the cap.
 // This relay is unauthenticated, so lifting the cap trades a bandwidth brake for usable
 // relayed traffic; RELAY_APPLY_DEFAULT_LIMIT=true restores libp2p's default for a public
 // deployment that wants the brake back.
 const RELAY_APPLY_DEFAULT_LIMIT = parseBooleanEnv('RELAY_APPLY_DEFAULT_LIMIT', false)
+// NOTE: 500 slots is sized well past any cadre this repo describes, and the store is one Map
+// entry per peer, so the cost is negligible. Two conditions would make it worth revisiting:
+// a party relay whose members exhaust 500 slots (raise this), or sustained circuit setup past
+// circuitRelayServer's maxOutboundStopStreams default of 300 - that cap is on concurrent
+// connection SETUP, not on held reservations, so it only bites if hundreds of clients dial
+// through at the same instant.
 const RELAY_MAX_RESERVATIONS = parsePositiveIntEnv('RELAY_MAX_RESERVATIONS', 500)
 
 const services: Record<string, any> = {
