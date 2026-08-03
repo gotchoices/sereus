@@ -8,6 +8,14 @@
  * - Full cross-party strand instance lifecycle with replication
  * - Multiple strands between same parties
  * - Three-party strand formation
+ * - Real-recorder consent enforcement, real-approval-hook redemption, provisioning abort
+ *
+ * NOTE: 1557 lines (`wc -l`, 2026-08-02) — the largest file in `src/scenarios/`, next largest
+ * 1170. Still one cohesive subject, and each `Phase N` describe owns its own `TestCadreNetwork`,
+ * so the phases are already independent. If another phase lands here, split per phase into
+ * sibling files and move the module-scope helpers above (`ownerSigner` … `readFormationUsage`)
+ * into a shared `strand-formation-helpers.ts` — the split is mechanical precisely because no
+ * phase shares state with another.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -171,6 +179,19 @@ function responderService(
 	});
 	service.registerResponder(party.ownerNode.libp2p);
 	return service;
+}
+
+/**
+ * A joiner-side service for a party that is redeeming, not hosting.
+ *
+ * No recorder and no `registerResponder`: a joiner only dials, so wiring either would give the
+ * redeeming side a responder surface it never has in production.
+ */
+function joinerService(party: TestParty): StrandSolicitationService {
+	return new StrandSolicitationService({
+		partyId: party.partyId,
+		cadrePeerAddrs: party.ownerNode.multiaddrs,
+	});
 }
 
 /** Build an OpenInvitation pointing at the responder party's bootstrap addrs. */
@@ -869,10 +890,7 @@ describe('E2E Strand Formation', () => {
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
 
-			const bobService = new StrandSolicitationService({
-				partyId: bob.partyId,
-				cadrePeerAddrs: bob.ownerNode.multiaddrs,
-			});
+			const bobService = joinerService(bob);
 
 			// First redemption provisions a fresh strand and records the single usage row.
 			const first = await bobService.formStrand(
@@ -914,10 +932,7 @@ describe('E2E Strand Formation', () => {
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
 
-			const bobService = new StrandSolicitationService({
-				partyId: bob.partyId,
-				cadrePeerAddrs: bob.ownerNode.multiaddrs,
-			});
+			const bobService = joinerService(bob);
 
 			// formStrand surfaces the responder's `approved:false` as a thrown
 			// `Formation rejected: Host strand not yet available on this responder` —
@@ -949,10 +964,7 @@ describe('E2E Strand Formation', () => {
 				expiresAtMs: Date.now() + 365 * 24 * 3600_000,
 			});
 
-			const bobService = new StrandSolicitationService({
-				partyId: bob.partyId,
-				cadrePeerAddrs: bob.ownerNode.multiaddrs,
-			});
+			const bobService = joinerService(bob);
 
 			const result = await bobService.formStrand(
 				invitationFor(token, 'sapp-consent-sig', alice),
@@ -1030,14 +1042,6 @@ describe('E2E Strand Formation', () => {
 		 */
 		function enrollApprover(party: TestParty, validationKey: string): Promise<void> {
 			return party.controlDatabase.insertValidationKey(validationKey, party.ownerPublicKey, ownerSigner(party));
-		}
-
-		/** A joiner-side service for a party that is redeeming, not hosting. */
-		function joinerService(party: TestParty): StrandSolicitationService {
-			return new StrandSolicitationService({
-				partyId: party.partyId,
-				cadrePeerAddrs: party.ownerNode.multiaddrs,
-			});
 		}
 
 		/** Publish an owner-signed, single-use, unbound invite gated on `validationUrl`. */
@@ -1315,10 +1319,11 @@ describe('E2E Strand Formation', () => {
 	//        adopts the outcome and tells the joiner the join succeeded, rather than reporting
 	//        a timeout over an invitation that is in fact spent.
 	//
-	// Both shipped, and both are covered per-layer only (`FormationListener` against a fake hook,
-	// the manager against a fake recorder, the recorder against a fake approver). Nothing ran the
-	// COMPOSED path, so deleting the `signal` argument from any single hop still passed every
-	// existing test. The chain these two cases drive end to end:
+	// Both shipped, and before these two cases both were covered per-layer only
+	// (`FormationListener` against a fake hook, the manager against a fake recorder, the recorder
+	// against a fake approver). Nothing ran the COMPOSED path, so deleting the `signal` argument
+	// from any single hop still passed every existing test. The chain these two cases drive end to
+	// end:
 	//
 	//   FormationListener.provision()                       strand-formation-protocol.ts
 	//     → AbortController.abort() at workMs, then settleWithinGrace()
@@ -1331,6 +1336,11 @@ describe('E2E Strand Formation', () => {
 	// row inserted up front and an invite naming it — because that is the shape production
 	// publishes and it routes through `recordUsage` → `recordFormationUsage`, the path carrying
 	// the real abort checks.
+	//
+	// Both hops above the recorder were measured NON-VACUOUS (2026-08-02): dropping `signal` from
+	// the listener→manager hop (`provisionStrand: (contact, signal) => provisionAsResponder(...)`)
+	// and, separately, from the manager→recorder hop (`recorder.recordUsage({ ..., signal })`)
+	// each fails BOTH cases — (i) on `hook.abortedCount` never reaching 1, (ii) on `observedAbort`.
 	//
 	// NOT covered here, deliberately: `ControlDatabase`'s own in-lock abort check is reached only
 	// AFTER the recorder's earlier checks, so dropping the `signal` on the
@@ -1406,14 +1416,6 @@ describe('E2E Strand Formation', () => {
 					resolve(false);
 				}, capMs);
 				signal.addEventListener('abort', onAbort, { once: true });
-			});
-		}
-
-		/** A joiner-side service for a party that is redeeming, not hosting. */
-		function joinerService(party: TestParty): StrandSolicitationService {
-			return new StrandSolicitationService({
-				partyId: party.partyId,
-				cadrePeerAddrs: party.ownerNode.multiaddrs,
 			});
 		}
 
