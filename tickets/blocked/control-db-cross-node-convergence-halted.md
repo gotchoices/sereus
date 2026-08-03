@@ -18,6 +18,15 @@ re-requesting a revision the coordinator already holds — landed and rebuilt
 (`cd ../optimystic && yarn build`). Then re-run the scenarios below and delete this
 ticket's entries from `tickets/.pre-existing-known.md`.
 
+**Update 2026-08-03 — the successor symptom has been traced to a different upstream site.** The
+20-second retry storm this ticket describes is gone; what replaced it (a collection holding a
+committed revision whose header block reads absent) was traced on 2026-08-03 to a single line,
+`../optimystic/packages/db-p2p/src/repo/service.ts:264`, which skips the cohort consult on every
+read arriving over the repo protocol. That is a **different** unblock condition from this
+ticket's, so the two are not merged — see
+`blocked/control-coordinator-answers-absent-without-asking-cohort` for the trace and the
+runtime-patch proof. Re-measure this ticket's own condition only after that one lands.
+
 ## Measurement conditions — read before re-measuring
 
 Everything below was measured on **2026-07-31** with:
