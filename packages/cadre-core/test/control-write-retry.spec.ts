@@ -456,6 +456,22 @@ describe('retryControlWrite', () => {
 		expect(slept).toBe(0);
 	});
 
+	/**
+	 * `attempts` is caller-supplied, so a value below 1 must not fall straight through the loop
+	 * and rethrow the `lastError` nobody set — `throw undefined` would defeat every downstream
+	 * `instanceof Error` check and erase the real failure.
+	 */
+	it('still runs the body once when attempts is below 1', async () => {
+		let runs = 0;
+		const failure = nested(TRANSACTOR_AGGREGATE);
+		await expect(retryControlWrite(async () => {
+			runs++;
+			throw failure;
+		}, immediatePacing({ attempts: 0 }))).rejects.toBe(failure);
+
+		expect(runs).toBe(1);
+	});
+
 	it('propagates a non-retriable failure from the first attempt, unretried', async () => {
 		let runs = 0;
 		const failure = nested('CHECK constraint failed: Authorized');

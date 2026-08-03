@@ -395,13 +395,18 @@ Running the host's *own* cadre (the **founder** role) is demoted to an opt-in fl
   provider-delivered seed, a node pinned to a stranger refuses it (400, trust gate) while a wrong
   bearer on the same endpoint gets 401 (delivery gate), and the first node restarted from its volume
   with **no** pin still accepts a second seed — proving the first seed anchored the owner key
-  durably. ⚠️ That scenario is currently majority-red on the control-database defect tracked by
-  `fix/0-bug-control-collection-header-absent-at-committed-revision` (its reds are `addDrone` insert
-  failures on the owner, not seed-path failures) and, less often, on
-  `implement/1-control-write-retry-covers-self-coordination-blocked` (node B dies in control-schema
-  DDL and never provisions; root cause is optimystic's self-coordination guard, tracked by
-  `blocked/offline-node-cannot-serve-its-own-data`). Measured 2026-08-03: 1 green of 4 runs in the implement pass, 1 green of 3 in
-  the review pass. A green run takes ~43 s. **Still not covered**: the real Docker image and its `docker/entrypoint.sh`
+  durably. ⚠️ That scenario is currently majority-red on the control-database defect now tracked by
+  `blocked/control-coordinator-answers-absent-without-asking-cohort` (its reds are `addDrone` insert
+  failures on the owner, not seed-path failures — a collection reporting a committed revision whose
+  header block reads as absent). Its *second*, less frequent red — node B dying in control-schema DDL
+  on optimystic's self-coordination guard and never provisioning — now has a Cadre-side mitigation:
+  `complete/1-control-write-retry-covers-self-coordination-blocked` put startup DDL on a retry policy
+  that absorbs `Self-coordination blocked: grace-period-not-elapsed`. That fingerprint did not recur
+  across the 4 runs of its review pass, but it only ever appeared on roughly 1 run in 3, so those
+  greens corroborate rather than prove; the guard behaviour itself is still
+  `blocked/offline-node-cannot-serve-its-own-data`. Measured 2026-08-03: 1 green of 4 runs in the
+  `provider-seed-accepted-by-real-node` implement pass, 1 green of 3 in its
+  review pass. A green run takes ~43 s. **Still not covered**: the real Docker image and its `docker/entrypoint.sh`
   — the orchestrator reproduces the image env and the entrypoint's derivations in process, so a drift
   in the script itself passes everything above.
 - [x] Grantee-facing `/grants` provisioning surface + `bin/host.ts` wiring + stale-`awaiting_seed`

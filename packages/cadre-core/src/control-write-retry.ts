@@ -343,7 +343,10 @@ function matchesRetriableMessage(
  * to the behaviour before per-call-site policies existed.
  */
 export interface ControlWriteRetryOptions {
-	/** Total attempts, first included. Default {@link CONTROL_WRITE_ATTEMPTS}. */
+	/**
+	 * Total attempts, first included. Default {@link CONTROL_WRITE_ATTEMPTS}, floored at 1 —
+	 * below that the loop would run the body zero times and rethrow a `lastError` nobody set.
+	 */
 	attempts?: number;
 	/** Backoff base before retry N (last entry repeats). Default {@link CONTROL_WRITE_RETRY_DELAYS_MS}. */
 	delaysMs?: readonly number[];
@@ -365,8 +368,14 @@ export interface ControlWriteRetryOptions {
  * longer backoff to do it (see {@link SCHEMA_INIT_ATTEMPTS} and
  * {@link SCHEMA_INIT_RETRY_DELAYS_MS}). Still bounded by the shared
  * {@link CONTROL_WRITE_RETRY_BUDGET_MS}.
+ *
+ * NOTE: exactly one call site opts in today, and the re-run safety this policy assumes is that
+ * site's, not a general property — `apply schema` is a diff and a failed `create table` leaves the
+ * catalog clean. A second opt-in must re-derive that argument for its own write body first; if this
+ * policy ever grows a third consumer, rename it for what the callers share rather than widening it
+ * by default.
  */
-export const SCHEMA_INIT_RETRY_POLICY: ControlWriteRetryOptions = {
+export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
 	attempts: SCHEMA_INIT_ATTEMPTS,
 	delaysMs: SCHEMA_INIT_RETRY_DELAYS_MS,
 	isRetriable: isRetriableSchemaInitFailure,
@@ -391,7 +400,7 @@ export async function retryControlWrite<T>(
 	attempt: () => Promise<T>,
 	options: ControlWriteRetryOptions = {}
 ): Promise<T> {
-	const attempts = options.attempts ?? CONTROL_WRITE_ATTEMPTS;
+	const attempts = Math.max(1, options.attempts ?? CONTROL_WRITE_ATTEMPTS);
 	const delays = options.delaysMs ?? CONTROL_WRITE_RETRY_DELAYS_MS;
 	const isRetriable = options.isRetriable ?? isRetriableControlWriteFailure;
 	const sleep = options.sleep ?? defaultSleep;

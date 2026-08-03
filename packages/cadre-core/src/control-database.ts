@@ -579,13 +579,9 @@ export class ControlDatabase {
     // vetoes indeterminate commits and does not match `Missing block`, which is a durable
     // convergence fault a retry cannot heal (tracked separately) and must keep propagating.
     //
-    // This is the one call site that does NOT take the default policy. Schema init also
-    // absorbs optimystic refusing to let a cold-starting node elect ITSELF coordinator
-    // (`Self-coordination blocked: grace-period-not-elapsed`), which killed startup outright
-    // on a freshly provisioned node whose connection blipped mid-DDL. That class is safe to
-    // re-present HERE — a write refused at coordinator selection never reached a peer — but
-    // NOT for control writes generally, because the same refusal can come out of the commit
-    // phase where something may already have landed. Both halves of the reasoning live on
+    // This is the ONE call site on a non-default policy: the re-run safety argued above is
+    // also what lets schema init absorb optimystic's self-coordination grace refusal, which
+    // is unsafe for control writes in general. Why, on
     // `RETRIABLE_SCHEMA_INIT_MATCHERS` in `control-write-retry.ts`.
     await this.lockedWithRetry(() => this.db!.exec(schemaContent), SCHEMA_INIT_RETRY_POLICY);
     log('Schema loaded and executed');
