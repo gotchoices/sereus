@@ -848,6 +848,18 @@ soft (a missing seam yields a plain error, never a throw) and a spec in
 `packages/cadre-core/test/relay-reservation.spec.ts` pins the shape so a libp2p
 upgrade that moves it fails loudly.
 
+Because discovery is out of reach, nothing else would ever ask again either — so
+`reserveRelays()` leaves a **supervisor** running rather than driving once.
+It re-checks every 5 s while a reservation is held and, once one is lost (relay
+restart, connection drop), re-drives on a backoff from 2 s to 60 s until it is
+back. Status gains `retrying` for that window, which sharpens `error` into
+"nobody is going to try again" (no supervisor, or no node). Before the supervisor
+a relay restart left a browser tab undialable until the user reloaded the page.
+Retrying needs one extra step: libp2p records a peer in the reservation store's
+`relayFilter` when a reservation *request* fails and never clears it, so the loop
+clears each target's entry before every attempt — otherwise a relay that briefly
+misbehaved is refused as "previously invalid" for the life of the process.
+
 The relay container `ops/docker/libp2p-infra` deploys (`src/main.ts`) runs
 `circuitRelayServer()` with libp2p's default per-reservation `Limit` (~128 KiB
 / 2 min) turned **off** and its concurrent-reservation cap raised well past

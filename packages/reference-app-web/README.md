@@ -126,13 +126,19 @@ at runtime — exactly like the ICE manifest:
 When a relay is configured the tab listens on `['/p2p-circuit', '/webrtc']`, and
 `CadreNode.reserveRelays()` dials the relay, asks it for a reservation slot, and
 waits for the `/p2p-circuit` address to appear (Home "Relay" row → `reserved`).
-The dial, the reservation request, and the status all live in cadre-core
-(`relay-reservation.ts`); this app only supplies the addresses and
-renders the result. The status is **recomputed on every read** from the node's live
-`/p2p-circuit` addresses, so a reservation lost after startup (relay restarted,
-connection dropped) flips the badge back to `error` and makes *Create invitation*
-refuse, rather than minting an invitation carrying dead addresses. The Home badge
-refreshes on the 4 s poll; `createInvitation` reads it at the decision point.
+It then leaves a **supervisor** running that re-drives the reservation whenever it
+is later lost, on a backoff that starts at 2 s and doubles up to 60 s. The dial,
+the retries, and the status all live in cadre-core (`relay-reservation.ts`); this
+app only supplies the addresses and renders the result.
+
+The status is **recomputed on every read** from the node's live `/p2p-circuit`
+addresses, so a reservation lost after startup (relay restarted, connection
+dropped) stops reporting `reserved` and makes *Create invitation* refuse, rather
+than minting an invitation carrying dead addresses. While the supervisor is
+working the badge reads `retrying`, and it returns to `reserved` on its own once
+the relay is back — no page reload. A resting `error` now means nothing is going
+to try again (no node, or the node was stopped). The Home badge refreshes on the
+4 s poll; `createInvitation` reads it at the decision point.
 
 `network.relayAddrs` is deliberately NOT set on the browser config: that is the
 fail-fast route (a configured circuit listener that cannot listen aborts node

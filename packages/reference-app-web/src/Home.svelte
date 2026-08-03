@@ -376,6 +376,11 @@
 	.relay-dialing {
 		color: #8a5a00;
 	}
+	/* In-progress, same as `dialing`: the reservation was lost and the node's
+	   supervisor has the next attempt scheduled — not a resting failure. */
+	.relay-retrying {
+		color: #8a5a00;
+	}
 	.relay-error {
 		color: #b3261e;
 	}

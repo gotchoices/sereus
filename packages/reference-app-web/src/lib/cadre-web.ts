@@ -97,8 +97,8 @@ export type RelayState = RelayReservationState;
  * Svelte `$state` object, which proxies it — a write through that proxy would
  * otherwise mutate the singleton every later caller receives.
  */
-function noRelayState(): RelayState {
-	return { status: 'none', addrs: [], circuitAddrs: [], error: null };
+export function noRelayState(): RelayState {
+	return { status: 'none', addrs: [], circuitAddrs: [], error: null, retryAtMs: null };
 }
 
 /** A strand this tab joined via the consent/invitation formation flow. */

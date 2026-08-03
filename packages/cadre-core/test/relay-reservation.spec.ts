@@ -1,4 +1,5 @@
 import { describe, it, expect, afterEach } from 'vitest';
+import { createServer } from 'node:net';
 import { createLibp2p, type Libp2p } from 'libp2p';
 import { tcp } from '@libp2p/tcp';
 import { noise } from '@chainsafe/libp2p-noise';
@@ -6,23 +7,28 @@ import { yamux } from '@chainsafe/libp2p-yamux';
 import { identify } from '@libp2p/identify';
 import { circuitRelayServer, circuitRelayTransport } from '@libp2p/circuit-relay-v2';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr } from '@multiformats/multiaddr';
+import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
+import { trailingPeerId } from '../src/peer-record.js';
 import {
   circuitMultiaddrs,
   driveRelayReservation,
   findCircuitRelayTransport,
-  resolveRelayReservationState
+  resolveRelayReservationState,
+  superviseRelayReservation,
+  type RelayReservationSupervisorOptions
 } from '../src/relay-reservation.js';
 
 /**
  * Relay reservation through the bare `/p2p-circuit` SEARCH listener: the status
- * precedence (pure), the loopback drive (real relay), and the regression this
- * module exists for — a reservation lost after a successful drive must stop
- * reporting `reserved`, because the status is derived from the node's LIVE
- * multiaddrs rather than a snapshot taken at drive time.
+ * precedence (pure), the loopback drive (real relay), the regression this module
+ * exists for — a reservation lost after a successful drive must stop reporting
+ * `reserved`, because the status is derived from the node's LIVE multiaddrs
+ * rather than a snapshot taken at drive time — and the supervisor that gets the
+ * lost reservation BACK without anybody driving again.
  */
 
 const CIRCUIT_ADDR =
@@ -35,14 +41,26 @@ function fakeNode(addrs: readonly string[]): Libp2p {
 
 describe('resolveRelayReservationState (precedence)', () => {
   it('reports none when no relay addrs were supplied, whatever else is true', () => {
-    // Empty addrs beats everything: a live circuit addr, a stale error, and an
-    // in-flight drive all lose to "nobody asked for a reservation".
-    const state = resolveRelayReservationState(fakeNode([CIRCUIT_ADDR]), [], 'boom', true);
-    expect(state).toEqual({ status: 'none', addrs: [], circuitAddrs: [], error: null });
+    // Empty addrs beats everything: a live circuit addr, a stale error, an
+    // in-flight drive and a scheduled retry all lose to "nobody asked".
+    const state = resolveRelayReservationState(fakeNode([CIRCUIT_ADDR]), [], 'boom', true, 1);
+    expect(state).toEqual({
+      status: 'none',
+      addrs: [],
+      circuitAddrs: [],
+      error: null,
+      retryAtMs: null
+    });
   });
 
   it('reports reserved when circuit addrs are held', () => {
-    const state = resolveRelayReservationState(fakeNode([CIRCUIT_ADDR]), ['/relay'], null, false);
+    const state = resolveRelayReservationState(
+      fakeNode([CIRCUIT_ADDR]),
+      ['/relay'],
+      null,
+      false,
+      null
+    );
     expect(state.status).toBe('reserved');
     expect(state.circuitAddrs).toEqual([CIRCUIT_ADDR]);
     expect(state.addrs).toEqual(['/relay']);
@@ -54,41 +72,87 @@ describe('resolveRelayReservationState (precedence)', () => {
       fakeNode([CIRCUIT_ADDR]),
       ['/relay'],
       'no circuit reservation within 10000ms',
-      false
+      false,
+      null
     );
     expect(state.status).toBe('reserved');
     expect(state.error).toBeNull();
   });
 
   it('reports dialing while a drive is in flight and nothing is reserved', () => {
-    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], null, true);
+    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], null, true, null);
     expect(state.status).toBe('dialing');
     expect(state.circuitAddrs).toEqual([]);
   });
 
   it('prefers reserved over dialing when both could apply', () => {
-    const state = resolveRelayReservationState(fakeNode([CIRCUIT_ADDR]), ['/relay'], null, true);
+    const state = resolveRelayReservationState(
+      fakeNode([CIRCUIT_ADDR]),
+      ['/relay'],
+      null,
+      true,
+      null
+    );
     expect(state.status).toBe('reserved');
   });
 
-  it('reports error with the last failure when no drive is in flight', () => {
-    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], 'dial refused', false);
+  it('reports retrying when a supervisor has the next attempt scheduled', () => {
+    // The distinction the `retrying` status exists for: the reservation is gone
+    // AND something is going to ask for it again, so this is not a resting error.
+    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], 'dial refused', false, 42);
+    expect(state).toEqual({
+      status: 'retrying',
+      addrs: ['/relay'],
+      circuitAddrs: [],
+      error: 'dial refused',
+      retryAtMs: 42
+    });
+  });
+
+  it('prefers dialing over retrying while a drive is actually in flight', () => {
+    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], null, true, 42);
+    expect(state.status).toBe('dialing');
+    // A drive in flight IS the attempt, so there is no countdown to report.
+    expect(state.retryAtMs).toBeNull();
+  });
+
+  it('prefers reserved over retrying, and reports the next liveness check', () => {
+    const state = resolveRelayReservationState(
+      fakeNode([CIRCUIT_ADDR]),
+      ['/relay'],
+      null,
+      false,
+      42
+    );
+    expect(state.status).toBe('reserved');
+    expect(state.retryAtMs).toBe(42);
+  });
+
+  it('reports error with the last failure when nothing is going to try again', () => {
+    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], 'dial refused', false, null);
     expect(state).toEqual({
       status: 'error',
       addrs: ['/relay'],
       circuitAddrs: [],
-      error: 'dial refused'
+      error: 'dial refused',
+      retryAtMs: null
     });
   });
 
   it('reports error with a fallback reason when no failure was recorded', () => {
-    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], null, false);
+    const state = resolveRelayReservationState(fakeNode([]), ['/relay'], null, false, null);
     expect(state.status).toBe('error');
     expect(state.error).toBeTruthy();
   });
 
   it('reports error when there is no node at all', () => {
-    const state = resolveRelayReservationState(null, ['/relay'], 'control node unavailable', false);
+    const state = resolveRelayReservationState(
+      null,
+      ['/relay'],
+      'control node unavailable',
+      false,
+      null
+    );
     expect(state.status).toBe('error');
     expect(state.error).toBe('control node unavailable');
   });
@@ -98,7 +162,8 @@ describe('resolveRelayReservationState (precedence)', () => {
       fakeNode(['/ip4/127.0.0.1/tcp/4001']),
       ['/relay'],
       null,
-      false
+      false,
+      null
     );
     expect(state.status).toBe('error');
     expect(state.circuitAddrs).toEqual([]);
@@ -127,7 +192,13 @@ describe('CadreNode.reserveRelays before start', () => {
     const node = new CadreNode(config);
     const started = Date.now();
     const state = await node.reserveRelays([]);
-    expect(state).toEqual({ status: 'none', addrs: [], circuitAddrs: [], error: null });
+    expect(state).toEqual({
+      status: 'none',
+      addrs: [],
+      circuitAddrs: [],
+      error: null,
+      retryAtMs: null
+    });
     // The solo browser tab takes this path on every boot — it must be instant, not
     // a walk to the reservation timeout.
     expect(Date.now() - started).toBeLessThan(1_000);
@@ -239,13 +310,115 @@ async function blackholeRelayAddr(port: number): Promise<string> {
   return `/ip4/192.0.2.1/tcp/${port}/p2p/${peerIdFromPrivateKey(key).toString()}`;
 }
 
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function waitFor(cond: () => boolean, what: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (!cond()) {
     if (Date.now() > deadline) throw new Error(`Timed out waiting for ${what}`);
-    await new Promise((resolve) => setTimeout(resolve, 100));
+    await sleep(100);
   }
 }
+
+/**
+ * A TCP port nothing is listening on: bind `:0`, read what the OS assigned,
+ * release it, hand it on. Deliberately NOT a hard-coded port — spec files run in
+ * parallel and would collide on one.
+ */
+function freePort(): Promise<number> {
+  return new Promise<number>((resolve, reject) => {
+    const probe = createServer();
+    probe.on('error', reject);
+    probe.listen(0, '127.0.0.1', () => {
+      const address = probe.address();
+      if (address === null || typeof address === 'string') {
+        probe.close(() => reject(new Error('no TCP port was assigned')));
+        return;
+      }
+      const { port } = address;
+      probe.close(() => resolve(port));
+    });
+  });
+}
+
+/**
+ * A libp2p identity plus the address it will listen at, so a node can be stopped
+ * and brought BACK as the same peer at the same address. {@link startRelay} cannot
+ * do that — its ephemeral key and port 0 make every restart a different peer at a
+ * different address — and recovery is untestable without it.
+ */
+interface FixedIdentity {
+  privateKey: PrivateKey;
+  port: number;
+  /** The full dial address, known before anything listens at it. */
+  addr: string;
+}
+
+async function fixedIdentity(): Promise<FixedIdentity> {
+  const privateKey = await generateKeyPair('Ed25519');
+  const port = await freePort();
+  const peerId = peerIdFromPrivateKey(privateKey).toString();
+  return { privateKey, port, addr: `/ip4/127.0.0.1/tcp/${port}/p2p/${peerId}` };
+}
+
+/** Everything but the services, which are what the two fixed-identity nodes differ in. */
+function fixedNodeBase(id: FixedIdentity) {
+  return {
+    addresses: { listen: [`/ip4/127.0.0.1/tcp/${id.port}`] },
+    privateKey: id.privateKey,
+    transports: [tcp()],
+    connectionEncrypters: [noise()],
+    streamMuxers: [yamux()]
+  };
+}
+
+/** A relay at `id`'s exact peer id and port, restartable at that same address. */
+async function startFixedRelay(id: FixedIdentity): Promise<Libp2p> {
+  const node = await createLibp2p({
+    ...fixedNodeBase(id),
+    services: { identify: identify(), relay: circuitRelayServer() }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/**
+ * The same identity WITHOUT `circuitRelayServer()`: dialable, but it rejects the
+ * hop request — the failure that poisons the reservation store's relay filter.
+ */
+async function startFixedNonRelay(id: FixedIdentity): Promise<Libp2p> {
+  const node = await createLibp2p({
+    ...fixedNodeBase(id),
+    services: { identify: identify() }
+  });
+  nodes.push(node);
+  return node;
+}
+
+/** Whether libp2p currently considers `addr`'s peer a known-bad relay. */
+function relayFilterHas(node: Libp2p, addr: string): boolean {
+  const filter = findCircuitRelayTransport(node)?.reservationStore.relayFilter;
+  const peerId = trailingPeerId(multiaddr(addr));
+  if (filter === undefined || peerId === null) {
+    return false;
+  }
+  return filter.has(peerIdFromString(peerId).toMultihash().bytes);
+}
+
+/**
+ * Supervisor timings for the specs: seconds, not the production minute. The drive
+ * timeout is short too, so an attempt against a peer that is up but not a relay
+ * does not spend 10 s polling before the next attempt.
+ */
+const FAST_SUPERVISOR: RelayReservationSupervisorOptions = {
+  checkMs: 250,
+  minBackoffMs: 250,
+  maxBackoffMs: 1_000,
+  timeoutMs: 2_000,
+  pollMs: 100
+};
 
 describe('driveRelayReservation over a loopback relay', () => {
   it('reserves through a live relay and reports it live', async () => {
@@ -259,7 +432,9 @@ describe('driveRelayReservation over a loopback relay', () => {
     );
     expect(error).toBeNull();
     expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
-    expect(resolveRelayReservationState(client, ['relay'], null, false).status).toBe('reserved');
+    expect(resolveRelayReservationState(client, ['relay'], null, false, null).status).toBe(
+      'reserved'
+    );
   });
 
   it('stops reporting reserved once the reservation is lost', async () => {
@@ -271,12 +446,15 @@ describe('driveRelayReservation over a loopback relay', () => {
     const relayAddr = relay.getMultiaddrs()[0].toString();
 
     await driveRelayReservation(client, [relayAddr], { timeoutMs: 10_000, pollMs: 100 });
-    expect(resolveRelayReservationState(client, [relayAddr], null, false).status).toBe('reserved');
+    expect(resolveRelayReservationState(client, [relayAddr], null, false, null).status).toBe(
+      'reserved'
+    );
 
     await relay.stop();
     await waitFor(() => circuitMultiaddrs(client).length === 0, 'circuit addrs to drain');
 
-    const after = resolveRelayReservationState(client, [relayAddr], null, false);
+    // No supervisor here (this spec drives by hand), so `error`, not `retrying`.
+    const after = resolveRelayReservationState(client, [relayAddr], null, false, null);
     expect(after.status).toBe('error');
     expect(after.circuitAddrs).toEqual([]);
   });
@@ -449,6 +627,129 @@ describe('driveRelayReservation legible failures', () => {
   });
 });
 
+describe('superviseRelayReservation', () => {
+  /**
+   * The bug this whole supervisor exists for: a relay restart (or a connection
+   * blip) used to leave the tab undialable FOREVER, because `driveRelayReservation`
+   * ran once at startup and nothing ever ran it again. libp2p's own relay discovery
+   * cannot cover for it — a cadre node's namespaced identify means discovery never
+   * nominates the relay (see the module header).
+   */
+  it('gets the reservation back after the relay restarts, with no manual re-drive', async () => {
+    const id = await fixedIdentity();
+    const relay = await startFixedRelay(id);
+    const client = await startSearchClient();
+
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
+    try {
+      await supervisor.firstAttempt;
+      expect(supervisor.lastError).toBeNull();
+      expect(circuitMultiaddrs(client).length).toBeGreaterThan(0);
+
+      await relay.stop();
+      await waitFor(() => circuitMultiaddrs(client).length === 0, 'circuit addrs to drain');
+
+      // Same peer id, same port. Nobody drives the reservation from here on —
+      // this line is the ONLY thing the test does, and the addr must come back.
+      await startFixedRelay(id);
+      await waitFor(
+        () => circuitMultiaddrs(client).length > 0,
+        'the reservation to come back on its own',
+        30_000
+      );
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  /**
+   * The narrower half of the same bug. When a reservation REQUEST fails (rather
+   * than our own dial), libp2p records the peer in the store's `relayFilter` and
+   * never clears it, so an un-managed retry loop would report `The relay was
+   * previously invalid` forever — even against a relay that has since recovered.
+   */
+  it('recovers after an attempt poisoned the reservation filter', async () => {
+    const id = await fixedIdentity();
+    const notARelay = await startFixedNonRelay(id);
+    const client = await startSearchClient();
+
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
+    try {
+      await supervisor.firstAttempt;
+      // Sync, no awaits: the next attempt (250 ms out) clears the filter.
+      expect(circuitMultiaddrs(client)).toEqual([]);
+      expect(supervisor.lastError).toContain('is not a relay');
+      // Pins the libp2p behaviour the un-poisoning exists for. If this goes false,
+      // `clearRelayFilterEntry` may have become unnecessary — check before deleting.
+      expect(relayFilterHas(client, id.addr)).toBe(true);
+
+      await notARelay.stop();
+      await startFixedRelay(id);
+
+      await waitFor(
+        () => circuitMultiaddrs(client).length > 0,
+        'the supervisor to reserve past the poisoned filter',
+        30_000
+      );
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  it('reports retrying between attempts and reserved once one lands', async () => {
+    const id = await fixedIdentity();
+    const client = await startSearchClient();
+
+    // Nothing is listening at `id.addr` yet, so the first attempt fails.
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
+    try {
+      await supervisor.firstAttempt;
+      expect(supervisor.driving).toBe(false);
+      expect(supervisor.retryAtMs).not.toBeNull();
+      expect(
+        resolveRelayReservationState(
+          client,
+          [id.addr],
+          supervisor.lastError,
+          supervisor.driving,
+          supervisor.retryAtMs
+        ).status
+      ).toBe('retrying');
+
+      await startFixedRelay(id);
+      await waitFor(() => circuitMultiaddrs(client).length > 0, 'the first reservation', 30_000);
+      // A held reservation clears the error rather than leaving a stale one.
+      await waitFor(() => supervisor.lastError === null, 'the error to clear');
+    } finally {
+      supervisor.stop();
+    }
+  }, 90_000);
+
+  it('stops re-driving once stopped', async () => {
+    const id = await fixedIdentity();
+    const client = await startSearchClient();
+
+    const supervisor = superviseRelayReservation(client, [id.addr], FAST_SUPERVISOR);
+    await supervisor.firstAttempt;
+    // Stop BETWEEN attempts: `stop()` clears the timer but cannot abort a drive
+    // that is already in flight, and one still running would muddy the assertion.
+    await waitFor(
+      () => !supervisor.driving && supervisor.retryAtMs !== null,
+      'an attempt to finish and the next to be scheduled'
+    );
+    supervisor.stop();
+    expect(supervisor.retryAtMs).toBeNull();
+
+    // A relay appears where the supervisor was looking. Nothing must notice.
+    await startFixedRelay(id);
+    await sleep(3_000); // several FAST_SUPERVISOR backoffs
+    expect(circuitMultiaddrs(client)).toEqual([]);
+
+    // Idempotent, and a second stop must not throw.
+    expect(() => supervisor.stop()).not.toThrow();
+  }, 60_000);
+});
+
 describe('CadreNode relay reservation against a live relay', () => {
   /**
    * The wiring the free-function specs above cannot reach: `CadreNode` handing its
@@ -495,7 +796,8 @@ describe('CadreNode relay reservation against a live relay', () => {
       status: 'none',
       addrs: [],
       circuitAddrs: [],
-      error: null
+      error: null,
+      retryAtMs: null
     });
   }, 90_000);
 });

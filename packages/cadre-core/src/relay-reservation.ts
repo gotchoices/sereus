@@ -1,6 +1,7 @@
 /**
  * Relay reservation for nodes that reserve through the SEARCH listen addr — the
- * dial, the explicit reservation request, and the (live) status derivation.
+ * dial, the explicit reservation request, the retry loop that keeps it, and the
+ * (live) status derivation.
  *
  * `@libp2p/circuit-relay-v2`'s listener branches on the SHAPE of the listen
  * address, and the two shapes are alternatives, not layers:
@@ -50,11 +51,18 @@
  * cached at drive time: when a relay restarts or the connection drops, libp2p's
  * listener clears its listening addrs and the circuit multiaddr disappears, so a
  * cached snapshot would keep claiming `reserved` for a node nothing can dial.
+ *
+ * And because discovery is out of reach, nothing would ever ASK again either —
+ * so {@link driveRelayReservation} stays a single-shot primitive and
+ * {@link superviseRelayReservation} owns the retry cadence on top of it. That
+ * loop is what makes a lost reservation recover without a page reload.
  */
 
 import debug from 'debug';
 import { multiaddr } from '@multiformats/multiaddr';
+import { peerIdFromString } from '@libp2p/peer-id';
 import type { Libp2p, PeerId } from '@libp2p/interface';
+import { trailingPeerId } from './peer-record.js';
 
 const log = debug('sereus:cadre:relay-reservation');
 
@@ -64,10 +72,12 @@ const log = debug('sereus:cadre:relay-reservation');
  *  - `none`     — no relay addrs supplied; the node is undialable by design.
  *  - `dialing`  — a drive is in flight.
  *  - `reserved` — the node currently holds at least one `/p2p-circuit` addr.
- *  - `error`    — the last drive failed, or finished with no reservation, and
- *                 none is held now.
+ *  - `retrying` — no reservation right now, but a {@link RelayReservationSupervisor}
+ *                 has the next attempt scheduled. Recoverable without a caller.
+ *  - `error`    — no reservation, and NOBODY IS GOING TO TRY AGAIN: no supervisor
+ *                 is running (or there is no node at all).
  */
-export type RelayReservationStatus = 'none' | 'dialing' | 'reserved' | 'error';
+export type RelayReservationStatus = 'none' | 'dialing' | 'reserved' | 'retrying' | 'error';
 
 export interface RelayReservationState {
   status: RelayReservationStatus;
@@ -76,6 +86,13 @@ export interface RelayReservationState {
   /** LIVE `/p2p-circuit` multiaddrs, recomputed on every read. */
   circuitAddrs: string[];
   error: string | null;
+  /**
+   * Epoch ms of the supervisor's next scheduled tick, or `null` when a drive is
+   * in flight, no supervisor is running, or no addrs were supplied. A UI can turn
+   * this into "reconnecting, next try in 8s" rather than showing a bare error for
+   * a node that is in fact recovering.
+   */
+  retryAtMs: number | null;
 }
 
 /** How long {@link driveRelayReservation} waits for a reservation to appear. */
@@ -88,14 +105,30 @@ export interface RelayReserveOptions {
 }
 
 /**
+ * The slice of `@libp2p/utils`' `Filter` (a cuckoo filter) that the reservation
+ * store uses to remember relays whose reservation request failed. `remove` is
+ * OPTIONAL on that interface, so every use here has to cope with its absence —
+ * see {@link clearRelayFilterEntry}.
+ */
+export interface RelayFilterLike {
+  has(item: Uint8Array): boolean;
+  remove?(item: Uint8Array): boolean;
+}
+
+/**
  * The slice of `@libp2p/circuit-relay-v2`'s `ReservationStore` this module drives.
  * Declared structurally because the class is internal to that package: naming only
- * the two members we call keeps the coupling small, explicit and greppable, and
- * lets {@link findCircuitRelayTransport} duck-type rather than brand-match.
+ * the members we call keeps the coupling small, explicit and greppable, and lets
+ * {@link findCircuitRelayTransport} duck-type rather than brand-match.
+ *
+ * `relayFilter` is optional because it is not required to DRIVE a reservation,
+ * only to RE-drive one (see {@link clearRelayFilterEntry}); a libp2p version that
+ * renames or drops it must degrade, not break.
  */
 export interface RelayReservationStoreLike {
   addRelay(peerId: PeerId, type: 'discovered' | 'configured'): Promise<unknown>;
   hasReservation(peerId: PeerId): boolean;
+  relayFilter?: RelayFilterLike;
 }
 
 /** The slice of libp2p's circuit-relay transport that owns the reservation store. */
@@ -389,8 +422,9 @@ function describeReservationFailure(err: unknown, addr: string): string {
   // path does not reset that filter (it only resets when a reservation is actually
   // removed). So a SECOND drive against the same relay in the same process reports
   // `ListenError: The relay was previously invalid` even if the relay has since
-  // recovered. Harmless today — every caller drives once at startup. If a retry or
-  // re-drive loop is ever added, that filter has to be dealt with first.
+  // recovered. `RelayReservationLoop` clears the entry before every attempt (see
+  // {@link clearRelayFilterEntry}); a caller that re-drives WITHOUT the supervisor
+  // still has to deal with the filter itself.
   const name = err instanceof Error ? err.name : '';
   const message = err instanceof Error ? err.message : String(err);
   switch (name) {
@@ -435,6 +469,250 @@ function delay(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
+/** Gap between liveness checks while a reservation is held. */
+export const DEFAULT_RELAY_CHECK_MS = 5_000;
+/** Backoff before the first re-drive after a failed attempt. */
+export const DEFAULT_RELAY_MIN_BACKOFF_MS = 2_000;
+/** Ceiling the backoff doubles up to. */
+export const DEFAULT_RELAY_MAX_BACKOFF_MS = 60_000;
+
+export interface RelayReservationSupervisorOptions extends RelayReserveOptions {
+  /** Gap between liveness checks while a reservation is held. Default 5_000. */
+  checkMs?: number;
+  /** Backoff before the first re-drive after a failure. Default 2_000. */
+  minBackoffMs?: number;
+  /** Backoff ceiling. Default 60_000. */
+  maxBackoffMs?: number;
+}
+
+/**
+ * A running retry loop for one node + relay list. Obtained from
+ * {@link superviseRelayReservation}; its only imperative is {@link stop}.
+ */
+export interface RelayReservationSupervisor {
+  /**
+   * Resolves once the FIRST attempt has settled — so a caller can await startup
+   * exactly as it awaited a single {@link driveRelayReservation}, and the retries
+   * carry on in the background afterwards. Also resolves on {@link stop}, so an
+   * awaiting caller is never left hanging.
+   */
+  readonly firstAttempt: Promise<void>;
+  /** True while a drive is in flight. */
+  readonly driving: boolean;
+  /** Epoch ms of the next scheduled tick; `null` while a drive is running. */
+  readonly retryAtMs: number | null;
+  /** Reason the last drive produced no reservation; `null` once one is held. */
+  readonly lastError: string | null;
+  /**
+   * Idempotent. Clears the timer so no further drive is scheduled. A drive that
+   * is ALREADY in flight is not aborted — {@link driveRelayReservation} takes no
+   * signal — but its result is discarded and nothing follows it.
+   */
+  stop(): void;
+}
+
+/**
+ * Keep asking for a relay reservation until one is held, then keep watching that
+ * it still is — the thing that makes a lost reservation recover on its own.
+ *
+ * Needed because nothing else re-drives: libp2p re-fills a search listener's
+ * freed slot from relay DISCOVERY, and a cadre node's namespaced identify puts
+ * discovery permanently out of reach (see the module header). Without this loop a
+ * relay restart left a browser tab undialable until the user reloaded the page.
+ *
+ * Per tick:
+ *  - a reservation is held → reset the backoff, clear the error, re-check in
+ *    `checkMs`. No drive: a healthy node must not re-request every few seconds.
+ *  - otherwise → un-poison the reservation store's relay filter (see
+ *    {@link clearRelayFilterEntry}), run ONE {@link driveRelayReservation}, then
+ *    sleep the current backoff and double it up to `maxBackoffMs`.
+ *
+ * Starts immediately; the first tick runs before this returns.
+ */
+export function superviseRelayReservation(
+  node: Libp2p,
+  addrs: readonly string[],
+  opts?: RelayReservationSupervisorOptions
+): RelayReservationSupervisor {
+  return new RelayReservationLoop(node, [...addrs], opts ?? {});
+}
+
+/**
+ * Forget that `addr`'s peer ever failed a reservation request, so the next
+ * attempt is actually made rather than refused out of hand.
+ *
+ * `ReservationStore` records a peer in `relayFilter` when its reservation request
+ * fails with `DialError` or `UnsupportedProtocolError`, and NOTHING on that path
+ * ever clears it: the reset lives in `#checkReservationCount`, which only runs
+ * when a reservation is genuinely removed, and `#removeReservation` early-returns
+ * when there was never one. So a relay that was briefly not-a-relay (or died
+ * between our dial and the hop request) stays permanently rejected with
+ * `The relay was previously invalid` — measured, not inferred.
+ *
+ * Fails soft in every direction: no `relayFilter`, no `remove`, an addr with no
+ * peer id, a malformed addr — all mean "no un-poisoning", never a throw. The
+ * retry loop still recovers the common case without this, because a relay that is
+ * simply DOWN fails our own dial first and never reaches the filter.
+ *
+ * Returns whether an entry was actually removed (for specs; callers ignore it).
+ */
+export function clearRelayFilterEntry(store: RelayReservationStoreLike, addr: string): boolean {
+  const filter = store.relayFilter;
+  if (typeof filter?.remove !== 'function') {
+    log('Reservation store has no removable relayFilter — cannot un-poison %s', addr);
+    return false;
+  }
+  try {
+    // The peer id is in the multiaddr, so this costs no dial and can run before one.
+    const peerId = trailingPeerId(multiaddr(addr));
+    if (peerId === null) {
+      return false;
+    }
+    return filter.remove(peerIdFromString(peerId).toMultihash().bytes);
+  } catch (err) {
+    log('Could not clear the relayFilter entry for %s: %o', addr, err);
+    return false;
+  }
+}
+
+/** The self-rescheduling loop behind {@link superviseRelayReservation}. */
+class RelayReservationLoop implements RelayReservationSupervisor {
+  readonly firstAttempt: Promise<void>;
+
+  private readonly checkMs: number;
+  private readonly minBackoffMs: number;
+  private readonly maxBackoffMs: number;
+  private backoffMs: number;
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private stopped = false;
+  private inFlight = false;
+  private nextTickAtMs: number | null = null;
+  private failure: string | null = null;
+  private settleFirstAttempt: () => void = () => {};
+  private firstAttemptSettled = false;
+
+  constructor(
+    private readonly node: Libp2p,
+    private readonly addrs: readonly string[],
+    private readonly opts: RelayReservationSupervisorOptions
+  ) {
+    // Clamped away from 0: a caller-supplied 0 would spin the loop hot.
+    this.checkMs = Math.max(1, opts.checkMs ?? DEFAULT_RELAY_CHECK_MS);
+    this.minBackoffMs = Math.max(1, opts.minBackoffMs ?? DEFAULT_RELAY_MIN_BACKOFF_MS);
+    this.maxBackoffMs = Math.max(
+      this.minBackoffMs,
+      opts.maxBackoffMs ?? DEFAULT_RELAY_MAX_BACKOFF_MS
+    );
+    this.backoffMs = this.minBackoffMs;
+    this.firstAttempt = new Promise((resolve) => {
+      this.settleFirstAttempt = resolve;
+    });
+    void this.tick();
+  }
+
+  get driving(): boolean {
+    return this.inFlight;
+  }
+
+  get retryAtMs(): number | null {
+    return this.nextTickAtMs;
+  }
+
+  get lastError(): string | null {
+    return this.failure;
+  }
+
+  stop(): void {
+    if (this.stopped) {
+      return;
+    }
+    this.stopped = true;
+    if (this.timer !== null) {
+      clearTimeout(this.timer);
+      this.timer = null;
+    }
+    this.nextTickAtMs = null;
+    this.settleFirst();
+  }
+
+  private async tick(): Promise<void> {
+    if (this.stopped) {
+      return;
+    }
+    this.nextTickAtMs = null;
+    if (circuitMultiaddrs(this.node).length > 0) {
+      this.onReservationHeld();
+      return;
+    }
+    await this.driveOnce();
+    if (this.stopped) {
+      return;
+    }
+    this.settleFirst();
+    this.scheduleBackoff();
+  }
+
+  /** Healthy tick: nothing to request, so only reset and re-check later. */
+  private onReservationHeld(): void {
+    this.backoffMs = this.minBackoffMs;
+    this.failure = null;
+    this.settleFirst();
+    this.schedule(this.checkMs);
+  }
+
+  private async driveOnce(): Promise<void> {
+    this.inFlight = true;
+    try {
+      this.unpoisonRelayFilter();
+      const { error } = await driveRelayReservation(this.node, this.addrs, this.opts);
+      if (!this.stopped) {
+        this.failure = error;
+      }
+    } finally {
+      this.inFlight = false;
+    }
+  }
+
+  private scheduleBackoff(): void {
+    const wait = this.backoffMs;
+    this.backoffMs = Math.min(this.backoffMs * 2, this.maxBackoffMs);
+    this.schedule(wait);
+  }
+
+  private unpoisonRelayFilter(): void {
+    const transport = findCircuitRelayTransport(this.node);
+    if (transport === null) {
+      return;
+    }
+    for (const addr of this.addrs) {
+      clearRelayFilterEntry(transport.reservationStore, addr);
+    }
+  }
+
+  private schedule(ms: number): void {
+    if (this.stopped) {
+      return;
+    }
+    this.nextTickAtMs = Date.now() + ms;
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      void this.tick();
+    }, ms);
+    // Node keeps the process alive while a timer is pending, so an un-unref'd
+    // supervisor would hang every CLI run and vitest worker that ever reserved.
+    // Cast + optional-chain: browsers and React Native have no `unref`.
+    (this.timer as { unref?: () => void }).unref?.();
+  }
+
+  private settleFirst(): void {
+    if (this.firstAttemptSettled) {
+      return;
+    }
+    this.firstAttemptSettled = true;
+    this.settleFirstAttempt();
+  }
+}
+
 /**
  * Derive the reservation posture, reading the node's circuit addrs LIVE. Pure
  * apart from that read, so the precedence is testable on its own:
@@ -444,43 +722,55 @@ function delay(ms: number): Promise<void> {
  * | no addrs supplied        | `none`                                          |
  * | live circuit addrs held  | `reserved` (`error: null`)                      |
  * | a drive is in flight     | `dialing`                                       |
+ * | a retry is scheduled     | `retrying`                                      |
  * | otherwise                | `error`                                         |
  *
  * `reserved` is checked BEFORE `error` on purpose: the circuit addrs are read
  * live, so a reservation that lands by ANY route supersedes a stale error string
  * without a second drive.
  *
- * That precedence is not a promise that a lost reservation comes back. libp2p
- * re-fills a search listener's freed reservation slot from relay DISCOVERY, which
- * a cadre node's namespaced identify puts permanently out of reach (see the module
- * header), and nothing re-runs {@link driveRelayReservation} on its own. So once a
- * relay restarts or its connection drops, this reports `error` until some caller
- * drives again — tracked by `tickets/backlog/bug-relay-reservation-not-redriven-after-loss`.
+ * `retrying` sits between the two so that `error` carries a sharper meaning:
+ * NOBODY IS GOING TO TRY AGAIN. A lost reservation does come back on its own now,
+ * as long as a {@link RelayReservationSupervisor} is running — that loop is the
+ * only thing that re-drives, since libp2p re-fills a search listener's freed slot
+ * from relay DISCOVERY, which a cadre node's namespaced identify puts permanently
+ * out of reach (see the module header). So `error` means the supervisor was
+ * stopped, was never started, or there is no node at all.
+ *
+ * `retryAtMs` is the supervisor's next scheduled tick (`null` while a drive runs
+ * or when there is no supervisor); it both selects `retrying` and is passed
+ * through so a UI can count down to the next attempt.
  */
 export function resolveRelayReservationState(
   node: Libp2p | null,
   addrs: readonly string[],
   lastError: string | null,
-  driving: boolean
+  driving: boolean,
+  retryAtMs: number | null
 ): RelayReservationState {
   if (addrs.length === 0) {
-    return { status: 'none', addrs: [], circuitAddrs: [], error: null };
+    return { status: 'none', addrs: [], circuitAddrs: [], error: null, retryAtMs: null };
   }
   const supplied = [...addrs];
   const circuitAddrs = node ? circuitMultiaddrs(node) : [];
   if (circuitAddrs.length > 0) {
-    return { status: 'reserved', addrs: supplied, circuitAddrs, error: null };
+    return { status: 'reserved', addrs: supplied, circuitAddrs, error: null, retryAtMs };
   }
   if (driving) {
-    return { status: 'dialing', addrs: supplied, circuitAddrs: [], error: lastError };
+    return {
+      status: 'dialing',
+      addrs: supplied,
+      circuitAddrs: [],
+      error: lastError,
+      retryAtMs: null
+    };
   }
   // `driveRelayReservation` always reports a reason when it finishes without a
-  // reservation, so `lastError` is normally set here. The fallback only covers
+  // reservation, so `lastError` is normally set below. The fallback only covers
   // addrs recorded without a completed drive.
-  return {
-    status: 'error',
-    addrs: supplied,
-    circuitAddrs: [],
-    error: lastError ?? 'no circuit reservation held'
-  };
+  const error = lastError ?? 'no circuit reservation held';
+  if (retryAtMs !== null) {
+    return { status: 'retrying', addrs: supplied, circuitAddrs: [], error, retryAtMs };
+  }
+  return { status: 'error', addrs: supplied, circuitAddrs: [], error, retryAtMs: null };
 }

@@ -24,6 +24,7 @@ import {
 	getChatStrandId,
 	getOwnerState,
 	getRelayState,
+	noRelayState,
 	readControlAuthorizationState,
 	attemptUnauthorizedStrandWrite,
 	type RelayState,
@@ -194,7 +195,7 @@ function emptyAuthorization(): AuthorizationInfo {
 		formationInvites: [],
 		formationUsage: [],
 		strands: [],
-		relay: { status: 'none', addrs: [], circuitAddrs: [], error: null },
+		relay: noRelayState(),
 		gateProbe: null,
 	};
 }

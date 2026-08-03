@@ -91,10 +91,11 @@ import {
 } from './delegate-admission.js';
 import { resolveListenAddrs } from './relay-addrs.js';
 import {
-  driveRelayReservation,
+  superviseRelayReservation,
   resolveRelayReservationState,
   type RelayReservationState,
-  type RelayReserveOptions
+  type RelayReservationSupervisor,
+  type RelayReservationSupervisorOptions
 } from './relay-reservation.js';
 import { PushFanoutService } from './push-fanout.js';
 import type { WakeAck, WakeRequest } from './types.js';
@@ -225,15 +226,18 @@ export class CadreNode implements SAppIdLookup {
    * nodes, which use the configured `network.relayAddrs` route instead.
    */
   private relayReserveAddrs: string[] = [];
-  /** Reason the last {@link reserveRelays} drive produced no reservation. */
-  private relayReserveError: string | null = null;
   /**
-   * In-flight {@link reserveRelays} drives. A COUNT, not a boolean, so two
-   * overlapping calls cannot leave the status stuck at `dialing` when the first
-   * finishes (the boolean version would be cleared by whichever returns first,
-   * or left set by whichever returns last).
+   * The running retry loop for {@link relayReserveAddrs}, or `null` when nobody
+   * asked for a reservation / there was no control node to supervise. It owns the
+   * in-flight flag, the last failure and the next-attempt time; this class only
+   * starts it, stops it and reads it.
    */
-  private relayReserveDriving = 0;
+  private relayReserveSupervisor: RelayReservationSupervisor | null = null;
+  /**
+   * Reason {@link reserveRelays} produced no reservation when there is no
+   * supervisor to hold one — i.e. the pre-start `control node unavailable` case.
+   */
+  private relayReserveError: string | null = null;
 
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
   private sAppConfigs: Map<string, SAppConfig> = new Map();
@@ -780,7 +784,11 @@ export class CadreNode implements SAppIdLookup {
     log('Stopping CadreNode');
     await this.cleanup();
     // Drop the relay-reservation posture: a stopped node holds no reservation, so
-    // a restarted instance must not report the previous run's `reserved`.
+    // a restarted instance must not report the previous run's `reserved`. Stopping
+    // the supervisor matters most — a live retry timer would re-dial a torn-down
+    // node and keep the process alive past stop().
+    this.relayReserveSupervisor?.stop();
+    this.relayReserveSupervisor = null;
     this.relayReserveAddrs = [];
     this.relayReserveError = null;
     this._running = false;
@@ -3913,43 +3921,48 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Dial the given relay(s) from the control node, ask the first one that answers
-   * for a reservation slot, and wait until the resulting `/p2p-circuit` address
-   * makes this node dialable.
+   * Start keeping a relay reservation: dial the given relay(s) from the control
+   * node, ask the first one that answers for a reservation slot, wait until the
+   * resulting `/p2p-circuit` address makes this node dialable — and keep a
+   * supervisor running that re-drives whenever the reservation is later lost.
    *
    * For nodes that listen on the bare `/p2p-circuit` SEARCH addr (a browser tab)
    * rather than a configured `network.relayAddrs` circuit listener — see
    * `relay-reservation.ts` for why the two are alternatives and why configuring
    * both is a regression. Opt-in: nothing calls this for the CLI/host nodes.
    *
-   * Fail-soft — never throws. An unreachable relay, a missing control node, or a
-   * timeout all resolve to `status: 'error'`, so a caller can await this during
-   * startup without a dead relay aborting the node.
+   * Resolves once the FIRST attempt has settled, exactly as it did when it drove
+   * once; the retries continue in the background until {@link stop} or the next
+   * `reserveRelays` call. Fail-soft — never throws. An unreachable relay, a
+   * missing control node, or a timeout all resolve to a non-`reserved` status, so
+   * a caller can await this during startup without a dead relay aborting the node.
    *
-   * Passing an empty list resets the posture to `none` without dialing or waiting.
+   * Passing an empty list stops the supervisor and resets the posture to `none`
+   * without dialing or waiting.
    */
-  async reserveRelays(addrs: string[], opts?: RelayReserveOptions): Promise<RelayReservationState> {
-    // NOTE: two overlapping calls with DIFFERENT lists leave the last caller's
-    // list recorded (the drives themselves both run, and the reservation is read
-    // live either way, so only the reported `addrs` is affected). Every caller
-    // today passes one node-wide list once at startup; if a second relay source
-    // ever appears, union the lists here instead of overwriting.
+  async reserveRelays(
+    addrs: string[],
+    opts?: RelayReservationSupervisorOptions
+  ): Promise<RelayReservationState> {
+    // Stop first, unconditionally: a second call with a different list must not
+    // leave two loops fighting over one pending reservation slot.
+    this.relayReserveSupervisor?.stop();
+    this.relayReserveSupervisor = null;
     this.relayReserveAddrs = [...addrs];
+    this.relayReserveError = null;
     if (addrs.length === 0) {
-      this.relayReserveError = null;
       return this.getRelayReservationState();
     }
     if (!this.controlNode) {
+      // No node to supervise, so this is the one failure the node records itself.
       this.relayReserveError = 'control node unavailable';
       return this.getRelayReservationState();
     }
-    this.relayReserveDriving++;
-    try {
-      const { error } = await driveRelayReservation(this.controlNode, addrs, opts);
-      this.relayReserveError = error;
-    } finally {
-      this.relayReserveDriving--;
-    }
+    const supervisor = superviseRelayReservation(this.controlNode, addrs, opts);
+    this.relayReserveSupervisor = supervisor;
+    await supervisor.firstAttempt;
+    // Read through `this`, not `supervisor`: an overlapping call may have replaced
+    // it while the first attempt was in flight, and the newest list is the truth.
     return this.getRelayReservationState();
   }
 
@@ -3962,19 +3975,18 @@ export class CadreNode implements SAppIdLookup {
    * a cached `reserved` would let a caller mint invitations carrying circuit
    * addresses that no longer route.
    *
-   * Reading live does NOT mean the reservation comes back on its own: libp2p
-   * re-fills a freed search-listener slot from relay discovery, which a cadre
-   * node's namespaced identify puts out of reach (`relay-reservation.ts`), and
-   * nothing re-drives. A relay that restarts leaves this at `error` until some
-   * caller calls {@link reserveRelays} again — tracked by
-   * `tickets/backlog/bug-relay-reservation-not-redriven-after-loss`.
+   * A lost reservation now recovers on its own — the supervisor {@link reserveRelays}
+   * starts re-drives on a backoff, reporting `retrying` meanwhile. `error` here
+   * means nothing is going to try again: no supervisor, or no control node.
    */
   getRelayReservationState(): RelayReservationState {
+    const supervisor = this.relayReserveSupervisor;
     return resolveRelayReservationState(
       this.controlNode,
       this.relayReserveAddrs,
-      this.relayReserveError,
-      this.relayReserveDriving > 0
+      supervisor ? supervisor.lastError : this.relayReserveError,
+      supervisor?.driving ?? false,
+      supervisor?.retryAtMs ?? null
     );
   }
 

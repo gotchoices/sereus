@@ -369,11 +369,17 @@ export {
 // the fail-fast alternative is `network.relayAddrs`, see relay-reservation.ts)
 export {
   circuitMultiaddrs,
+  superviseRelayReservation,
   DEFAULT_RELAY_RESERVE_TIMEOUT_MS,
   DEFAULT_RELAY_RESERVE_POLL_MS,
+  DEFAULT_RELAY_CHECK_MS,
+  DEFAULT_RELAY_MIN_BACKOFF_MS,
+  DEFAULT_RELAY_MAX_BACKOFF_MS,
   type RelayReservationStatus,
   type RelayReservationState,
-  type RelayReserveOptions
+  type RelayReserveOptions,
+  type RelayReservationSupervisor,
+  type RelayReservationSupervisorOptions
 } from './relay-reservation.js';
 
 // Connection-path diagnostics (relayed vs direct classification + summary)

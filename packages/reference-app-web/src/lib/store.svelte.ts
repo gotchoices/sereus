@@ -21,6 +21,7 @@ import {
 	getPartyId,
 	getOwnerState,
 	getRelayState,
+	noRelayState,
 	type OwnerState,
 	type RelayState,
 } from './cadre-web.js';
@@ -65,7 +66,7 @@ const state = $state<NodeState>({
 	strandPeers: null,
 	strandError: null,
 	owner: 'pending',
-	relay: { status: 'none', addrs: [], circuitAddrs: [], error: null },
+	relay: noRelayState(),
 });
 
 const events = $state<{ list: CadreEvent[] }>({ list: [] });
@@ -216,7 +217,7 @@ export async function stop(): Promise<void> {
 		state.strandPeers = null;
 		state.strandError = null;
 		state.owner = 'pending';
-		state.relay = { status: 'none', addrs: [], circuitAddrs: [], error: null };
+		state.relay = noRelayState();
 		state.status = 'stopped';
 	} catch (err) {
 		state.error = err instanceof Error ? err.message : String(err);
