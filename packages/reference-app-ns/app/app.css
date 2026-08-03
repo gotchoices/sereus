@@ -48,6 +48,13 @@ Page {
 	margin: 6 0 2 0;
 }
 
+/* Muted explanatory copy under a field (mirrors RN's `styles.hint`). */
+.hint {
+	color: #888888;
+	font-size: 12;
+	margin: 4 0 6 0;
+}
+
 .value {
 	color: #ffffff;
 	font-size: 13;

@@ -9,6 +9,7 @@
  */
 
 import { Observable } from '@nativescript/core';
+import { pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import type { CadreNode, StrandInstance, CadreNodeEvents } from '@serfab/cadre-core';
 import {
 	startPhoneNode,
@@ -216,12 +217,59 @@ export class CadreViewModel extends Observable {
 		this.setStatus('idle');
 	}
 
-	/** Decode + apply a base64url seed; throws if the node rejects it. */
-	async applySeed(encoded: string): Promise<void> {
+	/**
+	 * Decode a pasted base64url `CadreInvite` and return the owner keys it pins
+	 * (empty when an older invite carries none). Guard order matches `applySeed`:
+	 * 'Node not started' throws before the node is touched.
+	 *
+	 * `CadreNode.decodeInvite` is a raw base64url → `JSON.parse` → cast with no
+	 * shape check, so a typo'd paste would otherwise surface as a bare
+	 * `SyntaxError: Unexpected token …`. Rewrap it with app-level copy naming what
+	 * was expected; the original rides along as `cause`.
+	 *
+	 * NOTE: a hand-crafted invite whose `ownerKeys` is a non-array (e.g. a number)
+	 * yields a falsy `.length`, so no pin is attempted and the seed is then
+	 * rejected by the default anchored policy — safe, but the error names the
+	 * anchor rather than the bad invite. If that ever confuses a real user, the fix
+	 * is shape validation inside `CadreNode.decodeInvite` (one site, both apps),
+	 * not a second guard here.
+	 */
+	ownerKeysFromInvite(encodedInvite: string): string[] {
+		const node = this._node;
+		if (!node) throw new Error('Node not started');
+		try {
+			return node.decodeInvite(encodedInvite).ownerKeys ?? [];
+		} catch (err) {
+			throw new Error(
+				'Enrollment invite could not be read (expected a base64url CadreInvite)',
+				{ cause: err },
+			);
+		}
+	}
+
+	/**
+	 * Decode + apply a base64url seed, optionally pinning owner keys taken from a
+	 * pasted `CadreInvite`; throws if the node rejects it.
+	 */
+	async applySeed(encoded: string, pinnedOwnerKeys?: string[]): Promise<void> {
 		const node = this._node;
 		if (!node) throw new Error('Node not started');
 		const seed = node.decodeSeed(encoded);
-		const result = await node.applySeed(seed);
+		const trustPolicy = pinnedOwnerKeys?.length ? pinnedKeyTrustPolicy(pinnedOwnerKeys) : undefined;
+		if (pinnedOwnerKeys?.length) {
+			// Enrollment seam: the invite's owner keys are out-of-band trust — anchor
+			// them in the node-local trusted-owner store BEFORE the seed is applied,
+			// so the anchor already holds them when seed trust consults it. The
+			// ordering is load-bearing; do not fold these two calls together.
+			//
+			// The pin STICKS even when the seed that motivated it is then rejected:
+			// pasting the invite is itself the out-of-band trust act, while the seed
+			// is a separate artifact that may be stale, for another party, or
+			// corrupt. Rolling the anchor back on a seed failure would make the user
+			// re-paste the invite on every retry.
+			await node.trustOwnerKeys(pinnedOwnerKeys, 'invite');
+		}
+		const result = await node.applySeed(seed, trustPolicy ? { trustPolicy } : undefined);
 		if (!result.success) {
 			throw new Error(result.error ?? 'Seed application failed');
 		}

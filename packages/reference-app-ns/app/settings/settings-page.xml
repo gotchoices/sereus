@@ -58,6 +58,11 @@
 					<Label text="Paste seed" class="label" />
 					<TextView text="{{ seedInput }}" hint="base64url seed string" class="input textarea"
 						automationText="input-seed" />
+					<Label class="hint" textWrap="true"
+						text="Optional: paste an enrollment invite (CadreInvite) to pin its owner keys as the trust anchor for this seed. A cold node rejects a seed signed by another cadre unless its key is pinned." />
+					<Label text="Paste enrollment invite (for trust)" class="label" />
+					<TextView text="{{ enrollInviteInput }}" hint="base64url CadreInvite (optional)"
+						class="input textarea" automationText="input-enroll-invite" />
 					<Button text="Apply Seed" tap="onApplySeed" isEnabled="{{ canApplySeed }}" class="btn" automationText="btn-apply-seed" />
 
 					<Label text="Strands" class="section-title" />

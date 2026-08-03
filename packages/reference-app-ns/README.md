@@ -68,7 +68,12 @@ A real device or emulator is required (the SQLite + WebSocket plugins are native
    persisted in the SQLite `kv` table under `peer-private-key`).
 7. Against a drone (see [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md)
    § Two-Node Startup): enter the drone's Party ID + bootstrap multiaddr before
-   Connect; messages then replicate bidirectionally.
+   Connect. Then paste the drone's **enrollment invite** into *Paste enrollment
+   invite (for trust)* along with the seed before **Apply Seed** — a cold phone
+   has an empty trusted-owner anchor and otherwise rejects a seed signed by
+   another cadre. Expect *Seed applied / Pinned 1 owner key(s)*. A **second**
+   Apply Seed with the invite field blank must also succeed (the pin persisted).
+   Messages then replicate bidirectionally.
 
 ### Two-node drone start (manual)
 
@@ -81,8 +86,9 @@ node dist/bin/cadre.js start -c ../reference-app-rn/drone.cadre.yaml --listen-fo
 ```
 
 On the phone's **Settings** tab: enter the drone's **Party ID**
-(`reference-chat-party`) + that **bootstrap addr** → **Connect** → **Apply Seed**
-(if needed) → **Create Chat Strand**, then chat on the **Chat** tab. The full
+(`reference-chat-party`) + that **bootstrap addr** → **Connect** → paste the seed
++ the drone's **enrollment invite** → **Apply Seed** → **Create Chat Strand**,
+then chat on the **Chat** tab. The full
 walk-through is shared with RN —
 [`docs/reference-app-rn.md` § Two-Node Startup Sequence](../../docs/reference-app-rn.md#two-node-startup-sequence).
 

@@ -253,6 +253,9 @@ async function main() {
 		PARTY_ID: testData.partyId,
 		BOOTSTRAP_ADDR: testData.droneBootstrapAddr,
 		SEED: testData.seed,
+		// Drone's enrollment invite — `_setup.yaml` types it into `input-enroll-invite`
+		// so the cold phone pins the drone owner key before applying the seed.
+		ENROLL_INVITE: testData.enrollInvite,
 		STRAND_ID: testData.strandId,
 		SIDECAR_URL,
 		MAESTRO_APP_ID,

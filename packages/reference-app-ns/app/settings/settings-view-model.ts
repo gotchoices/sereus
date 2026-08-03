@@ -24,6 +24,7 @@ export class SettingsViewModel extends Observable {
 	private _partyId = '';
 	private _bootstrapAddr = '';
 	private _seedInput = '';
+	private _enrollInviteInput = '';
 	private _peerAddr = '';
 	private _modalVisible = false;
 	private _modalTitle = '';
@@ -62,6 +63,20 @@ export class SettingsViewModel extends Observable {
 		this._seedInput = value;
 		this.notifyPropertyChange('seedInput', value);
 		this.notifyPropertyChange('canApplySeed', this.canApplySeed);
+	}
+
+	/**
+	 * Optional enrollment invite pasted alongside the seed. Deliberately NOT part
+	 * of `canApplySeed` — the seed alone gates the button, matching RN's
+	 * `disabled={!seedInput.trim()}`.
+	 */
+	get enrollInviteInput(): string {
+		return this._enrollInviteInput;
+	}
+	set enrollInviteInput(value: string) {
+		if (value === this._enrollInviteInput) return;
+		this._enrollInviteInput = value;
+		this.notifyPropertyChange('enrollInviteInput', value);
 	}
 
 	get peerAddr(): string {
@@ -128,13 +143,30 @@ export class SettingsViewModel extends Observable {
 		await this.cadre.stop();
 	}
 
+	/**
+	 * Apply a cold-start seed, optionally anchoring trust on the owner keys carried
+	 * by a pasted `CadreInvite`. A cold node has nothing in its trusted-owner
+	 * anchor, so the default `anchoredTrustPolicy` rejects a seed signed by another
+	 * cadre; pinning the invite's keys lets that first seed through. A blank or
+	 * older invite yields no pins — the modal says so rather than implying a pin
+	 * succeeded. Both fields are cleared on success only, so a mistyped seed does
+	 * not cost the user the pasted invite.
+	 */
 	async onApplySeed(): Promise<void> {
 		const seed = this._seedInput.trim();
 		if (!seed) return;
 		try {
-			await this.cadre.applySeed(seed);
+			const enrollInvite = this._enrollInviteInput.trim();
+			const pins = enrollInvite ? this.cadre.ownerKeysFromInvite(enrollInvite) : undefined;
+			await this.cadre.applySeed(seed, pins);
 			this.seedInput = '';
-			this.showAlert('Seed applied', 'Peer cache updated');
+			this.enrollInviteInput = '';
+			this.showAlert(
+				'Seed applied',
+				pins?.length
+					? `Pinned ${pins.length} owner key(s); peer cache updated`
+					: 'Peer cache updated (no owner keys pinned)',
+			);
 		} catch (err) {
 			this.showAlert('Seed failed', String(err));
 		}

@@ -15,6 +15,7 @@ export const TEST_IDS = {
 		connectBtn: 'btn-connect',
 		disconnectBtn: 'btn-disconnect',
 		seedInput: 'input-seed',
+		enrollInviteInput: 'input-enroll-invite',
 		applySeedBtn: 'btn-apply-seed',
 		addPeerInput: 'input-add-peer',
 		addPeerBtn: 'btn-add-peer',

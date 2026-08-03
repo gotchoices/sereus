@@ -84,12 +84,26 @@ protected as the plaintext identity key it qualifies — unlike React Native, wh
 puts the anchor in the secure enclave (see [`reference-app-rn.md`](reference-app-rn.md)).
 Whoever adds NS secure storage should move both together.
 
-⚠️ Nothing in this app writes the anchor yet: it wires no owner private key (no
-genesis self-anchor) and has no invite-paste field (no pinned owner keys), so
-under the default `anchoredTrustPolicy` every seed it is handed is rejected —
-tracked as `feat-ns-invite-trust-pinning`. The bootstrap-peer record does fill
-in, from `applySeed`. Both records are party-scoped and the party id is typed
-into Settings each launch, so a relaunch with a fresh id loads empty slots.
+The **invite pin is this app's only writer of the anchor**. Settings' Seed
+Bootstrap section carries an optional "Paste enrollment invite (for trust)" field
+(`input-enroll-invite`); its owner keys go to `CadreNode.trustOwnerKeys(keys,
+'invite')` *before* the seed is applied and to `pinnedKeyTrustPolicy(keys)` for
+the apply itself (`CadreViewModel.ownerKeysFromInvite` + `applySeed`, mirroring
+reference-app-rn). The pin persists, so a *later* seed from the same owner is
+accepted with the invite field blank — the default `anchoredTrustPolicy` now
+clears it. A pin sticks even if the seed that motivated it is rejected: pasting
+the invite is itself the out-of-band trust act.
+
+The app wires **no owner private key**, so there is no genesis self-anchor. It
+does not need one — it either forms a cadre solo or enrolls into an existing one
+via an invite. (An owner private key would also land in the same plaintext SQLite
+blob as the identity key; see the Keychain/Keystore caveat above.) The
+bootstrap-peer record fills in from `applySeed`.
+
+⚠️ Both records are party-scoped and the party id is typed into Settings each
+launch, so a relaunch with a fresh id loads empty slots — a pin survives a
+relaunch only if the user retypes the same party id. Closed by
+`feat-rn-persist-node-start-options` (which carries an NS arm).
 
 ## App Structure
 
@@ -321,11 +335,16 @@ The orchestrator:
    `strandFilter:all`, `initializeSeedBootstrap`, a pre-created chat strand) with
    the RN package as cwd so its deps resolve;
 2. waits for `GET http://127.0.0.1:4080/health` (the HTTP sidecar);
-3. reads `test-data.json` (`partyId`, `droneBootstrapAddr`, `seed`, `strandId`);
+3. reads `test-data.json` (`partyId`, `droneBootstrapAddr`, `seed`, `enrollInvite`,
+   `strandId`);
 4. runs `adb reverse tcp:4002` and `tcp:4080` so the Android emulator can reach
    the host-bound fixture;
 5. runs `maestro test` over the RN `maestro/flows/`, passing the test-data fields
-   + `MAESTRO_APP_ID` as `-e KEY=VALUE` env vars (and `--format junit`);
+   (`PARTY_ID`, `BOOTSTRAP_ADDR`, `SEED`, `ENROLL_INVITE`, `STRAND_ID`) +
+   `SIDECAR_URL` + `MAESTRO_APP_ID` as `-e KEY=VALUE` env vars (and
+   `--format junit`). `ENROLL_INVITE` is what `_setup.yaml` types into
+   `input-enroll-invite` so the cold phone pins the drone's owner key before
+   applying the seed;
 6. tears down the fixture + adb reverse rules on exit.
 
 #### Flows (reused from RN)
@@ -347,7 +366,7 @@ it so both sides reference the same DB.
 RN sets `testID`; NativeScript has no `testID`. The NS UI instead sets
 **`automationText`** on every interactive element using the **exact same string
 values** as `src/test-ids.ts` (`input-party-id`, `btn-connect`, `btn-disconnect`,
-`input-seed`, `btn-apply-seed`, `input-add-peer`, `btn-add-peer`,
+`input-seed`, `input-enroll-invite`, `btn-apply-seed`, `input-add-peer`, `btn-add-peer`,
 `btn-create-strand`, `value-peer-id`, `modal-title`, `btn-modal-ok`, `status-bar`,
 `input-message`, `btn-send`, `message-list`, `message-row-<id>`). On Android
 `automationText` maps to `contentDescription`; on iOS to
