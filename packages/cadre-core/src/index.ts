@@ -43,6 +43,15 @@ export {
   type KeyId
 } from './key-store.js';
 
+// The KeyStore-backed identity rule, shared with embedding apps that need the
+// node key BEFORE `CadreNode` exists (RN resolves it to sign its ICE-manifest
+// request), plus the generic "prove you hold this node key" signer built on it.
+export {
+  loadOrCreateIdentityKey,
+  peerKeySigner,
+  type PeerKeySigner
+} from './identity-key.js';
+
 // Node-local trusted-owner anchor: the NON-replicated, per-party record of
 // out-of-band-established owner keys (the trust anchor the replicated OwnerKey
 // table cannot be). Cross-platform: interface + in-memory store only — the

@@ -33,6 +33,7 @@ import {
 	generateStrandMemberKey,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
+	peerKeySigner,
 } from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
@@ -293,7 +294,12 @@ export async function startCadre(): Promise<CadreNode> {
 
 	// ICE servers (STUN/TURN) from the runtime manifest. Never throws; `[]` when
 	// no manifest is configured (host/LAN candidates still work).
-	const iceServers = await loadIceConfig();
+	//
+	// The signer proves to a peer-bound TURN credential issuer that this tab owns
+	// the node key it is about to start with, so the issued credential can be
+	// attributed (and revoked) per peer id. A rejected assertion degrades to an
+	// unauthenticated retry inside `loadIceConfig` — it never costs us STUN.
+	const iceServers = await loadIceConfig({ signer: peerKeySigner(privateKey) });
 
 	// Relay multiaddr(s) from the runtime manifest. When configured, the tab
 	// listens on `/p2p-circuit` (+`/webrtc`) so it can hold a relay reservation

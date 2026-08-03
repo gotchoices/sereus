@@ -1,7 +1,6 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
-import { generateKeyPair, privateKeyToProtobuf, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { createLibp2pNode } from '@optimystic/db-p2p';
 import { multiaddr } from '@multiformats/multiaddr';
@@ -40,6 +39,7 @@ import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
 import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
+import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
@@ -838,11 +838,11 @@ export class CadreNode implements SAppIdLookup {
    * before any network bring-up. Resolution order:
    *
    * 1. Both `keyStore` and `privateKey` set ⇒ configuration error (throws).
-   * 2. `keyStore` set ⇒ load protobuf bytes from `identityKeyId` (default
-   *    {@link DEFAULT_IDENTITY_KEY_ID}). Found ⇒ deserialize; empty ⇒ generate a
-   *    fresh Ed25519 key, persist it, and use it. A rejected `get` (access denied
-   *    / backend failure) PROPAGATES — we never generate a new key on a read
-   *    error, which would silently orphan the real identity.
+   * 2. `keyStore` set ⇒ {@link loadOrCreateIdentityKey} against `identityKeyId`
+   *    (default {@link DEFAULT_IDENTITY_KEY_ID}): load when the slot is present,
+   *    generate + persist when it is empty. A rejected `get` (access denied /
+   *    backend failure) PROPAGATES — we never generate a new key on a read error,
+   *    which would silently orphan the real identity.
    * 3. `privateKey` set ⇒ use it directly.
    * 4. Neither ⇒ leave undefined; libp2p generates an ephemeral key.
    *
@@ -863,21 +863,11 @@ export class CadreNode implements SAppIdLookup {
     }
 
     if (keyStore) {
-      const keyId = identityKeyId ?? DEFAULT_IDENTITY_KEY_ID;
-      // A rejection here (e.g. KeyStoreAccessError) must propagate — do NOT fall
-      // through to generation, which would orphan an existing but unreadable key.
-      const bytes = await keyStore.get(keyId);
-      if (bytes) {
-        // Corrupt/garbage bytes throw here; surface loudly rather than
-        // regenerating (which would orphan the real identity).
-        this.identityKey = privateKeyFromProtobuf(bytes);
-        log('Identity key loaded from key store (slot present)');
-        return;
-      }
-      const generated = await generateKeyPair('Ed25519');
-      await keyStore.set(keyId, privateKeyToProtobuf(generated));
-      this.identityKey = generated;
-      log('Identity key generated and persisted to key store (first run)');
+      // Shared with the embedding app: `reference-app-rn` resolves the very same
+      // key before constructing this node so it can sign its ICE-manifest request
+      // with it (identity-key.ts). One copy of the rule, so neither side can
+      // drift into generating a second identity.
+      this.identityKey = await loadOrCreateIdentityKey(keyStore, identityKeyId ?? DEFAULT_IDENTITY_KEY_ID);
       return;
     }
 

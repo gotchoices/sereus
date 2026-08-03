@@ -114,12 +114,71 @@ cross-replica state, no extra round trip per node start. The replay cache and bo
 rate limiters are per-process, so replicas do not share them.
 
 The wire format, the full admission order, and the status codes are normative in
-`../docker/turn-credential-issuer/README.md` → "Peer-bound issuance". The client
-half (web + React Native signers wired into `loadIceConfig`) is
-`ice-config-peer-assertion-client`.
+`../docker/turn-credential-issuer/README.md` → "Peer-bound issuance".
 
 See `../docker/turn-credential-issuer/README.md` for the full knob set and the
 reverse-proxy / `TRUST_PROXY` notes.
+
+##### Client side (what the apps send)
+Both reference apps send an assertion on **every** manifest fetch — the web app
+(`packages/reference-app-web/src/lib/ice-config.ts`, signing with the browser peer
+key) and the React Native app (`packages/reference-app-rn/src/ice-config.ts`,
+signing with the secure-enclave identity key). Nothing needs to be turned on in the
+app: with `PEER_AUTH_MODE=off` the issuer simply ignores the headers.
+
+**`PEER_AUTH_AUDIENCE` must equal the manifest URL the app fetched, with the query
+string and fragment removed and nothing else changed.** The comparison is exact —
+these are all *different* audiences:
+
+```
+https://relay.sereus.org/ice-servers.json     ← what to configure
+https://relay.sereus.org/ice-servers.json/    ← trailing slash: mismatch
+http://relay.sereus.org/ice-servers.json      ← scheme: mismatch
+https://relay.sereus.org/ice/servers.json     ← proxy rewrote the path: mismatch
+```
+
+A mismatch is invisible from the server side (it looks like any other bad
+signature), so the client logs the audience it sent whenever it falls back. Look
+for this in the browser/device console:
+
+```
+[reference-app-web] ice-config: peer assertion not accepted — HTTP 401,
+  audience "https://relay.sereus.org/ice-servers.json"; retrying unauthenticated
+```
+
+**CORS: a static manifest on another origin now needs preflight support.** The five
+`X-Sereus-Peer-*` headers are not CORS-safelisted, so a *cross-origin* fetch from
+the web app is preflighted — the browser sends an `OPTIONS` first. The
+turn-credential-issuer answers that preflight (it lists all five headers in
+`Access-Control-Allow-Headers`); a plain static file server generally does not. Two
+ways this is already safe:
+
+- Host the manifest **same-origin** with the web app and there is no CORS at all.
+- Cross-origin and static: the failed preflight surfaces as a network error, and
+  the client retries unsigned — which is a "simple request" and needs no
+  preflight — so STUN survives. It costs one wasted round trip per tab start; add
+  the header to the static host's CORS config to avoid it.
+
+Three client behaviours worth knowing when reading issuer logs:
+
+- **The 4xx/503 fallback.** On `400`, `401`, `403`, or `503` — the statuses only
+  the assertion path can produce — the client retries the fetch **once** with no
+  assertion headers, and uses whatever that returns. A device with a clock skewed
+  past `PEER_AUTH_SKEW_SECONDS`, a deny-listed peer, or a full replay cache
+  therefore keeps working on the unauthenticated path rather than losing STUN
+  entirely (`loadIceConfig` turns a non-OK response into `[]`, which would strip
+  STUN too). So expect a paired 401-then-200 in the access log. `429` is
+  deliberately **not** in that list: the per-IP limit fires before the assertion is
+  parsed, so an unsigned retry would hit the same wall.
+- **A signed request that fails outright** takes the same single retry, for the
+  CORS reason above. A genuinely offline device just fails twice inside the one 5 s
+  deadline and gets `[]`, as before.
+- **No assertion at all** is not an error either — if signing fails for any reason
+  the app logs it and fetches unauthenticated. Identity trouble never stops a node
+  from booting.
+
+The whole exchange is one request per node start (plus at most one retry), so
+under `required` mode a node that cannot assert still gets the STUN-only `200`.
 
 ### Where to host it
 The manifest is plain HTTPS — host it wherever is convenient and same-origin-ish
@@ -150,28 +209,33 @@ fetches and validates that JSON. (This is distinct from the libp2p `_dnsaddr`
 records in `dnsaddr.md`, which carry multiaddrs, not `stun:`/`turn:` URLs.)
 
 ### Client helpers
-`packages/reference-app-web/src/lib/ice-config.ts` exposes `loadIceConfig()`:
-resolve URL (`VITE_ICE_CONFIG_URL` → `localStorage['ice-config-url']` → none),
-fetch + validate, and return `RTCIceServer[]`. It returns `[]` on any failure (no
-URL, network error, malformed) and **never** falls back to a third-party STUN
-(e.g. Google) — empty is the privacy-preserving default. The WebRTC transport
-wiring that consumes it is `web-webrtc-transport-to-bypass-relay` (ticket 3).
+`packages/reference-app-web/src/lib/ice-config.ts` exposes
+`loadIceConfig({ url?, signer? })`: resolve URL (`options.url` →
+`VITE_ICE_CONFIG_URL` → `localStorage['ice-config-url']` → none), optionally attach
+a peer assertion, fetch + validate, and return `RTCIceServer[]`. It returns `[]` on
+any failure (no URL, network error, malformed) and **never** falls back to a
+third-party STUN (e.g. Google) — empty is the privacy-preserving default. The
+WebRTC transport wiring that consumes it is `web-webrtc-transport-to-bypass-relay`
+(ticket 3).
 
 `packages/reference-app-rn/src/ice-config.ts` is the React Native port: same
-validation, 5 s timeout, and never-throws contract, but resolves the URL from
-`EXPO_PUBLIC_ICE_CONFIG_URL` only (no `localStorage`) and returns a local
-structural `IceServer[]` (RN's tsconfig lacks the `dom` lib). The transport
-wiring that consumes it is `rn-webrtc-transport`.
+validation, same assertion wire format, 5 s timeout, and never-throws contract, but
+resolves the URL from `EXPO_PUBLIC_ICE_CONFIG_URL` only (no `localStorage`) and
+returns a local structural `IceServer[]` (RN's tsconfig lacks the `dom` lib). The
+transport wiring that consumes it is `rn-webrtc-transport`.
+
+Both copies are deliberately dependency-free: the signing capability arrives as an
+injected structural interface (`IceConfigPeerSigner`), so neither file imports a
+crypto library. The real signer is `peerKeySigner(privateKey)` from
+`@serfab/cadre-core` (`packages/cadre-core/src/identity-key.ts`), which also owns
+`loadOrCreateIdentityKey` — the single load-or-create rule the React Native app and
+`CadreNode` share, so the app can sign with the very key the node then starts with.
 
 ### Forward pointers (TURN gaps — do not lose these when TURN is enabled)
 - **`turn-credential-issuer`** (built — `../docker/turn-credential-issuer/`): the
   signing service that mints ephemeral TURN credentials and serves the dynamic
   manifest. This is what makes a TURN entry possible here. Peer-bound issuance
   (`PEER_AUTH_MODE`) is built into it — see the section above.
-- **`ice-config-peer-assertion-client`**: the client half of peer-bound issuance —
-  web + React Native signers that attach the five `X-Sereus-Peer-*` headers in
-  `loadIceConfig()`. Until it lands, the server side is dormant: leave
-  `PEER_AUTH_MODE=off` (or `optional`, which still serves unsigned callers).
 - **`web-turn-relayed-path-detection`** (backlog): the `connection-path` classifier treats
   a TURN-relayed WebRTC connection as `direct` (it only sees `/webrtc`), so a
   TURN-relayed path is **not** counted as relayed in connectivity observability.

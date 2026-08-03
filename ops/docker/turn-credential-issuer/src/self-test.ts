@@ -5,9 +5,9 @@
  * Two things are locked here:
  *
  *  1. **The wire format**, against a pinned test vector derived from a fixed seed.
- *     The client signers (`ice-config-peer-assertion-client`) pin the SAME values,
- *     so any drift on either side fails a test rather than silently failing to
- *     authenticate in production.
+ *     The client side pins the SAME values — `packages/cadre-core/test/identity-key.spec.ts`
+ *     plus both reference apps' `test/ice-config.spec.ts` — so any drift on either
+ *     side fails a test rather than silently failing to authenticate in production.
  *
  *  2. **The admission ladder** — every row of the README's admission table drives
  *     `decideIceServers` directly (no socket) and asserts its documented HTTP

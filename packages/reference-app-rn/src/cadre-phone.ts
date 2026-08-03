@@ -13,6 +13,8 @@ import {
   DEFAULT_IDENTITY_KEY_ID,
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
+  loadOrCreateIdentityKey,
+  peerKeySigner,
 } from '@serfab/cadre-core';
 import type {
   CadreNodeConfig,
@@ -229,13 +231,44 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     opts.partyId,
   );
 
+  // Resolve the identity key HERE, before the manifest fetch, so the request can
+  // be signed with the very key the CadreNode below then loads from the same slot
+  // (we keep passing `keyStore` + `identityKeyId`, NOT `config.privateKey`, which
+  // is mutually exclusive with `keyStore` and would take the identity out of the
+  // secure-enclave path).
+  //
+  // Ordering is load-bearing on BOTH sides: after `migrateLegacyIdentity` above
+  // (which may fill an empty slot — calling this first would generate a fresh key
+  // and orphan the migrated identity), and before `loadIceConfig` below.
+  //
+  // Idempotent across a cold-start re-entry (`use-cadre`'s resume hook re-runs
+  // startPhoneNode): it is a `get` then return, and unlike `nodeLocalDb` above it
+  // opens no native handle. A rejected `get` — a cancelled biometric/unlock prompt
+  // — PROPAGATES and fails the start rather than degrading to "no signer", exactly
+  // as CadreNode itself behaves: generating a replacement key would silently
+  // orphan the real identity.
+  const identityKey = await loadOrCreateIdentityKey(keyStore, DEFAULT_IDENTITY_KEY_ID);
+
   // ICE servers (STUN/TURN) from the runtime manifest, for the WebRTC transport's
   // RTCPeerConnection. Never throws; `[]` when no manifest is configured (the
   // relay-signalled WebRTC upgrade still works on host/LAN candidates). Awaited
   // inside startPhoneNode (not hoisted to module scope) so each cold-start /
   // foreground-resume re-fetches — ICE servers may rotate. The 5 s deadline in
   // loadIceConfig bounds a hung manifest host so it cannot wedge a resume.
-  const iceServers = await loadIceConfig();
+  //
+  // The signer proves to a peer-bound TURN credential issuer that this device owns
+  // the node key, so the issued credential can be attributed (and revoked) per peer
+  // id. A rejected assertion degrades to an unauthenticated retry inside
+  // `loadIceConfig` — it never costs us STUN.
+  //
+  // NOTE: one signed fetch per cold start / foreground resume, each burning a
+  // nonce in the issuer's replay cache and a slot in its per-peer bucket
+  // (RATE_LIMIT_PER_PEER_PER_MIN, default 10). A phone that resumed more than ten
+  // times in a minute would take a 429, which is deliberately NOT in the
+  // unauthenticated-retry list, so that resume would run STUN-less. If resume
+  // churn ever gets that high, cache the manifest for the credential TTL instead
+  // of re-fetching per resume.
+  const iceServers = await loadIceConfig({ signer: peerKeySigner(identityKey) });
 
   const config: CadreNodeConfig = {
     // Identity comes from the secure enclave (load on present, generate+persist on

@@ -35,8 +35,11 @@ If you set `ISSUER_AUTH_TOKEN`, you can gate with **zero client change** by baki
 the token into that URL: `…/ice-servers.json?token=<token>`.
 
 Peer-bound issuance (below) is the one exception to "env var only": it needs a
-client that signs, which is `ice-config-peer-assertion-client`. Until that lands no
-client sends the headers, so leave `PEER_AUTH_MODE=off`.
+client that signs. Both reference apps do — they attach the five `X-Sereus-Peer-*`
+headers on every manifest fetch — so enabling it is a server-side decision
+(`PEER_AUTH_MODE` plus a `PEER_AUTH_AUDIENCE` that matches the URL the app fetches
+exactly; see `../../docs/ice-servers.md` → "Client side"). With `PEER_AUTH_MODE=off`
+the headers are ignored.
 
 ### How to deploy (Ubuntu)
 Use the common installer-driven workflow documented in `../README.md` (Ops/Docker).

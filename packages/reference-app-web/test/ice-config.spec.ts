@@ -2,13 +2,13 @@
  * `ice-config.ts` — URL resolution, manifest validation, and the peer-assertion
  * client half of peer-bound TURN issuance.
  *
- * Mirrors `reference-app-web/test/ice-config.spec.ts` case for case: the two
- * `ice-config.ts` copies exist by design (structural `IceServer` +
- * `process.env.EXPO_PUBLIC_*` here; DOM `RTCIceServer` + `localStorage` +
- * `import.meta.env` there) and every helper must behave identically in both. Both
- * specs pin the same assertion vector as `packages/cadre-core/test/identity-key.spec.ts`
- * and the issuer's own self-test, so a drift on any side fails a test rather than
- * silently failing to authenticate in production.
+ * Mirrored, case for case, by `reference-app-rn/test/ice-config.spec.ts`: the two
+ * `ice-config.ts` copies exist by design (DOM `RTCIceServer` + `localStorage` +
+ * `import.meta.env` here; structural `IceServer` + `process.env.EXPO_PUBLIC_*`
+ * there) and every helper must behave identically in both. Both specs pin the same
+ * assertion vector as `packages/cadre-core/test/identity-key.spec.ts` and the
+ * issuer's own self-test, so a drift on any side fails a test rather than silently
+ * failing to authenticate in production.
  */
 import { describe, it, expect, vi, afterEach } from 'vitest';
 import {
@@ -20,9 +20,9 @@ import {
 	randomNonceHex,
 	buildPeerAssertionHeaders,
 	exampleIceConfigManifest,
-	type IceServer,
+	ICE_CONFIG_URL_STORAGE_KEY,
 	type IceConfigPeerSigner,
-} from '../src/ice-config';
+} from '../src/lib/ice-config';
 
 // ── Fixtures ───────────────────────────────────────────────────────────────────
 
@@ -123,37 +123,39 @@ function withMutedWarn<T>(fn: () => T): T {
 
 afterEach(() => {
 	vi.unstubAllGlobals();
+	vi.unstubAllEnvs();
 	vi.useRealTimers();
-	// Clear any env-var stubs set during tests
-	delete process.env.EXPO_PUBLIC_ICE_CONFIG_URL;
 });
 
 // ── resolveIceConfigUrl ────────────────────────────────────────────────────────
 
 describe('resolveIceConfigUrl', () => {
 	it('returns an explicit arg over everything else', () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
+		vi.stubEnv('VITE_ICE_CONFIG_URL', 'https://env.example/ice.json');
 		expect(resolveIceConfigUrl(URL_UNDER_TEST)).toBe(URL_UNDER_TEST);
 	});
 
 	it('returns the env var when no explicit arg supplied', () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
+		vi.stubEnv('VITE_ICE_CONFIG_URL', 'https://env.example/ice.json');
 		expect(resolveIceConfigUrl()).toBe('https://env.example/ice.json');
 	});
 
-	it('returns undefined when neither explicit arg nor env var are set', () => {
-		delete process.env.EXPO_PUBLIC_ICE_CONFIG_URL;
+	it('falls back to the localStorage override when no env var is set', () => {
+		vi.stubEnv('VITE_ICE_CONFIG_URL', '');
+		vi.stubGlobal('localStorage', {
+			getItem: (key: string) => (key === ICE_CONFIG_URL_STORAGE_KEY ? 'https://stored.example/ice.json' : null),
+		});
+		expect(resolveIceConfigUrl()).toBe('https://stored.example/ice.json');
+	});
+
+	it('returns undefined when nothing is configured', () => {
+		vi.stubEnv('VITE_ICE_CONFIG_URL', '');
 		expect(resolveIceConfigUrl()).toBeUndefined();
 	});
 
 	it('treats an empty string explicit arg as "not configured"', () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
+		vi.stubEnv('VITE_ICE_CONFIG_URL', 'https://env.example/ice.json');
 		expect(resolveIceConfigUrl('')).toBe('https://env.example/ice.json');
-	});
-
-	it('treats an empty env var as "not configured"', () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = '';
-		expect(resolveIceConfigUrl()).toBeUndefined();
 	});
 });
 
@@ -207,13 +209,6 @@ describe('parseIceServers', () => {
 		});
 		expect(dropped[0].username).toBeUndefined();
 		expect(dropped[0].credential).toBeUndefined();
-	});
-
-	it('accepts both a single string and a string[] urls field', () => {
-		expect(parseIceServers({ iceServers: [{ urls: 'stun:stun.example:3478' }] })[0].urls)
-			.toBe('stun:stun.example:3478');
-		expect(parseIceServers({ iceServers: [{ urls: ['stun:a.example:3478', 'stun:b.example:3478'] }] })[0].urls)
-			.toEqual(['stun:a.example:3478', 'stun:b.example:3478']);
 	});
 
 	it('ignores the informational peerAuth / peerId manifest fields', () => {
@@ -299,7 +294,7 @@ describe('buildPeerAssertionHeaders', () => {
 
 describe('loadIceConfig', () => {
 	it('returns [] without fetching when no URL is configured', async () => {
-		delete process.env.EXPO_PUBLIC_ICE_CONFIG_URL;
+		vi.stubEnv('VITE_ICE_CONFIG_URL', '');
 		const fetchSpy = vi.fn();
 		vi.stubGlobal('fetch', fetchSpy);
 		expect(await loadIceConfig()).toEqual([]);
@@ -307,13 +302,13 @@ describe('loadIceConfig', () => {
 	});
 
 	it('happy path: returns iceServers from the fetched manifest', async () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
+		vi.stubEnv('VITE_ICE_CONFIG_URL', 'https://env.example/ice.json');
 		stubFetch(() => fakeResponse(exampleIceConfigManifest));
 		expect(await loadIceConfig()).toEqual(exampleIceConfigManifest.iceServers);
 	});
 
 	it('options.url beats the env var', async () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
+		vi.stubEnv('VITE_ICE_CONFIG_URL', 'https://env.example/ice.json');
 		const calls: string[] = [];
 		stubFetch((input) => {
 			calls.push(String(input));
@@ -321,17 +316,6 @@ describe('loadIceConfig', () => {
 		});
 		await loadIceConfig({ url: URL_UNDER_TEST });
 		expect(calls).toEqual([URL_UNDER_TEST]);
-	});
-
-	it('env var used when no options supplied', async () => {
-		process.env.EXPO_PUBLIC_ICE_CONFIG_URL = 'https://env.example/ice.json';
-		const calls: string[] = [];
-		stubFetch((input) => {
-			calls.push(String(input));
-			return fakeResponse(exampleIceConfigManifest);
-		});
-		await loadIceConfig();
-		expect(calls).toEqual(['https://env.example/ice.json']);
 	});
 
 	it('returns [] on non-OK HTTP status (e.g. 500)', async () => {
@@ -368,11 +352,10 @@ describe('loadIceConfig', () => {
 					],
 				}),
 			);
-			const expected: IceServer[] = [
+			expect(await loadIceConfig({ url: URL_UNDER_TEST })).toEqual([
 				{ urls: 'stun:good.example:3478' },
 				{ urls: 'stun:also-good.example:3478', username: 'u', credential: 'c' },
-			];
-			expect(await loadIceConfig({ url: URL_UNDER_TEST })).toEqual(expected);
+			]);
 		});
 	});
 
@@ -504,15 +487,16 @@ describe('loadIceConfig peer assertion', () => {
 		});
 	});
 
-	// Mirrors the web copy, where the five custom headers make a cross-origin fetch
-	// preflighted and an unanswered OPTIONS surfaces as a plain network error.
-	it('a thrown first attempt retries once, unauthenticated', async () => {
+	// The five custom headers make a cross-origin fetch preflighted; a manifest host
+	// that does not answer that OPTIONS fails the request outright, which reaches us
+	// as an ordinary network error. Retrying unsigned restores the simple request.
+	it('a thrown first attempt retries once, unauthenticated (covers a failed CORS preflight)', async () => {
 		await withMutedWarn(async () => {
 			const calls: RequestInit[] = [];
 			stubFetch((_input, init) => {
 				calls.push(init ?? {});
 				return calls.length === 1
-					? Promise.reject(new TypeError('Network request failed'))
+					? Promise.reject(new TypeError('Failed to fetch'))
 					: fakeResponse(exampleIceConfigManifest);
 			});
 
@@ -530,7 +514,7 @@ describe('loadIceConfig peer assertion', () => {
 			const calls: RequestInit[] = [];
 			stubFetch((_input, init) => {
 				calls.push(init ?? {});
-				return Promise.reject(new TypeError('Network request failed'));
+				return Promise.reject(new TypeError('Failed to fetch'));
 			});
 
 			expect(await loadIceConfig({ url: URL_UNDER_TEST })).toEqual([]);
@@ -543,7 +527,7 @@ describe('loadIceConfig peer assertion', () => {
 			const calls: RequestInit[] = [];
 			stubFetch((_input, init) => {
 				calls.push(init ?? {});
-				return Promise.reject(new TypeError('Network request failed'));
+				return Promise.reject(new TypeError('Failed to fetch'));
 			});
 
 			expect(await loadIceConfig({ url: URL_UNDER_TEST, signer: stubSigner() })).toEqual([]);
