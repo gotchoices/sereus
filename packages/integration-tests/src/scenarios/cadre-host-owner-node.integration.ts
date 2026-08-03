@@ -201,6 +201,32 @@ describe('cadre-host ↔ real cadre-cli owner node', () => {
     expect(invite.ownerAddrs).toEqual(pushed);
   }, OP_MS);
 
+  // The first exercise of the strand admin routes against a REAL control database.
+  // Every other test of those routes drives a mock node, so nothing else proves the
+  // `StrandRow` → `StrandSummary` projection survives a real row, or that the
+  // envelope the node emits is the one `OwnerNodeClient` parses.
+  //
+  // Both cases run against a party with no strands, so they need no formation flow
+  // and cost one round trip each. The closed-strand confirmation gate is NOT covered
+  // here — refusing an unconfirmed closed removal needs a real closed strand, which
+  // needs formation; that belongs to the formation scenarios.
+  it('listStrands() reports an empty strand set on a fresh party', async () => {
+    const { strands, controlConnections } = await client.listStrands();
+    expect(strands).toEqual([]);
+    expect(typeof controlConnections).toBe('number');
+    expect(controlConnections).toBeGreaterThanOrEqual(0);
+  }, OP_MS);
+
+  it('removeStrand() on a never-published id answers published: false rather than throwing', async () => {
+    const result = await client.removeStrand('never-published', { confirm: false });
+    expect(result.strandId).toBe('never-published');
+    expect(result.published).toBe(false);
+    expect(result.removed).toBe(false);
+    expect(result.type).toBeNull();
+    // A lone founding node has no siblings — `alone` is the node's honest report.
+    expect(typeof result.alone).toBe('boolean');
+  }, OP_MS);
+
   it('rejects a bad bearer token with not_authorized', async () => {
     const endpoint = orchestrator.getOwnerAdminEndpoint();
     expect(endpoint).toBeDefined();

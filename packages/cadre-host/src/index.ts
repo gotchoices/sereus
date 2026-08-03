@@ -61,6 +61,19 @@ export type {
   TrustCircleErrorCode,
 } from './auth/index.js';
 
+/* ──────────────── strand management ──────────────── */
+
+export { StrandService, StrandError, createStrandHandlers } from './strands/index.js';
+export type {
+  StrandServiceOptions,
+  CadreNodeLike as StrandCadreNodeLike,
+  StrandSummary,
+  StrandListSnapshot,
+  StrandRemovalResult,
+  StrandHandlers,
+  StrandErrorCode,
+} from './strands/index.js';
+
 /* ──────────────── donation grant tokens ──────────────── */
 
 export {

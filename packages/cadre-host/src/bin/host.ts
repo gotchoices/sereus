@@ -53,6 +53,7 @@ import {
   clearPushSecret,
   pushStatus,
 } from '../push/index.js';
+import { StrandService } from '../strands/index.js';
 import { OwnerNodeClient } from '../owner/index.js';
 import { createLocalUiServer, HostSettingsStore } from '../server/index.js';
 import { openBrowser } from '../installer/browser.js';
@@ -344,6 +345,7 @@ program
       // loopback-only — nothing for NatService to map without an owner node.
       let trustCircle: TrustCircleService | undefined;
       let natService: NatService | undefined;
+      let strandService: StrandService | undefined;
       if (hostOwnsCadre(cfg)) {
         // Spawn the owner node. Best-effort: a spawn failure leaves the
         // management API up (trust-circle listing degrades to local labels,
@@ -373,6 +375,10 @@ program
           rootDir: cfg.dataDir,
           cadreNode: owner,
         });
+
+        // Strand management is founder-only for the same reason as the trust
+        // circle: it asks the owner node, and donor-only mode has none.
+        strandService = new StrandService({ cadreNode: owner });
 
         // Push NAT-resolved invite addresses to the node on every NAT change.
         // NatService.start() also fires this once as an initial push, retried
@@ -428,6 +434,7 @@ program
         orchestrator,
         ...(trustCircle ? { trustCircle } : {}),
         ...(natService ? { nat: natService } : {}),
+        ...(strandService ? { strands: strandService } : {}),
         update: updateService,
         grants: grantService,
         donations: donationService,

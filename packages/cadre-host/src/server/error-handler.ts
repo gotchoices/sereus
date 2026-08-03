@@ -2,7 +2,8 @@
  * Fastify error handler — translates known typed errors to stable HTTP status
  * codes and uniform `{ ok: false, error: { code, message } }` payloads.
  *
- * Codes (cross-referenced with `auth/types.ts`, `nat/types.ts`, `update/types.ts`):
+ * Codes (cross-referenced with `auth/types.ts`, `nat/types.ts`, `strands/types.ts`,
+ * `update/types.ts`):
  *   - TrustCircleError
  *       invalid_label, invalid_token             → 400
  *       not_found, already_redeemed              → 404
@@ -16,6 +17,11 @@
  *       mapping_failed, router_unreachable,
  *       ip_detection_failed, ddns_update_failed  → 500
  *       node_unavailable                         → 503
+ *   - StrandError
+ *       invalid_id                               → 400
+ *       confirmation_required                    → 428
+ *       node_unavailable                         → 503
+ *       internal                                 → 500
  *   - UpdateErrorException
  *       manifest_invalid, no_update_available,
  *       min_previous_version                     → 400
@@ -45,6 +51,7 @@ import debug from 'debug';
 
 import { TrustCircleError, type TrustCircleErrorCode } from '../auth/types.js';
 import { NatError, type NatErrorCode } from '../nat/types.js';
+import { StrandError, type StrandErrorCode } from '../strands/types.js';
 import { UpdateErrorException, type UpdateErrorCode } from '../update/types.js';
 import { GrantError, type GrantErrorCode, DonationError, type DonationErrorCode } from '../donation/types.js';
 
@@ -71,6 +78,19 @@ const NAT_STATUS: Record<NatErrorCode, number> = {
   ip_detection_failed: 500,
   ddns_update_failed: 500,
   node_unavailable: 503,
+};
+
+/**
+ * 428 (Precondition Required) for `confirmation_required`: the node refused a
+ * closed-strand removal because the caller had not confirmed. It is not a 400
+ * (the request was well-formed) and not a 409 (nothing conflicts) — the caller
+ * must re-send with the precondition satisfied.
+ */
+const STRAND_STATUS: Record<StrandErrorCode, number> = {
+  invalid_id: 400,
+  confirmation_required: 428,
+  node_unavailable: 503,
+  internal: 500,
 };
 
 const GRANT_STATUS: Record<GrantErrorCode, number> = {
@@ -133,6 +153,9 @@ function classify(err: FastifyError): Classified {
   }
   if (err instanceof NatError) {
     return { status: NAT_STATUS[err.code] ?? 500, code: err.code, message: err.message };
+  }
+  if (err instanceof StrandError) {
+    return { status: STRAND_STATUS[err.code] ?? 500, code: err.code, message: err.message };
   }
   if (err instanceof UpdateErrorException) {
     return { status: UPDATE_STATUS[err.code] ?? 500, code: err.code, message: err.message };

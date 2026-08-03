@@ -5,10 +5,10 @@
  * cadre-host's manager process holds no in-process `CadreNode`; it spawns the
  * admin's owner node as a managed child (see `HostProcessOrchestrator`)
  * and delegates all owner/membership/identity operations to it over this
- * client. The client implements **both** trimmed `CadreNodeLike` interfaces —
- * the trust-circle one (`auth/trust-circle.ts`) and the NAT one
- * (`nat/nat-service.ts`) — plus `pushInviteAddresses` and `addDrone` (the
- * node-donation requester side).
+ * client. The client implements **all three** trimmed `CadreNodeLike`
+ * interfaces — the trust-circle one (`auth/trust-circle.ts`), the NAT one
+ * (`nat/nat-service.ts`), and the strand one (`strands/strand-service.ts`) —
+ * plus `pushInviteAddresses` and `addDrone` (the node-donation requester side).
  *
  * Transport: `Authorization: Bearer <token>` against
  * `http://127.0.0.1:<adminPort>`. Every response uses the cadre-provider
@@ -25,6 +25,8 @@ import type { CadreInvite, DroneInitResult } from '@serfab/cadre-core';
 import type { OwnerAdminEndpoint } from '../orchestrator/index.js';
 import type { CadreNodeLike as TrustCircleCadreNodeLike } from '../auth/trust-circle.js';
 import type { CadreNodeLike as NatCadreNodeLike } from '../nat/nat-service.js';
+import type { CadreNodeLike as StrandCadreNodeLike } from '../strands/strand-service.js';
+import type { StrandListSnapshot, StrandRemovalResult } from '../strands/types.js';
 
 const log = debug('cadre:host:owner-client');
 
@@ -55,7 +57,8 @@ export interface OwnerNodeClientOptions {
   fetch?: typeof fetch;
 }
 
-export class OwnerNodeClient implements TrustCircleCadreNodeLike, NatCadreNodeLike {
+export class OwnerNodeClient
+implements TrustCircleCadreNodeLike, NatCadreNodeLike, StrandCadreNodeLike {
   private readonly endpointSource: EndpointSource;
   private readonly fetchImpl: typeof fetch;
 
@@ -151,6 +154,29 @@ export class OwnerNodeClient implements TrustCircleCadreNodeLike, NatCadreNodeLi
   async getMultiaddrs(): Promise<string[]> {
     const data = await this.request<{ multiaddrs: string[] }>('GET', '/admin/multiaddrs');
     return data.multiaddrs;
+  }
+
+  // --- strand CadreNodeLike ---
+
+  /** This party's strands plus the node's current control-connection count. */
+  async listStrands(): Promise<StrandListSnapshot> {
+    return await this.request<StrandListSnapshot>('GET', '/admin/strands');
+  }
+
+  /**
+   * Remove this party's participation in one strand.
+   *
+   * `?confirm=1` is appended **only** when the caller asked for it. The node
+   * refuses an unconfirmed closed-strand removal with `confirmation_required`;
+   * that refusal is surfaced, never retried with the flag added — the row holds
+   * this party's membership key for the strand and nothing else does.
+   */
+  async removeStrand(strandId: string, opts: { confirm: boolean }): Promise<StrandRemovalResult> {
+    const query = opts.confirm ? '?confirm=1' : '';
+    return await this.request<StrandRemovalResult>(
+      'DELETE',
+      `/admin/strands/${encodeURIComponent(strandId)}${query}`,
+    );
   }
 
   // --- drone seeding (node-donation requester side) ---

@@ -20,6 +20,8 @@ import type { TrustCircleService } from '../auth/index.js';
 import { createTrustCircleHandlers } from '../auth/index.js';
 import type { NatService } from '../nat/index.js';
 import { createNatHandlers } from '../nat/index.js';
+import type { StrandService } from '../strands/index.js';
+import { createStrandHandlers } from '../strands/index.js';
 import type { UpdateService } from '../update/index.js';
 import { createUpdateHandlers } from '../update/index.js';
 import type { GrantService, DonationService } from '../donation/index.js';
@@ -33,6 +35,7 @@ import { registerStaticMount } from './static.js';
 import { buildFastify, startListening, stopListening } from './server.js';
 import { registerNatRoutes } from './routes/nat.js';
 import { registerTrustCircleRoutes } from './routes/trust-circle.js';
+import { registerStrandRoutes } from './routes/strands.js';
 import { registerUpdateRoutes } from './routes/update.js';
 import { registerStatusRoute } from './routes/status.js';
 import { registerNodesRoutes } from './routes/nodes.js';
@@ -60,6 +63,12 @@ export interface LocalUiServerOptions {
    * unmounted and 404s.
    */
   nat?: NatService;
+  /**
+   * Strand service — present only when the host runs its own personal cadre.
+   * Absent in donor-only mode, where there is no owner node to ask, so
+   * `/api/strands` stays unmounted and 404s through the static handler.
+   */
+  strands?: StrandService;
   /** Optional — 6.4.2 lands this; nullable while still iterating. */
   update?: UpdateService;
   /**
@@ -133,14 +142,18 @@ export function createLocalUiServer(opts: LocalUiServerOptions): LocalUiServer {
   registerNodesRoutes(app, { orchestrator: opts.orchestrator });
   registerSettingsRoutes(app, { settingsStore, ...(opts.nat ? { nat: opts.nat } : {}), ...(opts.update ? { update: opts.update } : {}) });
 
-  // Trust-circle + NAT surfaces exist only when the host runs its own personal
-  // cadre. In donor-only mode they're left unmounted, so `/auth/*` and `/nat/*`
-  // fall through to the static not-found handler and 404 (see static.ts).
+  // Trust-circle + NAT + strand surfaces exist only when the host runs its own
+  // personal cadre. In donor-only mode they're left unmounted, so `/auth/*`,
+  // `/nat/*` and `/api/strands` fall through to the static not-found handler and
+  // 404 (see static.ts).
   if (opts.trustCircle) {
     registerTrustCircleRoutes(app, { handlers: createTrustCircleHandlers(opts.trustCircle), events });
   }
   if (opts.nat) {
     registerNatRoutes(app, { handlers: createNatHandlers(opts.nat), events });
+  }
+  if (opts.strands) {
+    registerStrandRoutes(app, { handlers: createStrandHandlers(opts.strands), events });
   }
   if (opts.update) {
     registerUpdateRoutes(app, { handlers: createUpdateHandlers(opts.update), events });

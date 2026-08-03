@@ -245,6 +245,20 @@ Owner operations (steps 1, 3, 4) are **delegated to the host's owner cadre node*
 
 In v1 the management-API surface is localhost-only (`127.0.0.1`), so redemption assumes the recipient is on the same machine as the host or on the LAN reaching it. Cross-WAN redemption via the management API requires a future cadre-host-over-P2P ticket.
 
+## Strands
+
+> **Founder role only.** Strand management asks the host's *own* owner node, so it is mounted only when `ownCadre.enabled`. In donor-only mode `/api/strands` stays unmounted and 404s.
+
+Where the trust circle is *who* belongs to this party, strands are *which shared data networks the party belongs to*. The list is canonical in cadre-core's `Strand` table on the control network; cadre-host stores nothing of its own — there is no `strands.json`. `StrandService` (`src/strands/`) exists to validate ids and translate the owner node's error codes; every read and write goes to the node over the [admin channel](#node-admin-channel-management-channel-transport) (`GET /admin/strands`, `DELETE /admin/strands/:id?confirm=1`).
+
+Three things about removal an operator has to know:
+
+- **It removes *our party's* participation, not the strand.** Other parties in the strand keep their own rows and the network carries on. Every node of *this* party stops its instance once its watcher observes the missing row — except a node whose `strandFilter` never admitted the strand, which never observes the removal and keeps running until stopped locally.
+- **A closed strand needs explicit confirmation.** A closed strand's row carries this party's membership key for that network and it is stored **nowhere else**. Removing the row destroys it, and the party could never admit another member to that strand. The node refuses such a removal without `?confirm=1` and answers **428**; the manager forwards the flag and surfaces the refusal, it never re-sends with confirmation added on the caller's behalf. The rule lives in the node because that is the only place it can be enforced — the manager never reads the row.
+- **A removal committed with no control connections may not reach siblings.** `GET /api/strands` reports `controlConnections`, and a removal reports `alone`; both are honest snapshots of what the node saw. When `alone` is true the delete committed local-only and rides on the revocation tombstone to converge later — see the "Delete-while-alone durability (revocation tombstone)" note in [`docs/architecture.md`](architecture.md#control-network-seed).
+
+The same read→decide→write and the same confirmation gate back `cadre strand remove` in cadre-cli. cadre-host does not import that code: it depends on cadre-cli only to resolve its **bin path**, never its source.
+
 ## NAT and DDNS
 
 Cadre-host runs on machines that are typically behind NAT. To be dialable from the open internet it composes three layers, each fail-safe and independent:
@@ -437,6 +451,8 @@ cadre-host is a same-machine management surface. Any local process running as th
 | `/api/nodes/:id/logs?lines=N` | GET | Tail of `node.log` (default 200, max 2000) | 404 unknown |
 | `/api/nodes/:id/stop` | POST | Stop a running node | 404 unknown |
 | `/api/nodes/:id/{start,restart}` | POST | Lifecycle stub — v1 has no auto-spawn path (see honest-gap below) | 501 not_implemented |
+| `/api/strands` | GET | Strands this party belongs to + `controlConnections` (founder role only; 404 in donor-only mode) | mapped from `StrandError.code` |
+| `/api/strands/:id?confirm=1` | DELETE | Remove this party's participation in one strand. `confirm` is forwarded to the node, which refuses an unconfirmed **closed** strand with 428 | 400 invalid_id, 428 confirmation_required, 503 node_unavailable |
 | `/api/settings` | GET/PUT | `host.config.json` passthrough (PUT is whitelisted) | 400 invalid_setting |
 | `/api/events` | GET | Server-Sent Events stream | — |
 | `/auth/*` | various | Trust-circle (matches CLI) — `POST /auth/invites`, `GET /auth/trust-circle`, `DELETE /auth/invites/:token`, `DELETE /auth/members/:peerId` | mapped from `TrustCircleError.code` |
@@ -454,6 +470,7 @@ Error payloads use the same envelope as cadre-provider: `{ ok: false, error: { c
 |---|---|
 | `node-state-changed` | A managed node transitions running ↔ stopped |
 | `trust-circle-changed` | An invite is issued / redeemed / revoked, or a member is removed |
+| `strands-changed` | A strand removal issued a delete (`kind: 'removed'`). Not emitted when the id was never published — nothing changed |
 | `connectivity-changed` | NAT settings change, reachability re-tested, server boot |
 | `update-available` | A new release version is observed |
 
