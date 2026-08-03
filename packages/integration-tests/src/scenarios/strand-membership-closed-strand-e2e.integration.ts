@@ -30,7 +30,7 @@
  *
  * Permission/rejection SEMANTICS for `MemberPeer` (which branch authorizes what,
  * stranger rejection, `NoUpdate`, same-transaction managers) are settled in
- * `cadre-core/test/strand-membership-peer-rotation.spec.ts` under bootstrap mode and
+ * `cadre-core/test/strand-membership-peer-registration.spec.ts` under bootstrap mode and
  * are NOT repeated here. What this file adds is the NETWORK.
  *
  * ── WHERE THE WRITER LIFECYCLE RUNS (and why) ────────────────────────────────
