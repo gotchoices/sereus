@@ -6,7 +6,8 @@ import {
 	retryControlWrite,
 	type ControlWriteRetryOptions
 } from '../src/control-write-retry.js';
-import { isLostUseNumberRace } from '../src/control-database.js';
+import { ControlDatabase, isLostUseNumberRace } from '../src/control-database.js';
+import type { ControlDatabaseConfig } from '../src/control-database.js';
 
 /**
  * The transient-control-write classifier and retry loop behind
@@ -46,6 +47,18 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
 }
 
 /**
+ * One `create table` of the control DDL failing, as Quereus' migration loop reports it:
+ * `Failed to execute DDL: <ddl>\nError: <cause message>`, with the cause preserved on the
+ * chain (`runBatchedMigrationLoop` in
+ * `quereus/src/runtime/emit/schema-declarative.ts`). The classifier walks the chain, so it
+ * sees the inner message either way — the outer text is here so the schema-init cases below
+ * fail against the surface a real startup actually produces.
+ */
+function ddlFailure(causeMessage: string): string {
+	return `Failed to execute DDL: create table CadreControl.FormationUsage (Token text not null, UseNumber integer not null)\nError: ${causeMessage}`;
+}
+
+/**
  * The transactor aggregate as the block-read (`get`) and phase-1 (`pend`) sites format it:
  * per-batch details name a SINGLE block, `<peerId>[block:<id>](<status>)`. Nothing has
  * committed when either site raises, so the write is known not to have landed.
@@ -75,6 +88,22 @@ const SUPER_MAJORITY_REJECTED =
 const LOST_USE_NUMBER =
 	'UNIQUE constraint failed: FormationUsage.Token, FormationUsage.UseNumber';
 const LOST_USE_NUMBER_DEFERRED = 'CHECK constraint failed: Monotonic';
+/**
+ * The shortfall exactly as a THREE-node party raises it — the shape that makes a third
+ * node's join fragile. A control transaction there needs 2 of 2 remaining peers to answer,
+ * so ONE flaky peer response is fatal where a two-node party would have tolerated it.
+ * Transcribed from the failing `provider-seed-accepted` run recorded in
+ * `tickets/implement/29.3-third-node-join-ddl-init.md`.
+ */
+const SUPER_MAJORITY_THIRD_NODE_JOIN =
+	'Failed to get super-majority: 1/2 approvals (needed 2, 0 rejections)';
+/**
+ * A durable convergence fault, not a transient one: a collection reports a committed
+ * revision whose header block reads as affirmatively ABSENT. Tracked separately in
+ * `tickets/blocked/control-db-cross-node-convergence-halted.md`; a retry cannot heal it, so
+ * the classifier must keep letting it through unmatched.
+ */
+const MISSING_BLOCK = 'Missing block (jQlkVafUFlI6FzOGGAlViyK5GrgcSm_4SL7HfPKwhis)';
 
 describe('isRetriableControlWriteFailure', () => {
 	it('retries the read/pend-phase transactor aggregate ("the cohort did not answer")', () => {
@@ -128,6 +157,18 @@ describe('isRetriableControlWriteFailure', () => {
 
 	it('never retries a super-majority shortfall carrying a rejection — somebody voted no', () => {
 		expect(isRetriableControlWriteFailure(nested(SUPER_MAJORITY_REJECTED))).toBe(false);
+	});
+
+	/**
+	 * `Missing block` is a DURABLE fault (a committed revision whose header block is
+	 * affirmatively absent), so it matches nothing here and propagates unchanged. Asserted
+	 * explicitly because the schema-init retry below shares this classifier: widening it to
+	 * absorb this message would make a joining node spin over an unhealable condition and
+	 * then report the same failure ~2 s later.
+	 */
+	it('never retries a missing-block convergence fault — a retry cannot heal it', () => {
+		expect(isRetriableControlWriteFailure(nested(MISSING_BLOCK))).toBe(false);
+		expect(isRetriableControlWriteFailure(nested(ddlFailure(MISSING_BLOCK)))).toBe(false);
 	});
 
 	it('never retries constraint/authorization failures — a retry would re-present a spent signature', () => {
@@ -288,5 +329,109 @@ describe('retryControlWrite', () => {
 			throw nested(TRANSACTOR_AGGREGATE);
 		})).rejects.toThrow();
 		expect(transientRuns).toBe(CONTROL_WRITE_ATTEMPTS);
+	});
+});
+
+/**
+ * Test-only window onto `ControlDatabase.loadSchema` and the two private fields it needs:
+ * the `Database` handle `initialize` would have built, and `lockedWithRetry`'s pacing seams.
+ * Same cast pattern `control-write-lock.spec.ts` uses for the same seams.
+ *
+ * Driving `loadSchema` directly (rather than `initialize`) is deliberate: the subject is
+ * whether the DDL `exec` is re-presented after a transient cohort failure, and everything
+ * `initialize` does before it — plugin registration, libp2p injection, catalog hydration —
+ * is irrelevant to that and would cost a real node bring-up to reproduce.
+ */
+interface SchemaInitHarness {
+	db: { exec: (sql: string) => Promise<void> };
+	controlWriteRetryPacing: ControlWriteRetryOptions;
+	loadSchema: () => Promise<void>;
+}
+
+/**
+ * A `ControlDatabase` with `initialize`'s output faked: `exec` is the supplied stub, pacing
+ * never sleeps. The config is never read on this path (`schemaPath` is absent, so
+ * `loadSchema` takes the embedded-schema branch), hence the cast rather than a real libp2p
+ * node.
+ */
+function schemaInitHarness(exec: (sql: string) => Promise<void>): SchemaInitHarness {
+	const database = new ControlDatabase({ partyId: 'schema-init-spec' } as ControlDatabaseConfig);
+	const harness = database as unknown as SchemaInitHarness;
+	harness.db = { exec };
+	harness.controlWriteRetryPacing = immediatePacing();
+	return harness;
+}
+
+/**
+ * Schema init is a DISTRIBUTED write — every `CadreControl` table is optimystic-backed, so
+ * each `create table` needs a super-majority of the party's peers to answer. It used to be
+ * the one such write that bypassed the retry, which made a node joining a party that already
+ * had two live members die on startup over a single unanswered peer.
+ *
+ * Re-running the whole `exec` is safe because `apply schema` is a diff, not a replay, and a
+ * failed `create table` leaves the catalog clean — so attempt 2 re-emits exactly the failed
+ * table and its successors. The reasoning lives at the call site; these cases pin the
+ * behaviour.
+ */
+describe('ControlDatabase.loadSchema — transient-failure retry', () => {
+	it('re-presents the whole DDL after a third-node-join super-majority shortfall', async () => {
+		let runs = 0;
+		const executed: string[] = [];
+		const harness = schemaInitHarness(async (sql) => {
+			runs++;
+			executed.push(sql);
+			if (runs === 1) {
+				throw nested(ddlFailure(SUPER_MAJORITY_THIRD_NODE_JOIN));
+			}
+		});
+
+		await harness.loadSchema();
+
+		expect(runs).toBe(2);
+		// The retry re-presents the SAME schema text: Quereus diffs it against the live
+		// catalog, so the tables that landed on attempt 1 emit no DDL the second time.
+		expect(executed[1]).toBe(executed[0]);
+		expect(executed[0]).toContain('CadreControl');
+	});
+
+	/**
+	 * The two failure faces observed from the same joining node, only one of which this
+	 * retry is for. A commit-phase batch is INDETERMINATE (the write may have landed), and
+	 * `Missing block` is durable. Both must reach the caller from the first attempt — a
+	 * silent extra ~2 s of retry before the identical error would be pure cost.
+	 */
+	it('never re-presents an indeterminate commit or a durable convergence fault', async () => {
+		for (const causeMessage of [TRANSACTOR_AGGREGATE_COMMIT_PHASE, MISSING_BLOCK]) {
+			let runs = 0;
+			const failure = nested(ddlFailure(causeMessage));
+			const harness = schemaInitHarness(async () => {
+				runs++;
+				throw failure;
+			});
+
+			await expect(harness.loadSchema()).rejects.toBe(failure);
+			expect(runs).toBe(1);
+		}
+	});
+
+	it('surfaces the last error unchanged once the attempt budget is spent', async () => {
+		const thrown: Error[] = [];
+		const harness = schemaInitHarness(async () => {
+			const failure = nested(ddlFailure(SUPER_MAJORITY_THIRD_NODE_JOIN));
+			thrown.push(failure);
+			throw failure;
+		});
+
+		let caught: unknown;
+		try {
+			await harness.loadSchema();
+		} catch (error) {
+			caught = error;
+		}
+
+		expect(thrown).toHaveLength(CONTROL_WRITE_ATTEMPTS);
+		// Identity, not message equality: the LAST attempt's error object, never a wrapper
+		// and never an earlier attempt's — startup diagnostics read this text verbatim.
+		expect(caught).toBe(thrown[thrown.length - 1]);
 	});
 });

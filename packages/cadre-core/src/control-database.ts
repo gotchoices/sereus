@@ -553,7 +553,31 @@ export class ControlDatabase {
       schemaContent = CONTROL_SCHEMA;
     }
 
-    await this.db!.exec(schemaContent);
+    // Schema init is a DISTRIBUTED write, so it gets the same bounded transient-failure
+    // retry every other control write does ({@link lockedWithRetry}). Every CadreControl
+    // table is optimystic-backed (the default vtab was routed to optimystic just above),
+    // so each `create table` needs a super-majority of the party's peers to answer. On a
+    // node joining a party that already has two live members a single unanswered peer
+    // during any one create otherwise kills startup outright.
+    //
+    // Re-running the WHOLE `exec` after a partial failure is safe, and this is the
+    // non-obvious part:
+    //
+    //  - `apply schema` is a DIFF, not a replay. Quereus collects the live catalog, diffs
+    //    the declared schema against it, and only emits DDL for what is missing — which is
+    //    exactly why `initialize` hydrates persisted optimystic schemas BEFORE getting here.
+    //    Tables that already landed generate no statements on the second pass.
+    //  - a failed `create table` leaves the catalog CLEAN. `SchemaManager.createTable` calls
+    //    the module's `create` first and only registers the table on success, so the table
+    //    that failed is not in the catalog, and neither are the ones after it.
+    //
+    // Together: attempt 2 re-emits exactly the failed table and its successors. No
+    // `if not exists` juggling, no per-table loop, no statement splitting.
+    //
+    // Only the "cohort did not answer, nothing committed" class is retried; the classifier
+    // vetoes indeterminate commits and does not match `Missing block`, which is a durable
+    // convergence fault a retry cannot heal (tracked separately) and must keep propagating.
+    await this.lockedWithRetry(() => this.db!.exec(schemaContent));
     log('Schema loaded and executed');
   }
 
@@ -1634,6 +1658,12 @@ export class ControlDatabase {
    * {@link withUseNumberRetry} re-takes the lock per attempt — see the note on
    * `USE_NUMBER_ATTEMPTS`. Safe because every locked body is atomic and re-runnable
    * (the contract on {@link withWriteLock}).
+   *
+   * Also carries {@link loadSchema}'s distributed DDL, the one caller that runs BEFORE
+   * `initialized` is set — so it reaches this method directly rather than through
+   * {@link execWrite}, whose {@link ensureInitialized} would reject it. The write queue is
+   * necessarily empty at that point, so the lock is uncontended there; it is taken anyway
+   * rather than carving out a lockless path.
    */
   private lockedWithRetry<T>(fn: () => Promise<T>): Promise<T> {
     return retryControlWrite(() => this.withWriteLock(fn), this.controlWriteRetryPacing);
