@@ -12,6 +12,7 @@ import type {
   OrchestratorCreateResult,
   OrchestratorStats,
 } from './orchestrator.js';
+import { buildNodeEnv } from './container-env.js';
 
 const log = debug('cadre:provider:docker');
 
@@ -197,29 +198,7 @@ export class DockerOrchestrator implements Orchestrator {
       container = await this.docker.createContainer({
         name: `cadre-${request.containerId}`,
         Image: this.config.image,
-        Env: [
-          `CADRE_PARTY_ID=${request.partyId}`,
-          `CADRE_BOOTSTRAP_NODES=${request.bootstrapNodes.join(',')}`,
-          `CADRE_PROFILE=${request.profile}`,
-          `CADRE_HEALTH_PORT=8080`,
-          `CADRE_METRICS_PORT=9090`,
-          `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/4001`,
-          `CADRE_SEED_TOKEN=${seedToken}`,
-          request.strandFilter ? `CADRE_STRAND_FILTER=${request.strandFilter}` : '',
-          resources.storageQuotaBytes ? `CADRE_STORAGE_QUOTA=${resources.storageQuotaBytes}` : '',
-          // This tenant's push credentials, JSON-encoded (handles the PEM newlines)
-          // — only ever this tenant's, resolved upstream by ContainerService. The
-          // node reads it via the CADRE_PUSH env mapping. Never logged.
-          request.push ? `CADRE_PUSH=${JSON.stringify(request.push)}` : '',
-          // This tenant's cold-start seed-trust anchors. `cadre-cli start` unions
-          // the comma-separated list into a pinnedKeyTrustPolicy, which is the
-          // only thing that lets a fresh container accept the first seed the
-          // provider delivers — its node-local trusted-owner store starts empty
-          // and nothing replicated can fill it. Omitted entirely when the list is
-          // empty (the CLI would parse a bare var to [] anyway, but a node told to
-          // trust nobody should not look configured).
-          request.pinnedOwnerKeys?.length ? `CADRE_OWNER_KEYS=${request.pinnedOwnerKeys.join(',')}` : '',
-        ].filter(Boolean),
+        Env: buildNodeEnv({ request, seedToken, resources }),
         HostConfig: {
           // Health (which also serves the authenticated `POST /seed`) and metrics
           // are bound to the host's loopback only: the provider reaches them via
