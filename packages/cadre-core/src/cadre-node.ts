@@ -2079,6 +2079,9 @@ export class CadreNode implements SAppIdLookup {
    * is caught by the cohort's periodic pull-on-read instead. Re-issuing an already-
    * replicated row is harmless (an idempotent monotonic bump), so the coarse proxy
    * is acceptable as the agreed first cut.
+   *
+   * The public {@link getControlConnectionCount} reads the same expression for
+   * embedder-facing reporting — change one, change both.
    */
   private committedAlone(): boolean {
     return (this.controlNode?.getConnections().length ?? 0) === 0;
@@ -3937,6 +3940,24 @@ export class CadreNode implements SAppIdLookup {
    */
   getControlDatabase(): ControlDatabase | null {
     return this.controlDatabase;
+  }
+
+  /**
+   * Open control-network connections right now. A lower-bound proxy for replication
+   * reach: 0 connections ⇒ a control write commits local-only (see
+   * {@link committedAlone}, which reads the same expression for the write-while-alone
+   * seam — keep the two in step). Read-only reporting; drives no behavior here.
+   *
+   * Both this and `committedAlone` are approximations of the precise signal (the
+   * block's cluster size), and a caller that samples this AFTER a write samples a
+   * slightly wider window than `committedAlone` does inside the write itself. It
+   * exists so an embedder can warn an owner before a control write that this machine
+   * currently sees none of its siblings, and report after one that the write may not
+   * have travelled — a warning shown unconditionally is a warning people learn to
+   * ignore.
+   */
+  getControlConnectionCount(): number {
+    return this.controlNode?.getConnections().length ?? 0;
   }
 
   /**

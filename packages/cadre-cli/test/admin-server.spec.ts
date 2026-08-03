@@ -1,6 +1,13 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { AdminServer } from '../src/server/admin-server.js';
-import type { CadreNode, CadreInvite } from '@serfab/cadre-core';
+import type { CadreNode, CadreInvite, StrandRow, StrandStatus } from '@serfab/cadre-core';
+
+/**
+ * The closed strand's membership key, as it sits in the control row. Tests assert this
+ * exact string never appears in a response body — it is stored nowhere else, so a leak
+ * over the admin channel is a leak of the party's only copy.
+ */
+const CLOSED_STRAND_KEY = 'MEMBER-PRIVATE-KEY-DO-NOT-LEAK';
 
 /**
  * A scriptable mock of the CadreNode surface the admin channel delegates to.
@@ -17,6 +24,19 @@ class MockNode {
   seedUninitialized = false;
   /** When true, read methods throw an unclassifiable error (-> internal/500). */
   genericFailure = false;
+
+  /** The control-database rows — the source of truth for the strands routes. */
+  strandRows: StrandRow[] = [
+    { Id: 'strand-open', MemberPrivateKey: null, Type: 'o' },
+    { Id: 'strand-closed', MemberPrivateKey: CLOSED_STRAND_KEY, Type: 'c' },
+  ];
+  /** Instances this node is running, overlaid onto the rows by the list route. */
+  strandInstances = new Map<string, { status: StrandStatus }>();
+  /** When true, `getControlDatabase()` returns null (node never started). */
+  noControlDatabase = false;
+  /** When set, `unpublishStrand` rejects with this message. */
+  unpublishError: string | null = null;
+  controlConnections = 2;
 
   readonly partyId = 'party-xyz';
   get peerId() { return { toString: () => '12D3KooWSelf' }; }
@@ -72,6 +92,29 @@ class MockNode {
   setInviteAddresses(addresses: string[] | null) {
     this.record('setInviteAddresses', addresses);
     this.pushedAddresses = addresses;
+  }
+
+  getStrands() { return this.strandInstances; }
+
+  getControlConnectionCount() { this.record('getControlConnectionCount'); return this.controlConnections; }
+
+  getControlDatabase() {
+    if (this.noControlDatabase) return null;
+    return {
+      queryStrands: async () => { this.record('queryStrands'); return this.strandRows; },
+      queryStrand: async (strandId: string) => {
+        this.record('queryStrand', strandId);
+        return this.strandRows.find((r) => r.Id === strandId) ?? null;
+      },
+    };
+  }
+
+  async unpublishStrand(strandId: string) {
+    this.record('unpublishStrand', strandId);
+    if (this.unpublishError) {
+      throw new Error(this.unpublishError);
+    }
+    this.strandRows = this.strandRows.filter((r) => r.Id !== strandId);
   }
 }
 
@@ -337,6 +380,169 @@ describe('AdminServer', () => {
       });
       expect(res.status).toBe(400);
       expect((await res.json()).error.code).toBe('bad_request');
+    });
+  });
+
+  describe('strands routes', () => {
+    const url = (suffix = '') => `${base}/admin/strands${suffix}`;
+    const unpublished = () => node.calls.filter((c) => c.method === 'unpublishStrand').map((c) => c.args[0]);
+    const del = (suffix: string) => fetch(url(suffix), { method: 'DELETE', headers: auth() });
+
+    describe('GET /admin/strands', () => {
+      it('lists control rows, overlaying the running instances', async () => {
+        node.strandInstances.set('strand-open', { status: 'active' });
+        const res = await fetch(url(), { headers: auth() });
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data.strands).toEqual([
+          { id: 'strand-open', type: 'o', running: true, status: 'active' },
+          { id: 'strand-closed', type: 'c', running: false, status: null },
+        ]);
+      });
+
+      it('never exposes MemberPrivateKey (field name or value)', async () => {
+        node.strandInstances.set('strand-closed', { status: 'idle' });
+        const raw = await (await fetch(url(), { headers: auth() })).text();
+        expect(raw).not.toContain('MemberPrivateKey');
+        expect(raw).not.toContain(CLOSED_STRAND_KEY);
+      });
+
+      it('reports the control connection count from the node accessor', async () => {
+        node.controlConnections = 3;
+        const body = await (await fetch(url(), { headers: auth() })).json();
+        expect(body.data.controlConnections).toBe(3);
+      });
+
+      it('does not force a strand poll (side-effect free)', async () => {
+        await fetch(url(), { headers: auth() });
+        expect(node.calls.some((c) => c.method === 'forceStrandPoll')).toBe(false);
+      });
+
+      it('answers 503 not_ready when the node has no control database', async () => {
+        node.noControlDatabase = true;
+        const res = await fetch(url(), { headers: auth() });
+        expect(res.status).toBe(503);
+        expect((await res.json()).error.code).toBe('not_ready');
+      });
+
+      it('with an id is not a route (400 bad_request)', async () => {
+        const res = await fetch(url('/strand-open'), { headers: auth() });
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('bad_request');
+      });
+
+      it('requires a bearer token (401)', async () => {
+        const res = await fetch(url());
+        expect(res.status).toBe(401);
+        expect((await res.json()).error.code).toBe('not_authorized');
+      });
+    });
+
+    describe('DELETE /admin/strands/:id', () => {
+      it('removes an open strand without confirmation', async () => {
+        const res = await del('/strand-open');
+        expect(res.status).toBe(200);
+        const body = await res.json();
+        expect(body.data).toEqual({
+          strandId: 'strand-open', published: true, type: 'o', removed: true, alone: false,
+        });
+        expect(unpublished()).toEqual(['strand-open']);
+      });
+
+      it('accepts and ignores confirm on an open strand', async () => {
+        const res = await del('/strand-open?confirm=1');
+        expect(res.status).toBe(200);
+        expect((await res.json()).data.removed).toBe(true);
+        expect(unpublished()).toEqual(['strand-open']);
+      });
+
+      it('refuses a closed strand without confirm (428) and writes NOTHING', async () => {
+        const res = await del('/strand-closed');
+        expect(res.status).toBe(428);
+        const body = await res.json();
+        expect(body.ok).toBe(false);
+        expect(body.error.code).toBe('confirmation_required');
+        expect(unpublished()).toEqual([]);
+      });
+
+      it.each(['1', 'true'])('removes a closed strand with confirm=%s', async (value) => {
+        const res = await del(`/strand-closed?confirm=${value}`);
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual({
+          strandId: 'strand-closed', published: true, type: 'c', removed: true, alone: false,
+        });
+        expect(unpublished()).toEqual(['strand-closed']);
+      });
+
+      it.each(['yes', '', '0', 'on', 'TRUE'])(
+        'treats confirm=%s as unconfirmed (428, no write)',
+        async (value) => {
+          const res = await del(`/strand-closed?confirm=${value}`);
+          expect(res.status).toBe(428);
+          expect((await res.json()).error.code).toBe('confirmation_required');
+          expect(unpublished()).toEqual([]);
+        }
+      );
+
+      it('answers 200 published:false for an absent id, without writing', async () => {
+        const res = await del('/never-published');
+        expect(res.status).toBe(200);
+        expect((await res.json()).data).toEqual({
+          strandId: 'never-published', published: false, type: null, removed: false, alone: false,
+        });
+        expect(unpublished()).toEqual([]);
+      });
+
+      it('rejects a blank id before any read (400 bad_request)', async () => {
+        const res = await del('/%20%20');
+        expect(res.status).toBe(400);
+        expect((await res.json()).error.code).toBe('bad_request');
+        expect(node.calls.some((c) => c.method === 'queryStrand')).toBe(false);
+      });
+
+      it('rejects an id containing a slash, naming the limitation (400)', async () => {
+        const res = await del('/a/b');
+        expect(res.status).toBe(400);
+        const body = await res.json();
+        expect(body.error.code).toBe('bad_request');
+        expect(body.error.message).toMatch(/cadre strand remove/);
+        expect(unpublished()).toEqual([]);
+      });
+
+      it('reports alone:true when the node has no control connections', async () => {
+        node.controlConnections = 0;
+        const body = await (await del('/strand-open')).json();
+        expect(body.data.alone).toBe(true);
+      });
+
+      it('answers 503 not_ready when the node has no control database', async () => {
+        node.noControlDatabase = true;
+        const res = await del('/strand-open');
+        expect(res.status).toBe(503);
+        expect((await res.json()).error.code).toBe('not_ready');
+      });
+
+      it('surfaces an unpublish rejection message intact (500 internal)', async () => {
+        node.unpublishError = 'Strand.AuthorizedDelete rejected the write: signer is not an enrolled owner';
+        const res = await del('/strand-open');
+        expect(res.status).toBe(500);
+        const body = await res.json();
+        expect(body.error.code).toBe('internal');
+        expect(body.error.message).toMatch(/not an enrolled owner/);
+      });
+
+      it('never exposes MemberPrivateKey in the removal body', async () => {
+        const raw = await (await del('/strand-closed?confirm=1')).text();
+        expect(raw).not.toContain('MemberPrivateKey');
+        expect(raw).not.toContain(CLOSED_STRAND_KEY);
+      });
+
+      it('requires a bearer token (401)', async () => {
+        const res = await fetch(url('/strand-open'), { method: 'DELETE' });
+        expect(res.status).toBe(401);
+        expect((await res.json()).error.code).toBe('not_authorized');
+        expect(unpublished()).toEqual([]);
+      });
     });
   });
 

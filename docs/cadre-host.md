@@ -183,7 +183,7 @@ The node is given its identity via the child config's `identity.protobufKeyFile`
 
 **A child's configuration comes only from its own config file and the vars the orchestrator sets for it.** `cadre-cli` treats `CADRE_*` environment variables as config overrides that *beat* the config file, and children would otherwise inherit the manager's whole environment — so one `CADRE_PARTY_ID` (or `CADRE_STORAGE_PATH`, `CADRE_ADMIN_PORT`, …) set on the `cadre-host` process would silently reconfigure every node it spawns. `HostProcessOrchestrator` therefore strips **all** `CADRE_`-prefixed keys from the inherited environment before adding the per-child ones (startup/seed tokens, health/metrics ports, listen addrs, node-state dir, pinned owner keys). Everything else — `PATH`, `NODE_OPTIONS`, proxy/TLS settings — passes through untouched. A new `CADRE_*` var added to `cadre-cli` is covered automatically; there is no list to keep in sync.
 
-Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{ code, message } }` envelope; error codes `not_authorized` → 401, `not_ready` → 503, `bad_request` → 400, `internal` → 500):
+Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{ code, message } }` envelope; error codes `not_authorized` → 401, `not_ready` → 503, `bad_request` → 400, `confirmation_required` → 428, `internal` → 500):
 
 | Method & path | Purpose |
 |---|---|
@@ -193,10 +193,12 @@ Routes (all under `/admin`, provider-style `{ ok, data }` / `{ ok:false, error:{
 | `GET /admin/members/:peerId` | membership probe (addressable) |
 | `GET /admin/authorized-members` | trust-facing enumeration — **authorized** surface, excludes self (the set the wake / strand-addr gates consult) |
 | `GET /admin/authorized-members/:peerId` | authorized-membership probe |
+| `GET /admin/strands` | the strands this party belongs to → `{ strands: { id, type, running, status }[], controlConnections }`. Listed from the **control database**, with the running instances overlaid for `running`/`status` — a strand this node's `strandFilter` excluded, or one whose launch failed, is still this party's participation and is still removable. The row's `MemberPrivateKey` is never projected |
 | `POST /admin/invites` | mint a `CadreInvite` → `{ invite, encodedInvite }` |
 | `POST /admin/accept-phone` | authorize a redeeming peer |
 | `POST /admin/add-drone` | mint a seed authorizing a drone/donated node → `{ seed, encodedSeed }` |
 | `DELETE /admin/members/:peerId` | signed `CadrePeer` delete |
+| `DELETE /admin/strands/:id?confirm=1` | owner-signed `Strand` delete → `{ strandId, published, type, removed, alone }`. Reads the row, decides, then writes — an unpublished id answers **200** with `published:false` (nothing to do), and a **closed** strand without `confirm` answers **428 `confirmation_required`** and writes nothing (its row carries the party's membership key, stored nowhere else). `confirm` accepts exactly `1` and `true`. `alone:true` means 0 control connections were sampled after the write, so the deletion may be local-only. Ids containing `/` are not addressable here — use `cadre strand remove` |
 | `PUT /admin/invite-addresses` | push NAT-resolved invite addresses (resolver transport) |
 
 `encodeInvite` needs no route: the mint route already returns `encodedInvite`. Invite addresses use a **push** model — the manager `PUT`s NAT-resolved addresses at spawn and on every NAT change; the node holds the latest set and embeds them in subsequent invites, falling back to `libp2pNode.getMultiaddrs()` when none have been pushed. The spawn-time push is a bounded retry awaited inside `NatService.start()` (the freshly spawned node's admin channel may not be bound yet), so the manager's invite-minting API does not come up until the first address set has landed (or the retry budget elapses). Push (host→node) is chosen over a callback so the control-network node never needs to know or dial the manager's address.
