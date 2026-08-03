@@ -1,5 +1,6 @@
 ---
 description: The stand-in used by the donated-node tests is more forgiving than the real thing, so several tests pass without proving the behaviour they claim to prove.
+prereq: debt-failed-respawn-strands-donated-workdir
 files: packages/cadre-host/src/donation/__tests__/fake-orchestrator.ts, packages/cadre-host/src/orchestrator/host-process-orchestrator.ts, packages/cadre-host/src/donation/__tests__/donation-service.test.ts, packages/cadre-host/src/donation/__tests__/donation-supervisor.test.ts
 difficulty: medium
 ---
@@ -55,6 +56,22 @@ Not a mechanical change: several current tests assert on `orch.stopped` / `orch.
 handles that a faithful fake would reject, and the harnesses in both donation test files share the
 fake. Expect to re-derive what each of those tests is actually asserting. Some of them are probably
 asserting "we called stop on X" when the meaningful claim is "X ended up cleaned up".
+
+## Mirror the post-fix semantics, not today's
+
+`debt-failed-respawn-strands-donated-workdir` (the `prereq:` above) changes
+divergence 1's target behaviour, so plan against the real class *after* that
+lands, not against the code as read today. There, a `createContainer` that fails
+to launch **restores** the handle it dropped, along with its four ports — the
+drop only sticks when the spawn succeeds. So the faithful fake must drop a prior
+handle for the same `containerId` on a **successful** create only; on
+`failCreate` it must leave the prior child exactly where it was. A fake that
+drops unconditionally would be a fresh divergence in the opposite direction, and
+would make the very tests that ticket adds pass for the wrong reason.
+
+That ticket also adds a `donation-service.test.ts` case around a respawn whose
+record write fails; it does not touch `FakeOrchestrator`, so there is no conflict
+to merge — only the semantics above to carry across.
 
 An alternative worth weighing during the work: rather than growing the fake, add a small number of
 tests that drive `HostProcessOrchestrator` itself (it spawns real `cadre-cli` children, so these are
