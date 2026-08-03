@@ -309,17 +309,36 @@ Removing the override today reintroduces all 22 as hard errors. Tracked in
 | Tier | Command | Agent/CI-runnable? | What it proves |
 |------|---------|--------------------|----------------|
 | Typecheck | `yarn workspace @serfab/reference-app-ns typecheck` | **yes** | `tsc --noEmit` across the package + cadre-core/db-p2p/storage-ns/quereus types |
+| Unit | `yarn workspace @serfab/reference-app-ns test` | **yes** | Vitest over `test/**/*.spec.ts` under plain Node: the node-local slot backend (`src/node-local-slots.ts`) composed with cadre-core's real `PersistentTrustedOwnerStore` / `PersistentBootstrapPeerStore`, and `src/cadre-phone.ts`'s start/stop lifecycle over a faked `SqliteKVStore` and `CadreNode`. Guarded by the shared stale-build check (`test/global-setup.ts`). NativeScript-coupled modules (pages, view models, `ns-storage.ts`) are **not** covered here. |
 | Bundle smoke | `yarn workspace @serfab/reference-app-ns test:bundle` | **yes** | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of RN's `expo export`. |
 | Native prepare | `yarn workspace @serfab/reference-app-ns test:bundle:native` | **no** | `ns prepare android` — the webpack compile plus the gradle native-plugin build (needs Android SDK / gradle) |
 | Maestro e2e | `yarn workspace @serfab/reference-app-ns test:e2e` | **no** | full device run (needs emulator + built APK + Maestro + adb) |
 
-### Bundle smoke (the agent-runnable gate)
+### Unit suite
+
+`vitest.config.ts` collects `test/**/*.spec.ts` under `environment: 'node'`. Only the
+modules that reach no NativeScript API are targeted: `src/node-local-slots.ts` and
+`src/cadre-phone.ts`, the latter with `@optimystic/db-p2p-storage-ns` (SQLite,
+identity) and `src/ns-storage.ts` mocked, and cadre-core mocked **only** in its
+`CadreNode` export so the two node-local store classes stay real. `ns-storage.ts`
+itself, the view models, and the pages have no unit coverage — they need the
+device harness below.
+
+`test/global-setup.ts` runs the shared stale-build guard
+(`test-harness/build-freshness.ts`) first, because those specs execute real
+compiled output from `@serfab/cadre-core` and the linked `@optimystic` /
+`@quereus` siblings. A stale sibling `dist` fails the run up front rather than
+reporting green about code it never executed. `test/build-targets.spec.ts` holds
+that hand-written target list against the package's actual dependencies.
+
+### Bundle smoke (the whole-graph gate)
 
 `scripts/bundle-check.js` runs the webpack compile and asserts the whole graph
 resolves with 0 errors **and 0 warnings** (see `exportsPresence: 'warn'` above for
-why warnings are fatal). It is the only runtime-adjacent gate an agent or CI without an Android
-device can run; everything that requires the native SQLite / WebSocket plugins is
-device-only. A green bundle proves resolution and parse, **not** execution.
+why warnings are fatal). It is the only gate without an Android device that reaches
+the *whole* import graph — the unit suite above touches two modules and mocks the
+native seams — and everything that requires the native SQLite / WebSocket plugins
+stays device-only. A green bundle proves resolution and parse, **not** execution.
 
 ### Maestro e2e (device / CI — out-of-band)
 

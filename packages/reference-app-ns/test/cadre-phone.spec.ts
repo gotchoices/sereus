@@ -28,7 +28,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // happened to touch it, it blows the default 5s test timeout instead. It also
 // primes the namespace `H.state.core` caches for every later `vi.resetModules()`.
 import { CadreNode, PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
-import type { CadreNodeConfig } from '@serfab/cadre-core';
+import type { CadreNodeConfig, ControlNetworkSeed, StrandConfig } from '@serfab/cadre-core';
 
 /**
  * All doubles live in one `vi.hoisted` block: `vi.mock` factories are hoisted
@@ -73,8 +73,24 @@ const H = vi.hoisted(() => {
 		}
 	}
 
+	/** The libp2p handle `getControlNode()` hands back — only `dial` is reached. */
+	class FakeControlNode {
+		/** Raw, unstringified, so a test can tell a parsed Multiaddr from a string. */
+		readonly dialed: unknown[] = [];
+
+		async dial(addr: unknown): Promise<void> {
+			this.dialed.push(addr);
+		}
+	}
+
 	class FakeCadreNode {
 		isRunning = false;
+		/** `null` models a node whose libp2p control network never came up. */
+		controlNode: FakeControlNode | null = new FakeControlNode();
+		readonly seedsApplied: unknown[] = [];
+		readonly seedsDecoded: string[] = [];
+		readonly settleWindows: (number | undefined)[] = [];
+		readonly strandsAdded: unknown[] = [];
 
 		constructor(readonly config: CadreNodeConfig) {
 			state.nodes.push(this);
@@ -89,7 +105,43 @@ const H = vi.hoisted(() => {
 			if (state.stopError) throw state.stopError;
 			this.isRunning = false;
 		}
+
+		getControlNode(): FakeControlNode | null {
+			return this.controlNode;
+		}
+
+		async applySeed(seed: ControlNetworkSeed): Promise<unknown> {
+			this.seedsApplied.push(seed);
+			return sentinels.applySeedResult;
+		}
+
+		decodeSeed(encoded: string): unknown {
+			this.seedsDecoded.push(encoded);
+			return sentinels.decodedSeed;
+		}
+
+		getConnectionPaths(settleWindowMs?: number): unknown {
+			this.settleWindows.push(settleWindowMs);
+			return sentinels.connectionPaths;
+		}
+
+		async addStrand(config: StrandConfig): Promise<unknown> {
+			this.strandsAdded.push(config);
+			return sentinels.strandInstance;
+		}
 	}
+
+	/**
+	 * Opaque return values for the four pass-through helpers. Those wrappers add
+	 * nothing but the "started?" guard, so identity is the whole assertion —
+	 * shaping these as real cadre-core results would prove nothing extra.
+	 */
+	const sentinels = {
+		applySeedResult: { tag: 'apply-seed-result' },
+		decodedSeed: { tag: 'decoded-seed' },
+		connectionPaths: { tag: 'connection-paths' },
+		strandInstance: { tag: 'strand-instance' },
+	};
 
 	const state = {
 		/** Database names passed to `openOptimysticNSDb`, in order. */
@@ -143,7 +195,7 @@ const H = vi.hoisted(() => {
 		return { type: 'Ed25519', raw: new Uint8Array([1, 2, 3]) };
 	}
 
-	return { state, reset, openOptimysticNSDb, loadOrCreateNSPeerKey, FakeSqliteKVStore, FakeCadreNode };
+	return { state, reset, openOptimysticNSDb, loadOrCreateNSPeerKey, FakeSqliteKVStore, FakeCadreNode, sentinels };
 });
 
 vi.mock('@optimystic/db-p2p-storage-ns', () => ({
@@ -370,6 +422,29 @@ describe('startPhoneNode / stopPhoneNode lifecycle', () => {
 		expect(H.state.kvConstructions[1]!.db).toBe(H.state.dbs[1]);
 	});
 
+	it('retries a failed start over the handle that start already opened', async () => {
+		// The `??=`. A failed start leaves `identityDb` open (nothing closes it until
+		// `stopPhoneNode`), and the node it left behind is not running — so the retry
+		// falls straight through the `node?.isRunning` early-return to the open call.
+		// A plain open there would strand the first native handle, which then blocks
+		// every later open of the same file.
+		const { startPhoneNode, getPhoneNode } = await loadModule();
+		H.state.startError = new Error('control network unreachable');
+		await expect(startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] })).rejects.toThrow(
+			'control network unreachable',
+		);
+
+		H.state.startError = null;
+		const node = await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
+
+		expect(H.state.opens).toEqual(['sereus-peer-identity']);
+		expect(H.state.dbs).toHaveLength(1);
+		expect(H.state.dbs[0]!.closed).toBe(false);
+		expect(H.state.nodes).toHaveLength(2);
+		expect(getPhoneNode()).toBe(node);
+		expect(node.isRunning).toBe(true);
+	});
+
 	it('clears the handle even when db.close() rejects, so the next start opens a fresh one', async () => {
 		const { startPhoneNode, stopPhoneNode } = await loadModule();
 		await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
@@ -384,5 +459,74 @@ describe('startPhoneNode / stopPhoneNode lifecycle', () => {
 		// A dangling handle handed back here would fail every later node-local write.
 		expect(H.state.dbs).toHaveLength(2);
 		expect(H.state.kvConstructions[1]!.db).toBe(H.state.dbs[1]);
+	});
+});
+
+// ── The helpers that delegate to the running node ─────────────────────────────
+// Everything past `stopPhoneNode` in `cadre-phone.ts` is the same two lines: a
+// "started?" guard, then a forward to the node. Cheap to get wrong (a guard that
+// checks the wrong thing, an argument dropped or reordered) and silent when it is.
+
+const SEED: ControlNetworkSeed = {
+	partyId: PARTY,
+	peers: [],
+	signature: 'seed-signature',
+	signerKey: 'owner-key-b64',
+};
+
+const STRAND: StrandConfig = {
+	strandRow: { Id: 'strand-1', MemberPrivateKey: null, Type: 'o' },
+	sAppConfig: { id: 'chat', version: '1', schema: 'create table Message (Id text primary key)' },
+};
+
+describe('the helpers that require a started node', () => {
+	it('all refuse before any start', async () => {
+		const phone = await loadModule();
+
+		await expect(phone.applySeed(SEED)).rejects.toThrow('Phone node not started');
+		await expect(phone.dialPeer('/ip4/1.2.3.4/tcp/4001/ws')).rejects.toThrow('Phone node not started');
+		await expect(phone.addStrand(STRAND)).rejects.toThrow('Phone node not started');
+		expect(() => phone.decodeSeed('encoded-seed')).toThrow('Phone node not started');
+		expect(() => phone.getConnectionPaths()).toThrow('Phone node not started');
+	});
+
+	it('forward their argument to the node and hand back what it returned', async () => {
+		const phone = await loadModule();
+		await phone.startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
+		const node = H.state.nodes[0]!;
+
+		expect<unknown>(await phone.applySeed(SEED)).toBe(H.sentinels.applySeedResult);
+		expect<unknown>(phone.decodeSeed('encoded-seed')).toBe(H.sentinels.decodedSeed);
+		expect<unknown>(phone.getConnectionPaths(1234)).toBe(H.sentinels.connectionPaths);
+		expect<unknown>(await phone.addStrand(STRAND)).toBe(H.sentinels.strandInstance);
+
+		expect(node.seedsApplied).toEqual([SEED]);
+		expect(node.seedsDecoded).toEqual(['encoded-seed']);
+		expect(node.strandsAdded).toEqual([STRAND]);
+		// Optional, and passed through as-is — a defaulted window would silently
+		// change how `stuckOnRelay` reads on the diagnostics screen.
+		expect(node.settleWindows).toEqual([1234]);
+		expect(phone.getConnectionPaths()).toBeDefined();
+		expect(node.settleWindows).toEqual([1234, undefined]);
+	});
+
+	it('dialPeer dials a parsed multiaddr on the control node', async () => {
+		const phone = await loadModule();
+		await phone.startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
+
+		await phone.dialPeer('/ip4/1.2.3.4/tcp/4001/ws');
+
+		const [dialed] = H.state.nodes[0]!.controlNode!.dialed;
+		// A Multiaddr, not the raw string libp2p's `dial` would reject.
+		expect(typeof dialed).not.toBe('string');
+		expect(String(dialed)).toBe('/ip4/1.2.3.4/tcp/4001/ws');
+	});
+
+	it('dialPeer refuses when the node has no control network', async () => {
+		const phone = await loadModule();
+		await phone.startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
+		H.state.nodes[0]!.controlNode = null;
+
+		await expect(phone.dialPeer('/ip4/1.2.3.4/tcp/4001/ws')).rejects.toThrow('Control network not available');
 	});
 });

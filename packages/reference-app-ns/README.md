@@ -46,6 +46,7 @@ nativescript.config.ts
 | Script | What it does | Agent-runnable? |
 |--------|--------------|-----------------|
 | `yarn workspace @serfab/reference-app-ns typecheck` | `tsc --noEmit` across the new package + cadre-core/db-p2p/storage-ns/quereus types | yes |
+| `yarn workspace @serfab/reference-app-ns test` | `vitest run` — unit suite over `test/**/*.spec.ts` (node-local slots + the `cadre-phone` lifecycle), preceded by the shared stale-build check on cadre-core and the linked `@optimystic`/`@quereus` siblings | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle` | `node scripts/bundle-check.js` — webpack-only compile (no gradle), resolving the whole import graph (db-p2p → `rn.js`, no `@libp2p/tcp`, `@libp2p/crypto` browser variants). The analog of reference-app-rn's `expo export`. | yes |
 | `yarn workspace @serfab/reference-app-ns test:bundle:native` | `ns prepare android` — the same webpack compile plus the gradle native-plugin build | **no** — needs local Android SDK / gradle |
 | `yarn workspace @serfab/reference-app-ns test:e2e` | `node scripts/run-e2e.mjs` — spawns the RN drone fixture, `adb reverse`, runs the reused RN Maestro flows against the NS app | **no** — needs emulator + built APK + Maestro + adb (see Automated e2e) |

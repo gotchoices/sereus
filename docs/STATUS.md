@@ -603,7 +603,7 @@ the slower `yarn build`, and test files are type-checked where possible (vitest 
   (`reference-app-ns`, `reference-app-rn`, `reference-app-web`). All ten workspaces are covered:
   `reference-app-ns` was the last holdout and now carries a `vitest.config.ts` listed in its main
   `tsconfig.json` `include` alongside `test/**/*.ts`.
-  Verified by injecting an unknown key into each of the nine configs that existed then and confirming `TS2769
+  Verified by injecting an unknown key into each of the ten configs and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
   (`ProjectConfig`), which is where the `poolOptions` precedent lived.
   Enforced going forward by `scripts/check-vitest-typecheck-coverage.mjs` (`yarn check:vitest-typecheck-coverage`,
