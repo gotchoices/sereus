@@ -239,7 +239,9 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
           RestartPolicy: { Name: 'unless-stopped' },
         },
         Labels: {
-          'sereus.container-id': request.containerId,
+          // The label `resolveDockerId` filters on — the only containerId → handle
+          // mapping that survives a provider restart.
+          [CONTAINER_ID_LABEL]: request.containerId,
           'sereus.party-id': request.partyId,
           'sereus.profile': request.profile,
         },
@@ -357,6 +359,26 @@ export class DockerOrchestrator implements RecoverableOrchestrator {
       restartCount: info.RestartCount ?? 0,
       ...(exitedAt ? { exitedAt, exitCode: info.State.ExitCode } : {}),
     };
+  }
+
+  /**
+   * The Docker handle currently carrying this provider container id, found by
+   * the `sereus.container-id` label every created container wears.
+   *
+   * Asks the daemon rather than the in-memory `containerPorts` map on purpose:
+   * the map is empty after a provider restart, which is exactly when the reap
+   * needs an answer. `all: true` so a container that exited (or never got past
+   * creation) is still found — an orphan to reclaim is usually not running.
+   *
+   * Errors are NOT swallowed: "the daemon could not answer" must not reach the
+   * reap as "there is nothing to reclaim".
+   */
+  async resolveDockerId(containerId: string): Promise<string | undefined> {
+    const matches = await this.docker.listContainers({
+      all: true,
+      filters: { label: [`${CONTAINER_ID_LABEL}=${containerId}`] },
+    });
+    return matches[0]?.Id;
   }
 
   async getLogs(dockerId: string, tail = 100): Promise<string> {

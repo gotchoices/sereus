@@ -274,6 +274,19 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 	}
 
 	/**
+	 * Scan the live handles for the one spawned under this containerId — the
+	 * stand-in for Docker's `sereus.container-id` label lookup. A container the
+	 * provider lost the dockerId for is still findable, exactly as it would be
+	 * against a real daemon. `undefined` once `removeContainer` forgot it.
+	 */
+	async resolveDockerId(containerId: string): Promise<string | undefined> {
+		for (const handle of this.handles.values()) {
+			if (handle.containerId === containerId) return handle.dockerId;
+		}
+		return undefined;
+	}
+
+	/**
 	 * NOTE: throws once `removeContainer` has forgotten the handle, mirroring
 	 * `docker logs` on a removed container. A scenario that tails a node AFTER a
 	 * failed provision therefore gets nothing — the provision's own reclaim

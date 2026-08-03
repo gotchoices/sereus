@@ -93,6 +93,9 @@ export {
   type ContainerServiceOptions,
   CONTAINER_ENROLLMENT_TIMEOUT_MS,
   CONTAINER_ENROLLMENT_POLL_MS,
+  CONTAINER_PROVISIONING_TTL_MS,
+  CONTAINER_ENROLLMENT_TTL_MS,
+  CONTAINER_REAP_SWEEP_MS,
 } from './service/container-service.js';
 
 // Wire types for a container's live `/status` payload (referenced by
@@ -110,6 +113,7 @@ export {
   type BillingHooks,
   type InvoiceLineItem,
   DEFAULT_PLANS,
+  QUOTA_CONSUMING_STATUSES,
 } from './service/billing-service.js';
 
 // Server

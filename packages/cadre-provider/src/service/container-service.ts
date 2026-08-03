@@ -27,6 +27,27 @@ export const CONTAINER_ENROLLMENT_POLL_MS = 2_000;
 const ENROLLMENT_FAILURE_LOG_LINES = 50;
 
 /**
+ * Age past which a `pending` / `creating` / `stopping` record is treated as
+ * abandoned by a provider that died mid-flight. Generous compared with
+ * cadre-host's 5 minutes because `creating` spans an orchestrator call that can
+ * include a Docker image pull (`pullPolicy: 'always'`) over a slow link — and
+ * the record is not touched during that pull, so the TTL is the only thing
+ * standing between a slow pull and a false reap of a provision that is genuinely
+ * still in flight.
+ */
+export const CONTAINER_PROVISIONING_TTL_MS = 15 * 60 * 1000;
+
+/**
+ * Age past which an `enrolling` record is no longer owned by an in-process
+ * `waitForEnrollment` (which gives up after `CONTAINER_ENROLLMENT_TIMEOUT_MS`),
+ * so the sweep may resolve it without two writers racing on the same record.
+ */
+export const CONTAINER_ENROLLMENT_TTL_MS = 5 * 60 * 1000;
+
+/** How often the reap sweep runs while the provider is up. */
+export const CONTAINER_REAP_SWEEP_MS = 5 * 60 * 1000;
+
+/**
  * Restarts tolerated during enrollment before the wait calls it a crash loop.
  * `DockerOrchestrator` runs tenant nodes under `RestartPolicy: unless-stopped`
  * precisely so a transient first-boot failure recovers by itself, so one restart
@@ -53,6 +74,50 @@ function isChildDown(state: ContainerRunState): boolean {
 function hasChildDied(state: ContainerRunState, previous: ContainerRunState | undefined): boolean {
   if (state.restartCount > ENROLLMENT_TOLERATED_RESTARTS) return true;
   return isChildDown(state) && previous !== undefined && isChildDown(previous);
+}
+
+/**
+ * The same two signals as {@link hasChildDied}, judged on ONE reading — for the
+ * reap sweep, which sees a single reading every few minutes and has no previous
+ * one to compare against.
+ *
+ * Sound there precisely because the record has already sat on `enrolling` past
+ * its TTL: the "crashed once and is booting again" case {@link hasChildDied}
+ * protects has had minutes to come back and has not, so a down-and-exited
+ * reading now is the end state rather than a moment inside a restart.
+ */
+function isChildGone(state: ContainerRunState): boolean {
+  return state.restartCount > ENROLLMENT_TOLERATED_RESTARTS || isChildDown(state);
+}
+
+/** The one wording for "this container's process died on us", used by the wait and the sweep. */
+function childDiedMessage(state: ContainerRunState): string {
+  return `container process exited during enrollment (restarts=${state.restartCount}, exitCode=${state.exitCode ?? 'unknown'})`;
+}
+
+/**
+ * Age past which a record in this status is nobody's responsibility any more,
+ * or `undefined` for a status the sweep never touches. `running` is watched by
+ * billing, `stopped`/`error` are terminal, and everything else is either an
+ * in-flight call's to finish or an abandoned record's to be reaped.
+ */
+function reapTtlMsFor(status: ContainerStatus): number | undefined {
+  switch (status) {
+    case 'pending':
+    case 'creating':
+    case 'stopping':
+      return CONTAINER_PROVISIONING_TTL_MS;
+    case 'enrolling':
+      return CONTAINER_ENROLLMENT_TTL_MS;
+    default:
+      return undefined;
+  }
+}
+
+/** Whether this record is in a reapable status AND has sat there past that status's TTL. */
+function isStuck(container: Container, nowMs: number): boolean {
+  const ttlMs = reapTtlMsFor(container.status);
+  return ttlMs !== undefined && nowMs - container.updatedAt.getTime() >= ttlMs;
 }
 
 /**
@@ -101,6 +166,11 @@ export interface ContainerServiceOptions {
   enrollmentTimeoutMs?: number;
   /** Override the enrollment poll interval; defaults to `CONTAINER_ENROLLMENT_POLL_MS`. */
   enrollmentPollMs?: number;
+  /**
+   * Clock override, so a reap TTL can be tested by handing the service a date
+   * rather than by moving wall-clock time or faking timers.
+   */
+  now?: () => Date;
 }
 
 /**
@@ -113,6 +183,10 @@ export class ContainerService {
   private readonly push?: ProviderPushConfig;
   private readonly enrollmentTimeoutMs: number;
   private readonly enrollmentPollMs: number;
+  private readonly now: () => Date;
+  private reapInterval?: ReturnType<typeof setInterval>;
+  /** A sweep that inspects many containers can outlast its interval; one at a time. */
+  private sweeping = false;
 
   constructor(options: ContainerServiceOptions) {
     this.store = options.store;
@@ -120,6 +194,7 @@ export class ContainerService {
     this.push = options.push;
     this.enrollmentTimeoutMs = options.enrollmentTimeoutMs ?? CONTAINER_ENROLLMENT_TIMEOUT_MS;
     this.enrollmentPollMs = options.enrollmentPollMs ?? CONTAINER_ENROLLMENT_POLL_MS;
+    this.now = options.now ?? (() => new Date());
     log('ContainerService initialized');
   }
 
@@ -252,6 +327,15 @@ export class ContainerService {
     }
   }
 
+  /** Best-effort stop; logs but never throws (cleanup path — `safeReclaim` follows regardless). */
+  private async safeStop(dockerId: string): Promise<void> {
+    try {
+      await this.orchestrator.stopContainer(dockerId);
+    } catch (err) {
+      log('Failed to stop container %s: %O', dockerId, err);
+    }
+  }
+
   /**
    * Wait for a freshly-created container to report healthy.
    *
@@ -274,22 +358,7 @@ export class ContainerService {
       // (stop, then remove) as a crash.
       if (container?.status !== 'enrolling') return;
 
-      // Read `/status` rather than `/health`: it reports the same `status` field
-      // and additionally carries the node's `peerId`, which we record once here.
-      // `fetchContainerHealthStatus` swallows unreachable/non-OK responses, so a
-      // node that is still starting simply keeps the loop waiting.
-      const health = await fetchContainerHealthStatus(container);
-      if (health?.status === 'healthy') {
-        // peerId is durable for the life of the container's volume, so the
-        // first healthy report is authoritative; it is absent only if the node
-        // reports healthy before acquiring a libp2p identity.
-        // NOTE: nothing backfills it afterwards. Harmless while every consumer of
-        // peerId reads live `/status` (`getPeerInfo`); if the stored field ever
-        // becomes a read path of its own, add a backfill on the next status read.
-        await this.updateStatus(containerId, 'running', health.peerId ? { peerId: health.peerId } : undefined);
-        log('Container %s is now running (peer %s)', containerId, health.peerId ?? 'unknown');
-        return;
-      }
+      if (await this.enrollIfHealthy(container)) return;
 
       // Health is read FIRST on purpose: a container that crashed once and came
       // back healthy must still enrol. Only an unhealthy read asks whether the
@@ -304,13 +373,40 @@ export class ContainerService {
       await new Promise(resolve => setTimeout(resolve, this.enrollmentPollMs));
     }
 
-    // NOTE: the timeout still strands a record on 'enrolling', but now only for a
-    // container whose process is alive and simply not healthy yet — a dead child
-    // fails above. Harmless while 'enrolling' stays seedable (`applySeed` accepts
-    // it), so a merely-slow node still works. If anything ever reads 'enrolling'
-    // as not-failed (an SLA sweep, a UI waiting on the record instead of polling
-    // /status, an operator dashboard), fail to 'error' here instead.
+    // The timeout leaves the record on 'enrolling' — deliberately, for a container
+    // whose process is alive and simply not healthy yet (a dead child fails
+    // above), because 'enrolling' stays seedable (`applySeed` accepts it) so a
+    // merely-slow node still works. `reapStuckContainers` picks the record up
+    // from here once CONTAINER_ENROLLMENT_TTL_MS has passed: it enrols a node
+    // that came good late, and terminalizes one whose child is gone.
     log('Container %s enrollment timeout', containerId);
+  }
+
+  /**
+   * Promote a container that reports healthy to `running`, recording the peerId
+   * the same `/status` read carries. Shared by the enrollment wait and the reap
+   * sweep, so "what enrolling successfully means" is written exactly once.
+   *
+   * Reads `/status` rather than `/health`: it reports the same `status` field and
+   * additionally carries the node's `peerId`. `fetchContainerHealthStatus`
+   * swallows unreachable/non-OK responses, so a node that is still starting
+   * simply answers "not yet".
+   *
+   * @returns whether the container enrolled.
+   */
+  private async enrollIfHealthy(container: Container): Promise<boolean> {
+    const health = await fetchContainerHealthStatus(container);
+    if (health?.status !== 'healthy') return false;
+
+    // peerId is durable for the life of the container's volume, so the first
+    // healthy report is authoritative; it is absent only if the node reports
+    // healthy before acquiring a libp2p identity.
+    // NOTE: nothing backfills it afterwards. Harmless while every consumer of
+    // peerId reads live `/status` (`getPeerInfo`); if the stored field ever
+    // becomes a read path of its own, add a backfill on the next status read.
+    await this.updateStatus(container.id, 'running', health.peerId ? { peerId: health.peerId } : undefined);
+    log('Container %s is now running (peer %s)', container.id, health.peerId ?? 'unknown');
+    return true;
   }
 
   /**
@@ -327,9 +423,7 @@ export class ContainerService {
     if (!state || !hasChildDied(state, previous)) return state;
 
     await this.logContainerTail(containerId, dockerId);
-    throw new Error(
-      `container process exited during enrollment (restarts=${state.restartCount}, exitCode=${state.exitCode ?? 'unknown'})`
-    );
+    throw new Error(childDiedMessage(state));
   }
 
   /**
@@ -417,8 +511,7 @@ export class ContainerService {
       await this.updateStatus(id, 'stopping');
 
       if (container.dockerId) {
-        await this.orchestrator.stopContainer(container.dockerId);
-        await this.orchestrator.removeContainer(container.dockerId);
+        await this.stopAndRemove(container.dockerId);
       }
 
       await this.updateStatus(id, 'stopped');
@@ -428,6 +521,11 @@ export class ContainerService {
       log('Container %s termination error: %O', id, error);
       const updated = await this.store.getContainer(id);
       if (updated) {
+        // NOTE: the record stops counting against the customer's plan here (see
+        // QUOTA_CONSUMING_STATUSES) while its container may still be up — the
+        // stop or remove is what just failed. Same trade the reap makes
+        // deliberately: quota is generous to the tenant rather than exact. If
+        // provider quota ever has to be exact, this is the site to revisit.
         updated.status = 'error';
         updated.error = error instanceof Error ? error.message : String(error);
         updated.updatedAt = new Date();
@@ -435,6 +533,204 @@ export class ContainerService {
       }
       return false;
     }
+  }
+
+  /**
+   * Stop and remove one container, treating "the orchestrator no longer has it"
+   * as the desired end state rather than a failure.
+   *
+   * Every path that writes `status: 'error'` reclaims the container first but
+   * leaves `dockerId` on the record, so a tenant who then issues
+   * `DELETE /containers/:id` sends us at a handle Docker answers 404 for. Without
+   * this, that record could never reach `stopped` — and before the quota rules
+   * changed, that meant a slot no tenant action could release.
+   *
+   * Genuine failures (daemon unreachable, a container that is still there and
+   * would not stop) rethrow onto the caller's error path. `inspectRunState` is
+   * the seam: only a handle the orchestrator affirmatively does not know is
+   * forgiven, and an orchestrator that cannot answer is treated as "still there".
+   */
+  private async stopAndRemove(dockerId: string): Promise<void> {
+    try {
+      await this.orchestrator.stopContainer(dockerId);
+      await this.orchestrator.removeContainer(dockerId);
+    } catch (err) {
+      if (await this.orchestratorKnows(dockerId)) throw err;
+      log('Container handle %s is already gone; treating removal as done: %O', dockerId, err);
+    }
+  }
+
+  /**
+   * Whether the orchestrator still knows this handle. `true` whenever it cannot
+   * say — no `inspectRunState`, or a probe that itself failed — because an
+   * unanswerable question must never be read as "the container is gone".
+   */
+  private async orchestratorKnows(dockerId: string): Promise<boolean> {
+    if (!this.orchestrator.inspectRunState) return true;
+    try {
+      return (await this.orchestrator.inspectRunState(dockerId)) !== undefined;
+    } catch (err) {
+      log('Could not confirm whether %s still exists; assuming it does: %O', dockerId, err);
+      return true;
+    }
+  }
+
+  /**
+   * Start the periodic sweep for container records the provider abandoned
+   * mid-flight, and run one immediately — records recovered from disk at startup
+   * are the whole reason the sweep exists, so they must not wait a full interval.
+   *
+   * Idempotent; pair with {@link stopReaper}. A leaked interval keeps the
+   * process (and a test runner) alive after shutdown.
+   */
+  startReaper(intervalMs: number = CONTAINER_REAP_SWEEP_MS): void {
+    if (this.reapInterval) return;
+    this.reapInterval = setInterval(() => { void this.runReapSweep(); }, intervalMs);
+    log('Container reap sweep started with interval %dms', intervalMs);
+    void this.runReapSweep();
+  }
+
+  /** Stop the periodic sweep. Safe to call when it was never started. */
+  stopReaper(): void {
+    if (!this.reapInterval) return;
+    clearInterval(this.reapInterval);
+    this.reapInterval = undefined;
+  }
+
+  /** One sweep, guarded so a slow orchestrator cannot have two running at once. */
+  private async runReapSweep(): Promise<void> {
+    if (this.sweeping) {
+      log('Reap sweep still in flight; skipping this tick');
+      return;
+    }
+    this.sweeping = true;
+    try {
+      const reaped = await this.reapStuckContainers();
+      if (reaped.length) log('Reaped %d stuck container record(s): %o', reaped.length, reaped);
+    } catch (err) {
+      log('Reap sweep failed: %O', err);
+    } finally {
+      this.sweeping = false;
+    }
+  }
+
+  /**
+   * Resolve container records nothing is watching any more.
+   *
+   * `createContainer` writes the record as `pending` before provisioning starts
+   * and `provisionContainer` moves it to `creating` before calling the
+   * orchestrator, so a provider that dies anywhere in that window (including
+   * during the orchestrator call itself, which can span a Docker image pull)
+   * leaves a record no in-flight call will ever advance. `stopping` has the same
+   * shape from the terminate path, and `enrolling` outlives the in-process
+   * `waitForEnrollment` that owned it — a container that came up healthy while
+   * the provider was down would otherwise stay `enrolling` forever and never be
+   * metered, since billing only reads `running` records.
+   *
+   * Best-effort per record: a failure is logged and the sweep continues.
+   *
+   * @returns the ids the sweep resolved.
+   */
+  async reapStuckContainers(): Promise<string[]> {
+    const nowMs = this.now().getTime();
+    const candidates = (await this.store.listContainers()).filter(c => isStuck(c, nowMs));
+    const reaped: string[] = [];
+
+    for (const candidate of candidates) {
+      try {
+        // Re-read: the list above is a snapshot and every reclaim awaits, so an
+        // in-flight provision in THIS process can advance a record between the
+        // snapshot and now. Re-test the predicate against what is stored now.
+        const current = await this.store.getContainer(candidate.id);
+        if (!current || !isStuck(current, nowMs)) continue;
+        if (await this.reapOne(current)) reaped.push(current.id);
+      } catch (err) {
+        log('Failed to reap container %s: %O', candidate.id, err);
+      }
+    }
+
+    return reaped;
+  }
+
+  /** Resolve one stuck record per its status; returns whether the sweep resolved it. */
+  private async reapOne(container: Container): Promise<boolean> {
+    if (container.status === 'enrolling') return this.reapStuckEnrolling(container);
+
+    if (container.status === 'stopping') {
+      // Reclaim first, then terminalize — the same order `terminateContainer`
+      // uses, so a crash mid-reap leaves the record on `stopping` and the next
+      // sweep simply retries it.
+      await this.reclaimStuckContainer(container);
+      await this.updateStatus(container.id, 'stopped');
+      log('Reaped container %s stuck in stopping', container.id);
+      return true;
+    }
+
+    // 'pending' / 'creating' — status FIRST, then reclaim, matching `terminate`'s
+    // ordering rule in both packages: a crash mid-reap must leave a terminal
+    // record rather than a repeat of the same stuck state. The status is read off
+    // before the write, since a store may hand back the record by reference.
+    const stuckIn = container.status;
+    await this.updateStatus(container.id, 'error', {
+      error: `stuck in ${stuckIn} past TTL — provider likely restarted mid-provision`,
+    });
+    await this.reclaimStuckContainer(container);
+    log('Reaped container %s stuck in %s', container.id, stuckIn);
+    return true;
+  }
+
+  /**
+   * Decide the fate of an `enrolling` record no in-process waiter owns any more.
+   *
+   * Healthy → `running`, which is what closes the never-metered hole after a
+   * provider restart. Otherwise ask whether the child is even alive: gone →
+   * `error` + reclaim; alive-but-unhealthy, or an orchestrator that cannot say →
+   * leave it alone. An alive container is genuinely consuming its resources, the
+   * record honestly reflects that, and `enrolling` is still seedable — a tenant's
+   * merely-slow node must not be terminalized.
+   */
+  private async reapStuckEnrolling(container: Container): Promise<boolean> {
+    if (await this.enrollIfHealthy(container)) {
+      log('Reaped container %s stuck in enrolling; it came up healthy', container.id);
+      return true;
+    }
+
+    const state = container.dockerId
+      ? await this.probeRunState(container.id, container.dockerId)
+      : undefined;
+    if (!state || !isChildGone(state)) {
+      log('Container %s still enrolling past TTL; child is not proven gone, leaving it', container.id);
+      return false;
+    }
+
+    await this.updateStatus(container.id, 'error', { error: childDiedMessage(state) });
+    await this.reclaimStuckContainer(container);
+    log('Reaped container %s stuck in enrolling; its child is gone', container.id);
+    return true;
+  }
+
+  /**
+   * Best-effort stop + remove of whatever container the stuck record still names:
+   * the `dockerId` it carries, else whatever the orchestrator can find under the
+   * provider's container id — a provider that died mid-provision never wrote one,
+   * and that container is otherwise orphaned, running under `unless-stopped` with
+   * host ports and a volume held and no record naming it.
+   *
+   * The stop/remove halves never throw (see `safeStop`/`safeReclaim`), so a
+   * reclaim failure cannot roll back the terminal status write. A `resolveDockerId`
+   * that throws does propagate, to the sweep's per-record catch: "the daemon could
+   * not answer" is not "there is nothing to reclaim".
+   *
+   * NOTE: `removeContainer` deletes the container's named `/data` volume, so
+   * reaping a stuck `creating` record destroys that container's node identity.
+   * Correct for a container that never enrolled; if the reap is ever widened to a
+   * status where the node HAS held an identity, that call needs an opt-out.
+   */
+  private async reclaimStuckContainer(container: Container): Promise<void> {
+    const dockerId = container.dockerId ?? await this.orchestrator.resolveDockerId?.(container.id);
+    if (!dockerId) return;
+    await this.safeStop(dockerId);
+    await this.safeReclaim(dockerId);
   }
 
   /**

@@ -132,6 +132,22 @@ export interface RecoverableOrchestrator extends Orchestrator {
    * connection must not read as "the child is fine".
    */
   inspectRunState?(dockerId: string): Promise<ContainerRunState | undefined>;
+
+  /**
+   * Map a provider container id back to the orchestrator's current handle for it.
+   * The reap needs this for a record that names no `dockerId` — the provider died
+   * before it could write one — so a container that WAS started can still be
+   * found and reclaimed instead of orphaned.
+   *
+   * `undefined` when the orchestrator knows no such container. Throws when the
+   * question could not be answered at all, which the caller must not read as
+   * "there is nothing to reclaim".
+   *
+   * Async, unlike cadre-host's synchronous `DonationOrchestrator.resolveDockerId`:
+   * here the container runtime is the source of truth, not an in-memory map, so
+   * the answer survives a provider restart.
+   */
+  resolveDockerId?(containerId: string): Promise<string | undefined>;
 }
 
 /**
@@ -195,6 +211,14 @@ export class MockOrchestrator implements RecoverableOrchestrator {
       restartCount: 0,
       ...(container.exitedAt ? { exitedAt: container.exitedAt, exitCode: container.exitCode } : {}),
     };
+  }
+
+  /** Scans the stored create requests — the same containerId → handle mapping Docker gets from labels. */
+  async resolveDockerId(containerId: string): Promise<string | undefined> {
+    for (const [dockerId, container] of this.containers) {
+      if (container.request.containerId === containerId) return dockerId;
+    }
+    return undefined;
   }
 
   async getLogs(_dockerId: string, _tail?: number): Promise<string> {

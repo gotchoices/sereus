@@ -3,7 +3,7 @@
  */
 
 import debug from 'debug';
-import type { UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
+import type { ContainerStatus, UsageMetrics, BillingPlan, CustomerBilling } from '../types.js';
 import type { ProviderStore } from './store.js';
 import type { Orchestrator } from './orchestrator.js';
 import { fetchContainerHealthStatus } from './container-health.js';
@@ -62,6 +62,22 @@ export const DEFAULT_PLANS: Record<string, BillingPlan> = {
     maxContainers: 100,
   },
 };
+
+/**
+ * Statuses that consume one of a customer's plan slots: everything that may
+ * still name live resources. `stopped` and `error` do not — every path that
+ * writes `error` reclaims the container first (provisioning failure, enrollment
+ * failure, `ContainerService.reapStuckContainers`), and nothing ever deletes a
+ * container record, so counting `error` would lock a tenant out of their plan
+ * permanently once enough provisions had failed.
+ */
+export const QUOTA_CONSUMING_STATUSES: ReadonlySet<ContainerStatus> = new Set<ContainerStatus>([
+  'pending',
+  'creating',
+  'enrolling',
+  'running',
+  'stopping',
+]);
 
 /** Billing service options */
 export interface BillingServiceOptions {
@@ -164,7 +180,7 @@ export class BillingService {
     if (!plan) return { allowed: true };
 
     const containers = await this.store.listContainers(customerId);
-    const activeContainers = containers.filter(c => c.status !== 'stopped');
+    const activeContainers = containers.filter(c => QUOTA_CONSUMING_STATUSES.has(c.status));
 
     if (activeContainers.length >= plan.maxContainers) {
       return { allowed: false, reason: `Plan limit reached (${plan.maxContainers} containers)` };

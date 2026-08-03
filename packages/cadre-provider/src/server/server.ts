@@ -128,6 +128,7 @@ export async function createProviderServer(
     try {
       console.log(`Cadre Provider shutting down: ${reason}`);
       billingService.stop();
+      containerService.stopReaper();
 
       let timer: ReturnType<typeof setTimeout> | undefined;
       const drain = app.close();
@@ -177,6 +178,12 @@ export async function createProviderServer(
     // Start billing service
     billingService.start();
 
+    // Reap container records this provider abandoned mid-flight (a crash between
+    // writing the record and finishing the orchestrator call, or an `enrolling`
+    // record whose in-process waiter died with the last process). Sweeps once
+    // immediately, so records recovered from disk are handled at startup.
+    containerService.startReaper();
+
     // Start HTTP server
     const address = await app.listen({
       host: config.server.host ?? '0.0.0.0',
@@ -190,6 +197,7 @@ export async function createProviderServer(
   const stop = async () => {
     log('Stopping server');
     billingService.stop();
+    containerService.stopReaper();
     await app.close();
     log('Server stopped');
   };
