@@ -881,11 +881,11 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//      each node mints its own random root id, so the joiner's locally-minted root
 	//      differs from the founder's — but the push copies the founder's root under
 	//      the FOUNDER's id, which is the block the founder's collections are actually
-	//      traversed through. Measured with the catch-up live (2026-08-03): the founder
-	//      holds 29 committed blocks after the writes below and the joiner's own store
-	//      covered all 29 on the FIRST poll — the debounce elapsed while the writes ran,
-	//      so the gate did not wait in that run, though unlike the first gate it MAY
-	//      legitimately wait up to a debounce-plus-push.
+	//      traversed through. Measured with the catch-up live (2026-08-03, 5 green runs):
+	//      the founder holds 29 committed blocks after the writes below and the joiner's
+	//      own store covered all 29 — but unlike the first gate this one DOES wait, ~510
+	//      to 530 ms, being the tail of the ~1 s debounce that the writes did not use up.
+	//      Do not tighten this gate toward first-poll coverage; waiting is correct here.
 	//
 	// If a residue ever reappears here, narrow the second gate only with an EXPLICIT,
 	// measured exclusion naming exactly which ids and why — never a blanket narrowing

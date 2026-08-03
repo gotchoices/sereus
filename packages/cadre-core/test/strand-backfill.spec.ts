@@ -343,6 +343,51 @@ describe('StrandBackfill', () => {
     expect(pushes.length).toBe(2);
   });
 
+  it('keeps pushing after a mid-run chunk failure once the peer has answered at least one push', async () => {
+    // A transient blip on a peer that demonstrably speaks the protocol must not abandon
+    // the rest of the store — only a peer that has answered NOTHING is treated as dead.
+    let calls = 0;
+    const { backfill, pushes } = makeBackfill(
+      { b1: committed('b1'), b2: committed('b2'), b3: committed('b3') },
+      { maxChunkBlocks: 1 },
+      {
+        respond: () => {
+          calls += 1;
+          if (calls === 2) throw new Error('stream reset');
+          return { missing: [] };
+        }
+      }
+    );
+
+    const result = await backfill.catchUpPeer(peer('p1'));
+
+    expect(pushes.length).toBe(3);
+    expect(result.accepted).toBe(2);
+    // Not clean, so the peer is not memoized — the next connection:open re-offers everything.
+    const retry = await backfill.catchUpPeer(peer('p1'));
+    expect(retry.offered).toBe(3);
+  });
+
+  it('abandons the run after the first failed chunk instead of dialing an unreachable peer per chunk', async () => {
+    // A peer that does not speak this strand's block-transfer protocol (a bare relay)
+    // fails every dial. One chunk per block, so without fail-fast this would be 3 pushes.
+    const { backfill, pushes } = makeBackfill(
+      { b1: committed('b1'), b2: committed('b2'), b3: committed('b3') },
+      { maxChunkBlocks: 1 },
+      { respond: () => { throw new Error('protocol not supported'); } }
+    );
+
+    const result = await backfill.catchUpPeer(peer('relay'));
+
+    expect(pushes.length).toBe(1);
+    expect(result.accepted).toBe(0);
+
+    // Not marked done — the next connection:open retries the whole store from the start.
+    const retry = await backfill.catchUpPeer(peer('relay'));
+    expect(pushes.length).toBe(2);
+    expect(retry.accepted).toBe(0);
+  });
+
   it('marks the peer done after a clean run — a second connection:open pushes nothing', async () => {
     const { backfill, pushes, fake } = makeBackfill({ b1: committed('b1') }, { debounceMs: 1 });
     backfill.start();

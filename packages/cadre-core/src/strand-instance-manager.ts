@@ -290,9 +290,12 @@ export class StrandInstanceManager {
       log('Strand %s using provided storage provider', strandId);
     }
 
-    // Note: protocolPrefix would be used by libp2p services, but createLibp2pNode
-    // may not support it yet - tracked for future implementation.
-    const _protocolPrefix = `/sereus/strand/${strandId}`;
+    // db-p2p namespaces every one of the node's protocol ids by network name
+    // (`/optimystic/<networkName>/...`), so anything dialing this node's own
+    // services must derive its prefix from the SAME string the node was built
+    // with — hence one binding for both, not two literals that can drift.
+    const networkName = `strand-${strandId}`;
+    const protocolPrefix = `/optimystic/${networkName}`;
 
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes.
@@ -304,7 +307,7 @@ export class StrandInstanceManager {
       const node = await createLibp2pNode({
         port: 0, // Random port
         bootstrapNodes: config.bootstrapNodes ?? [],
-        networkName: `strand-${strandId}`,
+        networkName,
         storage: strandStorage,
         fretProfile: config.profile === 'storage' ? 'core' : 'edge',
         relay: enableRelay,
@@ -376,9 +379,9 @@ export class StrandInstanceManager {
             libp2p: node,
             peerNetwork: node.keyNetwork,
             storage: strandStorage,
-            // MUST match the prefix the receiver registered its block-transfer
-            // handler under (db-p2p namespaces every service by networkName).
-            protocolPrefix: `/optimystic/strand-${strandId}`
+            // The same prefix the receiver registered its block-transfer handler
+            // under — derived from networkName above, never re-spelled here.
+            protocolPrefix
           }, config.backfill);
           backfill.start();
           this.backfills.set(strandId, backfill);
@@ -409,8 +412,9 @@ export class StrandInstanceManager {
    * Shared by `quiesceStrand`, `stopStrand`, and that rollback path.
    */
   private async releaseRuntime(instance: StrandInstance): Promise<void> {
-    // Backfill first — before the database closes and the libp2p node stops —
-    // so no catch-up push is issued against a torn-down transport.
+    // Backfill first — before the database closes and the libp2p node stops — so
+    // no NEW catch-up push is issued against a torn-down transport. A push already
+    // in flight is not awaited; it fails into the module's own per-chunk catch.
     const backfill = this.backfills.get(instance.strandId);
     if (backfill) {
       backfill.stop();

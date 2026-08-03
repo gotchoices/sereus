@@ -1,5 +1,5 @@
 import debug from 'debug';
-import type { Libp2p, PeerId } from '@libp2p/interface';
+import type { Connection, Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionId, IPeerNetwork } from '@optimystic/db-core';
 import { BlockTransferClient, type IRawStorage } from '@optimystic/db-p2p';
 
@@ -16,7 +16,23 @@ import { BlockTransferClient, type IRawStorage } from '@optimystic/db-p2p';
 // Membership: anything connected on the strand's own libp2p network already receives
 // cohort replicas of new commits, so pushing older blocks to it exposes nothing new. No
 // membership gate here — adding one would diverge from what ordinary replication already
-// does on this network.
+// does on this network. A peer that does NOT speak this strand's block-transfer protocol
+// (a bare circuit relay or bootstrap node the strand node also connects to) cannot receive
+// anything: the protocol id is namespaced per strand, so the dial fails and the push is
+// dropped.
+//
+// NOTE: that failing case costs one dial timeout per connection:open from such a peer, and
+// is never memoized (only clean runs are). Bounded today by the debounce plus the
+// unreachable-peer bail in `runCatchUp` — one dial per event, not one per chunk. If a strand
+// node ever holds many non-strand connections, or the enumeration ahead of the first chunk
+// gets expensive, pre-check `libp2p.peerStore` for this strand's block-transfer protocol
+// before enumerating.
+//
+// NOTE: a run that fails is retried only when that peer next opens a connection. Over a
+// stable connection a transient push failure therefore leaves the peer partially copied
+// until the next reconnect (read repair still covers reads meanwhile). If strand meshes
+// ever hold long-lived connections where that matters, re-arm the debounce timer with a
+// backoff on a non-clean run instead of waiting for connection:open.
 
 const log = debug('sereus:cadre:strand-backfill');
 
@@ -141,7 +157,7 @@ export class StrandBackfill {
   private readonly inFlight = new Set<string>();
   /** Pending per-peer debounce timers, cleared on stop. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
-  private readonly onConnectionOpen: (evt: CustomEvent<{ remotePeer: PeerId }>) => void;
+  private readonly onConnectionOpen: (evt: CustomEvent<Connection>) => void;
   private loggedNoListBlockIds = false;
 
   constructor(private readonly deps: StrandBackfillDeps, config?: StrandBackfillConfig) {
@@ -158,10 +174,11 @@ export class StrandBackfill {
     this.deps.libp2p.addEventListener('connection:open', this.onConnectionOpen);
     // A runtime rebuilt over live connections (resumeStrand) never sees their
     // connection:open, so walk what is already connected once.
-    for (const connection of this.deps.libp2p.getConnections()) {
+    const existing = this.deps.libp2p.getConnections();
+    for (const connection of existing) {
       this.schedulePeer(connection.remotePeer);
     }
-    log('[%s] started (%d peer(s) already connected)', this.deps.strandId, this.deps.libp2p.getConnections().length);
+    log('[%s] started (%d peer(s) already connected)', this.deps.strandId, existing.length);
   }
 
   /** Unsubscribe, clear timers; in-flight runs observe the stopped flag and bail. */
@@ -203,6 +220,11 @@ export class StrandBackfill {
     this.inFlight.add(key);
     try {
       const { result, clean } = await this.runCatchUp(peerId);
+      // NOTE: a run that hit `maxBlocks` is still "clean" and still memoizes the peer, so
+      // the tail past the ceiling never reaches it. Deliberate: enumeration is not
+      // resumable, so not memoizing would re-push the same prefix on every reconnect
+      // without ever advancing. Loud in the log below (capped > 0). If a strand's store can
+      // realistically exceed maxBlocks, the fix is a resumable cursor, not either policy.
       if (clean && !this.stopped) {
         this.done.add(key);
       }
@@ -237,6 +259,14 @@ export class StrandBackfill {
     const encoder = new TextEncoder();
     let chunk: Chunk = { ids: [], buffers: [], meta: {}, bytes: 0 };
     let chunkFailed = false;
+    let anyChunkDelivered = false;
+    /**
+     * A peer that has answered no push at all, and failed one, is not reachable on this
+     * protocol — abandon rather than spend a dial timeout per remaining chunk. Once ONE
+     * push has been answered the peer demonstrably speaks it, so a later failure is a
+     * transient blip and the rest of the store is still worth pushing.
+     */
+    const peerUnreachable = (): boolean => chunkFailed && !anyChunkDelivered;
 
     const flush = async (): Promise<void> => {
       if (chunk.ids.length === 0) return;
@@ -247,6 +277,7 @@ export class StrandBackfill {
           dialTimeoutMs: this.config.dialTimeoutMs,
           responseTimeoutMs: this.config.responseTimeoutMs
         });
+        anyChunkDelivered = true;
         const missing = new Set(response.missing);
         for (const id of ids) {
           if (missing.has(id)) {
@@ -293,6 +324,12 @@ export class StrandBackfill {
       }
 
       const buffer = encoder.encode(JSON.stringify(block));
+      // NOTE: MAX_BLOCK_MESSAGE_BYTES caps the whole framed request, not one block, and
+      // this test ignores the request envelope (ids array, blockMeta, JSON punctuation).
+      // A lone block within a few KiB of the cap therefore still ships and is rejected by
+      // the receiver's length-prefix decoder — a permanent chunk failure for that peer. No
+      // block in a strand comes close today; if one ever can, subtract a measured envelope
+      // allowance here rather than raising the cap.
       if (base64WireBytes(buffer.length) >= MAX_BLOCK_MESSAGE_BYTES) {
         result.oversized.push(blockId);
         log('[%s] block=%s is %d bytes (%d on the wire) — exceeds the %d-byte protocol cap alone; skipped',
@@ -305,7 +342,7 @@ export class StrandBackfill {
       if (chunk.ids.length > 0
         && (chunk.ids.length + 1 > this.config.maxChunkBlocks || chunk.bytes + buffer.length > this.config.maxChunkBytes)) {
         await flush();
-        if (this.stopped) break;
+        if (this.stopped || peerUnreachable()) break;
       }
       chunk.ids.push(blockId);
       chunk.buffers.push(buffer);
@@ -314,7 +351,7 @@ export class StrandBackfill {
       result.offered += 1;
     }
 
-    if (!this.stopped) {
+    if (!this.stopped && !peerUnreachable()) {
       await flush();
     }
 
