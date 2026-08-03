@@ -764,8 +764,9 @@ auto-fixable subset.
   authorized-member snapshot the control-stream gate reads); raw SQL skips it silently, a mistake
   made twice before the writers were consolidated. Matches both plain-string and template SQL;
   SQL assembled from variables is out of reach by design. Exempt: `control-database.ts` (the
-  destination) and the two constraint fixtures that drive raw SQL at a bare database
-  (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`).
+  destination) and the three constraint fixtures that drive raw SQL at a bare database
+  (`control-authorization-domain-separation.spec.ts`, `control-revocation-replay.spec.ts`,
+  `control-revocation-reap.spec.ts`).
 - Rules at **`warn`**: none. The lint-cleanup epic (`lint-cleanup-mechanical` → `lint-cleanup-no-explicit-any`
   → `lint-cleanup-svelte`) is complete; there is no remaining `warn` backlog and `yarn lint` exits 0 with
   **0 warnings, 0 errors**. Every rule the config encodes is now a hard `error` gate.

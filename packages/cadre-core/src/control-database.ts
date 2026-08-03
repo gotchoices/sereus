@@ -370,7 +370,7 @@ const GUARDED_KEY_COLUMN: Readonly<Record<RevocableTable, GuardedKeyColumn>> = {
  * `OwnerKey` has no production removal path and `MinOneOwner` makes an automated
  * owner-key reap a party-bricking hazard.
  */
-export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as const;
+export const REAPABLE_TABLES = ['CadrePeer', 'DeviceToken', 'ValidationKey'] as const satisfies readonly RevocableTable[];
 export type ReapableTable = (typeof REAPABLE_TABLES)[number];
 
 /**
@@ -1462,6 +1462,20 @@ export class ControlDatabase {
    *
    * Writes NOTHING to `Revocation`: `RevocationRecorded` is satisfied by the same
    * committed tombstone that authorizes the reap, so a reap files no second tombstone.
+   * It therefore does NOT fire the guarded-delete listener either — that seam exists to
+   * queue a tombstone for re-issue when it committed while alone, and a reap has no
+   * tombstone of its own to re-issue. A reap that commits while alone needs no
+   * re-replication at all: every OTHER node either already lacks the row, or holds the
+   * same committed tombstone and reaps its own copy.
+   *
+   * NOTE: the reap delete is keyed on the primary key; the `StampId` predicate is applied
+   * where the statement runs. If a reap on one node ever has to be reconciled against an
+   * owner re-seat of the same key that landed on another node, whether the delete or the
+   * re-seat wins is decided by the collection's merge order, not by this clause — the same
+   * ordering question the owner-signed delete path already carries
+   * (`tickets/blocked/forked-control-collection-sync-livelocks.md`). Only matters once a
+   * sweep drives this automatically on connected nodes; if that reconcile ever drops a
+   * freshly re-seated row, this is the site.
    *
    * `table` and its {@link GUARDED_KEY_COLUMN} column come from closed literal unions —
    * no caller-supplied string reaches the statement (same injection-surface discipline

@@ -400,6 +400,22 @@ describe('reap authorization: a committed tombstone authorizes deleting the row 
       expect(await strandRow(id)).toBeDefined();
     }, 60_000);
 
+    it('a tombstone filed against ANOTHER table does not authorize a reap', async () => {
+      // `CadrePeer` and `DeviceToken` share their key column (PeerId), so a tombstone naming
+      // one is shaped exactly like a tombstone naming the other — the branch's TableName
+      // clause is the only thing separating them. Both AuthorizedDelete's reap branch AND
+      // RevocationRecorded bind TableName, so either name proves the pair refused it.
+      const peerId = '12D3KooWCrossTableTombstone';
+      const { stamp } = await seatDeviceToken(peerId);
+      await tombstoneStamp('CadrePeer', peerId, stamp);
+
+      await expectConstraintFailure(
+        db.reapRevokedRow('DeviceToken', peerId, stamp),
+        'AuthorizedDelete', 'RevocationRecorded',
+      );
+      expect(await db.queryDeviceTokenStampId(peerId)).toBe(stamp);
+    }, 60_000);
+
     it('a tombstone whose RowKey is wrong for the stamp does not authorize a reap', async () => {
       // Not constructible in production (stamps are 128-bit CSPRNG per incarnation), but
       // the branch binds RowKey anyway. Both AuthorizedDelete's reap branch AND
