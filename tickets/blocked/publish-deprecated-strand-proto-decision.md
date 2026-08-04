@@ -22,7 +22,7 @@ Yet it is still first in the publish chain. The root `package.json` has:
 
 ```
 "pub": "yarn pub:strand-proto && yarn pub:quereus-plugin-sereus && ... ",
-"pub:strand-proto": "node scripts/publish-package.js strand-proto",
+"pub:strand-proto": "node scripts/publish-package.mjs strand-proto",
 ```
 
 so `yarn pub` pushes a new 0.9.0-line release of it alongside the packages we actually support.

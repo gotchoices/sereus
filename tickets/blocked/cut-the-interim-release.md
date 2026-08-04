@@ -71,12 +71,13 @@ are written to be pasted as-is.
 
 Two things worth knowing before you start:
 
-- **Step 6 is currently manual and easy to get wrong**, because `yarn pub` always marks a release as
-  the default install. `implement/0.2-release-publish-dist-tag` fixes that and adds a guard that
-  refuses to publish a prerelease without a tag. If it has landed, step 6 collapses to one command;
-  if it has not, the manual per-package commands are spelled out.
+- **Step 6 is now one command.** `0.2-release-publish-dist-tag` has landed
+  (`complete/0.2-release-publish-dist-tag.md`), so `scripts/publish-package.mjs` takes `--tag <name>`
+  or `SEREUS_DIST_TAG`, and it refuses to publish a prerelease version without a tag rather than
+  silently marking it as the default install. `SEREUS_DIST_TAG=alpha yarn pub` tags the whole chain.
+  The manual per-package commands in the runbook remain correct but are no longer necessary.
 - **`cadre-host` refuses to publish while its embedded release key is the all-zeros placeholder**
-  (`scripts/publish-package.js`, and `docs/cadre-host.md` § publishing). That is a separate piece of
+  (`scripts/publish-package.mjs`, and `docs/cadre-host.md` § publishing). That is a separate piece of
   human setup — generate the keypair offline — and it only affects that one package. The other four
   can go out without it.
 
