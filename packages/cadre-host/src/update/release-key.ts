@@ -43,7 +43,7 @@ export function getReleasePublicKey(env: NodeJS.ProcessEnv = process.env): KeyOb
  * ships in source until the release operator embeds a real public key.
  *
  * Consumers:
- *  - the publish guard (`scripts/publish-package.js`) refuses to ship a build
+ *  - the publish guard (`scripts/publish-package.mjs`) refuses to ship a build
  *    whose embedded key is still the placeholder, so a real release can never
  *    silently ship the dead key;
  *  - `UpdateService.check()` logs a diagnostic breadcrumb so a misbuilt binary

@@ -88,6 +88,18 @@ test('publishableWorkspaces derives the set from the root pub: scripts', () => {
 	});
 });
 
+test('publishableWorkspaces matches a `publish-package.mjs` script body, not only `.js`', () => {
+	withTempDir((root) => {
+		writeManifest(root, {
+			name: 'fixture-root',
+			scripts: { 'pub:alpha': 'node scripts/publish-package.mjs alpha' },
+		});
+		writeManifest(join(root, 'packages', 'alpha'), { name: '@scope/alpha', version: '1.0.0' });
+		const workspaces = publishableWorkspaces(root);
+		assert.deepEqual(workspaces.map((w) => w.manifest.name), ['@scope/alpha']);
+	});
+});
+
 test('publishableWorkspaces fails when no pub: script exists', () => {
 	withTempDir((root) => {
 		writeManifest(root, { name: 'fixture-root', scripts: { build: 'tsc' } });

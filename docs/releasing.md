@@ -105,14 +105,24 @@ yarn bump --release prerelease --preid rc      # e.g. 0.2.0-rc.0
 ```
 
 A prerelease **must** be published under a dist-tag, or it becomes what `npm install <pkg>` returns
-and the prerelease label buys nothing.
-
-`scripts/publish-package.js` currently runs a bare `yarn npm publish --access public`, which always
-tags `latest`. Passing a tag through is `tickets/implement/0.2-release-publish-dist-tag`; until that
-lands, publish a prerelease by hand from each package directory:
+and the prerelease label buys nothing. `scripts/publish-package.mjs` refuses to publish a prerelease
+version under no tag at all, so this cannot happen by accident — publish under a tag deliberately:
 
 ```bash
-cd packages/<name> && yarn clean && yarn build && yarn npm publish --access public --tag alpha
+# POSIX
+SEREUS_DIST_TAG=alpha yarn pub
+
+# PowerShell (this repo's primary shell)
+$env:SEREUS_DIST_TAG = 'alpha'; yarn pub
+```
+
+The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is six
+`&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
+command in that chain. `--tag` works for a single package's own script, where there is no chain to
+lose the flag partway through:
+
+```bash
+yarn pub:cadre-core --tag alpha
 ```
 
 Promoting a prerelease to `latest` later needs no republish:
@@ -134,7 +144,8 @@ script ensures this stays in sync. Do not manually edit version numbers in indiv
 - [ ] `yarn smoke:published` passes
 - [ ] Clean working tree
 - [ ] `yarn bump` (choose the dist-tag deliberately if this is a prerelease)
-- [ ] `yarn pub`, or per-package `yarn npm publish --tag <tag>`
+- [ ] `yarn pub` (prefix `SEREUS_DIST_TAG=<tag>` for a prerelease), or per-package
+      `yarn pub:<name> --tag <tag>`
 - [ ] GitHub release created with real notes
 
 ---
@@ -334,16 +345,18 @@ outward-facing and irreversible.
    ```bash
    yarn bump --release prerelease --preid alpha             # → 0.10.0-alpha.0
    ```
-6. **Publish five packages under the `alpha` tag** — not `yarn pub`, which tags `latest` and
-   includes `strand-proto`. Once `tickets/implement/0.2-release-publish-dist-tag` has landed this is
-   `yarn pub --tag alpha` minus that package; until then, from the repo root, per package
-   (`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`, in that
-   order):
+6. **Publish five packages under the `alpha` tag** — not `yarn pub`, which also publishes
+   `strand-proto`. `--tag` reaches a single package's own script, so run each in order
+   (`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`):
    ```bash
-   cd packages/<name> && yarn clean && yarn build && yarn npm publish --access public --tag alpha
+   yarn pub:quereus-plugin-sereus --tag alpha
+   yarn pub:cadre-core --tag alpha
+   yarn pub:cadre-cli --tag alpha
+   yarn pub:cadre-provider --tag alpha
+   yarn pub:cadre-host --tag alpha
    ```
    `cadre-host` additionally refuses to publish while its embedded release key is the all-zeros
-   placeholder — see `scripts/publish-package.js`. Resolve that before its turn, or publish the
+   placeholder — see `scripts/publish-package.mjs`. Resolve that before its turn, or publish the
    other four and hold it back.
 7. **Confirm `latest` did not move:**
    ```bash
