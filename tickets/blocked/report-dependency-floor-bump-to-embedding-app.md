@@ -43,11 +43,55 @@ timeouts.
   the version mismatch is a real problem that we have fixed, but it is not proven to be the
   cause of what they saw. The reply must say that plainly rather than promising a fix.
 
+## Findings from installing the published packages (2026-08-03)
+
+Everything above was measured against local copies of the sibling project. It has now been
+re-measured against **what the registry actually serves**: our packages were packed and installed
+into a throwaway project outside this repo, with every other dependency resolved from the public
+registry. Two configurations were run, each doing the reporter's exact scenario — a single node, no
+other members, no inbound listening address, no bootstrap peers, both node profiles, plus a restart.
+
+**1. The reporter's exact configuration — published `@serfab/cadre-core` 0.9.0, which pulls in
+version 0.14.1 of the lower layer. All three cases passed, in 92–216 ms.** No hang, at any step.
+
+**2. Our current code against the corrected minimum, version 0.18.0 of the lower layer. All three
+cases passed, in 84–196 ms.** Also no hang.
+
+So the freeze **still does not reproduce**, now including on the precise version combination the
+reporter downloads. The "we were not able to reproduce" sentence in the reply below stands as
+written and must not be softened.
+
+There was a specific reason to expect it might reproduce: the sibling project recently fixed a
+defect summarised as *a node with zero connections cannot resolve a coordinator for any key*, which
+sounded like a very close match for "a single-member node froze reading its own settings". Testing
+the two versions side by side is what settles it — the old version does not hang here either, so
+that fix is not an explanation for what they saw.
+
+Two other things surfaced, both real, neither a hang:
+
+- **Publishing is currently blocked.** At the corrected minimum, simply loading our library from a
+  registry install crashes immediately — see `optimystic-testing-barrel-breaks-consumer-install`.
+  Until that is resolved, telling the reporter to upgrade would send them to a release that does not
+  load. The reply below has been adjusted accordingly.
+- **The reporter's install contains two incompatible copies of the SQL engine.** At the 0.14.1
+  floor, the sibling project's plugins require an old 0.16.x line of `@quereus/quereus` while our
+  packages require 4.x, so a customer install ends up with both loaded in one process. That is a
+  genuine defect in the published 0.9.0 and a plausible source of odd behaviour, though it did not
+  produce a hang in our runs. Correcting the declared minimum to 0.18.0 removes it — at that
+  version everything agrees on a single 4.6.0.
+
+The script that produced these measurements is being landed as
+`implement/0-release-smoke-published-install` so this is repeatable rather than a one-off.
+
 ## What a human needs to do
 
-- Decide when to cut the next `@serfab/cadre-core` release (0.9.1 or later) — that is the first
+- **First**, resolve `optimystic-testing-barrel-breaks-consumer-install`. Until it is resolved, a
+  release built from current HEAD cannot be loaded at all by anyone installing it, so cutting one
+  would make the reporter's situation worse rather than better.
+- Then decide when to cut the next `@serfab/cadre-core` release (0.9.1 or later) — that is the first
   version an outside app can install to get the corrected minimums.
-- Send the reply below (adjust the version number once the release is cut).
+- Send the reply below (adjust the version number once the release is cut). Do not send it before
+  the release exists: it asks them to upgrade.
 - Record where the reply went, so the next person has the channel.
 
 ## Draft reply
@@ -64,7 +108,14 @@ timeouts.
 > for your exact setup — the same transport, no inbound listening address, no bootstrap peers,
 > both node profiles, plus a restart — and it completes in milliseconds for us.
 >
-> Please be aware we were **not** able to reproduce your freeze at either version. If you still
-> see it after upgrading, send us a stack trace or a debug log from the frozen call
-> (`DEBUG=cadre*,optimystic*`) — without a reproduction we cannot promise the version mismatch
-> was the whole story.
+> One more thing worth knowing about 0.9.0: because of the version mismatch, that install also
+> ends up with two incompatible copies of our SQL engine loaded at once. We have not seen it cause
+> a hang, but it is not a configuration we would expect to behave predictably. The new release
+> resolves to a single copy.
+>
+> Please be aware we were **not** able to reproduce your freeze at either version — including on
+> the exact combination of published versions that 0.9.0 installs, running your configuration
+> (single member, no inbound listening address, no bootstrap peers, both node profiles, plus a
+> restart). It completes in well under a second for us. If you still see it after upgrading, send
+> us a stack trace or a debug log from the frozen call (`DEBUG=cadre*,optimystic*`) — without a
+> reproduction we cannot promise the version mismatch was the whole story.

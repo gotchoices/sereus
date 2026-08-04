@@ -1,0 +1,91 @@
+----
+description: If we publish a release right now, anyone who installs our library from the public registry cannot even load it — it crashes immediately looking for a testing tool that was never shipped. The bug is in another team's package, so someone has to decide whether to wait for their fix or work around it on our side.
+prereq:
+files: packages/cadre-core/package.json, packages/quereus-plugin-sereus/package.json, packages/cadre-provider/package.json, packages/cadre-host/package.json, packages/cadre-cli/package.json
+difficulty: medium
+repro: verified
+----
+
+# Publishing today ships a package that will not import
+
+## What happens
+
+Install our library the way a customer would, then load it:
+
+```
+npm install @serfab/cadre-core        # built from this repo's current HEAD
+node -e "import('@serfab/cadre-core')"
+```
+
+It throws before running a single line of our code:
+
+```
+Error [ERR_MODULE_NOT_FOUND]: Cannot find package 'chai' imported from
+  .../node_modules/@optimystic/db-p2p/dist/src/testing/raw-storage-conformance.js
+```
+
+`chai` is a test-assertion library. It is not installed, because nobody's *runtime* is supposed to
+need it.
+
+**Verified, not inferred.** Measured 2026-08-03 by packing this repo's `@serfab/cadre-core` and
+`@serfab/quereus-plugin-sereus`, installing the tarballs into a throwaway project outside the repo,
+and letting everything else resolve from the public registry.
+
+## Why it happens
+
+Three facts line up:
+
+1. The lower-level networking package we depend on, `@optimystic/db-p2p`, publishes a testing
+   helper entry point. One file behind it starts with `import { expect } from 'chai'`.
+2. `chai` is listed in that package as a *development* dependency, so it is deliberately not
+   installed for anyone who merely depends on the package.
+3. The database-adapter package we also depend on, `@optimystic/quereus-plugin-optimystic`, imports
+   that testing entry point from its **shipped runtime code**, not from its tests.
+
+So loading our library loads the adapter, which loads the testing helper, which reaches for a
+library that is not there.
+
+This is not a packaging accident on our side — our own tarballs are fine. The import chain lives
+entirely inside the other project's published packages.
+
+## Why it appeared only now
+
+It has been broken in every version of the lower-level packages from `0.16.2` onward (checked
+`0.16.2`, `0.16.3`, `0.17.0`, `0.18.0` — all four ship the offending import; `0.14.1` does not).
+
+Our currently published release, `@serfab/cadre-core` 0.9.0, asks for version `0.14.1` of those
+packages, which predates the problem — so **installing 0.9.0 today works**. We then corrected the
+declared minimum to `0.18.0`, because that is the version we actually build and test against. That
+correction is right, and it is also what walks us into this. The moment we publish, customers stop
+being able to load the library at all.
+
+Nothing in this repo's own test suite can see it: our tests resolve those packages to local working
+copies of the sibling project, where `chai` happens to be present as that project's own development
+dependency.
+
+## Why a human has to decide
+
+The defect is in `../optimystic`, which is another team's active workspace and which we are not
+permitted to edit. Every fix is either theirs to make or a trade-off only a person should pick:
+
+- **Upstream, the clean fix.** In the `optimystic` project, stop the shipped adapter code from
+  importing the testing entry point — the two functions it wants (`createMesh`,
+  `buildNetworkTransactor`) should live in normal source rather than behind a test-only barrel.
+  Alternatively, drop the conformance file from that barrel, or promote `chai` to a real dependency
+  (least good — it ships a test library to every consumer).
+  Concrete sites in that repo: `packages/db-p2p/src/testing/index.ts`,
+  `packages/db-p2p/src/testing/raw-storage-conformance.ts`,
+  `packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts`.
+- **Wait.** Hold the release until a fixed version of those packages is published. Correct, but it
+  parks a release that other people are waiting on.
+- **Work around it here.** Declare `chai` as a real dependency of our own packages. It works — the
+  scratch project passed every check once `chai` was installed — but it means shipping a test
+  library to every customer to paper over someone else's bug, and it is easy to forget to remove.
+
+Whichever route is chosen, `implement/0-release-smoke-published-install` lands the script that
+catches this class of problem before publishing rather than after.
+
+## What is *not* affected
+
+Development in this repo, and anyone installing the currently published 0.9.0. This is a
+publish-time regression that would arrive with the next release, not a live customer-facing outage.
