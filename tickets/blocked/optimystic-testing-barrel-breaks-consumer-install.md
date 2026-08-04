@@ -116,3 +116,60 @@ site naming this ticket, plus a `backlog/debt-` ticket to remove it. Either way
 
 Development in this repo, and anyone installing the currently published 0.9.0. This is a
 publish-time regression that would arrive with the next release, not a live customer-facing outage.
+
+## The minimal upstream fix, traced 2026-08-03
+
+Verified against `../optimystic` at `9b86eb3` (the `v0.19.0` release commit). The whole defect is one
+re-export line.
+
+`packages/db-p2p/src/testing/index.ts` is two lines:
+
+```ts
+export * from './mesh-harness.js';
+export * from './raw-storage-conformance.js';
+```
+
+- `mesh-harness.ts` contains `buildNetworkTransactor` / `buildNetworkTransactors` — what production
+  code actually imports — and contains **zero** references to `chai`.
+- `raw-storage-conformance.ts` is the only file under `src/testing/` that imports `chai`
+  (`import { expect } from 'chai'` at line 1).
+- Nothing anywhere in `../optimystic` imports `raw-storage-conformance` **except** this barrel:
+  `grep -rn "raw-storage-conformance" src/ ../*/src/` returns only `testing/index.ts`.
+
+So the barrel is what drags `chai` into every consumer of the `./testing` subpath. Removing the
+second line makes `./testing` chai-free, and gives `raw-storage-conformance` its own subpath for the
+suites that want it:
+
+```ts
+// packages/db-p2p/src/testing/index.ts
+export * from './mesh-harness.js';
+```
+
+plus an `exports` entry alongside the existing `.`, `./rn`, `./testing`:
+
+```json
+"./testing/conformance": { ... }
+```
+
+**Do not fix it by moving `chai` from `devDependencies` to `dependencies`.** That ships an assertion
+library to every consumer of a peer-to-peer database and hides the real problem, which is that a
+production import path reaches test-only code.
+
+## Why a consumer reaches this at all
+
+The import is not from our code and not from a test. It is in optimystic's own production source:
+
+```
+../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts:12
+import { createMesh, buildNetworkTransactor } from '@optimystic/db-p2p/testing';
+```
+
+`@serfab/quereus-plugin-sereus` depends on `@optimystic/quereus-plugin-optimystic`, so the chain
+reaches every consumer of ours. Nothing in this repository imports `@optimystic/db-p2p/testing` —
+confirmed by grep across all `packages/*/src` and `packages/*/test`. **There is no sereus-side
+workaround worth taking**: we cannot stop a dependency's production module from importing what it
+imports, and vendoring or patching around it would be worse than waiting for a one-line fix.
+
+Worth raising with upstream separately, but not blocking: a production adapter importing from a
+barrel named `testing` is the underlying smell. `buildNetworkTransactor` arguably belongs in the
+main entry point. That is their call and a larger change than the release needs.
