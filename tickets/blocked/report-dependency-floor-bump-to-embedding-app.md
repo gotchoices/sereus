@@ -83,15 +83,35 @@ Two other things surfaced, both real, neither a hang:
 The script that produced these measurements is being landed as
 `implement/0-release-smoke-published-install` so this is repeatable rather than a one-off.
 
+## The version to tell them (settled 2026-08-03)
+
+**`@serfab/cadre-core@0.10.0-alpha.0`, installed by exact version.** The reasoning — why a minor
+bump rather than a patch, and why it goes out under an `alpha` dist-tag instead of becoming what a
+plain `npm install` returns — is in [`docs/releasing.md`](../../docs/releasing.md) under "The
+interim release". The short version: cross-machine replication is known-broken with a traced
+upstream root cause, so this must not be the version npm hands to everyone by default.
+
+The dist-tag costs the reporter nothing, because the reply below already asks them to pin. But it
+does mean **the version has to be written out exactly** — `npm install @serfab/cadre-core` and any
+`^0.9.0` range will *not* pick up a prerelease. The reply has been adjusted to say so.
+
+Two things to re-check before sending, because both can change:
+
+- The version number, if the release is cut as something other than `0.10.0-alpha.0`.
+- Whether cross-machine replication is still broken. It is as of 2026-08-03 (see `docs/STATUS.md` →
+  "Release readiness"). If the upstream coordinator fix has landed by the time this is sent, the
+  last paragraph of the reply should say so instead.
+
 ## What a human needs to do
 
 - **First**, resolve `optimystic-testing-barrel-breaks-consumer-install`. Until it is resolved, a
   release built from current HEAD cannot be loaded at all by anyone installing it, so cutting one
   would make the reporter's situation worse rather than better.
-- Then decide when to cut the next `@serfab/cadre-core` release (0.9.1 or later) — that is the first
-  version an outside app can install to get the corrected minimums.
-- Send the reply below (adjust the version number once the release is cut). Do not send it before
-  the release exists: it asks them to upgrade.
+- Then cut the release. The ordered runbook — what to run, in what order, and what to check after
+  each step — is at the end of [`docs/releasing.md`](../../docs/releasing.md); the go/no-go decision
+  is `blocked/cut-the-interim-release`.
+- Send the reply below (adjust the version number if it changed). Do not send it before the release
+  exists: it asks them to upgrade.
 - Record where the reply went, so the next person has the channel.
 
 ## Draft reply
@@ -99,9 +119,14 @@ The script that produced these measurements is being landed as
 > The minimum version our library declared for its underlying database/networking layer was two
 > minor versions behind the version we actually develop and test against, so installing
 > `@serfab/cadre-core` 0.9.0 from npm gave you an older layer underneath than anything we had
-> tested on. Every one of our packages now declares the tested version. **This ships in the next
-> release (0.9.1 or later) — 0.9.0 on npm still carries the old minimum**, so please pin to the
-> new release rather than reinstalling 0.9.0.
+> tested on. Every one of our packages now declares the tested version. **This ships in
+> 0.10.0-alpha.0 — 0.9.0 on npm still carries the old minimum**, so please pin to the new version
+> rather than reinstalling 0.9.0.
+>
+> Please install it by writing the version out exactly (`"@serfab/cadre-core": "0.10.0-alpha.0"`).
+> It is published under an `alpha` dist-tag, so a plain `npm install @serfab/cadre-core` and any
+> `^0.9.0` range will keep giving you 0.9.0. The tag is deliberate and is explained at the end of
+> this message.
 >
 > Once you are on it, please drop the manual timeouts you added around the settings read and
 > write, and tell us whether a single-member node still freezes. We have added permanent coverage
@@ -119,3 +144,13 @@ The script that produced these measurements is being landed as
 > restart). It completes in well under a second for us. If you still see it after upgrading, send
 > us a stack trace or a debug log from the frozen call (`DEBUG=cadre*,optimystic*`) — without a
 > reproduction we cannot promise the version mismatch was the whole story.
+>
+> Finally, the reason this goes out under an `alpha` tag rather than as the default install: sharing
+> data **across two or more machines does not currently work**. A read can be answered "nothing was
+> ever saved here" by whichever machine it routes to, even when another machine in the group holds
+> the row, and after that the writing machine refuses further writes to that table until it
+> restarts. We have traced it to a single line in the layer underneath us and it is fixed by a
+> release of that layer, not of ours. If everything you run is a single node holding its own data —
+> which is what your report describes — this does not affect you and the release is a strict
+> improvement. If you were planning on multi-device sync, please wait for us to promote a version to
+> the default tag.

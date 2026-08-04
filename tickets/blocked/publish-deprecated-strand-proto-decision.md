@@ -52,3 +52,19 @@ exactly the part only a human can answer, and it is why this is not a backlog it
 
 Out of scope either way: deleting `packages/strand-proto/` itself. Nothing here argues for removing the
 source, only for settling whether new versions of it keep going to npm.
+
+## For the next release specifically: leave it out (2026-08-03)
+
+The interim release (`docs/releasing.md` → "The interim release") ships five packages, not six, and
+skips this one. That is a deliberately narrower call than the question above, and it does not
+pre-empt it:
+
+- Nothing in `packages/strand-proto/` has changed since the `chore: release v0.9.0` commit except a
+  type-check config edit (`git log -- packages/strand-proto`). A new version would carry a version
+  number and nothing else.
+- **Not publishing a new version is not unpublishing.** 0.9.0 stays on npm and keeps resolving for
+  any external consumer this repo cannot see, so skipping one release costs nobody anything and
+  forecloses nothing.
+
+The permanent question — keep shipping it or stop for good, and correct the three places that call
+it deprecated accordingly — is still this ticket's, and still a human's.

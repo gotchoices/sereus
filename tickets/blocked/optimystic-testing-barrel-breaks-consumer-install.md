@@ -85,6 +85,31 @@ permitted to edit. Every fix is either theirs to make or a trade-off only a pers
 Whichever route is chosen, `implement/0-release-smoke-published-install` lands the script that
 catches this class of problem before publishing rather than after.
 
+## Re-checked 2026-08-03 (release-readiness pass) — nothing has changed, and nobody upstream knows
+
+- `packages/db-p2p/src/testing/raw-storage-conformance.ts:1` still opens with
+  `import { expect } from 'chai'`, and
+  `packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts:12` still does
+  `import { createMesh, buildNetworkTransactor } from '@optimystic/db-p2p/testing'`, at
+  `../optimystic` HEAD.
+- `../optimystic` cut **`v0.19.0`** later the same day (`9b86eb3`) and it is on npm as `latest`. It
+  is a version-numbers-only release — twelve `package.json` files, one line each — sitting directly
+  on the commit above, so **`0.19.0` ships this defect too**. There is still no published version
+  to move to.
+- **No ticket for this exists on `../optimystic`'s board** (searched `tickets/` there; the only
+  matches are unrelated run logs). Nothing was filed from this repo, on purpose — dropping work into
+  another team's top-priority `fix/` queue is not an agent's call. Handing this over is therefore
+  the first item on the release runbook, and it is item 1 because nothing else on that list matters
+  until an installable version exists.
+
+**Recommendation, so this is a decision rather than a menu: take the upstream route and wait.** The
+fix is small, it belongs where the defect is, and the alternative ships a test-assertion library to
+every customer to cover another project's bug. If the wait turns out to be unacceptable, the
+workaround is a declared `chai` dependency on `@serfab/cadre-core` and
+`@serfab/quereus-plugin-sereus` — verified to work — and it should be time-boxed: a `NOTE:` at each
+site naming this ticket, plus a `backlog/debt-` ticket to remove it. Either way
+`yarn smoke:published` is what proves the result.
+
 ## What is *not* affected
 
 Development in this repo, and anyone installing the currently published 0.9.0. This is a

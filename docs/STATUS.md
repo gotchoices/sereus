@@ -1075,6 +1075,77 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
 - Gap: the torn-transaction interleave the lock also prevents is asserted only by the
   `strand-addr-seed-convergence` integration scenario — no unit reproduces it deterministically.
 
+## Release readiness — measured 2026-08-03
+
+Whole-repo test truth at HEAD `9aee7b0`, `../optimystic` clean at `610d6d1`, `../quereus` at
+`f8cc81d3`. Every suite below was run in this session; these are the numbers, not an estimate.
+
+| suite | tests | failed | what the failures are |
+| --- | --- | --- | --- |
+| `packages/cadre-core` | 1507 (1 skipped) | **5** | `blocked/10-revocation-reissue-same-pk-update-unique-collision` — a Quereus DML defect, not a Cadre one |
+| `packages/cadre-cli` | 210 | 0 | — |
+| `packages/cadre-host` | 605 (4 skipped) | 0 | — |
+| `packages/cadre-provider` | 201 | 0 | — |
+| `packages/quereus-plugin-sereus` | 78 (1 todo) | **4** | all in `test/e2e/networked.e2e.spec.ts` — two real libp2p peers |
+| `packages/integration-tests` | 241 (1 expected-fail) | **13** | 8 scenario files, all of them multi-machine |
+
+**Every failure in the repo is either a Quereus DML defect or a multi-machine one.** No
+single-node, single-process, or single-machine test fails anywhere.
+
+The 13 integration failures, by file — all eight files are cross-machine scenarios:
+
+- `control-db-two-node-convergence` (1), `strand-addr-seed-convergence` (1),
+  `control-delete-while-alone-convergence` (2), `harness-party-control-cohort` (1),
+  `strand-membership-closed-strand-e2e` (3), `push-wake-e2e` (1) — fingerprint
+  `collection … holds committed revision N, but its header block read as absent` (15 occurrences
+  across the run).
+- `control-cohort-edge-carries-data` (1) — `peers-unreachable`.
+- `provider-seed-accepted` (3) — 60 s / 90 s seed-acceptance timeouts. This scenario was **green**
+  in the 2026-08-03 baseline and is red here; it is a routing race, not a regression.
+
+Root cause of the header-absent class is one upstream line,
+`../optimystic/packages/db-p2p/src/repo/service.ts:264` — a coordinator answers a remote block read
+as an authoritative absence without ever consulting its cohort. Tracked by
+`tickets/blocked/control-coordinator-answers-absent-without-asking-cohort`. **Sereus needs no code
+change for it**; it is fixed by an Optimystic publish.
+
+### What this means for publishing
+
+- **Single-machine is shippable. Cross-machine replication is not.** A second machine joining a
+  cadre can be told "nothing was ever saved here" for a table another machine holds, and that state
+  is permanent for the affected collection, not transient. An embedder should not build on
+  multi-device replication until the upstream fix lands.
+- **Publishing is blocked outright today**, and not by any of the above: at the `^0.18.0` floor this
+  repo declares, importing `@serfab/cadre-core` from a registry install throws before running a line
+  of our code (`Cannot find package 'chai'` — see the `yarn smoke:published` section and
+  `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install`). Present in every published
+  `@optimystic/*` from `0.16.2` onward, **including `0.19.0`**, and still unfixed at that repo's
+  HEAD. Nothing can be published until it resolves.
+- **The declared floors do move: `^0.18.0` → `^0.19.0`.** `../optimystic` cut `v0.19.0` on
+  2026-08-03 while this measurement was being taken, and it is on npm as `latest`. That release is
+  **version numbers only** (`git show --stat 9b86eb3` is twelve `package.json` files, one line
+  each), sitting directly on `610d6d1` — the commit everything above was measured against — so the
+  numbers in this section describe `0.19.0`'s code exactly. Since these are `0.x` versions,
+  `^0.18.0` means `>=0.18.0 <0.19.0` and now *excludes* what we link, which is why
+  `yarn check:dep-ranges` is currently red (22 ranges). The mechanical bump is
+  `tickets/implement/0.15-bump-optimystic-floors-to-0.19`. Note what `0.19.0` does **not** carry:
+  neither the coordinator fix nor the `chai` fix.
+- The runbook, the recommended version and dist-tag, and the draft release notes live in
+  [`docs/releasing.md`](releasing.md).
+
+### Measuring here is currently awkward, and that is worth knowing
+
+`../quereus` is under concurrent automation with uncommitted, **non-compiling** work in flight
+(`alter-table` / `add-constraint`). `yarn workspace @quereus/quereus build` fails there, so the
+stale-build guard cannot be cleared the normal way. Its `dist` is a clean build of that repo's
+committed HEAD, so the runs above advanced the `dist` mtimes (content untouched) to get past the
+guard — i.e. Sereus was measured against **committed** Quereus, which is the intended target. The
+neighbour edits every ~30 s, so this loses the race often; the whole integration suite also now
+exceeds a single 10-minute agent window and was run in five file batches. Since the suite already
+sets `fileParallelism: false`, batching does not change how scenarios contend, but it does change
+*which* scenarios share a process — and several of these failures are boot/routing races that move
+between runs either way.
+
 ## Multi-node use-case validation (2026-06-26)
 
 Hands-on debugging of two flows (real cadre-cli processes on localhost + integration
