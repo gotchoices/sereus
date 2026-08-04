@@ -148,12 +148,12 @@ menu; the actual go/no-go and the outward-facing publish are
 ## Recommendation
 
 **Version `0.10.0-alpha.0`, published under the `alpha` dist-tag, for five of the six packages
-(everything except `strand-proto`), with the declared dependency floors left at `^0.18.0`.**
+(everything except `strand-proto`), with the declared dependency floors moved to `^0.19.0`.**
 
 ### Why a minor bump, not a patch
 
 The change set since 0.9.0 is not a patch. The declared minimum for the underlying
-database/networking layer moved two minor versions (`^0.14.1` → `^0.18.0`), which changes what a
+database/networking layer moved two minor versions (`^0.14.1` → `^0.19.0`), which changes what a
 consumer's dependency tree resolves to; the control-database schema gained tables; push delivery and
 node donation are new subsystems. `0.9.1` would understate all of that.
 
