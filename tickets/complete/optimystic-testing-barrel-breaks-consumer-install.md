@@ -173,3 +173,23 @@ imports, and vendoring or patching around it would be worse than waiting for a o
 Worth raising with upstream separately, but not blocking: a production adapter importing from a
 barrel named `testing` is the underlying smell. `buildNetworkTransactor` arguably belongs in the
 main entry point. That is their call and a larger change than the release needs.
+
+## Fixed upstream and verified 2026-08-03 — closing
+
+`../optimystic` `v0.20.0` lands it (`ab06122` implement → `fced795` review). `src/testing/index.ts`
+now exports only `./mesh-harness.js`, `raw-storage-conformance` moved to its own
+`./testing/conformance` subpath, and they added `test/testing-entry-runtime-deps.spec.ts` which
+enforces that every published subpath imports only runtime `dependencies` — so this class cannot
+come back silently.
+
+`yarn smoke:published` **passes**, its first green run since the gate was written:
+
+```
+@optimystic/*     0.20.0
+@quereus/quereus  4.6.0
+3/3 case(s) passed.
+smoke-published-install: PASSED — the packed tarballs install and run from a clean project.
+```
+
+That also covers the gate's own previously-untested success path (`cleanup()`, the `PASSED` line,
+the build branch), which `docs/STATUS.md` recorded as unexercised.

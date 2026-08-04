@@ -458,3 +458,25 @@ stays open until a green run says otherwise.
 If a scenario is still red after this, `StaleFailure.staleAt` (new in Optimystic v0.18.0) carries
 the coordinator's actual revision in the `SyncRetryExhaustedError` message. Capture that number —
 upstream asked for it specifically, and it is worth more than the surrounding trace.
+
+## Resolved 2026-08-03 — closing the class
+
+The root cause was found and fixed upstream: a coordinator answering a remote read as an
+authoritative absence without consulting its cohort. Tracked to conclusion in
+`complete/control-coordinator-answers-absent-without-asking-cohort`, fixed in `../optimystic`
+`v0.20.0`. The other contributor, the corroboration floor, was fixed here in `42cd12c`.
+
+Every scenario this ticket was opened for is now green: `control-db-two-node-convergence`,
+`control-cohort-cold-start-retry`, `strand-addr-seed-convergence`,
+`control-write-while-alone-convergence` (both), `websocket-chat`, `convergence-stress` (all three),
+`control-delete-while-alone-convergence` (both), `strand-formation-e2e` Phase 2, and
+`push-wake-e2e`'s first two tests. Full suite is 4 red of 241, from 16 of 237 when this class was at
+its worst.
+
+One member does not resolve with it and needs its own ticket rather than keeping this one open:
+`push-wake-e2e` "wakes a member whose authorization and address were learned by control-DB
+replication, not local seeding" still shows the header-absent fingerprint. Both this ticket and the
+coordinator ticket predicted push-wake had a second cause; that prediction held.
+
+Do not reopen this ticket for that test, and do not treat the header-absent fingerprint as evidence
+that the coordinator defect is back — it is fixed, measured, and has an upstream regression test.

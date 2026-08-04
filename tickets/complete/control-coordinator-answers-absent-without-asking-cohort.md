@@ -304,3 +304,28 @@ an explicit warning not to touch `sync/service.ts:160`.
 **Still to do here once it lands:** re-measure against the real change rather than the emulation.
 The emulation is precise but it is an emulation, and the header-absent count of 7 means something
 in this class survives it.
+
+## Fixed upstream and verified 2026-08-03 — closing
+
+`../optimystic` `v0.20.0` lands the fix (`de03c13` fix → `9c72918` implement → `4457d94` review,
+"remote-read-consults-cohort"). `repo/service.ts` no longer passes `skipClusterFetch` on the repo
+protocol, and carries a comment explaining why. `sync/service.ts:160` was correctly left alone.
+
+Measured here at floors `^0.20.0`, both repos rebuilt, full integration suite:
+
+| | 0.19.0 | 0.20.0 |
+| --- | --- | --- |
+| test files red | 9 of 41 | 5 of 41 |
+| tests red | 14 of 241 | **4 of 241** |
+| `header block read as absent` | 24 | 3 |
+
+Better than the emulation predicted (it forecast 6). Cleared: `control-db-two-node-convergence`,
+`control-delete-while-alone-convergence` (both), `control-cohort-cold-start-retry`,
+`harness-party-control-cohort`, `happy-path`, `strand-unpublish-sibling-convergence`,
+`provider-seed-accepted` (all), two of three `push-wake-e2e`, three of four
+`strand-membership-closed-strand-e2e`.
+
+The three remaining `header block read as absent` occurrences are all one test — `push-wake-e2e`
+"wakes a member whose authorization and address were learned by control-DB replication". This ticket
+predicted that: push-wake has a genuine second cause and was never going to be fixed by this. It
+needs its own ticket rather than keeping this one open.
