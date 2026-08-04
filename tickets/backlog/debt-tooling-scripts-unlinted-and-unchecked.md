@@ -73,3 +73,18 @@ globals, same shape as the `scripts/` config block), and decide whether the two 
 should be wired into a root gate so a broken `ops/` service fails CI rather than failing at
 `docker build` time on an operator's machine. Do not fold `ops/` into `workspaces` to get there —
 these are standalone deployables with their own dependency trees, deliberately not hoisted.
+
+## The unchecked surface grew (noted 2026-08-03 during review of `release-smoke-published-install`)
+
+Not a new arm — the same `ignores` entry, restated with a current measurement. The release smoke gate
+(`yarn smoke:published`) landed entirely inside the ignored tree. Re-measured with
+`wc -l scripts/*.mjs scripts/*.js scripts/lib/*.mjs`:
+
+- root `scripts/` — **2,854** lines, up from the 1,768 recorded above on 2026-08-02
+- `packages/*/scripts/` — unchanged at 891 lines
+
+The new files are `scripts/smoke-published-install.mjs`, `scripts/lib/published-smoke-support.mjs`,
+`scripts/lib/published-smoke-scenario.mjs` and `scripts/smoke-published-install.test.mjs`. The first
+three decide whether the packages we are about to publish are shippable, and the last is the only
+thing pinning them — all four unlinted and untyped. That sharpens the "the gates themselves are
+unchecked" point above rather than changing the work.

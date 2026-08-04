@@ -29,6 +29,12 @@ import {
  * The next shape up — a cadre of *more than one* whose peers are all offline —
  * is covered by `control-database-offline-peers.spec.ts` (same harness, lifted
  * into `control-db-node-helpers.ts`).
+ *
+ * These same three cases are ported onto `node:assert/strict` in
+ * `scripts/lib/published-smoke-scenario.mjs`, which `yarn smoke:published` runs
+ * against packages installed from real tarballs (the scratch project has neither
+ * vitest nor `src` access). Nothing checks that the two stay in step — when the
+ * assertions here change, change the port to match rather than letting it drift.
  */
 
 /** Per-operation budget. Solo ops complete in milliseconds; this only catches hangs. */

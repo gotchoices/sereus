@@ -867,13 +867,29 @@ the `chai` defect below is exactly a failure that only appears once you install 
   The port keeps the labelled per-operation deadlines, so a regression reads as
   `HANG: solo control op <label> timed out after <n>ms` rather than a silent stall. Import failure,
   hang, and assertion failure each print a distinct block. Keep the two in step — when the spec's
-  assertions change, change the port rather than inventing new ones.
+  assertions change, change the port rather than inventing new ones. Nothing enforces that; both
+  files carry a comment pointing at the other, and that is the whole mechanism.
 - It fails if npm satisfied one of our own packages from the registry instead of from the packed
   tarball (checked against `package-lock.json`). The versions look identical in the report either
   way, so without that check the smoke could silently exercise the *previous* release.
 - **Deliberately not in `yarn test`.** It needs the network and takes ~40 s; as a default gate it
   would break offline runs. `--skip-build` reuses whatever is in each package's `dist/`; `--keep`
-  keeps the scratch project. A failing run always keeps it and prints its path.
+  keeps the scratch project. A failing run always keeps it and prints its path. An unrecognised flag
+  is refused rather than ignored, so a typo cannot silently start a full monorepo build.
+- **`--skip-build` is refused when any `dist/` is missing or older than its `src/`.** `pack` does not
+  build, so the tarballs would carry the previous build and a pass would mean nothing — the same
+  false green `test-harness/build-freshness.ts` guards the suites against. That module is TypeScript
+  with no build step, so a plain node script cannot import it; the rule (newest source mtime versus
+  newest output mtime) is re-derived in `scripts/lib/published-smoke-support.mjs`, and both copies
+  should change together.
+- **The decisions are unit-tested even though the run itself is not.** The script only executes at
+  release time, and there its guards only ever fire in the *passing* direction — a guard never seen
+  to fail is not a guard. Everything that is a pure function of the repo or of an installed
+  `node_modules` tree lives in `scripts/lib/published-smoke-support.mjs` and is pinned in both
+  directions against fixtures by `scripts/smoke-published-install.test.mjs` (`yarn
+  test:published-smoke-support`, in `yarn test`; no network, under a second). What remains unproven
+  is the orchestration around them: the on-success cleanup, the `yarn build` branch, and the POSIX
+  half of the `spawnSync` shim have never executed.
 - **As of 2026-08-03 it fails, and that is the correct result.** At the `^0.18.0` floor this repo
   declares, merely importing `@serfab/cadre-core` from a registry install throws
   `ERR_MODULE_NOT_FOUND: Cannot find package 'chai'` — see

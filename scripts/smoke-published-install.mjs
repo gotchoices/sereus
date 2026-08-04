@@ -26,22 +26,34 @@
  * workspace root. The scratch project lives outside this repo for the same reason —
  * no `resolutions` or workspace inheritance can leak in.
  *
- * Flags: `--skip-build` (reuse existing `dist/`), `--keep` (keep the scratch dir even
- * on success).
+ * Flags: `--skip-build` (reuse existing `dist/`, refused if any of it is stale),
+ * `--keep` (keep the scratch dir even on success).
+ *
+ * The decisions this makes about the repo and about an installed tree live in
+ * `scripts/lib/published-smoke-support.mjs` and are unit-tested by
+ * `scripts/smoke-published-install.test.mjs`; what stays here is the orchestration
+ * and the reporting.
  */
 
 import { spawnSync } from 'node:child_process';
-import { copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, relative } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import {
+	declaredRange,
+	hoistedVersions,
+	nestedCopies,
+	parseFlags,
+	publishableWorkspaces,
+	reportedPackages,
+	staleWorkspaces,
+	tarballProvenance
+} from './lib/published-smoke-support.mjs';
+
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const rootDir = join(scriptDir, '..');
-
-const args = new Set(process.argv.slice(2));
-const skipBuild = args.has('--skip-build');
-const keepScratch = args.has('--keep');
 
 /**
  * Packages whose resolved version is worth printing on top of the `@serfab/*`,
@@ -53,107 +65,42 @@ const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets'];
 /** The scratch project imports these directly, so it must declare them itself. */
 const SCENARIO_DIRECT_DEPS = ['@optimystic/db-p2p', '@libp2p/websockets'];
 
-function readJson(path) {
-	return JSON.parse(readFileSync(path, 'utf8'));
-}
-
 /**
  * `.cmd` shims (yarn, npm on Windows) cannot be spawned without a shell on modern
- * node, so shell out there and quote anything with whitespace. `stdio: 'inherit'`
- * streams as it goes — a silent redirect would let an agent runner's idle timer expire.
+ * node, so shell out there and quote anything with whitespace.
+ *
+ * Output streams as it goes by default — a silent redirect would let an agent
+ * runner's idle timer expire on the multi-minute `yarn build`. `quiet` captures
+ * instead, and is only for commands that finish in well under a second: `yarn pack`
+ * lists every file it archives, which is ~900 lines across the publishable set and
+ * buries the report this script exists to print. A quiet command that fails echoes
+ * everything it captured before throwing.
+ *
+ * NOTE: only the win32 branch has ever run. If this is ever used on macOS or Linux,
+ * expect the first failure here (`shell: false`) and in the `file:` spec's backslash
+ * normalisation in `writeScratchProject`.
  */
-function run(command, commandArgs, cwd) {
+function run(command, commandArgs, cwd, { quiet = false } = {}) {
 	const useShell = process.platform === 'win32';
 	const finalArgs = useShell
 		? commandArgs.map((arg) => (/[\s"&|<>^]/.test(arg) ? `"${arg}"` : arg))
 		: commandArgs;
 	console.log(`\n$ ${command} ${commandArgs.join(' ')}   (in ${cwd})`);
-	const result = spawnSync(command, finalArgs, { cwd, stdio: 'inherit', shell: useShell });
+	const result = spawnSync(command, finalArgs, {
+		cwd,
+		stdio: quiet ? 'pipe' : 'inherit',
+		shell: useShell,
+		encoding: quiet ? 'utf8' : undefined
+	});
 	if (result.error) {
 		throw new Error(`${command} failed to start: ${result.error.message}`);
 	}
 	if (result.status !== 0) {
+		if (quiet) {
+			process.stderr.write(result.stdout ?? '');
+			process.stderr.write(result.stderr ?? '');
+		}
 		throw new Error(`${command} ${commandArgs.join(' ')} exited with code ${result.status}`);
-	}
-}
-
-/**
- * The publishable set is whatever the root `pub:*` scripts publish — one source of
- * truth, so a new publishable package is covered the moment it gets a `pub:` script.
- */
-function publishableWorkspaces() {
-	const scripts = readJson(join(rootDir, 'package.json')).scripts ?? {};
-	const workspaces = [];
-	for (const [name, body] of Object.entries(scripts)) {
-		if (!name.startsWith('pub:')) {
-			continue;
-		}
-		const match = /publish-package\.js\s+(\S+)/.exec(body);
-		if (!match) {
-			throw new Error(`root script "${name}" does not name a package directory: ${body}`);
-		}
-		const dir = join(rootDir, 'packages', match[1]);
-		const manifest = readJson(join(dir, 'package.json'));
-		workspaces.push({ dir, manifest, tarballName: `${manifest.name.replace('@', '').replace('/', '-')}.tgz` });
-	}
-	if (workspaces.length === 0) {
-		throw new Error('no `pub:*` scripts found in the root package.json — nothing to pack');
-	}
-	return workspaces;
-}
-
-/**
- * The declared range for a package the scratch project must depend on directly.
- * Read off the in-repo manifests: `pack` only rewrites `workspace:` protocol ranges,
- * so for a registry dependency the packed manifest carries this exact string.
- */
-function declaredRange(workspaces, depName) {
-	for (const { manifest } of workspaces) {
-		const range = manifest.dependencies?.[depName];
-		if (range) {
-			return range;
-		}
-	}
-	throw new Error(`no publishable workspace declares "${depName}" — the scratch project cannot pin it`);
-}
-
-/** Every `@serfab/*`, `@optimystic/*` and `@quereus/*` name the publishable set depends on. */
-function reportedPackages(workspaces) {
-	const names = new Set(EXTRA_REPORTED);
-	for (const { manifest } of workspaces) {
-		names.add(manifest.name);
-		for (const depName of Object.keys(manifest.dependencies ?? {})) {
-			if (depName.startsWith('@serfab/') || depName.startsWith('@optimystic/') || depName.startsWith('@quereus/')) {
-				names.add(depName);
-			}
-		}
-	}
-	return [...names].sort();
-}
-
-/**
- * Locate `spec` as node would from `fromDir`: walk up checking `node_modules/<spec>`.
- * Resolving from the *consumer's* directory rather than the project root is the whole
- * point — a naive lookup at the root once reported `@quereus/quereus` 0.16.4 while
- * `@serfab/cadre-core` was loading a nested 4.6.0 one level down.
- *
- * A directory walk rather than `createRequire().resolve` because several of these
- * packages are ESM-only with no `require` export condition, and `@quereus/quereus`
- * does not export `./package.json` at all — both make `require.resolve` throw on
- * packages that are installed and working.
- */
-function findPackageDir(fromDir, spec) {
-	let dir = fromDir;
-	for (;;) {
-		const candidate = join(dir, 'node_modules', ...spec.split('/'));
-		if (existsSync(join(candidate, 'package.json'))) {
-			return candidate;
-		}
-		const parent = dirname(dir);
-		if (parent === dir) {
-			return null;
-		}
-		dir = parent;
 	}
 }
 
@@ -167,70 +114,28 @@ function findPackageDir(fromDir, spec) {
 function reportResolved(projectDir, workspaces) {
 	console.log('\n=== resolved dependency versions ===');
 	console.log('\n  hoisted into the consuming project:');
-	const baseline = new Map();
-	for (const name of reportedPackages(workspaces)) {
-		const dir = findPackageDir(projectDir, name);
-		if (!dir) {
-			console.log(`    ${name.padEnd(42)} (not installed)`);
-			continue;
-		}
-		const version = readJson(join(dir, 'package.json')).version;
-		baseline.set(name, dir);
-		console.log(`    ${name.padEnd(42)} ${String(version).padEnd(12)} ${relative(projectDir, dir)}`);
+	for (const { name, version, dir } of hoistedVersions(projectDir, reportedPackages(workspaces, EXTRA_REPORTED))) {
+		console.log(dir === null
+			? `    ${name.padEnd(42)} (not installed)`
+			: `    ${name.padEnd(42)} ${String(version).padEnd(12)} ${relative(projectDir, dir)}`);
 	}
-
-	// Every dependency, not only the reported ones: a nested duplicate of anything is
-	// worth seeing, and npm only nests where it could not hoist.
-	const hoisted = (name) => {
-		if (!baseline.has(name)) {
-			baseline.set(name, findPackageDir(projectDir, name));
-		}
-		return baseline.get(name);
-	};
 
 	console.log('\n  nested copies (a package resolving something other than the hoisted one):');
-	let nested = 0;
-	for (const { manifest } of workspaces) {
-		const consumerDir = findPackageDir(projectDir, manifest.name);
-		if (!consumerDir) {
-			continue;
-		}
-		for (const depName of Object.keys(manifest.dependencies ?? {})) {
-			const dir = findPackageDir(consumerDir, depName);
-			if (!dir || dir === hoisted(depName)) {
-				continue;
-			}
-			nested += 1;
-			const version = readJson(join(dir, 'package.json')).version;
-			console.log(`    ${manifest.name} → ${depName} ${version}  at ${relative(projectDir, dir)}`);
-		}
+	const copies = nestedCopies(projectDir, workspaces);
+	for (const { consumer, dep, version, dir } of copies) {
+		console.log(`    ${consumer} → ${dep} ${version}  at ${relative(projectDir, dir)}`);
 	}
-	if (nested === 0) {
+	if (copies.length === 0) {
 		console.log('    none — every package resolves the same copy the project root does.');
 	}
 }
 
-/**
- * Fail loudly if npm satisfied one of our own packages from the registry instead of
- * from the tarball just packed. The versions would look identical in the report above,
- * so without this check the smoke could silently test the *last* release rather than
- * this build.
- */
-function assertOurPackagesCameFromTarballs(projectDir, workspaces) {
-	const lockPath = join(projectDir, 'package-lock.json');
-	if (!existsSync(lockPath)) {
+/** Fail loudly if npm satisfied one of our own packages from anywhere but the packed tarball. */
+function reportProvenance(projectDir, workspaces) {
+	const { lockfilePresent, wrong } = tarballProvenance(projectDir, workspaces);
+	if (!lockfilePresent) {
 		console.log('\nnote: no package-lock.json written; cannot confirm the tarballs were used.');
 		return true;
-	}
-	const lock = readJson(lockPath);
-	const entries = lock.packages ?? {};
-	const wrong = [];
-	for (const { manifest, tarballName } of workspaces) {
-		const entry = entries[`node_modules/${manifest.name}`];
-		const resolved = entry?.resolved ?? '(absent from lockfile)';
-		if (!resolved.includes(tarballName)) {
-			wrong.push({ name: manifest.name, resolved });
-		}
 	}
 	if (wrong.length === 0) {
 		return true;
@@ -243,7 +148,25 @@ function assertOurPackagesCameFromTarballs(projectDir, workspaces) {
 	return false;
 }
 
-function writeScratchProject(projectDir, workspaces, tarballDir) {
+/**
+ * Refuse `--skip-build` when `dist` is missing or older than `src`. `pack` does not
+ * build, so the tarballs would carry the previous build and a pass would mean nothing.
+ */
+function reportStaleBuilds(workspaces) {
+	const stale = staleWorkspaces(workspaces);
+	if (stale.length === 0) {
+		console.log('--skip-build: reusing each package\'s existing dist/ (checked newer than its src/).');
+		return true;
+	}
+	console.error('\nsmoke-published-install: --skip-build would pack output that does not match src:');
+	for (const { name, reason } of stale) {
+		console.error(`  ${name}: ${reason === 'missing' ? 'never built — no dist/' : 'dist/ is older than src/'}`);
+	}
+	console.error('Re-run without --skip-build so the tarballs carry the source in this working tree.');
+	return false;
+}
+
+function writeScratchProject(scenarioPath, projectDir, workspaces, tarballDir) {
 	const dependencies = {};
 	for (const { manifest, tarballName } of workspaces) {
 		// A relative `file:` spec, and declared at the top level so each tarball also
@@ -261,12 +184,12 @@ function writeScratchProject(projectDir, workspaces, tarballDir) {
 		type: 'module',
 		dependencies
 	}, null, 2)}\n`);
-	copyFileSync(join(scriptDir, 'lib', 'published-smoke-scenario.mjs'), join(projectDir, 'scenario.mjs'));
+	copyFileSync(scenarioPath, join(projectDir, 'scenario.mjs'));
 	return dependencies;
 }
 
-function cleanup(scratchDir, ok) {
-	if (!ok || keepScratch) {
+function cleanup(scratchDir, ok, keep) {
+	if (!ok || keep) {
 		console.log(`\nscratch project left in place: ${scratchDir}`);
 		return;
 	}
@@ -277,12 +200,14 @@ function cleanup(scratchDir, ok) {
 	}
 }
 
-function main() {
-	const workspaces = publishableWorkspaces();
+function main(flags) {
+	const workspaces = publishableWorkspaces(rootDir);
 	console.log(`smoke-published-install: ${workspaces.length} publishable workspace(s): ${workspaces.map((w) => w.manifest.name).join(', ')}`);
 
-	if (skipBuild) {
-		console.log('--skip-build: reusing whatever is already in each package\'s dist/.');
+	if (flags.skipBuild) {
+		if (!reportStaleBuilds(workspaces)) {
+			return 1;
+		}
 	} else {
 		// `pack` does not build. Without this the tarballs carry a stale (or absent) dist.
 		run('yarn', ['build'], rootDir);
@@ -298,11 +223,11 @@ function main() {
 	let ok = false;
 	try {
 		for (const { manifest, tarballName } of workspaces) {
-			run('yarn', ['workspace', manifest.name, 'pack', '--out', join(tarballDir, tarballName)], rootDir);
+			run('yarn', ['workspace', manifest.name, 'pack', '--out', join(tarballDir, tarballName)], rootDir, { quiet: true });
 		}
 		console.log(`\npacked: ${readdirSync(tarballDir).join(', ')}`);
 
-		const dependencies = writeScratchProject(projectDir, workspaces, tarballDir);
+		const dependencies = writeScratchProject(join(scriptDir, 'lib', 'published-smoke-scenario.mjs'), projectDir, workspaces, tarballDir);
 		console.log('\nscratch project dependencies:');
 		for (const [name, range] of Object.entries(dependencies)) {
 			console.log(`  ${name.padEnd(42)} ${range}`);
@@ -312,7 +237,7 @@ function main() {
 
 		// Printed before any case runs, so it survives a crash in the scenario.
 		reportResolved(projectDir, workspaces);
-		if (!assertOurPackagesCameFromTarballs(projectDir, workspaces)) {
+		if (!reportProvenance(projectDir, workspaces)) {
 			return 1;
 		}
 
@@ -329,13 +254,13 @@ function main() {
 		console.log('\nsmoke-published-install: PASSED — the packed tarballs install and run from a clean project.');
 		return 0;
 	} finally {
-		cleanup(scratchDir, ok);
+		cleanup(scratchDir, ok, flags.keep);
 	}
 }
 
 let exitCode;
 try {
-	exitCode = main();
+	exitCode = main(parseFlags(process.argv.slice(2)));
 } catch (err) {
 	console.error(`\nsmoke-published-install: FAILED — ${err.message}`);
 	exitCode = 1;

@@ -331,6 +331,11 @@ function linkedRemedy(packageName: string, packageRoot: string): string {
  * (`yarn workspace <name> clean && yarn workspace <name> build`). If this stops
  * being rare, teach the `'stale'` remedy to suggest the clean first.
  *
+ * NOTE: `scripts/lib/published-smoke-support.mjs`'s `staleWorkspaces` re-derives this
+ * same newest-src-versus-newest-output rule, because `yarn smoke:published` runs under
+ * plain `node` and cannot import TypeScript. If the rule here changes, change that copy
+ * too; if a third caller ever needs it, that is the point to give this module a build.
+ *
  * NOTE: this walks every target's whole `src` and output tree on every suite
  * start-up — 6 packages for cadre-core, 11 for integration-tests, unmeasurable
  * against those suites' runtimes today. If it ever shows up in start-up time,
