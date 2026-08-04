@@ -845,6 +845,43 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   range does not admit, they get two Quereus instances and cross-instance `instanceof` checks start
   failing; move to `peerDependencies` at that point.
 
+### Installing what a customer installs — `yarn smoke:published` (a release step, not a test)
+
+The range gate above proves a declared range *admits* the version we build against. It never
+installs anything, so it cannot prove the published artifact at that version actually works — and
+the `chai` defect below is exactly a failure that only appears once you install from the registry.
+`scripts/smoke-published-install.mjs` closes that half.
+
+- It packs every `pub:*` workspace (yarn rewrites `workspace:^` to the concrete `^<version>`, so the
+  tarballs are what `yarn npm publish` would upload), installs them with **npm** into a scratch
+  project under the OS temp dir, and lets everything else resolve from the public registry. The
+  scratch project lives outside this repo so no `resolutions` or workspace inheritance can leak in;
+  npm rather than yarn because yarn would walk upward looking for a workspace root.
+- It prints the resolved version **and path** of every `@serfab/*` / `@optimystic/*` /
+  `@quereus/quereus` package as hoisted into the consuming project, then every *nested* copy a
+  package resolves instead — a report that would have made the "root sees `@quereus/quereus` 0.16.4
+  while `cadre-core` loads a nested 4.6.0" split obvious at a glance.
+- It then runs the cadre-of-one control-DB scenario against the installed packages:
+  `scripts/lib/published-smoke-scenario.mjs`, a port of
+  `packages/cadre-core/test/control-database-solo.spec.ts`'s assertions onto `node:assert/strict`.
+  The port keeps the labelled per-operation deadlines, so a regression reads as
+  `HANG: solo control op <label> timed out after <n>ms` rather than a silent stall. Import failure,
+  hang, and assertion failure each print a distinct block. Keep the two in step — when the spec's
+  assertions change, change the port rather than inventing new ones.
+- It fails if npm satisfied one of our own packages from the registry instead of from the packed
+  tarball (checked against `package-lock.json`). The versions look identical in the report either
+  way, so without that check the smoke could silently exercise the *previous* release.
+- **Deliberately not in `yarn test`.** It needs the network and takes ~40 s; as a default gate it
+  would break offline runs. `--skip-build` reuses whatever is in each package's `dist/`; `--keep`
+  keeps the scratch project. A failing run always keeps it and prints its path.
+- **As of 2026-08-03 it fails, and that is the correct result.** At the `^0.18.0` floor this repo
+  declares, merely importing `@serfab/cadre-core` from a registry install throws
+  `ERR_MODULE_NOT_FOUND: Cannot find package 'chai'` — see
+  `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install` for the upstream mechanism.
+  Do **not** install `chai` into the scratch project to get a green run; that hides the exact defect
+  the script exists to catch. With `chai` installed by hand for verification, all three cases pass
+  in 87–206 ms, so the scenario itself is sound and the only blocker is the upstream import chain.
+
 ### Control DB liveness: solo (cadre-of-one) and known-but-offline peers — supported and covered
 
 A **cadre of one** — a node whose only member is itself, the normal first-run state of every
