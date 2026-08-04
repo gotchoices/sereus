@@ -17,16 +17,21 @@ const TAG_SHAPE = /^[a-z0-9][a-z0-9._-]*$/i;
  * are needed: `yarn pub` is six `&&`-ed publishes, so an argv flag appended to the
  * `yarn pub` invocation reaches only the last one. The env var is the only form that
  * tags the whole chain: `SEREUS_DIST_TAG=alpha yarn pub`.
+ *
+ * NOTE: `yarn pub --tag alpha` therefore tags only `cadre-host`. Today that mis-invocation fails
+ * loudly on the first package whenever it matters (a prerelease with no tag trips
+ * `assertDistTagForPrerelease`); if the `pub` chain ever stops being a flat `&&` list of
+ * per-package scripts, re-check that this is still true.
  */
 export function resolveDistTag(argv, env) {
 	let tagFromArgv;
 	for (let i = 0; i < argv.length; i++) {
 		const arg = argv[i];
-		if (!arg.startsWith('--')) {
-			continue;
-		}
 		if (arg !== '--tag') {
-			throw new Error(`unknown flag "${arg}" — expected: --tag <name>`);
+			// A bare word here is almost always a forgotten `--tag` (`yarn pub:cadre-core alpha`),
+			// which would otherwise publish under `latest` without a word of complaint.
+			const kind = arg.startsWith('--') ? 'unknown flag' : 'unexpected argument';
+			throw new Error(`${kind} "${arg}" — expected: --tag <name>`);
 		}
 		const value = argv[i + 1];
 		if (value === undefined || value === '' || value.startsWith('--')) {

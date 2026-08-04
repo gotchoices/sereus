@@ -46,6 +46,22 @@ test('resolveDistTag: an unrecognised flag is refused', () => {
 	assert.throws(() => resolveDistTag(['--nope'], {}), /unknown flag "--nope"/);
 });
 
+test('resolveDistTag: a bare word (a forgotten --tag) is refused, not silently ignored', () => {
+	assert.throws(() => resolveDistTag(['alpha'], {}), /unexpected argument "alpha"/);
+});
+
+test('resolveDistTag: --tag followed by another flag is a missing value, not a tag named --keep', () => {
+	assert.throws(() => resolveDistTag(['--tag', '--keep'], {}), /--tag requires a value/);
+});
+
+test('resolveDistTag: a malformed SEREUS_DIST_TAG is refused', () => {
+	assert.throws(() => resolveDistTag([], { SEREUS_DIST_TAG: 'not a tag' }), /is not a plausible npm tag name/);
+});
+
+test('resolveDistTag: an empty SEREUS_DIST_TAG is treated as unset', () => {
+	assert.equal(resolveDistTag([], { SEREUS_DIST_TAG: '' }), undefined);
+});
+
 test('resolveDistTag: rejects a tag that is a bare semver version', () => {
 	assert.throws(() => resolveDistTag(['--tag', '1.2.3'], {}), /looks like a version, not a tag name/);
 });
