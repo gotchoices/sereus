@@ -828,6 +828,12 @@ this repo tests against, and hit a solo control-DB hang we could not reproduce.
   non-semver declared range such as `workspace:^`, and a malformed sibling version) reported as
   readable failures rather than a crash — each against a throwaway fixture workspace (not this
   repo's own packages) via `DEP_RANGE_CHECK_ROOT`.
+- NOTE (tripwire, noticed 2026-08-03): `@optimystic/db-p2p-storage-fs` is the one optimystic package
+  *not* in root `resolutions`, so it resolves from npm while its eight siblings resolve to
+  `../optimystic` — and because the gate only checks `link:` targets, its declared range is
+  ungated. Benign today (registry `0.19.0` is the same commit we link), but local edits to that
+  package are invisible to `cadre-cli` / `quereus-plugin-sereus`. If fs-storage behaviour ever
+  needs testing against local optimystic, add a `link:` entry for it.
 - `yarn upgrade:optimystic` / `yarn upgrade:quereus` (npm-check-updates) rewrite the declared ranges;
   run them when the sibling workspace is bumped, not only at release time.
 - Note `@optimystic/db-p2p-storage-fs` has **no** `resolutions` entry, so it always resolves from the
@@ -890,7 +896,7 @@ the `chai` defect below is exactly a failure that only appears once you install 
   test:published-smoke-support`, in `yarn test`; no network, under a second). What remains unproven
   is the orchestration around them: the on-success cleanup, the `yarn build` branch, and the POSIX
   half of the `spawnSync` shim have never executed.
-- **As of 2026-08-03 it fails, and that is the correct result.** At the `^0.18.0` floor this repo
+- **As of 2026-08-03 it fails, and that is the correct result.** At the `^0.19.0` floor this repo
   declares, merely importing `@serfab/cadre-core` from a registry install throws
   `ERR_MODULE_NOT_FOUND: Cannot find package 'chai'` — see
   `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install` for the upstream mechanism.
@@ -1115,20 +1121,20 @@ change for it**; it is fixed by an Optimystic publish.
   cadre can be told "nothing was ever saved here" for a table another machine holds, and that state
   is permanent for the affected collection, not transient. An embedder should not build on
   multi-device replication until the upstream fix lands.
-- **Publishing is blocked outright today**, and not by any of the above: at the `^0.18.0` floor this
+- **Publishing is blocked outright today**, and not by any of the above: at the `^0.19.0` floor this
   repo declares, importing `@serfab/cadre-core` from a registry install throws before running a line
   of our code (`Cannot find package 'chai'` — see the `yarn smoke:published` section and
   `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install`). Present in every published
   `@optimystic/*` from `0.16.2` onward, **including `0.19.0`**, and still unfixed at that repo's
   HEAD. Nothing can be published until it resolves.
-- **The declared floors do move: `^0.18.0` → `^0.19.0`.** `../optimystic` cut `v0.19.0` on
+- **The declared floors moved: `^0.18.0` → `^0.19.0` (landed 2026-08-03).** `../optimystic` cut `v0.19.0` on
   2026-08-03 while this measurement was being taken, and it is on npm as `latest`. That release is
   **version numbers only** (`git show --stat 9b86eb3` is twelve `package.json` files, one line
   each), sitting directly on `610d6d1` — the commit everything above was measured against — so the
   numbers in this section describe `0.19.0`'s code exactly. Since these are `0.x` versions,
-  `^0.18.0` means `>=0.18.0 <0.19.0` and now *excludes* what we link, which is why
-  `yarn check:dep-ranges` is currently red (22 ranges). The mechanical bump is
-  `tickets/implement/0.15-bump-optimystic-floors-to-0.19`. Note what `0.19.0` does **not** carry:
+  `^0.18.0` meant `>=0.18.0 <0.19.0` and *excluded* what we link, which is why
+  `yarn check:dep-ranges` was red (22 ranges); all 22 moved and the gate is green
+  (`tickets/complete/0.15-bump-optimystic-floors-to-0.19`). Note what `0.19.0` does **not** carry:
   neither the coordinator fix nor the `chai` fix.
 - The runbook, the recommended version and dist-tag, and the draft release notes live in
   [`docs/releasing.md`](releasing.md).

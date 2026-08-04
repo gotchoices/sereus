@@ -52,10 +52,10 @@ The recommendation, with its reasoning, is in `docs/releasing.md` → "The inter
 - **Five packages, not six** — everything except `@serfab/strand-proto`, which has not changed and
   is called deprecated in three places. Skipping one release of it takes nothing away from anyone;
   the permanent question stays in `blocked/publish-deprecated-strand-proto-decision`.
-- **The declared minimum for the underlying library moves to `^0.19.0`.** That version was published
-  while this was being written; it is the same code we measured against, just released. The check
-  that guards this is red until the edit lands —
-  `implement/0.15-bump-optimystic-floors-to-0.19` does it, and should land before you start.
+- **The declared minimum for the underlying library is now `^0.19.0`.** That version was published
+  while this was being written; it is the same code we measured against, just released. The edit
+  landed on 2026-08-03 (`complete/0.15-bump-optimystic-floors-to-0.19`) and the check that guards it
+  is green — nothing left to do here before you start.
 
 What you are actually deciding: whether an interim release with an honest "multi-machine is broken"
 caveat is worth publishing now, versus holding until the cross-machine fix lands. There is at least

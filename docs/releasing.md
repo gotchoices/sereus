@@ -153,7 +153,7 @@ menu; the actual go/no-go and the outward-facing publish are
 ### Why a minor bump, not a patch
 
 The change set since 0.9.0 is not a patch. The declared minimum for the underlying
-database/networking layer moved two minor versions (`^0.14.1` → `^0.19.0`), which changes what a
+database/networking layer moved five minor versions (`^0.14.1` → `^0.19.0`), which changes what a
 consumer's dependency tree resolves to; the control-database schema gained tables; push delivery and
 node donation are new subsystems. `0.9.1` would understate all of that.
 
@@ -187,13 +187,15 @@ stays on npm and keeps resolving for any external consumer this repo cannot see.
 question — keep shipping it or stop for good — remains
 `tickets/blocked/publish-deprecated-strand-proto-decision`.
 
-### Dependency floors: move them to `^0.19.0`
+### Dependency floors: moved to `^0.19.0` (landed 2026-08-03)
 
 `../optimystic` cut `v0.19.0` on 2026-08-03 and it is on npm as `latest`, so that is now both what
 this repo links and what a consumer installing the sibling packages gets. Because these are `0.x`
-versions, `^0.18.0` means `>=0.18.0 <0.19.0` and *excludes* it — `yarn check:dep-ranges` is red on
-22 ranges until they move. The mechanical edit is
-`tickets/implement/0.15-bump-optimystic-floors-to-0.19`.
+versions, `^0.18.0` meant `>=0.18.0 <0.19.0` and *excluded* it, so `yarn check:dep-ranges` was red on
+22 ranges. All 24 declared `@optimystic/*` ranges moved to `^0.19.0` on 2026-08-03
+(`tickets/complete/0.15-bump-optimystic-floors-to-0.19`) — the 22 the gate covers plus the two
+`db-p2p-storage-fs` ones it does not (that package is not a `link:` target); the gate now reports
+zero too-old ranges.
 
 This is not a speculative bump to a version nobody can install. `0.19.0` is a
 **version-numbers-only** release (`git show --stat 9b86eb3` in that repo is twelve `package.json`
@@ -312,12 +314,12 @@ outward-facing and irreversible.
    `packages/db-p2p/src/testing/raw-storage-conformance.ts` from that barrel), then publish — likely
    `0.19.1`. Nothing else on this list is worth starting until an installable version exists.
    *If you instead choose the local workaround, see "The blocker that must clear first" above.*
-2. **Point the floors at whatever that publishes.** `tickets/implement/0.15-bump-optimystic-floors-to-0.19`
-   moves them to `^0.19.0`; if the fix ships as something later, take that instead:
+2. **Point the floors at whatever that publishes.** They already sit at `^0.19.0` (landed
+   2026-08-03) and the gate is green; if the fix ships as something later, move them again:
    ```bash
    yarn upgrade:optimystic && yarn install && yarn check:dep-ranges
    ```
-   This gate must report zero too-old ranges before going further. It is red today.
+   This gate must report zero too-old ranges before going further.
 3. **Re-measure.** The numbers in the notes above are from 2026-08-03 and the multi-machine
    failures are races:
    ```bash

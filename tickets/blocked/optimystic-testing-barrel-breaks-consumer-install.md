@@ -51,11 +51,13 @@ entirely inside the other project's published packages.
 ## Why it appeared only now
 
 It has been broken in every version of the lower-level packages from `0.16.2` onward (checked
-`0.16.2`, `0.16.3`, `0.17.0`, `0.18.0` — all four ship the offending import; `0.14.1` does not).
+`0.16.2`, `0.16.3`, `0.17.0`, `0.18.0`, `0.19.0` — all five ship the offending import; `0.14.1`
+does not).
 
 Our currently published release, `@serfab/cadre-core` 0.9.0, asks for version `0.14.1` of those
 packages, which predates the problem — so **installing 0.9.0 today works**. We then corrected the
-declared minimum to `0.18.0`, because that is the version we actually build and test against. That
+declared minimum to `0.19.0` (via `0.18.0`), because that is the version we actually build and test
+against. That
 correction is right, and it is also what walks us into this. The moment we publish, customers stop
 being able to load the library at all.
 
