@@ -337,23 +337,33 @@ export class HostProcessOrchestrator implements Orchestrator {
       log('refusing to reclaim workdir outside rootDir: %s', workdir);
       return false;
     }
-    if (!existsSync(workdir)) return false;
+    // Must be a DIRECTORY, not merely something that exists: `rootDir` also
+    // holds `state.json` (this orchestrator's own persisted handles), and
+    // `discardWorkdir`'s `rmSync` deletes files as happily as trees. Same
+    // defence class as the escape check above — no real containerId names a
+    // file — but the blast radius if one ever did is the whole handle map.
+    if (!statSync(workdir, { throwIfNoEntry: false })?.isDirectory()) return false;
     this.discardWorkdir(workdir);
     return true;
   }
 
   /**
-   * Best-effort removal of a workdir this host created and no handle owns.
-   * Logs, never throws: every caller is already unwinding a failure and must
-   * report *that* error, not this one.
+   * Best-effort removal of a workdir no handle owns. Logs, never throws: every
+   * caller is either unwinding a failure it must report instead of this one, or
+   * tearing a container down along a path where a surviving directory is a
+   * nuisance rather than a fault.
    *
-   * Fewer retries than `removeContainer`'s: that one races the OS releasing a
-   * just-killed child's cwd handle (Windows), while every caller here has
-   * established no process ever attached to this directory.
+   * `retries` sizes the wait for the OS to release a cwd handle — Windows drops
+   * it asynchronously after a child exits. `createContainer`'s unwind needs none
+   * of that (its throw surface ends before any child is spawned), but
+   * `reclaimWorkdir` can still meet an orphan process the previous host left
+   * running with this directory as its cwd, so it is not a *guaranteed*
+   * no-process path either — it simply logs and leaves the directory when the
+   * removal fails.
    */
-  private discardWorkdir(workdir: string): void {
+  private discardWorkdir(workdir: string, retries = { maxRetries: 5, retryDelay: 100 }): void {
     try {
-      rmSync(workdir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      rmSync(workdir, { recursive: true, force: true, ...retries });
       log('discarded workdir %s', workdir);
     } catch (err) {
       log('failed to discard workdir %s: %o', workdir, err);
@@ -830,13 +840,10 @@ export class HostProcessOrchestrator implements Orchestrator {
 
     this.releasePorts(handle.ports);
 
-    // On Windows the OS releases the child's cwd handle asynchronously, so
-    // retry rmSync to give the kernel a chance to drop it.
-    try {
-      rmSync(handle.workdir, { recursive: true, force: true, maxRetries: 20, retryDelay: 200 });
-    } catch (err) {
-      log('failed to remove workdir %s: %o', handle.workdir, err);
-    }
+    // Longer retries than the other callers': this is the one path that has
+    // just killed a child which held this directory as its cwd, and on Windows
+    // the OS releases that handle asynchronously.
+    this.discardWorkdir(handle.workdir, { maxRetries: 20, retryDelay: 200 });
 
     this.handles.delete(dockerId);
     this.persist();

@@ -468,6 +468,18 @@ describe('HostProcessOrchestrator.reclaimWorkdir', () => {
     expect(orch.reclaimWorkdir('grn_never_existed')).toBe(false);
   });
 
+  it('refuses an id that names a file rather than a workdir', () => {
+    const orch = makeOrchestrator();
+    const rootDir = (orch as unknown as { rootDir: string }).rootDir;
+    // `rootDir` is not only container directories — `state.json` is the
+    // orchestrator's own persisted handle map, and `rmSync` would take it.
+    const statePath = join(rootDir, 'state.json');
+    writeFileSync(statePath, '{"handles":[]}', 'utf8');
+
+    expect(orch.reclaimWorkdir('state.json')).toBe(false);
+    expect(existsSync(statePath)).toBe(true);
+  });
+
   it('refuses an id that would escape rootDir', () => {
     const orch = makeOrchestrator();
     const rootDir = (orch as unknown as { rootDir: string }).rootDir;

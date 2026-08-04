@@ -57,3 +57,26 @@ Worth settling as part of the work:
   carries retry logic for it.
 - Whether the cross-checks against `FakeOrchestrator` should be explicit — the fake's contract suite
   and the real suite asserting the same rules side by side, so a future divergence is visible.
+
+## Status note (added while reviewing `debt-failed-provision-strands-workdir`)
+
+Most of this has since landed, unremarked, in
+`packages/cadre-host/src/__tests__/orchestrator.test.ts` — 951 lines driving the real class against a
+stub entrypoint, which is exactly the approach proposed above. The premise "there is no test file for
+it" no longer holds, and of the five rules listed as unverified, four now are: `dropStaleHandle`,
+`restoreDroppedHandles`, "deleting frees ports and removes the working directory, stopping does not",
+and the restart re-attach. The class is now ~1,130 lines.
+
+What is still open:
+
+- The `requireHandle` rule — stopping or deleting a node the class no longer knows about must be an
+  error, not a silent success — is asserted only against `FakeOrchestrator`, never against the real
+  class.
+- The explicit fake-versus-real cross-check (the last bullet above) was never done. The two suites
+  assert overlapping rules independently, so a divergence between the model and the real class is
+  still invisible.
+- Whether any case needs a real `cadre-cli` child, and where a slower suite would live, was never
+  settled — the stub-entrypoint suite simply grew instead.
+
+Whoever triages this should decide whether the remainder is worth its own smaller ticket or whether
+this one should be rewritten down to the two open items.
