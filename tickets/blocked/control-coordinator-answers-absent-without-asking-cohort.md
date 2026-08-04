@@ -251,3 +251,56 @@ fingerprint of `control-cohort-edge-carries-data` at HEAD (`Block default/Revoca
 (peers-unreachable)`), which is currently ticketed under `fix/control-read-over-fresh-edge-stream-resets`
 against an older stream-reset fingerprint that no longer matches. That ticket needs re-measuring
 regardless of what happens here.
+
+## Retraction and precise measurement, 2026-08-03
+
+**The "Caution 2026-08-03" section above is wrong and is retracted.** It reported that neutralizing
+the flag traded header-absent failures for `peers-unreachable` ones and did not clear the suite.
+That measurement un-skipped the flag at **both** production sites, not just the one this ticket
+names. There are two:
+
+```
+../optimystic/packages/db-p2p/src/repo/service.ts:264   { expiration, skipClusterFetch: true }   <- this ticket's target
+../optimystic/packages/db-p2p/src/sync/service.ts:160   { skipClusterFetch: true }               <- NOT this ticket's target
+```
+
+The sync path appears load-bearing, and un-skipping it produced the recursion-shaped 60-113 s
+timeouts that made the earlier result look bad. The two calls are cleanly distinguishable at
+runtime: only the repo-protocol call carries `expiration`.
+
+Re-ran with a harness that clears the flag **only** when `options.expiration !== undefined`, which
+is an exact emulation of the proposed change. Both repos freshly built, `../optimystic` at `9b86eb3`
+(`v0.19.0`), both runs on identical builds:
+
+| | at HEAD | shape 1 (repo protocol only) |
+| --- | --- | --- |
+| test files red | 9 of 41 | **5 of 41** |
+| tests red | 14 of 241 | **6 of 241** |
+| `header block read as absent` | 24 | 7 |
+| `peers-unreachable` | 3 | 3 |
+
+The failing sets nest exactly — every scenario red under shape 1 is also red at HEAD, and shape 1
+clears eight: `control-db-two-node-convergence`, `control-delete-while-alone-convergence` (both),
+`control-cohort-cold-start-retry`, `harness-party-control-cohort`, `happy-path`, and two of three
+`push-wake-e2e`.
+
+The six survivors are not replication-core and are separately explained:
+
+- `push-wake-e2e` ("wakes a member whose authorization and address were learned by control-DB
+  replication") — still header-absent, so it has a genuine second cause
+- `control-cohort-edge-carries-data` — `peers-unreachable`, unchanged by this
+- `strand-membership-closed-strand-e2e` test 5 — member-visibility timeout, not a header failure
+- `provider-seed-accepted` steps 3/4/5 — **unstable independent of this**: 4 of 5 red isolated at
+  HEAD, 3 of 5 red isolated under shape 1, and red in the HEAD full-suite baseline too
+
+`peers-unreachable` staying flat at 3 is the key number: the earlier claim that it becomes the next
+wall was an artifact of the cruder harness, where it rose to 21.
+
+**Upstream tickets filed 2026-08-03** into `../optimystic/tickets/fix/` (untracked there, for that
+team to review): `0-testing-barrel-drags-chai-into-consumer-installs` and
+`0.1-remote-read-answers-absent-without-consulting-cohort`. The second carries this measurement and
+an explicit warning not to touch `sync/service.ts:160`.
+
+**Still to do here once it lands:** re-measure against the real change rather than the emulation.
+The emulation is precise but it is an emulation, and the header-absent count of 7 means something
+in this class survives it.
