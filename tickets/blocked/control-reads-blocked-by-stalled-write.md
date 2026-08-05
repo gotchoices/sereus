@@ -6,7 +6,21 @@ difficulty: hard
 
 # Control reads block behind a stalled control write — cause is in Quereus, not Sereus
 
-## Decision needed
+## Decision made (2026-08-04): option (A), fix upstream
+
+Human chose (A). Upstream plan ticket filed: `concurrent-committed-reads` in
+`../quereus/tickets/plan/` (opt-in concurrent committed reads — assessment found
+the `_readCommitted` vtab contract already exists engine-side and in the
+optimystic plugin, so the change is engine plumbing, not a new concurrency
+model). A readiness ticket also filed in `../optimystic/tickets/backlog/`
+(`feat-concurrent-committed-read-readiness`) covering the stalled-commit
+regression test and concurrency-mode declaration. This ticket stays blocked on
+those external repos shipping; when the upstream opt-in lands, the work here is:
+adopt the new Quereus version, opt `ControlDatabase`'s read methods into
+committed-read concurrency, and flip the reproducer case from `it.fails` to
+plain `it` (see "Done means").
+
+## Original decision request (resolved)
 
 The defect is fully diagnosed and reproducible. It cannot be fixed inside this
 repository: the blocking code lives in `../quereus`, a **separate git repo** that Sereus
