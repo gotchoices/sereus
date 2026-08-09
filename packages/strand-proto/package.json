@@ -1,6 +1,6 @@
 {
   "name": "@serfab/strand-proto",
-  "version": "0.9.0",
+  "version": "0.10.0",
   "type": "module",
   "main": "dist/bootstrap.js",
   "types": "dist/bootstrap.d.ts",
