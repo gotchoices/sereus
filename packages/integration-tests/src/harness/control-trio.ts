@@ -71,6 +71,21 @@ export interface ControlTrio {
 }
 
 /**
+ * Run `body`, re-throwing any failure tagged with the boot step it came from.
+ * The polls below carry a `description` that lands in their timeout message; the
+ * STRAIGHT-LINE calls carried nothing, so a transactor error thrown by one of
+ * them reached the test naming no stage at all — and every one of them touches
+ * the control DB, so that is the shape a replication failure actually takes.
+ */
+async function atStage<T>(stage: string, body: () => Promise<T>): Promise<T> {
+	try {
+		return await body();
+	} catch (error) {
+		throw new Error(`bootControlTrio[${stage}]: ${String(error)}`, { cause: error });
+	}
+}
+
+/**
  * Stop whatever booted, newest first. A stop() failure is logged and the
  * remaining nodes are still stopped — a throw here would leak the other two
  * nodes' listeners AND mask the test failure that sent us into `finally`.
@@ -98,8 +113,8 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	//        here is directly dialable over loopback ws.
 	const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage' }));
 	handles.A = A;
-	await A.start();
-	const aOwnerKey = await makeOwnOwner(A, aKey);
+	await atStage('A starts', () => A.start());
+	const aOwnerKey = await atStage('A becomes its own owner', () => makeOwnOwner(A, aKey));
 	const aPeerId = A.peerId!.toString();
 
 	// A's self-publish rides the ~1s start timer; the seeds minted below are only
@@ -122,8 +137,9 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	// drain checkpoint below observable: B's own start-time self-registration then
 	// has a row to refresh instead of logging "not yet a CadrePeer member".
 	const bPeerId = peerIdFromPrivateKey(bKey).toString();
-	await A.authorizePeer(bPeerId);
-	const bVouchedAt = (await A.getControlDatabase()!.queryPeerRecord(bPeerId))!.updatedAt;
+	await atStage('A vouches B', () => A.authorizePeer(bPeerId));
+	const bVouchedAt = (await atStage('read B\'s vouched row on A',
+		() => A.getControlDatabase()!.queryPeerRecord(bPeerId)))!.updatedAt;
 
 	const B = new CadreNode(controlNodeConfig({
 		partyId, privateKey: bKey, profile: 'transaction',
@@ -131,12 +147,12 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		...(gaterB ? { connectionGater: gaterB } : {})
 	}));
 	handles.B = B;
-	await B.start();
+	await atStage('B starts', () => B.start());
 	if (B.peerId!.toString() !== bPeerId) {
 		throw new Error(`bootControlTrio: B started with peer id ${B.peerId!.toString()}, expected ${bPeerId}`);
 	}
 
-	const seedB = await A.createSeed();
+	const seedB = await atStage('A mints B\'s seed', () => A.createSeed());
 	// C has not been authorized and holds no row, so A's seed CANNOT name it.
 	// This is the "no shortcut" precondition: whatever B later knows about C did
 	// not arrive in a seed.
@@ -144,7 +160,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		throw new Error("bootControlTrio: A's seed for B names C — the no-shortcut precondition is broken");
 	}
 
-	const appliedB = await B.applySeed(seedB);
+	const appliedB = await atStage('B applies A\'s seed', () => B.applySeed(seedB));
 	if (!appliedB.success) {
 		throw new Error(`bootControlTrio: B failed to apply A's seed: ${JSON.stringify(appliedB)}`);
 	}
@@ -175,7 +191,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 	// wait it out, then join the pass. `reconcileControlCohort` hands back the
 	// in-flight pass, so this resolves only once no pass is running on B.
 	await sleep(1_000);
-	await B.reconcileControlCohort();
+	await atStage("B's start-time reconcile pass drains", () => B.reconcileControlCohort());
 
 	// ── 3. C starts, still unauthorized. At this instant nothing anywhere has told
 	//        B that C exists, so this checkpoint is non-racy.
@@ -183,7 +199,7 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 		partyId, privateKey: cKey, profile: 'transaction', pinnedOwnerKeys: [aOwnerKey]
 	}));
 	handles.C = C;
-	await C.start();
+	await atStage('C starts', () => C.start());
 	if (C.peerId!.toString() !== cPeerId) {
 		throw new Error(`bootControlTrio: C started with peer id ${C.peerId!.toString()}, expected ${cPeerId}`);
 	}
@@ -197,11 +213,11 @@ export async function bootControlTrio(options: ControlTrioOptions): Promise<Cont
 
 	// ── 4. A vouches C. `authorizePeer` writes the row with `Sig` null and an
 	//        empty `Multiaddr` — deliberately not yet resolvable by anyone.
-	await A.authorizePeer(cPeerId);
-	const seedC = await A.createSeed();
+	await atStage('A vouches C', () => A.authorizePeer(cPeerId));
+	const seedC = await atStage('A mints C\'s seed', () => A.createSeed());
 	// seedC legitimately names B (createSeed snapshots the whole CadrePeer table).
 	// Harmless: B's row carries no address, and applySeed only dials owner peers.
-	const appliedC = await C.applySeed(seedC);
+	const appliedC = await atStage('C applies A\'s seed', () => C.applySeed(seedC));
 	if (!appliedC.success) {
 		throw new Error(`bootControlTrio: C failed to apply A's seed: ${JSON.stringify(appliedC)}`);
 	}

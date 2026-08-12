@@ -175,6 +175,20 @@ async function waitUntilOrExplain(
 	}
 }
 
+/**
+ * Run `body`, re-throwing any failure with `context` appended. The polls below
+ * get that treatment from `waitUntilOrExplain`; the STRAIGHT-LINE reads need it
+ * just as much — an aggregate transactor error names a raw peer id, which is
+ * unattributable without the peer map.
+ */
+async function explain<T>(body: () => Promise<T>, context: string): Promise<T> {
+	try {
+		return await body();
+	} catch (error) {
+		throw new Error(`${String(error)}; ${context}`, { cause: error });
+	}
+}
+
 // ═══════════════════════════════════════════════════════════════════════════════
 
 describe('Control-cohort edge carries data (three nodes, severed backbone)', () => {
@@ -194,7 +208,9 @@ describe('Control-cohort edge carries data (three nodes, severed backbone)', () 
 			const peerMap = `peers: A=${aPeerId} B=${bPeerId} C=${cPeerId}`;
 
 			// ── 2. Baseline, while B↔A is still up and every read path is healthy.
-			const baseline = await B.getControlDatabase()!.queryPeerRecord(cPeerId);
+			const baseline = await explain(
+				() => B.getControlDatabase()!.queryPeerRecord(cPeerId),
+				`baseline read on B (step 2, pre-sever); ${peerMap}`);
 			expect(baseline).not.toBeNull();
 			const r0 = baseline!.updatedAt;
 			expect(hasOutboundTo(B, aPeerId)).toBe(true);
