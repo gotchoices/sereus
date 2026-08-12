@@ -196,10 +196,10 @@
 					<span class="muted" data-testid="diag-formation-usage" data-count="0">none</span>
 				{:else}
 					<ul class="row-list" data-testid="diag-formation-usage" data-count={diag.authorization.formationUsage.length}>
-						{#each diag.authorization.formationUsage as use (use.token + ':' + use.useNumber)}
+						{#each diag.authorization.formationUsage as use (use.usageStampId)}
 							<li>
 								<code>{use.token}</code>
-								<span class="muted">· use #{use.useNumber} → strand {use.strandId ?? '—'}</span>
+								<span class="muted">· {use.usageStampId.slice(0, 12)}… → strand {use.strandId ?? '—'}</span>
 							</li>
 						{/each}
 					</ul>

@@ -101,7 +101,7 @@ export interface FormationResponderHandle {
 	/** All `App.Message` rows in the strand, reduced to the convergence-assertion shape. */
 	readStrandMessages(): Promise<Array<{ id: string; memberId: string; content: string }>>;
 	/** `FormationUsage` rows on the responder's control DB (asserted after redemption). */
-	readFormationUsage(): Promise<Array<{ token: string; useNumber: number; strandId: string | null }>>;
+	readFormationUsage(): Promise<Array<{ token: string; usageStampId: string; strandId: string | null }>>;
 	/** Stop the node and release its strand/control resources. */
 	stop(): Promise<void>;
 }
@@ -324,12 +324,12 @@ function requireStrandDatabase(node: CadreNode, strandId: string): Database {
 /** Read the responder's `FormationUsage` rows over its control DB (read-only SQL). */
 async function readFormationUsage(
 	db: Database,
-): Promise<Array<{ token: string; useNumber: number; strandId: string | null }>> {
-	const rows: Array<{ token: string; useNumber: number; strandId: string | null }> = [];
-	for await (const row of db.eval('select Token, UseNumber, StrandId from CadreControl.FormationUsage')) {
+): Promise<Array<{ token: string; usageStampId: string; strandId: string | null }>> {
+	const rows: Array<{ token: string; usageStampId: string; strandId: string | null }> = [];
+	for await (const row of db.eval('select Token, UsageStampId, StrandId from CadreControl.FormationUsage')) {
 		rows.push({
 			token: row.Token as string,
-			useNumber: row.UseNumber as number,
+			usageStampId: row.UsageStampId as string,
 			strandId: (row.StrandId as string | null) ?? null,
 		});
 	}

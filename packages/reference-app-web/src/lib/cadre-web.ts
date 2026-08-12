@@ -135,7 +135,7 @@ export interface FormationInviteRow {
 /** A `FormationUsage` row, as surfaced to diagnostics. */
 export interface FormationUsageRow {
 	token: string;
-	useNumber: number;
+	usageStampId: string;
 	strandId: string | null;
 }
 
@@ -693,11 +693,11 @@ export async function readControlAuthorizationState(): Promise<ControlAuthorizat
 
 	const formationUsage: FormationUsageRow[] = [];
 	for await (const row of db.eval(
-		'select Token, UseNumber, StrandId from CadreControl.FormationUsage',
+		'select Token, UsageStampId, StrandId from CadreControl.FormationUsage',
 	)) {
 		formationUsage.push({
 			token: row.Token as string,
-			useNumber: row.UseNumber as number,
+			usageStampId: row.UsageStampId as string,
 			strandId: (row.StrandId as string | null) ?? null,
 		});
 	}

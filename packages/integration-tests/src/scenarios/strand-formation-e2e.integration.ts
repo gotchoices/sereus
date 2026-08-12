@@ -212,7 +212,7 @@ function invitationFor(token: string, sAppId: string, party: TestParty): OpenInv
  *
  * NOTE: returns whichever row the scan yields first, which is unambiguous only because
  * every caller here redeems a single-use invite. If a case ever reads back a multi-use
- * token, select the `UseNumber` it means rather than trusting scan order.
+ * token, select by the `UsageStampId` it means rather than trusting scan order.
  *
  * There is deliberately no approval material to read back: an approver's sign-off is an
  * INSERT-CONTEXT parameter (`context.ValidationKey` / `context.ValidationSignature`, see
