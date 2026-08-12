@@ -159,9 +159,10 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * NOTE: the discriminator is a formatting detail of another repo. If Optimystic ever reformats
  * those per-batch details, this fails CLOSED — the aggregate stops matching and control writes
  * simply stop being retried, silently losing the absorption rather than doing anything unsafe.
- * The guard against that is a scenario asserting the classifier against a live cluster failure
- * (`control-write-retry-scenario-coverage`); if that lands and later reddens here, an upstream
- * reformat is the first thing to check.
+ * The guard against that is live: `control-write-degraded-cohort-member.integration.ts` asserts
+ * this classifier against the real degraded-cohort failure object and asserts the `[block:`
+ * token on the live aggregate; if it reddens there, an upstream reformat is the first thing to
+ * check.
  *
  * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
  * batches to format) carries neither token, matches nothing here, and is not retried — an
@@ -296,8 +297,10 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
  * network are driven from the REAL engine in `control-formation-use-number-retry.spec.ts`, so
  * a rewording reddens a spec rather than silently disabling the retry. The two RETRIABLE
- * messages need a real multi-node cluster to produce and are still literals in
- * `control-write-retry.spec.ts`; `control-write-retry-scenario-coverage` closes that gap.
+ * messages need a real multi-node cluster to produce; the degraded-cohort scenario
+ * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against
+ * both LIVE — the super-majority shortfall from a real silent member, and the transactor
+ * aggregate from a real stream reset, which the retry there absorbs end to end.
  */
 export function isRetriableControlWriteFailure(error: unknown): boolean {
 	return matchesRetriableMessage(error, RETRIABLE_CONTROL_WRITE_MATCHERS);
@@ -356,6 +359,15 @@ export interface ControlWriteRetryOptions {
 	 * {@link isRetriableSchemaInitFailure}, via {@link SCHEMA_INIT_RETRY_POLICY}.
 	 */
 	isRetriable?: (error: unknown) => boolean;
+	/**
+	 * Operation label stamped into every log line this loop emits (rendered as
+	 * `Control write [<label>] …`), and NOTHING else — no behavioural effect. The debug
+	 * log is the only surface where the loop's decisions are observable (the rethrown
+	 * error is unchanged and no attempt counter is exposed), and several writes retry
+	 * CONCURRENTLY in a real party, so an unlabelled line cannot be attributed to a
+	 * write. The degraded-cohort scenario asserts on these lines per-operation.
+	 */
+	label?: string;
 	/** The sleep primitive. Default: `setTimeout`. */
 	sleep?: (ms: number) => Promise<void>;
 	/** Clock for the elapsed-budget check. Default: `Date.now`. */
@@ -405,6 +417,9 @@ export async function retryControlWrite<T>(
 	const isRetriable = options.isRetriable ?? isRetriableControlWriteFailure;
 	const sleep = options.sleep ?? defaultSleep;
 	const now = options.now ?? Date.now;
+	// Empty when unlabelled, so an unlabelled line is byte-identical to what this loop
+	// logged before labels existed.
+	const tag = options.label ? ` [${options.label}]` : '';
 	const start = now();
 	let lastError: unknown;
 	let attemptsMade = 0;
@@ -413,7 +428,7 @@ export async function retryControlWrite<T>(
 		try {
 			const result = await attempt();
 			if (attemptNumber > 1) {
-				log('Control write committed on attempt %d/%d', attemptNumber, attempts);
+				log('Control write%s committed on attempt %d/%d', tag, attemptNumber, attempts);
 			}
 			return result;
 		} catch (error) {
@@ -424,8 +439,8 @@ export async function retryControlWrite<T>(
 				// "here" is load-bearing: this fires for every non-transient failure, and some
 				// of them — the lost-use-number constraint failures — ARE retried by the OUTER
 				// loop (`ControlDatabase.withUseNumberRetry`) that this one nests inside.
-				log('Control write failed non-transiently on attempt %d/%d, not retried here: %s',
-					attemptNumber, attempts, error);
+				log('Control write%s failed non-transiently on attempt %d/%d, not retried here: %s',
+					tag, attemptNumber, attempts, error);
 				throw error;
 			}
 			lastError = error;
@@ -437,12 +452,12 @@ export async function retryControlWrite<T>(
 				break;
 			}
 			const delay = jitteredDelay(delays, attemptNumber);
-			log('Control write failed transiently (attempt %d/%d), retrying in %d ms: %s',
-				attemptNumber, attempts, delay, error);
+			log('Control write%s failed transiently (attempt %d/%d), retrying in %d ms: %s',
+				tag, attemptNumber, attempts, delay, error);
 			await sleep(delay);
 		}
 	}
-	log('Control write failed after %d/%d attempt(s): %s', attemptsMade, attempts, lastError);
+	log('Control write%s failed after %d/%d attempt(s): %s', tag, attemptsMade, attempts, lastError);
 	throw lastError;
 }
 

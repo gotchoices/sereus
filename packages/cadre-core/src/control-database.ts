@@ -605,7 +605,7 @@ export class ControlDatabase {
     // also what lets schema init absorb optimystic's self-coordination grace refusal, which
     // is unsafe for control writes in general. Why, on
     // `RETRIABLE_SCHEMA_INIT_MATCHERS` in `control-write-retry.ts`.
-    await this.lockedWithRetry(() => this.db!.exec(schemaContent), SCHEMA_INIT_RETRY_POLICY);
+    await this.lockedWithRetry(() => this.db!.exec(schemaContent), SCHEMA_INIT_RETRY_POLICY, 'schema-init');
     log('Schema loaded and executed');
   }
 
@@ -951,7 +951,7 @@ export class ControlDatabase {
         with context OwnerKey = null, Signature = ?
         set Multiaddr = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId]);
+    `, [record.sig, multiaddr, record.updatedAt, record.sig, record.peerId], 'self-record-update');
     log('Self peer record updated: %s (updatedAt=%d)', record.peerId, record.updatedAt);
   }
 
@@ -1794,7 +1794,7 @@ export class ControlDatabase {
       this.assertCommitBoundary(reason, 'on return from');
       await this.notifyMembershipChanged(reason);
       return result;
-    });
+    }, {}, reason);
   }
 
   /**
@@ -1864,10 +1864,12 @@ export class ControlDatabase {
    * `policy` — everything else takes the default, whose classifier and attempt count are
    * unchanged by that call site existing.
    */
-  private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}): Promise<T> {
+  private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}, label?: string): Promise<T> {
+    // The label lands LAST so a call site's own name survives both the policy and the
+    // spec-injected pacing; it changes log attribution only, never behaviour.
     return retryControlWrite(
       () => this.withWriteLock(fn),
-      { ...policy, ...this.controlWriteRetryPacing }
+      { ...policy, ...this.controlWriteRetryPacing, ...(label !== undefined ? { label } : {}) }
     );
   }
 
@@ -1881,9 +1883,9 @@ export class ControlDatabase {
    * through the same seam. Must NOT be called from inside an already-locked body (the
    * lock is not re-entrant); such a caller uses a bare `getDatabase().exec` instead.
    */
-  execWrite(sql: string, params?: SqlParameters): Promise<void> {
+  execWrite(sql: string, params?: SqlParameters, label?: string): Promise<void> {
     this.ensureInitialized();
-    return this.lockedWithRetry(() => this.db!.exec(sql, params));
+    return this.lockedWithRetry(() => this.db!.exec(sql, params), {}, label);
   }
 
   /**

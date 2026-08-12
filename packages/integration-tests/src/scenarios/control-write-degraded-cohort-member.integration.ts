@@ -72,10 +72,14 @@
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import debug from 'debug';
+import { format } from 'node:util';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Stream, Connection } from '@libp2p/interface';
-import { CadreNode } from '@serfab/cadre-core';
+import {
+	CadreNode, isRetriableControlWriteFailure, signPeerRecord, ed25519KeyPairFromLibp2p
+} from '@serfab/cadre-core';
+import type { Ed25519KeyPair } from '@serfab/cadre-core';
 import {
 	waitUntil, sleep, forceFullCohort, pinCoordinator, controlNodeConfig, makeOwnOwner, randomPeerId
 } from '../harness/index.js';
@@ -87,12 +91,14 @@ const log = debug('sereus:integration:degraded-cohort');
 //
 // Every bound below is sized off MEASURED single-machine (localhost websockets)
 // runs under the forced cohort + pinned coordinator, with ~2–3× headroom so a
-// slower CI box does not flake while a real regression still trips the bound:
+// slower CI box does not flake while a real regression still trips the bound
+// (re-measured 2026-08-12 with the control-write retry live under every case):
 //
-//   healthy authorize+remove ......... ~1.2 s   (both writes, combined)
-//   2 s-delayed authorize / remove ... ~55 s    each
+//   healthy authorize+remove ......... ~1.2–2.2 s (both writes, combined)
+//   2 s-delayed authorize / remove ... ~55 s      each
 //   never-answering member ........... ~20 s or ~40 s to the named failure
-//   recovery after a failed write .... ~0.9 s
+//   recovery after a failed write .... ~1.1–1.8 s
+//   transient-reset absorb ........... ~0.7 s     (commits on attempt 2)
 //
 // The ~55 s delayed commit is the 2 s handler delay paid serially across the
 // ~27 inbound cluster RPCs a control write makes: a small per-RPC delay becomes
@@ -100,6 +106,16 @@ const log = debug('sereus:integration:degraded-cohort');
 // `ClusterClient` response-deadline attempts against the silent member — and
 // the number of rounds is NOT deterministic even with the coordinator pinned
 // (one round in some runs, two in others; see the failure case's assertions).
+//
+// KNOWN INTERMITTENT (pre-existing, not this suite's defect): the healthy and
+// delayed cases sometimes fail with `Failed to get super-majority: 0/3
+// approvals (needed 3, 0 rejections)` — nobody votes at all, so those runs
+// prove nothing about degradation either way. Struck 3 of 5 full boots on
+// 2026-08-12. The retry-log capture below prints the funnel's decisions when
+// it strikes; tracked in `tickets/.pre-existing-known.md` against the
+// control-write-retry-scenario-coverage ticket, which carries the leading
+// mechanism (a concurrently-failed write's abandoned pend starves the hot
+// block — see the transient-reset case's header for the measured shape).
 
 /** Reads and read-backs: all answer from local state; this only catches hangs. */
 const READ_TIMEOUT_MS = 15_000;
@@ -140,6 +156,24 @@ const DELAYED_COMMIT_CEILING_MS = 100_000;
 
 /** The delay matrix: under the 10 s response deadline, and past it forever. */
 const UNDER_DEADLINE_DELAY_MS = 2_000;
+
+/**
+ * Injected inbound-stream resets for the transient-reset case, applied to the
+ * COORDINATOR's repo protocol (the transactor batch seam — see
+ * `resetFirstProtocolStreams` for why not the cluster protocol). Two, so a
+ * batch RPC that gets an in-line re-attempt still fails the write's first
+ * attempt outright; tuned against real runs.
+ */
+const TRANSIENT_RESET_COUNT = 2;
+/**
+ * Ceiling for the reset-absorbed commit. The resets fail instantly (no
+ * response-deadline wait), so the cost is the failed first attempt (<1 s), the
+ * retry backoffs (jittered ≤375 ms, then ≤1 s if a second retry is needed) and
+ * a healthy ~1 s commit — a few seconds end to end. Headroom so a slow box
+ * does not flake while an escalation into the 10 s response-deadline path
+ * (≥20 s) still trips it.
+ */
+const TRANSIENT_RESET_COMMIT_CEILING_MS = 15_000;
 
 // ── Labelled deadline ─────────────────────────────────────────────────────────
 
@@ -187,6 +221,86 @@ function errorChainText(error: unknown): string {
 		}
 	}
 	return parts.join(' | ');
+}
+
+/**
+ * Guard on the classifier's phase discriminator, against the LIVE message: when
+ * a failure carries the transactor's `Some peers did not complete:` aggregate,
+ * that aggregate must name at least one single-block batch (`[block:`) — the
+ * token `isRetriableControlWriteFailure` requires before it re-presents a
+ * write. The shortfall SENTENCE itself is phase-blind (`cluster-coordinator.ts`
+ * raises it identically from pend, cancel and commit), so the batch token is
+ * the only segment that decides retriability; an upstream reformat of the
+ * per-batch details silently disables the retry, and this turns that into a
+ * red assertion here instead. (`/\[block:/` cannot match inside `[blocks:` —
+ * the colon position separates the tokens.)
+ */
+function expectAggregateCarriesBatchToken(chain: string): void {
+	if (/Some peers did not complete:/.test(chain)) {
+		expect(chain,
+			'transactor aggregate carries no [block: batch token — the narrowed classifier would never retry this shape'
+		).toMatch(/\[block:/);
+	}
+}
+
+// ── Control-write retry log capture ───────────────────────────────────────────
+
+interface RetryLogCapture {
+	/** Every `sereus:cadre:control-db` line emitted since capture began. */
+	lines(): string[];
+	/** Put debug's namespace set and sink back. Idempotent. */
+	restore(): void;
+}
+
+/**
+ * Capture cadre-core's control-write retry debug lines
+ * (`sereus:cadre:control-db`) for the duration of a case. The retry funnel's
+ * decisions — `committed on attempt N`, `retrying in`, `failed after N/M
+ * attempt(s)` — are observable ONLY through these lines: the funnel neither
+ * wraps the error it rethrows nor exposes an attempt counter, so this is the
+ * one seam that can prove the retry ENGAGED (or stayed out of the way) on a
+ * real write. debug's sink and enabled-namespace set are process-global, so
+ * lines from every node in the trio land in one capture; each assertion below
+ * says how it copes with that.
+ */
+function captureControlRetryLogs(): RetryLogCapture {
+	const captured: string[] = [];
+	const previousNamespaces = debug.disable();
+	debug.enable(previousNamespaces ? `${previousNamespaces},sereus:cadre:control-db` : 'sereus:cadre:control-db');
+	const previousLog = debug.log;
+	debug.log = function (this: unknown, ...args: unknown[]): void {
+		captured.push(format(...args));
+		previousLog.apply(this, args);
+	};
+	let restored = false;
+	return {
+		lines: () => [...captured],
+		restore: (): void => {
+			if (restored) return;
+			restored = true;
+			debug.log = previousLog;
+			debug.disable();
+			if (previousNamespaces) debug.enable(previousNamespaces);
+		}
+	};
+}
+
+/**
+ * Print the retry funnel's decision lines under a `[retry-log]` prefix — the
+ * record a red run needs. In particular, when the intermittent healthy-path
+ * `0/3 approvals` failure strikes (tracked as an arm on
+ * `control-write-retry-scenario-coverage`), these lines say whether the funnel
+ * declined the failure (`not retried here` — a commit-phase veto or classifier
+ * miss) or retried and exhausted — the disambiguation that arm is missing.
+ */
+function printRetryDecisions(caseLabel: string, capture: RetryLogCapture): void {
+	for (const line of capture.lines()) {
+		// Matches all four funnel messages, labelled (`Control write [x] failed …`)
+		// or not; deliberately loose so a message rewording still prints.
+		if (line.includes('Control write')) {
+			console.log(`[retry-log ${caseLabel}] ${line}`);
+		}
+	}
 }
 
 // ── Degraded cluster handler ──────────────────────────────────────────────────
@@ -294,6 +408,88 @@ function observeClusterHandler(node: CadreNode, partyId: string): Promise<Degrad
 	return degradeClusterHandler(node, partyId, 0);
 }
 
+interface ResetHandle extends DegradedHandle {
+	/** Streams aborted by the injected-reset budget so far. */
+	resetStreams(): number;
+}
+
+/**
+ * Re-register one of `node`'s protocol handlers so the FIRST `count` inbound
+ * streams are aborted on arrival — the injected equivalent of the observed
+ * transient race (`registerSelf()` against a connection still forming, failing
+ * with `cause=The stream has been reset`) — and every later stream delegates
+ * to the real handler untouched.
+ *
+ * Takes the FULL protocol id, unlike `degradeClusterHandler`, because which
+ * seam the reset hits decides whether the retry can absorb it at all — a
+ * lesson measured the hard way (2026-08-12, run 1 of this ticket): resetting
+ * the CLUSTER protocol on a member kills that member's promise RPC AFTER the
+ * other members already pended the transaction, and the abandoned pend state
+ * then starves the retry's next attempts of answers on the same hot block
+ * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts). The class
+ * the retry absorbs is a reset on the transactor's REPO-protocol batch stream
+ * to the coordinator, which dies before anything pends anywhere.
+ *
+ * Sibling of `degradeClusterHandler`, deliberately self-contained rather than
+ * factored: the two share ~12 lines of registrar plumbing but differ in the
+ * whole middle (a reset consumes its budget synchronously and never holds a
+ * stream open, so there is no teardown signal and nothing for `restore()` to
+ * abort — it only has to drain the DELEGATED handlers still in flight).
+ *
+ * `fromPeer` narrows the reset budget to streams opened by that peer —
+ * necessary on a busy seam like the coordinator's repo protocol, where
+ * background dials from OTHER nodes would otherwise consume the budget before
+ * the write under test opens its first stream (measured: run 2 of this ticket
+ * burned both resets without the writing node's batches ever being touched).
+ * Each consumed reset logs who it hit, so a misaimed budget is diagnosable
+ * from the run output.
+ */
+async function resetFirstProtocolStreams(node: CadreNode, protocol: string, count: number, fromPeer?: string): Promise<ResetHandle> {
+	const controlNode = node.getControlNode();
+	if (!controlNode) throw new Error('resetFirstProtocolStreams: node has no started control node');
+	const registrar = (controlNode as unknown as { components: { registrar: RegistrarLike } }).components.registrar;
+	// Same loud failure as degradeClusterHandler if the protocol is not registered.
+	const { handler: original, options } = registrar.getHandler(protocol);
+
+	const pending = new Set<Promise<void>>();
+	let intercepted = 0;
+	let resets = 0;
+
+	const wrapped = (stream: Stream, connection: Connection): void => {
+		intercepted++;
+		const remote = connection.remotePeer.toString();
+		if (resets < count && (fromPeer === undefined || remote === fromPeer)) {
+			resets++;
+			console.log(`[measured] injected reset ${resets}/${count} on ${protocol.split('/').slice(-2).join('/')} from …${remote.slice(-8)}`);
+			stream.abort(new Error('injected transient stream reset'));
+			return;
+		}
+		const work = Promise.resolve(original(stream, connection)).catch((error: unknown) => {
+			// Same contract as degradeClusterHandler: logged, never rethrown into libp2p.
+			log('reset wrapper: delegate failed (%s): %o', protocol, error);
+			try { stream.abort(new Error('reset wrapper delegate failed')); } catch { /* stream already gone */ }
+		});
+		pending.add(work);
+		void work.finally(() => pending.delete(work));
+	};
+
+	await registrar.unhandle(protocol);
+	await registrar.handle(protocol, wrapped, options);
+
+	let restored = false;
+	return {
+		restore: async (): Promise<void> => {
+			if (restored) return;
+			restored = true;
+			await registrar.unhandle(protocol);
+			await registrar.handle(protocol, original, options);
+			await Promise.allSettled([...pending]);
+		},
+		interceptedStreams: () => intercepted,
+		resetStreams: () => resets
+	};
+}
+
 // ── Trio boot ─────────────────────────────────────────────────────────────────
 
 /** Does this node hold an OPEN control connection to `remotePeerId`? */
@@ -329,6 +525,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	let C: CadreNode; // the member each case degrades
 	let forced: ForcedCohortHandle | null = null;
 	let pinned: PinnedCoordinatorHandle | null = null;
+	/** B's signing keypair — the transient-reset case signs B's self-record itself. */
+	let bSigningKey: Ed25519KeyPair;
 	/** Set while a case holds a degradation, so afterAll can clean up a mid-case failure. */
 	let activeDegradation: DegradedHandle | null = null;
 
@@ -338,6 +536,7 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const cKey = await generateKeyPair('Ed25519');
 		const bPeerId = peerIdFromPrivateKey(bKey).toString();
 		const cPeerId = peerIdFromPrivateKey(cKey).toString();
+		bSigningKey = ed25519KeyPairFromLibp2p(bKey);
 
 		// Unlike the isolation scenario, ALL THREE nodes listen (the harness default):
 		// cluster fan-out must be able to dial every cohort member directly.
@@ -437,6 +636,9 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// baseline case, so it is the one that must prove the trio is real.
 		const observer = await observeClusterHandler(C, partyId);
 		activeDegradation = observer;
+		// No assertions on this capture — it exists so a red run records the retry
+		// funnel's decisions (see printRetryDecisions and the `0/3 approvals` arm).
+		const retryLog = captureControlRetryLogs();
 		const t0 = Date.now();
 		try {
 			await within(`authorizePeer(${target.slice(-8)}) healthy`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
@@ -455,6 +657,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// With a live cohort the write did NOT commit alone, so nothing queued.
 			expect(pendingPeerWrites(A).has(target)).toBe(false);
 		} finally {
+			printRetryDecisions('healthy', retryLog);
+			retryLog.restore();
 			await observer.restore();
 			activeDegradation = null;
 		}
@@ -464,6 +668,9 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const target = await randomPeerId();
 		const baseline = forced!.callCount();
 		activeDegradation = await degradeClusterHandler(C, partyId, UNDER_DEADLINE_DELAY_MS);
+		// Record-only, like the healthy case: this is the other case the
+		// intermittent `0/3 approvals` failure has struck.
+		const retryLog = captureControlRetryLogs();
 		try {
 			const authorize = await timedSettle(`authorizePeer(${target.slice(-8)}) delayed`, DELAYED_WRITE_TIMEOUT_MS,
 				() => A.authorizePeer(target));
@@ -484,6 +691,8 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expect(activeDegradation.interceptedStreams(), 'the delay wrapper never saw a stream — nothing was degraded').toBeGreaterThan(0);
 			expectThreePeerCohortConsulted(baseline);
 		} finally {
+			printRetryDecisions('delayed', retryLog);
+			retryLog.restore();
 			await activeDegradation.restore();
 			activeDegradation = null;
 		}
@@ -494,10 +703,12 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		const target = await randomPeerId();
 		const baseline = forced!.callCount();
 		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle(`authorizePeer(${target.slice(-8)}) stalled`, STALLED_WRITE_TIMEOUT_MS,
 				() => A.authorizePeer(target));
 			console.log(`[measured] authorize with never-answering member: ${outcome.elapsedMs}ms, error: ${outcome.error === null ? 'none (COMMITTED)' : errorChainText(outcome.error)}`);
+			printRetryDecisions('stalled-authorize', retryLog);
 
 			expect(outcome.error, 'write against a silent cohort member unexpectedly committed').not.toBeNull();
 			const chain = errorChainText(outcome.error);
@@ -510,12 +721,26 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// NOTE: the second round reports 0 approvals AND 0 rejections even though A
 			// and B are healthy — i.e. a retried control write hears nothing from the
 			// healthy members either. Benign for this assertion (the write must fail
-			// either way), but if the failure latency or the retry behaviour of control
-			// writes ever needs tightening, start there.
+			// either way). Measured 2026-08-12 (run 1 of the scenario-coverage
+			// ticket): a write re-presented right after a failed promise round
+			// degrades MONOTONICALLY — 2/3 → 1/3 → 0/3 across three attempts on the
+			// same hot block — so an abandoned pend appears to starve subsequent
+			// rounds until its cancel completes. That is the leading mechanism for
+			// the intermittent healthy-case `0/3` failure (see the header) and the
+			// reason the transient-reset case injects at the BATCH seam instead of
+			// the cluster promise seam.
 			expect(chain).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
 			// If the admission gate bit, the failure has the WRONG cause — fail on that
 			// explicitly rather than reporting a super-majority failure that isn't one.
 			expect(chain).not.toMatch(/membership-not-admitted/);
+			// The LIVE error object must classify as retriable — this is what the
+			// retry would re-present, and a reworded upstream message now fails this
+			// scenario instead of silently disabling the retry. (The retry still did
+			// not RUN here: the ~20 s first attempt exhausts the 10 s budget, which
+			// the log assertions below pin.)
+			expect(isRetriableControlWriteFailure(outcome.error),
+				'the live degraded-cohort failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
+			expectAggregateCarriesBatchToken(chain);
 
 			// Lower bound: an instant failure means the response-deadline path was
 			// never exercised. Upper bound: the transaction budget held.
@@ -523,7 +748,28 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			expect(outcome.elapsedMs).toBeLessThanOrEqual(FAILURE_CEILING_MS);
 			expect(activeDegradation.interceptedStreams()).toBeGreaterThan(0);
 			expectThreePeerCohortConsulted(baseline);
+
+			// The retry budget's whole rationale: a genuinely silent member fails in
+			// the SAME ~20-40 s it failed in before the retry existed, because the
+			// ~20 s first attempt exhausts the 10 s budget before any sleep. Wall
+			// clock cannot pin this (a one-round failure retried once lands at ~40 s,
+			// indistinguishable from a legitimate two-round settle), so the funnel's
+			// own log is the assertion surface — scoped by the `peer-insert` label to
+			// THIS write, because background writes are NOT all stall victims:
+			// measured 2026-08-12 (run 1), a background write fast-failed 3/3 inside
+			// this window on the intermittent `0/3 approvals` class, so an unscoped
+			// "nothing retried" assertion false-fails.
+			const insertLines = retryLog.lines().filter((l) => l.includes('[peer-insert]'));
+			expect(insertLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
+				'the stalled write ran a SECOND attempt — the 10 s retry budget no longer expires before the ~20 s degraded-member failure').toBe(false);
+			// Anti-vacuity for the line above: the stalled write's single attempt
+			// must itself be visible in the capture — otherwise the negative
+			// assertion passes because the capture is dead or the failure bypassed
+			// the retry funnel entirely.
+			expect(insertLines.some((l) => /failed after 1\/\d+ attempt\(s\)/.test(l)),
+				'the stalled write\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {
+			retryLog.restore();
 			await activeDegradation.restore();
 			activeDegradation = null;
 		}
@@ -607,14 +853,31 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		expect(await within('isMember (setup)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 
 		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);
+		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle(`removePeer(${target.slice(-8)}) stalled`, STALLED_WRITE_TIMEOUT_MS,
 				() => A.removePeer(target));
 			console.log(`[measured] remove with never-answering member: ${outcome.elapsedMs}ms, error: ${outcome.error === null ? 'none (COMMITTED)' : errorChainText(outcome.error)}`);
+			printRetryDecisions('stalled-remove', retryLog);
 			expect(outcome.error, 'DELETE against a silent cohort member unexpectedly committed').not.toBeNull();
+			const chain = errorChainText(outcome.error);
 			// `\d+` for the same reason as the authorize case above.
-			expect(errorChainText(outcome.error)).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
+			expect(chain).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
+			// Same classifier + budget guards as the authorize case: the DELETE
+			// direction's live failure must classify retriable, and no write may run
+			// a second attempt while C stalls (rationale on the authorize case).
+			expect(isRetriableControlWriteFailure(outcome.error),
+				'the live DELETE failure no longer classifies as retriable — a reworded upstream message has silently disabled the control-write retry').toBe(true);
+			expectAggregateCarriesBatchToken(chain);
+			// Scoped to the DELETE's own `peer-remove` label — same rationale as the
+			// authorize case (background writes can fail fast inside this window).
+			const removeLines = retryLog.lines().filter((l) => l.includes('[peer-remove]'));
+			expect(removeLines.some((l) => l.includes('retrying in') || /failed after [2-9]\/\d+ attempt\(s\)/.test(l)),
+				'the stalled DELETE ran a SECOND attempt — the 10 s retry budget no longer expires before the ~20 s degraded-member failure').toBe(false);
+			expect(removeLines.some((l) => /failed after 1\/\d+ attempt\(s\)/.test(l)),
+				'the stalled DELETE\'s failure never crossed the retry funnel — capture dead, or the funnel is no longer wired under control writes').toBe(true);
 		} finally {
+			retryLog.restore();
 			await activeDegradation.restore();
 			activeDegradation = null;
 		}
@@ -623,4 +886,103 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		// …and must have rolled back: the victim is still a member.
 		expect(await within('isMember (post-failed-remove)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(true);
 	}, 240_000);
+
+	it('absorbs an injected transient stream reset: the write commits on a retry attempt', async () => {
+		// The case the retry was BUILT for, and the first observation of its
+		// success path at a real call site (every prior proof drove a stub — see
+		// the coverage ticket's `verify-ddl-retry-engages` arm). The failure is
+		// injected at the seam the OBSERVED wild failure died on: the transactor's
+		// repo-protocol batch stream from the writing node to the coordinator.
+		// The writer must be B — A's own batches to the pinned coordinator (A)
+		// are handled LOCALLY and open no stream (run 4 measured the A-scoped
+		// budget matching nothing), so only a non-coordinator writer crosses the
+		// seam.
+		//
+		// The driven write is the WRITE HALF of `registerSelf()` — the very call
+		// the wild failure was observed on — invoked directly as
+		// `updateSelfPeerRecord` with a record this case signs itself (it holds
+		// B's key). Driving whole `registerSelf` instead is NOT viable here, and
+		// that is a measured finding, not a shortcut: its PRE-write reads sit
+		// outside the write funnel, dial the coordinator on every call (a prior
+		// read does not keep them local), and die unprotected on the first reset
+		// — 23-28 ms, `Error during query on table 'Revocation' …
+		// cause=Cannot write to a stream that is closed`, funnel never consulted
+		// (runs 3 and 5). The WRITE's own internal reads run inside the funnel,
+		// so this case still exercises reads-under-reset — on the protected side.
+		//
+		// Second hazard defused below: resets are scoped to streams FROM B,
+		// because A's repo protocol also serves background dials whose
+		// consumption of an unscoped budget let the write sail through untouched
+		// (run 2).
+		//
+		// Resetting C's CLUSTER streams instead does NOT yield an absorbable
+		// failure — the abandoned pend starves later attempts (see
+		// `resetFirstProtocolStreams`' header).
+		const bPeerId = B.peerId!.toString();
+		const bDb = B.getControlDatabase()!;
+		const before = await within('queryPeerRecord(B) (pre-reset)', READ_TIMEOUT_MS,
+			() => bDb.queryPeerRecord(bPeerId));
+		expect(before, 'B has no CadrePeer row to refresh — the case cannot drive a self-update').not.toBeNull();
+		// Same shape `CadreNode.signSelfRecord` builds: same addrs, a strictly
+		// later `updatedAt` (the monotonic self-update rule), B's own signature.
+		const record = signPeerRecord({
+			peerId: bPeerId,
+			publicKey: bSigningKey.publicKeyB64,
+			addrs: before!.addrs,
+			updatedAt: Math.max(Date.now(), before!.updatedAt + 1)
+		}, bSigningKey.privateKeyB64);
+
+		const baseline = forced!.callCount();
+		const retryLog = captureControlRetryLogs();
+		const resets = await resetFirstProtocolStreams(A, `/optimystic/control-${partyId}/repo/1.0.0`, TRANSIENT_RESET_COUNT, bPeerId);
+		activeDegradation = resets;
+		try {
+			const outcome = await timedSettle('updateSelfPeerRecord(B) transient-reset', WRITE_TIMEOUT_MS,
+				() => bDb.updateSelfPeerRecord(record));
+			console.log(`[measured] B self-record update with ${TRANSIENT_RESET_COUNT} injected repo-stream resets on A: ${outcome.elapsedMs}ms, error: ${outcome.error === null ? 'none' : errorChainText(outcome.error)}`);
+			// The record section 1 of the coverage ticket asks for: the REAL
+			// transient failure text (aggregate and all), straight from the funnel.
+			printRetryDecisions('transient-reset', retryLog);
+
+			expect(outcome.error, 'self-record refresh across the reset seam did not commit — the retry failed to absorb the observed transient class').toBeNull();
+			// Read-back: the refresh really landed (the row carries this exact stamp).
+			const after = await within('queryPeerRecord(B) (post-reset)', READ_TIMEOUT_MS,
+				() => bDb.queryPeerRecord(bPeerId));
+			expect(after!.updatedAt, 'B\'s CadrePeer row does not carry the refreshed stamp — the update never committed').toBe(record.updatedAt);
+
+			// Anti-vacuity, three layers. The reset budget was fully consumed
+			// (unconsumed resets mean the write's batches never crossed the seam)…
+			expect(resets.resetStreams(), 'no injected reset was consumed — B\'s transactor batch stream never crossed the repo seam').toBe(TRANSIENT_RESET_COUNT);
+			// …streams beyond the budget reached the real handler (the retry's
+			// attempt really crossed the same seam rather than routing around it)…
+			expect(resets.interceptedStreams(), 'no post-reset stream reached the handler — the retry attempt never crossed the batch seam').toBeGreaterThan(TRANSIENT_RESET_COUNT);
+			expectThreePeerCohortConsulted(baseline);
+
+			// …and the funnel itself says the retry ENGAGED on THIS write (the
+			// `self-record-update` label scopes the lines to B's refresh): a first
+			// attempt failed transiently and a later attempt committed. This is the
+			// success-path observation that closes the "never observed at any real
+			// call site" gap.
+			const refreshLines = retryLog.lines().filter((l) => l.includes('[self-record-update]'));
+			expect(refreshLines.some((l) => l.includes('retrying in')),
+				'no transient-retry decision was logged for the refresh — its first attempt never failed, so the retry was not exercised').toBe(true);
+			expect(refreshLines.some((l) => /committed on attempt [2-9]\/\d+/.test(l)),
+				'the refresh never committed on a retry attempt — the retry engaged but did not rescue the write').toBe(true);
+
+			// The absorption stayed inside the retry budget: resets fail instantly,
+			// so a settle near the response-deadline path's ~20 s floor means the
+			// failure escalated instead of being absorbed.
+			expect(outcome.elapsedMs).toBeLessThan(TRANSIENT_RESET_COMMIT_CEILING_MS);
+		} finally {
+			retryLog.restore();
+			await resets.restore();
+			activeDegradation = null;
+		}
+		// Prove the write path is healthy again with the wrapper gone: an
+		// owner-side write pair commits normally.
+		const target = await randomPeerId();
+		await within(`authorizePeer(${target.slice(-8)}) post-reset`, WRITE_TIMEOUT_MS, () => A.authorizePeer(target));
+		await within(`removePeer(${target.slice(-8)}) post-reset`, WRITE_TIMEOUT_MS, () => A.removePeer(target));
+		expect(await within('isMember (post-reset cleanup)', READ_TIMEOUT_MS, () => A.isMember(target))).toBe(false);
+	}, 120_000);
 });
