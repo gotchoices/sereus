@@ -213,3 +213,29 @@ Two consequences for this ticket:
 The unit-level proof is in `packages/cadre-core/test/control-write-retry.spec.ts`
 (`isRetriableSchemaInitFailure`), against the message text captured verbatim from a real node-B
 startup death — so this one is NOT a reconstruction, unlike the two the classifier already had.
+
+## Arm added 2026-08-11: this scenario's forced trio currently fails 0/3 on the healthy path
+
+Measured while validating `transactor-key-network-ignores-network-scoping`, with both sibling
+repos clean and rebuilt (`../optimystic` at `f02be8e`) and the whole sereus workspace rebuilt.
+Three consecutive runs of `control-write-degraded-cohort-member.integration.ts`:
+
+- run 1 — boot gate passed, then **2 tests failed** with
+  `Failed to get super-majority: 0/3 approvals (needed 3, 0 rejections)`
+  (`commits with a healthy three-member cohort (authorize AND remove)` and
+  `commits with a member delayed under the response deadline`). Final tally
+  `2 failed | 3 passed | 1 expected fail (6)`.
+- run 2 — `beforeAll` tripped the trio boot gate, all 6 reported skipped. That is
+  `fix/control-peer-row-refresh-invisible-to-third-node`, not this arm.
+- run 3 — fully green, `5 passed | 1 expected fail (6)`.
+
+`0/3 approvals, 0 rejections` means nobody voted at all — not that the degraded member refused.
+It lands on the **healthy** case too, which is the scenario's control, so when it strikes, the
+suite proves nothing about the retry either way. This ticket already owns `forced-cluster.ts` and
+this scenario, so it is recorded here rather than filed separately; the cause has not been
+established, and it is intermittent (1 of the 2 runs that got past `beforeAll`).
+
+Note that `forced-cluster.ts`'s header was rewritten in the same pass: a node now has exactly ONE
+`Libp2pKeyPeerNetwork`, so the two-instances-per-node rationale the header used to carry is gone.
+The prototype patch itself survives — see the rewritten header for why (it is now a simplicity
+argument, not a necessity one).

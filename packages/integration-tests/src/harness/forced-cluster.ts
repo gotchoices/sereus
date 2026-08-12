@@ -11,27 +11,30 @@
  * `ClusterCoordinator`, so any test about multi-member write consensus is
  * vacuous without this patch.
  *
- * WHY THE PROTOTYPE and not the node instances: every node has TWO
- * `Libp2pKeyPeerNetwork` instances over the same libp2p node —
+ * WHY THE PROTOTYPE and not the node instances: a node now has exactly ONE
+ * `Libp2pKeyPeerNetwork` — the node-attached instance (`createLibp2pNode` →
+ * `node.keyNetwork`), which serves the coordinatedRepo (consensus cohort
+ * derivation, member admission, `verifyResponsibility`), the cluster client
+ * AND the transactor, because `quereus-plugin-optimystic`'s collection factory
+ * (`resolveKeyNetwork('libp2p', node)`) prefers the attached instance instead
+ * of building a second one from defaults. So an instance patch on
+ * `node.keyNetwork` would in principle be enough now.
  *
- *  1. the node-attached instance (`createLibp2pNode` → `node.keyNetwork`),
- *     which serves the coordinatedRepo (consensus cohort derivation, member
- *     admission, `verifyResponsibility`) and the cluster client; and
- *  2. a FRESH default-args instance created by the quereus-plugin collection
- *     factory (`resolveKeyNetwork('libp2p', node)` in
- *     `quereus-plugin-optimystic`'s collection-factory) and cached with the
- *     `NetworkTransactor` — every transactor-level `findCluster` /
- *     `findCoordinator` goes through THIS one.
+ * The prototype patch stays because it is SIMPLER, not because it is required:
+ * these helpers take a `CohortNodeSource` (a `CadreNode`, a harness
+ * `TestCadreNode`, or a bare `Libp2p`) and only some of those expose the key
+ * network at all — reaching each node's instance means widening that resolver
+ * for no behavioural gain. It also still covers the cold-FRET problem in one
+ * shot: the patch has to hold for every instance in the process for the whole
+ * suite lifetime regardless, since each cohort member re-derives its own view.
  *
- * An instance patch on `node.keyNetwork` (this helper's original shape) covers
- * only (1): consensus ran against the forced trio, but the transactor's
- * coordinator ASSIGNMENT — `NetworkTransactor.consolidateCoordinators`, which
- * calls `findCluster` per block on instance (2) and only falls back to
- * `findCoordinator` when that throws — kept following the real (cold-FRET)
- * network, so which peer coordinated each write stayed a key-proximity draw
- * the test did not control, sticky across a suite (the hot control-tree block
- * ids are stable, and instance (2) also holds a per-key coordinator cache).
- * A prototype patch covers both instances on every node at once.
+ * Two seams the patch must cover either way, and the reason `pinCoordinator`
+ * overrides both: `NetworkTransactor.consolidateCoordinators` assigns each pend
+ * batch by per-block `findCluster` and only falls back to `findCoordinator`
+ * when that throws — so patching `findCoordinator` alone leaves which peer
+ * coordinates each write a key-proximity draw the test does not control,
+ * sticky across a suite (the hot control-tree block ids are stable, and the
+ * key network also holds a per-key coordinator cache).
  *
  * What the patch substitutes — and what it deliberately does NOT touch: cohort
  * DISCOVERY only. The real `ClusterClient` (with its production dial/response

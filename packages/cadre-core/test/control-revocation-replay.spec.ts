@@ -1056,28 +1056,23 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     );
 
     // And a counter-only bump is an OWNER action: identity untouched and moving upward,
-    // so ReissueOnly passes and AuthorizedReissue is the single rejector of a bump whose
-    // warrant does not hold up. The envelope names the founder but carries a stranger's
-    // signature — the pairing AuthorizedReissue's verify() rejects.
+    // so ReissueOnly passes and AuthorizedReissue is the single rejector of the unsigned
+    // shape. (The accept direction lives in control-revocation-reissue.spec.ts.)
     //
-    // It carries an envelope at all because a write that OMITS `with context` entirely
-    // cannot plan against this table: Quereus registers the context symbols only when the
-    // statement supplies them, so `context.OwnerKey` in the constraint fails to resolve
-    // and the write dies as a planner error rather than a named CHECK. Fail-closed either
-    // way, but the named-constraint assertion needs the envelope present.
-    // (The accept direction, and the wrong-digest / non-owner shapes, live in
-    // control-revocation-reissue.spec.ts.)
+    // "Unsigned" is a PRESENT `with context` clause bound to nulls, matching
+    // `rawTombstone(null, null, …)`: a null OwnerKey matches no row in the constraint's
+    // `exists (select 1 from OwnerKey A where A.Key = context.OwnerKey …)`, so the check
+    // fails by name. Omitting the clause outright would instead die at plan time — a
+    // table declaring mutation context requires its NOT NULL variables from any statement
+    // whose constraints read them — which is fail-closed but not the named rejection this
+    // probe pins.
     await expectConstraintFailure(
       rawDb.exec(
         `update CadreControl.Revocation
            with context OwnerKey = ?, Signature = ?
            set ReissuedAt = 1
            where StampId = ?`,
-        [
-          founder.publicKey,
-          signAs(freshKeyPair(), reissueMessage('CadrePeer', rowKey, orphan, 1)),
-          orphan,
-        ],
+        [null, null, orphan],
       ),
       'AuthorizedReissue',
     );
