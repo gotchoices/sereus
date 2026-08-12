@@ -990,12 +990,18 @@ where local rows exist.
   half-applied), and post-failure recovery. Latency figures and the uncovered
   degraded-node-is-coordinator branch are in `architecture.md`. One case is a standing `it.fails`
   reproducer for `fix/control-reads-blocked-by-stalled-write`: local control reads on the writing
-  node block behind an in-flight stalled write. Runtime ~185 s. **Currently not running**: fails in
-  `beforeAll`, all 6 cases skipped, blocked on
-  `blocked/transactor-key-network-ignores-network-scoping` (an upstream `../optimystic`
-  coordinator-cache-poisoning bug — a node racing its first outbound dial can elect itself
-  coordinator for a control-DB key and cache that pick for 30 minutes). The design and coverage
-  described above are otherwise accurate and were last observed green before that regression.
+  node block behind an in-flight stalled write. Since 2026-08-12 it also carries the **control-write
+  retry's coverage** (7 cases, ~90–110 s): the classifier is asserted against the LIVE failure
+  objects both silent-member cases produce, so an upstream rewording reddens here instead of
+  silently disabling the retry; a seventh case injects a stream reset on the coordinator's
+  transactor batch protocol and asserts the retry ABSORBS it (the write commits on attempt 2 in
+  ~0.6 s — the first observation of the retry's success path at a real call site); and both silent
+  cases assert, through the retry funnel's own per-operation debug lines, that they ran exactly ONE
+  attempt, which is what pins the 10 s budget expiring before the ~20 s degraded-member failure.
+  **Two known-red arms** (`tickets/.pre-existing-known.md`): the trio boot gate
+  (`fix/control-peer-row-refresh-invisible-to-third-node`), and a healthy/delayed-case failure where
+  a write hears `0/3 approvals` from a trio with nobody degraded
+  (`fix/control-write-hears-zero-approvals-from-healthy-trio` — struck 2 of 2 runs on 2026-08-12).
 - [x] `packages/integration-tests/src/scenarios/control-cohort-harness-helpers.integration.ts` — the
   two harness modules the two entries above rest on, tested on their own terms and with no control
   writes at all (~13 s, two small parties). Covers `harness/control-cohort.ts`

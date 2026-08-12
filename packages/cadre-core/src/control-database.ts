@@ -1004,7 +1004,7 @@ export class ControlDatabase {
         with context OwnerKey = null, Signature = ?
         set Platform = ?, Token = ?, UpdatedAt = ?, Sig = ?
         where PeerId = ?
-    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId]);
+    `, [record.sig, record.platform, record.token, record.updatedAt, record.sig, record.peerId], 'device-token-update');
     log('Self device token updated: %s (platform=%s, updatedAt=%d)', record.peerId, record.platform, record.updatedAt);
   }
 
@@ -1028,7 +1028,7 @@ export class ControlDatabase {
       insert into CadreControl.OwnerKey (Key, StampId)
         with context OwnerKey = null, Signature = null
         values (?, ?)
-    `, [key, stampId]);
+    `, [key, stampId], 'owner-key-insert');
     log('Owner key inserted');
   }
 
@@ -1071,7 +1071,7 @@ export class ControlDatabase {
       insert into CadreControl.Strand (Id, Type, MemberPrivateKey, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?)
-    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId]);
+    `, [ownerKey, signature, strandId, type, memberPrivateKey ?? null, stampId], 'strand-insert');
 
     log('Strand inserted: %s', strandId);
   }
@@ -1099,7 +1099,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.lockedWithRetry(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('Strand', strandId, ownerKey, signMessage), {}, 'strand-delete');
   }
 
   /**
@@ -1134,7 +1134,7 @@ export class ControlDatabase {
       insert into CadreControl.ValidationKey (Key, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?)
-    `, [ownerKey, signature, key, stampId]);
+    `, [ownerKey, signature, key, stampId], 'validation-key-insert');
 
     log('Validation key inserted: %s', key);
   }
@@ -1160,7 +1160,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.lockedWithRetry(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('ValidationKey', key, ownerKey, signMessage), {}, 'validation-key-delete');
   }
 
   /**
@@ -1360,7 +1360,7 @@ export class ControlDatabase {
     ownerKey: string,
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
-    return this.lockedWithRetry(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage));
+    return this.lockedWithRetry(() => this.deleteGuardedRow('DeviceToken', peerId, ownerKey, signMessage), {}, 'device-token-delete');
   }
 
   /**
@@ -1527,7 +1527,7 @@ export class ControlDatabase {
       // in one pass, hoist the notify to one refresh after the sweep instead.
       await this.mutateCadrePeer('peer-reap', () => this.db!.exec(sql, [rowKey, stampId]));
     } else {
-      await this.execWrite(sql, [rowKey, stampId]);
+      await this.execWrite(sql, [rowKey, stampId], `reap-${table}`);
     }
     // A row leaving the control plane without an owner signature at the write site
     // should be visible in a log.
@@ -1689,7 +1689,7 @@ export class ControlDatabase {
       });
       log('Reissued %d revocation tombstone(s) at %d', executed, reissuedAt);
       return executed;
-    });
+    }, {}, 'revocation-reissue');
   }
 
   /**
@@ -1863,6 +1863,11 @@ export class ControlDatabase {
    * rather than carving out a lockless path. It is also the ONLY caller that passes a
    * `policy` — everything else takes the default, whose classifier and attempt count are
    * unchanged by that call site existing.
+   *
+   * `label` names the operation in this loop's debug lines and nothing else
+   * ({@link ControlWriteRetryOptions.label}). Every call site in this class supplies one:
+   * several writes retry CONCURRENTLY in a real party, so an unlabelled line cannot be
+   * attributed to a write — keep new call sites labelled.
    */
   private lockedWithRetry<T>(fn: () => Promise<T>, policy: ControlWriteRetryOptions = {}, label?: string): Promise<T> {
     // The label lands LAST so a call site's own name survives both the policy and the
@@ -1882,6 +1887,9 @@ export class ControlDatabase {
    * Public so `SeedBootstrapService`'s direct `CadrePeer`/`DeviceToken` SQL writes go
    * through the same seam. Must NOT be called from inside an already-locked body (the
    * lock is not re-entrant); such a caller uses a bare `getDatabase().exec` instead.
+   *
+   * `label` names the write in the retry loop's debug lines (see {@link lockedWithRetry});
+   * optional only because it is log-only, but every caller in this repo passes one.
    */
   execWrite(sql: string, params?: SqlParameters, label?: string): Promise<void> {
     this.ensureInitialized();
@@ -2025,7 +2033,7 @@ export class ControlDatabase {
       options.validationUrl ?? null,
       options.strandId ?? null,
       stampId,
-    ]);
+    ], 'formation-invite-insert');
 
     log('Formation invite inserted: %s', token);
   }
@@ -2266,7 +2274,7 @@ export class ControlDatabase {
           await this.assertSeatRemains(token, useNumber, knownTotalUses);
           await write(useNumber);
           return useNumber;
-        });
+        }, {}, 'formation-use-number');
       } catch (error) {
         if (!isLostUseNumberRace(error)) {
           throw error;

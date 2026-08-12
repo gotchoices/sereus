@@ -1,4 +1,6 @@
 import { describe, it, expect } from 'vitest';
+import debug from 'debug';
+import { format } from 'node:util';
 import {
 	CONTROL_WRITE_ATTEMPTS,
 	CONTROL_WRITE_RETRY_BUDGET_MS,
@@ -26,9 +28,10 @@ import type { ControlDatabaseConfig } from '../src/control-database.js';
  *  - the RETRIABLE side cannot be produced here at all. Both messages come off a real
  *    multi-node cluster (the network transactor's aggregate, the cluster coordinator's
  *    super-majority shortfall), which needs an integration scenario, not a unit spec.
- *    `control-write-retry-scenario-coverage` produces them for real; until it lands, a
- *    rewording upstream would silently disable the retry and only these literals would
- *    notice. The literals below are transcribed from the transactor's own format strings
+ *    `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
+ *    now produces both LIVE and asserts this classifier against them, so an upstream
+ *    rewording reddens there rather than silently disabling the retry. The literals below
+ *    are transcribed from the transactor's own format strings
  *    (`db-core/src/transactor/network-transactor.ts`) — they are not claimed to be
  *    captured output.
  */
@@ -588,7 +591,60 @@ describe('retryControlWrite', () => {
 		})).rejects.toThrow();
 		expect(transientRuns).toBe(CONTROL_WRITE_ATTEMPTS);
 	});
+
+	/**
+	 * The `label` option's whole surface is the debug line — several control writes retry
+	 * concurrently in a real party, so an unlabelled line cannot be attributed to a write.
+	 * The degraded-cohort scenario asserts on exactly this rendering (it filters the funnel's
+	 * lines by `[<label>]`), but that scenario needs a real trio and is intermittently red on
+	 * a tracked boot race, so the rendering is pinned here too — a pure string surface should
+	 * not depend on a three-node network to notice a change.
+	 */
+	it('stamps the label into every line it logs, and changes nothing without one', async () => {
+		const labelled = await captureRetryLog(() => runOneTransientFailure({ label: 'peer-insert' }));
+		const unlabelled = await captureRetryLog(() => runOneTransientFailure({}));
+
+		// Both lines the loop emits on this path carry the tag, right after the subject.
+		expect(labelled.some((line) => line.includes('Control write [peer-insert] failed transiently'))).toBe(true);
+		expect(labelled.some((line) => line.includes('Control write [peer-insert] committed on attempt 2/3'))).toBe(true);
+		// Unlabelled lines are byte-identical to what this loop logged before labels existed.
+		expect(unlabelled.some((line) => line.includes('Control write failed transiently'))).toBe(true);
+		expect(unlabelled.some((line) => line.includes('Control write committed on attempt 2/3'))).toBe(true);
+		// (Only the TAG position matters — the error text these lines carry has brackets of
+		// its own, `[block:…]`, which is exactly what the classifier reads.)
+		expect(unlabelled.every((line) => !line.includes('Control write ['))).toBe(true);
+	});
 });
+
+/** One transient failure then success, under the given options plus never-sleep pacing. */
+async function runOneTransientFailure(options: ControlWriteRetryOptions): Promise<void> {
+	let runs = 0;
+	await retryControlWrite(async () => {
+		runs++;
+		if (runs === 1) throw nested(TRANSACTOR_AGGREGATE);
+	}, immediatePacing(options));
+}
+
+/**
+ * Run `body` with `sereus:cadre:control-db` enabled and debug's sink captured, returning the
+ * lines it emitted. Namespace set and sink are process-global in `debug`, so both are put
+ * back even when `body` throws.
+ */
+async function captureRetryLog(body: () => Promise<void>): Promise<string[]> {
+	const lines: string[] = [];
+	const previousNamespaces = debug.disable();
+	const previousLog = debug.log;
+	debug.enable('sereus:cadre:control-db');
+	debug.log = function (this: unknown, ...args: unknown[]): void { lines.push(format(...args)); };
+	try {
+		await body();
+	} finally {
+		debug.log = previousLog;
+		debug.disable();
+		if (previousNamespaces) debug.enable(previousNamespaces);
+	}
+	return lines;
+}
 
 /**
  * Test-only window onto `ControlDatabase.loadSchema` and the two private fields it needs:

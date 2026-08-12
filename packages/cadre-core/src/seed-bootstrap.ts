@@ -404,7 +404,7 @@ export class SeedBootstrapService {
       insert into CadreControl.DeviceToken (PeerId, Platform, Token, UpdatedAt, Sig, StampId)
         with context OwnerKey = ?, Signature = ?
         values (?, ?, ?, ?, ?, ?)
-    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId]);
+    `, [this.ownerPublicKey, signature, record.peerId, record.platform, record.token, record.updatedAt, record.sig, stampId], 'device-token-insert');
     log('Device token inserted (owner-signed): %s', record.peerId);
   }
 

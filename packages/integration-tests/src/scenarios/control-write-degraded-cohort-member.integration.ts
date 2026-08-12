@@ -111,11 +111,12 @@ const log = debug('sereus:integration:degraded-cohort');
 // delayed cases sometimes fail with `Failed to get super-majority: 0/3
 // approvals (needed 3, 0 rejections)` — nobody votes at all, so those runs
 // prove nothing about degradation either way. Struck 3 of 5 full boots on
-// 2026-08-12. The retry-log capture below prints the funnel's decisions when
-// it strikes; tracked in `tickets/.pre-existing-known.md` against the
-// control-write-retry-scenario-coverage ticket, which carries the leading
-// mechanism (a concurrently-failed write's abandoned pend starves the hot
-// block — see the transient-reset case's header for the measured shape).
+// 2026-08-12, then 2 of 2 on that day's review pass. The retry-log capture
+// below prints the funnel's decisions when it strikes; the class is owned by
+// `tickets/fix/control-write-hears-zero-approvals-from-healthy-trio` (listed
+// in `tickets/.pre-existing-known.md`), which carries both candidate
+// mechanisms and the experiments that separate them. A red run on THIS
+// fingerprint is that tracked class, not a regression of the retry coverage.
 
 /** Reads and read-backs: all answer from local state; this only catches hangs. */
 const READ_TIMEOUT_MS = 15_000;
@@ -262,6 +263,11 @@ interface RetryLogCapture {
  * real write. debug's sink and enabled-namespace set are process-global, so
  * lines from every node in the trio land in one capture; each assertion below
  * says how it copes with that.
+ *
+ * NOTE: process-global also means this assumes the cases run SERIALLY (vitest's
+ * default within a file). Marking any case in here `it.concurrent` would nest
+ * two captures, and the inner `restore()` would hand the sink back to the outer
+ * wrapper rather than to debug's own — capture per case first if that day comes.
  */
 function captureControlRetryLogs(): RetryLogCapture {
 	const captured: string[] = [];
@@ -411,6 +417,12 @@ function observeClusterHandler(node: CadreNode, partyId: string): Promise<Degrad
 interface ResetHandle extends DegradedHandle {
 	/** Streams aborted by the injected-reset budget so far. */
 	resetStreams(): number;
+	/**
+	 * Streams from `fromPeer` (all of them, when unscoped), reset or delegated.
+	 * `interceptedStreams` counts a busy seam's background dials from OTHER peers
+	 * too, so only this one can say the WRITER re-crossed the seam.
+	 */
+	fromPeerStreams(): number;
 }
 
 /**
@@ -426,9 +438,12 @@ interface ResetHandle extends DegradedHandle {
  * the CLUSTER protocol on a member kills that member's promise RPC AFTER the
  * other members already pended the transaction, and the abandoned pend state
  * then starves the retry's next attempts of answers on the same hot block
- * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts). The class
- * the retry absorbs is a reset on the transactor's REPO-protocol batch stream
- * to the coordinator, which dies before anything pends anywhere.
+ * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts; the starving
+ * is inferred, and `fix/control-write-hears-zero-approvals-from-healthy-trio`
+ * carries a later run that saw 0/3 from the first attempt instead). Either
+ * way, the class the retry demonstrably absorbs is a reset on the transactor's
+ * REPO-protocol batch stream to the coordinator, which dies before anything
+ * pends anywhere.
  *
  * Sibling of `degradeClusterHandler`, deliberately self-contained rather than
  * factored: the two share ~12 lines of registrar plumbing but differ in the
@@ -453,11 +468,13 @@ async function resetFirstProtocolStreams(node: CadreNode, protocol: string, coun
 
 	const pending = new Set<Promise<void>>();
 	let intercepted = 0;
+	let fromPeerIntercepted = 0;
 	let resets = 0;
 
 	const wrapped = (stream: Stream, connection: Connection): void => {
 		intercepted++;
 		const remote = connection.remotePeer.toString();
+		if (fromPeer === undefined || remote === fromPeer) fromPeerIntercepted++;
 		if (resets < count && (fromPeer === undefined || remote === fromPeer)) {
 			resets++;
 			console.log(`[measured] injected reset ${resets}/${count} on ${protocol.split('/').slice(-2).join('/')} from …${remote.slice(-8)}`);
@@ -486,7 +503,8 @@ async function resetFirstProtocolStreams(node: CadreNode, protocol: string, coun
 			await Promise.allSettled([...pending]);
 		},
 		interceptedStreams: () => intercepted,
-		resetStreams: () => resets
+		resetStreams: () => resets,
+		fromPeerStreams: () => fromPeerIntercepted
 	};
 }
 
@@ -723,12 +741,12 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// healthy members either. Benign for this assertion (the write must fail
 			// either way). Measured 2026-08-12 (run 1 of the scenario-coverage
 			// ticket): a write re-presented right after a failed promise round
-			// degrades MONOTONICALLY — 2/3 → 1/3 → 0/3 across three attempts on the
-			// same hot block — so an abandoned pend appears to starve subsequent
-			// rounds until its cancel completes. That is the leading mechanism for
-			// the intermittent healthy-case `0/3` failure (see the header) and the
-			// reason the transient-reset case injects at the BATCH seam instead of
-			// the cluster promise seam.
+			// degraded MONOTONICALLY — 2/3 → 1/3 → 0/3 across three attempts on the
+			// same hot block — which is why the transient-reset case injects at the
+			// BATCH seam instead of the cluster promise seam. That decline is one
+			// observation, not a settled mechanism: the review pass measured `0/3`
+			// from the first attempt on the same fingerprint. Both readings live on
+			// `fix/control-write-hears-zero-approvals-from-healthy-trio`.
 			expect(chain).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
 			// If the admission gate bit, the failure has the WRONG cause — fail on that
 			// explicitly rather than reporting a super-majority failure that isn't one.
@@ -933,9 +951,13 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 		}, bSigningKey.privateKeyB64);
 
 		const baseline = forced!.callCount();
-		const retryLog = captureControlRetryLogs();
+		// Injection FIRST, capture second (it swaps a handler and issues no control write,
+		// so nothing is missed): a capture taken before an injection that throws would
+		// never be restored, leaving debug's process-global sink hooked for the rest of
+		// the file. Every other case degrades before capturing for the same reason.
 		const resets = await resetFirstProtocolStreams(A, `/optimystic/control-${partyId}/repo/1.0.0`, TRANSIENT_RESET_COUNT, bPeerId);
 		activeDegradation = resets;
+		const retryLog = captureControlRetryLogs();
 		try {
 			const outcome = await timedSettle('updateSelfPeerRecord(B) transient-reset', WRITE_TIMEOUT_MS,
 				() => bDb.updateSelfPeerRecord(record));
@@ -953,9 +975,11 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// Anti-vacuity, three layers. The reset budget was fully consumed
 			// (unconsumed resets mean the write's batches never crossed the seam)…
 			expect(resets.resetStreams(), 'no injected reset was consumed — B\'s transactor batch stream never crossed the repo seam').toBe(TRANSIENT_RESET_COUNT);
-			// …streams beyond the budget reached the real handler (the retry's
-			// attempt really crossed the same seam rather than routing around it)…
-			expect(resets.interceptedStreams(), 'no post-reset stream reached the handler — the retry attempt never crossed the batch seam').toBeGreaterThan(TRANSIENT_RESET_COUNT);
+			// …B opened MORE streams on this seam than the budget consumed, so the
+			// retry's attempt really re-crossed it rather than routing around it
+			// (scoped to B: `interceptedStreams` also counts C's background dials,
+			// which would satisfy this for the wrong reason)…
+			expect(resets.fromPeerStreams(), 'B opened no post-reset stream on the batch seam — the retry attempt never re-crossed it').toBeGreaterThan(TRANSIENT_RESET_COUNT);
 			expectThreePeerCohortConsulted(baseline);
 
 			// …and the funnel itself says the retry ENGAGED on THIS write (the
