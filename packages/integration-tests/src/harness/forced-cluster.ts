@@ -20,13 +20,16 @@
  * of building a second one from defaults. So an instance patch on
  * `node.keyNetwork` would in principle be enough now.
  *
- * The prototype patch stays because it is SIMPLER, not because it is required:
- * these helpers take a `CohortNodeSource` (a `CadreNode`, a harness
- * `TestCadreNode`, or a bare `Libp2p`) and only some of those expose the key
- * network at all — reaching each node's instance means widening that resolver
- * for no behavioural gain. It also still covers the cold-FRET problem in one
- * shot: the patch has to hold for every instance in the process for the whole
- * suite lifetime regardless, since each cohort member re-derives its own view.
+ * The prototype patch stays anyway, for one hard reason and one soft one. HARD:
+ * the third helper on the same seam, `observeControlCohorts` in
+ * `control-cohort.ts`, takes NO node list — it exists to record cohorts a test
+ * did not force, from nodes it was never handed — so an instance patch is not
+ * available to it, and the three helpers must patch the same way to compose
+ * (see RESTORE ORDERING below). SOFT: these helpers take a `CohortNodeSource`
+ * (a `CadreNode`, a harness `TestCadreNode`, or a bare `Libp2p`), and a
+ * per-instance patch would have to resolve and patch every node individually
+ * for no behavioural gain, since each cohort member re-derives its own view and
+ * the patch has to hold process-wide for the whole suite lifetime regardless.
  *
  * Two seams the patch must cover either way, and the reason `pinCoordinator`
  * overrides both: `NetworkTransactor.consolidateCoordinators` assigns each pend

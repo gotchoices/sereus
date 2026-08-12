@@ -230,9 +230,10 @@ export interface ControlCohortObserverHandle {
  * The anti-vacuity instrument for WAIT-based tests, where `forceFullCohort`'s counters
  * do not apply because nothing is forced: it proves a write really consulted an N-peer
  * cohort rather than committing alone. Patches the PROTOTYPE for the same reason the
- * forcer does — each node has two `Libp2pKeyPeerNetwork` instances over the same libp2p
- * node and an instance patch would miss the transactor's (see the header of
- * `forced-cluster.ts`).
+ * forcer does — a node has exactly one `Libp2pKeyPeerNetwork` now (the transactor shares
+ * the node-attached instance), but the observation still has to span every node in the
+ * process for a whole suite, and these helpers accept node shapes that do not all expose
+ * the key network (see the header of `forced-cluster.ts`).
  */
 export function observeControlCohorts(): ControlCohortObserverHandle {
 	let calls = 0;
