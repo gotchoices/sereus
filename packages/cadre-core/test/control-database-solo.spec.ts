@@ -28,7 +28,11 @@ import {
  *
  * The next shape up — a cadre of *more than one* whose peers are all offline —
  * is covered by `control-database-offline-peers.spec.ts` (same harness, lifted
- * into `control-db-node-helpers.ts`).
+ * into `control-db-node-helpers.ts`). The shape SIDEWAYS from this one — a
+ * device that was in a cadre and is now the only one left, restarting on real
+ * files rather than a shared heap object, and booting in the embedding app's
+ * order (`start()` straight to `addStrand()`) — is
+ * `control-database-solo-warm-start.spec.ts`.
  *
  * These same three cases are ported onto `node:assert/strict` in
  * `scripts/lib/published-smoke-scenario.mjs`, which `yarn smoke:published` runs
@@ -116,9 +120,12 @@ describe('control database, cadre of one (no listen addr, no bootstrap peers)', 
 		// restart, which enters ControlDatabase.initialize's catalog-hydrate path
 		// rather than the fresh-schema path.
 		// NOTE: `MemoryRawStorage` proves the hydrate-before-apply path but not the
-		// storage backends embedders actually restart on (IndexedDB, RN, filesystem).
-		// If a hydrate bug ever turns out to be backend-specific, add a
-		// `FileRawStorage` variant of this test rather than widening the memory one.
+		// storage backends embedders actually restart on (IndexedDB, RN, filesystem),
+		// and a shared instance keeps a live object across the restart boundary.
+		// `control-database-solo-warm-start.spec.ts` is the `FileRawStorage` variant —
+		// same identity slot, but each run builds a fresh handle over the same
+		// directory, so only bytes on disk cross the boundary. Extend that file for a
+		// backend-specific hydrate bug rather than widening this memory one.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
 		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });

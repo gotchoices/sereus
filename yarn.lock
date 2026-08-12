@@ -5182,6 +5182,7 @@ __metadata:
     "@multiformats/multiaddr": "npm:^12.5.1"
     "@optimystic/db-core": "npm:^0.22.0"
     "@optimystic/db-p2p": "npm:^0.22.0"
+    "@optimystic/db-p2p-storage-fs": "npm:^0.22.0"
     "@optimystic/quereus-plugin-crypto": "npm:^0.22.0"
     "@optimystic/quereus-plugin-optimystic": "npm:^0.22.0"
     "@quereus/quereus": "npm:^4.10.0"

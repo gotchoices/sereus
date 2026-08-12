@@ -3550,6 +3550,17 @@ export class CadreNode implements SAppIdLookup {
     if (!this.controlDatabase || !this.controlNode) {
       return { bootstrapNodes: [], hasOtherPeers: false };
     }
+    // NOTE: this read is UNBOUNDED and sits on the critical path an embedding app
+    // awaits during startup — `addStrand` cannot resolve until it does, and it is
+    // the first control operation an embedder's boot order issues (before genesis,
+    // before seed bootstrap). Measured fine today: the warm-start-alone shape a
+    // report pointed at — a `CadrePeer` list naming peers that are all gone, read
+    // off real files after a restart — completes in milliseconds, and
+    // `control-database-solo-warm-start.spec.ts` covers it under a deadline. If a
+    // control read ever CAN stall (a transactor change that consults the network
+    // for a local row, a storage backend with blocking I/O), give this one a
+    // timeout — and decide then whether the breach fails `addStrand` or degrades
+    // to `hasOtherPeers: false`, because those promise callers different things.
     const peers = await this.controlDatabase.queryCadrePeers();
     const { otherPeerIds, hasOtherPeers } =
       deriveCohortMembers(peers, this.controlNode.peerId.toString());

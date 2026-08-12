@@ -9,6 +9,12 @@
  * assertions are that spec's assertions — when the spec changes, change them here
  * too rather than inventing new ones.
  *
+ * NOT yet ported: `packages/cadre-core/test/control-database-solo-warm-start.spec.ts`
+ * (a device that was in a cadre and is now the only one left, restarting on prior
+ * `CadrePeer` rows). That suite is where the shape an embedding app actually reported
+ * lives, so it is the one most worth running against a REGISTRY install rather than a
+ * linked workspace — see `tickets/implement/port-solo-warm-start-to-published-smoke`.
+ *
  * Two things could not be reused as-is and are re-derived below:
  *  - `withinOp` delegates to cadre-core's internal `withTimeout` (`src/control-stream.js`),
  *    which `src/index.ts` does not re-export, so the scratch project cannot reach it.

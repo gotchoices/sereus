@@ -798,7 +798,9 @@ repo ever exercises the version a consumer installs* — that comes from each pa
 
 That drift caused a real report: `@serfab/cadre-core` 0.9.0 declared `@optimystic/*: ^0.14.1` while
 the workspace linked 0.16.x, so an embedding app installed a substrate two minors behind everything
-this repo tests against, and hit a solo control-DB hang we could not reproduce.
+this repo tests against, and hit a solo control-DB hang we could not reproduce. (Still unreproduced
+as of 2026-08-12, now including the warm-restart-alone shape — see
+`control-database-solo-warm-start.spec.ts` under "Control DB liveness" below.)
 
 - [x] **Rule: bump the declared range in lockstep with the linked workspace version.** As of
   2026-07-29 all seven optimystic-consuming packages (`cadre-core`, `cadre-cli`,
@@ -904,7 +906,7 @@ the `chai` defect below is exactly a failure that only appears once you install 
   the script exists to catch. With `chai` installed by hand for verification, all three cases pass
   in 87–206 ms, so the scenario itself is sound and the only blocker is the upstream import chain.
 
-### Control DB liveness: solo (cadre-of-one) and known-but-offline peers — supported and covered
+### Control DB liveness: solo (cadre-of-one), warm-start-alone, and known-but-offline peers — supported and covered
 
 A **cadre of one** — a node whose only member is itself, the normal first-run state of every
 embedding app — is a supported configuration. Its single node is the whole membership and the sole
@@ -977,6 +979,35 @@ where local rows exist.
   more pins that a drive which lands a reservation resumes the `checkMs` liveness cadence instead
   of the backoff it had grown to. What remains integration-only is the same posture over real WAN
   transports.
+- [x] `packages/cadre-core/test/control-database-solo-warm-start.spec.ts` — the shape SIDEWAYS from
+  the cadre of one: a device that **was** in a cadre and is now the only one left, restarting on rows
+  a previous session left behind. Written to reproduce a freeze an embedding React Native team
+  reported three times against 0.10.0, whose configuration a review of their checkout confirmed is
+  the one the solo spec already covers. Three things here that no other control-DB suite does:
+  (1) **real files** — a `FileRawStorage` under a temp directory, rebuilt per run, so only bytes on
+  disk cross the restart boundary (every other "restart" in this repo shares one live
+  `MemoryRawStorage` object across it); (2) a **non-empty member list with zero reachable peers**,
+  which flips `selectStrandMode` to `networked` while `resolveCohortSeed` can reach nobody, so the
+  strand launches into a cluster transactor with an empty bootstrap list; (3) the **embedding app's
+  boot order** — `start()` straight to `addStrand()`, so `CadreNode.resolveCohortSeed`'s unbounded
+  `queryCadrePeers()` is the control DB's first awaited operation of the process, issued before any
+  owner key exists and before seed bootstrap is wired. Six cases: vanished prior cohort (one and
+  three siblings), a **revoked** prior cohort (rows still on disk, hidden by the `Revocation` join —
+  membership collapses to self and the mode correctly drops back to `bootstrap`), a **closed** strand
+  founded as the last member standing (founder seated locally against an empty seed), a **cold** boot
+  in the embedder order with no genesis at all (and genesis still accepted afterwards), and the
+  re-issue queue's restart durability.
+  **Finding: nothing hangs.** All six pass in ~32 s total, every operation inside its labelled
+  deadline. That narrows the remaining difference to the embedding app's own side — three defects
+  were reported to that team separately (polyfills installed after the module graph needing them, a
+  memoized start promise that never clears on success, control errors swallowed by a bare `catch {}`).
+  The suite stays as coverage, not as a regression test for a fixed defect: a future change to
+  `resolveCohortSeed`, to strand-mode selection, or to control-DB hydration that reintroduces a stall
+  on this path is caught here. A tripwire `NOTE:` at `cadre-node.ts`'s `resolveCohortSeed` records
+  that its `queryCadrePeers()` is unbounded on a path embedders await during startup — measured fine
+  today, and what to decide if a control read ever *can* stall.
+- [ ] Not yet ported to `scripts/lib/published-smoke-scenario.mjs`, which still carries only the
+  three cadre-of-one cases — see `tickets/implement/port-solo-warm-start-to-published-smoke`.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of

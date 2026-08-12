@@ -10,13 +10,15 @@ import type { Multiaddr } from '@multiformats/multiaddr';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
-import { signPeerRecord } from '../src/peer-record.js';
 import {
 	controlNodeConfig,
 	expectNotListening,
 	freshPartyId,
-	withinOp
+	insertResolvableOfflinePeer,
+	mintBlackholePeer as mintBlackholePeerOn,
+	short,
+	withinOp,
+	type OfflinePeer
 } from './control-db-node-helpers.js';
 import type { NetworkConfig, NodeProfile } from '../src/types.js';
 
@@ -73,9 +75,6 @@ function within<T>(label: string, ms: number, op: () => Promise<T>): Promise<T> 
 }
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-/** Abbreviate a peerId for timeout labels. */
-const short = (peerId: string) => peerId.slice(-8);
 
 /** Peek the private write-while-alone queue (same cast pattern as `cadre-node-control-cohort.spec.ts`). */
 function pendingPeerWrites(node: CadreNode): Map<string, 'authorize'> {
@@ -153,42 +152,16 @@ async function bootOwnerNode(
 	return owner;
 }
 
-interface OfflinePeer {
-	peerId: string;
-	addrs: string[];
-}
-
 /**
- * Owner-insert a self-signed, fresh `CadrePeer` record for an offline sibling,
- * then assert it RESOLVES — without this the spec is vacuous (an unsigned or
- * stale row resolves to `[]`, the peerStore fallback misses too, and no dial
- * is ever attempted).
+ * The minting helpers, bound to this spec's `within` and per-op budget. The
+ * bodies live in `control-db-node-helpers.ts` so the solo warm-start suite can
+ * mint the same siblings; these shims keep every call site below unchanged.
  */
-async function insertResolvableOfflinePeer(
-	owner: OwnerNode,
-	key: PrivateKey,
-	addrs: string[]
-): Promise<OfflinePeer> {
-	const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
-	const peerId = peerIdFromPrivateKey(key).toString();
-	const record = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs, updatedAt: Date.now() }, privateKeyB64);
-	await owner.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
+const insertOfflinePeer = (owner: OwnerNode, key: PrivateKey, addrs: string[]): Promise<OfflinePeer> =>
+	insertResolvableOfflinePeer(owner.node, within, key, addrs, OP_TIMEOUT_MS);
 
-	const resolved = await within(`resolvePeerAddrs(${short(peerId)}) (anti-vacuity)`, OP_TIMEOUT_MS,
-		() => owner.node.resolvePeerAddrs(peerId));
-	expect(new Set(resolved.map((m) => m.toString()))).toEqual(new Set(addrs));
-	return { peerId, addrs };
-}
-
-/**
- * Mint a sibling at an RFC 5737 TEST-NET-1 address (guaranteed unrouted — the
- * connect never answers). `n` keeps each sibling's address distinct.
- */
-async function mintBlackholePeer(owner: OwnerNode, n: number): Promise<OfflinePeer> {
-	const key = await generateKeyPair('Ed25519');
-	const peerId = peerIdFromPrivateKey(key).toString();
-	return insertResolvableOfflinePeer(owner, key, [`/ip4/192.0.2.${n}/tcp/4001/ws/p2p/${peerId}`]);
-}
+const mintBlackholePeer = (owner: OwnerNode, n: number): Promise<OfflinePeer> =>
+	mintBlackholePeerOn(owner.node, within, n, OP_TIMEOUT_MS);
 
 /**
  * Mint a DEPARTED sibling: a real second `CadreNode` started on a loopback
@@ -218,7 +191,7 @@ async function mintDepartedPeer(owner: OwnerNode): Promise<OfflinePeer> {
 	} finally {
 		await within('departed sibling stop()', LIFECYCLE_TIMEOUT_MS, () => sibling.stop());
 	}
-	return insertResolvableOfflinePeer(owner, key, addrs);
+	return insertOfflinePeer(owner, key, addrs);
 }
 
 // ============================================================================
@@ -370,7 +343,7 @@ async function mintWebRtcPeer(owner: OwnerNode, n: number, withDirect: boolean):
 	const relayId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
 	const relayedAddr = `/ip4/192.0.2.${n}/tcp/4001/ws/p2p/${relayId}/p2p-circuit/webrtc/p2p/${peerId}`;
 	const directAddr = `/ip4/192.0.2.${n}/udp/4001/webrtc-direct/certhash/${WEBRTC_CERTHASH}/p2p/${peerId}`;
-	const peer = await insertResolvableOfflinePeer(owner, key, withDirect ? [relayedAddr, directAddr] : [relayedAddr]);
+	const peer = await insertOfflinePeer(owner, key, withDirect ? [relayedAddr, directAddr] : [relayedAddr]);
 	return { ...peer, relayedAddr, directAddr, relayPeerId: relayId };
 }
 
@@ -583,12 +556,14 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 	}, 180_000);
 
 	// NOTE: this block carries the per-transport-shape cases and is the part of
-	// this file that grows — the file is 791 lines (`wc -l`) with the WebRTC
-	// shapes added, up from 519. If it gains more than a couple more shapes,
-	// split it into its own spec and lift the shared minting / operation-set
-	// helpers (`bootOwnerNode`, `insertResolvableOfflinePeer`,
-	// `runControlOperationSet`, `expectIntactAfterPass`, `within`) into
-	// `control-db-node-helpers.ts`.
+	// this file that grows — the file is 767 lines (`wc -l`) with the WebRTC
+	// shapes added, up from 519. `insertResolvableOfflinePeer` /
+	// `mintBlackholePeer` / `short` have since been lifted into
+	// `control-db-node-helpers.ts` (the solo warm-start suite mints the same
+	// siblings); if this block gains more than a couple more shapes, split it
+	// into its own spec and lift the rest of the shared scaffolding
+	// (`bootOwnerNode`, `runControlOperationSet`, `expectIntactAfterPass`,
+	// `within`) alongside them.
 	describe('stress and transport shapes (transaction profile)', () => {
 		it('three blackhole siblings: the sequential dial loop accumulates cost but the pass stays bounded', async () => {
 			const owner = await bootOwnerNode('transaction', 'three-blackhole');
