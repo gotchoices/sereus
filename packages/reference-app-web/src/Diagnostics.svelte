@@ -199,7 +199,7 @@
 						{#each diag.authorization.formationUsage as use (use.usageStampId)}
 							<li>
 								<code>{use.token}</code>
-								<span class="muted">· {use.usageStampId.slice(0, 12)}… → strand {use.strandId ?? '—'}</span>
+								<span class="muted" title={use.usageStampId}>· stamp {use.usageStampId.slice(0, 12)}… → strand {use.strandId ?? '—'}</span>
 							</li>
 						{/each}
 					</ul>

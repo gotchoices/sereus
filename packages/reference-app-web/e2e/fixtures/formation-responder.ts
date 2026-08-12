@@ -60,6 +60,17 @@ const DEFAULT_EXPIRATION_MS = 24 * 60 * 60 * 1000;
 const EXPIRED_OFFSET_MS = 60_000;
 
 /**
+ * A `CadreControl.FormationUsage` row reduced to what the convergence spec asserts.
+ * `usageStampId` is the row's primary key — two rows of one multi-use token differ only
+ * by it.
+ */
+export interface FormationUsageReadback {
+	token: string;
+	usageStampId: string;
+	strandId: string | null;
+}
+
+/**
  * A live handle to the in-process responder, consumed by the e2e spec (which boots it
  * in `beforeAll`). All multiaddrs are read back from the bound libp2p nodes
  * (never hard-coded), so parallel runs never clash on a port.
@@ -101,7 +112,7 @@ export interface FormationResponderHandle {
 	/** All `App.Message` rows in the strand, reduced to the convergence-assertion shape. */
 	readStrandMessages(): Promise<Array<{ id: string; memberId: string; content: string }>>;
 	/** `FormationUsage` rows on the responder's control DB (asserted after redemption). */
-	readFormationUsage(): Promise<Array<{ token: string; usageStampId: string; strandId: string | null }>>;
+	readFormationUsage(): Promise<FormationUsageReadback[]>;
 	/** Stop the node and release its strand/control resources. */
 	stop(): Promise<void>;
 }
@@ -322,10 +333,8 @@ function requireStrandDatabase(node: CadreNode, strandId: string): Database {
 }
 
 /** Read the responder's `FormationUsage` rows over its control DB (read-only SQL). */
-async function readFormationUsage(
-	db: Database,
-): Promise<Array<{ token: string; usageStampId: string; strandId: string | null }>> {
-	const rows: Array<{ token: string; usageStampId: string; strandId: string | null }> = [];
+async function readFormationUsage(db: Database): Promise<FormationUsageReadback[]> {
+	const rows: FormationUsageReadback[] = [];
 	for await (const row of db.eval('select Token, UsageStampId, StrandId from CadreControl.FormationUsage')) {
 		rows.push({
 			token: row.Token as string,
