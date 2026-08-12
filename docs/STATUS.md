@@ -1001,7 +1001,10 @@ where local rows exist.
   **Two known-red arms** (`tickets/.pre-existing-known.md`): the trio boot gate
   (`fix/control-peer-row-refresh-invisible-to-third-node`), and a healthy/delayed-case failure where
   a write hears `0/3 approvals` from a trio with nobody degraded
-  (`fix/control-write-hears-zero-approvals-from-healthy-trio` — struck 2 of 2 runs on 2026-08-12).
+  (`blocked/control-write-hears-zero-approvals-from-healthy-trio` — struck 2 of 2 runs on
+  2026-08-12; cause traced that day to an abandoned Optimystic pend that locks the block for 2 s
+  while the members that lose the conflict race return no vote, and filed upstream as
+  `../optimystic/tickets/fix/lost-conflict-race-abstains-and-orphans-the-block`).
 - [x] `packages/integration-tests/src/scenarios/control-cohort-harness-helpers.integration.ts` — the
   two harness modules the two entries above rest on, tested on their own terms and with no control
   writes at all (~13 s, two small parties). Covers `harness/control-cohort.ts`

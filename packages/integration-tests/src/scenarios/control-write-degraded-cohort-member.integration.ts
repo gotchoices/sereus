@@ -111,12 +111,22 @@ const log = debug('sereus:integration:degraded-cohort');
 // delayed cases sometimes fail with `Failed to get super-majority: 0/3
 // approvals (needed 3, 0 rejections)` — nobody votes at all, so those runs
 // prove nothing about degradation either way. Struck 3 of 5 full boots on
-// 2026-08-12, then 2 of 2 on that day's review pass. The retry-log capture
-// below prints the funnel's decisions when it strikes; the class is owned by
-// `tickets/fix/control-write-hears-zero-approvals-from-healthy-trio` (listed
-// in `tickets/.pre-existing-known.md`), which carries both candidate
-// mechanisms and the experiments that separate them. A red run on THIS
-// fingerprint is that tracked class, not a regression of the retry coverage.
+// 2026-08-12, 2 of 2 on that day's review pass, and 1 of 3 isolated runs of the
+// healthy case. Cause settled 2026-08-12 and filed upstream as
+// `../optimystic/tickets/fix/lost-conflict-race-abstains-and-orphans-the-block`:
+// concurrent writers on one block (this write plus B's and C's ORGANIC
+// `[self-record-update]` refreshes) produce a stale-revision rejection whose
+// coordinator abandons the pend without telling the members, and the abandoned
+// pend then wins the conflict race against every later write for a fixed 2 s —
+// during which a losing member returns NO vote, which the coordinator counts as
+// zero approvals AND zero rejections. Each blocked attempt leaves a fresh 2 s
+// blocker, so all three retry attempts land inside the window. Tracked here by
+// `tickets/blocked/control-write-hears-zero-approvals-from-healthy-trio` (listed
+// in `tickets/.pre-existing-known.md`). The retry-log capture below prints the
+// funnel's decisions when it strikes; to see the mechanism itself, re-run under
+// `DEBUG='optimystic:db-p2p:cluster*'` and grep `race-keep-existing` /
+// `phase-promising-blocked` / `stale-cleanup`. A red run on THIS fingerprint is
+// that tracked class, not a regression of the retry coverage.
 
 /** Reads and read-backs: all answer from local state; this only catches hangs. */
 const READ_TIMEOUT_MS = 15_000;
@@ -438,10 +448,12 @@ interface ResetHandle extends DegradedHandle {
  * the CLUSTER protocol on a member kills that member's promise RPC AFTER the
  * other members already pended the transaction, and the abandoned pend state
  * then starves the retry's next attempts of answers on the same hot block
- * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts; the starving
- * is inferred, and `fix/control-write-hears-zero-approvals-from-healthy-trio`
- * carries a later run that saw 0/3 from the first attempt instead). Either
- * way, the class the retry demonstrably absorbs is a reset on the transactor's
+ * (approvals degraded 2/3 → 1/3 → 0/3 across the three attempts). The starving
+ * was inferred there and is now CONFIRMED upstream — an abandoned pend wins the
+ * conflict race at every member for a fixed 2 s, and a member that loses that
+ * race returns no vote, so the coordinator counts zero of both
+ * (`blocked/control-write-hears-zero-approvals-from-healthy-trio`). Either way,
+ * the class the retry demonstrably absorbs is a reset on the transactor's
  * REPO-protocol batch stream to the coordinator, which dies before anything
  * pends anywhere.
  *
@@ -743,10 +755,11 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 			// ticket): a write re-presented right after a failed promise round
 			// degraded MONOTONICALLY — 2/3 → 1/3 → 0/3 across three attempts on the
 			// same hot block — which is why the transient-reset case injects at the
-			// BATCH seam instead of the cluster promise seam. That decline is one
-			// observation, not a settled mechanism: the review pass measured `0/3`
-			// from the first attempt on the same fingerprint. Both readings live on
-			// `fix/control-write-hears-zero-approvals-from-healthy-trio`.
+			// BATCH seam instead of the cluster promise seam. The decline itself is
+			// one observation (the review pass measured `0/3` from the first attempt),
+			// but the underlying mechanism is settled: an abandoned pend blocks the
+			// block for 2 s and the members that lose that race vote nothing. See
+			// `blocked/control-write-hears-zero-approvals-from-healthy-trio`.
 			expect(chain).toMatch(/Failed to get super-majority: \d+\/3 approvals \(needed 3, 0 rejections\)/);
 			// If the admission gate bit, the failure has the WRONG cause — fail on that
 			// explicitly rather than reporting a super-majority failure that isn't one.
