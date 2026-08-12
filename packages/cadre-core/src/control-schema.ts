@@ -530,7 +530,11 @@ declare schema CadreControl {
     ) with context (OwnerKey text, Signature text);
 
     table FormationUsage (
-        Token text,
+        Token text not null,            -- the FormationInvite this acceptance redeems. Stated explicitly because
+                                        -- Token is no longer a primary-key prefix; Authorized below would refuse a
+                                        -- null anyway (null = null is never true, so its FormationInvite
+                                        -- exists-clause cannot match), but the column carries the invariant rather
+                                        -- than leaving it to a CHECK.
         UsageStampId text not null,     -- single-use nonce for THIS redemption, and this table's PRIMARY KEY.
                                         -- The JOINING peer mints it and sends it in its contact message, having
                                         -- signed it into its own 'consent' digest (PeerConsented below); the
@@ -593,7 +597,7 @@ declare schema CadreControl {
                         -- fought-over sequence key turns a concurrent redemption into a silent,
                         -- unrecoverable loss of a consented join, which is strictly worse than
                         -- a visible, reversible over-admission.
-                        and (FI.TotalUses is null or FI.TotalUses > (select count(*) from committed.FormationUsage U where U.Token = new.Token))
+                        and (FI.TotalUses is null or FI.TotalUses > (select count(1) from committed.FormationUsage U where U.Token = new.Token))
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
                         -- An invite carrying a ValidationUrl demands a sign-off from a key the party
                         -- ENROLLED in ValidationKey. The signature is verified against the STORED VK.Key,

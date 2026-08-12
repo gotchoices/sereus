@@ -113,6 +113,11 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
     return Number(row?.c ?? 0);
   }
 
+  async function strandCount(): Promise<number> {
+    const row = await rawDb.get('select count(1) as c from CadreControl.Strand');
+    return Number(row?.c ?? 0);
+  }
+
   /**
    * A bound invite plus its owner-signed host strand — the shape production actually runs,
    * since `cadre-web` / `cadre-phone` publish strand-bound invites and those redeem
@@ -145,7 +150,8 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
    * way to bypass `assertSeatRemains` and to capture the engine's REAL rejection messages.
    */
   async function rawInsertFormationUsage(opts: {
-    token: string;
+    /** `null` is reachable only from the null-Token case below; every other caller passes one. */
+    token: string | null;
     strandId: string;
     strandStampId: string;
     consent?: JoinerConsent;
@@ -153,7 +159,7 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
   }): Promise<void> {
     const now = await canonicalDatetime(rawDb, Date.now());
     const disclosure = opts.disclosure ?? '';
-    const consent = opts.consent ?? mintConsent(opts.token, disclosure);
+    const consent = opts.consent ?? mintConsent(opts.token ?? '', disclosure);
     await rawDb.exec(
       `insert into CadreControl.FormationUsage (Token, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
          with context Now = ?, ValidationKey = null, ValidationSignature = null
@@ -305,6 +311,7 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
         token, sAppId: 'sapp-recorder-unbound', disclosure: '', ...mintConsent(token),
       });
 
+      const strandsBefore = await strandCount();
       const results = await Promise.allSettled([provision(), provision()]);
 
       const seated = results.filter(r => r.status === 'fulfilled') as PromiseFulfilledResult<{ strandId: string }>[];
@@ -314,6 +321,11 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
       expect((rejected.reason as InvitationExhaustedError).usesRecorded).toBe(1);
       expect(await usageStampsFor(token)).toHaveLength(1);
       expect(await db.queryStrand(seated[0]!.value.strandId)).not.toBeNull();
+      // Exactly ONE new Strand row: the loser is refused by the seat check AHEAD of
+      // `redeemInvitation`'s transaction, so it never seats a strand it then has to roll back.
+      // Counted rather than read by id — the loser's id is minted inside the recorder and is
+      // unreachable from here, so a count is the only way to see an orphan at all.
+      expect(await strandCount()).toBe(strandsBefore + 1);
     });
   });
 
@@ -354,6 +366,23 @@ describe('ControlDatabase — seat budget over nonce-keyed redemptions', () => {
         'Authorized',
       );
       expect(await usageStampsFor(token)).toHaveLength(1);
+    });
+
+    it('refuses a null Token outright, rather than leaving it to Authorized', async () => {
+      // `Token` left the primary key in this design and so lost the key's implicit non-nullity;
+      // the column carries `not null` explicitly to keep the invariant stated where it belongs.
+      // `Authorized` would refuse a null anyway (its FormationInvite exists-clause cannot match
+      // `null = null`), so this case exists to prove the column constraint is REAL — without it
+      // the comment on the column would be describing a guard the engine never applies.
+      const { strandId, strandStampId } = await boundInvite('null-token');
+      const before = await usageCount();
+
+      const error = await captureError(
+        rawInsertFormationUsage({ token: null, strandId, strandStampId }),
+      );
+      expect(String(error)).toMatch(/not null|NOT NULL/i);
+      expect(String(error)).not.toMatch(/Authorized/);
+      expect(await usageCount()).toBe(before);
     });
 
     it('admits exactly TotalUses rows under unrelated nonces and refuses the next', async () => {

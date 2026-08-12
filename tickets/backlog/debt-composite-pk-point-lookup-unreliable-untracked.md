@@ -42,9 +42,9 @@ they are not.
 **2. Which callers still use the shortcut?** A repo-wide grep found **no** remaining
 full-*multi*-column primary-key lookups in `packages/` (the only two-column equality,
 `FormationUsage where Token = ? and StrandId = ?` in `strand-formation-consent.spec.ts`,
-is a *partial* match — that table's key is `(Token, UseNumber)` — so it is served by a
-scan and is unaffected). Single-column primary-key lookups, however, are ordinary and
-widespread, e.g.:
+matches no key column at all — that table's key is the single column `UsageStampId` since
+`formation-unique-token-redesign` — so it is served by a scan and is unaffected).
+Single-column primary-key lookups, however, are ordinary and widespread, e.g.:
 
 - `packages/cadre-core/src/strand-member-registry.ts:164` — `isMemberRegistered` reads
   `select count(1) from Strand.Member where Key = ?`. A miss here reports an existing
@@ -56,6 +56,18 @@ widespread, e.g.:
 Whether any of these are actually at risk depends entirely on question 1. That is the point
 of the ticket: **decide, once, with evidence** — rather than rewriting call sites one at a
 time on suspicion, or leaving a known-unreliable read shape in the hot path unexamined.
+
+**3. Secondary-index seeks are a third shape, and one now sits under an authorization rule.**
+Added by review of `formation-unique-token-redesign`. That change declared
+`index FormationUsageByToken on FormationUsage (Token)`, so
+`ControlDatabase.countFormationUsage` — `select count(1) from FormationUsage where Token = ?` —
+is now served by a descent through a *separate* index collection instead of the table scan it
+got before, when `Token` was a leading primary-key column with no full-key equality (a shape
+the module explicitly declines). No miss has been observed on an index seek; the point is that
+nobody has checked, and this particular count is what enforces an invitation's use limit, so an
+under-count admits a member the invitation did not pay for. Whatever question 1 concludes about
+descents should cover index descents too, not only primary-key ones. The code site carries a
+`NOTE:` pointing here.
 
 ## What "done" looks like
 

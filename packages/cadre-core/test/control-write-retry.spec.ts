@@ -297,7 +297,6 @@ describe('isRetriableControlWriteFailure', () => {
 		expect(isRetriableControlWriteFailure(undefined)).toBe(false);
 		expect(isRetriableControlWriteFailure({ message: TRANSACTOR_AGGREGATE })).toBe(false);
 	});
-
 });
 
 /**

@@ -721,8 +721,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
    * Every case that asserts a REJECTION records against a PRE-EXISTING owner-signed strand
    * (`recordFormationUsage`, not `redeemInvitation`) so `Authorized` is the only constraint that
    * can reject: `StrandExists` is satisfied by the committed strand. That keeps
-   * `expectConstraintFailure(..., 'Authorized')` a single-rejector assertion. The one `redeemInvitation` case below asserts a LANDING, so it is
-   * free of that restriction — see the note on it for why the consent-seating path needs its own.
+   * `expectConstraintFailure(..., 'Authorized')` a single-rejector assertion. The one
+   * `redeemInvitation` case below asserts a LANDING, so it is free of that restriction — see
+   * the note on it for why the consent-seating path needs its own.
    */
   describe('FormationUsage.Authorized validation-key branch', () => {
     let validationPrivateKey: string;

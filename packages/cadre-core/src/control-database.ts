@@ -2269,6 +2269,18 @@ export class ControlDatabase {
 
   /**
    * Count `FormationUsage` rows recorded against a token (uses consumed so far).
+   *
+   * NOTE: `Token` left the primary key in `formation-unique-token-redesign` and gained the
+   * `FormationUsageByToken` secondary index, so this filter is now served by an index SEEK
+   * (a descent through the index collection) where it used to be a leading-key partial match
+   * the optimystic vtab declined and the engine served by scan. That matters because the seat
+   * cap is this count: a descent that under-reports admits a seat the invite does not have,
+   * where a scan could not. Descent misses have been observed on a NETWORKED store (tracked
+   * by `debt-composite-pk-point-lookup-unreliable-untracked`, for full-primary-key lookups);
+   * no miss has been observed on this index. If over-admission ever shows up on a converged
+   * single node — a token with more usage rows than its `TotalUses` and no concurrent
+   * redeemers to explain it — suspect this seek first and drop the index to fall back to the
+   * scan.
    */
   async countFormationUsage(token: string): Promise<number> {
     this.ensureInitialized();

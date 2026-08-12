@@ -20,8 +20,8 @@
  * never converged.
  *
  * Network-backing also required closing a transaction-semantics gap in the Optimystic
- * vtab: a deferred CHECK referencing `committed.<Table>` (the
- * `FormationUsage.Monotonic` anti-replay) must read the pre-transaction snapshot, so
+ * vtab: a deferred CHECK referencing `committed.<Table>` (today,
+ * `FormationUsage.Authorized`'s count-based use cap) must read the pre-transaction snapshot, so
  * the vtab now honours Quereus's `_readCommitted` flag (and enforces secondary-UNIQUE
  * constraints for the single-use StampId columns). That work lives in the
  * `../optimystic` workspace; the green cadre-core consent suite depends on it being

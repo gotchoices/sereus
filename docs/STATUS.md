@@ -1106,13 +1106,15 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
   rather than signing against a row that is no longer there).
 - `FormationUsage` has no lost race to recover from: each acceptance is keyed by the joiner's own
   nonce (`UsageStampId`, the primary key), and the invite's seat cap is enforced by counting
-  committed rows — see `packages/cadre-core/test/control-formation-seat-budget.spec.ts` (11 cases:
+  committed rows — see `packages/cadre-core/test/control-formation-seat-budget.spec.ts` (12 cases:
   concurrent `recordUsage`/`redeemInvitation` races on one node landing under distinct nonces with
-  the hook asked exactly once, the loser of a single-seat race refused by name, sequential
-  exhaustion raising `InvitationExhaustedError` instead of a retryable conflict — through the
-  recorder too, which passes the seat budget down rather than re-reading it — the schema's own
-  count-based `Authorized` cap asserted with raw inserts that bypass the TypeScript guard, a
-  verbatim duplicate-nonce replay refused on the primary key with exactly one write attempt, and
+  the hook asked exactly once, the loser of a single-seat race refused by name (and, on the
+  unbound path, seating no orphan strand), sequential exhaustion raising
+  `InvitationExhaustedError` instead of a retryable conflict — through the recorder too, which
+  passes the seat budget down rather than re-reading it — the schema's own count-based
+  `Authorized` cap asserted with raw inserts that bypass the TypeScript guard, `Token`'s explicit
+  `not null` proven to be enforced by the engine rather than by `Authorized`, a verbatim
+  duplicate-nonce replay refused on the primary key with exactly one write attempt, and
   `isRetriableControlWriteFailure` never claiming a real constraint failure as transient).
 - The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
   own: control writes are fast in-memory statements and Quereus serializes each one internally
