@@ -62,8 +62,25 @@ const rootDir = join(scriptDir, '..');
  */
 const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets'];
 
-/** The scratch project imports these directly, so it must declare them itself. */
-const SCENARIO_DIRECT_DEPS = ['@optimystic/db-p2p', '@libp2p/websockets'];
+/**
+ * The scratch project imports these directly, so it must declare them itself.
+ *
+ * `@optimystic/db-p2p-storage-fs` is here for the warm-start cases, which restart
+ * across real files rather than a shared heap object. It is also the one
+ * `@optimystic/*` package with no root `resolutions` entry (see `docs/STATUS.md` →
+ * "declared range"), so it always resolves from the registry — which makes exercising
+ * it here more interesting than the linked ones, not less.
+ *
+ * `@libp2p/crypto` + `@libp2p/peer-id` mint the throwaway sibling identity whose
+ * signed `CadrePeer` row puts the device in a cadre it is the last member of.
+ */
+const SCENARIO_DIRECT_DEPS = [
+	'@optimystic/db-p2p',
+	'@optimystic/db-p2p-storage-fs',
+	'@libp2p/websockets',
+	'@libp2p/crypto',
+	'@libp2p/peer-id'
+];
 
 /**
  * `.cmd` shims (yarn, npm on Windows) cannot be spawned without a shell on modern

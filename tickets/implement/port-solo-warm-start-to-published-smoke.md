@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-08-12T16:05:07.863Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\port-solo-warm-start-to-published-smoke.implement.2026-08-12T16-05-07-863Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 ---
 description: We have a new test for a phone that used to be in a group and is now the only device left. It runs against our own source tree, but not against the packages a customer would actually download — and that gap is exactly where the problem an outside team reported would live. Port the test so the download-and-run check covers it too.
 prereq:
