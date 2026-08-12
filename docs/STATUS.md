@@ -1104,15 +1104,16 @@ see [`architecture.md` → Local write serialization](architecture.md#local-writ
   `packages/cadre-core/test/peer-record-resolution.spec.ts`: both orderings, plus the row being
   REMOVED between the lost insert and the fall-through's re-read (the publish reports `skipped`
   rather than signing against a row that is no longer there).
-- Recovery from a lost race is also covered for `FormationUsage.UseNumber`: two redemptions of one
-  invitation racing for the same use number are retried under `ControlDatabase.withUseNumberRetry`,
-  re-presenting the SAME approver sign-off rather than asking a second time — see
-  `packages/cadre-core/test/control-formation-use-number-retry.spec.ts` (19 cases: the classifier
-  against real engine errors, concurrent `recordUsage`/`redeemInvitation` races landing sequential
-  use numbers with the hook asked exactly once, rollback on both a pre-commit and a commit-time
-  loss, attempts bounded at 3, and an exhausted invite raising `InvitationExhaustedError` instead
-  of retrying forever — on a first attempt for a same-node race as well as on a spent retry, and
-  through the recorder, which passes the seat budget down rather than re-reading it).
+- `FormationUsage` has no lost race to recover from: each acceptance is keyed by the joiner's own
+  nonce (`UsageStampId`, the primary key), and the invite's seat cap is enforced by counting
+  committed rows — see `packages/cadre-core/test/control-formation-seat-budget.spec.ts` (11 cases:
+  concurrent `recordUsage`/`redeemInvitation` races on one node landing under distinct nonces with
+  the hook asked exactly once, the loser of a single-seat race refused by name, sequential
+  exhaustion raising `InvitationExhaustedError` instead of a retryable conflict — through the
+  recorder too, which passes the seat budget down rather than re-reading it — the schema's own
+  count-based `Authorized` cap asserted with raw inserts that bypass the TypeScript guard, a
+  verbatim duplicate-nonce replay refused on the primary key with exactly one write attempt, and
+  `isRetriableControlWriteFailure` never claiming a real constraint failure as transient).
 - The direct `withWriteLock` case exists because the real writers cannot pin the contract on their
   own: control writes are fast in-memory statements and Quereus serializes each one internally
   (`Database._withMutex`), so a unit-scale race between two of them completes the first before the

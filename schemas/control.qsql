@@ -520,18 +520,20 @@ declare schema CadreControl {
 
     table FormationUsage (
         Token text,
-        UseNumber int,
-        UsageStampId text not null unique,  -- single-use nonce for THIS redemption. The JOINING peer mints it and
-                                        -- sends it in its contact message, having signed it into its own 'consent'
-                                        -- digest (PeerConsented below); the responder inserts that same value and
-                                        -- asks the approver about it, so it is bound into the 'vouch' digest below
-                                        -- too and one sign-off is spendable exactly once. Neither side can swap it:
-                                        -- a substituted nonce fails the joiner's consent signature.
-                                        -- Unlike every other StampId in this schema, this table is append-only
-                                        -- (InsertOnly below), so the nonce is never freed by a delete: `unique`
-                                        -- alone makes it permanent and there is deliberately NO NotRevoked /
-                                        -- RevocationRecorded pair here — do not go looking for the missing one.
-                                        -- NOTE: `unique` is evaluated against LOCALLY VISIBLE rows, so two nodes
+        UsageStampId text not null,     -- single-use nonce for THIS redemption, and this table's PRIMARY KEY.
+                                        -- The JOINING peer mints it and sends it in its contact message, having
+                                        -- signed it into its own 'consent' digest (PeerConsented below); the
+                                        -- responder inserts that same value and asks the approver about it, so it
+                                        -- is bound into the 'vouch' digest below too and one sign-off is spendable
+                                        -- exactly once. Neither side can swap it: a substituted nonce fails the
+                                        -- joiner's consent signature.
+                                        -- As the row key, a verbatim replay of an approval collides on the
+                                        -- primary key locally instead of on a column `unique`. Unlike every other
+                                        -- StampId in this schema, this table is append-only (InsertOnly below),
+                                        -- so the nonce is never freed by a delete: the key alone makes it
+                                        -- permanent and there is deliberately NO NotRevoked / RevocationRecorded
+                                        -- pair here — do not go looking for the missing one.
+                                        -- NOTE: the key is evaluated against LOCALLY VISIBLE rows, so two nodes
                                         -- that have not yet converged could each admit the same nonce and both
                                         -- rows survive the merge. Same class as the NotRevoked convergence notes
                                         -- on OwnerKey / Strand / ValidationKey; the digest binding still holds on
@@ -553,28 +555,34 @@ declare schema CadreControl {
                                        -- in the bound (provision-then-record) path several invitees
                                        -- each write a usage row against the SAME host strand, so many
                                        -- usage rows legitimately share one stamp.
-        primary key (Token, UseNumber),
+        primary key (UsageStampId),
         constraint InsertOnly check on update, delete (false),
-        constraint Monotonic check (
-            -- Read the PRE-transaction snapshot (committed.*): this CHECK auto-defers
-            -- to commit (it has a subquery), by which point the row being inserted is
-            -- live, so a plain from-FormationUsage would count this row itself and make
-            -- UseNumber = max+1 unsatisfiable. committed.* excludes the in-flight row,
-            -- giving sequential 1,2,3... per token (cross-transaction; concurrent
-            -- redemptions of the same token collide on the (Token, UseNumber) PK).
-            -- ControlDatabase's use-number retry (withUseNumberRetry) is what resolves
-            -- that collision, by re-presenting the same approval under a fresh use
-            -- number. The deferred check above is the other surface the same race can
-            -- take: a concurrent row the inserting transaction's key probe did not yet
-            -- see trips this Monotonic CHECK at commit instead of the PK.
-            new.UseNumber = coalesce((select max(UseNumber) from committed.FormationUsage U where U.Token = new.Token), 0) + 1
-        ),
         constraint Authorized check on insert (
             -- Satisfies an invitation
             exists (
                 select 1 from FormationInvite FI
                     where FI.Token = new.Token
-                        and (FI.TotalUses is null or FI.TotalUses >= new.UseNumber)
+                        -- The use cap is COUNTED against the pre-transaction snapshot, never
+                        -- sequenced. This CHECK auto-defers to commit (it has a subquery), by
+                        -- which point the in-flight row is live; committed.* is what excludes
+                        -- it, so a sequentially exhausted invite — every seat already committed
+                        -- on this node — is still refused here. What is deliberately NOT
+                        -- refused: concurrent redeemers on separate nodes (or nodes that have
+                        -- not yet converged) each count the same committed snapshot and both
+                        -- land, over-admitting by at most the number of concurrent redeemers.
+                        -- Both rows survive in this append-only record, so the overage is
+                        -- auditable, and removal is owner-gated (member removal + Revocation).
+                        -- Same class as the convergence note on UsageStampId above.
+                        -- One rule for FUTURE writers: two FormationUsage rows for one token
+                        -- inserted in ONE transaction each read the same committed count, so
+                        -- they can jointly exceed the cap. No writer in this repo does that; it
+                        -- is a constraint on new writers, not a case to engineer for.
+                        -- Do not "fix" this into a per-token sequence number to restore a
+                        -- strict cap — that trade was weighed and rejected (2026-08-04): a
+                        -- fought-over sequence key turns a concurrent redemption into a silent,
+                        -- unrecoverable loss of a consented join, which is strictly worse than
+                        -- a visible, reversible over-admission.
+                        and (FI.TotalUses is null or FI.TotalUses > (select count(*) from committed.FormationUsage U where U.Token = new.Token))
                         and (FI.ExpiresAt is null or FI.ExpiresAt > context.Now)
                         -- An invite carrying a ValidationUrl demands a sign-off from a key the party
                         -- ENROLLED in ValidationKey. The signature is verified against the STORED VK.Key,
@@ -594,16 +602,12 @@ declare schema CadreControl {
                         -- (Token, UsageStampId, StrandId, PeerKey, Disclosure), so an approval is NOT
                         -- transferable across invitations, redemptions, networks, joiners, or disclosure
                         -- text. Replay is closed twice over, by two independent mechanisms: presenting an
-                        -- approval VERBATIM repeats its UsageStampId and is refused by that column's
-                        -- `unique`; presenting it under any OTHER redemption changes a signed field and
-                        -- fails this verify.
-                        -- Why a fresh nonce rather than binding UseNumber: UseNumber is derived from the
-                        -- table's current state (max+1, see Monotonic), so binding it would make the
-                        -- approver sign a value a concurrent redemption can invalidate — the loser of the
-                        -- race would need a SECOND approval for the same joiner (for a manual review
-                        -- queue, a second human review). A nonce chosen freely by the redeeming node is
-                        -- just as single-use and lets the loser retry the same approval under a new use
-                        -- number.
+                        -- approval VERBATIM repeats its UsageStampId and is refused by this table's
+                        -- primary key; presenting it under any OTHER redemption changes a signed field
+                        -- and fails this verify.
+                        -- Every signed field is supplied by the redeeming side — nothing derived from
+                        -- the table's current state is bound — so no concurrent write can invalidate an
+                        -- approval between the sign-off and the row landing.
                         -- Why StrandStampId is deliberately NOT bound: it names the strand ROW
                         -- incarnation, which the unbound path (redeemInvitation) mints inside its own
                         -- transaction, and it adds nothing on top of a strictly single-use approval —
@@ -653,6 +657,12 @@ declare schema CadreControl {
     -- ValidationKey/ValidationSignature pair for the 'vouch' check in Authorized. The joiner's
     -- signature is NOT context — it lives on the row (PeerSig, verified by PeerConsented above).
     ) with context (Now datetime, ValidationKey text null, ValidationSignature text null);
+
+    -- Token is no longer a primary-key prefix (the key is the redemption nonce), so the
+    -- per-token filters — the cap count in Authorized above, and cadre-core's
+    -- countFormationUsage / isTokenUsed / hasOutstandingFormationInvite — get an index
+    -- rather than a table scan.
+    index FormationUsageByToken on FormationUsage (Token);
 
     -- Append-only retirement record for the one-off StampId nonces of removed OwnerKey /
     -- CadrePeer / ValidationKey / Strand rows. Without it a removal was undoable: the add

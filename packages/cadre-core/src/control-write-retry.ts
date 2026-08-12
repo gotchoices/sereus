@@ -247,9 +247,8 @@ function chainMessages(error: Error): string[] {
  *
  * Deliberately NOT matched: every constraint / authorization failure
  * (`CHECK constraint failed:`, `UNIQUE constraint failed:`) — those reach the same funnel
- * and must be retried zero times. In particular the lost-use-number messages
- * (`isLostUseNumberRace` in `control-database.ts`) are constraint failures, so this
- * classifier and that one are DISJOINT and the two retry loops can never multiply.
+ * and must be retried zero times: the cohort REFUSED the write, so re-presenting it
+ * re-presents a spent signature and can never commit.
  */
 const RETRIABLE_CONTROL_WRITE_MATCHERS: readonly ((message: string) => boolean)[] = [
 	isUncommittedTransactorAggregate,
@@ -284,8 +283,7 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * re-presenting the SAME signed write a moment later the right response?
  *
  * Classifies by MESSAGE, walking the `cause` chain with Quereus' own {@link unwrapError} —
- * the exact shape of `isLostUseNumberRace`, for the same reason: neither surface is
- * recognisable by type. The transactor and the coordinator both throw bare `Error`s, and by
+ * the failure surface is not recognisable by type. The transactor and the coordinator both throw bare `Error`s, and by
  * the time one reaches `ControlDatabase` it is wrapped in a `QuereusError` (the real chain
  * is `QuereusError` → `Error` → `Error`), so the match must work at any depth. Anything
  * that is not an `Error` is never retried.
@@ -295,7 +293,7 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * other level looking transient.
  *
  * NOTE: this depends on engine/transactor error TEXT. The messages producible without a
- * network are driven from the REAL engine in `control-formation-use-number-retry.spec.ts`, so
+ * network are driven from the REAL engine in `control-formation-seat-budget.spec.ts`, so
  * a rewording reddens a spec rather than silently disabling the retry. The two RETRIABLE
  * messages need a real multi-node cluster to produce; the degraded-cohort scenario
  * (`control-write-degraded-cohort-member.integration.ts`) asserts this classifier against
@@ -436,9 +434,6 @@ export async function retryControlWrite<T>(
 				// The ONLY trace that this funnel saw a failure and declined it. Without it the
 				// log is silent either way, so "the classifier vetoed this one" is
 				// indistinguishable from "the retry is not wired into this path at all".
-				// "here" is load-bearing: this fires for every non-transient failure, and some
-				// of them — the lost-use-number constraint failures — ARE retried by the OUTER
-				// loop (`ControlDatabase.withUseNumberRetry`) that this one nests inside.
 				log('Control write%s failed non-transiently on attempt %d/%d, not retried here: %s',
 					tag, attemptNumber, attempts, error);
 				throw error;

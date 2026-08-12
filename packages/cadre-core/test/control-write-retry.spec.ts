@@ -11,7 +11,7 @@ import {
 	retryControlWrite,
 	type ControlWriteRetryOptions
 } from '../src/control-write-retry.js';
-import { ControlDatabase, isLostUseNumberRace } from '../src/control-database.js';
+import { ControlDatabase } from '../src/control-database.js';
 import type { ControlDatabaseConfig } from '../src/control-database.js';
 
 /**
@@ -21,10 +21,9 @@ import type { ControlDatabaseConfig } from '../src/control-database.js';
  * The classifier table below asserts against message LITERALS, a known dependency on
  * engine/transactor error text. It is only half the coverage, deliberately:
  *
- *  - the NON-retriable side (constraint/authorization failures, and disjointness with
- *    `isLostUseNumberRace`) is additionally driven from the REAL engine in
- *    `control-formation-use-number-retry.spec.ts`, which boots a `CadreNode` — so a
- *    reworded constraint message reddens a spec there;
+ *  - the NON-retriable side (constraint/authorization failures) is additionally driven
+ *    from the REAL engine in `control-formation-seat-budget.spec.ts`, which boots a
+ *    `CadreNode` — so a reworded constraint message reddens a spec there;
  *  - the RETRIABLE side cannot be produced here at all. Both messages come off a real
  *    multi-node cluster (the network transactor's aggregate, the cluster coordinator's
  *    super-majority shortfall), which needs an integration scenario, not a unit spec.
@@ -61,7 +60,7 @@ function immediatePacing(overrides: ControlWriteRetryOptions = {}): ControlWrite
  * fail against the surface a real startup actually produces.
  */
 function ddlFailure(causeMessage: string): string {
-	return `Failed to execute DDL: create table CadreControl.FormationUsage (Token text not null, UseNumber integer not null)\nError: ${causeMessage}`;
+	return `Failed to execute DDL: create table CadreControl.FormationUsage (Token text not null, UsageStampId text not null)\nError: ${causeMessage}`;
 }
 
 /**
@@ -96,9 +95,6 @@ const SUPER_MAJORITY_PARTIAL =
 	'Failed to get super-majority: 2/3 approvals (needed 3, 0 rejections)';
 const SUPER_MAJORITY_REJECTED =
 	'Failed to get super-majority: 2/3 approvals (needed 3, 1 rejections)';
-const LOST_USE_NUMBER =
-	'UNIQUE constraint failed: FormationUsage.Token, FormationUsage.UseNumber';
-const LOST_USE_NUMBER_DEFERRED = 'CHECK constraint failed: Monotonic';
 /**
  * The shortfall exactly as a THREE-node party raises it — the shape that makes a third
  * node's join fragile. A control transaction there needs 2 of 2 remaining peers to answer,
@@ -302,21 +298,6 @@ describe('isRetriableControlWriteFailure', () => {
 		expect(isRetriableControlWriteFailure({ message: TRANSACTOR_AGGREGATE })).toBe(false);
 	});
 
-	/**
-	 * The property that keeps this loop and `withUseNumberRetry` from multiplying: no error
-	 * is claimed by both classifiers, so any given failure is retried by exactly one loop
-	 * (or neither). Asserted from both directions.
-	 */
-	it('is disjoint from isLostUseNumberRace', () => {
-		for (const lostRace of [LOST_USE_NUMBER, LOST_USE_NUMBER_DEFERRED]) {
-			expect(isLostUseNumberRace(nested(lostRace))).toBe(true);
-			expect(isRetriableControlWriteFailure(nested(lostRace))).toBe(false);
-		}
-		for (const transient of [TRANSACTOR_AGGREGATE, SUPER_MAJORITY_NONE_ANSWERED]) {
-			expect(isRetriableControlWriteFailure(nested(transient))).toBe(true);
-			expect(isLostUseNumberRace(nested(transient))).toBe(false);
-		}
-	});
 });
 
 /**
@@ -381,8 +362,7 @@ describe('isRetriableSchemaInitFailure', () => {
 			TRANSACTOR_AGGREGATE_NO_DETAILS,
 			SUPER_MAJORITY_REJECTED,
 			MISSING_BLOCK,
-			LOST_USE_NUMBER,
-			LOST_USE_NUMBER_DEFERRED,
+			'UNIQUE constraint failed: FormationUsage.UsageStampId',
 			'CHECK constraint failed: Authorized',
 		];
 		for (const message of retriable) {
@@ -549,47 +529,6 @@ describe('retryControlWrite', () => {
 		}, immediatePacing())).rejects.toBe(failure);
 
 		expect(runs).toBe(1);
-	});
-
-	/**
-	 * The nesting `withUseNumberRetry` now has in production: its use-number loop wraps
-	 * `lockedWithRetry`, which wraps this loop. Simulated here with the same
-	 * classify-and-rethrow shape to pin the multiplication bound — because the classifiers
-	 * are disjoint (asserted above), any failure mode runs the body at most 3 times total,
-	 * never 3 × 3.
-	 */
-	it('composed under a use-number-style outer loop, total attempts stay bounded at 3', async () => {
-		const OUTER_ATTEMPTS = 3;
-		const simulatedUseNumberRetry = async (write: () => Promise<void>): Promise<void> => {
-			let lastError: unknown;
-			for (let attempt = 1; attempt <= OUTER_ATTEMPTS; attempt++) {
-				try {
-					return await retryControlWrite(write, immediatePacing());
-				} catch (error) {
-					if (!isLostUseNumberRace(error)) {
-						throw error;
-					}
-					lastError = error;
-				}
-			}
-			throw lastError;
-		};
-
-		// A lost use number: the inner loop refuses it, the outer loop retries it.
-		let lostRaceRuns = 0;
-		await expect(simulatedUseNumberRetry(async () => {
-			lostRaceRuns++;
-			throw nested(LOST_USE_NUMBER);
-		})).rejects.toThrow();
-		expect(lostRaceRuns).toBe(OUTER_ATTEMPTS);
-
-		// A transient cluster failure: the inner loop retries it, the outer loop refuses it.
-		let transientRuns = 0;
-		await expect(simulatedUseNumberRetry(async () => {
-			transientRuns++;
-			throw nested(TRANSACTOR_AGGREGATE);
-		})).rejects.toThrow();
-		expect(transientRuns).toBe(CONTROL_WRITE_ATTEMPTS);
 	});
 
 	/**

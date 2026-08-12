@@ -185,14 +185,18 @@ redemption is written. Binding the nonce, strand, and peer makes the approval no
 it cannot be re-presented for another use of the same invitation, another strand, or another
 joiner. Sign the `disclosure` bytes verbatim; do not re-serialize them.
 
-Notice `UseNumber` — the invitation's 1-based redemption sequence — is not one of the five signed
-fields. That is deliberate, and it is what backs the following guarantee: **a hook is contacted at
-most once per redemption, never once per write attempt.** If two nodes redeem the same invitation
-at once, the loser's write is refused a use number the winner already took; the losing node
-retries with a fresh use number and re-presents the identical sign-off it already has, instead of
-asking the hook again. Only when the invitation has no seat left for a retry does the
-redemption fail — reported to the joiner the same way an already-fully-redeemed invitation is,
-never as a fresh retryable conflict.
+Notice that nothing derived from the invitation's stored state is among the five signed fields —
+the nonce (`UsageStampId`) is minted by the redeeming side and is the acceptance record's own
+key. That is what backs the following guarantee: **a hook is contacted at most once per
+redemption, never once per write attempt.** Each redemption is stored under its own nonce, so two
+nodes redeeming the same invitation at once never contend for a shared record and there is no
+lost race to recover from. The invitation's use limit is enforced by counting the recorded
+redemptions: a spent invitation is refused — reported to the joiner the same way an invalid token
+is, never as a retryable conflict — but redemptions that run simultaneously (or on nodes that
+have not yet converged) can each read the same count and exceed the stated limit by up to the
+number of simultaneous redeemers. Every acceptance survives in the append-only record, so an
+overage is visible there and reversible by owner-gated member removal; treat `TotalUses` as an
+audited bound, not a hard ceiling under concurrency.
 
 ### A hook in TypeScript
 

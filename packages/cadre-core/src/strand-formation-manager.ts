@@ -299,14 +299,14 @@ export class StrandFormationManager {
    * Defense-in-depth: known provisioning/redeem failures are caught and mapped to a logged
    * protocol rejection rather than a thrown insert + a silently-closed stream. The mapping is
    * per-failure, NOT blanket retry-suggesting: an exhausted invitation
-   * ({@link InvitationExhaustedError}, raised by `ControlDatabase` whenever a redemption's use
-   * number is past the invite's seat budget — including a first attempt racing another
-   * redemption of the same token on this node, not only a retry) is reported as `'Invalid
-   * token'`, because retrying it can never succeed. The
-   * `(Token, UseNumber)` PK collision that concurrent redemptions of one invite used to
-   * surface here is now retried a layer down and no longer reaches this method. The
-   * LOG-before-reject keeps this a deliberate internal-error→protocol-rejection conversion
-   * (AGENTS.md: don't eat exceptions silently), not control-flow-by-exception.
+   * ({@link InvitationExhaustedError}, raised by `ControlDatabase` when the count of recorded
+   * uses has reached the invite's seat budget — which is how the loser of a same-node race
+   * surfaces, the local write queue having serialized the two writes) is reported as
+   * `'Invalid token'`, because retrying it can never succeed. Concurrent redemptions never
+   * contend for a shared row key — each writes under its own `UsageStampId` — so there is no
+   * key collision to surface here at all. The LOG-before-reject keeps this a deliberate
+   * internal-error→protocol-rejection conversion (AGENTS.md: don't eat exceptions silently),
+   * not control-flow-by-exception.
    */
   private async provisionAsResponder(
     contact: FormationContactMessage,
@@ -366,26 +366,23 @@ export class StrandFormationManager {
       }
       if (err instanceof InvitationExhaustedError) {
         // Shares `INVALID_TOKEN_REASON` with the up-front `validateToken` rejection so the loser
-        // of the race that exposed the spent invite — same-node, first attempt, or a retry that
-        // ran out — sees exactly what a non-racing latecomer sees. No wire-visible distinction between "invalid" and "exhausted" — the
+        // of the race that exposed the spent invite sees exactly what a non-racing latecomer
+        // sees. No wire-visible distinction between "invalid" and "exhausted" — the
         // operator signal lives in this log line instead.
         // NOTE: if a joining client ever has to tell "never valid" from "used up" WITHOUT node
         // logs, that is a new protocol reason string, not a local change here.
         log(
-          'invitation exhausted for token %s: use #%d past limit of %d',
+          'invitation exhausted for token %s: %d of %d use(s) already recorded',
           err.token,
-          err.useNumber,
+          err.usesRecorded,
           err.totalUses
         );
         return { approved: false, reason: INVALID_TOKEN_REASON };
       }
-      // An approval obtained before landing here is RETRIED, not discarded: the database
-      // layer re-presents the same approver sign-off under a fresh use number when it loses
-      // one to a writer its local write queue does not serialize — another node of the cadre,
-      // another `Database` handle over the same store (see
-      // `ControlDatabase.withUseNumberRetry`). Reaching this catch-all means either that retry
-      // ran out (surfaced above as `InvitationExhaustedError`) or the failure was never
-      // retryable to begin with.
+      // An approval is never discarded to a lost key race: each redemption writes under its
+      // own `UsageStampId`, so no other writer can take its row key. Reaching this catch-all
+      // means the failure was never retryable at the database layer to begin with (or the
+      // transient-cluster retry inside `ControlDatabase.lockedWithRetry` ran out).
       log('provisionAsResponder failed for token %s: %o', token, err);
       return { approved: false, reason: 'Formation conflict, retry' };
     }

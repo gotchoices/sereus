@@ -267,13 +267,14 @@ export class ControlFormationUsageRecorder implements FormationUsageRecorder {
    *
    * A concurrent redemption of the same single-use invite still THROWS for the loser — the
    * manager maps that to a clean protocol rejection (it never lets the dropped insert close
-   * the stream silently) — but no longer via a `(Token, UseNumber)` primary-key collision on
-   * this node: `redeemInvitation` reads the use number INSIDE the write lock, so two local
-   * redemptions serialize and the second one reads the number the first already committed.
-   * It is then refused because that number is past the invite's seat budget, reported as a
-   * named `InvitationExhaustedError` on every attempt (including the first, which is what a
-   * same-node race hits). A PK collision is still what a cross-node race surfaces as, and that
-   * one IS retried under a fresh use number rather than thrown.
+   * the stream silently): the local write queue serializes the two writes, so the loser's
+   * seat check reads the winner's committed row against the cap and is refused as a named
+   * `InvitationExhaustedError`. A CROSS-node race is not a collision to retry at all — each
+   * redemption writes under its own `UsageStampId`, both rows land and survive convergence,
+   * and the cap can over-admit by the number of concurrent redeemers. That over-admission is
+   * the accepted trade (visible in the append-only record, reversible by owner-gated
+   * removal), chosen over a fought-over shared key whose failure mode was the silent loss of
+   * a consented join.
    */
   async provisionAndRecord(params: {
     token: string;

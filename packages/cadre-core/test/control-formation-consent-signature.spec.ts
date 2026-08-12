@@ -116,7 +116,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
       const { token, strandId } = await plainInvite('consent-ok');
 
       const consent = mintConsent(token);
-      expect((await db.recordFormationUsage({ token, strandId, ...consent })).useNumber).toBe(1);
+      expect((await db.recordFormationUsage({ token, strandId, ...consent })).usageStampId).toBe(consent.usageStampId);
 
       const row = await rawDb.get(
         'select PeerKey, PeerSig from CadreControl.FormationUsage where Token = ?',
@@ -217,7 +217,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
         peerKey: joiner.peerKey,
         usageStampId,
         peerSignature: signJoinerConsent(joiner, { token, usageStampId }),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(usageStampId);
       expect(await usageCount()).toBe(before + 1);
     });
 
@@ -240,25 +240,24 @@ describe('FormationUsage joiner-consent signature matrix', () => {
       expect(await usageCount()).toBe(before);
 
       // The nonce that WAS signed, presented as itself: lands. Neither nonce had ever been
-      // spent, so `unique` could not have been what refused the write above.
+      // spent, so the primary key could not have been what refused the write above.
       expect((await db.recordFormationUsage({
         token, strandId,
         peerKey: joiner.peerKey,
         usageStampId: signedNonce,
         peerSignature: signJoinerConsent(joiner, { token, usageStampId: signedNonce }),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(signedNonce);
       expect(await usageCount()).toBe(before + 1);
     });
 
-    it('refuses a SPENT nonce re-presented verbatim on `unique`, NOT on PeerConsented', async () => {
+    it('refuses a SPENT nonce re-presented verbatim on the primary key, NOT on PeerConsented', async () => {
       const { token, strandId } = await plainInvite('consent-replay');
       // One consent object, presented twice. Every signed field matches on the second
-      // presentation, so the digest verify passes and cannot be what refuses it. The invite
-      // is uncapped, so `recordFormationUsage` derives UseNumber 2 for the replay and the
-      // (Token, UseNumber) primary key does not collide either — leaving the nonce column's
-      // `unique`, which is enforced on the insert rather than as a named deferred CHECK.
+      // presentation, so the digest verify passes and cannot be what refuses it. The nonce
+      // IS the table's primary key, so the verbatim replay collides on the row key — which
+      // is enforced on the insert rather than as a named deferred CHECK.
       const consent = mintConsent(token);
-      expect((await db.recordFormationUsage({ token, strandId, ...consent })).useNumber).toBe(1);
+      expect((await db.recordFormationUsage({ token, strandId, ...consent })).usageStampId).toBe(consent.usageStampId);
 
       const before = await usageCount();
       await expectUniqueViolation(
@@ -293,7 +292,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
         peerKey: joiner.peerKey,
         usageStampId,
         peerSignature: signJoinerConsent(joiner, { token, usageStampId, disclosure }),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(usageStampId);
       expect(await usageCount()).toBe(before + 1);
     });
   });
@@ -338,7 +337,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
         peerKey: joiner.peerKey,
         usageStampId,
         peerSignature: signJoinerConsent(joiner, { token, usageStampId }),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(usageStampId);
       expect(await usageCount()).toBe(before + 1);
     });
 
@@ -386,7 +385,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
           joiner.peerKey,
           joiner.privateKey,
         ).validationSignature,
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(usageStampId);
       expect(await usageCount()).toBe(before + 1);
     });
   });
@@ -451,7 +450,7 @@ describe('FormationUsage joiner-consent signature matrix', () => {
         peerSignature: signJoinerConsent(r.joiner, r),
         validationKey: approverPublicKey,
         validationSignature: vouch({ ...row, peerKey: r.joiner.peerKey }),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(r.usageStampId);
       expect(await usageCount()).toBe(before + 1);
 
       const stored = await rawDb.get(

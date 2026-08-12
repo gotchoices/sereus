@@ -800,9 +800,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const bound = 'fi-rejoin-c-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(bound, 'sapp-rejoin', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1, strandId: id });
-    expect((await db.recordFormationUsage({
-      token: bound, strandId: id, ...mintConsent(bound),
-    })).useNumber).toBe(1);
+    await db.recordFormationUsage({ token: bound, strandId: id, ...mintConsent(bound) });
+    expect(await db.countFormationUsage(bound)).toBe(1);
   }, 60_000);
 
   it('Strand: an id seated ONLY owner-signed, then removed, can never be consent-seated', async () => {
@@ -838,9 +837,8 @@ describe('Revocation: remove-then-replay resurrection is closed', () => {
     const bound = 'fi-owner-only-rejoin-' + Math.random().toString(36).slice(2);
     await db.insertFormationInvite(bound, 'sapp-owner-only-removed', founder.publicKey,
       message => signAs(founder, message), { totalUses: 1, strandId: id });
-    expect((await db.recordFormationUsage({
-      token: bound, strandId: id, ...mintConsent(bound),
-    })).useNumber).toBe(1);
+    await db.recordFormationUsage({ token: bound, strandId: id, ...mintConsent(bound) });
+    expect(await db.countFormationUsage(bound)).toBe(1);
   }, 60_000);
 
   it('ValidationKey: a signed delete must carry a tombstone under the matching TableName (RevocationRecorded)', async () => {

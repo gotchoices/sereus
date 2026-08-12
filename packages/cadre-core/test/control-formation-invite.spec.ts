@@ -80,7 +80,6 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
    */
   async function rawInsertFormationUsage(opts: {
     token: string;
-    useNumber: number;
     strandId: string;
     strandStampId: string;
     disclosure?: string;
@@ -92,12 +91,12 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       ? mintConsent(opts.token, opts.disclosure ?? '')
       : { usageStampId: opts.usageStampId, peerKey: opts.peerKey, peerSignature: opts.peerSignature };
     await rawDb.exec(
-      `insert into CadreControl.FormationUsage (Token, UseNumber, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
+      `insert into CadreControl.FormationUsage (Token, UsageStampId, PeerKey, PeerSig, Disclosure, StrandId, StrandStampId)
          with context Now = ?, ValidationKey = ?, ValidationSignature = ?
-         values (?, ?, ?, ?, ?, ?, ?, ?)`,
+         values (?, ?, ?, ?, ?, ?, ?)`,
       [
         now, opts.validationKey ?? null, opts.validationSignature ?? null,
-        opts.token, opts.useNumber,
+        opts.token,
         consent.usageStampId, consent.peerKey, consent.peerSignature,
         opts.disclosure ?? '', opts.strandId, opts.strandStampId,
       ],
@@ -183,11 +182,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(strand?.Type).toBe('o');
 
     const usage = await rawDb.get(
-      'select Token, UseNumber, StrandId, StrandStampId from CadreControl.FormationUsage where StrandId = ?',
+      'select Token, StrandId, StrandStampId from CadreControl.FormationUsage where StrandId = ?',
       [strandId],
     );
     expect(usage?.Token).toBe(token);
-    expect(usage?.UseNumber).toBe(1);
     expect(usage?.StrandId).toBe(strandId);
     // Consent is bound to the strand ROW, not the strand id: the usage row carries the
     // seated row's one-off stamp, which is what makes a later removal permanent.
@@ -283,7 +281,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     expect(await usageCount()).toBe(usageBefore);
   }, 30_000);
 
-  it('recordFormationUsage adds usage rows against a pre-existing (owner-signed) strand, monotonically', async () => {
+  it('recordFormationUsage adds usage rows against a pre-existing (owner-signed) strand, each under its own nonce', async () => {
     const token = 'invite-rec-' + rand();
     const strandId = 'strand-authsigned-' + rand();
     await db.insertFormationInvite(token, 'sapp-rec', ownerPublicKey, signMessage);
@@ -292,14 +290,20 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
     // The SAME joiner both times, on purpose: fresh consent (fresh nonce) per use, one key.
     const joiner = mintJoiner();
-    expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token, '', joiner) })).useNumber).toBe(1);
-    expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token, '', joiner) })).useNumber).toBe(2);
+    const first = mintConsent(token, '', joiner);
+    const second = mintConsent(token, '', joiner);
+    expect((await db.recordFormationUsage({ token, strandId, ...first })).usageStampId).toBe(first.usageStampId);
+    expect((await db.recordFormationUsage({ token, strandId, ...second })).usageStampId).toBe(second.usageStampId);
 
-    const row = await rawDb.get(
-      'select count(1) as c from CadreControl.FormationUsage where Token = ?',
+    // Two rows, each keyed by its own nonce — neither write erased the other.
+    const stamps: string[] = [];
+    for await (const usage of rawDb.eval(
+      'select UsageStampId from CadreControl.FormationUsage where Token = ?',
       [token],
-    );
-    expect(Number(row?.c)).toBe(2);
+    )) {
+      stamps.push(usage.UsageStampId as string);
+    }
+    expect(stamps.sort()).toEqual([first.usageStampId, second.usageStampId].sort());
 
     // Both consent records are bound to the HOST strand's live stamp — `recordFormationUsage`
     // reads it off the row rather than leaving the pair to the deferred `StrandExists` CHECK.
@@ -325,7 +329,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // the writer's choosing and held in reserve to re-seat the id after a removal.
     await expectConstraintFailure(
       rawInsertFormationUsage({
-        token, useNumber: 1, strandId, strandStampId: 'not-the-live-stamp-' + rand(),
+        token, strandId, strandStampId: 'not-the-live-stamp-' + rand(),
       }),
       'StrandExists',
     );
@@ -335,7 +339,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
     // is about the stamp and nothing else.
     const liveStamp = await db.queryStrandStampId(strandId);
     expect(liveStamp).not.toBeNull();
-    await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: liveStamp! });
+    await rawInsertFormationUsage({ token, strandId, strandStampId: liveStamp! });
     expect(await usageCount()).toBe(before + 1);
   });
 
@@ -417,8 +421,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await expect(abandoned).rejects.toThrow(FormationAbortedError);
       expect(await usageCount()).toBe(usageBefore);
 
-      // Use #1 is still free — the abandoned attempt consumed no use number.
-      expect((await db.recordFormationUsage({ token, strandId, ...mintConsent(token) })).useNumber).toBe(1);
+      // The single seat is still free — the abandoned attempt consumed nothing.
+      await db.recordFormationUsage({ token, strandId, ...mintConsent(token) });
       expect(await usageCount()).toBe(usageBefore + 1);
     });
 
@@ -441,7 +445,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       release();
       await held;
 
-      expect((await queued).useNumber).toBe(1);
+      await queued;
       expect(await usageCount()).toBe(usageBefore + 1);
     });
   });
@@ -511,7 +515,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await expectConstraintFailure(
         inTransaction(async () => {
           await rawInsertStrandUnsigned(strandId, 'c', 'ATTACKER-KEY-' + strandId, stamp);
-          await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: stamp });
+          await rawInsertFormationUsage({ token, strandId, strandStampId: stamp });
         }),
         'AuthorizedInsert',
       );
@@ -519,13 +523,13 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       expect(await usageCount()).toBe(usageBefore);
 
       // The identical transaction in the open/keyless shape lands — the rejection above
-      // is about the shape and nothing else. (Use number 1 again: the failed transaction
-      // left no usage row behind.)
+      // is about the shape and nothing else. (The failed transaction left no usage row
+      // behind.)
       const okId = 'strand-open-consent-' + rand();
       const okStamp = freshStamp();
       await inTransaction(async () => {
         await rawInsertStrandUnsigned(okId, 'o', null, okStamp);
-        await rawInsertFormationUsage({ token, useNumber: 1, strandId: okId, strandStampId: okStamp });
+        await rawInsertFormationUsage({ token, strandId: okId, strandStampId: okStamp });
       });
       expect(await strandCount()).toBe(strandsBefore + 1);
       expect(await usageCount()).toBe(usageBefore + 1);
@@ -547,7 +551,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       await expectConstraintFailure(
         inTransaction(async () => {
           await rawInsertStrandUnsigned(strandId, 'c', null, stamp);
-          await rawInsertFormationUsage({ token, useNumber: 1, strandId, strandStampId: stamp });
+          await rawInsertFormationUsage({ token, strandId, strandStampId: stamp });
         }),
         'AuthorizedInsert',
       );
@@ -620,7 +624,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
       const usageBefore = await usageCount();
       // Record-only — no Strand insert — against an ALREADY owner-signed strand, so
-      // StrandExists and Monotonic are satisfied and FormationUsage.Authorized's
+      // StrandExists is satisfied and FormationUsage.Authorized's
       // own-strand clause is the one rule that can reject. This isolates the
       // FormationUsage half of the narrowing, which any shape carrying a Strand insert
       // masks behind AuthorizedInsert.
@@ -663,8 +667,10 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         totalUses: 3,
       });
 
-      expect((await db.recordFormationUsage({ token, strandId: host, ...mintConsent(token) })).useNumber).toBe(1);
-      expect((await db.recordFormationUsage({ token, strandId: host, ...mintConsent(token) })).useNumber).toBe(2);
+      const first = mintConsent(token);
+      const second = mintConsent(token);
+      expect((await db.recordFormationUsage({ token, strandId: host, ...first })).usageStampId).toBe(first.usageStampId);
+      expect((await db.recordFormationUsage({ token, strandId: host, ...second })).usageStampId).toBe(second.usageStampId);
 
       // Still exactly one Strand row for the host — joining by bound invite records
       // consent, it never seats anything.
@@ -714,9 +720,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
    *
    * Every case that asserts a REJECTION records against a PRE-EXISTING owner-signed strand
    * (`recordFormationUsage`, not `redeemInvitation`) so `Authorized` is the only constraint that
-   * can reject: `StrandExists` is satisfied by the committed strand and `Monotonic` by the
-   * writer's use-number read. That keeps `expectConstraintFailure(..., 'Authorized')` a
-   * single-rejector assertion. The one `redeemInvitation` case below asserts a LANDING, so it is
+   * can reject: `StrandExists` is satisfied by the committed strand. That keeps
+   * `expectConstraintFailure(..., 'Authorized')` a single-rejector assertion. The one `redeemInvitation` case below asserts a LANDING, so it is
    * free of that restriction — see the note on it for why the consent-seating path needs its own.
    */
   describe('FormationUsage.Authorized validation-key branch', () => {
@@ -863,7 +868,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         ...redemption,
         validationKey: validationPublicKey,
         validationSignature: vouch(validationPrivateKey, redemption),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(redemption.usageStampId);
       expect(await usageCount()).toBe(before + 1);
 
       // The row that landed carries the very nonce and joiner the approver signed over —
@@ -903,7 +908,6 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         validationKey: validationPublicKey,
         validationSignature: vouch(validationPrivateKey, redemption),
       });
-      expect(landed.useNumber).toBe(1);
       expect(landed.usageStampId).toBe(redemption.usageStampId);
 
       // The nonce the approver signed is the nonce on the row, and the strand it authorized
@@ -967,7 +971,6 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
       const consent = mintConsent(token, 'open');
       const before = await usageCount();
       const landed = await db.recordFormationUsage({ token, strandId, ...consent, disclosure: 'open' });
-      expect(landed.useNumber).toBe(1);
       expect(await usageCount()).toBe(before + 1);
 
       // The writer threads the consent's nonce through and echoes back the one that
@@ -992,7 +995,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         ...approved,
         validationKey: retiredPublic,
         validationSignature: vouch(retiredPrivate, approved),
-      })).useNumber).toBe(1);
+      })).usageStampId).toBe(approved.usageStampId);
 
       await db.deleteValidationKey(retiredPublic, ownerPublicKey, signMessage);
 
@@ -1011,7 +1014,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
       // Past redemptions: CHECKs run on write only, so the already-approved row stands.
       expect(await rawDb.get(
-        'select UseNumber from CadreControl.FormationUsage where Token = ?',
+        'select UsageStampId from CadreControl.FormationUsage where Token = ?',
         [approved.token],
       )).toBeDefined();
     });
@@ -1021,8 +1024,8 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * that whole design exists for. Replay is closed twice over by two INDEPENDENT
      * mechanisms, and each case below is arranged so that exactly one of them can fire:
      *
-     *  - re-presenting an approval VERBATIM repeats its `UsageStampId`, which that column's
-     *    `unique` refuses — a duplicate-row error, NOT a named CHECK failure, so it is
+     *  - re-presenting an approval VERBATIM repeats its `UsageStampId`, which the table's
+     *    PRIMARY KEY refuses — a duplicate-row error, NOT a named CHECK failure, so it is
      *    asserted with a `UNIQUE constraint failed:` match rather than
      *    `expectConstraintFailure`;
      *  - re-presenting it under ANY other redemption changes a field inside the signed
@@ -1041,11 +1044,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
      * on an unspent approval. Verified by mutation, not by reading: dropping PeerKey reddens only
      * the PeerKey case, dropping UsageStampId only the fresh-nonce case.
      *
-     * NOTE: the race case pins the (Token, UseNumber) primary-key collision because the vtab
-     * enforces the key on the insert, ahead of the deferred `Monotonic` CHECK; were that
-     * ordering to invert, the same write would be refused by name instead. Re-observe what the
-     * engine emits and re-pin the single one it does — do NOT widen the match to accept both.
-     * `expectUniqueViolation` carries the caveat about that message's wording.
+     * NOTE: the verbatim-replay cases pin the vtab's rendering of the primary-key collision
+     * (`UNIQUE constraint failed: FormationUsage.UsageStampId`), which is wording the schema
+     * does not promise — `expectUniqueViolation` carries the caveat about that message.
      */
     describe('one approval, one redemption (replay refusals)', () => {
       it('refuses one invitee\'s approval re-filed under ANOTHER joiner, without locking that joiner out', async () => {
@@ -1056,9 +1057,9 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
         expect((await db.recordFormationUsage({
           ...joinerA, validationKey: validationPublicKey, validationSignature: approvalA,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(joinerA.usageStampId);
 
-        // A's sign-off, re-filed under B's name. The nonce is FRESH, so the column's `unique`
+        // A's sign-off, re-filed under B's name. The nonce is FRESH, so the primary key
         // cannot be what refuses this — the digest's PeerKey and UsageStampId are.
         const stolen = sibling(joinerA, 'stolen');
         const before = await usageCount();
@@ -1077,7 +1078,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
           ...joinerB,
           validationKey: validationPublicKey,
           validationSignature: vouch(validationPrivateKey, joinerB),
-        })).useNumber).toBe(2);
+        })).usageStampId).toBe(joinerB.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
@@ -1088,11 +1089,11 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
           ...redemption, validationKey: validationPublicKey, validationSignature: approval,
         });
 
-        expect((await present()).useNumber).toBe(1);
+        expect((await present()).usageStampId).toBe(redemption.usageStampId);
 
         // Byte-identical second presentation: every signed field matches, so the `verify` in
-        // `Authorized` is NOT what stops it. The repeated UsageStampId is — and that column's
-        // `unique` is enforced on the insert itself rather than as a named deferred CHECK,
+        // `Authorized` is NOT what stops it. The repeated UsageStampId is — the table's
+        // primary key is enforced on the insert itself rather than as a named deferred CHECK,
         // hence a duplicate-row rejection here instead of expectConstraintFailure.
         const before = await usageCount();
         await expectUniqueViolation(present(), 'FormationUsage.UsageStampId');
@@ -1111,7 +1112,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
         expect((await db.recordFormationUsage({
           ...approved, validationKey: validationPublicKey, validationSignature: approval,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(approved.usageStampId);
 
         const before = await usageCount();
         await expectConstraintFailure(
@@ -1124,14 +1125,14 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         expect(await usageCount()).toBe(before);
 
         // The invite itself is not exhausted — it is uncapped, and a SECOND sign-off over a
-        // second nonce lands as use #2. So the refusal above was about the approval being
-        // spent, not about the token having run out of uses.
+        // second nonce lands as its own row. So the refusal above was about the approval
+        // being spent, not about the token having run out of uses.
         const second = sibling(approved, 'nonce-swap-second');
         expect((await db.recordFormationUsage({
           ...second,
           validationKey: validationPublicKey,
           validationSignature: vouch(validationPrivateKey, second),
-        })).useNumber).toBe(2);
+        })).usageStampId).toBe(second.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
@@ -1158,7 +1159,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         // Same approval, same still-unspent nonce, the joiner it actually names: lands.
         expect((await db.recordFormationUsage({
           ...approved, validationKey: validationPublicKey, validationSignature: approval,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(approved.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
@@ -1187,7 +1188,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         // The same approval and the same nonce, against the strand it actually names: lands.
         expect((await db.recordFormationUsage({
           ...approved, validationKey: validationPublicKey, validationSignature: approval,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(approved.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
@@ -1213,7 +1214,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
           ...target,
           validationKey: validationPublicKey,
           validationSignature: vouch(validationPrivateKey, target),
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(target.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
@@ -1234,64 +1235,50 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
 
         expect((await db.recordFormationUsage({
           ...approved, validationKey: validationPublicKey, validationSignature: approval,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(approved.usageStampId);
         expect(await usageCount()).toBe(before + 1);
       });
 
-      it('lets the loser of a use-number race retry the SAME approval under the next use number', async () => {
-        // The ergonomic property the nonce design was chosen FOR. `UseNumber` is max+1 over
-        // the table (`Monotonic`), so a concurrent redemption invalidates it; binding it into
-        // the digest would send the loser of a race back for a SECOND approval — another trip
-        // through whatever manual review the ValidationUrl fronts. Binding a nonce the
-        // redeeming node mints itself is just as single-use and survives the retry.
-        // Not a duplicate of `control-formation-use-number-retry.spec.ts`: this case drives the
-        // retry BY HAND (raw insert, then a second `recordFormationUsage`) to pin the nonce
-        // design itself; that spec covers `withUseNumberRetry` re-presenting the approval
-        // automatically. Either could pass while the other fails.
-        const joinerA = await validatingInvite('race', { totalUses: 3, bound: true });
-        const joinerB = sibling(joinerA, 'race-b');
+      it('admits a second joiner under its own nonce, and refuses a verbatim replay on the primary key', async () => {
+        // The ergonomic property the nonce design was chosen FOR: each redemption is keyed by
+        // a nonce the redeeming node mints itself, so two joiners of one token never contend
+        // for a shared row key — nothing here needs (or has) any retry machinery. What the
+        // primary key DOES refuse is a verbatim replay of an already-landed approval.
+        const joinerA = await validatingInvite('two-joiners', { totalUses: 3, bound: true });
+        const joinerB = sibling(joinerA, 'two-joiners-b');
         const approvalA = vouch(validationPrivateKey, joinerA);
         const approvalB = vouch(validationPrivateKey, joinerB);
 
-        // Both approvals were obtained while the token had no uses, i.e. both for use #1.
-        // A commits first.
         expect((await db.recordFormationUsage({
           ...joinerA, validationKey: validationPublicKey, validationSignature: approvalA,
-        })).useNumber).toBe(1);
+        })).usageStampId).toBe(joinerA.usageStampId);
+        expect((await db.recordFormationUsage({
+          ...joinerB, validationKey: validationPublicKey, validationSignature: approvalB,
+        })).usageStampId).toBe(joinerB.usageStampId);
 
+        // Both rows stand side by side, each readable under its own joiner — neither
+        // acceptance erased the other.
+        for (const joiner of [joinerA, joinerB]) {
+          const row = await rawDb.get(
+            'select PeerKey from CadreControl.FormationUsage where UsageStampId = ?',
+            [joiner.usageStampId],
+          );
+          expect(row?.PeerKey).toBe(joiner.peerKey);
+        }
+
+        // A's approval re-presented VERBATIM repeats its UsageStampId and collides on the
+        // table's primary key — the local half of what makes one sign-off spendable once.
         const strandStampId = await db.queryStrandStampId(joinerA.strandId);
         expect(strandStampId).not.toBeNull();
-
-        // B's insert was already in flight against use #1: fully approved, and refused purely
-        // because A took that use number. The engine reports the (Token, UseNumber) primary-key
-        // collision, which lands before the deferred `Monotonic` CHECK is ever evaluated.
         const before = await usageCount();
         await expectUniqueViolation(
           rawInsertFormationUsage({
-            ...joinerB, useNumber: 1, strandStampId: strandStampId!,
-            validationKey: validationPublicKey, validationSignature: approvalB,
-          }),
-          'FormationUsage.Token', 'FormationUsage.UseNumber',
-        );
-        expect(await usageCount()).toBe(before);
-
-        // The retry: the SAME nonce and the SAME signature under the use number the writer
-        // now reads. No second approval, no second review.
-        expect((await db.recordFormationUsage({
-          ...joinerB, validationKey: validationPublicKey, validationSignature: approvalB,
-        })).useNumber).toBe(2);
-        expect(await usageCount()).toBe(before + 1);
-
-        // A's nonce, though, is spent for good: its own approval re-presented verbatim under a
-        // free use number is refused by the nonce's `unique`, not by anything about the retry.
-        await expectUniqueViolation(
-          rawInsertFormationUsage({
-            ...joinerA, useNumber: 3, strandStampId: strandStampId!,
+            ...joinerA, strandStampId: strandStampId!,
             validationKey: validationPublicKey, validationSignature: approvalA,
           }),
           'FormationUsage.UsageStampId',
         );
-        expect(await usageCount()).toBe(before + 1);
+        expect(await usageCount()).toBe(before);
       });
     });
   });

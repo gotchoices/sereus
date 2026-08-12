@@ -246,11 +246,11 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     // (b) exactly one FormationUsage row, keyed to the host strand.
     expect(await db.countFormationUsage(token)).toBe(1);
     const usage = await rawDb.get(
-      'select StrandId, UseNumber from CadreControl.FormationUsage where Token = ?',
+      'select StrandId, UsageStampId from CadreControl.FormationUsage where Token = ?',
       [token],
     );
     expect(usage?.StrandId).toBe(hostStrandId);
-    expect(usage?.UseNumber).toBe(1);
+    expect(usage?.UsageStampId).toBeTruthy();
 
     // (d) second use of the single-use invite is rejected, and writes NO extra row.
     const second = new MockStream([encodeFrame(await contactFor(token))]);
@@ -332,10 +332,12 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
     expect(id1).not.toBe(id2);
     expect(await db.countFormationUsage(token)).toBe(2);
 
-    // UseNumbers are the sequential 1 and 2 across the two minted strands.
-    const u1 = await rawDb.get('select UseNumber from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id1!]);
-    const u2 = await rawDb.get('select UseNumber from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id2!]);
-    expect(new Set([u1?.UseNumber, u2?.UseNumber])).toEqual(new Set([1, 2]));
+    // Each redemption landed under its own nonce — two distinct row keys, neither erased.
+    const u1 = await rawDb.get('select UsageStampId from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id1!]);
+    const u2 = await rawDb.get('select UsageStampId from CadreControl.FormationUsage where Token = ? and StrandId = ?', [token, id2!]);
+    expect(u1?.UsageStampId).toBeTruthy();
+    expect(u2?.UsageStampId).toBeTruthy();
+    expect(u1?.UsageStampId).not.toBe(u2?.UsageStampId);
 
     // Third use exhausts the invite.
     const third = new MockStream([encodeFrame(await contactFor(token))]);
@@ -672,8 +674,8 @@ describe('strand formation consent (provision-then-record, real recorder)', () =
   it('(p) an InvitationExhaustedError from the recorder maps to the same "Invalid token" a spent invite gives', async () => {
     // Unit-level, not DB-driven (the recorder interface is deliberately "unit-testable with an
     // in-memory fake" — see FormationUsageRecorder's doc comment): a fake recorder that raises
-    // InvitationExhaustedError stands in for a real retry-exhausted redemption
-    // (control-formation-use-number-retry.spec.ts covers the database layer actually raising it).
+    // InvitationExhaustedError stands in for a real spent-seat-budget redemption
+    // (control-formation-seat-budget.spec.ts covers the database layer actually raising it).
     // This asserts only the manager's mapping, which that spec explicitly leaves untested.
     const token = 'invite-exhausted-' + rand();
     const fakeRecorder: FormationUsageRecorder = {

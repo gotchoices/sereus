@@ -41,7 +41,7 @@ export function expectConstraintFailure(write: Promise<unknown>, ...constraints:
  *
  * Columns are given fully qualified and in the order the schema declares them, e.g.
  * `expectUniqueViolation(write, 'FormationUsage.UsageStampId')` or, for a composite key,
- * `expectUniqueViolation(write, 'FormationUsage.Token', 'FormationUsage.UseNumber')`.
+ * `expectUniqueViolation(write, 'MemberKey.MemberId', 'MemberKey.Key')`.
  *
  * NOTE: unlike a named CHECK, this message is not something the schema promises — it is the
  * wording the optimystic vtab renders (`optimystic-module.ts` → `uniqueConstraintMessage`,
