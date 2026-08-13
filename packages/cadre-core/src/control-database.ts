@@ -462,6 +462,17 @@ export class ControlDatabase {
     log('Hydrated control catalog (tables=%d, indexes=%d)', hydrated.tables, hydrated.indexes);
 
     // Load and execute the schema
+    // NOTE: this is where a slow launch is felt. A cold start issues 1541 raw-storage
+    // operations (8 tables + 1 index, over 21 distinct blocks — `getMetadata` alone is
+    // 720 of them); a warm restart 315. Duration is that count × per-operation storage
+    // latency: ~1ms/op on an idle machine is the familiar ~1.5s, but 50-90ms/op on a
+    // loaded disk or a phone's flash under launch contention makes the SAME start take
+    // 15-62s and look frozen. The amplification is inside `@optimystic/db-p2p` and
+    // cannot be fixed here — see tickets/blocked/optimystic-block-read-amplification-on-control-start.md
+    // for the full measurement and the ruled-out hypotheses (it is NOT the retry policy
+    // and NOT a cluster deadline). The counts are pinned by
+    // packages/cadre-core/test/control-start-storage-op-budget.spec.ts; if they grow,
+    // that spec fails before anyone has to debug a launch.
     t0 = performance.now();
     await this.loadSchema();
     timing('[controlDb] loadSchema: %dms', Math.round(performance.now() - t0));
