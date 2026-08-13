@@ -58,6 +58,17 @@ import type { CadreNodeConfig, SAppConfig, StrandInstance } from '../src/types.j
  * `control-database-offline-peers.spec.ts` (cadre of several, all unreachable),
  * `control-database-genesis.spec.ts` (the listening solo shape). Shared harness:
  * `control-db-node-helpers.ts`.
+ *
+ * **Ported, in part, to `scripts/lib/published-smoke-scenario.mjs`** — the body
+ * `yarn smoke:published` runs inside a scratch project installed from packed
+ * tarballs plus the public registry, which is the one place this repo exercises
+ * the substrate a customer installs rather than the linked sibling workspaces.
+ * Two of the six cases below are there: the vanished prior cohort and the cold
+ * boot in the embedder order. The other four stay here — the smoke is a release
+ * step, not a suite, and every case costs wall clock in a scratch install.
+ * Nothing enforces that the two agree; this comment and the one at the head of
+ * that file are the whole mechanism, so when the assertions in either ported
+ * case change, change them in both rather than inventing new ones.
  */
 
 /** Per-operation budget. Every operation here answers from local rows; this only catches hangs. */

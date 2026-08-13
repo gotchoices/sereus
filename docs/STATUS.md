@@ -869,14 +869,30 @@ the `chai` defect below is exactly a failure that only appears once you install 
   `@quereus/quereus` package as hoisted into the consuming project, then every *nested* copy a
   package resolves instead — a report that would have made the "root sees `@quereus/quereus` 0.16.4
   while `cadre-core` loads a nested 4.6.0" split obvious at a glance.
-- It then runs the cadre-of-one control-DB scenario against the installed packages:
-  `scripts/lib/published-smoke-scenario.mjs`, a port of
-  `packages/cadre-core/test/control-database-solo.spec.ts`'s assertions onto `node:assert/strict`.
-  The port keeps the labelled per-operation deadlines, so a regression reads as
-  `HANG: solo control op <label> timed out after <n>ms` rather than a silent stall. Import failure,
-  hang, and assertion failure each print a distinct block. Keep the two in step — when the spec's
-  assertions change, change the port rather than inventing new ones. Nothing enforces that; both
-  files carry a comment pointing at the other, and that is the whole mechanism.
+- It then runs the solo control-DB scenario against the installed packages:
+  `scripts/lib/published-smoke-scenario.mjs`, a port onto `node:assert/strict` of
+  `packages/cadre-core/test/control-database-solo.spec.ts`'s assertions (three cadre-of-one cases)
+  plus two of the six in `packages/cadre-core/test/control-database-solo-warm-start.spec.ts` —
+  the vanished prior cohort and the cold boot in the embedder order (see "Control DB liveness"
+  below). Those two are the ones carrying the shape an embedding app actually reported, so they are
+  the ones worth running against a registry install; the other four stay spec-only because the smoke
+  is a release step, not a suite, and every case costs wall clock in a scratch install. The port
+  keeps the labelled per-operation deadlines, so a regression reads as
+  `HANG: solo control op <label> timed out after <n>ms` rather than a silent stall, and `addStrand`
+  gets its own wider 60 s budget because it brings a second libp2p node up. Import failure, hang,
+  and assertion failure each print a distinct block. Keep the three in step — when a spec's
+  assertions change, change the port rather than inventing new ones. Nothing enforces that; all
+  three files carry a comment pointing at the others, and that is the whole mechanism.
+- The warm-start half needs two things the cadre-of-one half did not, both added to
+  `SCENARIO_DIRECT_DEPS` so the scratch project declares them: `@optimystic/db-p2p-storage-fs` (the
+  `FileRawStorage` that makes the restart cross real files rather than a shared heap object — and,
+  per the tripwire above, the one `@optimystic/*` with no root `resolutions` entry, so it is the one
+  package here that *always* comes from the registry), and `@libp2p/crypto` + `@libp2p/peer-id` for
+  the throwaway sibling identity whose signed `CadrePeer` row puts the device in a cadre it is the
+  last member of. The alternative — harvesting a peerId off a throwaway second node and recording it
+  with `authorizePeer` — needs no new dependencies but writes a row with `Sig: null`, which
+  `resolvePeerAddrs` cannot resolve, so the port would lose the spec's anti-vacuity check that the
+  sibling row is real. The dependencies were the cheaper trade.
 - It fails if npm satisfied one of our own packages from the registry instead of from the packed
   tarball (checked against `package-lock.json`). The versions look identical in the report either
   way, so without that check the smoke could silently exercise the *previous* release.
@@ -903,8 +919,14 @@ the `chai` defect below is exactly a failure that only appears once you install 
   `ERR_MODULE_NOT_FOUND: Cannot find package 'chai'` — see
   `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install` for the upstream mechanism.
   Do **not** install `chai` into the scratch project to get a green run; that hides the exact defect
-  the script exists to catch. With `chai` installed by hand for verification, all three cases pass
-  in 87–206 ms, so the scenario itself is sound and the only blocker is the upstream import chain.
+  the script exists to catch. The scenario body is therefore verified out-of-band instead: run
+  directly against the linked workspace (`node scripts/lib/published-smoke-scenario.mjs` from
+  anywhere inside this repo, which resolves `@serfab/*` through the workspace symlinks), all five
+  cases pass — the three cadre-of-one ones in 78–170 ms, the two warm-start ones in ~3.6–3.9 s each,
+  since those bring a strand's libp2p node up. So the scenario itself is sound and the only blocker
+  is the upstream import chain. What that out-of-band run does **not** prove is the registry
+  substrate, which is the whole point of the script — that stays unproven until the `chai` defect
+  clears.
 
 ### Control DB liveness: solo (cadre-of-one), warm-start-alone, and known-but-offline peers — supported and covered
 
@@ -1006,8 +1028,13 @@ where local rows exist.
   on this path is caught here. A tripwire `NOTE:` at `cadre-node.ts`'s `resolveCohortSeed` records
   that its `queryCadrePeers()` is unbounded on a path embedders await during startup — measured fine
   today, and what to decide if a control read ever *can* stall.
-- [ ] Not yet ported to `scripts/lib/published-smoke-scenario.mjs`, which still carries only the
-  three cadre-of-one cases — see `tickets/implement/port-solo-warm-start-to-published-smoke`.
+  Two of the six — the vanished prior cohort and the cold boot in the embedder order — are also
+  ported into `scripts/lib/published-smoke-scenario.mjs`, so `yarn smoke:published` runs them against
+  a registry install rather than the linked workspace (see "Installing what a customer installs"
+  above for what that port costs in scratch-project dependencies, and for how it is verified while
+  the `chai` defect keeps the smoke red). That matters because the remaining unexplained difference
+  between us and the reporting team is the substrate version they install, and this is the only
+  thing in the repo that exercises one.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of

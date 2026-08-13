@@ -57,10 +57,15 @@ const rootDir = join(scriptDir, '..');
 
 /**
  * Packages whose resolved version is worth printing on top of the `@serfab/*`,
- * `@optimystic/*` and `@quereus/*` set derived from the manifests. `libp2p` is the
- * transport core; `@libp2p/websockets` is what the scenario itself constructs.
+ * `@optimystic/*` and `@quereus/*` set derived from the manifests (which covers only
+ * those three scopes, and only `dependencies`). `libp2p` is the transport core; the
+ * three `@libp2p/*` entries are what the scenario itself constructs — websockets for
+ * the transport, and crypto + peer-id for the sibling identity the warm-start cases
+ * mint. A nested copy of either of the latter two is worth seeing: a peerId minted
+ * against one copy and recorded through a `@serfab/cadre-core` holding another is a
+ * mismatch that would otherwise surface only as a confusing assertion failure.
  */
-const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets'];
+const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets', '@libp2p/crypto', '@libp2p/peer-id'];
 
 /**
  * The scratch project imports these directly, so it must declare them itself.
