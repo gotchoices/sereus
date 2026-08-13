@@ -21,9 +21,6 @@
  *     intersected with currently-OPEN control connections) feeding the joiner's
  *     `addStrand` with strand-NETWORK addrs — never the control addrs that
  *     seeded the old bug this file regression-guards against,
- *   - `selectStrandMode` row-presence inference flipping the joiner to
- *     `networked` with no explicit mode (observable via the `StrandInstance.mode`
- *     field), while the founder's explicit `bootstrap` sticks,
  *   - libp2p `bootstrap()` discovery + connection-manager auto-dial forming the
  *     strand mesh from the RPC-resolved seed ALONE.
  *
@@ -34,8 +31,8 @@
  * once the first replicates (see push-wake-e2e's header). Founder A is the
  * party's SOLE owner + storage hub with a STABLE identity: the same Ed25519 key
  * is its node identity AND its owner signing key (push-wake scenario-3 style),
- * because A's own `CadrePeer` row is both the joiner's RPC target and the row
- * that flips the joiner `networked` — its peerId must be real and stable.
+ * because A's own `CadrePeer` row is the joiner's RPC target — its peerId must
+ * be real and stable.
  * Joiner B is a plain member with a stable key and `bootstrapNodes: [A]`, which
  * makes A unconditionally admitted by B's fail-closed control-stream gate once
  * B's authorized-member snapshot goes non-empty. Every gated write is a clean
@@ -44,11 +41,11 @@
  *
  * ── What is deliberately NOT asserted ──
  *
- * Data replication between A and B: a `bootstrap`-mode founder commits through
- * a purely LOCAL transactor, so rows written on A never travel the strand mesh
- * this test forms. The claim here is connection + seed content. A data-
- * convergence scenario needs both members `networked` (a third node, or an
- * explicit mode on the founder) — a separate ticket, not this one.
+ * Data replication between A and B. Both run the network transactor, so rows
+ * MAY now travel the mesh this test forms — but the claim here is connection +
+ * seed content, and gating on replication would hang this scenario on the
+ * cluster's replication timing rather than on the seed path it pins. A
+ * data-convergence scenario is a separate ticket, not this one.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -134,18 +131,16 @@ describe('E2E strand-addr seed convergence', () => {
 			expect(await B.isAuthorizedMember(aPeerId)).toBe(true);
 
 			// ── Subject: founder side ────────────────────────────────────────────
-			// A stands the strand up solo in explicit `bootstrap` mode (first node of a
-			// brand-new strand — no cluster to transact against yet). The Phase-1
-			// observable `mode` field must report it, and the instance must have a live
-			// strand-network node with dialable addrs for the RPC to answer with.
+			// A stands the strand up solo (first node of a brand-new strand — the
+			// network transactor self-coordinates at a cohort of one). The instance
+			// must have a live strand-network node with dialable addrs for the RPC
+			// to answer with.
 			const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 			const aStrand = await A.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
 				sAppConfig: sApp,
-				mode: 'bootstrap',
 			});
 			expect(aStrand.status).toBe('active');
-			expect(aStrand.mode).toBe('bootstrap');
 			const aStrandNode = aStrand.libp2pNode!;
 			expect(aStrandNode).toBeDefined();
 			const aStrandAddrs = aStrandNode.getMultiaddrs().map((ma) => ma.toString());
@@ -180,16 +175,14 @@ describe('E2E strand-addr seed convergence', () => {
 			).toBe(true);
 
 			// ── Subject: requester half ─────────────────────────────────────────
-			// B stands up the SAME strand with NO explicit mode: `selectStrandMode`
-			// must infer `networked` from A's CadrePeer row (observable via the
-			// Phase-1 field), and the internal seed pass must feed B's strand node
-			// A's strand addrs — the same union the direct RPC above returned.
+			// B stands up the SAME strand: the internal seed pass must feed B's
+			// strand node A's strand addrs — the same union the direct RPC above
+			// returned.
 			const bStrand = await B.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
 				sAppConfig: sApp,
 			});
 			expect(bStrand.status).toBe('active');
-			expect(bStrand.mode).toBe('networked');
 			const bStrandNode = bStrand.libp2pNode!;
 			expect(bStrandNode).toBeDefined();
 			const bStrandPeerId = bStrandNode.peerId.toString();
@@ -223,8 +216,8 @@ describe('E2E strand-addr seed convergence', () => {
 				expect(remote).toBe(aStrandPeerId);
 			}
 
-			// Deliberately NOT asserted: data replication A↔B — the bootstrap-mode
-			// founder commits through a purely local transactor (see file header).
+			// Deliberately NOT asserted: data replication A↔B — the subject is the
+			// seed path, not replication timing (see file header).
 		} finally {
 			await B?.stop();
 			await A?.stop();

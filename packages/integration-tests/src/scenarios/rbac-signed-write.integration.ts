@@ -168,19 +168,18 @@ describe('sApp signed-write RBAC (real strand)', () => {
 			const bobRow = await bobDb.get(`select Value from App.Items where Id = 'item-1'`);
 
 			// Cross-node replication is a BEST-EFFORT observation here, NOT a gating
-			// assertion, and it is EXPECTED to be false. This test passes no `mode` to
-			// `addStrand`, so cadre-core infers one from the cohort
-			// (`selectStrandMode(explicitMode, seed.hasOtherPeers)` in `cadre-node.ts`):
-			// with no CadrePeer rows naming another peer, that resolves to `bootstrap`,
-			// whose transactor is purely local, so writes stay node-local no matter how many
-			// strand-level libp2p connections exist. The mode is logged below rather than
-			// asserted — it is `StrandInstance.mode`, read-only reporting, and pinning it
-			// here would make this RBAC test fail on an unrelated cohort-seeding change.
+			// assertion. Both strands run the network transactor and their libp2p
+			// nodes are dialed together above, so replication may now be observed
+			// either way — but a two-machine strand's read-repair corroboration floor
+			// is a known separate exposure
+			// (`backlog/debt-read-repair-single-voter-corroboration`), and gating an
+			// RBAC test on replication timing would buy flakiness for no new coverage.
 			//
-			// A strand that DOES replicate is covered elsewhere:
-			// `strand-membership-closed-strand-e2e.integration.ts` forces `mode:'networked'`
-			// on both nodes, gates every cross-node read, and its fourth test proves blocks
-			// land PHYSICALLY in the second node's own raw store. Nothing is owed here.
+			// A strand that DOES replicate, with gated reads, is covered elsewhere:
+			// `strand-membership-closed-strand-e2e.integration.ts` runs both nodes on
+			// the shared transactor, gates every cross-node read, and its fourth test
+			// proves blocks land PHYSICALLY in the second node's own raw store.
+			// Nothing is owed here.
 			//
 			// The RBAC accept/reject assertions in this test are local to the writer and are
 			// the actual deliverable; they do not depend on replication.
@@ -196,13 +195,13 @@ describe('sApp signed-write RBAC (real strand)', () => {
 					);
 					replicated = true;
 				} catch {
-					replicated = false; // expected in bootstrap mode; observed, not asserted
+					replicated = false; // observed, not asserted — see the note above
 				}
 			}
 			console.log(
-				`[rbac] App.Items schema applied on Bob; strand mode alice=${aliceStrand.mode} bob=${bobStrand.mode}; ` +
+				`[rbac] App.Items schema applied on Bob; ` +
 				`cross-node replication observed=${replicated} ` +
-				`(false is expected under an inferred bootstrap mode — see the note above)`,
+				`(either value is acceptable — see the note above)`,
 			);
 
 			// ── 2. Authorized update accepted (fresh signature) ──────────────

@@ -133,10 +133,10 @@ async function setupStrandBetweenParties(
 		Type: opts.type ?? 'o',
 	});
 
-	const strandA = await partyA.addStrand({ strandRow: strandRow(opts.memberPrivateKeyA ?? null), sAppConfig, mode: 'networked' });
+	const strandA = await partyA.addStrand({ strandRow: strandRow(opts.memberPrivateKeyA ?? null), sAppConfig });
 	expect(strandA.status).toBe('active');
 
-	const strandB = await partyB.addStrand({ strandRow: strandRow(opts.memberPrivateKeyB ?? null), sAppConfig, mode: 'networked' });
+	const strandB = await partyB.addStrand({ strandRow: strandRow(opts.memberPrivateKeyB ?? null), sAppConfig });
 	expect(strandB.status).toBe('active');
 
 	// Manually connect strand-level libp2p nodes (strand peer discovery not yet wired)

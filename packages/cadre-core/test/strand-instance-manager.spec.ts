@@ -102,20 +102,15 @@ describe('StrandInstanceManager', () => {
       // covered by strand-cohort.spec.ts (asserting the forwarded array would
       // require mocking the @optimystic/db-p2p import — see review handoff).
       //
-      // Bring-up runs in `bootstrap` (local-transactor) mode: every strand now
-      // applies the `Strand` membership schema at bring-up (in addition to the
-      // sApp schema), and in `networked` mode creating those tables needs cohort
-      // consensus — which this BOGUS, unreachable seed can never provide (the
-      // seed is a phantom 2nd cluster member, so a seed-owned collection's create
-      // blocks on an approval that never comes). `bootstrap` keeps the create
-      // local while still forwarding the seed to createLibp2pNode, which is what
-      // this smoke test actually verifies.
+      // The seed is BOGUS and unreachable, so the node never connects to it and
+      // coordinates alone on the network transactor — the same stale-cohort shape
+      // control-database-solo-warm-start.spec.ts proves does not hang. Reaching
+      // `active` despite the dead seed is part of what this smoke verifies.
       const manager = new StrandInstanceManager();
       // A real, parseable peer id — the libp2p bootstrap module validates it.
       const seedPeerId = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
       const config = createStartConfig('seeded-strand', {
-        bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${seedPeerId}`],
-        mode: 'bootstrap'
+        bootstrapNodes: [`/ip4/127.0.0.1/tcp/4001/p2p/${seedPeerId}`]
       });
 
       const instance = await manager.startStrand(config);
@@ -239,8 +234,7 @@ describe('StrandInstanceManager', () => {
       // rejections above fail before registration. Both must leave no residue.
       const config = createStartConfig('doomed-strand', {
         sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
-        requireSignedSchemas: false,
-        mode: 'bootstrap'
+        requireSignedSchemas: false
       });
 
       await expect(manager.startStrand(config)).rejects.toThrow();
@@ -256,13 +250,12 @@ describe('StrandInstanceManager', () => {
 
       await expect(manager.startStrand(createStartConfig(strandId, {
         sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
-        requireSignedSchemas: false,
-        mode: 'bootstrap'
+        requireSignedSchemas: false
       }))).rejects.toThrow();
 
       // Same id, now with a valid schema: the retry must actually build a runtime
       // rather than hand back the dead record from the first attempt.
-      const instance = await manager.startStrand(createStartConfig(strandId, { mode: 'bootstrap' }));
+      const instance = await manager.startStrand(createStartConfig(strandId));
 
       expect(instance.status).toBe('active');
       expect(instance.error).toBeUndefined();
@@ -278,8 +271,7 @@ describe('StrandInstanceManager', () => {
       // behind would let resumeStrand rebuild a strand nothing tracks.
       await expect(manager.startStrand(createStartConfig('orphan-config-strand', {
         sAppConfig: { id: authorPublicKey, version: testVersion, schema: BAD_SCHEMA },
-        requireSignedSchemas: false,
-        mode: 'bootstrap'
+        requireSignedSchemas: false
       }))).rejects.toThrow();
 
       await expect(manager.resumeStrand('orphan-config-strand')).rejects.toThrow(/not tracked/);

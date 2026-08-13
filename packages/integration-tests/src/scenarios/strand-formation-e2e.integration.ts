@@ -488,20 +488,17 @@ describe('E2E Strand Formation', () => {
 
 				// These tests manually wire strand-level libp2p connections below
 				// (control-network cohort discovery is intentionally not exercised here —
-				// see strand-formation-e2e header), so request `networked` mode explicitly.
-				// Without it, addStrand infers `bootstrap` from the empty CadrePeer cohort
-				// and each node keeps an independent local transactor that never replicates.
+				// see strand-formation-e2e header). Every strand runs the network
+				// transactor, so the manual dial is all replication needs.
 				const aliceStrand = await aliceNode.addStrand({
 					strandRow,
 					sAppConfig: SAPP_CONFIG_A,
-					mode: 'networked',
 				});
 				expect(aliceStrand.status).toBe('active');
 
 				const bobStrand = await bobNode.addStrand({
 					strandRow,
 					sAppConfig: SAPP_CONFIG_A,
-					mode: 'networked',
 				});
 				expect(bobStrand.status).toBe('active');
 
@@ -594,12 +591,12 @@ describe('E2E Strand Formation', () => {
 				const strandRowA: StrandRow = { Id: resultA.strandId, MemberPrivateKey: null, Type: 'o' };
 				const strandRowB: StrandRow = { Id: resultB.strandId, MemberPrivateKey: null, Type: 'o' };
 
-				// Manually-wired strands (see note in the first Phase 2 test): request
-				// `networked` explicitly so writes replicate over the dialed connections.
-				const aliceStrandA = await aliceNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A, mode: 'networked' });
-				const aliceStrandB = await aliceNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B, mode: 'networked' });
-				const bobStrandA = await bobNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A, mode: 'networked' });
-				const bobStrandB = await bobNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B, mode: 'networked' });
+				// Manually-wired strands (see note in the first Phase 2 test): writes
+				// replicate over the dialed connections.
+				const aliceStrandA = await aliceNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A });
+				const aliceStrandB = await aliceNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B });
+				const bobStrandA = await bobNode.addStrand({ strandRow: strandRowA, sAppConfig: SAPP_CONFIG_A });
+				const bobStrandB = await bobNode.addStrand({ strandRow: strandRowB, sAppConfig: SAPP_CONFIG_B });
 
 				expect(aliceStrandA.status).toBe('active');
 				expect(aliceStrandB.status).toBe('active');
@@ -716,11 +713,11 @@ describe('E2E Strand Formation', () => {
 				// (in real use, the responder would return the same strandId for the same invitation)
 				const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
 
-				// Manually-wired strands (see note in the first Phase 2 test): request
-				// `networked` explicitly so writes replicate over the dialed connections.
-				const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, mode: 'networked' });
-				const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, mode: 'networked' });
-				const carolStrand = await carolNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A, mode: 'networked' });
+				// Manually-wired strands (see note in the first Phase 2 test): writes
+				// replicate over the dialed connections.
+				const aliceStrand = await aliceNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
+				const bobStrand = await bobNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
+				const carolStrand = await carolNode.addStrand({ strandRow, sAppConfig: SAPP_CONFIG_A });
 
 				expect(aliceStrand.status).toBe('active');
 				expect(bobStrand.status).toBe('active');
@@ -836,7 +833,7 @@ describe('E2E Strand Formation', () => {
 					const strandRow: StrandRow = { Id: strandId, MemberPrivateKey: null, Type: 'o' };
 
 					await expect(
-						node.addStrand({ strandRow, sAppConfig: config, mode: 'networked' }),
+						node.addStrand({ strandRow, sAppConfig: config }),
 					).rejects.toThrow(reason);
 
 					// The strand instance must never have been brought up.

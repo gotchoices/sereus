@@ -151,17 +151,16 @@ describe('CadreNode', () => {
       await node.stop();
     }, 60000);
 
-    it('should cold-start a strand without an explicit mode (empty cohort → bootstrap)', async () => {
-      // Solo cold-start parity: a fresh node has no CadrePeer rows, so addStrand
-      // with no `mode` should infer `bootstrap` and still produce a working
-      // instance — no explicit mode required for a single-device cadre.
+    it('should cold-start a strand with an empty cohort', async () => {
+      // Solo cold-start: a fresh node has no CadrePeer rows, so addStrand
+      // resolves an empty seed and still produces a working instance — a
+      // single-device cadre self-serves on the network transactor.
       const config = createConfig();
       const node = new CadreNode(config);
 
       await node.start();
 
       const strandConfig = createStrandConfig('cold-start-strand');
-      expect(strandConfig.mode).toBeUndefined();
 
       const instance = await node.addStrand(strandConfig);
 
@@ -302,7 +301,6 @@ describe('CadreNode', () => {
         connectedPeers: 3,
         lastActivity: new Date(0),
         latencyHint: 'interactive',
-        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -381,8 +379,7 @@ describe('CadreNode', () => {
       expect(resumeCalls).toHaveLength(1);
       expect(resumeCalls[0]!.id).toBe('hib-strand');
       expect(resumeCalls[0]!.overrides).toEqual({
-        bootstrapNodes: [otherStrandAddr],
-        mode: 'networked'
+        bootstrapNodes: [otherStrandAddr]
       });
       expect(instance.status).toBe('active');
       expect(instance.libp2pNode).toBeDefined();
@@ -398,7 +395,6 @@ describe('CadreNode', () => {
         connectedPeers: 1,
         lastActivity: new Date(0),
         latencyHint: 'interactive',
-        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -438,8 +434,7 @@ describe('CadreNode', () => {
         sAppInfo: { id: 'app', version: '1.0.0', schema: '' },
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive',
-        mode: 'networked'
+        latencyHint: 'interactive'
       };
 
       const resumeCalls: Array<{ id: string; overrides: unknown }> = [];
@@ -465,7 +460,7 @@ describe('CadreNode', () => {
         peerId: { toString: () => 'self-peer' },
         getConnections: () => []
       };
-      // Solo cohort (only self) → bootstrap mode, empty seed.
+      // Solo cohort (only self) → empty seed.
       (node as unknown as { controlDatabase: unknown }).controlDatabase = {
         queryCadrePeers: async () => [
           { peerId: 'self-peer', multiaddr: '/ip4/1.1.1.1/tcp/4001/p2p/self-peer' }
@@ -480,7 +475,7 @@ describe('CadreNode', () => {
 
       // Resumed once (with a freshly re-resolved seed), then quiesced again.
       expect(resumeCalls).toHaveLength(1);
-      expect(resumeCalls[0]!.overrides).toEqual({ bootstrapNodes: [], mode: 'bootstrap' });
+      expect(resumeCalls[0]!.overrides).toEqual({ bootstrapNodes: [] });
       expect(quiesceCalls).toEqual(['checkin-strand']);
       expect(instance.status).toBe('hibernating');
       expect(instance.libp2pNode).toBeUndefined();
@@ -494,8 +489,7 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive',
-        mode: 'networked'
+        latencyHint: 'interactive'
       };
 
       const quiesceCalls: string[] = [];
@@ -552,8 +546,7 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(1000),
-        latencyHint: 'interactive',
-        mode: 'networked'
+        latencyHint: 'interactive'
       };
 
       const quiesceCalls: string[] = [];
@@ -599,7 +592,6 @@ describe('CadreNode', () => {
         connectedPeers: 2,
         lastActivity: new Date(0),
         latencyHint,
-        mode: 'networked',
         libp2pNode: {} as never,
         database: {} as never
       };
@@ -631,8 +623,8 @@ describe('CadreNode', () => {
     function injectControl(node: CadreNode, peers: Array<{ peerId: string; multiaddr: string | null }> = []): void {
       (node as unknown as { _running: boolean })._running = true;
       // No connected siblings here → resolveCohortSeed RPCs nobody and yields an
-      // empty strand seed; mode still follows membership. These lifecycle tests
-      // assert the resume/window/re-hibernate machinery, not seed contents (which
+      // empty strand seed. These lifecycle tests assert the
+      // resume/window/re-hibernate machinery, not seed contents (which
       // cadre-node-strand-seed.spec.ts covers).
       (node as unknown as { controlNode: unknown }).controlNode = {
         peerId: { toString: () => 'self-peer' },
@@ -683,7 +675,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'hib', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(0), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(0), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -752,7 +744,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-idle', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(1000), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -772,7 +764,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-active', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(1000), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -829,7 +821,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-fail', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(1000), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       const manager = fakeManager(new Map([['sw-fail', instance]]), calls);
@@ -852,7 +844,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-coalesce', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(1000), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -877,7 +869,7 @@ describe('CadreNode', () => {
       const node = new CadreNode(createConfig({ hibernation: { enabled: true } }));
       const instance: StrandInstance = {
         strandId: 'sw-teardown', status: 'hibernating', connectedPeers: 0,
-        lastActivity: new Date(1000), latencyHint: 'interactive', mode: 'networked'
+        lastActivity: new Date(1000), latencyHint: 'interactive'
       };
       const calls = { quiesce: [] as string[], resume: [] as Array<{ id: string; overrides: unknown }> };
       (node as unknown as { strandManager: unknown }).strandManager =
@@ -931,8 +923,7 @@ describe('CadreNode', () => {
         status: 'hibernating',
         connectedPeers: 0,
         lastActivity: new Date(0),
-        latencyHint: 'interactive',
-        mode: 'networked'
+        latencyHint: 'interactive'
       };
       const wakeCalls: string[] = [];
       const receiver = new StrandWakeService({

@@ -14,7 +14,6 @@ import type {
   SAppConfig,
   SAppInfo,
   RawStorageProvider,
-  StrandMode,
   Libp2pNodeWithRepo
 } from './types.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './types.js';
@@ -37,12 +36,6 @@ export interface StartStrandConfig {
   privateKey?: PrivateKey;
   /** Cohort-derived discovery seed (multiaddr strings). Defaults to [] when omitted. */
   bootstrapNodes?: string[];
-  /**
-   * Lifecycle mode for this strand; selects the default transactor used by the
-   * StrandDatabase. When omitted, the StrandDatabase falls back to `'networked'`;
-   * callers (CadreNode) infer it from cohort membership before reaching here.
-   */
-  mode?: StrandMode;
   /**
    * Require a valid author signature on the sApp schema before bring-up.
    * Defaults to true (fail closed) when omitted; set false only for dev/test
@@ -70,23 +63,21 @@ export interface StartStrandConfig {
    * Tuning for the strand peer-join block catch-up ({@link StrandBackfill}),
    * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
    * libp2p node connects to a peer this runtime has not yet caught up, every
-   * block in the strand's own raw store is pushed to it. Runs only on
-   * `networked` strands with per-strand storage; `{ enabled: false }` restores
-   * the pre-existing no-backfill behaviour.
+   * block in the strand's own raw store is pushed to it. Runs only on strands
+   * with per-strand storage; `{ enabled: false }` restores the pre-existing
+   * no-backfill behaviour.
    */
   backfill?: StrandBackfillConfig;
 }
 
 /**
- * Volatile inputs re-resolved when resuming a quiesced strand. These may have
- * changed since the strand first launched — the cohort discovery seed grows as
- * peers are learned, and cohort membership can push a strand `bootstrap → networked`.
+ * Volatile inputs re-resolved when resuming a quiesced strand. The cohort
+ * discovery seed is the only one — it grows as peers are learned since the
+ * strand first launched.
  */
 export interface ResumeStrandOverrides {
   /** Freshly-resolved cohort discovery seed (multiaddr strings). */
   bootstrapNodes?: string[];
-  /** Freshly-resolved lifecycle mode. */
-  mode?: StrandMode;
 }
 
 /**
@@ -241,10 +232,7 @@ export class StrandInstanceManager {
       memberPrivateKey: strandRow.MemberPrivateKey ?? undefined,
       connectedPeers: 0,
       lastActivity: new Date(),
-      latencyHint,
-      // Seed only — buildStrandRuntime overwrites this with the same resolution,
-      // so an instance that errors mid-build still reads sensibly.
-      mode: config.mode ?? 'networked'
+      latencyHint
     };
 
     this.instances.set(strandId, instance);
@@ -273,14 +261,13 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, mode, storage, network, profile,
-   * privateKey, sApp config) from `config`, so the caller controls the
-   * cohort-derived values.
+   * volatile inputs (bootstrapNodes, storage, network, profile, privateKey,
+   * sApp config) from `config`, so the caller controls the cohort-derived
+   * values.
    */
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
     const { sAppConfig } = config;
-    const mode = config.mode ?? 'networked';
 
     // Resolve storage for this strand. If a factory function is provided, it is
     // called with the strandId to create strand-specific storage (e.g.,
@@ -337,15 +324,8 @@ export class StrandInstanceManager {
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));
 
       instance.libp2pNode = node;
-      // Assigned on every runtime (re)build — resume re-enters here with
-      // resumeConfig, so a bootstrap → networked shift refreshes the field.
-      instance.mode = mode;
 
-      // Create and initialize the StrandDatabase. In bootstrap mode the same
-      // strandStorage instance also backs the optimystic local transactor so
-      // DML lands on the host's persistent storage (e.g. LevelDB on RN). Sharing
-      // the instance — not creating a second one over the same id+prefix —
-      // avoids cache divergence between the libp2p and database paths.
+      // Create and initialize the StrandDatabase.
       //
       // Attach before initialize so a failed init is cleaned up by
       // releaseRuntime below (close() is safe on a partially-initialized db).
@@ -355,8 +335,6 @@ export class StrandInstanceManager {
         sAppConfig,
         libp2pNode: node,
         coordinatedRepo: node.coordinatedRepo,
-        mode,
-        rawStorage: strandStorage,
         // Founder bootstrap inputs: the strand's type drives which membership rows
         // are written, and the closed-strand MemberPrivateKey derives the founding
         // Member/Manager key. Both come off the control-network strand row.
@@ -370,9 +348,14 @@ export class StrandInstanceManager {
 
       // Peer-join block catch-up: push this strand's own blocks to each newly
       // connected peer, so a machine that joined after blocks were committed
-      // still ends up physically holding them (a bootstrap strand has no mesh
-      // to catch up, and without per-strand storage there is nothing to copy).
-      if (mode === 'networked' && strandStorage && config.backfill?.enabled !== false) {
+      // still ends up physically holding them (without per-strand storage there
+      // is nothing to copy). Armed for EVERY stored strand: `StrandBackfill`
+      // only does work when the strand's libp2p node reports a peer connection,
+      // so on a device that is genuinely alone it is inert, and arming it at
+      // launch is what closes the "founded alone, never replicates" hole — a
+      // peer that joins later gets the founder's blocks without any relaunch.
+      // Cost: one StrandBackfill object + one connection listener per strand.
+      if (strandStorage && config.backfill?.enabled !== false) {
         if (node.keyNetwork) {
           const backfill = new StrandBackfill({
             strandId,
@@ -459,9 +442,9 @@ export class StrandInstanceManager {
    * Resume a previously-quiesced strand: rebuild its libp2p node + StrandDatabase
    * from the retained launch config and re-attach them, transitioning it back to
    * `active`. `overrides` re-applies volatile inputs that may have changed since
-   * launch (cohort `bootstrapNodes`, lifecycle `mode`) and updates the retained
-   * config so a later resume reuses the latest values. Returns the live instance
-   * unchanged if it is already running.
+   * launch (the cohort `bootstrapNodes` seed) and updates the retained config so
+   * a later resume reuses the latest values. Returns the live instance unchanged
+   * if it is already running.
    */
   async resumeStrand(strandId: string, overrides?: ResumeStrandOverrides): Promise<StrandInstance> {
     if (this.stopping) {
@@ -486,8 +469,7 @@ export class StrandInstanceManager {
     // Re-apply volatile inputs and persist them so a subsequent resume reuses them.
     const resumeConfig: StartStrandConfig = {
       ...launchConfig,
-      bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes,
-      mode: overrides?.mode ?? launchConfig.mode
+      bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes
     };
     this.launchConfigs.set(strandId, resumeConfig);
 

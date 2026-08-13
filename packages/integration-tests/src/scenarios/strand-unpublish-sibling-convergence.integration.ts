@@ -22,10 +22,10 @@
  * - B is NOT its own owner (`bootPair`), so every row it observes arrived over
  *   the wire — Phase 1's `strand:discovered` is the anti-vacuity anchor proving
  *   a genuine network read before the removal is ever issued.
- * - B joins with an explicit `mode: 'bootstrap'`: left to inference,
- *   `selectStrandMode` would pick `'networked'` (A is a `CadrePeer` sibling) and
- *   B would resolve an empty strand-network seed since A runs no instance. The
- *   subject here is the control-plane watcher, not strand-data replication.
+ * - B's strand launches with an empty strand-network seed (A is a `CadrePeer`
+ *   sibling but runs no strand instance, so the strand-addr RPC yields nothing);
+ *   the network transactor self-coordinates at a cohort of one. The subject here
+ *   is the control-plane watcher, not strand-data replication.
  * - Gate on events, never a sleep (except the quiet window, which is derived
  *   from the configured poll cadence rather than hardcoded).
  *
@@ -139,7 +139,6 @@ describe('Two-node strand-unpublish sibling convergence', () => {
 			const instance = await B.addStrand({
 				strandRow,
 				sAppConfig: createSignedSAppConfig(SIMPLE_SCHEMA, '1.0.0'),
-				mode: 'bootstrap',
 			});
 			expect(instance.status).toBe('active');
 			expect(B.getStrand(strandId)).toBeDefined();

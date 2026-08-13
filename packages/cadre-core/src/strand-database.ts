@@ -4,8 +4,7 @@ import { connectToStrand } from '@serfab/quereus-plugin-sereus';
 import type { SereusPluginResult } from '@serfab/quereus-plugin-sereus';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { IRawStorage } from '@optimystic/db-p2p';
-import type { SAppConfig, StrandMode } from './types.js';
+import type { SAppConfig } from './types.js';
 import { bootstrapFounderMembership } from './strand-membership-writer.js';
 import { strandMemberKeyPair } from './strand-member-key.js';
 
@@ -21,20 +20,6 @@ export interface StrandDatabaseConfig {
   libp2pNode: Libp2p;
   /** Coordinated repo from the libp2p node */
   coordinatedRepo: IRepo;
-  /**
-   * Lifecycle mode. `'bootstrap'` selects a purely local transactor so the strand
-   * can initialize (e.g. apply schema DDL) without network round trips on a solo
-   * node. `'networked'` (the default) uses the network transactor.
-   */
-  mode?: StrandMode;
-  /**
-   * Raw storage backing the strand. When mode is `'bootstrap'` this is also used
-   * by the optimystic plugin's local transactor so DML lands on the host's
-   * persistent storage instead of in-memory. Must be the same instance the
-   * libp2p node was created with — sharing the instance avoids cache divergence
-   * across the two consumers.
-   */
-  rawStorage?: IRawStorage;
   /**
    * Strand type (`'o'` open / `'c'` closed) from the control-network strand row.
    * Drives the founder bootstrap: open strands get a `Header` only; closed strands
@@ -91,9 +76,8 @@ export class StrandDatabase {
     }
 
     const sid = this.config.strandId;
-    const mode: StrandMode = this.config.mode ?? 'networked';
-    log('Initializing StrandDatabase for strand: %s (sApp: %s v%s, mode=%s)',
-      sid, this.config.sAppConfig.id, this.config.sAppConfig.version, mode);
+    log('Initializing StrandDatabase for strand: %s (sApp: %s v%s)',
+      sid, this.config.sAppConfig.id, this.config.sAppConfig.version);
 
     this.db = new Database();
 
@@ -102,15 +86,14 @@ export class StrandDatabase {
     //    `StrandInstanceManager` owns the node lifecycle. Its `shutdown` does
     //    still stop the injected node via the collection factory, so the
     //    manager's later `node.stop()` is an idempotent second stop;
-    //  - `storage` (the strand's raw storage, same instance the node uses) is
-    //    handed to the plugin's local transactor in bootstrap mode so DML lands
-    //    on the host backend rather than in-memory.
+    //  - no `storage` is passed: the plugin consumes it only to build a local
+    //    transactor's raw-storage factory or to create a node it was not given,
+    //    and cadre-core always injects the node and runs the network transactor.
+    //    (The plugin keeps its `storage` option for the browser entry point.)
     const t0 = performance.now();
     const result = await connectToStrand(this.db, {
       strandId: sid,
       schema: this.config.sAppConfig.schema,
-      mode,
-      storage: this.config.rawStorage,
       libp2pNode: this.config.libp2pNode,
       coordinatedRepo: this.config.coordinatedRepo,
       enableCache: true,

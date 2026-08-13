@@ -103,7 +103,7 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(mocks.close).toHaveBeenCalledTimes(1);
   });
 
-  it('resume rebuilds node + db and returns to active, applying override seed/mode', async () => {
+  it('resume rebuilds node + db and returns to active, applying the override seed', async () => {
     const manager = new StrandInstanceManager();
     const instance = await manager.startStrand(createStartConfig('r-strand'));
 
@@ -111,7 +111,7 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(instance.libp2pNode).toBeUndefined();
 
     const seed = ['/ip4/9.9.9.9/tcp/4001/p2p/QmPeer'];
-    const resumed = await manager.resumeStrand('r-strand', { bootstrapNodes: seed, mode: 'networked' });
+    const resumed = await manager.resumeStrand('r-strand', { bootstrapNodes: seed });
 
     expect(resumed).toBe(instance);
     expect(resumed.status).toBe('active');
@@ -154,7 +154,7 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     // instance falsely "already live".
     mocks.initialize.mockRejectedValueOnce(new Error('schema apply boom'));
     await expect(
-      manager.resumeStrand('flaky-strand', { bootstrapNodes: [], mode: 'networked' })
+      manager.resumeStrand('flaky-strand', { bootstrapNodes: [] })
     ).rejects.toThrow(/schema apply boom/);
 
     // Rolled back to a fully-released state: neither handle attached, status error.
@@ -166,7 +166,7 @@ describe('StrandInstanceManager quiesce/resume (hibernation)', () => {
     expect(mocks.stop).toHaveBeenCalledTimes(2);
 
     // A subsequent resume actually rebuilds (not a false "already live" return).
-    const resumed = await manager.resumeStrand('flaky-strand', { bootstrapNodes: [], mode: 'networked' });
+    const resumed = await manager.resumeStrand('flaky-strand', { bootstrapNodes: [] });
     expect(resumed.status).toBe('active');
     expect(resumed.libp2pNode).toBeDefined();
     expect(resumed.database).toBeDefined();
@@ -212,18 +212,17 @@ describe('StrandInstanceManager resume transport identity', () => {
     expect(lastCreateLibp2pNodeArgs().privateKey?.raw).toEqual(transportKey.raw);
   });
 
-  it('resume overrides (bootstrap addrs, mode) replace only those fields, leaving the key untouched', async () => {
+  it('resume overrides (bootstrap addrs) replace only that field, leaving the key untouched', async () => {
     const transportKey = await generateKeyPair('Ed25519');
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('key-strand-override', {
       privateKey: transportKey,
-      bootstrapNodes: ['/ip4/1.1.1.1/tcp/4001/p2p/QmOld'],
-      mode: 'bootstrap'
+      bootstrapNodes: ['/ip4/1.1.1.1/tcp/4001/p2p/QmOld']
     }));
 
     await manager.quiesceStrand('key-strand-override');
     const seed = ['/ip4/9.9.9.9/tcp/4001/p2p/QmNew'];
-    await manager.resumeStrand('key-strand-override', { bootstrapNodes: seed, mode: 'networked' });
+    await manager.resumeStrand('key-strand-override', { bootstrapNodes: seed });
 
     const args = lastCreateLibp2pNodeArgs();
     expect(args.privateKey?.raw).toEqual(transportKey.raw);
@@ -240,7 +239,7 @@ describe('StrandInstanceManager resume transport identity', () => {
 
     for (const seed of [['/ip4/2.2.2.2/tcp/4001/p2p/QmA'], ['/ip4/3.3.3.3/tcp/4001/p2p/QmB']]) {
       await manager.quiesceStrand('key-strand-cycles');
-      await manager.resumeStrand('key-strand-cycles', { bootstrapNodes: seed, mode: 'networked' });
+      await manager.resumeStrand('key-strand-cycles', { bootstrapNodes: seed });
       const args = lastCreateLibp2pNodeArgs();
       expect(args.bootstrapNodes).toEqual(seed);
       expect(args.privateKey?.raw).toEqual(transportKey.raw);

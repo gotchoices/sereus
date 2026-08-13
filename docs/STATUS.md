@@ -1008,23 +1008,25 @@ where local rows exist.
   the one the solo spec already covers. Three things here that no other control-DB suite does:
   (1) **real files** — a `FileRawStorage` under a temp directory, rebuilt per run, so only bytes on
   disk cross the restart boundary (every other "restart" in this repo shares one live
-  `MemoryRawStorage` object across it); (2) a **non-empty member list with zero reachable peers**,
-  which flips `selectStrandMode` to `networked` while `resolveCohortSeed` can reach nobody, so the
-  strand launches into a cluster transactor with an empty bootstrap list; (3) the **embedding app's
+  `MemoryRawStorage` object across it); (2) a **non-empty member list with zero reachable peers** —
+  `resolveCohortSeed` walks a real membership list yet reaches nobody, so the strand launches on the
+  network transactor with an empty bootstrap list; (3) the **embedding app's
   boot order** — `start()` straight to `addStrand()`, so `CadreNode.resolveCohortSeed`'s unbounded
   `queryCadrePeers()` is the control DB's first awaited operation of the process, issued before any
   owner key exists and before seed bootstrap is wired. Six cases: vanished prior cohort (one and
   three siblings), a **revoked** prior cohort (rows still on disk, hidden by the `Revocation` join —
-  membership collapses to self and the mode correctly drops back to `bootstrap`), a **closed** strand
+  membership collapses to self), a **closed** strand
   founded as the last member standing (founder seated locally against an empty seed), a **cold** boot
   in the embedder order with no genesis at all (and genesis still accepted afterwards), and the
-  re-issue queue's restart durability.
+  re-issue queue's restart durability. Every strand runs the same network transactor (the old
+  per-strand `bootstrap`/`networked` mode is retired), so what varies across the cases is the state
+  the seed resolution walks, not the transactor the strand lands on.
   **Finding: nothing hangs.** All six pass in ~32 s total, every operation inside its labelled
   deadline. That narrows the remaining difference to the embedding app's own side — three defects
   were reported to that team separately (polyfills installed after the module graph needing them, a
   memoized start promise that never clears on success, control errors swallowed by a bare `catch {}`).
   The suite stays as coverage, not as a regression test for a fixed defect: a future change to
-  `resolveCohortSeed`, to strand-mode selection, or to control-DB hydration that reintroduces a stall
+  `resolveCohortSeed` or to control-DB hydration that reintroduces a stall
   on this path is caught here. A tripwire `NOTE:` at `cadre-node.ts`'s `resolveCohortSeed` records
   that its `queryCadrePeers()` is unbounded on a path embedders await during startup — measured fine
   today, and what to decide if a control read ever *can* stall.
@@ -1058,6 +1060,19 @@ where local rows exist.
   by `blocked/optimystic-block-read-amplification-on-control-start`. A tripwire `NOTE:` at
   `control-database.ts`'s `loadSchema` call site records the counts and the latency multiplier,
   which is where someone debugging a slow launch actually lands.
+- [x] Solo-strand network-transactor evidence (three specs, the gate that retired the per-strand
+  `bootstrap`/`networked` mode): `packages/cadre-core/test/strand-solo-write-budget.spec.ts` pins
+  two-sided storage-operation budgets for a solo strand's launch/insert/select on the network
+  transactor (launch 1613 ops / 17 blocks, 5 inserts 366/3, 5 selects 230/2, measured 2026-08-13;
+  the retired local transactor measured 1592/17, 364/3, 230/2 — a 1.005× insert cost, +21
+  `getMetadata` at launch), sharing `test/storage-op-counter.ts` with the control budget spec.
+  `strand-transactor-handover.spec.ts` is the data-safety case: blocks written through the plugin's
+  `transactor: 'local'` into a `FileRawStorage` are re-opened cold on the network transactor —
+  catalog hydrated (not re-created), old rows selectable, new commits land, both generations read
+  back. `strand-membership-network-transactor-parity.spec.ts` proves the deferred membership CHECK
+  enforcement (unauthorized manager delete, `MinOneManager` floor, add-then-resign hand-off) holds
+  on the network transactor — enforcement is Quereus plus the Optimystic vtab session, above the
+  transactor.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
@@ -1119,7 +1134,7 @@ where local rows exist.
 - [x] `packages/integration-tests/src/scenarios/strand-unpublish-sibling-convergence.integration.ts`
   — party-wide strand removal reaches the OTHER side: two real nodes, owner A publishes a strand,
   sibling B discovers it over the wire (`strand:discovered` — B is deliberately not an owner, so
-  the sighting proves a network read), runs it (`mode: 'bootstrap'`), and stops it exactly once
+  the sighting proves a network read), runs it, and stops it exactly once
   when its 1 s watcher poll observes A's `unpublishStrand` delete — the first proof anywhere that
   a control-plane DELETE becomes visible to a sibling reader (the two-node convergence scenario
   proves an INSERT; the degraded-cohort scenario reads `removePeer` back on the writer). A

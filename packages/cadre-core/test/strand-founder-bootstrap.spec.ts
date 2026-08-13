@@ -11,8 +11,9 @@ import type { StrandRow, SAppConfig } from '../src/types.js';
  * End-to-end plumbing test for the founder flag: `addStrand`/`startStrand`
  * threading `founder` (+ strandType + memberPrivateKey) down to the StrandDatabase,
  * which runs the founder bootstrap in `initialize()`. Drives the real
- * StrandInstanceManager (real libp2p node + StrandDatabase) in `bootstrap` mode so
- * the membership rows land on the local transactor without cohort consensus.
+ * StrandInstanceManager (real libp2p node + StrandDatabase) solo — the network
+ * transactor self-coordinates at a cohort of one, so the membership rows commit
+ * without any peer.
  *
  * Only the FOUNDER writes. A joiner (`founder:false`) writes nothing locally — in a
  * networked cadre it would instead receive the rows via Optimystic sync (covered by
@@ -34,7 +35,6 @@ function startConfig(strandRow: StrandRow, founder: boolean): StartStrandConfig 
     sAppConfig: signedSApp(),
     profile: 'transaction',
     defaultLatencyHint: 'interactive',
-    mode: 'bootstrap',
     founder,
   };
 }

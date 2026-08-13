@@ -440,11 +440,10 @@ async function bringUpClosedStrand(label: string): Promise<ClosedStrandFixture> 
 		const founderKeyPair = strandMemberKeyPair(memberPrivateKey);
 		const strandRow: StrandRow = { Id: formResult.strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' };
 
-		// Request `networked` explicitly on both so writes route through the network
-		// transactor and the manual strand dial actually replicates (an empty
-		// CadrePeer cohort would otherwise infer `bootstrap` and keep rows node-local).
-		const founderStrand = await founderNode.addStrand({ strandRow, sAppConfig, mode: 'networked', founder: true });
-		const joinerStrand = await joinerNode.addStrand({ strandRow, sAppConfig, mode: 'networked', founder: false });
+		// Both nodes run the network transactor (every strand does), so the manual
+		// strand dial below actually replicates rows across the two raw stores.
+		const founderStrand = await founderNode.addStrand({ strandRow, sAppConfig, founder: true });
+		const joinerStrand = await joinerNode.addStrand({ strandRow, sAppConfig, founder: false });
 		expect(founderStrand.status).toBe('active');
 		expect(joinerStrand.status).toBe('active');
 

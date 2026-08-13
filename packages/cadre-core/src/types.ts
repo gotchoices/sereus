@@ -546,14 +546,6 @@ export interface StrandInstance {
   status: StrandStatus;
   sAppInfo?: SAppInfo;
 
-  /**
-   * The lifecycle mode this instance's runtime was built with — `bootstrap`
-   * (purely local transactor) or `networked` (cluster transactor). Refreshed on
-   * every runtime (re)build, so a resume that shifts `bootstrap → networked`
-   * updates it. Read-only reporting; drives no behavior.
-   */
-  mode: StrandMode;
-
   /** The libp2p node for this strand (only when active/idle) */
   libp2pNode?: Libp2p;
 
@@ -631,21 +623,6 @@ export interface SAppConfig {
 }
 
 /**
- * Lifecycle mode for a strand.
- *
- * - `bootstrap`: newly created locally; no remote peers exist for this strand yet.
- *   Schema apply and data operations route through a local (non-network) transactor
- *   so a solo node can fully initialize without any peer round trips.
- * - `networked`: strand has (or is expected to have) remote peers. Operations route
- *   through the network transactor.
- *
- * Transition `bootstrap -> networked` happens at first remote-peer enrollment for
- * the strand; because the transactor is fixed at plugin registration time, the
- * transition requires stopping and restarting the strand.
- */
-export type StrandMode = 'bootstrap' | 'networked';
-
-/**
  * Full strand configuration when adding a strand via the API
  */
 export interface StrandConfig {
@@ -653,13 +630,6 @@ export interface StrandConfig {
   strandRow: StrandRow;
   /** sApp configuration provided by the hosting application */
   sAppConfig: SAppConfig;
-  /**
-   * Lifecycle mode for this strand instance. When omitted, CadreNode infers the
-   * mode from cohort membership (`bootstrap` for a solo/first node with no other
-   * `CadrePeer` rows, `networked` once the cohort has other members). An explicit
-   * value always wins.
-   */
-  mode?: StrandMode;
   /**
    * Whether THIS node is the strand's founder — the party that provisioned and
    * published the strand (the responder in formation, the creator in host/solo

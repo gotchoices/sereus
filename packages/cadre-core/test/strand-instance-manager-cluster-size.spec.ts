@@ -75,7 +75,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-default-resume'));
     await manager.quiesceStrand('cs-default-resume');
-    await manager.resumeStrand('cs-default-resume', { bootstrapNodes: [], mode: 'networked' });
+    await manager.resumeStrand('cs-default-resume', { bootstrapNodes: [] });
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
     expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
@@ -98,7 +98,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-resume', { clusterSize: 6 }));
     await manager.quiesceStrand('cs-resume');
-    await manager.resumeStrand('cs-resume', { bootstrapNodes: [], mode: 'networked' });
+    await manager.resumeStrand('cs-resume', { bootstrapNodes: [] });
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledTimes(2);
     // The rebuilt node must declare the same size — a resume that silently

@@ -9,7 +9,7 @@ import { STRAND_WAKE_TYPE } from '../src/strand-wake-payload.js';
 
 /** Minimal live strand instance — only its presence (the participation gate) matters. */
 function stubInstance(strandId: string): StrandInstance {
-  return { strandId, status: 'active', connectedPeers: 0, lastActivity: new Date(0), latencyHint: 'interactive', mode: 'networked' };
+  return { strandId, status: 'active', connectedPeers: 0, lastActivity: new Date(0), latencyHint: 'interactive' };
 }
 
 /** A resolvable DeviceToken for a peer (platform defaults to FCM). */

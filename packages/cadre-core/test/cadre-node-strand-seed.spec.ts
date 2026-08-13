@@ -4,7 +4,6 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { Libp2p } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
-import type { CohortSeed } from '../src/strand-cohort.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { duplexPair } from './wake-stream-helpers.js';
 
@@ -96,14 +95,14 @@ function injectSeed(
   return { dialed };
 }
 
-function resolveSeed(node: CadreNode, strandId: string): Promise<CohortSeed> {
-  return (node as unknown as { resolveCohortSeed(id: string): Promise<CohortSeed> }).resolveCohortSeed(strandId);
+function resolveSeed(node: CadreNode, strandId: string): Promise<string[]> {
+  return (node as unknown as { resolveCohortSeed(id: string): Promise<string[]> }).resolveCohortSeed(strandId);
 }
 
 describe('CadreNode.resolveCohortSeed', () => {
   it('returns an empty seed when there is no control DB / node', async () => {
     const node = new CadreNode(createConfig());
-    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual({ bootstrapNodes: [], hasOtherPeers: false });
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([]);
   });
 
   it('returns an empty seed when alone (only self in membership)', async () => {
@@ -115,7 +114,7 @@ describe('CadreNode.resolveCohortSeed', () => {
       connections: []
     });
 
-    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual({ bootstrapNodes: [], hasOtherPeers: false });
+    await expect(resolveSeed(node, 'strand-x')).resolves.toEqual([]);
     expect(dialed).toEqual([]);
   });
 
@@ -139,18 +138,17 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    expect(seed.hasOtherPeers).toBe(true);
     // Deduped union, /p2p-circuit signaling addr ordered first.
-    expect(seed.bootstrapNodes).toEqual([
+    expect(seed).toEqual([
       '/ip4/9.9.9.9/tcp/9/p2p-circuit',
       '/ip4/10.0.0.1/tcp/5/p2p/strand',
       '/ip4/10.0.0.2/tcp/6/p2p/strand'
     ]);
     // None of the control addrs leaked into the strand seed.
-    expect(seed.bootstrapNodes.some((a) => a.includes('control'))).toBe(false);
+    expect(seed.some((a) => a.includes('control'))).toBe(false);
   });
 
-  it('selects mode from membership even when no connected sibling runs the strand (empty seed, hasOtherPeers true)', async () => {
+  it('yields an empty seed when no connected sibling runs the strand, after asking each', async () => {
     const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
     const node = new CadreNode(createConfig());
     const { dialed } = injectSeed(node, {
@@ -162,12 +160,11 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    expect(seed.hasOtherPeers).toBe(true);
-    expect(seed.bootstrapNodes).toEqual([]);
+    expect(seed).toEqual([]);
     expect(dialed).toEqual([sib]); // the connected sibling WAS asked
   });
 
-  it('does not RPC a member with no open control connection (membership still counts)', async () => {
+  it('does not RPC a member with no open control connection', async () => {
     const [self, sib] = await Promise.all([freshPeerId(), freshPeerId()]);
     const node = new CadreNode(createConfig());
     const { dialed } = injectSeed(node, {
@@ -179,8 +176,7 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    expect(seed.hasOtherPeers).toBe(true);
-    expect(seed.bootstrapNodes).toEqual([]); // not dialed because not connected
+    expect(seed).toEqual([]); // not dialed because not connected
     expect(dialed).toEqual([]);
   });
 
@@ -196,7 +192,7 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    expect(seed.bootstrapNodes).toEqual(['/ip4/10.0.0.1/tcp/5/p2p/strand']);
+    expect(seed).toEqual(['/ip4/10.0.0.1/tcp/5/p2p/strand']);
     // collectStrandAddrs filters self out of the candidate set before dialing.
     expect(dialed).toEqual([sib]);
     expect(dialed).not.toContain(self);
@@ -219,7 +215,6 @@ describe('CadreNode.resolveCohortSeed', () => {
 
     const seed = await resolveSeed(node, 'strand-x');
 
-    expect(seed.hasOtherPeers).toBe(true);
-    expect(seed.bootstrapNodes).toEqual(['/ip4/2.2.2.2/tcp/2/p2p/strand']);
+    expect(seed).toEqual(['/ip4/2.2.2.2/tcp/2/p2p/strand']);
   });
 });

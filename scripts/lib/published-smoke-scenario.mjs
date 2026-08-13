@@ -316,8 +316,9 @@ async function restartAndReRead() {
 // shape an embedding React Native team reported:
 //  1. Real FILES (`fileStorageProvider`), not one shared `MemoryRawStorage`, so only
 //     bytes on disk cross the restart boundary.
-//  2. A non-empty member list with zero reachable peers, which flips the strand's
-//     mode from `bootstrap` to `networked` while the cohort seed resolves to nobody.
+//  2. A non-empty member list with zero reachable peers — the seed resolution walks
+//     a real membership list yet reaches nobody, so the strand launches on the
+//     network transactor (every strand's transactor) with an empty bootstrap list.
 //  3. The EMBEDDER's boot order — `start()` straight to `addStrand()`, so the cohort
 //     seed's `queryCadrePeers()` is the control DB's first awaited operation.
 // --------------------------------------------------------------------------
@@ -471,11 +472,9 @@ async function warmStartVanishedCohort() {
 			// process that the app actually awaits.
 			const instance = await addStrand(second, 'vanished');
 
-			// `networked`, not `bootstrap`: the stale rows are what make this case
-			// different from the cold solo one, and the mode is where that difference
-			// lands. If this ever reads `bootstrap` the case has degenerated into a
-			// rename of the cadre-of-one cases above.
-			assert.equal(instance.mode, 'networked');
+			// The stale rows are what make this case different from the cold solo one:
+			// the seed resolution walks a real membership list and reaches nobody, so
+			// the network transactor launches on an empty seed.
 			assert.equal(instance.status, 'active');
 		} finally {
 			await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -499,7 +498,6 @@ async function coldBootInEmbedderOrder() {
 			assert.equal(await within('hasOwnerKey() (pre-genesis)', OP_TIMEOUT_MS, () => db.hasOwnerKey()), false);
 
 			const instance = await addStrand(node, 'cold');
-			assert.equal(instance.mode, 'bootstrap');
 			assert.equal(instance.status, 'active');
 
 			// And genesis still works AFTER the strand launched — the out-of-order read

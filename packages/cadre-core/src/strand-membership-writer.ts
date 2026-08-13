@@ -1375,10 +1375,12 @@ export interface RemoveManagerParams {
  * The caller selects the case purely by which keypair it passes; the only
  * branching here is the action tag, chosen by comparing the signer to the target.
  *
- * The optimystic bootstrap-mode transactor evaluates deferred (subquery-bearing)
- * CHECK constraints on DELETE as well as INSERT, so `Manager.Authorized` — deferred —
- * IS enforced here: a signer that is neither an existing manager nor the target
- * itself is rejected at commit.
+ * Deferred (subquery-bearing) CHECK constraints are evaluated on DELETE as well
+ * as INSERT by Quereus plus the Optimystic vtab session — enforcement lives above
+ * the transactor (proven on the network transactor by
+ * `strand-membership-network-transactor-parity.spec.ts`), so `Manager.Authorized`
+ * — deferred — IS enforced here: a signer that is neither an existing manager nor
+ * the target itself is rejected at commit.
  *
  * THE LAST MANAGER CANNOT BE REMOVED. `Manager.MinOneManager` (`check on delete`,
  * deferred, so it sees the POST-delete count) rejects any delete that would leave the

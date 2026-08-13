@@ -34,11 +34,12 @@ import type { CadreNodeConfig, SAppConfig, StrandInstance } from '../src/types.j
  *     directory (see {@link fileStorageProvider}), so nothing but the bytes on
  *     disk crosses from one run to the next.
  *  2. **A non-empty member list with zero reachable peers.** The prior session
- *     left `CadrePeer` rows naming siblings that no longer exist. This flips
- *     `selectStrandMode` from `bootstrap` to `networked` (see
- *     `strand-cohort.ts`) while `resolveCohortSeed` can reach nobody, so the
- *     strand launches into a cluster transactor with an EMPTY bootstrap list —
- *     a combination no cold-boot test can construct.
+ *     left `CadrePeer` rows naming siblings that no longer exist, so
+ *     `resolveCohortSeed` walks a real membership list yet can reach nobody and
+ *     the strand launches into the network transactor with an EMPTY bootstrap
+ *     list — a combination no cold-boot test can construct. (Every strand runs
+ *     the network transactor now; what varies across the cases below is the
+ *     state the seed resolution walks, not the transactor it lands on.)
  *  3. **The embedding app's boot ORDER, not ours.** Every other suite runs
  *     genesis first, then wires seed bootstrap, then reads peers. An embedder
  *     calls `start()` and goes straight to `addStrand()`, whose
@@ -51,8 +52,8 @@ import type { CadreNodeConfig, SAppConfig, StrandInstance } from '../src/types.j
  * the finding this suite records, and the reason it is written as coverage
  * rather than as a regression test for a fixed defect — do not read a passing
  * run as "the interesting case is elsewhere in the file". If a future change to
- * `resolveCohortSeed`, to strand-mode selection, or to control-DB hydration
- * reintroduces a stall on this path, these are the cases that catch it.
+ * `resolveCohortSeed` or to control-DB hydration reintroduces a stall on this
+ * path, these are the cases that catch it.
  *
  * Companions: `control-database-solo.spec.ts` (cadre of one, cold),
  * `control-database-offline-peers.spec.ts` (cadre of several, all unreachable),
@@ -223,11 +224,9 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				// operation of this process that the app actually awaits.
 				const instance = await addStrand(second, { Id: strandId('vanished'), MemberPrivateKey: null, Type: 'o' });
 
-				// `networked`, not `bootstrap`: the stale rows are what make this case
-				// different from the cold solo one, and the mode is where that
-				// difference lands. If this ever reads `bootstrap` the case has
-				// degenerated into a rename of `control-database-solo.spec.ts`.
-				expect(instance.mode).toBe('networked');
+				// The stale rows are what make this case different from the cold solo
+				// one: the seed resolution walks a real membership list and reaches
+				// nobody, so the network transactor launches on an empty seed.
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -270,8 +269,8 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 
 				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o' });
 				// Revoked siblings are NOT cohort members, so unlike the vanished case
-				// the strand falls back to the local transactor.
-				expect(instance.mode).toBe('bootstrap');
+				// the seed resolution sees a membership of one — same transactor, one
+				// fewer row for `queryCadrePeers`'s revocation join to keep.
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -306,7 +305,6 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				const memberPrivateKey = await generateStrandMemberKey();
 				const instance = await addStrand(second,
 					{ Id: strandId('closed'), MemberPrivateKey: memberPrivateKey, Type: 'c' });
-				expect(instance.mode).toBe('networked');
 				expect(instance.status).toBe('active');
 
 				// The founder really is seated — a launch that resolved an empty seed
@@ -350,7 +348,6 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				});
 
 				const instance = await addStrand(second, { Id: strandId('three'), MemberPrivateKey: null, Type: 'o' });
-				expect(instance.mode).toBe('networked');
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());
@@ -374,7 +371,6 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				expect(await within('hasOwnerKey() (pre-genesis)', OP_TIMEOUT_MS, () => db.hasOwnerKey())).toBe(false);
 
 				const instance = await addStrand(node, { Id: strandId('cold'), MemberPrivateKey: null, Type: 'o' });
-				expect(instance.mode).toBe('bootstrap');
 				expect(instance.status).toBe('active');
 
 				// And genesis still works AFTER the strand launched — the out-of-order

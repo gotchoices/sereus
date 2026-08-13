@@ -21,8 +21,7 @@ describe('HibernationManager', () => {
       status: 'active',
       connectedPeers: 0,
       lastActivity: new Date(),
-      latencyHint,
-      mode: 'networked'
+      latencyHint
     };
   }
 

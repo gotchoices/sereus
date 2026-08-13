@@ -4,7 +4,6 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { PrivateKey } from '@libp2p/interface';
 import { CadreNode } from '../src/cadre-node.js';
 import type { CadreNodeConfig } from '../src/types.js';
-import type { CohortSeed } from '../src/strand-cohort.js';
 import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 import { strandTransportKey } from '../src/strand-transport-key.js';
 
@@ -66,7 +65,7 @@ function injectIdentityKey(node: CadreNode, key: PrivateKey): void {
 function captureDelegatePeerIds(node: CadreNode): (string | undefined)[] {
   const delegates: (string | undefined)[] = [];
   const target = node as unknown as {
-    resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<CohortSeed>;
+    resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<string[]>;
   };
   const original = target.resolveCohortSeed.bind(target);
   target.resolveCohortSeed = (strandId, delegatePeerId) => {

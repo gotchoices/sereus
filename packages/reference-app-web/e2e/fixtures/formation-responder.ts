@@ -175,8 +175,7 @@ async function runOwnerGenesis(node: CadreNode, privateKey: NonNullable<CadreNod
  *  3. Wire the formation responder (`initializeStrandSolicitation` + a real
  *     `ControlFormationUsageRecorder`) — registers the `/sereus/formation/1.0.0` handler.
  *  4. Create the host CLOSED chat strand byte-identically to the browser
- *     (`publishStrand` + `addStrand` with the SHARED signed `getChatSAppConfig`,
- *     `mode:'networked'`).
+ *     (`publishStrand` + `addStrand` with the SHARED signed `getChatSAppConfig`).
  *  5. Mint + publish the redeemable invitation bound to that strand, PLUS a second
  *     already-expired invitation for the negative test.
  *  6. Arm seed-on-connect (best-effort) — the deterministic path is the explicit
@@ -208,22 +207,18 @@ export async function startFormationResponder(opts?: {
 		});
 
 		// Host CLOSED chat strand — byte-identical to the browser's createClosedChatStrand
-		// (publishStrand 'c' + addStrand with the SHARED signed config + mode:'networked').
+		// (publishStrand 'c' + addStrand with the SHARED signed config).
 		const strandId = crypto.randomUUID();
 		const memberKey = await generateStrandMemberKey();
 		await node.publishStrand(strandId, 'c', memberKey);
 		await node.addStrand({
 			strandRow: { Id: strandId, MemberPrivateKey: memberKey, Type: 'c' },
 			sAppConfig: getChatSAppConfig(),
-			// Formed strands replicate across a cohort. `networked` is mandatory: without
-			// it addStrand infers `bootstrap` from the empty CadrePeer cohort and the
-			// strand never replicates. See cadre-web.ts createClosedChatStrand.
-			mode: 'networked',
 		});
 
 		const strand = node.getStrand(strandId);
 		if (!strand?.libp2pNode) {
-			throw new Error(`responder strand ${strandId} has no libp2p node after networked addStrand`);
+			throw new Error(`responder strand ${strandId} has no libp2p node after addStrand`);
 		}
 		const strandLibp2p: Libp2p = strand.libp2pNode;
 

@@ -22,7 +22,6 @@ import type {
   OpenInvitation,
   FormStrandResult,
   StrandFormationDisclosure,
-  StrandMode,
   ResolveOpts,
   SelfRegistrationOutcome,
   ServiceWakeResult,
@@ -62,7 +61,7 @@ import {
 } from './device-token.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
-import { deriveCohortMembers, selectStrandMode, type CohortSeed } from './strand-cohort.js';
+import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
@@ -2802,7 +2801,6 @@ export class CadreNode implements SAppIdLookup {
     }
 
     try {
-      // Discovery path: no explicit mode — infer from cohort membership.
       await this.launchStrand(strand, sAppConfig);
     } catch (error) {
       log('Error starting strand %s: %o', strand.Id, error);
@@ -2961,7 +2959,7 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Wake a strand. If it was hibernating (quiesced — no libp2p node), re-resolve
-   * the cohort discovery seed and mode exactly as `launchStrand` does and rebuild
+   * the cohort discovery seed exactly as `launchStrand` does and rebuild
    * its runtime via the strand manager. If it is still live (e.g. waking an idle
    * strand, which retains its resources), just flip the status. Overlapping wake
    * triggers are coalesced upstream by `HibernationManager`, so this runs once
@@ -2983,8 +2981,8 @@ export class CadreNode implements SAppIdLookup {
       return;
     }
 
-    // Quiesced: re-resolve volatile cohort inputs (the seed may have grown, the
-    // mode may have shifted bootstrap → networked) and rebuild the runtime.
+    // Quiesced: re-resolve the volatile cohort input (the seed may have grown)
+    // and rebuild the runtime.
     log('Waking strand %s — rebuilding strand-network resources', strandId);
     await this.resumeStrandRuntime(strandId);
     instance.lastActivity = new Date();
@@ -2993,11 +2991,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort inputs
-   * first: the discovery seed may have grown and cohort membership may have
-   * shifted the mode `bootstrap → networked` since the strand last ran. Shared by
+   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort input
+   * first: the discovery seed may have grown since the strand last ran. Shared by
    * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so
-   * both apply the same fresh seed/mode resolution. `resumeStrand` is idempotent
+   * both apply the same fresh seed resolution. `resumeStrand` is idempotent
    * (returns the live instance unchanged) as a backstop against double-resume.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
@@ -3007,12 +3004,8 @@ export class CadreNode implements SAppIdLookup {
     const delegatePeerId = this.identityKey
       ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString()
       : undefined;
-    const seed = await this.resolveCohortSeed(strandId, delegatePeerId);
-    const mode = selectStrandMode(undefined, seed.hasOtherPeers);
-    await this.strandManager.resumeStrand(strandId, {
-      bootstrapNodes: seed.bootstrapNodes,
-      mode
-    });
+    const bootstrapNodes = await this.resolveCohortSeed(strandId, delegatePeerId);
+    await this.strandManager.resumeStrand(strandId, { bootstrapNodes });
   }
 
   /**
@@ -3024,7 +3017,7 @@ export class CadreNode implements SAppIdLookup {
    * realized as a resume → bounded window → re-hibernate-if-idle cycle that
    * reuses the existing quiesce/resume primitives rather than a bespoke probe:
    *
-   *   1. Resume the strand (rebuild node + db, re-resolve cohort seed/mode) so
+   *   1. Resume the strand (rebuild node + db, re-resolve the cohort seed) so
    *      its strand network can reach cohort peers — exactly as a wake does.
    *   2. Hold it resumed for a bounded window, during which the app may drive
    *      reads (pull-on-read) and record activity.
@@ -3049,7 +3042,7 @@ export class CadreNode implements SAppIdLookup {
 
     try {
       // 1. Resume exactly as a wake does: re-resolve the (possibly grown) cohort
-      //    seed + mode, then rebuild the runtime.
+      //    seed, then rebuild the runtime.
       log('Check-in: resuming strand %s to probe the cohort for pending activity', strandId);
       await this.resumeStrandRuntime(strandId);
 
@@ -3161,18 +3154,16 @@ export class CadreNode implements SAppIdLookup {
       throw new Error('CadreNode not running');
     }
 
-    const { strandRow, sAppConfig, mode, founder } = config;
+    const { strandRow, sAppConfig, founder } = config;
 
     // Store sApp config for this strand
     this.sAppConfigs.set(strandRow.Id, sAppConfig);
-    log('Registered sAppConfig for strand %s (sApp: %s, mode: %s, founder: %s)',
-      strandRow.Id, sAppConfig.id, mode ?? 'inferred', founder ?? false);
+    log('Registered sAppConfig for strand %s (sApp: %s, founder: %s)',
+      strandRow.Id, sAppConfig.id, founder ?? false);
 
-    // Pass `mode` (possibly undefined) through: an explicit mode wins, while a
-    // caller that omits it gets the same cohort-inferred mode as the discovery path.
     // `founder` only flows from the explicit addStrand path — the control-discovered
     // join path never founds, so its rows arrive via sync (see handleStrandAdded).
-    return await this.launchStrand(strandRow, sAppConfig, mode, founder);
+    return await this.launchStrand(strandRow, sAppConfig, founder);
   }
 
   /**
@@ -3449,8 +3440,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Shared strand launch path for both the explicit (`addStrand`) and the
    * control-discovered (`handleStrandAdded`) entry points. Resolves the cohort
-   * seed, selects the mode, starts the strand, and registers it with the
-   * hibernation manager before emitting `strand:started`.
+   * seed, starts the strand, and registers it with the hibernation manager
+   * before emitting `strand:started`.
    *
    * Idempotent no-op when the strand manager already tracks `strand.Id` — the
    * ordinary founding sequence is `addStrand` (starts it locally) followed by
@@ -3464,7 +3455,6 @@ export class CadreNode implements SAppIdLookup {
   private async launchStrand(
     strand: StrandRow,
     sAppConfig: SAppConfig,
-    explicitMode?: StrandMode,
     founder?: boolean
   ): Promise<StrandInstance> {
     const existing = this.strandManager.getInstance(strand.Id);
@@ -3497,8 +3487,7 @@ export class CadreNode implements SAppIdLookup {
     // `libp2p.start()` (the responder records the grant before replying; the
     // client awaits the replies).
     const delegatePeerId = transportKey ? peerIdFromPrivateKey(transportKey).toString() : undefined;
-    const seed = await this.resolveCohortSeed(strand.Id, delegatePeerId);
-    const mode = selectStrandMode(explicitMode, seed.hasOtherPeers);
+    const bootstrapNodes = await this.resolveCohortSeed(strand.Id, delegatePeerId);
 
     const instance = await this.strandManager.startStrand({
       strandRow: strand,
@@ -3508,8 +3497,7 @@ export class CadreNode implements SAppIdLookup {
       profile: this.config.profile,
       defaultLatencyHint: this.config.hibernation?.defaultLatencyHint ?? 'interactive',
       privateKey: transportKey,
-      bootstrapNodes: seed.bootstrapNodes,
-      mode,
+      bootstrapNodes,
       requireSignedSchemas: this.config.requireSignedSchemas,
       clusterSize: this.config.strandClusterSize,
       backfill: this.config.strandBackfill,
@@ -3522,18 +3510,19 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Resolve a strand's discovery seed. Membership (and thus mode) comes from the
-   * control network's CadrePeer rows; the **strand-network** bootstrap addresses
-   * are resolved on demand over the control mesh via the strand-addr RPC —
-   * deliberately NOT from `CadrePeer.Multiaddr`, which carries *control*
-   * addresses that must not seed the strand mesh.
+   * Resolve a strand's discovery seed — the dialable strand-network multiaddr
+   * strings for cohort siblings. Membership comes from the control network's
+   * CadrePeer rows; the **strand-network** bootstrap addresses are resolved on
+   * demand over the control mesh via the strand-addr RPC — deliberately NOT
+   * from `CadrePeer.Multiaddr`, which carries *control* addresses that must not
+   * seed the strand mesh.
    *
    * Only siblings we already hold an open control connection to are RPC'd: they
    * are the ones that can answer right now, and dialing them by peerId reuses the
    * live connection. When no connected sibling yet runs the strand the seed is
-   * empty (`[]`) — mode still follows membership, and the empty seed self-heals
-   * on the next resume / check-in pass. Returns an empty seed when the control DB
-   * or node is absent (not yet started / torn down).
+   * empty (`[]`) — the empty seed self-heals on the next resume / check-in pass.
+   * Returns an empty seed when the control DB or node is absent (not yet
+   * started / torn down).
    *
    * When `delegatePeerId` is given (a strand launch/resume is imminent), the
    * pass doubles as the delegate ANNOUNCEMENT: our circuit relays are merged
@@ -3546,9 +3535,9 @@ export class CadreNode implements SAppIdLookup {
    * needs no grant. The relay's direct addr rides along as the dial fallback
    * for a relay we are not yet connected to.
    */
-  private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<CohortSeed> {
+  private async resolveCohortSeed(strandId: string, delegatePeerId?: string): Promise<string[]> {
     if (!this.controlDatabase || !this.controlNode) {
-      return { bootstrapNodes: [], hasOtherPeers: false };
+      return [];
     }
     // NOTE: this read is UNBOUNDED and sits on the critical path an embedding app
     // awaits during startup — `addStrand` cannot resolve until it does, and it is
@@ -3560,9 +3549,9 @@ export class CadreNode implements SAppIdLookup {
     // control read ever CAN stall (a transactor change that consults the network
     // for a local row, a storage backend with blocking I/O), give this one a
     // timeout — and decide then whether the breach fails `addStrand` or degrades
-    // to `hasOtherPeers: false`, because those promise callers different things.
+    // to an empty seed, because those promise callers different things.
     const peers = await this.controlDatabase.queryCadrePeers();
-    const { otherPeerIds, hasOtherPeers } =
+    const { otherPeerIds } =
       deriveCohortMembers(peers, this.controlNode.peerId.toString());
 
     // RPC only siblings we already have a control connection to — they can answer
@@ -3583,7 +3572,7 @@ export class CadreNode implements SAppIdLookup {
     // Throttle state for the RELAY targets only — refreshDelegateGrants never
     // looks up a sibling key, so recording one would only be dead weight.
     this.recordDelegateAnnounces(relays.map((r) => r.relayPeerId), strandId);
-    return { bootstrapNodes, hasOtherPeers };
+    return bootstrapNodes;
   }
 
   /**

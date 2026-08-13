@@ -118,10 +118,10 @@ describe('WebSocket Chat (server-to-server)', () => {
 
     const strandRow: StrandRow = { Id: STRAND_ID, MemberPrivateKey: null, Type: 'o' };
 
-    const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, mode: 'networked' });
+    const droneStrand = await drone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
     expect(droneStrand.status).toBe('active');
 
-    const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG, mode: 'networked' });
+    const phoneStrand = await phone.addStrand({ strandRow, sAppConfig: CHAT_SAPP_CONFIG });
     expect(phoneStrand.status).toBe('active');
 
     // Connect the strand-level libp2p nodes.

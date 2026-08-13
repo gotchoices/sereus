@@ -494,12 +494,6 @@ async function createClosedChatStrand(
 	await cadre.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: memberPrivateKey, Type: 'c' },
 		sAppConfig: getChatSAppConfig(),
-		// Formed strands replicate across a cohort. Without an explicit mode,
-		// addStrand infers `bootstrap` from the empty CadrePeer cohort (formation
-		// exchanges peer addrs but persists no CadrePeer rows yet) and the strand
-		// gets a local transactor that never replicates — the silent no-convergence
-		// failure mode. `networked` launches even before the cohort peer dials in.
-		mode: 'networked',
 		// This node provisioned + published the strand, so it is the founder: run the
 		// one-time genesis bootstrap that seats Header/Member/Owner from
 		// MemberPrivateKey. Idempotent (insert-if-absent) across reload / re-addStrand.
@@ -604,11 +598,6 @@ export async function joinViaInvitation(
 			Type: 'c',
 		},
 		sAppConfig: getChatSAppConfig(),
-		// Formed strands replicate across a cohort — request `networked` explicitly
-		// so the joiner's strand does not infer `bootstrap` from the empty CadrePeer
-		// cohort and end up with a non-replicating local transactor. See the matching
-		// note in createClosedChatStrand.
-		mode: 'networked',
 	});
 
 	const formed: FormedStrand = {

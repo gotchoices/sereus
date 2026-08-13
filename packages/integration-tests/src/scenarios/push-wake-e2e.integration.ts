@@ -164,17 +164,16 @@ async function seedReceiverRecord(
 }
 
 /**
- * Stand up a strand on the receiver and drive it to `hibernating`. Uses
- * `mode: 'bootstrap'` so the strand stands up solo (the wake travels the control
- * network, not the strand network). Asserts `active` then `hibernating` so a
- * silent hibernate no-op (e.g. a realtime latency hint) fails loudly.
+ * Stand up a strand on the receiver and drive it to `hibernating`. The strand
+ * stands up solo (the wake travels the control network, not the strand
+ * network). Asserts `active` then `hibernating` so a silent hibernate no-op
+ * (e.g. a realtime latency hint) fails loudly.
  */
 async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promise<void> {
 	const sApp = createSignedSAppConfig(SIMPLE_SCHEMA, '0.1.0');
 	const strand = await Rx.addStrand({
 		strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
 		sAppConfig: sApp,
-		mode: 'bootstrap',
 	});
 	expect(strand.status).toBe('active');
 
@@ -385,7 +384,6 @@ describe('E2E push-wake over the control network', () => {
 			const strand = await Rx.addStrand({
 				strandRow: { Id: strandId, MemberPrivateKey: null, Type: 'o' },
 				sAppConfig: sApp,
-				mode: 'bootstrap',
 			});
 			expect(strand.status).toBe('active');
 
