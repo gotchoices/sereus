@@ -1035,6 +1035,29 @@ where local rows exist.
   the `chai` defect keeps the smoke red). That matters because the remaining unexplained difference
   between us and the reporting team is the substrate version they install, and this is the only
   thing in the repo that exercises one.
+- [x] `packages/cadre-core/test/control-start-storage-op-budget.spec.ts` — the same start paths as
+  the two specs above, asserting their **cost** rather than their liveness. A control-database start
+  is neither CPU- nor network-bound: its duration is (operations issued against `IRawStorage`) ×
+  (what one such operation costs on the device), so on an idle machine it looks fine at ~1 ms/op
+  while the identical start takes tens of seconds at the 50–90 ms/op a loaded disk or a phone's
+  flash under launch contention charges. The operation COUNT is therefore the thing worth pinning —
+  it is deterministic where wall clock is not, and nothing else in the suite would notice a change
+  that doubled it. A counting passthrough over the `IRawStorage` the node is handed tallies calls by
+  method and by distinct block id, across a cold start (empty storage: **1541 operations over 21
+  distinct blocks**, `getMetadata` alone 720 of them — each block's metadata read ~34× in one start)
+  and a warm restart on what it left behind (**315 over 22**, the catalog-hydrate path). Budgets sit
+  modestly above both (1700/24 and 360/25) with the measured figure, its date, and the run's own
+  per-method breakdown written into every assertion message. Two-sided: the ceiling is the
+  regression guard, and a FLOOR at half the measurement is the anti-vacuity guard — if the node ever
+  stops routing through the storage the spec hands it, a ceiling-only budget would pass while
+  measuring nothing. Backed by `MemoryRawStorage`, which issues the same operations a file backend
+  does (the cold figure matches the one measured over `FileRawStorage`). The printed
+  `[storage-op-budget]` lines need `vitest run --reporter=verbose` — vitest's default reporter shows
+  a passing test's console output nowhere. **This spec is not the fix**: the amplification is
+  produced inside `@optimystic/db-p2p` and the decision about whether and where to fix it is carried
+  by `blocked/optimystic-block-read-amplification-on-control-start`. A tripwire `NOTE:` at
+  `control-database.ts`'s `loadSchema` call site records the counts and the latency multiplier,
+  which is where someone debugging a slow launch actually lands.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of
