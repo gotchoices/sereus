@@ -65,6 +65,21 @@ including one asserting an unknown value is rejected or passed through, matching
 itself the retired vocabulary. Leave `strand-transactor-handover.spec.ts` (added by the first ticket,
 in `cadre-core`) alone: it was written against `transactor` for exactly this reason.
 
+## Arm added by the `strand-network-transactor-solo-parity` review (2026-08-13)
+
+**Report the resolved transactor on `SereusPluginResult`.** Nothing a caller can see today says which
+transactor a connection actually got — `compose-strand.ts` resolves it into a local variable and only
+logs it. Three specs in `cadre-core` exist *specifically* to prove behaviour on a named transactor
+(`strand-transactor-handover.spec.ts` — the retirement's data-safety evidence — plus
+`strand-membership-network-transactor-parity.spec.ts` and `strand-solo-write-budget.spec.ts`), and
+none of them can assert the arm it ran on. If this ticket's rewrite of the option ever lands the
+wrong arm, every one of those specs still passes while proving nothing.
+
+Add `transactor: 'local' | 'network' | 'test'` (the resolved value, not the requested one) to
+`SereusPluginResult` in `types.ts`, set it in `composeStrand`, and assert it in those three specs —
+which is what makes them evidence rather than assertion-shaped. `NOTE:` markers in
+`test/strand-spec-helpers.ts` and `test/strand-transactor-handover.spec.ts` point here. This is the same site the ticket already rewrites, so it is one edit, not a second pass.
+
 ## Edge cases & interactions
 
 - **`cadre-core` must not regress.** After the previous ticket its production path passes no
@@ -109,3 +124,5 @@ say which ones you ran and which you did not.
 - Run both packages' suites plus root lint and build; report any e2e spec skipped and why.
 - Grep the repo one final time for `bootstrap` used to mean a transactor choice, and for
   `StrandMode` — both should return nothing outside `tickets/complete/`.
+- Add the resolved `transactor` to `SereusPluginResult`; assert it in `cadre-core`'s handover,
+  membership-parity and solo-budget specs, and drop the three `NOTE:` markers that point here.

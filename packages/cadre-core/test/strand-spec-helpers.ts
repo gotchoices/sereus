@@ -114,6 +114,16 @@ export async function openRawStrand(transactor: StrandTransactor = 'local'): Pro
   // The 'network' arm passes `transactor` (the knob that survives the strand-mode
   // retirement) rather than `mode: 'networked'`; the default arm keeps the exact
   // historical option shape.
+  //
+  // NOTE: nothing here can assert which transactor was actually resolved —
+  // `SereusPluginResult` does not report it, so a spec whose whole point is the
+  // arm it runs on (`strand-membership-network-transactor-parity.spec.ts`,
+  // `strand-transactor-handover.spec.ts`) would pass just the same if the option
+  // were silently ignored. Low risk today: 'network' is the default at both the
+  // Sereus and Optimystic layers, so only an active regression could land the
+  // wrong arm. `tickets/implement/13-drop-strand-mode-option-from-sql-plugin.md`
+  // carries the arm to surface the resolved transactor on the result; assert it
+  // here once it exists.
   const result = await connectToStrand(db, transactor === 'local'
     ? { strandId, mode: 'bootstrap', storage }
     : { strandId, transactor: 'network', storage });

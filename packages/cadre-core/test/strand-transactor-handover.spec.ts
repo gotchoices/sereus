@@ -31,6 +31,14 @@ import { tempStorageDir } from './control-db-node-helpers.js';
  *
  * Each phase boots a real (isolated, empty-bootstrap-list) libp2p node via
  * `connectToStrand`, so the timeout is generous.
+ *
+ * NOTE: this spec cannot assert that phase 1 really ran on the local transactor —
+ * `SereusPluginResult` does not report the resolved transactor, so a phase 1 whose
+ * `transactor` option went unread would degrade this into a network→network test
+ * that still passes. It is the retirement's data-safety evidence, and
+ * `tickets/implement/13-drop-strand-mode-option-from-sql-plugin.md` is the ticket
+ * that rewrites that option — its arm adds the resolved transactor to the result
+ * so both phases can pin their arm here.
  */
 
 const SCHEMA = 'create table Note (Id text primary key, Body text not null);';

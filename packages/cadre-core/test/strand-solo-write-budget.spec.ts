@@ -149,8 +149,20 @@ async function measureArm(arm: StrandMode): Promise<ArmCost> {
 	// Count ONLY the strand's storage: the provider is called with 'control' for
 	// the control node and with the strandId for the strand — the counting
 	// wrapper goes on the strand branch alone.
-	const provider = (id: string): IRawStorage =>
-		id === strandId ? new CountingRawStorage(new MemoryRawStorage(), counter) : new MemoryRawStorage();
+	//
+	// Memoised per id for the same reason `fileStorageProvider` is: `CadreNode`
+	// asks once per id today, but a second call handing back a fresh (empty)
+	// store would split the strand's blocks across two views rather than
+	// measuring one.
+	const byId = new Map<string, IRawStorage>();
+	const provider = (id: string): IRawStorage => {
+		let storage = byId.get(id);
+		if (!storage) {
+			storage = id === strandId ? new CountingRawStorage(new MemoryRawStorage(), counter) : new MemoryRawStorage();
+			byId.set(id, storage);
+		}
+		return storage;
+	};
 
 	const node = new CadreNode(controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage: provider }));
 	try {
