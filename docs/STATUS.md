@@ -1072,7 +1072,11 @@ where local rows exist.
   back. `strand-membership-network-transactor-parity.spec.ts` proves the deferred membership CHECK
   enforcement (unauthorized manager delete, `MinOneManager` floor, add-then-resign hand-off) holds
   on the network transactor — enforcement is Quereus plus the Optimystic vtab session, above the
-  transactor.
+  transactor. All three now pin the **resolved** transactor rather than assuming their arm:
+  `SereusPluginResult.transactor` reports it (added when the SQL plugin's `mode` option was
+  dropped), `test/strand-spec-helpers.ts` throws when a strand resolves to an engine other than the
+  one asked for, and `StrandDatabase.getTransactor()` carries it to the budget spec. Before that,
+  any of the three would have passed just the same with its transactor option silently ignored.
 - [ ] `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts`
   — the third flavour, the one the two specs above cannot reach: a sibling that is **connected and
   inside the cohort** but slow or silent, so it counts against the 0.75 approval bar instead of

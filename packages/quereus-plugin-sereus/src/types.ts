@@ -6,11 +6,15 @@ import type { IRawStorage } from '@optimystic/db-p2p';
  * Which Optimystic transactor a strand connection commits through — a choice of
  * storage engine, nothing more. See {@link StrandConnectionOptions.transactor}.
  *
- * Deliberately a closed union of the three names Optimystic's
- * `collection-factory.ts` switches on. That factory also accepts a custom
- * transactor name registered by the host, but nothing in this repo registers
- * one, and a closed union lets `parseConfig` reject a typo (`'locl'`) instead of
- * handing it downstream. Widen it if and when a custom transactor exists.
+ * Deliberately a closed union, and narrower than what Optimystic's
+ * `collection-factory.ts` accepts: that factory also switches on `'mesh-test'`
+ * (its production transactor stack over a one-node mock mesh) and falls through
+ * to a host-registered custom transactor for any other name. Neither is offered
+ * here — `composeStrand`'s node gate special-cases only `'test'`, so
+ * `'mesh-test'` would get a real libp2p node it does not want, and nothing in
+ * this repo registers a custom transactor. A closed union lets `parseConfig`
+ * reject a typo (`'locl'`) instead of handing it downstream; widen it (and the
+ * node gate with it) when one of those values is actually needed.
  */
 export type StrandTransactor = 'local' | 'network' | 'test';
 

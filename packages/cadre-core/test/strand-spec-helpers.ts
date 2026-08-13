@@ -120,6 +120,20 @@ export async function openRawStrand(transactor: StrandTransactor = 'local'): Pro
   const storage = new MemoryRawStorage();
   const db = new Database();
   const result = await connectToStrand(db, { strandId, transactor, storage });
+  const strand: RawStrand = {
+    db,
+    strandId,
+    // The guard below proves these are the same value; this one is typed as the
+    // narrower `StrandTransactor` these helpers deal in.
+    transactor,
+    shutdown: async () => {
+      await result.shutdown();
+      db.close();
+    },
+  };
+  // Registered BEFORE the guard so a mismatched strand is still torn down by the
+  // afterEach rather than leaking its node and database out of the failing run.
+  opened.push(strand);
   // Fail here rather than in the caller: a strand that silently landed the other
   // engine makes every assertion downstream a statement about the wrong thing.
   if (result.transactor !== transactor) {
@@ -128,18 +142,6 @@ export async function openRawStrand(transactor: StrandTransactor = 'local'): Pro
       + 'every assertion below would be about the wrong engine',
     );
   }
-  const strand: RawStrand = {
-    db,
-    strandId,
-    // The guard above proved these are the same value; this one is typed as the
-    // narrower `StrandTransactor` these helpers deal in.
-    transactor,
-    shutdown: async () => {
-      await result.shutdown();
-      db.close();
-    },
-  };
-  opened.push(strand);
   return strand;
 }
 
