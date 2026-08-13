@@ -2277,10 +2277,14 @@ export class ControlDatabase {
    * cap is this count: a descent that under-reports admits a seat the invite does not have,
    * where a scan could not. Descent misses have been observed on a NETWORKED store (tracked
    * by `debt-composite-pk-point-lookup-unreliable-untracked`, for full-primary-key lookups);
-   * no miss has been observed on this index. If over-admission ever shows up on a converged
-   * single node — a token with more usage rows than its `TotalUses` and no concurrent
-   * redeemers to explain it — suspect this seek first and drop the index to fall back to the
-   * scan.
+   * no miss has been observed on this index on a SINGLE node. Across nodes the index is
+   * currently blind: a sibling never learns index entries for rows written elsewhere (the
+   * distributed commit drops the index update — measured 2026-08-12, tracked by
+   * `blocked/secondary-index-seek-blind-to-sibling-rows`), so on a multi-machine party this
+   * count under-reports and the cap over-admits until the upstream fix lands. If
+   * over-admission ever shows up on a converged single node — a token with more usage rows
+   * than its `TotalUses` and no concurrent redeemers to explain it — suspect this seek first
+   * and drop the index to fall back to the scan.
    */
   async countFormationUsage(token: string): Promise<number> {
     this.ensureInitialized();

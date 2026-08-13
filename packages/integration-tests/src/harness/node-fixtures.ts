@@ -9,7 +9,7 @@
 
 import { webSockets } from '@libp2p/websockets';
 import { circuitRelayTransport } from '@libp2p/circuit-relay-v2';
-import { generateKeyPair } from '@libp2p/crypto/keys';
+import { generateKeyPair, privateKeyToProtobuf } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey, peerIdFromString } from '@libp2p/peer-id';
 import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
@@ -18,6 +18,8 @@ import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-cry
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema } from '@serfab/cadre-core';
 import type { CadreNodeConfig, SAppConfig } from '@serfab/cadre-core';
 import { waitUntil } from './wait-utils.js';
+import { readCohort } from './control-cohort.js';
+import { signMessageEd25519 } from './test-network.js';
 
 /** WebSocket + circuit-relay transports shared by every e2e/integration scenario. */
 export function wsTransports(): Libp2pTransports {
@@ -205,4 +207,76 @@ export async function bootPair(
   await A.authorizePeer(B.peerId!.toString());
 
   return { A, B };
+}
+
+export interface ConnectedPair {
+  A: CadreNode;
+  B: CadreNode;
+  /** The party's enrolled owner PUBLIC key (A's derived key, base64url). */
+  ownerPublicKey: string;
+  /**
+   * Sign control-row authorization bytes with the pair's owner key — pass as the
+   * `signMessage` argument of `ControlDatabase.insertStrand` / `insertFormationInvite` /
+   * `insertValidationKey` to publish owner-signed rows from a scenario.
+   */
+  ownerSign: (message: Uint8Array) => string;
+}
+
+/**
+ * Boot the same A/B party as {@link bootPair} but with CONNECT-THEN-WRITE ordering: the
+ * two nodes are connected and BOTH report a control cohort of >= 2 BEFORE the first
+ * control write (owner-key genesis included), so every row is offered to the two-machine
+ * cohort from the start. Use this when a scenario must read its own rows back on BOTH
+ * nodes: `bootPair` writes A's owner key while A is still alone, and a row committed by a
+ * one-member cohort cannot be read back once the cohort grows (tracked in
+ * `control-db-cross-node-convergence-halted`).
+ *
+ * Deliberately a sibling of {@link bootPair}, not a change to it — existing scenarios
+ * depend on bootPair's write-while-alone ordering (they assert pull-on-read convergence
+ * of rows written by A, not cross-node read-back of genesis rows).
+ *
+ * The cohort wait is also what makes a later concurrent-write assertion meaningful: a
+ * write offered to a one-member cohort commits on the writer's own vote and proves
+ * nothing about two machines (see `control-cohort.ts`).
+ *
+ * Caller owns shutdown (`A.stop()` / `B.stop()`), including on the failure path.
+ */
+export async function bootConnectedPair(
+  tag: string,
+  partyIdPrefix = 'ctrl',
+  opts: { strandWatchMs?: number } = {},
+): Promise<ConnectedPair> {
+  const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
+  const { strandWatchMs } = opts;
+
+  const aKey = await generateKeyPair('Ed25519');
+  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
+  await A.start();
+
+  const bKey = await generateKeyPair('Ed25519');
+  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
+  await B.start();
+
+  // B's dial is admitted by A's cold-start carve-out (no control rows exist yet, so the
+  // membership gate has no basis to judge); the vouch that keeps B admitted once rows
+  // exist lands right after genesis below.
+  await connectControlNodes(B, A);
+  for (const [node, label] of [[A, 'A'], [B, 'B']] as const) {
+    await waitUntil(async () => (await readCohort(node.getControlNode()!, `pair ${label}`)).length >= 2, {
+      timeoutMs: 30_000,
+      intervalMs: 250,
+      description: `pair node ${label} control cohort spans both machines`,
+    });
+  }
+
+  const ownerPublicKey = await makeOwnOwner(A, aKey);
+  await A.authorizePeer(B.peerId!.toString());
+
+  const ownerPrivateKeyProtobuf = privateKeyToProtobuf(aKey);
+  return {
+    A,
+    B,
+    ownerPublicKey,
+    ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
+  };
 }

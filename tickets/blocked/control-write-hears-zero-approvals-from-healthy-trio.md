@@ -107,4 +107,32 @@ real "no" is never re-presented. A conflict rejection would then read as a real
 upstream ticket's TODO says to settle the message shape with this repo; whoever
 picks that up owns the matching classifier change here.
 
+**Update 2026-08-12 — upstream fix has landed** (optimystic tickets
+`abandoned-pend-holds-the-block` and `2-member-must-answer-a-lost-conflict-race`).
+The shape this repo needs to know:
+
+- The reject-vote concern above did **not** materialize. A losing member now signs a
+  new third vote kind, `conflict`, which is *never* counted as a rejection. The
+  super-majority shortfall message this repo's classifier matches was left
+  **byte-identical** (there is a NOTE at the throw site in optimystic's
+  `cluster-coordinator.ts` naming this repo's matcher as the reason), so
+  `SUPER_MAJORITY_SHORTFALL_UNANSWERED` keeps working for the genuinely-silent
+  cohort and its rejection count stays uninflated. **No classifier change is
+  required here.**
+- The ordinary lost-race path no longer produces an error at all: optimystic's
+  `CoordinatorRepo.pend` converts the loss into a retryable
+  `StaleFailure { conflict: true }`, which its own sync/pend layers retry natively
+  before anything reaches this repo's control-write retry.
+- A new typed error `ConflictRaceLostError` (exported from `@optimystic/db-p2p`,
+  name `'ConflictRaceLostError'`) exists for paths other than pend. It is
+  retryable by definition — if it ever shows up in this repo's failure logs, it
+  should be classified as retryable, but no matcher is needed pre-emptively.
+- The self-sustaining 2 s pile-up is addressed at both ends: an abandoned dead
+  transaction is broadcast so members clear it immediately, and a losing write is
+  answered instead of silently blocked.
+
+The healthy-trio scenario (≥ 5 runs of
+`control-write-degraded-cohort-member.integration.ts`) is the end-to-end gate for
+unblocking this ticket — the upstream repo could not run it from there.
+
 Do not "fix" this by loosening the scenario's assertions.
