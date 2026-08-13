@@ -37,8 +37,10 @@ import {
  * These same three cases are ported onto `node:assert/strict` in
  * `scripts/lib/published-smoke-scenario.mjs`, which `yarn smoke:published` runs
  * against packages installed from real tarballs (the scratch project has neither
- * vitest nor `src` access). Nothing checks that the two stay in step — when the
- * assertions here change, change the port to match rather than letting it drift.
+ * vitest nor `src` access). That file also carries two cases from
+ * `control-database-solo-warm-start.spec.ts`, so it answers to two specs, not
+ * one. Nothing checks that they stay in step — when the assertions here change,
+ * change the port to match rather than letting it drift.
  */
 
 /** Per-operation budget. Solo ops complete in milliseconds; this only catches hangs. */

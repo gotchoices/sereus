@@ -355,8 +355,12 @@ async function withDevice(tag, body) {
 		await body(() => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage }));
 	} finally {
 		// `force` so a case that failed before creating anything still cleans up, and a
-		// scratch project is never left holding block directories.
-		rmSync(dir, { recursive: true, force: true });
+		// scratch project is never left holding block directories. The retries are for
+		// Windows: `force` swallows ENOENT but not the EBUSY a `FileRawStorage` handle
+		// that outlives `stop()` would raise, and a teardown throw here would fail an
+		// otherwise-passing case. Same treatment as
+		// `packages/integration-tests/src/harness/test-cadre-host.ts`.
+		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	}
 }
 

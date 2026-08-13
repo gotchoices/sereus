@@ -14,9 +14,10 @@
  *      so the tarballs are exactly what `yarn npm publish` would upload),
  *   2. install them with **npm** into a scratch project under the OS temp dir, with
  *      everything else resolved from the public registry,
- *   3. run the cadre-of-one control-DB scenario there
+ *   3. run the solo control-DB scenario there
  *      (`scripts/lib/published-smoke-scenario.mjs`, a port of
- *      `packages/cadre-core/test/control-database-solo.spec.ts`),
+ *      `packages/cadre-core/test/control-database-solo.spec.ts` plus two cases from
+ *      `packages/cadre-core/test/control-database-solo-warm-start.spec.ts`),
  *   4. report the resolved version *and path* of every dependency that matters.
  *
  * Deliberately NOT wired into `yarn test`: it needs the network and takes tens of
@@ -78,6 +79,14 @@ const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets', '@libp2p/crypto', '@libp
  *
  * `@libp2p/crypto` + `@libp2p/peer-id` mint the throwaway sibling identity whose
  * signed `CadrePeer` row puts the device in a cadre it is the last member of.
+ *
+ * NOTE: nothing checks this list against the specifiers the scenario actually imports —
+ * running the scenario from inside this repo cannot catch a gap, because the root
+ * `node_modules` answers imports the scratch project would not. A missing entry surfaces
+ * only at release time, as an `ERR_MODULE_NOT_FOUND` that reads exactly like the upstream
+ * `chai` defect. If this list or the scenario's imports grow again, mechanise the check
+ * (parse the `await import()` specifiers and diff them against this list plus the packed
+ * workspaces) rather than re-reading both files by eye.
  */
 const SCENARIO_DIRECT_DEPS = [
 	'@optimystic/db-p2p',
@@ -263,7 +272,7 @@ function main(flags) {
 			return 1;
 		}
 
-		console.log('\n=== cadre-of-one control-DB scenario, against the installed packages ===');
+		console.log('\n=== solo control-DB scenario, against the installed packages ===');
 		const scenario = spawnSync(process.execPath, ['scenario.mjs'], { cwd: projectDir, stdio: 'inherit' });
 		if (scenario.error) {
 			throw new Error(`could not run the scenario: ${scenario.error.message}`);

@@ -51,7 +51,8 @@ yarn smoke:published
 ```
 
 Packs every publishable workspace, installs the tarballs plus registry dependencies into a scratch
-project outside this repo, and runs a single-node control-database scenario against them. This is
+project outside this repo, and runs a solo-device control-database scenario against them — a cadre
+of one, plus a device restarting alone on the peer rows a vanished cohort left on disk. This is
 the only gate that can see a defect which exists solely in the *published* dependency graph. Do not
 skip it, and do not paper over a failure by installing something into the scratch project by hand.
 

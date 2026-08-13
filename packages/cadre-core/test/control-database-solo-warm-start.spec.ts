@@ -122,8 +122,10 @@ async function withDevice(tag: string, body: (device: Device) => Promise<void>):
 	try {
 		await body({ dir, config: () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage }) });
 	} finally {
-		// `force` so a case that failed before creating anything still cleans up.
-		rmSync(dir, { recursive: true, force: true });
+		// `force` so a case that failed before creating anything still cleans up; the
+		// retries are for Windows, where `force` swallows ENOENT but not the EBUSY a
+		// `FileRawStorage` handle outliving `stop()` would raise.
+		rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 	}
 }
 

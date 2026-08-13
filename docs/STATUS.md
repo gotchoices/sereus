@@ -922,8 +922,8 @@ the `chai` defect below is exactly a failure that only appears once you install 
   the script exists to catch. The scenario body is therefore verified out-of-band instead: run
   directly against the linked workspace (`node scripts/lib/published-smoke-scenario.mjs` from
   anywhere inside this repo, which resolves `@serfab/*` through the workspace symlinks), all five
-  cases pass — the three cadre-of-one ones in 78–170 ms, the two warm-start ones in ~3.6–3.9 s each,
-  since those bring a strand's libp2p node up. So the scenario itself is sound and the only blocker
+  cases pass — the three cadre-of-one ones in well under a second each, the two warm-start ones in
+  roughly 3–4 s each, since those bring a strand's libp2p node up. So the scenario itself is sound and the only blocker
   is the upstream import chain. What that out-of-band run does **not** prove is the registry
   substrate, which is the whole point of the script — that stays unproven until the `chai` defect
   clears.
