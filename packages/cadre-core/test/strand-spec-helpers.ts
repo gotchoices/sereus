@@ -11,10 +11,11 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 import type { SAppConfig } from '../src/types.js';
 
 /**
- * Shared setup for the `strand-*.spec.ts` suites: opening a real strand DB in
- * bootstrap mode (libp2p node + MemoryRawStorage + the optimystic local
- * transactor) via `connectToStrand` — the same path `StrandDatabase` uses —
- * and the small raw-write/read helpers those suites build on.
+ * Shared setup for the `strand-*.spec.ts` suites: opening a real strand DB
+ * (libp2p node + MemoryRawStorage + an optimystic transactor — local by
+ * default, network on request) via `connectToStrand` — the same path
+ * `StrandDatabase` uses — and the small raw-write/read helpers those suites
+ * build on.
  *
  * IMPORTING THIS MODULE HAS A SIDE EFFECT: it registers a file-level `afterEach`
  * that shuts down every strand {@link openStrand} / {@link openRawStrand} handed
@@ -87,17 +88,35 @@ afterEach(async () => {
 });
 
 /**
- * Open a strand DB in bootstrap mode WITHOUT the founder bootstrap — no Header,
- * no Member, no Manager. For tests that seed those rows themselves (to vary the
- * founding order), or that need a member set with NO manager at all
+ * Which optimystic transactor {@link openRawStrand} / {@link openStrand} run
+ * on. `'local'` (the default — behaviourally identical to the historical
+ * `mode: 'bootstrap'`) commits with no peer round trips; `'network'` runs the
+ * full cluster-coordination path, which a lone node resolves against itself.
+ * `strand-membership-network-transactor-parity.spec.ts` uses `'network'` to
+ * prove the membership constraints bite identically on both.
+ */
+export type StrandTransactor = 'local' | 'network';
+
+/**
+ * Open a strand DB WITHOUT the founder bootstrap — no Header, no Member, no
+ * Manager. For tests that seed those rows themselves (to vary the founding
+ * order), or that need a member set with NO manager at all
  * (`bootstrapFounderMembership` always seats a founding Manager, and any Manager
  * row makes `NotAManager` fire alongside the floor under test).
+ *
+ * Defaults to the local transactor (`mode: 'bootstrap'`, unchanged), so no
+ * pre-existing suite changes behaviour.
  */
-export async function openRawStrand(): Promise<RawStrand> {
+export async function openRawStrand(transactor: StrandTransactor = 'local'): Promise<RawStrand> {
   const strandId = randomUUID();
   const storage = new MemoryRawStorage();
   const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+  // The 'network' arm passes `transactor` (the knob that survives the strand-mode
+  // retirement) rather than `mode: 'networked'`; the default arm keeps the exact
+  // historical option shape.
+  const result = await connectToStrand(db, transactor === 'local'
+    ? { strandId, mode: 'bootstrap', storage }
+    : { strandId, transactor: 'network', storage });
   const strand: RawStrand = {
     db,
     strandId,
@@ -110,9 +129,9 @@ export async function openRawStrand(): Promise<RawStrand> {
   return strand;
 }
 
-/** Open a strand DB in bootstrap mode and run the founder bootstrap for the type. */
-export async function openStrand(type: 'o' | 'c' = 'c'): Promise<Strand> {
-  const raw = await openRawStrand();
+/** Open a strand DB (default: local transactor) and run the founder bootstrap for the type. */
+export async function openStrand(type: 'o' | 'c' = 'c', transactor: StrandTransactor = 'local'): Promise<Strand> {
+  const raw = await openRawStrand(transactor);
   const founder = strandMemberKeyPair(await generateStrandMemberKey());
   await bootstrapFounderMembership(raw.db, {
     strandId: raw.strandId,

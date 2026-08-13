@@ -1,10 +1,9 @@
 import { describe, it, expect } from 'vitest';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
-import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
-import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
 import { controlNodeConfig, freshPartyId, scopedWithin } from './control-db-node-helpers.js';
+import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, type OpSnapshot } from './storage-op-counter.js';
 
 /**
  * **What this protects: the NUMBER of raw-storage operations a control-database
@@ -111,184 +110,9 @@ interface Budget {
 	blockBudget: number;
 }
 
-interface MethodCount {
-	method: string;
-	calls: number;
-	blocks: number;
-}
-
-interface OpSnapshot {
-	/** Every call into `IRawStorage`, whatever the method. */
-	total: number;
-	/** Distinct block ids touched across all methods — the denominator of the redundancy ratio. */
-	distinctBlocks: number;
-	byMethod: MethodCount[];
-}
-
-/**
- * Tallies calls into an `IRawStorage`, by method and by distinct block id.
- *
- * Both halves matter. The total is the cost; the distinct-block count is what makes
- * it diagnosable — the measured start reads one block's metadata dozens of times, so
- * a change that removes redundancy moves the ratio, while a change that adds a table
- * moves the distinct count. A total-only budget cannot tell those two apart.
- */
-class StorageOpCounter {
-	private readonly calls = new Map<string, number>();
-	private readonly blocksByMethod = new Map<string, Set<BlockId>>();
-	private readonly blocks = new Set<BlockId>();
-
-	/** `blockId` omitted for the whole-store methods (`listBlockIds`, `getApproximateBytesUsed`). */
-	record(method: string, blockId?: BlockId): void {
-		this.calls.set(method, (this.calls.get(method) ?? 0) + 1);
-		if (blockId === undefined) return;
-		this.blocks.add(blockId);
-		let seen = this.blocksByMethod.get(method);
-		if (!seen) {
-			seen = new Set<BlockId>();
-			this.blocksByMethod.set(method, seen);
-		}
-		seen.add(blockId);
-	}
-
-	reset(): void {
-		this.calls.clear();
-		this.blocksByMethod.clear();
-		this.blocks.clear();
-	}
-
-	snapshot(): OpSnapshot {
-		const byMethod = [...this.calls]
-			.map(([method, calls]) => ({ method, calls, blocks: this.blocksByMethod.get(method)?.size ?? 0 }))
-			.sort((a, b) => b.calls - a.calls);
-		return {
-			total: byMethod.reduce((sum, m) => sum + m.calls, 0),
-			distinctBlocks: this.blocks.size,
-			byMethod
-		};
-	}
-}
-
-/** Per-method `calls/distinct-blocks`, busiest first — the blocked ticket's table on one line. */
-function formatBreakdown(snapshot: OpSnapshot): string {
-	return snapshot.byMethod.map((m) => `${m.method} ${m.calls}/${m.blocks}`).join(', ');
-}
-
-/** One line per phase, in the blocked ticket's `calls / distinct blocks` shape. */
-function formatSnapshot(label: string, snapshot: OpSnapshot): string {
-	return `[storage-op-budget] ${label}: ${snapshot.total} ops over ${snapshot.distinctBlocks} distinct blocks — ${formatBreakdown(snapshot)}`;
-}
-
-/**
- * Counting passthrough over a real `IRawStorage`. Every method records BEFORE
- * delegating, so an operation is counted when it is issued rather than when it
- * settles — that is what the device pays for.
- *
- * The two iterable methods return the inner iterable directly instead of being
- * `async *` generators: a generator would not count until something started
- * iterating it, which would undercount an issued-but-abandoned listing.
- *
- * Written out method by method rather than as a `Proxy` so it type-checks against
- * `IRawStorage` — a new method on that interface should fail the build here, not
- * silently go uncounted.
- */
-class CountingRawStorage implements IRawStorage {
-	/**
-	 * Mirrors `KvRawStorage`: the optional members exist only when the inner storage
-	 * has them, because callers feature-detect (`typeof storage.listBlockIds === 'function'`).
-	 * A stub here would change what the node under measurement actually does.
-	 */
-	listBlockIds?: () => AsyncIterable<BlockId>;
-	getApproximateBytesUsed?: () => Promise<number>;
-
-	constructor(
-		private readonly inner: IRawStorage,
-		private readonly counter: StorageOpCounter
-	) {
-		if (inner.listBlockIds) {
-			this.listBlockIds = () => {
-				this.counter.record('listBlockIds');
-				return inner.listBlockIds!();
-			};
-		}
-		if (inner.getApproximateBytesUsed) {
-			this.getApproximateBytesUsed = () => {
-				this.counter.record('getApproximateBytesUsed');
-				return inner.getApproximateBytesUsed!();
-			};
-		}
-	}
-
-	getMetadata(blockId: BlockId): Promise<BlockMetadata | undefined> {
-		this.counter.record('getMetadata', blockId);
-		return this.inner.getMetadata(blockId);
-	}
-
-	saveMetadata(blockId: BlockId, metadata: BlockMetadata): Promise<void> {
-		this.counter.record('saveMetadata', blockId);
-		return this.inner.saveMetadata(blockId, metadata);
-	}
-
-	getRevision(blockId: BlockId, rev: number): Promise<ActionId | undefined> {
-		this.counter.record('getRevision', blockId);
-		return this.inner.getRevision(blockId, rev);
-	}
-
-	saveRevision(blockId: BlockId, rev: number, actionId: ActionId): Promise<void> {
-		this.counter.record('saveRevision', blockId);
-		return this.inner.saveRevision(blockId, rev, actionId);
-	}
-
-	listRevisions(blockId: BlockId, startRev: number, endRev: number): AsyncIterable<ActionRev> {
-		this.counter.record('listRevisions', blockId);
-		return this.inner.listRevisions(blockId, startRev, endRev);
-	}
-
-	getPendingTransaction(blockId: BlockId, actionId: ActionId): Promise<Transform | undefined> {
-		this.counter.record('getPendingTransaction', blockId);
-		return this.inner.getPendingTransaction(blockId, actionId);
-	}
-
-	savePendingTransaction(blockId: BlockId, actionId: ActionId, transform: Transform): Promise<void> {
-		this.counter.record('savePendingTransaction', blockId);
-		return this.inner.savePendingTransaction(blockId, actionId, transform);
-	}
-
-	deletePendingTransaction(blockId: BlockId, actionId: ActionId): Promise<void> {
-		this.counter.record('deletePendingTransaction', blockId);
-		return this.inner.deletePendingTransaction(blockId, actionId);
-	}
-
-	listPendingTransactions(blockId: BlockId): AsyncIterable<ActionId> {
-		this.counter.record('listPendingTransactions', blockId);
-		return this.inner.listPendingTransactions(blockId);
-	}
-
-	getTransaction(blockId: BlockId, actionId: ActionId): Promise<Transform | undefined> {
-		this.counter.record('getTransaction', blockId);
-		return this.inner.getTransaction(blockId, actionId);
-	}
-
-	saveTransaction(blockId: BlockId, actionId: ActionId, transform: Transform): Promise<void> {
-		this.counter.record('saveTransaction', blockId);
-		return this.inner.saveTransaction(blockId, actionId, transform);
-	}
-
-	getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {
-		this.counter.record('getMaterializedBlock', blockId);
-		return this.inner.getMaterializedBlock(blockId, actionId);
-	}
-
-	saveMaterializedBlock(blockId: BlockId, actionId: ActionId, block?: IBlock): Promise<void> {
-		this.counter.record('saveMaterializedBlock', blockId);
-		return this.inner.saveMaterializedBlock(blockId, actionId, block);
-	}
-
-	promotePendingTransaction(blockId: BlockId, actionId: ActionId): Promise<void> {
-		this.counter.record('promotePendingTransaction', blockId);
-		return this.inner.promotePendingTransaction(blockId, actionId);
-	}
-}
+// `StorageOpCounter`, `CountingRawStorage` and the formatters live in
+// `storage-op-counter.ts`, shared with `strand-solo-write-budget.spec.ts`. The
+// budgets below passing unchanged is the proof the hoist was faithful.
 
 /**
  * Assert one phase against its budget.
@@ -354,7 +178,7 @@ describe('control database start, raw-storage operation budget', () => {
 			await within('first.start() (cold)', LIFECYCLE_TIMEOUT_MS, () => first.start());
 			// Snapshot immediately: everything after this point is the spec's own doing.
 			cold = counter.snapshot();
-			console.log(formatSnapshot('cold start', cold));
+			console.log(formatSnapshot('storage-op-budget', 'cold start', cold));
 
 			// Genesis AFTER the snapshot, so it costs the cold budget nothing. Its
 			// purpose is the warm run below: without a written row, a warm start that
@@ -377,7 +201,7 @@ describe('control database start, raw-storage operation budget', () => {
 			counter.reset();
 			await within('second.start() (warm)', LIFECYCLE_TIMEOUT_MS, () => second.start());
 			warm = counter.snapshot();
-			console.log(formatSnapshot('warm restart', warm));
+			console.log(formatSnapshot('storage-op-budget', 'warm restart', warm));
 
 			// Anti-vacuity: the warm start really did read the prior session's rows.
 			const db = second.getControlDatabase();
