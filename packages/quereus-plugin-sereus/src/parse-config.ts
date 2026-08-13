@@ -1,5 +1,23 @@
 import type { SqlValue } from '@quereus/quereus';
-import type { StrandConnectionOptions } from './types.js';
+import type { StrandConnectionOptions, StrandTransactor } from './types.js';
+
+const STRAND_TRANSACTORS: readonly StrandTransactor[] = ['local', 'network', 'test'];
+
+/**
+ * Read the optional `transactor` key. Unlike `fret_profile` (whose unknown
+ * values fall back to the default), an unrecognised transactor throws: silently
+ * running on the network when the caller asked for local storage is the kind of
+ * mistake that only surfaces as a mysterious hang on a machine with no peers.
+ */
+function parseTransactor(raw: SqlValue): StrandTransactor | undefined {
+	if (raw === undefined || raw === null || raw === '') return undefined;
+	if (typeof raw !== 'string' || !STRAND_TRANSACTORS.includes(raw as StrandTransactor)) {
+		throw new Error(
+			`quereus-plugin-sereus: transactor must be one of ${STRAND_TRANSACTORS.join(', ')} (got ${JSON.stringify(raw)})`,
+		);
+	}
+	return raw as StrandTransactor;
+}
 
 /**
  * Parse the plugin-loader SqlValue config into typed StrandConnectionOptions.
@@ -23,17 +41,15 @@ export function parseConfig(config: Record<string, SqlValue>): StrandConnectionO
 	const enableCache = config.enable_cache !== false && config.enable_cache !== 0;
 	const fretProfile = config.fret_profile === 'core' ? 'core' as const : 'edge' as const;
 
-	// Lifecycle mode: selects bootstrap (local transactor) vs networked. Only the
-	// two known values are honored; anything else falls through to the default.
-	const mode = config.mode === 'bootstrap' || config.mode === 'networked'
-		? config.mode
-		: undefined;
+	// Storage engine — see `StrandConnectionOptions.transactor`. Left out entirely
+	// when unset so `composeStrand` applies its own default.
+	const transactor = parseTransactor(config.transactor);
 
-	// Internal transactor override (e.g. `'test'`). Applies only when `mode` is
-	// unset — see `StrandConnectionOptions.transactor`.
-	const transactor = typeof config.transactor === 'string' && config.transactor
-		? config.transactor
-		: undefined;
+	// NOTE: `parseConfig` reads the keys it knows and ignores every other key in
+	// the map — there is no allowlist, so a misspelled or retired setting (e.g.
+	// the `mode` this package used to carry) is silently dropped rather than
+	// rejected. Deliberate: the plugin loader hands through whatever the host's
+	// settings file holds.
 
 	// NOTE: persistent storage cannot ride a `Record<string, SqlValue>` — an
 	// `IRawStorage` is not an `SqlValue`. The Node loader (`plugin.ts`) reads the
@@ -49,7 +65,6 @@ export function parseConfig(config: Record<string, SqlValue>): StrandConnectionO
 		port,
 		enableCache,
 		fretProfile,
-		...(mode && { mode }),
 		...(transactor && { transactor }),
 	};
 }

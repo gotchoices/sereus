@@ -130,9 +130,10 @@ insert into App.Message (Id, Content) values (1, 'hello strand');
   `sereus-strand-<strandId>`. State survives reload. The plugin treats the
   IndexedDB handle as borrowed and does **not** close it on `shutdown()` — its
   lifecycle is the page/worker.
-- **Networked-only via the loader.** The plugin-loader settings expose the
-  `network` transactor; offline/solo `bootstrap` mode is only reachable through
-  the programmatic `connectToStrand({ mode: 'bootstrap' })` API.
+- **Network transactor by default.** Every connection commits through the
+  strand's libp2p cohort unless it asks otherwise; the in-process `local`
+  transactor is a testing/tooling option (`connectToStrand({ transactor:
+  'local' })`), not a browser deployment mode.
 - **WebRTC** requires cross-origin isolation (COOP/COEP) and is tracked as a
   follow-up; v1 is WebSockets + circuit-relay only.
 - **Lifecycle.** Quoomb Web's loader keeps only the manifest and discards the
@@ -225,13 +226,16 @@ const result = await registerPlugin(db, sereusPlugin, {
 await result.shutdown();
 ```
 
-### Bootstrap mode (solo node with persistent storage)
+### Local transactor (in-process, no cohort)
 
-For a solo node (e.g. first-launch sApp init, single-host dev) that should apply
-schema and accept DML without peer round trips, set `mode: 'bootstrap'` and pass
-a persistent `IRawStorage`. The same storage instance is wired into both the
-libp2p data path and the optimystic plugin's local transactor, so writes persist
-across restart.
+`transactor: 'local'` sends every transaction straight to this process's raw
+storage — no peers are consulted at all. It is for in-process tests and tooling
+(this package's own e2e suites run on it); applications should stay on the
+default `network` transactor, which a lone node coordinates for itself.
+
+Pair it with a persistent `IRawStorage` to survive restart: the same storage
+instance is wired into both the libp2p data path and the optimystic plugin's
+local transactor.
 
 ```typescript
 import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
@@ -239,7 +243,7 @@ import { FileRawStorage } from '@optimystic/db-p2p-storage-fs';
 const storage = new FileRawStorage('./data/my-strand');
 const strand = await connectToStrand(db, {
   strandId: 'abc',
-  mode: 'bootstrap',
+  transactor: 'local',
   storage,
   schema: 'table Msg (Id integer primary key, Body text not null)',
 });
@@ -282,7 +286,7 @@ on shutdown.
 | `clusterSize` | number | `4` | Nodes the **strand's** replication cluster should have (the control network uses its own fixed `CONTROL_REPLICATION_BREADTH` and never reads this). 4 is the smallest breadth whose 0.75 super-majority (`ceil(4 × 0.75) = 3`) still commits with one holder offline; at 2 or 3 every holder must be awake for every write, and at 2 read repair cannot converge at all. Every peer on the strand should use the same value: a peer configured much higher derives a larger expected cohort and can reject a coordinator's smaller declared peer set as a downsize. Frozen when the libp2p node is created, so a change takes effect on the next restart. Must be an integer ≥ 2 (`MIN_CLUSTER_SIZE`, Optimystic's own minimum). Leaving it unset is *not* the same as passing 4 elsewhere — Optimystic's own fallback is 10, so this default is applied here. Ignored when `libp2pNode` is injected |
 | `libp2pNode` | Libp2p | — | Inject an existing libp2p node |
 | `coordinatedRepo` | IRepo | — | Required when `libp2pNode` is provided |
-| `mode` | `'bootstrap' \| 'networked'` | `'networked'` | `'bootstrap'` routes through the local transactor (no peer round trips); `'networked'` uses the network transactor |
+| `transactor` | `'local' \| 'network' \| 'test'` | `'network'` | Storage engine transactions go through. `'network'`: the strand's libp2p cohort, which a lone node coordinates for itself — the only value an application should use. `'local'`: this process's raw storage directly, no peers consulted (in-process tests and tooling). `'test'`: Optimystic's in-memory fake; no libp2p node is created unless one is injected (unit tests) |
 | `storage` | IRawStorage | — | Persistent raw storage. Borrowed — not closed on `shutdown()` |
 
 ### Plugin settings (plugin-loader / Quoomb)
@@ -297,6 +301,7 @@ on shutdown.
 | `port` | number | `0` | libp2p listening port |
 | `enable_cache` | boolean | `true` | Enable caching |
 | `fret_profile` | string | `'edge'` | FRET profile (`'edge'` or `'core'`) |
+| `transactor` | string | `'network'` | Storage engine (`'local'`, `'network'` or `'test'`) — see the `transactor` row above. An unrecognised value is rejected at load |
 
 **Bootstrap multiaddrs.** Browsers can only dial transports reachable from an
 `https://` page. Use `/wss` (or `/dns/.../wss`, or a relay-fronted multiaddr).
@@ -334,8 +339,9 @@ reaches the IndexedDB layer in a jsdom + `fake-indexeddb` environment.
 
 The `e2e` project covers two scenarios over real libp2p + `FileRawStorage`:
 
-- `test/e2e/bootstrap.e2e.spec.ts` — solo-node bootstrap mode, including
-  cold-restart persistence across the shared storage directory.
+- `test/e2e/local-transactor.e2e.spec.ts` — a single in-process connection on the
+  `local` transactor, including cold-restart persistence across the shared
+  storage directory.
 - `test/e2e/networked.e2e.spec.ts` — two in-process peers exchanging strand data
   through a `createLibp2pNode` mesh: cross-peer replication, bidirectional
   convergence, and late-joiner catch-up.

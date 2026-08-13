@@ -23,8 +23,8 @@ import type { MemberRegistration } from '../src/types.js';
 /**
  * Component coverage for the per-strand invite -> join handshake (issuance,
  * atomic consumption, manager-admit) and the strand-DB-backed EnrollmentService
- * backing. Every test runs against a REAL closed strand DB in bootstrap mode
- * (libp2p node + MemoryRawStorage + the optimystic local transactor) via
+ * backing. Every test runs against a REAL closed strand DB on the local
+ * transactor (libp2p node + MemoryRawStorage, no peers consulted) via
  * `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *

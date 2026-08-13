@@ -66,7 +66,7 @@ test.describe('Tier 1 / solo / diagnostics surface', () => {
 		);
 
 		// Cadre surface — control network connected and the signed chat strand
-		// reaches `active` on a solo node (bootstrap mode).
+		// reaches `active` on a solo node (no peers).
 		await expect(page.getByTestId('diag-control-connected')).toHaveText(
 			'connected ✓',
 			{ timeout: 30_000 },

@@ -5,8 +5,8 @@
  * Replaces the old `@optimystic/demo` `MessageApp` wiring. Reads/writes the
  * `App.Member` / `App.Message` tables of the active chat strand directly via
  * Quereus SQL, mirroring `reference-app-rn/src/chat-operations.ts`. The strand
- * runs in `bootstrap` mode on a solo node, so writes land on the strand's
- * IndexedDB local transactor.
+ * coordinates its own writes on a solo node, so writes land on the strand's
+ * IndexedDB with no peers needed.
  *
  * Polling stays cheap: a 4s visibility-gated refresh while the route is mounted.
  */

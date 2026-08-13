@@ -211,7 +211,7 @@
 <footer>
 	<p>
 		Identity and party id persist in IndexedDB and survive reloads. The solo
-		chat strand runs in bootstrap mode; a strand formed via an invitation is a
+		chat strand needs no peers; a strand formed via an invitation is a
 		closed strand keyed by the minted member key. Control-network authorization
 		(owner keys, formation invites/usage, strand membership) is visible on
 		the <a href="#/diag">Diagnostics</a> page.

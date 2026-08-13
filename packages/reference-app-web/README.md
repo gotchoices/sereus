@@ -22,8 +22,8 @@ CadreNode → control network (CadreControl) → signed open chat strand (chat s
   (`assertSchemaSignature`), so the browser exercises the schema-signature gate
   the RN reference currently skips.
 - **Strand database** — the chat `Member`/`Message` tables backed by Quereus over
-  Optimystic. On a solo node the strand runs in `bootstrap` mode, so DML lands on
-  the strand's IndexedDB-backed local transactor with no peers needed.
+  Optimystic. A solo node coordinates its own writes, so DML lands on the
+  strand's IndexedDB-backed storage with no peers needed.
 
 Identity (Ed25519 peer key) and the party id persist in IndexedDB across reloads.
 
@@ -87,12 +87,12 @@ of time — and the provider returns a cached `IndexedDBRawStorage` per key.
 ## Solo cadre (Phase 1)
 
 No control bootstrap, no listen addresses. The node self-seeds as its own
-owner and hosts a single signed chat strand in `bootstrap` mode. Send →
+owner and hosts a single signed chat strand with no peers. Send →
 list round-trips and the data survives reload (DML persists to the strand's
 IndexedDB database). This is the single-node analogue of the RN reference's
 current coverage, plus the schema-signature gate.
 
-Owner genesis is **fail-soft**: the chat round-trip runs in bootstrap mode
+Owner genesis is **fail-soft**: the chat round-trip runs on the solo node
 and does not depend on owner, so a genesis failure is surfaced on Home /
 Diagnostics rather than aborting startup.
 

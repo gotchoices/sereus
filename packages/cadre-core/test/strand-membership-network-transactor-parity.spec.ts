@@ -12,9 +12,8 @@ import { freshKeyPair, tableCount, openStrand } from './strand-spec-helpers.js';
  * — `Manager.Authorized`, `Manager.MinOneManager` — are what stop an
  * unauthorized party from removing a strand's administrators. Reading the code
  * says enforcement lives in Quereus and the optimystic vtab session, not in the
- * transactor; this spec is the proof, gathered before the strand `bootstrap`
- * mode is retired (`retire-strand-mode-in-cadre-core`) and the NETWORK
- * transactor becomes the only production path.
+ * transactor; this spec is the proof, gathered when the network transactor
+ * became the only production path (`retire-strand-mode-in-cadre-core`).
  *
  * Each case below re-runs one of the strongest existing membership assertions
  * through the network transactor (`openStrand(type, 'network')`), mirroring a
@@ -35,7 +34,10 @@ describe('strand membership constraints, network transactor parity', () => {
 	// transactor too, or the retirement would ship a strand whose administrators
 	// anyone can remove.
 	it('rejects an unauthorized Manager delete (Manager.Authorized, deferred, on delete)', async () => {
-		const { db, founder } = await openStrand('c', 'network');
+		const { db, founder, transactor } = await openStrand('c', 'network');
+		// The arm is the whole point of this file: pin the RESOLVED transactor, or a
+		// case that quietly ran on `local` would re-prove the mirrored test instead.
+		expect(transactor).toBe('network');
 		const other = freshKeyPair();
 		await admitManager(db, { byManagerKeyPair: founder, newManagerKey: other.publicKeyB64 });
 		expect(await tableCount(db, 'Manager')).toBe(2);
@@ -58,7 +60,8 @@ describe('strand membership constraints, network transactor parity', () => {
 	// is a valid self-resignation, so MinOneManager is the only possible rejector
 	// — pinning the name proves the floor fired on this transactor.
 	it('rejects the sole manager resigning (Manager.MinOneManager, deferred, on delete)', async () => {
-		const { db, founder } = await openStrand('c', 'network');
+		const { db, founder, transactor } = await openStrand('c', 'network');
+		expect(transactor).toBe('network');
 		expect(await tableCount(db, 'Manager')).toBe(1);
 
 		await expect(
@@ -74,7 +77,8 @@ describe('strand membership constraints, network transactor parity', () => {
 	// SECOND — see `removeManager`'s doc). Parity must hold for acceptance too: a
 	// transactor that over-rejects would freeze a legitimate administrator change.
 	it('accepts an authorized add-then-resign hand-off', async () => {
-		const { db, founder } = await openStrand('c', 'network');
+		const { db, founder, transactor } = await openStrand('c', 'network');
+		expect(transactor).toBe('network');
 		const successor = freshKeyPair();
 
 		await admitManager(db, { byManagerKeyPair: founder, newManagerKey: successor.publicKeyB64 });

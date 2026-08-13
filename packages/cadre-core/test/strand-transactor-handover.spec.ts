@@ -18,11 +18,6 @@ import { tempStorageDir } from './control-db-node-helpers.js';
  * data-visibility regression could hide, which is why it gets a spec rather
  * than an argument.
  *
- * Phase 1 uses the plugin's `transactor: 'local'` option, NOT
- * `mode: 'bootstrap'`: `transactor` is the knob that survives ticket three
- * (`drop-strand-mode-option-from-sql-plugin`), so this spec needs no edit when
- * the mode goes away.
- *
  * Phase 2 builds a FRESH `FileRawStorage` over the same directory, so only the
  * bytes on disk cross the phase boundary — the idiom
  * `control-database-solo-warm-start.spec.ts` established (nothing survives in
@@ -32,13 +27,9 @@ import { tempStorageDir } from './control-db-node-helpers.js';
  * Each phase boots a real (isolated, empty-bootstrap-list) libp2p node via
  * `connectToStrand`, so the timeout is generous.
  *
- * NOTE: this spec cannot assert that phase 1 really ran on the local transactor —
- * `SereusPluginResult` does not report the resolved transactor, so a phase 1 whose
- * `transactor` option went unread would degrade this into a network→network test
- * that still passes. It is the retirement's data-safety evidence, and
- * `tickets/implement/13-drop-strand-mode-option-from-sql-plugin.md` is the ticket
- * that rewrites that option — its arm adds the resolved transactor to the result
- * so both phases can pin their arm here.
+ * Both phases pin `result.transactor`, the RESOLVED engine. Without that this is
+ * the retirement's data-safety evidence in name only: a phase 1 whose option went
+ * unread would quietly degrade into a network→network test that still passes.
  */
 
 const SCHEMA = 'create table Note (Id text primary key, Body text not null);';
@@ -74,6 +65,9 @@ describe('strand transactor handover: local-transactor blocks under the network 
 				storage: new FileRawStorage(dir)
 			});
 			try {
+				expect(era1.transactor,
+					'phase 1 did not run on the local transactor — this would be a network→network test wearing a handover label'
+				).toBe('local');
 				for (const id of GEN1_IDS) {
 					await insertNote(db1, id, `written by the local transactor: ${id}`);
 				}
@@ -95,6 +89,12 @@ describe('strand transactor handover: local-transactor blocks under the network 
 				storage: new FileRawStorage(dir)
 			});
 			try {
+				// Omitting the option really does land the network transactor — the
+				// default every strand runs on after the retirement.
+				expect(era2.transactor,
+					'phase 2 did not default to the network transactor, so it proves nothing about reading local-era bytes'
+				).toBe('network');
+
 				// The catalog HYDRATED from the local era's persisted schemas rather
 				// than being re-created — a re-create would mask a store the network
 				// transactor cannot actually read.

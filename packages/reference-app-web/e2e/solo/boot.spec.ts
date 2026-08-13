@@ -17,7 +17,7 @@ test.describe('Tier 1 / solo / boot', () => {
 		expect(partyId, 'home-party-id should be set once the cadre is up').toBeTruthy();
 		expect(partyId).not.toBe('—');
 		await expect(page.getByTestId('home-control')).toHaveText('connected');
-		// The signed open chat strand reaches `active` on a solo node (bootstrap mode).
+		// The signed open chat strand reaches `active` on a solo node (no peers).
 		await expect(page.getByTestId('home-strand-status')).toContainText('active', {
 			timeout: 30_000,
 		});

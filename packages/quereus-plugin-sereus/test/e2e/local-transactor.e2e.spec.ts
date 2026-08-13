@@ -9,21 +9,25 @@ import { connectToStrand } from '../../src/connect.js';
 import type { SereusPluginResult } from '../../src/types.js';
 
 /**
- * End-to-end suite for bootstrap mode: real libp2p node + real FileRawStorage
- * + real optimystic plugin local transactor. No `vi.mock` calls — the sibling
- * unit spec's `vi.mock('@optimystic/db-p2p', ...)` is scoped to that file by
- * Vitest, so this file inherits no fakes.
+ * End-to-end suite for the `local` transactor — a strand database running
+ * entirely in this process, consulting no peers: real libp2p node + real
+ * FileRawStorage + the real optimystic plugin's local transactor. No `vi.mock`
+ * calls — the sibling unit spec's `vi.mock('@optimystic/db-p2p', ...)` is scoped
+ * to that file by Vitest, so this file inherits no fakes.
  *
  * The headline assertion is the persistence test: data written by one
- * `connectToStrand({ mode: 'bootstrap', storage })` call must be readable by
- * a second connection built over the same storage directory after the first
- * has shut down. This closes the cold-start loop deferred to the host app in
+ * `connectToStrand({ transactor: 'local', storage })` call must be readable by
+ * a second connection built over the same storage directory after the first has
+ * shut down. This closes the cold-start loop deferred to the host app in
  * tickets/complete/1-wire-strand-storage-into-bootstrap-transactor.md.
+ *
+ * Applications run on the default `network` transactor (covered by
+ * `networked.e2e.spec.ts`); `local` is for in-process tests and tooling.
  */
 
 const TEST_SCHEMA = 'table Msg (Id integer primary key, Body text not null)';
 
-describe('connectToStrand (bootstrap e2e)', () => {
+describe('connectToStrand (local transactor e2e)', () => {
 	let storageDir: string;
 	let db: Database | null = null;
 	let result: SereusPluginResult | null = null;
@@ -53,16 +57,20 @@ describe('connectToStrand (bootstrap e2e)', () => {
 		await fs.rm(storageDir, { recursive: true, force: true });
 	});
 
-	it('runs CRUD round-trip in a single bootstrap connection', async () => {
+	it('runs CRUD round-trip in a single local-transactor connection', async () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
-			mode: 'bootstrap',
+			transactor: 'local',
 			storage,
 			schema: TEST_SCHEMA,
 		});
+
+		// The option landed: everything below really is the local transactor, not
+		// the network one silently resolving a lone node against itself.
+		expect(result.transactor).toBe('local');
 
 		await db.exec(`insert into App.Msg(Id, Body) values (1,'a'),(2,'b'),(3,'c')`);
 
@@ -97,7 +105,7 @@ describe('connectToStrand (bootstrap e2e)', () => {
 			const db1 = new Database();
 			const r1 = await connectToStrand(db1, {
 				strandId,
-				mode: 'bootstrap',
+				transactor: 'local',
 				storage: storage1,
 				schema: TEST_SCHEMA,
 			});
@@ -115,7 +123,7 @@ describe('connectToStrand (bootstrap e2e)', () => {
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
-			mode: 'bootstrap',
+			transactor: 'local',
 			storage: storage2,
 			schema: TEST_SCHEMA,
 		});
@@ -149,7 +157,7 @@ describe('connectToStrand (bootstrap e2e)', () => {
 			const db1 = new Database();
 			const r1 = await connectToStrand(db1, {
 				strandId,
-				mode: 'bootstrap',
+				transactor: 'local',
 				storage: storage1,
 				schema: HYDRATE_SCHEMA,
 			});
@@ -170,7 +178,7 @@ describe('connectToStrand (bootstrap e2e)', () => {
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
-			mode: 'bootstrap',
+			transactor: 'local',
 			storage: storage2,
 			schema: HYDRATE_SCHEMA,
 		});
@@ -191,13 +199,13 @@ describe('connectToStrand (bootstrap e2e)', () => {
 		expect(rows).toEqual([{ Name: 'alice', Body: 'hello' }]);
 	});
 
-	it('rejects queries against App.* when schema is omitted in bootstrap mode', async () => {
+	it('rejects queries against App.* when schema is omitted', async () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
-			mode: 'bootstrap',
+			transactor: 'local',
 			storage,
 		});
 
@@ -218,7 +226,7 @@ describe('connectToStrand (bootstrap e2e)', () => {
 			const cycleDb = new Database();
 			const cycleResult = await connectToStrand(cycleDb, {
 				strandId,
-				mode: 'bootstrap',
+				transactor: 'local',
 				storage,
 				schema: TEST_SCHEMA,
 			});

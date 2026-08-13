@@ -4,7 +4,7 @@ import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
-import type { StrandConnectionOptions, SereusPluginResult, Libp2pNodeWithRepo } from './types.js';
+import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize } from './cluster-size.js';
 
@@ -88,7 +88,7 @@ export interface CreateNodeContext {
 /** Context passed to the platform's storage-resolution strategy. */
 export interface ResolveStorageContext {
 	strandId: string;
-	resolvedTransactor: string;
+	resolvedTransactor: StrandTransactor;
 	/** The storage the caller passed in `options.storage`, if any. */
 	requestedStorage?: IRawStorage;
 }
@@ -143,33 +143,26 @@ export async function composeStrand(
 		port = 0,
 		enableCache = true,
 		fretProfile = 'edge',
-		mode,
+		transactor = 'network',
 	} = options;
 
 	// Resolve (and validate) up front so a nonsense value fails before any plugin
 	// registration or node creation has happened.
 	const clusterSize = resolveStrandClusterSize(options.clusterSize);
 
-	// Resolve the transactor. `mode` is the public knob: bootstrap -> local,
-	// networked -> network. The legacy `transactor` override (used by unit
-	// tests with `'test'`) only applies when `mode` is unspecified.
-	let resolvedTransactor: string;
-	if (mode !== undefined) {
-		resolvedTransactor = mode === 'bootstrap' ? 'local' : 'network';
-	} else if (options.transactor !== undefined) {
-		resolvedTransactor = options.transactor;
-	} else {
-		resolvedTransactor = 'network';
-	}
+	// The storage engine every write and read below goes through — see
+	// `StrandConnectionOptions.transactor`. Named separately from the option so
+	// the default is applied exactly once and reported on the result.
+	const resolvedTransactor: StrandTransactor = transactor;
 
 	const networkName = `strand-${strandId}`;
-	log('Connecting to strand %s (network: %s, mode=%s, transactor=%s)',
-		strandId, networkName, mode ?? '(default)', resolvedTransactor);
+	log('Connecting to strand %s (network: %s, transactor=%s)',
+		strandId, networkName, resolvedTransactor);
 
 	// Resolve storage. Node passes `options.storage` through; the browser
-	// defaults to IndexedDB. The resolved instance feeds BOTH the plugin's
-	// bootstrap `rawStorageFactory` and node creation, so it must be decided up
-	// front (before pluginConfig is built).
+	// defaults to IndexedDB. The resolved instance feeds BOTH the local
+	// transactor's `rawStorageFactory` and node creation, so it must be decided
+	// up front (before pluginConfig is built).
 	const storage = platform.resolveStorage
 		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
 		: options.storage;
@@ -178,9 +171,9 @@ export async function composeStrand(
 	await platform.registerCrypto(db);
 	log('Registered crypto plugin');
 
-	// 2. Register optimystic plugin with transactor defaults. In local mode with
-	// persistent storage, hand the same instance to the plugin so the local
-	// transactor persists DML on the host backend (not in-memory).
+	// 2. Register optimystic plugin with transactor defaults. On the local
+	// transactor with persistent storage, hand the same instance to the plugin so
+	// DML persists on the host backend (not in-memory).
 	const pluginConfig: Record<string, unknown> = {
 		default_transactor: resolvedTransactor,
 		default_key_network: 'libp2p',
@@ -313,6 +306,7 @@ export async function composeStrand(
 		functions: [],
 		collations: [],
 		hydrated,
+		transactor: resolvedTransactor,
 		async shutdown() {
 			log('Shutting down strand connection %s', strandId);
 			await collectionFactory.shutdown();

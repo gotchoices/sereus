@@ -7,4 +7,4 @@ export {
 	STRAND_CLUSTER_POLICY,
 	resolveStrandClusterSize
 } from './cluster-size.js';
-export type { StrandConnectionOptions, SereusPluginResult } from './types.js';
+export type { StrandConnectionOptions, SereusPluginResult, StrandTransactor } from './types.js';

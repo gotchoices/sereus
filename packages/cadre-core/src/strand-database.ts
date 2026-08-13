@@ -57,6 +57,7 @@ export interface StrandDatabaseConfig {
 export class StrandDatabase {
   private db: Database | null = null;
   private shutdownStrand: SereusPluginResult['shutdown'] | null = null;
+  private resolvedTransactor: SereusPluginResult['transactor'] | null = null;
   private readonly config: StrandDatabaseConfig;
   private initialized = false;
 
@@ -99,6 +100,7 @@ export class StrandDatabase {
       enableCache: true,
     });
     this.shutdownStrand = result.shutdown;
+    this.resolvedTransactor = result.transactor;
     timing('[strandDb:%s] connectToStrand: %dms (hydrated tables=%d, indexes=%d)',
       sid, Math.round(performance.now() - t0),
       result.hydrated?.tables ?? 0, result.hydrated?.indexes ?? 0);
@@ -161,6 +163,18 @@ export class StrandDatabase {
   }
 
   /**
+   * The Optimystic transactor this strand's connection resolved to — always
+   * `'network'` here, since cadre-core passes no `transactor` option and takes
+   * the plugin's default. Exposed so a spec measuring or asserting the network
+   * path (`strand-solo-write-budget.spec.ts`) can pin the engine it ran on
+   * rather than assume it.
+   */
+  getTransactor(): SereusPluginResult['transactor'] {
+    this.ensureInitialized();
+    return this.resolvedTransactor!;
+  }
+
+  /**
    * Close the database and cleanup resources. Runs the strand-connection
    * shutdown (collection-factory teardown, which also stops the injected node),
    * then closes the `Database`. `StrandInstanceManager.releaseRuntime` issues a
@@ -175,6 +189,7 @@ export class StrandDatabase {
       void this.db.close();
       this.db = null;
     }
+    this.resolvedTransactor = null;
     this.initialized = false;
     log('StrandDatabase for strand %s closed', this.config.strandId);
   }

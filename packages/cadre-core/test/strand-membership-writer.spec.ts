@@ -19,8 +19,8 @@ import { makeSAppConfig, tableCount } from './strand-spec-helpers.js';
  * Unit + component coverage for the founder-bootstrap primitives.
  *
  * The pure-crypto tests (key bridge round-trip, single-digest signer) are fast and
- * need no DB. The bootstrap tests run a REAL strand DB in bootstrap mode (libp2p
- * node + MemoryRawStorage + the optimystic local transactor) via `connectToStrand`
+ * need no DB. The founder-bootstrap tests run a REAL strand DB on the local
+ * transactor (libp2p node + MemoryRawStorage, no peers consulted) via `connectToStrand`
  * — the same path `StrandDatabase` uses — so they exercise the real apply / DML /
  * deferred-constraint path, not a fake.
  */
@@ -87,16 +87,17 @@ interface OpenStrand {
 }
 
 /**
- * Open a strand DB in bootstrap mode (real node + in-memory storage). Passing a
- * prior run's `strandId`+`storage` reopens that persisted strand (a fresh
- * `Database` over the same blocks), exercising the warm-restart / hydrate path.
+ * Open a strand DB on the local transactor (real node + in-memory storage, no
+ * peers consulted). Passing a prior run's `strandId`+`storage` reopens that
+ * persisted strand (a fresh `Database` over the same blocks), exercising the
+ * warm-restart / hydrate path.
  */
 async function openStrandDb(
   strandId: string = randomUUID(),
   storage: MemoryRawStorage = new MemoryRawStorage(),
 ): Promise<OpenStrand> {
   const db = new Database();
-  const result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+  const result = await connectToStrand(db, { strandId, transactor: 'local', storage });
   return {
     db,
     strandId,

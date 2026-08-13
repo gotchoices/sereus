@@ -15,7 +15,7 @@
  *   - Transaction profile — the browser is an edge node, like the phone.
  *
  * The node self-seeds as its own owner (mirroring `cadre-cli start
- * --owner`); the solo chat strand runs in `bootstrap` mode so DML lands on
+ * --owner`); the solo chat strand coordinates its own writes, so DML lands on
  * the strand's IndexedDB without any peers.
  *
  * Beyond the solo strand, this module also drives the **consent/invitation
@@ -393,7 +393,7 @@ export async function startCadre(): Promise<CadreNode> {
  * base64url owner keypair, run the idempotent genesis `OwnerKey` insert,
  * then initialize seed-bootstrap.
  *
- * Fail-soft: the Phase-1 chat round-trip runs in `bootstrap` mode and does not
+ * Fail-soft: the Phase-1 chat round-trip needs no peers and does not
  * depend on owner, so a genesis failure is captured for diagnostics rather
  * than aborting node startup.
  *
@@ -711,8 +711,8 @@ async function countRows(db: Database, table: string): Promise<number> {
 /**
  * Add the signed open chat strand. Pre-opens the strand's IndexedDB handle
  * (the provider is synchronous), then `addStrand`s an open strand. On a solo
- * node the strand auto-selects `bootstrap` mode (no other cadre peers), so DML
- * lands on the strand's IndexedDB local transactor with no peers needed.
+ * node the strand's cohort is itself — it coordinates its own writes — so DML
+ * lands on the strand's IndexedDB with no other peers needed.
  *
  * Throws `SchemaVerificationError` if the sApp signature does not match its
  * schema/version — the signature gate the reference is meant to exercise.
@@ -777,16 +777,15 @@ function requireStrandInstance(strandId: string): StrandInstance {
 }
 
 /**
- * Resolve a strand instance's libp2p node, or throw a clear, surfaced error. The
- * strand may be still launching, or in `bootstrap` mode with no libp2p node — both
- * surface as a thrown error rather than a bare `undefined` deref.
+ * Resolve a strand instance's libp2p node, or throw a clear, surfaced error. A
+ * strand that is still launching (or has been released) holds no node yet — that
+ * surfaces as a thrown error rather than a bare `undefined` deref.
  */
 function requireStrandLibp2p(strandId: string): Libp2p {
 	const libp2pNode = requireStrandInstance(strandId).libp2pNode;
 	if (!libp2pNode) {
 		throw new Error(
-			`strand ${strandId} has no libp2p node — it is still launching or runs in ` +
-				'bootstrap mode (no cohort). Formed strands must be added with mode:"networked".',
+			`strand ${strandId} has no libp2p node — it is still launching, or it was released`,
 		);
 	}
 	return libp2pNode;

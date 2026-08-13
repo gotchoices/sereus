@@ -61,6 +61,12 @@ interface ShutdownHandle {
 export interface RawStrand extends ShutdownHandle {
   db: Database;
   strandId: string;
+  /**
+   * The transactor this strand RESOLVED to (read back off the connection, not
+   * the value asked for). A spec whose point is the arm it runs on can assert
+   * this instead of assuming the option was honoured.
+   */
+  transactor: StrandTransactor;
 }
 
 export interface Strand extends RawStrand {
@@ -89,11 +95,14 @@ afterEach(async () => {
 
 /**
  * Which optimystic transactor {@link openRawStrand} / {@link openStrand} run
- * on. `'local'` (the default — behaviourally identical to the historical
- * `mode: 'bootstrap'`) commits with no peer round trips; `'network'` runs the
- * full cluster-coordination path, which a lone node resolves against itself.
+ * on. `'local'` (the default) commits straight to this process's storage with no
+ * peer round trips; `'network'` runs the full cluster-coordination path, which a
+ * lone node resolves against itself.
  * `strand-membership-network-transactor-parity.spec.ts` uses `'network'` to
  * prove the membership constraints bite identically on both.
+ *
+ * Narrower than the plugin's own `StrandTransactor` (which also has `'test'`,
+ * Optimystic's in-memory fake): these helpers open real strand databases.
  */
 export type StrandTransactor = 'local' | 'network';
 
@@ -104,32 +113,27 @@ export type StrandTransactor = 'local' | 'network';
  * (`bootstrapFounderMembership` always seats a founding Manager, and any Manager
  * row makes `NotAManager` fire alongside the floor under test).
  *
- * Defaults to the local transactor (`mode: 'bootstrap'`, unchanged), so no
- * pre-existing suite changes behaviour.
+ * Defaults to the local transactor, so no pre-existing suite changes behaviour.
  */
 export async function openRawStrand(transactor: StrandTransactor = 'local'): Promise<RawStrand> {
   const strandId = randomUUID();
   const storage = new MemoryRawStorage();
   const db = new Database();
-  // The 'network' arm passes `transactor` (the knob that survives the strand-mode
-  // retirement) rather than `mode: 'networked'`; the default arm keeps the exact
-  // historical option shape.
-  //
-  // NOTE: nothing here can assert which transactor was actually resolved —
-  // `SereusPluginResult` does not report it, so a spec whose whole point is the
-  // arm it runs on (`strand-membership-network-transactor-parity.spec.ts`,
-  // `strand-transactor-handover.spec.ts`) would pass just the same if the option
-  // were silently ignored. Low risk today: 'network' is the default at both the
-  // Sereus and Optimystic layers, so only an active regression could land the
-  // wrong arm. `tickets/implement/13-drop-strand-mode-option-from-sql-plugin.md`
-  // carries the arm to surface the resolved transactor on the result; assert it
-  // here once it exists.
-  const result = await connectToStrand(db, transactor === 'local'
-    ? { strandId, mode: 'bootstrap', storage }
-    : { strandId, transactor: 'network', storage });
+  const result = await connectToStrand(db, { strandId, transactor, storage });
+  // Fail here rather than in the caller: a strand that silently landed the other
+  // engine makes every assertion downstream a statement about the wrong thing.
+  if (result.transactor !== transactor) {
+    throw new Error(
+      `openRawStrand asked for the '${transactor}' transactor but the strand resolved to '${result.transactor}' — `
+      + 'every assertion below would be about the wrong engine',
+    );
+  }
   const strand: RawStrand = {
     db,
     strandId,
+    // The guard above proved these are the same value; this one is typed as the
+    // narrower `StrandTransactor` these helpers deal in.
+    transactor,
     shutdown: async () => {
       await result.shutdown();
       db.close();

@@ -15,10 +15,10 @@ import type { SAppConfig } from '../src/types.js';
  *
  * The network transactor resolves a lone node as its own coordinator, so a
  * device alone costs almost exactly what the old local transactor did. These
- * budgets were pinned by the two-arm evidence gate for retiring the local
- * (`bootstrap`) transactor mode (tickets `strand-network-transactor-solo-parity`
- * and `retire-strand-mode-in-cadre-core`); the baseline arm died with the mode,
- * and its measured figures survive as provenance in the budget comments below.
+ * budgets were pinned by the two-arm evidence gate for moving solo strands off
+ * the local transactor (tickets `strand-network-transactor-solo-parity` and
+ * `retire-strand-mode-in-cadre-core`); the baseline arm died with that move, and
+ * its measured figures survive as provenance in the budget comments below.
  * Two-sided budgets (ceiling = regression guard, floor = anti-vacuity guard)
  * exactly like `control-start-storage-op-budget.spec.ts`, whose rationale for
  * counting operations rather than wall clock applies verbatim here.
@@ -176,6 +176,12 @@ async function measureSoloStrand(): Promise<RunCost> {
 			}));
 		const launch: PhaseCost = { snapshot: counter.snapshot(), ms: performance.now() - t0 };
 		expect(instance.status).toBe('active');
+		// Every budget below is a NETWORK-transactor figure. A strand that landed
+		// the local transactor would post lower counts and read as an improvement
+		// rather than as the wrong measurement it is.
+		expect(instance.database!.getTransactor(),
+			'the measured strand is not on the network transactor — these budgets describe a different engine'
+		).toBe('network');
 		const db = instance.database!.getDatabase();
 
 		// --- Insert: ROW_COUNT single-row autocommit inserts --------------------

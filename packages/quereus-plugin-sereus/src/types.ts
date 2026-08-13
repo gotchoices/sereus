@@ -2,6 +2,18 @@ import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
 import type { IRawStorage } from '@optimystic/db-p2p';
 
+/**
+ * Which Optimystic transactor a strand connection commits through — a choice of
+ * storage engine, nothing more. See {@link StrandConnectionOptions.transactor}.
+ *
+ * Deliberately a closed union of the three names Optimystic's
+ * `collection-factory.ts` switches on. That factory also accepts a custom
+ * transactor name registered by the host, but nothing in this repo registers
+ * one, and a closed union lets `parseConfig` reject a typo (`'locl'`) instead of
+ * handing it downstream. Widen it if and when a custom transactor exists.
+ */
+export type StrandTransactor = 'local' | 'network' | 'test';
+
 export interface StrandConnectionOptions {
 	/** UUID of the strand to connect to */
 	strandId: string;
@@ -33,24 +45,29 @@ export interface StrandConnectionOptions {
 	/** Required when libp2pNode is provided */
 	coordinatedRepo?: IRepo;
 	/**
-	 * Lifecycle mode. `'networked'` (default) uses the network transactor and
-	 * is appropriate for multi-peer participation. `'bootstrap'` switches to a
-	 * local transactor so a solo node can apply schema and accept DML with no
-	 * peer round trips; pair it with a persistent `storage` to survive restart.
-	 */
-	mode?: 'bootstrap' | 'networked';
-	/**
 	 * Persistent raw storage. When provided:
 	 *  - it is passed to `createLibp2pNode` as `storage` so the libp2p data path uses it,
-	 *  - in `bootstrap` mode it is also handed to the optimystic plugin as
+	 *  - with `transactor: 'local'` it is also handed to the optimystic plugin as
 	 *    `rawStorageFactory: () => storage` so the local transactor persists DML
 	 *    on the same instance (avoids cache divergence between the two consumers).
 	 *
 	 * The plugin treats `storage` as borrowed — it is NOT closed on `shutdown()`.
 	 */
 	storage?: IRawStorage;
-	/** @internal Override transactor type. Used by unit tests with `'test'`. When set, takes precedence only if `mode` is not specified. */
-	transactor?: string;
+	/**
+	 * Which Optimystic transactor writes and reads go through (default
+	 * `'network'`):
+	 *
+	 *  - `'network'` — transactions go through the strand's libp2p cohort. A node
+	 *    that is alone coordinates for itself, so this works with one peer or
+	 *    many; it is the only value an application should use.
+	 *  - `'local'` — transactions go straight to this process's raw storage, no
+	 *    peers consulted. For in-process tests and tooling; pair it with a
+	 *    persistent {@link storage} to survive restart.
+	 *  - `'test'` — Optimystic's in-memory fake. No libp2p node is created unless
+	 *    one is injected. Unit tests only.
+	 */
+	transactor?: StrandTransactor;
 }
 
 export interface SereusPluginResult {
@@ -65,6 +82,13 @@ export interface SereusPluginResult {
 	 * composition threw before hydrate.
 	 */
 	hydrated?: { tables: number; indexes: number };
+	/**
+	 * The transactor this connection actually resolved to — the RESOLVED value,
+	 * not the requested one, so a spec whose whole point is the arm it runs on can
+	 * assert it rather than assume it. Equals `options.transactor` when one was
+	 * given, `'network'` otherwise.
+	 */
+	transactor: StrandTransactor;
 	/** Shuts down the libp2p node and collection factory. Call when done. */
 	shutdown: () => Promise<void>;
 }

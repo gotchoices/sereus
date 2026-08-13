@@ -125,19 +125,37 @@ describe('parseConfig', () => {
 		expect(parseConfig({ strand_id: 'abc', fret_profile: 'unknown' }).fretProfile).toBe('edge');
 	});
 
-	it('should parse mode when it is a known value', () => {
-		expect(parseConfig({ strand_id: 'abc', mode: 'bootstrap' }).mode).toBe('bootstrap');
-		expect(parseConfig({ strand_id: 'abc', mode: 'networked' }).mode).toBe('networked');
-	});
-
-	it('should ignore an unknown or absent mode', () => {
-		expect(parseConfig({ strand_id: 'abc', mode: 'sideways' }).mode).toBeUndefined();
-		expect(parseConfig({ strand_id: 'abc' }).mode).toBeUndefined();
-	});
-
-	it('should parse the transactor override', () => {
+	it('should parse every known transactor', () => {
+		expect(parseConfig({ strand_id: 'abc', transactor: 'local' }).transactor).toBe('local');
+		expect(parseConfig({ strand_id: 'abc', transactor: 'network' }).transactor).toBe('network');
 		expect(parseConfig({ strand_id: 'abc', transactor: 'test' }).transactor).toBe('test');
+	});
+
+	it('should leave the transactor unset when absent or empty', () => {
+		// Unset, so `composeStrand` applies the default — see its resolution.
 		expect(parseConfig({ strand_id: 'abc' }).transactor).toBeUndefined();
+		expect(parseConfig({ strand_id: 'abc', transactor: '' }).transactor).toBeUndefined();
+	});
+
+	it('should reject an unrecognised transactor rather than silently defaulting', () => {
+		// A typo that fell back to 'network' would surface only as a mystifying
+		// hang on a machine with no peers, so it throws at parse time.
+		expect(() => parseConfig({ strand_id: 'abc', transactor: 'locl' }))
+			.toThrow(/transactor must be one of/);
+		expect(() => parseConfig({ strand_id: 'abc', transactor: 'bootstrap' }))
+			.toThrow(/transactor must be one of/);
+		expect(() => parseConfig({ strand_id: 'abc', transactor: 7 }))
+			.toThrow(/transactor must be one of/);
+	});
+
+	it('should ignore a key it does not know, including the retired `mode`', () => {
+		// `parseConfig` has no allowlist: the loader hands through whatever the
+		// host's settings file holds, and unknown keys are dropped. Pinned so the
+		// silent-drop contract is a decision on record rather than an accident.
+		const result = parseConfig({ strand_id: 'abc', mode: 'bootstrap', nonsense: 'x' });
+		expect(result.strandId).toBe('abc');
+		expect(result.transactor).toBeUndefined();
+		expect(result as unknown as Record<string, unknown>).not.toHaveProperty('mode');
 	});
 });
 
@@ -260,8 +278,23 @@ describe('connectToStrand', () => {
 		expect(result.vtables).toEqual([]);
 		expect(result.functions).toEqual([]);
 		expect(result.collations).toEqual([]);
+		expect(result.transactor).toBe('test');
 		expect(typeof result.shutdown).toBe('function');
 
+		await result.shutdown();
+	});
+
+	it('should report the transactor it resolved to', async () => {
+		// The result is the only thing a caller (or a spec whose point is the arm
+		// it runs on) can read to know which engine it actually got. The default
+		// ('network') is pinned where it can be exercised for real, in cadre-core's
+		// `strand-transactor-handover.spec.ts` phase 2 — a mock node cannot satisfy
+		// the coordinator lookup the network transactor's hydrate performs.
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-resolved',
+			transactor: 'local',
+		});
+		expect(result.transactor).toBe('local');
 		await result.shutdown();
 	});
 
@@ -296,14 +329,14 @@ describe('connectToStrand', () => {
 	});
 
 	it('should create a node for a real (non-test) transactor', async () => {
-		// `bootstrap` exercises the same "non-test transactor ⇒ create a node"
-		// branch but routes the shared composition's catalog hydrate through the
-		// in-memory local transactor. The default `network` transactor would drive
-		// hydrate into a real libp2p coordinator lookup the mock node cannot
-		// satisfy; that path is covered with real nodes in networked.e2e.spec.ts.
+		// `local` exercises the same "non-test transactor ⇒ create a node" branch
+		// but routes the shared composition's catalog hydrate through the in-memory
+		// local transactor. The default `network` transactor would drive hydrate
+		// into a real libp2p coordinator lookup the mock node cannot satisfy; that
+		// path is covered with real nodes in networked.e2e.spec.ts.
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-net',
-			mode: 'bootstrap',
+			transactor: 'local',
 		});
 
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
@@ -317,7 +350,7 @@ describe('connectToStrand', () => {
 		// (10), which gates every write on a party smaller than ten nodes.
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-cluster-default',
-			mode: 'bootstrap',
+			transactor: 'local',
 		});
 
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
@@ -331,7 +364,7 @@ describe('connectToStrand', () => {
 	it('should forward an explicit cluster size to the node', async () => {
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-cluster-override',
-			mode: 'bootstrap',
+			transactor: 'local',
 			clusterSize: 5,
 		});
 
@@ -346,7 +379,7 @@ describe('connectToStrand', () => {
 	it('should reject a cluster size below the optimystic minimum before creating a node', async () => {
 		await expect(connectToStrand(db, {
 			strandId: 'test-strand-cluster-invalid',
-			mode: 'bootstrap',
+			transactor: 'local',
 			clusterSize: 1,
 		})).rejects.toThrow(/clusterSize must be an integer >= 2/);
 
@@ -357,7 +390,7 @@ describe('connectToStrand', () => {
 	it('should stop created node on shutdown', async () => {
 		const result = await connectToStrand(db, {
 			strandId: 'test-strand-9',
-			mode: 'bootstrap',
+			transactor: 'local',
 		});
 
 		await result.shutdown();

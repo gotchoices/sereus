@@ -25,8 +25,8 @@ import {
 /**
  * Component coverage for `Manager` rotation: an existing manager promotes/removes
  * admins, admits-and-promotes a key that is not in the strand yet, or resigns
- * itself. Every test runs against a REAL closed strand DB in bootstrap mode
- * (libp2p node + MemoryRawStorage + the optimystic local transactor) via
+ * itself. Every test runs against a REAL closed strand DB on the local
+ * transactor (libp2p node + MemoryRawStorage, no peers consulted) via
  * `connectToStrand` — the same path `StrandDatabase` uses — so the real
  * apply/DML/deferred-constraint path is exercised, not a fake.
  *

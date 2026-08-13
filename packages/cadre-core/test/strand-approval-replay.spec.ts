@@ -54,7 +54,7 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
  * delete+tombstone shape with a VALID approval, proving the tombstone leg is never
  * the constraint the replays trip.
  *
- * Every test runs against a REAL closed strand DB in bootstrap mode (libp2p node +
+ * Every test runs against a REAL closed strand DB on the local transactor (libp2p node +
  * MemoryRawStorage + the optimystic local transactor) via `connectToStrand` — the
  * same path `StrandDatabase` uses.
  */

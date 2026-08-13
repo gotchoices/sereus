@@ -12,9 +12,13 @@ import type { SereusPluginResult } from '../../src/types.js';
  * End-to-end suite for the `Strand` membership/RBAC schema being applied to every
  * strand by the shared composition (`composeStrand`), alongside the sApp schema.
  *
- * These tests run in bootstrap mode (real libp2p node + real FileRawStorage +
- * the optimystic local transactor) so they exercise the real apply/hydrate/DML
- * path, not a fake. They construct their own `Header`/membership rows directly
+ * These tests run on the `local` transactor (real libp2p node + real
+ * FileRawStorage + the optimystic local transactor) so they exercise the real
+ * apply/hydrate/DML path in-process, with no cohort and no peer round trips.
+ * Membership-constraint parity on the network transactor — the one applications
+ * run on — is `cadre-core`'s
+ * `strand-membership-network-transactor-parity.spec.ts`.
+ * They construct their own `Header`/membership rows directly
  * via `db.exec(... with context ...)`; runtime population of membership rows is
  * owned by `strand-membership-lifecycle-population`, not this ticket.
  *
@@ -94,7 +98,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		db = new Database();
 		result = await connectToStrand(db, {
 			strandId,
-			mode: 'bootstrap',
+			transactor: 'local',
 			storage,
 			// An sApp schema is also supplied to prove the two schemas coexist.
 			schema: 'table Note (Id integer primary key, Body text not null)',
@@ -115,7 +119,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
 		// No `schema` option: the Strand schema must still be applied unconditionally.
-		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
 		expect(await selectCount(db, 'select count(*) as c from Strand.Manager')).toBe(0);
 
@@ -134,7 +138,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		{
 			const storage1 = new FileRawStorage(storageDir);
 			const db1 = new Database();
-			const r1 = await connectToStrand(db1, { strandId, mode: 'bootstrap', storage: storage1 });
+			const r1 = await connectToStrand(db1, { strandId, transactor: 'local', storage: storage1 });
 			try {
 				expect(r1.hydrated).toEqual({ tables: 0, indexes: 0 });
 				await insertHeader(db1, 'c');
@@ -153,7 +157,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		// Warm session: fresh Database + FileRawStorage over the same dir/strandId.
 		const storage2 = new FileRawStorage(storageDir);
 		db = new Database();
-		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage: storage2 });
+		result = await connectToStrand(db, { strandId, transactor: 'local', storage: storage2 });
 
 		// Hydrate actually ran on reopen and surfaced the persisted membership tables,
 		// so `apply schema Strand;` diffs against a primed catalog (no churn).
@@ -169,7 +173,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
-		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
 		await insertHeader(db, 'c');
 
@@ -197,7 +201,7 @@ describe('Strand membership schema (apply e2e)', () => {
 		const strandId = randomUUID();
 		const storage = new FileRawStorage(storageDir);
 		db = new Database();
-		result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+		result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
 		await insertHeader(db, 'c');
 		// Bootstrap the founder so the committed member set is non-empty — the
@@ -262,7 +266,7 @@ describe('Strand membership schema (apply e2e)', () => {
 			const strandId = randomUUID();
 			const storage = new FileRawStorage(storageDir);
 			const dbOpen = new Database();
-			const rOpen = await connectToStrand(dbOpen, { strandId, mode: 'bootstrap', storage });
+			const rOpen = await connectToStrand(dbOpen, { strandId, transactor: 'local', storage });
 			try {
 				await insertHeader(dbOpen, 'o');
 
@@ -309,7 +313,7 @@ describe('Strand membership schema (apply e2e)', () => {
 			const strandId = randomUUID();
 			const storage = new FileRawStorage(closedDir);
 			db = new Database();
-			result = await connectToStrand(db, { strandId, mode: 'bootstrap', storage });
+			result = await connectToStrand(db, { strandId, transactor: 'local', storage });
 
 			await insertHeader(db, 'c');
 			await db.exec(
