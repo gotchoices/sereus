@@ -354,7 +354,11 @@ export class StrandInstanceManager {
       // so on a device that is genuinely alone it is inert, and arming it at
       // launch is what closes the "founded alone, never replicates" hole — a
       // peer that joins later gets the founder's blocks without any relaunch.
-      // Cost: one StrandBackfill object + one connection listener per strand.
+      //
+      // NOTE: cost is one StrandBackfill object + one `connection:open` listener
+      // per running strand — linear in strand count, negligible at the handful a
+      // device or host runs today. If a node ever hosts strands by the hundred,
+      // move to one shared listener that dispatches by strand id.
       if (strandStorage && config.backfill?.enabled !== false) {
         if (node.keyNetwork) {
           const backfill = new StrandBackfill({

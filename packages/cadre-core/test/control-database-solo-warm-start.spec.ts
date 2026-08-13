@@ -268,9 +268,10 @@ describe('control database, solo warm start on a prior cohort (no listen addr, n
 				expect(revoked.size).toBe(cohort.siblings.length);
 
 				const instance = await addStrand(second, { Id: strandId('revoked'), MemberPrivateKey: null, Type: 'o' });
-				// Revoked siblings are NOT cohort members, so unlike the vanished case
-				// the seed resolution sees a membership of one — same transactor, one
-				// fewer row for `queryCadrePeers`'s revocation join to keep.
+				// Unlike the vanished case, the seed resolution walks a membership of
+				// ONE: the revocation join above hid both sibling rows, which is the
+				// state `expectWarmState` already pinned. What is under test here is
+				// that the tombstone re-read on the launch path costs no liveness.
 				expect(instance.status).toBe('active');
 			} finally {
 				await within('second.stop()', LIFECYCLE_TIMEOUT_MS, () => second.stop());

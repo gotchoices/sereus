@@ -198,7 +198,7 @@ Strand lifecycle resource management in `@serfab/cadre-core`
 - [x] Hibernation releases strand resources and rehydrates on wake
   - `StrandInstanceManager.quiesceStrand` stops the libp2p node + closes the `StrandDatabase`
     while retaining the instance record + launch config; `resumeStrand` rebuilds them via the
-    shared `buildStrandRuntime`, re-resolving the cohort seed + mode (`bootstrap → networked`).
+    shared `buildStrandRuntime`, re-resolving the cohort seed (which may have grown since launch).
   - `CadreNode.handleStrandHibernate`/`handleStrandWake` wire the orchestration; overlapping
     wake triggers coalesce in `HibernationManager` so only one runtime is rebuilt.
 - [x] `idle` is a lightweight status flag (node + DB still running)

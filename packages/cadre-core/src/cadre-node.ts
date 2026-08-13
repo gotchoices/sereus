@@ -3551,8 +3551,7 @@ export class CadreNode implements SAppIdLookup {
     // timeout — and decide then whether the breach fails `addStrand` or degrades
     // to an empty seed, because those promise callers different things.
     const peers = await this.controlDatabase.queryCadrePeers();
-    const { otherPeerIds } =
-      deriveCohortMembers(peers, this.controlNode.peerId.toString());
+    const otherPeerIds = deriveCohortMembers(peers, this.controlNode.peerId.toString());
 
     // RPC only siblings we already have a control connection to — they can answer
     // now, and `dialProtocol` by peerId reuses the open connection.
