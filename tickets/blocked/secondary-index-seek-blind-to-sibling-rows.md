@@ -38,6 +38,13 @@ the old write-while-alone / one-member-cohort arm.
   **index seek** (`… where Token = ?`) sees nothing, still nothing after 30 s of 250 ms
   polls. No error anywhere; B's read-repair no-ops; B reports
   `cluster-fetch:local-current { localRev: 1, clusterRev: 1 }` for the data collection.
+- **Control — a PRIMARY-key descent on the same sibling converges fine.** In every run of
+  the acceptance scenario, node B reads back A's `FormationInvite` row (`queryFormationInvite`,
+  a lookup on the table's own primary key `Token`) inside the same 30 s window that the
+  `FormationUsage` secondary-index seek never satisfies; the same holds for A's `Strand` and
+  `ValidationKey` rows. So the blindness is specific to *secondary*-index sub-collections, not
+  to indexed descent in general — a useful narrowing for whoever takes the upstream fix.
+  (Re-confirmed in the review pass, 2026-08-12.)
 - **Concurrent, two writers** (the acceptance scenario below): both joiners are approved,
   the approval hook is asked exactly twice, both rows commit — and each node's per-token
   view holds exactly its OWN row (distinct keys confirm attribution). A silent per-index

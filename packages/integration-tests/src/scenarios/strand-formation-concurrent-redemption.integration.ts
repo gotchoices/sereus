@@ -66,6 +66,13 @@ const SAPP_ID = 'sapp-concurrent-redemption';
 const YEAR_MS = 365 * 24 * 3600_000;
 /** Cross-node pull-on-read convergence budget; the wait's timeout is the failure. */
 const CONVERGE_MS = 30_000;
+/**
+ * Per-case budget, sized so a case can spend EVERY {@link CONVERGE_MS} wait it may issue
+ * (case 1: publish + both nodes' views = 3) plus two 30 s formation sessions and still
+ * fail on the wait rather than on vitest's clock — a bare per-test timeout loses the
+ * both-nodes diagnostic those waits raise, which is the whole point of this scenario.
+ */
+const CASE_TIMEOUT_MS = 180_000;
 
 /** One redemption attempt: which joiner, dialed through which responder node. */
 interface Attempt {
@@ -262,11 +269,10 @@ describe('Concurrent invitation redemption across two machines', () => {
 		// approved joiner's row, and let the wait's timeout be what fails a slow run. The
 		// timeout rethrow carries what WAS observed — a lost row, a stale count, and plain
 		// slowness all look identical in a bare timeout message.
-		let observed: UsageRow[] = [];
 		try {
 			await waitUntil(async () => {
-				observed = await readUsageRows(db, token);
-				return approvedKeys.every((k) => observed.some((r) => r.peerKey === k));
+				const converging = await readUsageRows(db, token);
+				return approvedKeys.every((k) => converging.some((r) => r.peerKey === k));
 			}, {
 				timeoutMs: CONVERGE_MS,
 				intervalMs: 250,
@@ -351,7 +357,7 @@ describe('Concurrent invitation redemption across two machines', () => {
 				expect(disclosed.partyId).toBe(results[owner]!.memberKey);
 			}
 		}
-	}, 120_000);
+	}, CASE_TIMEOUT_MS);
 
 	it('case 2: concurrent redemption of a single-use invite — approved responses and surviving rows correspond one-to-one', async () => {
 		const token = `invite-concurrent-single-${Date.now()}`;
@@ -404,7 +410,7 @@ describe('Concurrent invitation redemption across two machines', () => {
 
 		spentSingleUseToken = token;
 		case2ApprovedKeys = approvedKeys;
-	}, 120_000);
+	}, CASE_TIMEOUT_MS);
 
 	it('case 3: once the cohort agrees the invite is spent, a later redemption is refused terminally on both nodes', async () => {
 		// Case 3 exists to redeem the very invite case 2 spent; without it there is
@@ -435,5 +441,5 @@ describe('Concurrent invitation redemption across two machines', () => {
 
 		expect(await dbA().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
 		expect(await dbB().countFormationUsage(token)).toBe(case2ApprovedKeys.length);
-	}, 90_000);
+	}, CASE_TIMEOUT_MS);
 });

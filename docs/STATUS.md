@@ -1076,6 +1076,22 @@ where local rows exist.
   five-poll quiet window pins exactly-once / no re-add; a re-publish is then rediscovered, proving
   the watcher cleared the id and the removal's `Revocation` tombstone is not read back as a live
   row. Test body ~25–30 s.
+- [ ] `packages/integration-tests/src/scenarios/strand-formation-concurrent-redemption.integration.ts`
+  — **written and correct, standing RED on an upstream defect** (`tickets/.pre-existing-known.md`
+  → `blocked/secondary-index-seek-blind-to-sibling-rows`). The acceptance scenario for the
+  nonce-keyed `FormationUsage` design: one party with two live cadre nodes (A owner/storage,
+  B plain member) each answering formation over its own `ControlFormationUsageRecorder`, and
+  two joiner nodes redeeming the SAME token in the same tick through different responders —
+  so the two writes race across the distributed control collection rather than through one
+  node's write queue. Three cases: a multi-use invite behind a real HTTP approval hook (both
+  admitted, per-row attribution re-verified from the stored bytes, hook asked **exactly**
+  twice); a single-use invite raced by both nodes (approved responses ↔ surviving rows
+  one-to-one on both views, a refused joiner told `'Invalid token'` and never to retry, and
+  the accepted both-land over-admission asserted as observable rather than as a failure); and
+  a third redemption of the spent invite refused terminally through either node. It fails at
+  the cross-node visibility waits because a sibling's index seek never sees the other node's
+  row — the scenario is the re-measurement instrument for that ticket's unblock condition, so
+  its assertions are not to be weakened for a green run.
 - [x] `reference-app-web` boots solo end-to-end in Playwright (`e2e/solo/boot.spec.ts`,
   `e2e/solo/diagnostics.spec.ts` — the latter asserts owner self-genesis reaches `genesis|existing`).
   `reference-app-ns` has a solo entry point (`startSolo`) and needs no owner genesis.
@@ -1514,7 +1530,9 @@ of tokens this process minted/published (pruned on expiry and on observed consum
 registry is dry, from the usage recorder's optional durable scan
 (`ControlDatabase.hasOutstandingFormationInvite` — unexpired AND usage below `TotalUses`, matching
 `isTokenValid`/`isTokenUsed` semantics exactly, so a token the handler would reject cannot hold the
-gate open). The check moved to the END of the admission chain, after the authorized-member reads, so
+gate open — though not across machines today: that scan descends the same blind secondary index as
+the seat cap, so a node that did not record a redemption itself still reads the spent invite as
+outstanding, see `blocked/secondary-index-seek-blind-to-sibling-rows`). The check moved to the END of the admission chain, after the authorized-member reads, so
 only a peer already on the deny path pays for it, and it catches its own errors (fail-open). Eager
 `initializeStrandSolicitation` on the phone and `formStrand`'s lazy service on an initiator now both
 leave the gate armed. Two accepted caveats, both self-healing: the registry dies with the process

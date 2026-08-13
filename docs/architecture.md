@@ -555,6 +555,18 @@ redemption is refused as `InvitationExhaustedError`, which
 `StrandFormationManager.provisionAsResponder` reports to the joiner as the same `'Invalid token'`
 a spent invite would give, never as a retryable conflict.
 
+**The "at most the number of concurrent redeemers" bound does not hold today on a
+multi-machine party** (measured 2026-08-12). Every per-token usage read —
+`countFormationUsage`, and through it the cap and `hasOutstandingFormationInvite` — descends
+the `FormationUsageByToken` secondary index, and the storage layer currently replicates the
+data tree of a row written elsewhere but not that row's index entry. Each node therefore
+counts only the redemptions it recorded itself, so the cap over-admits without bound rather
+than by the concurrency, and a spent invite still reads as outstanding to the membership
+connection gate. The defect is upstream in Optimystic; tracked here in
+`tickets/blocked/secondary-index-seek-blind-to-sibling-rows`, with
+`integration-tests` scenario `strand-formation-concurrent-redemption` as the standing
+re-measurement instrument. The bound above is the design's intent and returns with the fix.
+
 ```mermaid
 sequenceDiagram
     participant A as Party A (Responder)

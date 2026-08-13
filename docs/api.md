@@ -198,6 +198,13 @@ number of simultaneous redeemers. Every acceptance survives in the append-only r
 overage is visible there and reversible by owner-gated member removal; treat `TotalUses` as an
 audited bound, not a hard ceiling under concurrency.
 
+> **Current limitation (2026-08-12).** On a party running more than one cadre node, the
+> overage is not bounded by the number of simultaneous redeemers: each node counts only the
+> redemptions it recorded itself, because a replicated row's secondary-index entry does not
+> currently reach the other nodes. A spent invitation also still reads as outstanding to the
+> membership connection gate. This is a storage-layer defect being fixed upstream — see
+> `docs/architecture.md` → strand formation — not a property of the invitation design.
+
 ### A hook in TypeScript
 
 ```ts

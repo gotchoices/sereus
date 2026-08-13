@@ -235,11 +235,20 @@ export interface ConnectedPair {
  * depend on bootPair's write-while-alone ordering (they assert pull-on-read convergence
  * of rows written by A, not cross-node read-back of genesis rows).
  *
+ * NOTE: the ~8 lines of node construction here duplicate {@link bootPair}'s. Left duplicated
+ * because factoring them out would move `B.start()` ahead of A's owner genesis in bootPair,
+ * i.e. change the very ordering the two fixtures exist to keep apart, and the full
+ * integration suite that would prove that safe exceeds the 10-minute agent run budget. If a
+ * THIRD pair fixture lands, extract a shared node-construction helper that takes the
+ * ordering as its argument rather than copying a third time.
+ *
  * The cohort wait is also what makes a later concurrent-write assertion meaningful: a
  * write offered to a one-member cohort commits on the writer's own vote and proves
  * nothing about two machines (see `control-cohort.ts`).
  *
- * Caller owns shutdown (`A.stop()` / `B.stop()`), including on the failure path.
+ * Caller owns shutdown (`A.stop()` / `B.stop()`) of a boot that RETURNS. A boot that throws
+ * hands the caller no node handles, so it stops whatever it already started itself — the
+ * cohort wait below is a 30 s failure window, and a leaked libp2p node outlives the run.
  */
 export async function bootConnectedPair(
   tag: string,
@@ -248,35 +257,54 @@ export async function bootConnectedPair(
 ): Promise<ConnectedPair> {
   const partyId = `${partyIdPrefix}-${tag}-${Date.now()}`;
   const { strandWatchMs } = opts;
+  const started: CadreNode[] = [];
 
-  const aKey = await generateKeyPair('Ed25519');
-  const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
-  await A.start();
+  try {
+    const aKey = await generateKeyPair('Ed25519');
+    const A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true, strandWatchMs }));
+    await A.start();
+    started.push(A);
 
-  const bKey = await generateKeyPair('Ed25519');
-  const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
-  await B.start();
+    const bKey = await generateKeyPair('Ed25519');
+    const B = new CadreNode(controlNodeConfig({ partyId, privateKey: bKey, profile: 'transaction', strandWatchMs }));
+    await B.start();
+    started.push(B);
 
-  // B's dial is admitted by A's cold-start carve-out (no control rows exist yet, so the
-  // membership gate has no basis to judge); the vouch that keeps B admitted once rows
-  // exist lands right after genesis below.
-  await connectControlNodes(B, A);
-  for (const [node, label] of [[A, 'A'], [B, 'B']] as const) {
-    await waitUntil(async () => (await readCohort(node.getControlNode()!, `pair ${label}`)).length >= 2, {
-      timeoutMs: 30_000,
-      intervalMs: 250,
-      description: `pair node ${label} control cohort spans both machines`,
-    });
+    // B's dial is admitted by A's cold-start carve-out (no control rows exist yet, so the
+    // membership gate has no basis to judge); the vouch that keeps B admitted once rows
+    // exist lands right after genesis below.
+    await connectControlNodes(B, A);
+    for (const [node, label] of [[A, 'A'], [B, 'B']] as const) {
+      await waitUntil(async () => (await readCohort(node.getControlNode()!, `pair ${label}`)).length >= 2, {
+        timeoutMs: 30_000,
+        intervalMs: 250,
+        description: `pair node ${label} control cohort spans both machines`,
+      });
+    }
+
+    const ownerPublicKey = await makeOwnOwner(A, aKey);
+    await A.authorizePeer(B.peerId!.toString());
+
+    const ownerPrivateKeyProtobuf = privateKeyToProtobuf(aKey);
+    return {
+      A,
+      B,
+      ownerPublicKey,
+      ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
+    };
+  } catch (error) {
+    await stopStartedNodes(started);
+    throw error;
   }
+}
 
-  const ownerPublicKey = await makeOwnOwner(A, aKey);
-  await A.authorizePeer(B.peerId!.toString());
-
-  const ownerPrivateKeyProtobuf = privateKeyToProtobuf(aKey);
-  return {
-    A,
-    B,
-    ownerPublicKey,
-    ownerSign: (message) => signMessageEd25519(message, ownerPrivateKeyProtobuf),
-  };
+/** Stop nodes newest-first, reporting (never rethrowing) a stop that fails. */
+async function stopStartedNodes(started: CadreNode[]): Promise<void> {
+  for (const node of [...started].reverse()) {
+    try {
+      await node.stop();
+    } catch (stopError) {
+      console.error('[bootConnectedPair] cleanup of a partially booted node failed:', stopError);
+    }
+  }
 }
