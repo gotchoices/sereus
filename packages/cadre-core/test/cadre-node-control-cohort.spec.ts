@@ -24,10 +24,18 @@ function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
   };
 }
 
+/** One address-book write the pass made: who it was for, and what went in. */
+interface MergeCall { peerId: string; addrs: string[] }
+
 interface FakeControlOpts {
   selfPeerId?: string;
   connections?: string[];
   dialCalls: Array<unknown>;
+  mergeCalls: MergeCall[];
+  /** Make every address-book write reject, to prove the pass survives it. */
+  mergeThrows?: boolean;
+  /** Cold-start fallback source; the default misses (no entry). */
+  peerStoreGet?: () => Promise<unknown>;
 }
 
 /** A minimal control-node fake exposing only what reconcile reads. */
@@ -37,8 +45,28 @@ function fakeControlNode(opts: FakeControlOpts): unknown {
     getConnections: () =>
       (opts.connections ?? []).map((id) => ({ remotePeer: { toString: () => id } })),
     dial: async (addrs: unknown) => { opts.dialCalls.push(addrs); },
-    // Cold-start fallback target; unused when resolvePeerAddrs returns addrs.
-    peerStore: { get: async () => { throw new Error('peerStore miss'); } }
+    peerStore: {
+      // Cold-start fallback target; unused when resolvePeerAddrs returns addrs.
+      get: opts.peerStoreGet ?? (async () => { throw new Error('peerStore miss'); }),
+      merge: async (peerId: { toString(): string }, data: { multiaddrs: Array<{ toString(): string }> }) => {
+        if (opts.mergeThrows) {
+          throw new Error('merge boom');
+        }
+        opts.mergeCalls.push({
+          peerId: peerId.toString(),
+          addrs: data.multiaddrs.map((a) => a.toString())
+        });
+        // Echo the merged addresses back as the stored, expiry-filtered set —
+        // what `mergePeerAddrs` reads to decide the write is visible and no
+        // restamp is needed (peer-addr-book.spec.ts covers the restamp itself).
+        return {
+          addresses: data.multiaddrs.map((ma) => ({ multiaddr: ma, isCertified: false })),
+          protocols: [],
+          metadata: new Map(),
+          tags: new Map()
+        };
+      }
+    }
   };
 }
 
@@ -59,11 +87,22 @@ function injectCohort(
     bootstrapStore?: BootstrapPeerStore;
     /** Make the revoked-row reap sweep reject, to prove the pass survives it. */
     reapThrows?: boolean;
+    /** Make every address-book write reject, to prove the pass survives it. */
+    mergeThrows?: boolean;
+    /** Cold-start fallback source; the default misses (no entry). */
+    peerStoreGet?: () => Promise<unknown>;
   }
-): { dialCalls: Array<unknown>; resolvedFor: string[]; queryCalls: () => number; reapCalls: string[] } {
+): {
+  dialCalls: Array<unknown>;
+  resolvedFor: string[];
+  queryCalls: () => number;
+  reapCalls: string[];
+  mergeCalls: MergeCall[];
+} {
   const dialCalls: Array<unknown> = [];
   const resolvedFor: string[] = [];
   const reapCalls: string[] = [];
+  const mergeCalls: MergeCall[] = [];
   let queries = 0;
 
   (node as unknown as { _running: boolean })._running = opts.running ?? true;
@@ -72,7 +111,10 @@ function injectCohort(
   (node as unknown as { controlNode: unknown }).controlNode = fakeControlNode({
     selfPeerId: opts.selfPeerId ?? 'self-peer',
     connections: opts.connections,
-    dialCalls
+    dialCalls,
+    mergeCalls,
+    mergeThrows: opts.mergeThrows,
+    peerStoreGet: opts.peerStoreGet
   });
   (node as unknown as { controlDatabase: unknown }).controlDatabase = {
     queryCadrePeers: async () => { queries++; return opts.members; },
@@ -91,7 +133,7 @@ function injectCohort(
   (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
     async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
 
-  return { dialCalls, resolvedFor, queryCalls: () => queries, reapCalls };
+  return { dialCalls, resolvedFor, queryCalls: () => queries, reapCalls, mergeCalls };
 }
 
 describe('CadreNode.reconcileControlCohort', () => {
@@ -131,7 +173,10 @@ describe('CadreNode.reconcileControlCohort', () => {
     expect(dialCalls).toHaveLength(1);
   });
 
-  it('skips a sibling that is already connected (no re-dial, no resolve)', async () => {
+  it('does not re-dial a sibling that is already connected (but still resolves it)', async () => {
+    // The resolve is NOT wasted work: its addresses go into the address book, and
+    // a live connection is exactly the case where that book must already be warm
+    // when the connection drops (see the address-book describe block below).
     const node = new CadreNode(createConfig());
     const { dialCalls, resolvedFor } = injectCohort(node, {
       members: [
@@ -144,7 +189,7 @@ describe('CadreNode.reconcileControlCohort', () => {
     await node.reconcileControlCohort();
 
     expect(dialCalls).toEqual([]);
-    expect(resolvedFor).toEqual([]);
+    expect(resolvedFor).toEqual(['sibling-1']);
   });
 
   it('never dials self even if self appears as a sibling row', async () => {
@@ -299,6 +344,136 @@ describe('CadreNode.reconcileControlCohort', () => {
     await node.reconcileControlCohort();
 
     expect(dialCalls).toHaveLength(2);
+  });
+});
+
+// ══════════════════════════════════════════════════════════════════════════════
+// Address-book warming
+//
+// Each pass copies every sibling's VERIFIED addresses into the control node's
+// libp2p peerStore, so the layers below cadre-core that dial by bare peer id
+// (Optimystic's cluster/repo clients, FRET ping/announce) have an address for a
+// sibling whose connection has dropped. The merge helper's own semantics — the
+// expiry restamp, the empty-input skip, error folding — are covered by
+// peer-addr-book.spec.ts; these cover WHICH siblings the pass feeds it.
+//
+// The peer ids here are real Ed25519 ids because the merge path parses them
+// (`peerIdFromString`); the synthetic `sibling-1` ids the dial tests use would
+// be dropped before any write.
+// ══════════════════════════════════════════════════════════════════════════════
+
+describe('CadreNode.reconcileControlCohort — address-book warming', () => {
+  it('merges every sibling, including already-connected ones and ones the dial cap dropped', async () => {
+    // targetDegree 1 with three non-owner siblings, one of them connected: one
+    // dial, but all three must reach the address book.
+    const node = new CadreNode(createConfig({ network: { controlCohort: { targetDegree: 1 } } }));
+    const [a, b, c] = [await realPeerId(), await realPeerId(), await realPeerId()];
+    const connected = [a, b, c].sort()[0];
+    const { dialCalls, mergeCalls } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: a, multiaddr: null },
+        { peerId: b, multiaddr: null },
+        { peerId: c, multiaddr: null }
+      ],
+      connections: [connected]
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(mergeCalls.map((m) => m.peerId).sort()).toEqual([a, b, c].sort());
+    expect(mergeCalls.every((m) => m.addrs.includes('/ip4/1.2.3.4/tcp/4001'))).toBe(true);
+    // The cap still bounds dialing: one selected sibling, and it is connected.
+    expect(dialCalls).toEqual([]);
+  });
+
+  it('resolves each sibling exactly once per pass (the dial reuses the resolved addrs)', async () => {
+    const node = new CadreNode(createConfig());
+    const [a, b] = [await realPeerId(), await realPeerId()];
+    const { dialCalls, resolvedFor } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: a, multiaddr: null },
+        { peerId: b, multiaddr: null }
+      ]
+    });
+
+    await node.reconcileControlCohort();
+
+    // Two siblings, two resolutions — not four. Each `resolvePeerAddrs` is a
+    // `queryPeerRecord` against the control DB, and both are dialed, so a dial
+    // path that re-resolved would show up here as duplicates.
+    expect(resolvedFor.sort()).toEqual([a, b].sort());
+    expect(dialCalls).toHaveLength(2);
+  });
+
+  it('never merges a sibling whose record fails to resolve, even when the peerStore can still dial it', async () => {
+    // Revoked / stale / untrusted: `resolvePeerAddrs` returns []. The cold-start
+    // peerStore address is good enough to DIAL, but it came out of the address
+    // book — echoing it back would restamp an unverified seed address forever,
+    // and the entry must be allowed to age out on its own instead.
+    const node = new CadreNode(createConfig());
+    const sibling = await realPeerId();
+    const { dialCalls, mergeCalls } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: sibling, multiaddr: null }
+      ],
+      peerStoreGet: async () => ({ addresses: [{ multiaddr: multiaddr('/ip4/9.9.9.9/tcp/4001') }] })
+    });
+    (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
+      async () => [];
+
+    await node.reconcileControlCohort();
+
+    expect(mergeCalls).toEqual([]);
+    expect(dialCalls).toHaveLength(1);
+  });
+
+  it('still dials its selected siblings when the address-book write rejects', async () => {
+    // Best-effort by contract, like the reap sweep: reconnecting siblings
+    // outranks keeping the address book warm.
+    const node = new CadreNode(createConfig());
+    const sibling = await realPeerId();
+    const { dialCalls, resolvedFor } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: sibling, multiaddr: null }
+      ],
+      mergeThrows: true
+    });
+
+    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+
+    expect(resolvedFor).toEqual([sibling]);
+    expect(dialCalls).toHaveLength(1);
+  });
+
+  it('abandons the warming loop mid-way when the node stops', async () => {
+    const node = new CadreNode(createConfig());
+    const [a, b] = [await realPeerId(), await realPeerId()];
+    const { mergeCalls, dialCalls } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: a, multiaddr: null },
+        { peerId: b, multiaddr: null }
+      ]
+    });
+    // Stop the node during the first sibling's resolve. The write is guarded on
+    // both sides of that await, so a torn-down node is never written to at all.
+    const resolvedFor: string[] = [];
+    (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
+      async (id: string) => {
+        resolvedFor.push(id);
+        (node as unknown as { _running: boolean })._running = false;
+        return [multiaddr('/ip4/1.2.3.4/tcp/4001')];
+      };
+
+    await node.reconcileControlCohort();
+
+    expect(resolvedFor).toHaveLength(1);
+    expect(mergeCalls).toEqual([]);
+    expect(dialCalls).toEqual([]);
   });
 });
 

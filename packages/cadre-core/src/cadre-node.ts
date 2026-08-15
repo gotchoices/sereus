@@ -41,6 +41,7 @@ import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
+import { mergePeerAddrs, type MergeAddrsResult } from './peer-addr-book.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
 import {
@@ -1862,10 +1863,18 @@ export class CadreNode implements SAppIdLookup {
         cappedNonOwner, targetDegree);
     }
 
-    // 3. Skip already-connected peers (no re-dial / churn for live connections).
+    // 3. Warm the libp2p address book with EVERY sibling's verified addresses,
+    //    keeping what resolved for the dial loop below.
+    const resolved = await this.warmSiblingAddrBook(siblings);
+    if (!this._running || !this.controlNode || !this.controlDatabase) {
+      return;
+    }
+
+    // 4. Skip already-connected peers (no re-dial / churn for live connections).
     const connected = new Set(this.controlNode.getConnections().map((c) => c.remotePeer.toString()));
 
-    // 4. Resolve + dial each selected, not-yet-connected sibling, best-effort.
+    // 5. Dial each selected, not-yet-connected sibling, best-effort, from the
+    //    addresses step 3 already resolved for it.
     let dialed = 0;
     for (const sibling of dials) {
       if (!this._running || !this.controlNode) {
@@ -1874,7 +1883,7 @@ export class CadreNode implements SAppIdLookup {
       if (connected.has(sibling.peerId)) {
         continue;
       }
-      if (await this.dialControlSibling(sibling)) {
+      if (await this.dialControlSibling(sibling, resolved.get(sibling.peerId) ?? [])) {
         dialed++;
       }
     }
@@ -1883,20 +1892,100 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Resolve one sibling's control-network dial addresses and dial it, best-effort.
-   * Returns whether a dial was attempted (false when no address resolves).
+   * Resolve every sibling's signed address record once and merge what resolves
+   * into the control node's libp2p **address book** (peerStore). Returns the
+   * resolved addresses per sibling so the dial loop reuses them rather than
+   * re-resolving — one `queryPeerRecord` per sibling per pass, not two.
+   *
+   * Deliberately every sibling, not the {@link selectControlCohortDials} subset,
+   * and deliberately including already-connected ones: everything below
+   * cadre-core dials by bare peer id (Optimystic's cluster/repo clients, FRET
+   * ping/announce), so the address book has to be warm BEFORE a live connection
+   * drops, and a sibling the out-degree cap declines to dial is still one those
+   * layers may need to reach.
+   *
+   * Only `resolvePeerAddrs` output is merged — never the cold-start
+   * `peerStoreAddrs` fallback, which came out of the address book to begin with
+   * and would restamp unverified seed addresses indefinitely. A sibling that
+   * resolves to nothing (revoked, stale, untrusted) is not written at all, so its
+   * existing entry ages out on its own.
+   *
+   * NOTE: one record query per sibling per reconcile pass (~15s). A cadre is a
+   * handful of devices, so this is a few extra local reads per pass; if cadres
+   * ever grow large, batch the records into one query or merge only on change.
+   */
+  private async warmSiblingAddrBook(siblings: CohortPeerRow[]): Promise<Map<string, Multiaddr[]>> {
+    const resolved = new Map<string, Multiaddr[]>();
+    const counts: Record<MergeAddrsResult, number> = { merged: 0, restamped: 0, skipped: 0, failed: 0 };
+    for (const sibling of siblings) {
+      if (!this._running || !this.controlNode) {
+        break;
+      }
+      const addrs = await this.resolveSiblingAddrs(sibling.peerId);
+      resolved.set(sibling.peerId, addrs);
+      // Re-guarded after the resolve await as well as before it: the write is
+      // the half that matters, and a torn-down node must never be written to.
+      const controlNode = this.controlNode;
+      if (!this._running || !controlNode) {
+        break;
+      }
+      counts[await this.mergeSiblingAddrs(controlNode, sibling.peerId, addrs)]++;
+    }
+    log('reconcileControlCohort: address book warmed (resolved=%d, merged=%d, restamped=%d, skipped=%d, failed=%d)',
+      resolved.size, counts.merged, counts.restamped, counts.skipped, counts.failed);
+    return resolved;
+  }
+
+  /**
+   * {@link resolvePeerAddrs} for one sibling, best-effort: a control-DB read
+   * failure yields `[]` (and the cold-start fallback then gets its turn) rather
+   * than aborting the whole pass, like every other step here.
+   */
+  private async resolveSiblingAddrs(peerId: string): Promise<Multiaddr[]> {
+    try {
+      return await this.resolvePeerAddrs(peerId);
+    } catch (error) {
+      log('reconcileControlCohort: resolving addrs for %s failed (continuing): %o', peerId, error);
+      return [];
+    }
+  }
+
+  /**
+   * Merge one sibling's resolved addresses into the control address book.
+   * `peerIdFromString` throws on a malformed `CadrePeer.PeerId`, which is caught
+   * here so one bad row never aborts the pass.
+   */
+  private async mergeSiblingAddrs(
+    controlNode: Libp2p,
+    peerId: string,
+    addrs: Multiaddr[]
+  ): Promise<MergeAddrsResult> {
+    if (addrs.length === 0) {
+      return 'skipped';
+    }
+    try {
+      return await mergePeerAddrs(controlNode, peerIdFromString(peerId), addrs);
+    } catch (error) {
+      log('reconcileControlCohort: cannot merge addrs for %s: %o', peerId, error);
+      return 'failed';
+    }
+  }
+
+  /**
+   * Dial one sibling from its already-resolved addresses, best-effort. Returns
+   * whether a dial was attempted (false when no address resolves).
    *
    * A per-peer failure (NAT, offline, relay down, connection-gater denial) is
    * logged and swallowed so one unreachable sibling never aborts the pass —
    * exactly like {@link SeedBootstrapService.applySeed}'s owner-dial loop. A
    * failed dial is simply retried on the next pass.
    */
-  private async dialControlSibling(sibling: CohortPeerRow): Promise<boolean> {
+  private async dialControlSibling(sibling: CohortPeerRow, resolved: Multiaddr[]): Promise<boolean> {
     const controlNode = this.controlNode;
     if (!controlNode) {
       return false;
     }
-    const addrs = await this.resolveControlDialAddrs(sibling.peerId);
+    const addrs = await this.resolveControlDialAddrs(sibling.peerId, resolved);
     if (addrs.length === 0) {
       log('reconcileControlCohort: no dialable control address for sibling %s; skipping', sibling.peerId);
       return false;
@@ -1912,16 +2001,16 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Resolve a sibling's control-network dial addresses for the reconcile pass.
+   * A sibling's control-network dial addresses for the reconcile pass.
    *
-   * Primary (steady state): the signed, fresh, trust-gated control addresses from
-   * the converged `CadrePeer` record via {@link resolvePeerAddrs}. Fallback (cold
-   * start): the libp2p peerStore entries `applySeed` populated, used only while the
-   * record is not yet resolvable. Returns `[]` (never throws) when neither yields
-   * an address — that sibling is skipped this pass.
+   * Primary (steady state): the signed, fresh, trust-gated control addresses
+   * `resolved` for it by {@link warmSiblingAddrBook} — passed in rather than
+   * re-resolved, so the pass makes one record query per sibling. Fallback (cold
+   * start): the libp2p peerStore entries `applySeed` populated, used only while
+   * the record is not yet resolvable. Returns `[]` (never throws) when neither
+   * yields an address — that sibling is skipped this pass.
    */
-  private async resolveControlDialAddrs(peerId: string): Promise<Multiaddr[]> {
-    const resolved = await this.resolvePeerAddrs(peerId);
+  private async resolveControlDialAddrs(peerId: string, resolved: Multiaddr[]): Promise<Multiaddr[]> {
     if (resolved.length > 0) {
       return resolved;
     }
