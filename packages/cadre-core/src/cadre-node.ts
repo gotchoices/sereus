@@ -1910,9 +1910,11 @@ export class CadreNode implements SAppIdLookup {
    * resolves to nothing (revoked, stale, untrusted) is not written at all, so its
    * existing entry ages out on its own.
    *
-   * NOTE: one record query per sibling per reconcile pass (~15s). A cadre is a
-   * handful of devices, so this is a few extra local reads per pass; if cadres
-   * ever grow large, batch the records into one query or merge only on change.
+   * NOTE: this resolves EVERY sibling serially before the dial loop below runs,
+   * so it costs one record query per sibling per reconcile pass (~15s) and each
+   * one delays the pass's first dial. A cadre is a handful of devices, so today
+   * that is a few extra local reads; if cadres ever grow large, batch the records
+   * into one query, merge only on change, or move the warm pass after the dials.
    */
   private async warmSiblingAddrBook(siblings: CohortPeerRow[]): Promise<Map<string, Multiaddr[]>> {
     const resolved = new Map<string, Multiaddr[]>();
@@ -1929,9 +1931,11 @@ export class CadreNode implements SAppIdLookup {
       if (!this._running || !controlNode) {
         break;
       }
-      counts[await this.mergeSiblingAddrs(controlNode, sibling.peerId, addrs)]++;
+      // `mergePeerAddrs` owns the whole best-effort contract — including parsing
+      // a malformed `CadrePeer.PeerId` — so one bad row cannot abort the pass.
+      counts[await mergePeerAddrs(controlNode, sibling.peerId, addrs)]++;
     }
-    log('reconcileControlCohort: address book warmed (resolved=%d, merged=%d, restamped=%d, skipped=%d, failed=%d)',
+    log('reconcileControlCohort: address book warmed (siblings=%d, merged=%d, restamped=%d, skipped=%d, failed=%d)',
       resolved.size, counts.merged, counts.restamped, counts.skipped, counts.failed);
     return resolved;
   }
@@ -1947,27 +1951,6 @@ export class CadreNode implements SAppIdLookup {
     } catch (error) {
       log('reconcileControlCohort: resolving addrs for %s failed (continuing): %o', peerId, error);
       return [];
-    }
-  }
-
-  /**
-   * Merge one sibling's resolved addresses into the control address book.
-   * `peerIdFromString` throws on a malformed `CadrePeer.PeerId`, which is caught
-   * here so one bad row never aborts the pass.
-   */
-  private async mergeSiblingAddrs(
-    controlNode: Libp2p,
-    peerId: string,
-    addrs: Multiaddr[]
-  ): Promise<MergeAddrsResult> {
-    if (addrs.length === 0) {
-      return 'skipped';
-    }
-    try {
-      return await mergePeerAddrs(controlNode, peerIdFromString(peerId), addrs);
-    } catch (error) {
-      log('reconcileControlCohort: cannot merge addrs for %s: %o', peerId, error);
-      return 'failed';
     }
   }
 

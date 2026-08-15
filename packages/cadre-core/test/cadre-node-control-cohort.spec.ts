@@ -430,6 +430,29 @@ describe('CadreNode.reconcileControlCohort — address-book warming', () => {
     expect(dialCalls).toHaveLength(1);
   });
 
+  it('stops merging a sibling from the pass after the one that revoked it', async () => {
+    // The single-pass case above proves the `[]` branch; this drives the actual
+    // production sequence — warm, then revoke — so the entry provably stops being
+    // refreshed and is left to age out rather than being restamped forever.
+    const node = new CadreNode(createConfig());
+    const sibling = await realPeerId();
+    const { mergeCalls } = injectCohort(node, {
+      members: [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: sibling, multiaddr: null }
+      ]
+    });
+
+    await node.reconcileControlCohort();
+    expect(mergeCalls.map((m) => m.peerId)).toEqual([sibling]);
+
+    (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
+      async () => [];
+    await node.reconcileControlCohort();
+
+    expect(mergeCalls.map((m) => m.peerId)).toEqual([sibling]);
+  });
+
   it('still dials its selected siblings when the address-book write rejects', async () => {
     // Best-effort by contract, like the reap sweep: reconnecting siblings
     // outranks keeping the address book warm.

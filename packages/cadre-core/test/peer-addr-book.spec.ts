@@ -196,6 +196,28 @@ describe('mergePeerAddrs', () => {
       .toEqual(new Set([aged.toString(), added.toString()]));
   });
 
+  it('accepts the string form of a peer id that callers hold', async () => {
+    // Both call sites hold strings — a `CadrePeer.PeerId` column, a strand-addr
+    // RPC result — so the parse lives here rather than being re-wrapped by each.
+    const { host, store, peerId } = await fixture();
+
+    await expect(mergePeerAddrs(host, peerId.toString(), [multiaddr('/ip4/1.2.3.4/tcp/1234')]))
+      .resolves.toBe('merged');
+
+    expect(await storedAddrs(store, peerId)).toEqual(['/ip4/1.2.3.4/tcp/1234']);
+  });
+
+  it('folds a malformed peer-id string into "failed" rather than throwing', async () => {
+    // One corrupt `CadrePeer.PeerId` row must cost that peer its address-book
+    // entry, not abort the caller's whole reconcile loop.
+    const { host, store } = await fixture();
+
+    await expect(mergePeerAddrs(host, 'not-a-peer-id', [multiaddr('/ip4/1.2.3.4/tcp/1234')]))
+      .resolves.toBe('failed');
+
+    expect(await store.all()).toEqual([]);
+  });
+
   it('folds a failing merge into "failed" rather than throwing', async () => {
     const host = {
       peerStore: { merge: async () => { throw new Error('datastore boom'); } }

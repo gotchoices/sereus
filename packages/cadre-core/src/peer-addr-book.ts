@@ -12,6 +12,7 @@
  */
 
 import debug from 'debug';
+import { peerIdFromString } from '@libp2p/peer-id';
 import type { Address, Peer, PeerId, PeerStore, TagOptions } from '@libp2p/interface';
 import type { Multiaddr } from '@multiformats/multiaddr';
 
@@ -30,7 +31,10 @@ export interface PeerAddrBookHost {
 }
 
 /**
- * Write `addrs` into `host`'s address book for `peerId`, best-effort.
+ * Write `addrs` into `host`'s address book for `peerId`, best-effort. `peerId`
+ * may be the string form callers hold (a `CadrePeer.PeerId` column, a strand-addr
+ * RPC result); parsing it is part of the best-effort contract below, so no caller
+ * has to wrap this in a second try/catch of its own.
  *
  * - **Empty `addrs` writes nothing** and reports `'skipped'`. That is how a
  *   revoked / stale / untrusted peer's existing entry is allowed to age out on
@@ -50,23 +54,40 @@ export interface PeerAddrBookHost {
  * not even merging a brand-new address. The `save` below is the workaround:
  * `save` is the one write path that omits `existingPeer` and therefore stamps
  * `Date.now()`. Drop it once upstream stamps `Date.now()` on merge.
+ *
+ * NOTE: raising the store's own `maxAddressAge` (libp2p forwards `init.peerStore`
+ * straight into `persistentPeerStore`) would sidestep the bug in one line, and is
+ * deliberately NOT done: expiry is load-bearing here. Only *verified* addresses
+ * come through this helper, and the design relies on everything else — the
+ * cold-start seed entries, identify-learned addresses — still ageing out on the
+ * stock schedule. A global age bump would keep those alive too.
+ *
+ * NOTE: if the store ever REJECTS an address we hand it, the restamp repeats
+ * every pass forever — `allVisible` stays false, and `save` re-submits the same
+ * rejected address. libp2p wires the store's `addressFilter` to
+ * `connectionGater.filterMultiaddrForPeer`, which nothing in this repo implements
+ * today (`createMembershipConnectionGater` gates dials, not addresses), so the
+ * loop is unreachable. If an app ever supplies that gater hook via
+ * `NetworkConfig.connectionGater`, bound the retry — the cost is one redundant
+ * datastore write per gated sibling per reconcile pass.
  */
 export async function mergePeerAddrs(
   host: PeerAddrBookHost,
-  peerId: PeerId,
+  peerId: PeerId | string,
   addrs: Multiaddr[]
 ): Promise<MergeAddrsResult> {
   if (addrs.length === 0) {
     return 'skipped';
   }
   try {
-    const peer = await host.peerStore.merge(peerId, { multiaddrs: addrs });
+    const id = typeof peerId === 'string' ? peerIdFromString(peerId) : peerId;
+    const peer = await host.peerStore.merge(id, { multiaddrs: addrs });
     // The returned Peer is already expiry-filtered, so it says whether the merge
     // is actually VISIBLE — which is the only question that matters downstream.
-    if (allVisible(peer.addresses, addrs, peerId)) {
+    if (allVisible(peer.addresses, addrs, id)) {
       return 'merged';
     }
-    await host.peerStore.save(peerId, restampData(peer, addrs, peerId));
+    await host.peerStore.save(id, restampData(peer, addrs, id));
     return 'restamped';
   } catch (error) {
     log('mergePeerAddrs: address-book write for %s failed: %o', peerId.toString(), error);
