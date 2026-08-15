@@ -19,7 +19,7 @@
 import debug from 'debug';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Address, Peer, PeerId, PeerStore, TagOptions } from '@libp2p/interface';
-import { multiaddr, CODE_P2P, type Multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, CODE_P2P, CODE_P2P_CIRCUIT, type Multiaddr } from '@multiformats/multiaddr';
 
 const log = debug('sereus:cadre:peer-addr-book');
 
@@ -111,10 +111,14 @@ export async function mergePeerAddrs(
  * destination. Taking the last therefore attributes both shapes to the peer the
  * address actually reaches.
  *
- * An address that does not parse, or that carries no `/p2p/` component at all (a
- * peer advertising a bare listen addr), is dropped: it cannot be attributed to a
- * peer, so it cannot enter any peer's address book. Duplicates collapse within a
- * group. Insertion order is preserved, both between groups and inside one.
+ * Three shapes are dropped rather than attributed, because none of them names a
+ * peer the address reaches: one that does not parse, one carrying no `/p2p/`
+ * component at all (a peer advertising a bare listen addr), and one whose
+ * `p2p-circuit` comes AFTER its last `/p2p/` (`…/p2p/<relay>/p2p-circuit`) — that
+ * last one is a relay hop with the destination missing, so its trailing peer id
+ * is the RELAY's and filing it under the relay would claim the relay is reachable
+ * at a circuit leading nowhere. Duplicates collapse within a group. Insertion
+ * order is preserved, both between groups and inside one.
  */
 export function groupAddrsByPeerId(addrs: string[]): Map<string, Multiaddr[]> {
   const groups = new Map<string, Multiaddr[]>();
@@ -141,8 +145,8 @@ export function groupAddrsByPeerId(addrs: string[]): Map<string, Multiaddr[]> {
 
 /**
  * Parse one address and pull out the peer id it addresses (its last `/p2p/`
- * value); null when the address is unparsable or names no peer. Both cases are
- * logged at the same level — an unattributable address is a sibling telling us
+ * value); null when the address is unparsable or names no destination. Every case
+ * is logged at the same level — an unattributable address is a sibling telling us
  * something we cannot use, which is worth seeing but never worth throwing over.
  */
 function attributeAddr(addr: string): { peerId: string; multiaddr: Multiaddr } | null {
@@ -153,14 +157,31 @@ function attributeAddr(addr: string): { peerId: string; multiaddr: Multiaddr } |
     log('groupAddrsByPeerId: skipping unparsable addr %s: %o', addr, error);
     return null;
   }
+  const peerId = lastAddressedPeerId(parsed);
+  if (peerId === null) {
+    log('groupAddrsByPeerId: skipping addr naming no destination peer: %s', addr);
+    return null;
+  }
+  return { peerId, multiaddr: parsed };
+}
+
+/**
+ * The peer id a parsed address reaches: its last `/p2p/` value, or null when it
+ * has none — or when a `p2p-circuit` sits after it, which makes that value the
+ * relay's rather than a destination's (see {@link groupAddrsByPeerId}). Walking
+ * backwards, meeting the circuit first is exactly that case.
+ */
+function lastAddressedPeerId(parsed: Multiaddr): string | null {
   const components = parsed.getComponents();
   for (let i = components.length - 1; i >= 0; i--) {
     const component = components[i];
+    if (component.code === CODE_P2P_CIRCUIT) {
+      return null;
+    }
     if (component.code === CODE_P2P && component.value) {
-      return { peerId: component.value, multiaddr: parsed };
+      return component.value;
     }
   }
-  log('groupAddrsByPeerId: skipping addr with no /p2p/ component: %s', addr);
   return null;
 }
 

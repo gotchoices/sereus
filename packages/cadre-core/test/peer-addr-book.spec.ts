@@ -294,6 +294,17 @@ describe('groupAddrsByPeerId', () => {
       .toEqual({ [strand.toString()]: [keeper] });
   });
 
+  it('drops a relay hop with no destination behind it rather than filing it under the relay', async () => {
+    const [relay, strand] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const hop = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit`;
+    const keeper = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit/p2p/${strand}`;
+
+    // `hop`'s trailing /p2p/ names the RELAY, and the relay is not reachable at a
+    // circuit through itself — so it must not become a relay address-book entry.
+    expect(grouped([hop, keeper])).toEqual({ [strand.toString()]: [keeper] });
+    expect(grouped([hop])).toEqual({});
+  });
+
   it('returns an empty map for an empty list', () => {
     expect(groupAddrsByPeerId([])).toEqual(new Map());
   });

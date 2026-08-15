@@ -1792,9 +1792,10 @@ export class CadreNode implements SAppIdLookup {
     // to the reconcile interval.
     // NOTE: this refresh and the sibling enumeration below each run their own
     // CadrePeer query (two reads per pass), plus a third from
-    // `refreshStrandPeerAddrs` on the passes where a strand is actually due
-    // (at most one per strand per 10 min); if those reads ever get costly,
-    // share one row-set across all three.
+    // `refreshStrandPeerAddrs` on the passes where a strand is due AND this node
+    // holds a control connection (one read for the whole pass, not one per
+    // strand); if those reads ever get costly, share one row-set across all
+    // three.
     await this.refreshMembershipGate('reconcile');
     if (!this._running || !this.controlNode || !this.controlDatabase) {
       return;
@@ -3684,6 +3685,14 @@ export class CadreNode implements SAppIdLookup {
    * {@link refreshStrandPeerAddrs} (the periodic pass) so both ask the same set.
    * Empty when the control DB or node is absent (not yet started / torn down).
    *
+   * The read below is issued even when the node holds no control connection and
+   * the answer is therefore empty by construction. That is deliberate on the
+   * launch path: `control-database-solo-warm-start.spec.ts` exists to prove this
+   * exact read does not stall as an embedder's FIRST awaited control operation,
+   * on a warm cohort no one can reach. A caller that re-enters often enough for
+   * the read to matter should skip the call itself, as
+   * {@link refreshStrandPeerAddrs} does.
+   *
    * NOTE: this read is UNBOUNDED and sits on the critical path an embedding app
    * awaits during startup — `addStrand` cannot resolve until it does, and it is
    * the first control operation an embedder's boot order issues (before genesis,
@@ -3702,9 +3711,8 @@ export class CadreNode implements SAppIdLookup {
       return [];
     }
     const peers = await this.controlDatabase.queryCadrePeers();
-    const otherPeerIds = deriveCohortMembers(peers, controlNode.peerId.toString());
     const connected = new Set(controlNode.getConnections().map((c) => c.remotePeer.toString()));
-    return otherPeerIds
+    return deriveCohortMembers(peers, controlNode.peerId.toString())
       .filter((id) => connected.has(id))
       .map((peerId) => ({ peerId }));
   }
@@ -3852,6 +3860,15 @@ export class CadreNode implements SAppIdLookup {
       (strandId) => now - (this.strandPeerAddrRefreshAt.get(strandId) ?? 0) >= refreshMs
     );
     if (due.length === 0) {
+      return;
+    }
+    // A due strand with nobody to ask leaves its throttle unstamped (see below),
+    // so this pass re-enters on EVERY 15 s reconcile tick for as long as the node
+    // is alone — which is the steady state of a solo node running a strand.
+    // `connectedSiblingTargets`' membership read is unbounded, and with zero
+    // connections its answer is empty whatever the table holds, so decide it here
+    // from the connection list instead of paying for the read once a tick.
+    if (this.controlNode.getConnections().length === 0) {
       return;
     }
     // NOTE: one strand-addr RPC per (due strand × connected sibling) per refresh

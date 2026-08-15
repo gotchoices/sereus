@@ -58,3 +58,14 @@ change — this is an internal reorganization, not a redesign.
 
 Deciding whether the reorganization is worth its churn — and which seam to cut first —
 is the actual open question. A maintainer may well decide the answer is "not yet".
+
+## Evidence: it is still growing
+
+Re-measured 2026-08-15 with `wc -l packages/cadre-core/src/cadre-node.ts`: **5,073** lines,
+up from the 4,770 recorded above on 2026-08-13. The growth is one feature —
+`merge-strand-peer-addrs-into-strand-peerstore` — landing four more methods
+(`connectedSiblingTargets`, `refreshStrandPeerAddrs`, `refreshOneStrandPeerAddrs`,
+`mergeStrandPeerAddrs`) plus a constant and a throttle map on the class. They belong with
+the relay/delegate-handling group in the list above: all of them are periodic control-mesh
+maintenance riding the reconcile pass, and none of them touch `CadreNode`'s public API. If
+a first seam is ever cut, that group is now large enough to be a plausible candidate.

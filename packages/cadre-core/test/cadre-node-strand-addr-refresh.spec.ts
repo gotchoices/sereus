@@ -1,8 +1,10 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import { CadreNode, STRAND_PEER_ADDR_REFRESH_MS } from '../src/cadre-node.js';
+import { MemoryBootstrapPeerStore } from '../src/bootstrap-peer-store.js';
 import type { CadreNodeConfig, SAppConfig, StrandInstance, StrandRow } from '../src/types.js';
 import { StrandAddrService } from '../src/strand-addr-protocol.js';
 import { duplexPair } from './wake-stream-helpers.js';
@@ -73,6 +75,19 @@ function fakeControlNode(opts: ControlFakeOpts): Libp2p {
   return {
     peerId: { toString: () => opts.selfPeerId },
     getConnections: () => opts.connections.map((id) => ({ remotePeer: { toString: () => id } })),
+    // Read by `circuitRelayTargets` (no relays configured) and by the control
+    // node's own address-book warming, both only on the full reconcile path.
+    getMultiaddrs: () => [],
+    dial: async () => {},
+    peerStore: {
+      get: async () => { throw new Error('peerStore miss'); },
+      merge: async (_id: PeerId, data: { multiaddrs: Array<{ toString(): string }> }) => ({
+        addresses: data.multiaddrs.map((multiaddr) => ({ multiaddr, isCertified: false })),
+        protocols: [],
+        metadata: new Map(),
+        tags: new Map()
+      })
+    },
     dialProtocol: async (target: unknown) => {
       const id = (target as { toString(): string }).toString();
       const reply = opts.replies.get(id);
@@ -163,7 +178,14 @@ function injectRefresh(opts: {
     asked,
     onAsk: opts.onAsk
   });
-  privates.controlDatabase = { queryCadrePeers: async () => opts.members };
+  privates.controlDatabase = {
+    queryCadrePeers: async () => opts.members,
+    // Only the full `reconcileControlCohort` path reads past `queryCadrePeers`;
+    // the direct-call tests never reach these.
+    queryRevokedStamps: async () => new Set<string>(),
+    getOwnerKeys: async () => new Set<string>(),
+    reapRevokedRows: async () => 0
+  };
   privates.strandManager = {
     getInstances: () => instances,
     getInstance: (strandId: string) => instances.get(strandId)
@@ -416,6 +438,57 @@ describe('CadreNode.refreshStrandPeerAddrs', () => {
 
     expect(harness.asked).toEqual([]);
     expect(throttleMap(harness.node).size).toBe(0);
+  });
+
+  it('runs as a step of the public reconcile pass, not only when called directly', async () => {
+    const [self, sib, sibStrand, ownStrand] = await Promise.all(
+      Array.from({ length: 4 }, () => freshPeerId())
+    );
+    const addr = `/ip4/10.0.0.1/tcp/1/p2p/${sibStrand}`;
+    const strand = fakeStrandNode(ownStrand);
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [sib],
+      replies: new Map([[sib, { 's1': [addr] }]]),
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    // The rest of the pass needs a bootstrap store and a sibling address
+    // resolver; neither is what this test asserts, it just has to get past them.
+    const privates = harness.node as unknown as Record<string, unknown>;
+    privates.bootstrapPeerStore = new MemoryBootstrapPeerStore('p');
+    privates.resolvePeerAddrs = async () => [multiaddr('/ip4/1.2.3.4/tcp/4001')];
+
+    await harness.node.reconcileControlCohort();
+
+    // Proves the wiring — placement inside `runReconcileControlCohort` and the
+    // guards around it — not merely the helper the other tests call directly.
+    expect(harness.asked).toEqual([{ peerId: sib, strandId: 's1' }]);
+    expect(strand.merges).toEqual([{ peerId: sibStrand, addrs: [addr] }]);
+    expect(throttleMap(harness.node).get('s1')).toBeTypeOf('number');
+  });
+
+  it('reads no CadrePeer row when the node holds no control connection', async () => {
+    const [self, sib, ownStrand] = await Promise.all(Array.from({ length: 3 }, () => freshPeerId()));
+    const strand = fakeStrandNode(ownStrand);
+    let queries = 0;
+    const harness = injectRefresh({
+      selfPeerId: self,
+      members: [{ peerId: self, multiaddr: null }, { peerId: sib, multiaddr: null }],
+      connections: [],
+      instances: new Map([['s1', strandInstance('s1', strand.node)]])
+    });
+    const db = (harness.node as unknown as { controlDatabase: { queryCadrePeers(): Promise<unknown> } }).controlDatabase;
+    const inner = db.queryCadrePeers.bind(db);
+    db.queryCadrePeers = async () => { queries++; return inner(); };
+
+    // The pass leaves its throttle unstamped with nobody to ask, so it re-enters
+    // on every 15 s tick — the unbounded membership read must not ride along.
+    await refresh(harness.node, T0);
+    await refresh(harness.node, T0 + 1);
+
+    expect(queries).toBe(0);
+    expect(harness.asked).toEqual([]);
   });
 
   it('honours a configured strandAddrRefreshMs override', async () => {
