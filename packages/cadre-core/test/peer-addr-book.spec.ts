@@ -7,7 +7,7 @@ import { MemoryDatastore } from 'datastore-core';
 import { TypedEventEmitter } from 'main-event';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Libp2pEvents, PeerId, PeerStore } from '@libp2p/interface';
-import { mergePeerAddrs, type MergeAddrsResult, type PeerAddrBookHost } from '../src/peer-addr-book.js';
+import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult, type PeerAddrBookHost } from '../src/peer-addr-book.js';
 
 /**
  * The address-book merge helper, exercised against a REAL `@libp2p/peer-store`
@@ -239,5 +239,62 @@ describe('mergePeerAddrs', () => {
 
     await expect(mergePeerAddrs(host, await freshPeerId(), [multiaddr('/ip4/1.2.3.4/tcp/1234')]))
       .resolves.toBe('failed');
+  });
+});
+
+/**
+ * The attribution step in front of the merge. Its input is the strand-addr RPC's
+ * flat, peer-agnostic union, so the load-bearing case is the relayed address:
+ * its FIRST `/p2p/` names the relay and its LAST names the peer we are actually
+ * addressing, and grouping under the relay would write every sibling's addresses
+ * into one bogus entry.
+ */
+describe('groupAddrsByPeerId', () => {
+  /** The grouped result as plain strings, for readable assertions. */
+  function grouped(addrs: string[]): Record<string, string[]> {
+    return Object.fromEntries(
+      [...groupAddrsByPeerId(addrs)].map(([peerId, mas]) => [peerId, mas.map((ma) => ma.toString())])
+    );
+  }
+
+  it('groups a relayed address under the destination peer, not the relay', async () => {
+    const [strand, relay] = await Promise.all([freshPeerId(), freshPeerId()]);
+    const addr = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit/p2p/${strand}`;
+
+    expect(grouped([addr])).toEqual({ [strand.toString()]: [addr] });
+  });
+
+  it('groups a direct address under its trailing peer id', async () => {
+    const strand = await freshPeerId();
+    const addr = `/ip4/10.0.0.1/tcp/5001/p2p/${strand}`;
+
+    expect(grouped([addr])).toEqual({ [strand.toString()]: [addr] });
+  });
+
+  it('splits several peers into their own groups and collapses duplicates', async () => {
+    const [a, b, relay] = await Promise.all([freshPeerId(), freshPeerId(), freshPeerId()]);
+    const aDirect = `/ip4/10.0.0.1/tcp/1/p2p/${a}`;
+    const aRelayed = `/ip4/9.9.9.9/tcp/4001/p2p/${relay}/p2p-circuit/p2p/${a}`;
+    const bDirect = `/ip4/10.0.0.2/tcp/2/p2p/${b}`;
+
+    // aDirect appears twice — two siblings can report the same address.
+    expect(grouped([aDirect, bDirect, aRelayed, aDirect])).toEqual({
+      [a.toString()]: [aDirect, aRelayed],
+      [b.toString()]: [bDirect]
+    });
+  });
+
+  it('drops an address that names no peer, and an unparsable one, without throwing', async () => {
+    const strand = await freshPeerId();
+    const keeper = `/ip4/10.0.0.1/tcp/1/p2p/${strand}`;
+
+    // A bare listen addr is unattributable — it cannot enter ANY peer's book.
+    // `/ip4/999…` and the free-form string are simply not multiaddrs.
+    expect(grouped([keeper, '/ip4/10.0.0.1/tcp/1', '/ip4/999.999.999.999/tcp/1', 'not-a-multiaddr']))
+      .toEqual({ [strand.toString()]: [keeper] });
+  });
+
+  it('returns an empty map for an empty list', () => {
+    expect(groupAddrsByPeerId([])).toEqual(new Map());
   });
 });

@@ -106,6 +106,20 @@ relay in its own party's storage nodes, or in the ungated dedicated relays.
 
 **Within-party answer (implemented).** For a node's **own co-cadre siblings** there is no DHT lookup at all: the control network already gives every party node a connection to its siblings, but a `CadrePeer` row stores only a sibling's **control**-network address — dialing that reaches the sibling's control instance, not its strand instance (a strand is a separate libp2p node on its own port, with its own transport peerId derived from the cadre identity key — cadre authority stays on the control node, and the distinct peerId is what lets both nodes share one circuit relay). So a strand's bootstrap addresses are resolved **on demand over the control mesh**: a node asks each connected sibling "what are your live strand-`X` multiaddrs?" via the `/sereus/strand-addr/1.0.0` RPC and seeds from the union (see [architecture.md → Strand-Address Resolution](architecture.md#strand-address-resolution)). This is single-party only — it bootstraps this party's own nodes onto a strand. **Cross-party** strand discovery (finding *another* party's strand members) remains the open question above: it is future work, expected to use a strand-overlay DHT and/or the strand's own `MemberPeer` records rather than the control network. Until it lands, every discovered strand cohort is one party's machines (a cross-party mesh can still be built by hand — see the cross-party note in [architecture.md → Replication cluster size](architecture.md#replication-cluster-size)) — see [architecture.md → Strand Networks](architecture.md#strand-networks) — so a strand's replication breadth (`DEFAULT_STRAND_CLUSTER_SIZE`, [architecture.md → Replication cluster size](architecture.md#replication-cluster-size)) buys machine redundancy within that party and no party redundancy at all.
 
+That resolution is not one-shot. The launch/resume seed is also merged straight into the
+new strand node's libp2p **address book** (its peerStore), and every running strand
+re-resolves its siblings' strand addresses over the control mesh on a ~10-minute cadence,
+re-merging each answer under the sibling's *strand* transport peerId
+(`CadreNode.refreshStrandPeerAddrs`, riding the control-cohort reconcile pass). Both matter
+because everything below cadre-core dials a strand peer by **bare peer id** — Optimystic's
+cluster and repo clients, FRET ping/announce — and a bootstrap address list alone does not
+put anything in the address book that outlives the initial discovery. Without the refresh, a
+sibling that restarts its strand node or rotates its relay reservation stays unreachable
+until this node restarts or resumes the strand, and even the original seed addresses expire
+out of the peerStore after an hour. Only own-cadre siblings are covered — the strand-addr RPC
+is control-network, hence single-party — so cross-party strand members remain the open
+question above.
+
 ## Strand Creation
 
 _(TODO: not yet documented here. See the strand-formation and seed-bootstrap coverage in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_

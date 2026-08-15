@@ -6,15 +6,20 @@
  * whose connection has dropped, instead of failing with `NoValidAddressesError`
  * until the next reconcile pass happens to re-dial it.
  *
- * Shared by the control-cohort reconcile pass (`CadreNode`) and, in due course,
- * the strand-cohort one: both resolve a peer's signed, fresh, trust-gated
- * addresses and then need exactly this write, with exactly this workaround.
+ * Shared by the control-cohort reconcile pass and the strand one (both in
+ * `CadreNode`): each resolves a peer's addresses its own way and then needs
+ * exactly this write, with exactly this workaround.
+ *
+ * Two exports, in the order a caller uses them: {@link groupAddrsByPeerId} turns
+ * a flat address list into per-peer groups (the strand path starts from the
+ * peer-agnostic union the strand-addr RPC returns), and {@link mergePeerAddrs}
+ * writes one peer's group.
  */
 
 import debug from 'debug';
 import { peerIdFromString } from '@libp2p/peer-id';
 import type { Address, Peer, PeerId, PeerStore, TagOptions } from '@libp2p/interface';
-import type { Multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, CODE_P2P, type Multiaddr } from '@multiformats/multiaddr';
 
 const log = debug('sereus:cadre:peer-addr-book');
 
@@ -93,6 +98,70 @@ export async function mergePeerAddrs(
     log('mergePeerAddrs: address-book write for %s failed: %o', peerId.toString(), error);
     return 'failed';
   }
+}
+
+/**
+ * Group multiaddr strings by the peer id in their final `/p2p/` component — the
+ * attribution step between a flat, peer-agnostic address list and the per-peer
+ * writes {@link mergePeerAddrs} takes.
+ *
+ * The **last** `/p2p/` component is the addressed peer, not the first: a relayed
+ * address (`…/p2p/<relay>/p2p-circuit/p2p/<dst>`) names the relay first and the
+ * destination last, while a direct address (`…/tcp/…/p2p/<dst>`) names only the
+ * destination. Taking the last therefore attributes both shapes to the peer the
+ * address actually reaches.
+ *
+ * An address that does not parse, or that carries no `/p2p/` component at all (a
+ * peer advertising a bare listen addr), is dropped: it cannot be attributed to a
+ * peer, so it cannot enter any peer's address book. Duplicates collapse within a
+ * group. Insertion order is preserved, both between groups and inside one.
+ */
+export function groupAddrsByPeerId(addrs: string[]): Map<string, Multiaddr[]> {
+  const groups = new Map<string, Multiaddr[]>();
+  const seen = new Set<string>();
+  for (const addr of addrs) {
+    const attributed = attributeAddr(addr);
+    if (!attributed) {
+      continue;
+    }
+    const key = `${attributed.peerId}\n${addr}`;
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    const group = groups.get(attributed.peerId);
+    if (group) {
+      group.push(attributed.multiaddr);
+    } else {
+      groups.set(attributed.peerId, [attributed.multiaddr]);
+    }
+  }
+  return groups;
+}
+
+/**
+ * Parse one address and pull out the peer id it addresses (its last `/p2p/`
+ * value); null when the address is unparsable or names no peer. Both cases are
+ * logged at the same level — an unattributable address is a sibling telling us
+ * something we cannot use, which is worth seeing but never worth throwing over.
+ */
+function attributeAddr(addr: string): { peerId: string; multiaddr: Multiaddr } | null {
+  let parsed: Multiaddr;
+  try {
+    parsed = multiaddr(addr);
+  } catch (error) {
+    log('groupAddrsByPeerId: skipping unparsable addr %s: %o', addr, error);
+    return null;
+  }
+  const components = parsed.getComponents();
+  for (let i = components.length - 1; i >= 0; i--) {
+    const component = components[i];
+    if (component.code === CODE_P2P && component.value) {
+      return { peerId: component.value, multiaddr: parsed };
+    }
+  }
+  log('groupAddrsByPeerId: skipping addr with no /p2p/ component: %s', addr);
+  return null;
 }
 
 /**

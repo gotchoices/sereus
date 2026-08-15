@@ -260,6 +260,13 @@ export interface NetworkConfig {
      * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}.
      */
     reconcileMs?: number;
+    /**
+     * How often each running strand re-resolves its siblings' strand-network
+     * addresses into its own libp2p address book — a step of the reconcile pass,
+     * on its own much longer throttle. Defaults to `STRAND_PEER_ADDR_REFRESH_MS`
+     * (10 min); must stay well under the peerStore's one-hour address expiry.
+     */
+    strandAddrRefreshMs?: number;
   };
 }
 
