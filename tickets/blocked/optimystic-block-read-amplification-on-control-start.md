@@ -112,6 +112,15 @@ Somewhere in `../optimystic`, one of:
 
 Sereus cannot do any of these from here.
 
+## A later step on top of this (2026-08-14)
+
+The 1541 figure below is no longer what a cold start costs: it is now 1983, and a solo strand launch
+1979. That step has its own identified cause upstream (a cache-bypassing catalog re-read added per
+schema write) and its own record —
+`tickets/blocked/optimystic-schema-catalog-reread-per-write-blows-storage-budgets.md`. It does not
+change the decision framed here, but it changes the number the decision is about, so read both
+together.
+
 ## Decisions needed
 
 - Fix upstream in `../optimystic`, or accept ~1500 storage operations per control-database start
