@@ -17,13 +17,17 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  * as a frozen app. So the operation count — not wall clock — is the thing worth
  * pinning: it is deterministic, and it is what a regression would move.
  *
- * The amplification itself is NOT fixable from this repo. It is produced inside
- * `@optimystic/db-p2p` (the same handful of blocks are re-read dozens of times per
- * start), and the decision about whether and where to fix it is carried by
- * `tickets/blocked/optimystic-block-read-amplification-on-control-start.md`, which
- * holds the full measurement and the ruled-out hypotheses. **This spec is not that
- * fix.** It is the guard that keeps the cost visible and stops it growing silently,
- * and it stands whatever is decided upstream.
+ * The amplification (the same handful of blocks re-read dozens of times per start)
+ * is produced inside `@optimystic/db-p2p` and was measured at ~1541 ops
+ * (2026-08-12), then ~1983 after an upstream catalog-correctness fix (2026-08-14) —
+ * history and ruled-out hypotheses in
+ * `tickets/complete/optimystic-block-read-amplification-on-control-start.md` and
+ * `tickets/complete/optimystic-schema-catalog-reread-per-write-blows-storage-budgets.md`.
+ * The resolution was upstream's write-through raw-storage cache, which cadre-core
+ * wires over every embedder-supplied storage (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`): what reaches
+ * the backend now is dominated by the genuine writes plus one cold read per block.
+ * **This spec is the guard that keeps that so** — a broken or unwired cache reverts
+ * the count to ~2000 and fails the ceiling loudly.
  *
  * Nothing else in the suite would notice a change that doubled the count: the only
  * other signal is wall clock, which stays green on an idle machine while the
@@ -31,9 +35,11 @@ import { CountingRawStorage, formatBreakdown, formatSnapshot, StorageOpCounter, 
  *
  * Deliberately backed by `MemoryRawStorage` rather than files — the COUNT is what is
  * asserted, so an in-memory backend keeps the spec fast and free of filesystem noise
- * while issuing exactly the same operations a file backend would. It does: the cold
- * figure below is identical to the one the blocked ticket measured over
- * `FileRawStorage`.
+ * while issuing exactly the same operations a file backend would. It did when the
+ * pre-cache figure was cross-checked: the 1541 of 2026-08-12 was identical over
+ * `FileRawStorage`. (The counter sits UNDER cadre-core's cache — `CountingRawStorage`
+ * is not a `MemoryRawStorage`, so the wrap applies — which is the point: it counts
+ * what would reach the device's disk.)
  *
  * The counts reproduce exactly — three consecutive runs gave byte-identical
  * per-method breakdowns — which is what makes a budget this close to the measurement
@@ -66,37 +72,34 @@ const within = scopedWithin('storage-op-budget');
  * with no provenance cannot tell the next reader whether the count grew or the budget was
  * always wrong.
  */
-const MEASURED_ON = '2026-08-12';
+const MEASURED_ON = '2026-08-17';
 /**
  * Cold: first-ever start against empty storage — 8 control tables and 1 index
- * created. 1541 operations over 21 blocks, of which `getMetadata` alone is 720 over
- * the same 21: each block's metadata is read ~34 times in one start. Only 130 of the
- * 1541 are writes. Identical to the figure the blocked ticket measured against
- * `FileRawStorage`, so the count is a property of the storage layer's call pattern,
- * not of the backend.
+ * created. 172 operations over 21 blocks: the 130 genuine writes (unchanged since
+ * the first 2026-08-12 measurement), one `getMetadata` per block, and a handful of
+ * cold list/read fills. History: 1541 uncached (2026-08-12), 1983 after the
+ * upstream catalog re-read (2026-08-14), 172 with the write-through cache wired
+ * (2026-08-17) — so a run near 2000 means the cache has left the path.
  */
-const COLD: Budget = { ops: 1541, blocks: 21, opBudget: 1700, blockBudget: 24 };
+const COLD: Budget = { ops: 172, blocks: 21, opBudget: 200, blockBudget: 24 };
 /**
- * Warm: a second start against the storage the cold one left behind — the catalog
- * hydrates instead of the schema being applied, so the count drops roughly 5×. The
- * distinct-block count goes UP by one (22): the cold run had not yet written the
- * owner-key row this spec's genesis step leaves behind.
+ * Warm: a second start against the store the cold one left behind — the catalog
+ * hydrates instead of the schema being applied. 52 operations over 22 blocks: a
+ * cold CACHE over a warm STORE, essentially one read per block plus the hydrate's
+ * list fills. The distinct-block count is one above cold (22): the cold run had
+ * not yet written the owner-key row this spec's genesis step leaves behind.
  *
- * A warm start is not the cheap case in the field — the worst stall on record was one
- * (`hydrate: 7774ms` then `loadSchema: 7929ms`) — so it carries its own budget rather
- * than hiding under the cold one.
- *
- * NOTE: only the COLD figure has been cross-checked against `FileRawStorage` (the blocked
- * ticket measured the same 1541 there). The warm one is memory-only, and both starts here
- * share ONE live storage object, so nothing is re-read across a process boundary. That is
- * sound while the operation count stays a property of the repo layer's call pattern, as
- * the cold cross-check shows it is. If a change ever makes the warm path backend-sensitive
- * — a decode step, a cache, anything only a file-backed restart exercises — this figure
- * stops standing for a real device restart; pin it against `fileStorageProvider` then
- * (`control-db-node-helpers.ts`, the shape `control-database-solo-warm-start.spec.ts`
- * uses), which costs wall clock and is why it was not done speculatively.
+ * The second start deliberately gets a fresh storage IDENTITY over the shared
+ * backing store (see the comment at the spec body): cadre-core's cache is memoized
+ * per storage instance, and the tripwire the pre-cache version of this comment set
+ * — "if a change ever makes the warm path backend-sensitive, this figure stops
+ * standing for a real device restart" — tripped exactly as predicted when the
+ * cache was wired (a shared instance measured 3 ops, the first start's surviving
+ * cache, not a restart). A device restart kills the process and the cache with it;
+ * the fresh identity reproduces that. History: 315 uncached (2026-08-12), 463
+ * after the upstream catalog re-read (2026-08-14), 52 cache-wired (2026-08-17).
  */
-const WARM: Budget = { ops: 315, blocks: 22, opBudget: 360, blockBudget: 25 };
+const WARM: Budget = { ops: 52, blocks: 22, opBudget: 65, blockBudget: 25 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {
@@ -137,7 +140,8 @@ function expectWithinBudget(phase: string, snapshot: OpSnapshot, budget: Budget)
 		`${phase} start issued ${snapshot.total} raw-storage operations, over the budget of ${budget.opBudget} (${provenance}). `
 		+ 'Start duration is operations × per-operation storage latency, so this is a real slowdown on a loaded disk or a phone. '
 		+ 'This fires FIRST when a control table is added too — check the distinct-block budget below before reading it as pure slowdown. '
-		+ `See tickets/blocked/optimystic-block-read-amplification-on-control-start.md. ${breakdown}`
+		+ 'A count near 2000 means the write-through cache (cached-storage.ts in @serfab/quereus-plugin-sereus) has left the path. '
+		+ `History in tickets/complete/optimystic-block-read-amplification-on-control-start.md. ${breakdown}`
 	).toBeLessThanOrEqual(budget.opBudget);
 
 	expect(
@@ -163,11 +167,20 @@ describe('control database start, raw-storage operation budget', () => {
 		const partyId = freshPartyId('storage-op-budget');
 		const keyStore = new InMemoryKeyStore();
 		const counter = new StorageOpCounter();
-		// One storage instance across both runs — the same warm-restart shape
+		// One BACKING store across both runs — the same warm-restart shape
 		// `control-database-solo.spec.ts` uses, so the second start enters the
-		// catalog-hydrate path rather than re-creating the schema.
-		const storage = new CountingRawStorage(new MemoryRawStorage(), counter);
-		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+		// catalog-hydrate path rather than re-creating the schema. But each start gets
+		// its own CountingRawStorage IDENTITY over it: cadre-core memoizes its
+		// write-through cache per storage instance (`cached-storage.ts`), so reusing
+		// one instance would hand the "restarted" node the first start's warm cache
+		// and the warm figure would stop standing for a real device restart, where
+		// the process — and the cache — dies with it. A fresh identity means a cold
+		// cache over a warm store, which is what a device restart pays.
+		const inner = new MemoryRawStorage();
+		const config = () => controlNodeConfig({
+			partyId, profile: 'transaction', keyStore,
+			storage: new CountingRawStorage(inner, counter)
+		});
 
 		// --- Cold: first ever start, empty storage ---------------------------------
 		const first = new CadreNode(config());

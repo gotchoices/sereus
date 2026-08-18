@@ -1,5 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
+import { CachedRawStorage, MemoryRawStorage } from '@optimystic/db-p2p';
+import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -132,7 +134,7 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('storage', () => {
-    it('calls a factory provider exactly once with the literal "control" strand id', () => {
+    it('calls a factory provider exactly once with the literal "control" strand id, and hands the node the cached wrap', () => {
       const calls: string[] = [];
       const instance = {} as IRawStorage;
       const config = createConfig({ storage: { provider: (strandId) => { calls.push(strandId); return instance; } } });
@@ -140,11 +142,25 @@ describe('CadreNode control-network node options', () => {
       const options = controlOptions(new CadreNode(config));
 
       expect(calls).toEqual(['control']);
-      expect(options.storage).toBe(instance);
+      // The node gets the write-through cached view of the provided storage, and the
+      // wrap is memoized per inner instance — a second resolution of the same instance
+      // must reuse the same cache, never stack a second one over the same backend.
+      expect(options.storage).toBeInstanceOf(CachedRawStorage);
+      expect(options.storage).toBe(wrapStorageWithCache(instance, 'control'));
     });
 
-    it('passes an instance provider through unwrapped (same object identity)', () => {
+    it('passes an instance provider through the same memoized cached wrap', () => {
       const instance = {} as IRawStorage;
+      const config = createConfig({ storage: { provider: instance } });
+
+      const options = controlOptions(new CadreNode(config));
+
+      expect(options.storage).toBeInstanceOf(CachedRawStorage);
+      expect(options.storage).toBe(wrapStorageWithCache(instance, 'control'));
+    });
+
+    it('passes a MemoryRawStorage instance through unwrapped (nothing to save caching memory)', () => {
+      const instance = new MemoryRawStorage();
       const config = createConfig({ storage: { provider: instance } });
 
       const options = controlOptions(new CadreNode(config));

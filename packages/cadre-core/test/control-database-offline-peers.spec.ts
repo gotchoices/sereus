@@ -64,8 +64,15 @@ const RECONCILE_TIMEOUT_MS = 30_000;
 /**
  * Three blackhole siblings dialed SEQUENTIALLY ≈ 3 × the ~10 s per-dial
  * timeout, which busts the single-sibling budget — hence the wider one.
+ *
+ * 3× rather than 2× headroom: under a full parallel `yarn test` the WebRTC storm
+ * pass was measured completing at ~60.4 s (2026-08-17, three runs, machine under
+ * the whole suite's load) while finishing in 30–58 s run alone — the per-dial
+ * timeouts are timer-driven and worker contention delays them. This is a hang
+ * detector, not a performance assertion; the liveness the case exists to prove
+ * (local read/write unblocked DURING the storm) has its own tight budget.
  */
-const MULTI_RECONCILE_TIMEOUT_MS = 60_000;
+const MULTI_RECONCILE_TIMEOUT_MS = 90_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 

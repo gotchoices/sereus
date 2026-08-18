@@ -3,6 +3,7 @@ import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } fr
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { createLibp2pNode } from '@optimystic/db-p2p';
+import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -1031,11 +1032,16 @@ export class CadreNode implements SAppIdLookup {
     const enableRelay = network?.enableRelay ?? (profile === 'storage');
 
     // Create storage provider for control network
-    // Uses the factory function pattern if provided to create control-network-specific storage
-    const controlStorageProvider = storage?.provider
+    // Uses the factory function pattern if provided to create control-network-specific storage.
+    // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts) because a
+    // control start's cost is its raw-storage operation count.
+    const resolvedControlStorage = storage?.provider
       ? (typeof storage.provider === 'function'
           ? storage.provider('control')
           : storage.provider)
+      : undefined;
+    const controlStorageProvider = resolvedControlStorage
+      ? wrapStorageWithCache(resolvedControlStorage, 'control')
       : undefined;
 
     const nodeOptions: Parameters<typeof createLibp2pNode>[0] = {

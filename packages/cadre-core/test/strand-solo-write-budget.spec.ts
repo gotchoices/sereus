@@ -66,25 +66,33 @@ const VERSION = '1.0.0';
  * a budget with no provenance cannot tell the next reader whether the count
  * grew or the budget was always wrong.
  */
-const MEASURED_ON = '2026-08-13';
+const MEASURED_ON = '2026-08-17';
 /**
  * Launch: `addStrand` on an empty store — strand libp2p node up, Strand
  * membership schema (8 tables + 1 index) + the one-table sApp schema applied,
- * open-strand founder bootstrap (Header row only). The retired local-transactor
- * baseline measured 1592 over the same 17 blocks on the same day: the network
- * transactor costs +21 operations (all `getMetadata`) for the identical launch.
+ * open-strand founder bootstrap (Header row only). 168 over 17 blocks: the same
+ * 130 writes every earlier measurement carried, one `getMetadata` per block, and
+ * a handful of cold fills. History: 1613 uncached (2026-08-13, when the retired
+ * local-transactor baseline measured 1592 over the same blocks), 1979 after the
+ * upstream catalog re-read (2026-08-14), 168 with cadre-core's write-through
+ * cache wired (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`, 2026-08-17) — a run near 2000 means the
+ * cache has left the path.
  */
-const LAUNCH: Budget = { ops: 1613, blocks: 17, opBudget: 1780, blockBudget: 20 };
+const LAUNCH: Budget = { ops: 168, blocks: 17, opBudget: 195, blockBudget: 20 };
 /**
  * Insert: {@link ROW_COUNT} single-row autocommit inserts into `App.Note`.
- * Retired local-transactor baseline: 364 over the same 3 blocks (+2 operations here).
+ * 75 over 3 blocks — nearly all writes (the cache absorbs the transactor's
+ * re-reads; 366 uncached on 2026-08-13).
  */
-const INSERT: Budget = { ops: 366, blocks: 3, opBudget: 410, blockBudget: 5 };
+const INSERT: Budget = { ops: 75, blocks: 3, opBudget: 90, blockBudget: 5 };
 /**
- * Select: {@link ROW_COUNT} full-table selects of `App.Note`. Byte-identical
- * to the retired baseline's figure — reads cost the same on both transactors.
+ * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 2 operations —
+ * after the launch/insert phases every read the selects need is already cached,
+ * so almost nothing reaches the backend (230 uncached on 2026-08-13). The floor
+ * on a figure this small is 1, so this phase's floor no longer guards much; the
+ * insert phase's writes carry the anti-vacuity duty for this spec.
  */
-const SELECT: Budget = { ops: 230, blocks: 2, opBudget: 260, blockBudget: 4 };
+const SELECT: Budget = { ops: 2, blocks: 2, opBudget: 15, blockBudget: 4 };
 
 /** What was measured for one phase, and the ceiling allowed above it. */
 interface Budget {

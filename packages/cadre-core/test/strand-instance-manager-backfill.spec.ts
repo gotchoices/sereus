@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
+import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
 import { signSchema } from '../src/schema-verification.js';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -38,7 +39,13 @@ const mocks = vi.hoisted(() => {
   return { stop, createLibp2pNode, StrandDatabase, StrandBackfill, backfillStart, backfillStop };
 });
 
-vi.mock('@optimystic/db-p2p', () => ({ createLibp2pNode: mocks.createLibp2pNode }));
+// Partial mock: only `createLibp2pNode` is stubbed. The real module stays for the
+// storage classes (`MemoryRawStorage`, `CachedRawStorage`) that cadre-core's cache
+// wrap (`@serfab/quereus-plugin-sereus`'s `cached-storage.ts`) instanceof-checks on every strand launch.
+vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
+  const actual = await importOriginal();
+  return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
+});
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
 vi.mock('../src/strand-backfill.js', () => ({ StrandBackfill: mocks.StrandBackfill }));
 
@@ -103,7 +110,9 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
 
     const deps = lastBackfillDeps();
     expect(deps.strandId).toBe('bf-wiring');
-    expect(deps.storage).toBe(storage);
+    // The catch-up gets the same CACHED view the strand node writes through — the
+    // memoized wrap of the provided store, not a second cache over the same backend.
+    expect(deps.storage).toBe(wrapStorageWithCache(storage, 'bf-wiring'));
     expect(deps.protocolPrefix).toBe('/optimystic/strand-bf-wiring');
   });
 

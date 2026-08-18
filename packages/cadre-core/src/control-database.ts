@@ -462,17 +462,20 @@ export class ControlDatabase {
     log('Hydrated control catalog (tables=%d, indexes=%d)', hydrated.tables, hydrated.indexes);
 
     // Load and execute the schema
-    // NOTE: this is where a slow launch is felt. A cold start issues 1541 raw-storage
-    // operations (8 tables + 1 index, over 21 distinct blocks — `getMetadata` alone is
-    // 720 of them); a warm restart 315. Duration is that count × per-operation storage
-    // latency: ~1ms/op on an idle machine is the familiar ~1.5s, but 50-90ms/op on a
-    // loaded disk or a phone's flash under launch contention makes the SAME start take
-    // 15-62s and look frozen. The amplification is inside `@optimystic/db-p2p` and
-    // cannot be fixed here — see tickets/blocked/optimystic-block-read-amplification-on-control-start.md
-    // for the full measurement and the ruled-out hypotheses (it is NOT the retry policy
-    // and NOT a cluster deadline). The counts are pinned by
-    // packages/cadre-core/test/control-start-storage-op-budget.spec.ts; if they grow,
-    // that spec fails before anyone has to debug a launch.
+    // NOTE: this is where a slow launch is felt. Duration is (raw-storage operations
+    // issued) × per-operation storage latency: ~1ms/op on an idle machine, but
+    // 50-90ms/op on a loaded disk or a phone's flash under launch contention. A cold
+    // start now reaches the backend 172 times (8 tables + 1 index, 21 distinct blocks
+    // — dominated by its 130 genuine writes), a warm restart 52, because cadre-core
+    // wraps every embedder storage in `@optimystic/db-p2p`'s write-through cache
+    // (@serfab/quereus-plugin-sereus's cached-storage.ts). Uncached the same start issued ~2000 operations — the
+    // upstream re-read amplification measured in
+    // tickets/complete/optimystic-block-read-amplification-on-control-start.md (and
+    // its follow-up ...-schema-catalog-reread-per-write-blows-storage-budgets.md),
+    // which also rules out the retry policy and cluster deadlines. The counts are
+    // pinned by packages/cadre-core/test/control-start-storage-op-budget.spec.ts; if
+    // they grow — e.g. the cache leaves this path — that spec fails before anyone
+    // has to debug a launch.
     t0 = performance.now();
     await this.loadSchema();
     timing('[controlDb] loadSchema: %dms', Math.round(performance.now() - t0));

@@ -1045,27 +1045,33 @@ where local rows exist.
   flash under launch contention charges. The operation COUNT is therefore the thing worth pinning —
   it is deterministic where wall clock is not, and nothing else in the suite would notice a change
   that doubled it. A counting passthrough over the `IRawStorage` the node is handed tallies calls by
-  method and by distinct block id, across a cold start (empty storage: **1541 operations over 21
-  distinct blocks**, `getMetadata` alone 720 of them — each block's metadata read ~34× in one start)
-  and a warm restart on what it left behind (**315 over 22**, the catalog-hydrate path). Budgets sit
-  modestly above both (1700/24 and 360/25) with the measured figure, its date, and the run's own
+  method and by distinct block id, across a cold start (empty storage: **172 operations over 21
+  distinct blocks**, dominated by the 130 genuine writes) and a warm restart on what it left behind
+  (**52 over 22** — a cold cache over a warm store; the spec gives the second start a fresh storage
+  identity because a device restart kills the process and the in-memory cache with it). Budgets sit
+  modestly above both (200/24 and 65/25) with the measured figure, its date, and the run's own
   per-method breakdown written into every assertion message. Two-sided: the ceiling is the
   regression guard, and a FLOOR at half the measurement is the anti-vacuity guard — if the node ever
   stops routing through the storage the spec hands it, a ceiling-only budget would pass while
-  measuring nothing. Backed by `MemoryRawStorage`, which issues the same operations a file backend
-  does (the cold figure matches the one measured over `FileRawStorage`). The printed
-  `[storage-op-budget]` lines need `vitest run --reporter=verbose` — vitest's default reporter shows
-  a passing test's console output nowhere. **This spec is not the fix**: the amplification is
-  produced inside `@optimystic/db-p2p` and the decision about whether and where to fix it is carried
-  by `blocked/optimystic-block-read-amplification-on-control-start`. A tripwire `NOTE:` at
+  measuring nothing. Backed by `MemoryRawStorage` (the counter sits UNDER cadre-core's cache wrap,
+  so it counts what would reach the device's disk). The printed `[storage-op-budget]` lines need
+  `vitest run --reporter=verbose` — vitest's default reporter shows a passing test's console output
+  nowhere. History: the uncached start measured 1541 ops (2026-08-12), then 1983 after an upstream
+  catalog-correctness fix (2026-08-14) — the upstream re-read amplification whose record lives in
+  `complete/optimystic-block-read-amplification-on-control-start` and
+  `complete/optimystic-schema-catalog-reread-per-write-blows-storage-budgets`. The resolution is
+  upstream's opt-in write-through raw-storage cache, wired by cadre-core over every embedder
+  storage in `@serfab/quereus-plugin-sereus`'s `cached-storage.ts` (shared with the SQL plugin's own connectors, including the browser/IndexedDB path; memoized per instance so backfill/resume share one cache; a
+  count near 2000 in this spec now means the cache has left the path). A `NOTE:` at
   `control-database.ts`'s `loadSchema` call site records the counts and the latency multiplier,
   which is where someone debugging a slow launch actually lands.
 - [x] Solo-strand network-transactor evidence (three specs, the gate that retired the per-strand
   `bootstrap`/`networked` mode): `packages/cadre-core/test/strand-solo-write-budget.spec.ts` pins
   two-sided storage-operation budgets for a solo strand's launch/insert/select on the network
-  transactor (launch 1613 ops / 17 blocks, 5 inserts 366/3, 5 selects 230/2, measured 2026-08-13;
-  the retired local transactor measured 1592/17, 364/3, 230/2 — a 1.005× insert cost, +21
-  `getMetadata` at launch), sharing `test/storage-op-counter.ts` with the control budget spec.
+  transactor (launch 168 ops / 17 blocks, 5 inserts 75/3, 5 selects 2/2, measured 2026-08-17 with
+  the write-through cache wired; uncached history 1613/366/230 on 2026-08-13, when the retired
+  local transactor measured 1592/17, 364/3, 230/2 — a 1.005× insert cost, +21 `getMetadata` at
+  launch), sharing `test/storage-op-counter.ts` with the control budget spec.
   `strand-transactor-handover.spec.ts` is the data-safety case: blocks written through the plugin's
   `transactor: 'local'` into a `FileRawStorage` are re-opened cold on the network transactor —
   catalog hydrated (not re-created), old rows selectable, new commits land, both generations read

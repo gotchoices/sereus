@@ -7,6 +7,7 @@ import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize } from './cluster-size.js';
+import { wrapStorageWithCache } from './cached-storage.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -162,10 +163,13 @@ export async function composeStrand(
 	// Resolve storage. Node passes `options.storage` through; the browser
 	// defaults to IndexedDB. The resolved instance feeds BOTH the local
 	// transactor's `rawStorageFactory` and node creation, so it must be decided
-	// up front (before pluginConfig is built).
-	const storage = platform.resolveStorage
+	// up front (before pluginConfig is built). Wrapped in the write-through
+	// raw-storage cache (cached-storage.ts) — idempotent, so a caller that
+	// already wrapped (cadre-core's seams) passes through unchanged.
+	const resolvedStorage = platform.resolveStorage
 		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
 		: options.storage;
+	const storage = resolvedStorage ? wrapStorageWithCache(resolvedStorage, strandId) : resolvedStorage;
 
 	// 1. Register crypto plugin (digest, sign, verify, etc.)
 	await platform.registerCrypto(db);

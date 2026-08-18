@@ -1,6 +1,7 @@
 import debug from 'debug';
 import type { PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
+import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
 import { StrandBackfill, type StrandBackfillConfig } from './strand-backfill.js';
 import { assertSchemaSignature } from './schema-verification.js';
@@ -130,7 +131,10 @@ function resolveStrandStorage(
   if (!provider) {
     return undefined;
   }
-  return typeof provider === 'function' ? provider(strandId) : provider;
+  const storage = typeof provider === 'function' ? provider(strandId) : provider;
+  // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts); the memo
+  // inside makes the quiesce → resume replay reuse the same cache, not stack a second.
+  return wrapStorageWithCache(storage, strandId);
 }
 
 /**
