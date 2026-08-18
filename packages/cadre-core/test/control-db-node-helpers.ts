@@ -102,6 +102,14 @@ export interface ControlNodeConfigOpts {
 	transports?: NetworkConfig['transports'];
 	/** Defaults to `[]` — no inbound connections, as RN/browser cannot accept them. */
 	listenAddrs?: string[];
+	/**
+	 * Reconcile-pass tuning. Specs that drive DEAD addresses on purpose set
+	 * `dialTimeoutMs` here so a pass costs (dialed siblings) × a number the spec
+	 * chose, rather than each address's libp2p attempt timeout multiplied by
+	 * address fan-out and stretched by whatever else the machine is running.
+	 * Omitted entirely when absent, so the production defaults stay in force.
+	 */
+	controlCohort?: NetworkConfig['controlCohort'];
 }
 
 /**
@@ -122,7 +130,8 @@ export function controlNodeConfig(opts: ControlNodeConfigOpts): CadreNodeConfig 
 			transports: opts.transports ?? [webSockets()],
 			// The RN/browser default (see types.ts NetworkConfig.listenAddrs): these
 			// runtimes cannot accept inbound connections at all.
-			listenAddrs: opts.listenAddrs ?? []
+			listenAddrs: opts.listenAddrs ?? [],
+			...(opts.controlCohort ? { controlCohort: opts.controlCohort } : {})
 		}
 	};
 }

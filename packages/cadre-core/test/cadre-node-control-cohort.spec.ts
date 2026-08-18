@@ -279,6 +279,49 @@ describe('CadreNode.reconcileControlCohort', () => {
     expect(resolvedFor.sort()).toEqual(['sibling-a', 'sibling-b']);
   });
 
+  it('abandons a dial that never answers at controlCohort.dialTimeoutMs and dials the next sibling', async () => {
+    // The offline-sibling shape, which is what the budget exists for: `dial()`
+    // against an unroutable address never settles on its own, so without a
+    // deadline of the pass's own the sequential loop is held for as long as the
+    // addresses' libp2p attempt timeouts happen to take. The fake here settles
+    // ONLY on abort, so a pass that resolves at all is proof the deadline's
+    // signal reached `dial()` — and the second sibling is proof one dead peer
+    // does not end the loop.
+    const node = new CadreNode(createConfig({
+      network: { controlCohort: { dialTimeoutMs: 50 } }
+    }));
+    const dialedPeers: string[] = [];
+    const dialSignals: AbortSignal[] = [];
+    (node as unknown as { _running: boolean })._running = true;
+    (node as unknown as { controlNode: unknown }).controlNode = {
+      peerId: { toString: () => 'self-peer' },
+      getConnections: () => [],
+      dial: (_addrs: unknown, options?: { signal?: AbortSignal }) => new Promise<never>((_resolve, reject) => {
+        if (options?.signal) {
+          dialSignals.push(options.signal);
+          options.signal.addEventListener('abort', () => reject(new Error('dial aborted')));
+        }
+      }),
+      peerStore: { get: async () => { throw new Error('miss'); } }
+    };
+    (node as unknown as { controlDatabase: unknown }).controlDatabase = {
+      queryCadrePeers: async () => [
+        { peerId: 'self-peer', multiaddr: null },
+        { peerId: 'sibling-a', multiaddr: null },
+        { peerId: 'sibling-b', multiaddr: null }
+      ],
+      getOwnerKeys: async () => new Set<string>()
+    };
+    (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
+      async (id: string) => { dialedPeers.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
+
+    await expect(node.reconcileControlCohort()).resolves.toBeUndefined();
+    expect(dialedPeers.sort()).toEqual(['sibling-a', 'sibling-b']);
+    // One deadline per sibling, and each one cancelled its dial rather than
+    // leaking it — the whole point of `withDeadline` over a bare `withTimeout`.
+    expect(dialSignals.map((s) => s.aborted)).toEqual([true, true]);
+  });
+
   it('collapses concurrent passes into one in-flight run (single-flight)', async () => {
     const node = new CadreNode(createConfig());
     const { dialCalls, queryCalls } = injectCohort(node, {

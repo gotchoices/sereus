@@ -67,9 +67,11 @@ import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
   selectControlCohortDials,
+  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE
 } from './control-cohort.js';
+import { withDeadline } from './control-stream.js';
 import { EnrollmentService } from './enrollment.js';
 import { HibernationManager, type HibernationCallbacks } from './hibernation-manager.js';
 import { ControlDatabase, type RevokedRowRef } from './control-database.js';
@@ -1996,13 +1998,28 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Budget for ONE proactive dial of the reconcile pass — steady-state sibling
+   * ({@link dialControlSibling}) and cold-start bootstrap peer
+   * ({@link dialBootstrapPeer}) alike, since both feed a whole address list to
+   * one `dial()` and both run in a sequential loop that the next entry waits on.
+   *
+   * See {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} for why the pass bounds
+   * this itself rather than inheriting each address's libp2p attempt timeout.
+   */
+  private controlDialTimeoutMs(): number {
+    return this.config.network?.controlCohort?.dialTimeoutMs
+      ?? DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS;
+  }
+
+  /**
    * Dial one sibling from its already-resolved addresses, best-effort. Returns
    * whether a dial was attempted (false when no address resolves).
    *
-   * A per-peer failure (NAT, offline, relay down, connection-gater denial) is
-   * logged and swallowed so one unreachable sibling never aborts the pass —
-   * exactly like {@link SeedBootstrapService.applySeed}'s owner-dial loop. A
-   * failed dial is simply retried on the next pass.
+   * A per-peer failure (NAT, offline, relay down, connection-gater denial, or
+   * the {@link controlDialTimeoutMs} budget expiring) is logged and swallowed so
+   * one unreachable sibling never aborts the pass — exactly like
+   * {@link SeedBootstrapService.applySeed}'s owner-dial loop. A failed dial is
+   * simply retried on the next pass.
    */
   private async dialControlSibling(sibling: CohortPeerRow, resolved: Multiaddr[]): Promise<boolean> {
     const controlNode = this.controlNode;
@@ -2016,7 +2033,11 @@ export class CadreNode implements SAppIdLookup {
     }
     try {
       log('reconcileControlCohort: dialing sibling %s (%d addr(s))', sibling.peerId, addrs.length);
-      await controlNode.dial(addrs);
+      await withDeadline(
+        this.controlDialTimeoutMs(),
+        `reconcileControlCohort dial of sibling ${sibling.peerId}`,
+        (signal) => controlNode.dial(addrs, { signal })
+      );
       return true;
     } catch (error) {
       log('reconcileControlCohort: dial of sibling %s failed (continuing): %o', sibling.peerId, error);
@@ -2201,7 +2222,11 @@ export class CadreNode implements SAppIdLookup {
     }
     try {
       log('reconcileControlCohort(cold-start): dialing bootstrap peer %s (%d addr(s))', peerId, parsed.length);
-      await controlNode.dial(parsed);
+      await withDeadline(
+        this.controlDialTimeoutMs(),
+        `reconcileControlCohort cold-start dial of bootstrap peer ${peerId}`,
+        (signal) => controlNode.dial(parsed, { signal })
+      );
       return true;
     } catch (error) {
       log('reconcileControlCohort(cold-start): dial of bootstrap peer %s failed (continuing): %o', peerId, error);

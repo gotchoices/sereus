@@ -56,9 +56,30 @@ import type { NetworkConfig, NodeProfile } from '../src/types.js';
 /** Per-operation budget. All reads/writes answer from local rows; this only catches hangs. */
 const OP_TIMEOUT_MS = 15_000;
 /**
- * One reconcile pass deliberately dials dead addresses; js-libp2p's own dial
- * timeout (~10 s per attempt, no override in db-p2p's libp2p config) governs
- * how long each blackhole dial blocks the sequential dial loop.
+ * What ONE dead sibling costs the reconcile pass here — every node in this spec
+ * is booted with `network.controlCohort.dialTimeoutMs` set to this (see
+ * {@link bootOwnerNode}), so a pass's dial phase costs (dialed siblings) × this
+ * and nothing else.
+ *
+ * That budget is what makes the cases below assertable. Left at the production
+ * default the pass instead inherits each ADDRESS's libp2p attempt timeout
+ * (~10 s, timer-driven), multiplied by address fan-out and relay hops — a
+ * `…/p2p-circuit/webrtc/…` sibling alone costs the signalling leg plus the peer
+ * — and multiplied again by however much vitest worker contention starves those
+ * timers. That is what put the WebRTC storm case past a 90 s and then a 150 s
+ * budget under a full parallel `yarn test` while it finished in 30–58 s run
+ * alone. Chasing it with a wider number was the wrong move twice; the pass now
+ * bounds its own dials (`DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS`) and this spec
+ * picks the number.
+ *
+ * Sized to keep a storm long enough to be one: three siblings still grind for
+ * ~15 s, which the concurrent local operations run inside.
+ */
+const DIAL_TIMEOUT_MS = 5_000;
+/**
+ * One reconcile pass against a single dead sibling: {@link DIAL_TIMEOUT_MS} of
+ * dialing plus this spec's control reads. A hang detector, not a timing
+ * assertion.
  */
 const RECONCILE_TIMEOUT_MS = 30_000;
 /**
@@ -66,25 +87,22 @@ const RECONCILE_TIMEOUT_MS = 30_000;
  * down rather than run to their full timeout. Wider than the single-sibling
  * budget because the pass may still be mid-dial when stop lands, but nowhere
  * near the storm budget below. Sits under its cases' own 120 s `it()` timeout so
- * the labelled message wins over vitest's generic one.
+ * the labelled message wins over vitest's generic one. Not derived from
+ * {@link DIAL_TIMEOUT_MS}: what is being waited on here is teardown, not a dial
+ * running to its budget.
  */
 const MULTI_RECONCILE_TIMEOUT_MS = 90_000;
 /**
- * A multi-sibling dial storm run to completion: three blackhole siblings dialed
- * SEQUENTIALLY ≈ 3 × the ~10 s per-dial timeout nominally, but the per-dial
- * timeouts are TIMER-driven, so vitest worker contention stretches them by a
- * factor this spec cannot predict — measured 30–58 s run alone, ~60.4 s under a
- * full parallel `yarn test` (2026-08-17, three runs), and past 90 s in the
- * 2026-08-18 review run of the same suite.
- *
- * So it is sized as a HANG detector, not as a performance assertion: just under
- * the enclosing `it()` timeout (180 s), which keeps `within()`'s labelled
- * message and makes the budget independent of machine load. Chasing the last
- * measurement instead — 60 s, then 90 s — is what produced two failing runs.
- * The liveness this case exists to prove (local read/write unblocked DURING the
- * storm) is asserted separately at {@link OP_TIMEOUT_MS}, which stays tight.
+ * A multi-sibling dial storm run to completion: three dead siblings dialed
+ * SEQUENTIALLY, so 3 × {@link DIAL_TIMEOUT_MS} ≈ 15 s of dialing plus the
+ * pass's own control reads. Still a HANG detector rather than a performance
+ * assertion — the headroom over the nominal cost absorbs worker contention,
+ * which now stretches ONE abort deadline per sibling instead of a chain of
+ * nested libp2p attempt timeouts. The liveness this case exists to prove (local
+ * read/write unblocked DURING the storm) is asserted separately at
+ * {@link OP_TIMEOUT_MS}, which stays tight.
  */
-const STORM_PASS_TIMEOUT_MS = 150_000;
+const STORM_PASS_TIMEOUT_MS = 60_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 
@@ -153,7 +171,9 @@ async function rejoinOwner(owner: OwnerNode): Promise<void> {
 /**
  * Boot the node under test as its own owner (genesis exactly as the solo spec
  * does), in the mobile/browser posture: WebSockets-only, no listen address,
- * no bootstrap peers.
+ * no bootstrap peers — and with every reconcile dial bounded at
+ * {@link DIAL_TIMEOUT_MS}, since every sibling this spec mints is unreachable
+ * by construction.
  */
 async function bootOwnerNode(
 	profile: NodeProfile,
@@ -165,6 +185,7 @@ async function bootOwnerNode(
 		profile,
 		keyStore: new InMemoryKeyStore(),
 		storage: new MemoryRawStorage(),
+		controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS },
 		...(transports ? { transports } : {})
 	})));
 	await genesisOwner(owner);
@@ -548,7 +569,10 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 		// Shared across both runs: same identity slot, same block storage.
 		const keyStore = new InMemoryKeyStore();
 		const storage = new MemoryRawStorage();
-		const config = () => controlNodeConfig({ partyId, profile: 'transaction', keyStore, storage });
+		const config = () => controlNodeConfig({
+			partyId, profile: 'transaction', keyStore, storage,
+			controlCohort: { dialTimeoutMs: DIAL_TIMEOUT_MS }
+		});
 
 		let blackhole: OfflinePeer;
 		const first = await startControlNode(new CadreNode(config()));

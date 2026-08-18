@@ -317,6 +317,7 @@ export {
 // the cadence/degree defaults the proactive reconcile routine reads.
 export {
   selectControlCohortDials,
+  DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS,
   DEFAULT_CONTROL_COHORT_RECONCILE_MS,
   DEFAULT_CONTROL_COHORT_TARGET_DEGREE,
   type ControlCohortSelection

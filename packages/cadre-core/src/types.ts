@@ -244,9 +244,10 @@ export interface NetworkConfig {
    * Tuning for the proactive control-cohort dial routine
    * ({@link CadreNode.reconcileControlCohort}), which keeps a party's control
    * nodes connected so the `CadreControl` collections form a replicating cohort.
-   * Both fields are optional; omit for the defaults
+   * Every field is optional; omit for the defaults
    * ({@link DEFAULT_CONTROL_COHORT_TARGET_DEGREE} /
-   * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}).
+   * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS} /
+   * {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS} / `STRAND_PEER_ADDR_REFRESH_MS`).
    */
   controlCohort?: {
     /**
@@ -260,6 +261,13 @@ export interface NetworkConfig {
      * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}.
      */
     reconcileMs?: number;
+    /**
+     * Budget for ONE sibling's proactive dial, in ms. Bounds a pass at
+     * (dialed siblings) × this, instead of leaving it to each address's own
+     * libp2p attempt timeout multiplied by address fan-out and relay hops.
+     * Defaults to {@link DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS}.
+     */
+    dialTimeoutMs?: number;
     /**
      * How often each running strand re-resolves its siblings' strand-network
      * addresses into its own libp2p address book — a step of the reconcile pass,

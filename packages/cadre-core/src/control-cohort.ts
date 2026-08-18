@@ -38,6 +38,33 @@ export const DEFAULT_CONTROL_COHORT_RECONCILE_MS = 15_000;
  */
 export const DEFAULT_CONTROL_COHORT_TARGET_DEGREE = 6;
 
+/**
+ * Default per-sibling budget for one proactive control-cohort dial, in ms.
+ *
+ * `libp2p.dial(addrs)` is handed EVERY address a sibling resolved to, and each
+ * one carries its own attempt timeout (js-libp2p's default is ~10 s, and
+ * `@optimystic/db-p2p` does not override it). Some addresses cost more than one
+ * attempt on their own: a `…/p2p-circuit/webrtc/…` address makes
+ * `@libp2p/webrtc` dial the signalling leg to the relay hop FIRST and only then
+ * the peer, so a two-address WebRTC sibling can block the sequential dial loop
+ * for four attempt timeouts. Against unroutable addresses none of those attempts
+ * ever answers, so an offline sibling's cost is address fan-out × relay hops ×
+ * ~10 s — a number nothing in this package chose or bounds.
+ *
+ * This budget makes the SIBLING the unit instead of the address: one pass costs
+ * at most (dialed siblings) × this, whatever each sibling's addresses look like.
+ * Deliberately wider than one attempt timeout so a reachable sibling whose first
+ * address is stale still gets a genuine try at its later ones; a sibling that
+ * needs longer than this is simply retried next pass (every
+ * {@link DEFAULT_CONTROL_COHORT_RECONCILE_MS}), which is what the dial loop's
+ * best-effort contract already does with any other dial failure.
+ *
+ * Override per node with `network.controlCohort.dialTimeoutMs` — tests that
+ * drive dead addresses on purpose set it low so a pass's duration is a chosen
+ * number rather than a transitive libp2p default stretched by machine load.
+ */
+export const DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS = 20_000;
+
 /** Outcome of {@link selectControlCohortDials}: who to dial + what the cap dropped. */
 export interface ControlCohortSelection {
   /**
