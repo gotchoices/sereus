@@ -1067,9 +1067,11 @@ where local rows exist.
   count near 2000 in this spec now means the cache has left the path). The helper's own contract —
   memo, idempotence over an already-wrapped store, `MemoryRawStorage` pass-through, and one class
   identity across the package's two entrypoints — is covered in the package that owns it,
-  `packages/quereus-plugin-sereus/test/cached-storage.spec.ts`. What the memo does NOT cover is a
-  strand runtime rebuild, which calls the provider again for a fresh instance:
-  `fix/strand-runtime-rebuild-remints-raw-storage`. A `NOTE:` at
+  `packages/quereus-plugin-sereus/test/cached-storage.spec.ts`. What keeps a cache alive across a
+  strand runtime rebuild is not the memo but ownership: cadre-core resolves one store per scope per
+  runtime and holds it, so a hibernation wake resumes warm and a stop releases the wrapper through
+  `disposeStorageCache` (`packages/cadre-core/test/strand-instance-manager-storage-ownership.spec.ts`).
+  A `NOTE:` at
   `control-database.ts`'s `loadSchema` call site records the counts and the latency multiplier,
   which is where someone debugging a slow launch actually lands.
 - [x] Solo-strand network-transactor evidence (three specs, the gate that retired the per-strand

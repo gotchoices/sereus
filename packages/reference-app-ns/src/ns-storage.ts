@@ -17,9 +17,12 @@ import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
 import { openOptimysticNSDb, SqliteRawStorage } from '@optimystic/db-p2p-storage-ns';
 
 /**
- * One open promise per database name. A strand's provider may be invoked more
- * than once over the node lifecycle; caching keeps a single SQLite connection
- * (and its prepared statements) per strand rather than reopening the file.
+ * One open promise per database name. cadre-core calls a strand's provider once per
+ * strand runtime, and again after that strand stops (see `RawStorageProvider` in
+ * cadre-core's `types.ts`); caching keeps a single SQLite connection (and its
+ * prepared statements) per strand rather than reopening the file on that second
+ * call. The cache is for the connection, not for the `LazyNsRawStorage` proxy over
+ * it — cadre-core owns the store instance's lifetime itself.
  */
 const openByDbName = new Map<string, Promise<SqliteRawStorage>>();
 

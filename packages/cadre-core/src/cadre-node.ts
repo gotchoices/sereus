@@ -2,8 +2,8 @@ import debug from 'debug';
 import { toString as uint8ArrayToString, fromString as uint8ArrayFromString } from 'uint8arrays';
 import type { Libp2p, PeerId, PrivateKey, Connection } from '@libp2p/interface';
 import { peerIdFromString, peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { createLibp2pNode } from '@optimystic/db-p2p';
-import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
+import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
+import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { multiaddr } from '@multiformats/multiaddr';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import type {
@@ -220,6 +220,14 @@ export class CadreNode implements SAppIdLookup {
   private pushFanoutService: PushFanoutService | null = null;
   /** Backing field for the {@link running} / {@link isRunning} getters. */
   private _running = false;
+  /**
+   * The control database's own raw storage (cache-wrapped), resolved once per
+   * `start()` and released in {@link cleanup}. Owning it is what keeps
+   * `config.storage.provider('control')` a once-per-runtime call: a `stop()` then
+   * `start()` cycle on this object re-resolves against a live cache, and never
+   * orphans the previous wrapper's registration in the shared cache pool.
+   */
+  private controlStorage: IRawStorage | null = null;
   /**
    * In-flight {@link serviceWake} operations keyed by strandId. Coalesces
    * concurrent on-demand wakes for the same strand into one runtime build + one
@@ -1017,6 +1025,37 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The control database's cache-wrapped raw storage, resolved from
+   * `config.storage.provider` on first use and then held in {@link controlStorage}
+   * for the rest of this runtime.
+   *
+   * Resolving once is the contract `RawStorageProvider` (types.ts) states: a provider is
+   * called once per scope per runtime lifetime. Re-entering it per call would mint a
+   * second store over one backend — a fresh, cold cache, with the previous wrapper's
+   * registration orphaned in the process-wide pool.
+   *
+   * Lazy rather than eager in `start()` so the pure-unit call path
+   * (`cadre-node-control-node-options.spec.ts` calls `buildControlNodeOptions` on a
+   * bare `new CadreNode`) still resolves — and, on that path too, only once.
+   *
+   * Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's
+   * `cached-storage.ts`) because a control start's cost is its raw-storage
+   * operation count.
+   */
+  private resolveControlStorage(): IRawStorage | undefined {
+    if (this.controlStorage) {
+      return this.controlStorage;
+    }
+    const provider = this.config.storage?.provider;
+    if (!provider) {
+      return undefined;
+    }
+    const resolved = typeof provider === 'function' ? provider('control') : provider;
+    this.controlStorage = wrapStorageWithCache(resolved, 'control');
+    return this.controlStorage;
+  }
+
+  /**
    * Map this node's config onto the control network's libp2p node options.
    *
    * Split out of {@link createControlNode} purely so the mapping is assertable without
@@ -1025,7 +1064,7 @@ export class CadreNode implements SAppIdLookup {
    * only caller in production is `createControlNode`.
    */
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
-    const { controlNetwork, network, storage, profile } = this.config;
+    const { controlNetwork, network, profile } = this.config;
     const identityKey = this.identityKey;
     const listenAddrs = resolveListenAddrs(network);
 
@@ -1033,18 +1072,9 @@ export class CadreNode implements SAppIdLookup {
     // otherwise default to true for storage profile nodes (better connectivity/uptime)
     const enableRelay = network?.enableRelay ?? (profile === 'storage');
 
-    // Create storage provider for control network
-    // Uses the factory function pattern if provided to create control-network-specific storage.
-    // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts) because a
-    // control start's cost is its raw-storage operation count.
-    const resolvedControlStorage = storage?.provider
-      ? (typeof storage.provider === 'function'
-          ? storage.provider('control')
-          : storage.provider)
-      : undefined;
-    const controlStorageProvider = resolvedControlStorage
-      ? wrapStorageWithCache(resolvedControlStorage, 'control')
-      : undefined;
+    // The control node's own storage, resolved once per runtime (see
+    // {@link resolveControlStorage}) rather than per call.
+    const controlStorageProvider = this.resolveControlStorage();
 
     const nodeOptions: Parameters<typeof createLibp2pNode>[0] = {
       port: 0,
@@ -3064,6 +3094,19 @@ export class CadreNode implements SAppIdLookup {
     if (this.controlNode) {
       await this.controlNode.stop();
       this.controlNode = null;
+    }
+
+    // Release the control store's cache registration LAST — after the database and
+    // node that write through it are down. Dropping the field is what lets a
+    // stop()/start() cycle re-resolve the provider against a live cache instead of
+    // handing the restarted node a retired wrapper. Logged, never thrown: a
+    // cache-bookkeeping failure must not abort a teardown.
+    if (this.controlStorage) {
+      const controlStorage = this.controlStorage;
+      this.controlStorage = null;
+      await disposeStorageCache(controlStorage).catch(
+        (err) => log('Failed to dispose control storage cache: %o', err)
+      );
     }
   }
 

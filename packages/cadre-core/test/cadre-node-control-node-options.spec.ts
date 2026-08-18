@@ -173,6 +173,41 @@ describe('CadreNode control-network node options', () => {
 
       expect(options.storage).toBeUndefined();
     });
+
+    /**
+     * The control store belongs to the NODE, not to the call that builds its options.
+     * `buildControlNodeOptions` runs once per `CadreNode.start()`, and `start()` is
+     * guarded only by `_running` — which `stop()` clears — so a re-resolution per call
+     * would mint a second store over one backend on a stop()/start() cycle, leaving the
+     * first wrapper's registration orphaned in the process-wide cache pool. These two
+     * pin the resolve-once rule `RawStorageProvider` states.
+     */
+    it('resolves the provider once per node, not once per call', () => {
+      const calls: string[] = [];
+      const instance = {} as IRawStorage;
+      const config = createConfig({ storage: { provider: (strandId) => { calls.push(strandId); return instance; } } });
+      const node = new CadreNode(config);
+
+      const first = controlOptions(node);
+      const second = controlOptions(node);
+
+      expect(calls).toEqual(['control']);
+      expect(second.storage).toBe(first.storage);
+    });
+
+    it('holds the store even when the factory mints a fresh instance per call', () => {
+      // The memo in `wrapStorageWithCache` is keyed on the inner instance, so it cannot
+      // help here — only the node's own ownership can.
+      let minted = 0;
+      const config = createConfig({ storage: { provider: () => { minted++; return {} as IRawStorage; } } });
+      const node = new CadreNode(config);
+
+      const first = controlOptions(node);
+      const second = controlOptions(node);
+
+      expect(minted).toBe(1);
+      expect(second.storage).toBe(first.storage);
+    });
   });
 
   describe('profile-derived options', () => {

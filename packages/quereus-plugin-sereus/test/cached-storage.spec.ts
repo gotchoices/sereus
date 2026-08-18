@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
-import { CachedRawStorage, MemoryRawStorage, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache } from '../src/cached-storage.js';
+import { CachedRawStorage, MemoryRawStorage, defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
+import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 
 /**
  * `wrapStorageWithCache` is the one place Sereus opts every embedder-supplied
@@ -75,5 +75,60 @@ describe('wrapStorageWithCache', () => {
 		const b = wrapStorageWithCache({} as IRawStorage, 'b');
 
 		expect(a).not.toBe(b);
+	});
+});
+
+/**
+ * The release half of the ownership rule. cadre-core resolves one store per scope per
+ * runtime and calls this when that runtime ends; without it the retired wrapper's
+ * registration stays in the shared pool for the process lifetime (`unregisterStore`
+ * is the only removal), one orphan per stop in a process designed to run for weeks.
+ *
+ * The second test is the reason dispose has to touch the memo at all: `wraps` is keyed
+ * by the INNER instance, so a provider that returns a stable instance per scope (the
+ * web reference app, the integration harness) would otherwise be handed the disposed
+ * wrapper back on the scope's next launch.
+ */
+describe('disposeStorageCache', () => {
+	it('retires the pool registration the wrap created', async () => {
+		const before = defaultCachePool().stats().stores.length;
+		const wrapped = wrapStorageWithCache({} as IRawStorage, 'disposable');
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(wrapped);
+
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('evicts the memo, so re-wrapping the same inner instance yields a LIVE cache', async () => {
+		const inner = {} as IRawStorage;
+		const first = wrapStorageWithCache(inner, 'relaunch');
+
+		await disposeStorageCache(first);
+		const second = wrapStorageWithCache(inner, 'relaunch');
+
+		expect(second).not.toBe(first);
+		expect(second).toBeInstanceOf(CachedRawStorage);
+	});
+
+	it('leaves a live successor alone when handed an already-disposed wrapper', async () => {
+		// Dispose is keyed on identity, not on the inner instance: a late second dispose
+		// of a retired wrapper must not evict the memo entry its successor now owns.
+		const inner = {} as IRawStorage;
+		const first = wrapStorageWithCache(inner, 'double-dispose');
+		await disposeStorageCache(first);
+		const second = wrapStorageWithCache(inner, 'double-dispose');
+
+		await disposeStorageCache(first);
+
+		expect(wrapStorageWithCache(inner, 'double-dispose')).toBe(second);
+	});
+
+	it('is a no-op for storage this module returned unwrapped', async () => {
+		// Callers hand back whatever `wrapStorageWithCache` gave them, which for an
+		// in-memory backend is the backend itself — no instanceof test at the call site.
+		const inner = new MemoryRawStorage();
+
+		await expect(disposeStorageCache(wrapStorageWithCache(inner, 'memory'))).resolves.toBeUndefined();
 	});
 });

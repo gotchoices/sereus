@@ -1,7 +1,7 @@
 import debug from 'debug';
 import type { PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
-import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
 import { StrandBackfill, type StrandBackfillConfig } from './strand-backfill.js';
 import { assertSchemaSignature } from './schema-verification.js';
@@ -120,6 +120,9 @@ export function getStrandStoragePath(basePath: string, strandId: string): string
  * Resolve a storage provider for a specific strand.
  * If the provider is a factory function, call it with the strandId.
  *
+ * Called only from {@link StrandInstanceManager.startStrand}, which owns the result
+ * for the instance's lifetime — see `strandStorages`.
+ *
  * @param provider - Storage provider (instance or factory)
  * @param strandId - The strand ID to create storage for
  * @returns The resolved IRawStorage instance, or undefined if no provider
@@ -133,10 +136,8 @@ function resolveStrandStorage(
   }
   const storage = typeof provider === 'function' ? provider(strandId) : provider;
   // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts).
-  // The memo there dedupes the seams that share ONE instance (node wiring + backfill); it does
-  // NOT span a runtime rebuild, because `buildStrandRuntime` calls the provider again and most
-  // providers mint a fresh instance per call — see
-  // tickets/fix/strand-runtime-rebuild-remints-raw-storage.md.
+  // Called ONCE per strand launch — `startStrand` keeps the result for the instance's
+  // lifetime — so the wrap survives every runtime rebuild the instance goes through.
   return wrapStorageWithCache(storage, strandId);
 }
 
@@ -161,6 +162,26 @@ export class StrandInstanceManager {
    * missed writes).
    */
   private backfills: Map<string, StrandBackfill> = new Map();
+  /**
+   * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
+   * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
+   * Private for the same reason `backfills` is: runtime plumbing, not part of the
+   * public {@link StrandInstance}.
+   *
+   * Deliberately NOT touched by `releaseRuntime`: that is what lets a quiesce →
+   * resume cycle rebuild the libp2p node over the SAME store, keeping its
+   * write-through cache warm (and, on an in-memory backend, keeping the strand's
+   * blocks at all). An entry exists iff `instances` does AND the launch config
+   * supplied a storage provider.
+   *
+   * NOTE: a hibernating strand therefore keeps its store — and its share of the
+   * process-wide cache pool — resident for as long as the instance is tracked. That
+   * is the point (a warm wake), and the pool evicts under pressure, so the cost is
+   * one map entry per hibernating strand today. If a device ever hibernates strands
+   * by the hundred, revisit: dropping the store at quiesce and paying for a cold
+   * wake becomes the better trade.
+   */
+  private strandStorages: Map<string, IRawStorage> = new Map();
   private stopping = false;
 
   constructor() {
@@ -199,6 +220,10 @@ export class StrandInstanceManager {
    * of the failure from the rejected promise (and, on the control-discovered
    * path, from CadreNode's `strand:error` event), not from an error record left
    * behind in `instances`.
+   *
+   * The strand's raw storage is resolved HERE, once, and held for the instance's
+   * lifetime (see `strandStorages`) — `buildStrandRuntime` only reads it, so a
+   * hibernation wake never re-enters the embedder's provider.
    */
   async startStrand(config: StartStrandConfig): Promise<StrandInstance> {
     const { strandRow, sAppConfig } = config;
@@ -229,6 +254,15 @@ export class StrandInstanceManager {
       signature: sAppConfig.signature
     };
 
+    // Resolve this strand's storage ONCE, before anything is recorded. If a factory
+    // function is provided, it is called with the strandId to create strand-specific
+    // storage (e.g. strand-isolated directories). A provider that throws therefore
+    // fails the launch alongside the schema-signature check, leaving nothing tracked.
+    const strandStorage = resolveStrandStorage(config.storage?.provider, strandId);
+    if (strandStorage) {
+      log('Strand %s using provided storage provider', strandId);
+    }
+
     // Determine latency hint: sApp config > default
     const latencyHint = sAppConfig.latencyHint ?? config.defaultLatencyHint;
 
@@ -244,6 +278,9 @@ export class StrandInstanceManager {
 
     this.instances.set(strandId, instance);
     this.launchConfigs.set(strandId, config);
+    if (strandStorage) {
+      this.strandStorages.set(strandId, strandStorage);
+    }
 
     try {
       await this.buildStrandRuntime(instance, config);
@@ -260,6 +297,9 @@ export class StrandInstanceManager {
       // reads both, and a config without an instance would strand the config.
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      // The store this launch resolved goes with it: nothing owns it any more, and a
+      // retained cache wrapper would be handed back (already retired) on a retry.
+      await this.disposeStrandStorage(strandId);
       throw error;
     }
   }
@@ -268,21 +308,18 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, storage, network, profile, privateKey,
-   * sApp config) from `config`, so the caller controls the cohort-derived
-   * values.
+   * volatile inputs (bootstrapNodes, network, profile, privateKey, sApp config)
+   * from `config`, so the caller controls the cohort-derived values. Storage is the
+   * one input it does NOT re-read from `config`: that belongs to the instance and
+   * comes from `strandStorages`.
    */
   private async buildStrandRuntime(instance: StrandInstance, config: StartStrandConfig): Promise<void> {
     const strandId = instance.strandId;
     const { sAppConfig } = config;
 
-    // Resolve storage for this strand. If a factory function is provided, it is
-    // called with the strandId to create strand-specific storage (e.g.,
-    // strand-isolated directories).
-    const strandStorage = resolveStrandStorage(config.storage?.provider, strandId);
-    if (strandStorage) {
-      log('Strand %s using provided storage provider', strandId);
-    }
+    // The store the instance OWNS (resolved once in `startStrand`), not a fresh
+    // resolution: a rebuild must reach the same backend through the same warm cache.
+    const strandStorage = this.strandStorages.get(strandId);
 
     // db-p2p namespaces every one of the node's protocol ids by network name
     // (`/optimystic/<networkName>/...`), so anything dialing this node's own
@@ -404,6 +441,9 @@ export class StrandInstanceManager {
    * and zeroing connectedPeers. Tolerant of partially-built state — either handle
    * may be absent — so it doubles as rollback for a failed `buildStrandRuntime`.
    * Shared by `quiesceStrand`, `stopStrand`, and that rollback path.
+   *
+   * Leaves `strandStorages` untouched by design — the store outlives the runtime it
+   * was built into, which is what makes a resume warm. Only `stopStrand` disposes it.
    */
   private async releaseRuntime(instance: StrandInstance): Promise<void> {
     // Backfill first — before the database closes and the libp2p node stops — so
@@ -423,6 +463,29 @@ export class StrandInstanceManager {
       instance.libp2pNode = undefined;
     }
     instance.connectedPeers = 0;
+  }
+
+  /**
+   * Drop the strand's owned store and release its cache registration with the shared
+   * pool. Called only where the strand's whole lifetime ends (`stopStrand`, and the
+   * failed-launch rollback) — never on a quiesce.
+   *
+   * A dispose failure is logged, not thrown: the store is already unreferenced here,
+   * and failing the stop over a cache-bookkeeping error would leave the caller unable
+   * to tear the strand down. `disposeStorageCache` no-ops for an unwrapped store
+   * (e.g. `MemoryRawStorage`), so no instanceof test is needed.
+   */
+  private async disposeStrandStorage(strandId: string): Promise<void> {
+    const storage = this.strandStorages.get(strandId);
+    if (!storage) {
+      return;
+    }
+    this.strandStorages.delete(strandId);
+    try {
+      await disposeStorageCache(storage);
+    } catch (error) {
+      log('Failed to dispose storage cache for strand %s: %o', strandId, error);
+    }
   }
 
   /**
@@ -516,6 +579,8 @@ export class StrandInstanceManager {
       instance.status = 'stopped';
       this.instances.delete(strandId);
       this.launchConfigs.delete(strandId);
+      // Storage is released only here — NOT in releaseRuntime, which a quiesce shares.
+      await this.disposeStrandStorage(strandId);
       log('Strand %s stopped successfully', strandId);
     } catch (error) {
       instance.status = 'error';

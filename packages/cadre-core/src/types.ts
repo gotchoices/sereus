@@ -112,8 +112,21 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
 };
 
 /**
- * Storage provider type - either an IRawStorage instance or a factory function.
+ * Storage provider - either an `IRawStorage` instance or a factory function.
  * Factory functions are useful for creating strand-specific storage instances.
+ *
+ * **Called once per scope per runtime lifetime.** The scopes are the literal string
+ * `'control'` (once per `CadreNode.start()`) and each strand id (once per
+ * `startStrand`). Hibernation — `quiesceStrand` then `resumeStrand` — reuses the
+ * store already resolved for that strand and does NOT re-enter this callback.
+ *
+ * It IS re-entered for a scope after that scope's runtime has stopped
+ * (`stopStrand`, or a `stop()` then `start()` cycle on one `CadreNode`), so it must
+ * be able to hand back a store over the same durable backend a second time. A
+ * factory may mint a fresh object per call; it must not *need* to.
+ *
+ * cadre-core disposes only its own cache wrapper — it never closes the store you
+ * returned. Closing the underlying handle stays the embedder's job.
  */
 export type RawStorageProvider = IRawStorage | ((strandId: string) => IRawStorage);
 
@@ -123,6 +136,7 @@ export type RawStorageProvider = IRawStorage | ((strandId: string) => IRawStorag
 export interface StorageConfig {
   /**
    * Storage provider - either an IRawStorage instance or a factory function.
+   * See {@link RawStorageProvider} for how often cadre-core calls it.
    *
    * For Node.js environments, use FileRawStorage from @optimystic/db-p2p-storage-fs:
    * ```typescript

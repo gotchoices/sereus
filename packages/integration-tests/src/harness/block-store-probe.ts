@@ -65,12 +65,12 @@ export interface RawStorageCapture {
 /**
  * A storage provider that remembers the store it made for each scope.
  *
- * MEMOIZED PER SCOPE, deliberately: cadre-core calls the provider again whenever a strand
- * runtime is rebuilt (`startStrand` and `resumeStrand` both go through
- * `buildStrandRuntime`). A factory that minted a fresh `MemoryRawStorage` each time would
- * silently drop the strand's blocks on a resume — and would leave `forStrand` returning a
- * store the live node is no longer writing to. Memoizing makes the capture behave like a
- * real persistent provider (one directory per scope), which is the shape under test.
+ * MEMOIZED PER SCOPE, deliberately. cadre-core's `RawStorageProvider` contract calls a
+ * provider once per scope per runtime, and again for that scope after its runtime stops
+ * (`stopStrand`, or a `stop()` then `start()` cycle) — a second call must reach the SAME
+ * durable backend. Memoizing is how this capture honours that: it behaves like a real
+ * persistent provider (one directory per scope), which is the shape under test, and it
+ * keeps `forStrand` returning the store the live node is actually writing to.
  *
  * @param factory - Builds one store. Defaults to an in-memory store, which is what every
  *   scenario in this package uses.

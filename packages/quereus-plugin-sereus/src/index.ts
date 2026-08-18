@@ -7,5 +7,5 @@ export {
 	STRAND_CLUSTER_POLICY,
 	resolveStrandClusterSize
 } from './cluster-size.js';
-export { wrapStorageWithCache } from './cached-storage.js';
+export { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 export type { StrandConnectionOptions, SereusPluginResult, StrandTransactor } from './types.js';
