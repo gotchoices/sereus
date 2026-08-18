@@ -1,6 +1,6 @@
 {
   "name": "@serfab/integration-tests",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "type": "module",
   "private": true,
   "description": "Integration tests for Sereus cadre system - tests real networking, storage, and multi-party scenarios",
