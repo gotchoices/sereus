@@ -19,6 +19,13 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
  * wrapper, so a long-lived process does not accumulate one orphaned registration in
  * the shared cache pool per strand stop.
  *
+ * NOTE: the pool-count arms below measure `defaultCachePool().stats().stores.length`
+ * RELATIVE to a baseline taken inside the test, because the pool is process-wide and
+ * other tests in this file leave registrations behind. That is sound only while vitest
+ * runs the tests in this file sequentially (its default). If this file is ever marked
+ * `concurrent`, those baselines race — give each arm its own `SharedCachePool` instead
+ * of the default one.
+ *
  * Mocks follow `strand-instance-manager-hibernation.spec.ts`: `createLibp2pNode` and
  * `StrandDatabase` are doubles, so no real libp2p node or Quereus database starts.
  * The mock replaces `@optimystic/db-p2p` wholesale, hence the storage imports above

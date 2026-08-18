@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
-import { CachedRawStorage, MemoryRawStorage } from '@optimystic/db-p2p';
+import { CachedRawStorage, MemoryRawStorage, defaultCachePool } from '@optimystic/db-p2p';
 import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
@@ -47,6 +47,15 @@ function controlOptions(node: CadreNode): Parameters<typeof createLibp2pNode>[0]
   return (node as unknown as {
     buildControlNodeOptions: () => Parameters<typeof createLibp2pNode>[0]
   }).buildControlNodeOptions();
+}
+
+/**
+ * `cleanup` is the teardown `stop()` delegates to (and `start()` calls on a failed
+ * launch). Reached the same private-cast way as `buildControlNodeOptions`, so the
+ * storage-lifecycle tests below stay in this file's pure-unit budget.
+ */
+function nodeCleanup(node: CadreNode): Promise<void> {
+  return (node as unknown as { cleanup(): Promise<void> }).cleanup();
 }
 
 function resolveIdentity(node: CadreNode): Promise<void> {
@@ -207,6 +216,53 @@ describe('CadreNode control-network node options', () => {
 
       expect(minted).toBe(1);
       expect(second.storage).toBe(first.storage);
+    });
+
+    /**
+     * The release half of the same ownership rule. `cleanup()` runs on every `stop()`
+     * and on a failed `start()`; if it did not drop the field, a `stop()`/`start()`
+     * cycle would hand the restarted control node the RETIRED wrapper (its pool store
+     * id is unregistered and never reused), and the wrapper's registration would sit
+     * in the process-wide pool for the process lifetime. `cleanup` is safe to call on
+     * a bare node — every handle it touches is either null or a constructor-built
+     * object whose stop/dispose is a no-op when never started.
+     */
+    it('cleanup retires the control store registration it created', async () => {
+      // NOTE: measured relative to a baseline taken here, since the cache pool is
+      // process-wide and the storage tests above leave registrations behind. Sound only
+      // while vitest runs this file's tests sequentially (its default); marking the file
+      // `concurrent` would race these baselines — pass each arm its own SharedCachePool then.
+      const before = defaultCachePool().stats().stores.length;
+      const node = new CadreNode(createConfig({ storage: { provider: () => ({}) as IRawStorage } }));
+
+      controlOptions(node);
+      expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+      await nodeCleanup(node);
+
+      expect(defaultCachePool().stats().stores.length).toBe(before);
+    });
+
+    it('re-resolves against a LIVE cache after cleanup, not the retired wrapper', async () => {
+      // A provider that returns a stable instance per scope (the web reference app,
+      // the integration harness) is the case that would otherwise regress: the memo in
+      // `wrapStorageWithCache` is keyed on that inner instance, so without the memo
+      // eviction `disposeStorageCache` performs, the second cycle would be handed the
+      // disposed wrapper back.
+      const calls: string[] = [];
+      const instance = {} as IRawStorage;
+      const node = new CadreNode(createConfig({
+        storage: { provider: (scope) => { calls.push(scope); return instance; } }
+      }));
+
+      const first = controlOptions(node).storage;
+      await nodeCleanup(node);
+      const second = controlOptions(node).storage;
+
+      expect(calls).toEqual(['control', 'control']);
+      expect(second).toBeInstanceOf(CachedRawStorage);
+      expect(second).not.toBe(first);
+      await nodeCleanup(node);
     });
   });
 

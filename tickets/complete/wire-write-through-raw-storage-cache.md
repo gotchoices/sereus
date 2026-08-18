@@ -74,7 +74,8 @@ handoff's five self-declared soft spots, then the surrounding wiring and docs.
 
 ### Filed as a ticket
 
-- **`fix/strand-runtime-rebuild-remints-raw-storage`** — `buildStrandRuntime` re-resolves
+- **`fix/strand-runtime-rebuild-remints-raw-storage`** (since landed and archived as
+  `complete/strand-storage-owned-per-instance`) — `buildStrandRuntime` re-resolves
   the strand's storage on every runtime rebuild, and it is shared by `startStrand` and
   `resumeStrand`, so hibernation wake calls the embedder's provider again. Four of the six
   providers in the repo mint a fresh object per call. Consequences: the write-through cache
