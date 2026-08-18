@@ -148,3 +148,13 @@ Re-run the two specs from `packages/cadre-core`. Both print a `[storage-op-budge
 `[strand-write-budget]` line carrying the full per-method breakdown under
 `--reporter=verbose`, and every assertion embeds the breakdown in its own failure message, so a single
 run is enough to see which method moved.
+
+## Resolution (2026-08-17)
+
+Resolved together with `optimystic-block-read-amplification-on-control-start` (see its Resolution
+section): upstream kept the catalog-correctness re-reads but shipped a write-through raw-storage
+cache that absorbs them (and the pre-existing amplification) before they reach the backend;
+cadre-core wires it in `src/cached-storage.ts`. The +442-read step this ticket measured is gone
+from the backend-facing counts — cold start is now 172 operations — and both budget specs were
+re-baselined per this ticket's own design constraints (measurement + date updated, floors
+re-derived, history preserved in the comments).

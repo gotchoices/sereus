@@ -127,3 +127,21 @@ together.
   and the launch-time sensitivity that comes with it?
 - If accepted for now: is the acceptable ceiling stated in terms of operations (a budget the
   in-repo guard can pin) or in terms of wall clock on a reference device?
+
+## Resolution (2026-08-17)
+
+Decided path: **fix upstream, adopt here.** Upstream (`@optimystic/db-p2p` 0.24.0) shipped the
+remedy as an opt-in write-through raw-storage cache (`CachedRawStorage`; upstream tickets
+`coherent-raw-storage-cache` and `shared-bounded-cache-pool-with-2q-admission`, both complete
+there), deliberately leaving adoption to the consumer. Sereus adopted it in
+`packages/cadre-core/src/cached-storage.ts`: every embedder-supplied storage (control and strand)
+is wrapped once, memoized per instance so the backfill path and quiesce→resume share one cache;
+`MemoryRawStorage` is left unwrapped on upstream's own guidance.
+
+Measured effect (backend operations, i.e. what a device's disk pays): cold control start
+1983 → **172** (the 130 genuine writes plus one cold read per block), warm restart 463 → **52**,
+solo strand launch 1979 → **168**, 5 inserts 366 → **75**, 5 selects 230 → **2**. Both budget
+specs re-baselined with 2026-08-17 provenance and full history in their comments; the warm phase
+now hands the second start a fresh storage identity so the figure keeps standing for a real device
+restart (process death kills the cache). The `loadSchema` `NOTE:` in `control-database.ts` and
+`docs/STATUS.md` were updated to match.

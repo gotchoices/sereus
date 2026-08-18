@@ -56,3 +56,14 @@ composite-PK point-lookup backlog item), or decide on an interim engine-level wo
 
 Once fixed upstream, `implement/10-control-revocation-reissue-test-fixes` (which is
 prereq'd on this ticket) finishes the test work and validates the whole feature.
+
+## Resolution (2026-08-17)
+
+Cleared by the upstream dependency wave (`@optimystic/*` 0.22 → 0.24, `@quereus/quereus`
+^4.10 → ^4.14, linked workspaces rebuilt): the counter-only UPDATE no longer reports a false
+collision with the row's own primary key. Verified by running both revocation suites directly —
+`control-revocation-reissue.spec.ts` + `control-revocation-replay.spec.ts`, 44/44 green — and by
+two full `packages/cadre-core` runs (1551+ tests) the same day. The `.pre-existing-known.md`
+entries for these specs predate this and are superseded. This unblocks
+`implement/10-control-revocation-reissue-test-fixes`, whose remaining work is the small known
+test fixes plus a full validation pass.
