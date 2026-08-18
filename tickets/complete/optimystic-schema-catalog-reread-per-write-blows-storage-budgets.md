@@ -154,7 +154,7 @@ run is enough to see which method moved.
 Resolved together with `optimystic-block-read-amplification-on-control-start` (see its Resolution
 section): upstream kept the catalog-correctness re-reads but shipped a write-through raw-storage
 cache that absorbs them (and the pre-existing amplification) before they reach the backend;
-cadre-core wires it in `src/cached-storage.ts`. The +442-read step this ticket measured is gone
+cadre-core wires it via `packages/quereus-plugin-sereus/src/cached-storage.ts`. The +442-read step this ticket measured is gone
 from the backend-facing counts — cold start is now 172 operations — and both budget specs were
 re-baselined per this ticket's own design constraints (measurement + date updated, floors
 re-derived, history preserved in the comments).

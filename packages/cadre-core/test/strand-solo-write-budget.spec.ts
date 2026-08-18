@@ -88,9 +88,14 @@ const INSERT: Budget = { ops: 75, blocks: 3, opBudget: 90, blockBudget: 5 };
 /**
  * Select: {@link ROW_COUNT} full-table selects of `App.Note`. 2 operations —
  * after the launch/insert phases every read the selects need is already cached,
- * so almost nothing reaches the backend (230 uncached on 2026-08-13). The floor
- * on a figure this small is 1, so this phase's floor no longer guards much; the
- * insert phase's writes carry the anti-vacuity duty for this spec.
+ * so almost nothing reaches the backend (230 uncached on 2026-08-13).
+ *
+ * NOTE: at 2 ops the floor (`> ops/2` = `> 1`) is exactly the measurement, so this
+ * phase's anti-vacuity guard now has no slack in the improving direction: a change
+ * that legitimately took the selects to 1 backend operation would red this spec as
+ * "no longer measuring the real storage path". If that ever fires, re-measure and
+ * re-baseline rather than loosening — and note the insert phase's writes, which have
+ * real slack, already carry the anti-vacuity duty for the spec as a whole.
  */
 const SELECT: Budget = { ops: 2, blocks: 2, opBudget: 15, blockBudget: 4 };
 

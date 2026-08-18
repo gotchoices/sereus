@@ -134,7 +134,7 @@ Decided path: **fix upstream, adopt here.** Upstream (`@optimystic/db-p2p` 0.24.
 remedy as an opt-in write-through raw-storage cache (`CachedRawStorage`; upstream tickets
 `coherent-raw-storage-cache` and `shared-bounded-cache-pool-with-2q-admission`, both complete
 there), deliberately leaving adoption to the consumer. Sereus adopted it in
-`packages/cadre-core/src/cached-storage.ts`: every embedder-supplied storage (control and strand)
+`packages/quereus-plugin-sereus/src/cached-storage.ts`: every embedder-supplied storage (control and strand)
 is wrapped once, memoized per instance so the backfill path and quiesce→resume share one cache;
 `MemoryRawStorage` is left unwrapped on upstream's own guidance.
 

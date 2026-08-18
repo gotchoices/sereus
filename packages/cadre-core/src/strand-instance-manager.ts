@@ -132,8 +132,11 @@ function resolveStrandStorage(
     return undefined;
   }
   const storage = typeof provider === 'function' ? provider(strandId) : provider;
-  // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts); the memo
-  // inside makes the quiesce → resume replay reuse the same cache, not stack a second.
+  // Wrapped in the write-through raw-storage cache (quereus-plugin-sereus's cached-storage.ts).
+  // The memo there dedupes the seams that share ONE instance (node wiring + backfill); it does
+  // NOT span a runtime rebuild, because `buildStrandRuntime` calls the provider again and most
+  // providers mint a fresh instance per call — see
+  // tickets/fix/strand-runtime-rebuild-remints-raw-storage.md.
   return wrapStorageWithCache(storage, strandId);
 }
 

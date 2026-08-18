@@ -62,17 +62,29 @@ const OP_TIMEOUT_MS = 15_000;
  */
 const RECONCILE_TIMEOUT_MS = 30_000;
 /**
- * Three blackhole siblings dialed SEQUENTIALLY ≈ 3 × the ~10 s per-dial
- * timeout, which busts the single-sibling budget — hence the wider one.
- *
- * 3× rather than 2× headroom: under a full parallel `yarn test` the WebRTC storm
- * pass was measured completing at ~60.4 s (2026-08-17, three runs, machine under
- * the whole suite's load) while finishing in 30–58 s run alone — the per-dial
- * timeouts are timer-driven and worker contention delays them. This is a hang
- * detector, not a performance assertion; the liveness the case exists to prove
- * (local read/write unblocked DURING the storm) has its own tight budget.
+ * A pass already awaited AFTER `stop()`, so its remaining dials are being torn
+ * down rather than run to their full timeout. Wider than the single-sibling
+ * budget because the pass may still be mid-dial when stop lands, but nowhere
+ * near the storm budget below. Sits under its cases' own 120 s `it()` timeout so
+ * the labelled message wins over vitest's generic one.
  */
 const MULTI_RECONCILE_TIMEOUT_MS = 90_000;
+/**
+ * A multi-sibling dial storm run to completion: three blackhole siblings dialed
+ * SEQUENTIALLY ≈ 3 × the ~10 s per-dial timeout nominally, but the per-dial
+ * timeouts are TIMER-driven, so vitest worker contention stretches them by a
+ * factor this spec cannot predict — measured 30–58 s run alone, ~60.4 s under a
+ * full parallel `yarn test` (2026-08-17, three runs), and past 90 s in the
+ * 2026-08-18 review run of the same suite.
+ *
+ * So it is sized as a HANG detector, not as a performance assertion: just under
+ * the enclosing `it()` timeout (180 s), which keeps `within()`'s labelled
+ * message and makes the budget independent of machine load. Chasing the last
+ * measurement instead — 60 s, then 90 s — is what produced two failing runs.
+ * The liveness this case exists to prove (local read/write unblocked DURING the
+ * storm) is asserted separately at {@link OP_TIMEOUT_MS}, which stays tight.
+ */
+const STORM_PASS_TIMEOUT_MS = 150_000;
 /** `start()`/`stop()` bring libp2p up and down — a looser budget, still bounded. */
 const LIFECYCLE_TIMEOUT_MS = 30_000;
 
@@ -582,7 +594,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 				];
 				const authorizedPeerId = await runControlOperationSet(owner, blackholes);
 
-				await within('reconcileControlCohort() (three siblings)', MULTI_RECONCILE_TIMEOUT_MS,
+				await within('reconcileControlCohort() (three siblings)', STORM_PASS_TIMEOUT_MS,
 					() => owner.node.reconcileControlCohort());
 				await expectIntactAfterPass(owner, blackholes, authorizedPeerId);
 			} finally {
@@ -609,7 +621,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 				const authorizedPeerId = await runControlOperationSet(owner, blackholes);
 
 				// The pass itself must still settle inside its own budget…
-				await within('reconcileControlCohort() (storm pass)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+				await within('reconcileControlCohort() (storm pass)', STORM_PASS_TIMEOUT_MS, () => pass);
 				// …and with zero connections throughout, the queued write never drained.
 				await expectIntactAfterPass(owner, blackholes, authorizedPeerId);
 			} finally {
@@ -726,7 +738,7 @@ describe('control database with known-but-offline peers (no listen addr, no boot
 				const pass = owner.node.reconcileControlCohort();
 				const authorizedPeerId = await runControlOperationSet(owner, siblings);
 
-				await within('reconcileControlCohort() (WebRTC storm pass)', MULTI_RECONCILE_TIMEOUT_MS, () => pass);
+				await within('reconcileControlCohort() (WebRTC storm pass)', STORM_PASS_TIMEOUT_MS, () => pass);
 				await expectIntactAfterPass(owner, siblings, authorizedPeerId);
 			} finally {
 				await within('node.stop()', LIFECYCLE_TIMEOUT_MS, () => owner.node.stop());

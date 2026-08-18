@@ -1060,9 +1060,16 @@ where local rows exist.
   catalog-correctness fix (2026-08-14) — the upstream re-read amplification whose record lives in
   `complete/optimystic-block-read-amplification-on-control-start` and
   `complete/optimystic-schema-catalog-reread-per-write-blows-storage-budgets`. The resolution is
-  upstream's opt-in write-through raw-storage cache, wired by cadre-core over every embedder
-  storage in `@serfab/quereus-plugin-sereus`'s `cached-storage.ts` (shared with the SQL plugin's own connectors, including the browser/IndexedDB path; memoized per instance so backfill/resume share one cache; a
-  count near 2000 in this spec now means the cache has left the path). A `NOTE:` at
+  upstream's opt-in write-through raw-storage cache, wired over every embedder storage through one
+  helper in `@serfab/quereus-plugin-sereus`'s `cached-storage.ts` — shared by cadre-core's control
+  and strand seams and by the SQL plugin's own connectors including the browser/IndexedDB path, and
+  memoized per storage instance so overlapping seams cannot stack two caches over one backend (a
+  count near 2000 in this spec now means the cache has left the path). The helper's own contract —
+  memo, idempotence over an already-wrapped store, `MemoryRawStorage` pass-through, and one class
+  identity across the package's two entrypoints — is covered in the package that owns it,
+  `packages/quereus-plugin-sereus/test/cached-storage.spec.ts`. What the memo does NOT cover is a
+  strand runtime rebuild, which calls the provider again for a fresh instance:
+  `fix/strand-runtime-rebuild-remints-raw-storage`. A `NOTE:` at
   `control-database.ts`'s `loadSchema` call site records the counts and the latency multiplier,
   which is where someone debugging a slow launch actually lands.
 - [x] Solo-strand network-transactor evidence (three specs, the gate that retired the per-strand
