@@ -61,3 +61,16 @@ Two things a design pass must settle:
 in-flight write on the same node. This ticket is about a read *failing* on a transient
 network fault with no second attempt. Different site, different fix; the standing `it.fails`
 case in the degraded-cohort scenario belongs to that one, not this one.
+
+## Arm added 2026-08-18 (review of `control-revocation-reissuable-tombstone`)
+
+The exposure on the membership path **doubled** and nobody widened this ticket for it.
+`ControlDatabase.queryCadrePeers` used to be one network read; the revocation filter moved
+into it, so it now issues `queryRevokedStamps('CadrePeer')` *and* the `CadrePeer` scan, both
+unretried, before returning. `queryPeerRecord` gained the same second read.
+
+That matters here because `queryCadrePeers` sits on the membership-gate refresh — the read
+whose failure decides whether a node can answer inbound streams at all — and because both
+reads have to succeed for the call to succeed, so a single transient blip in *either* now
+fails the whole membership read. Nothing about the fix changes: the read seam this ticket
+asks for still covers both. Only the count of unretried hops per membership read went up.

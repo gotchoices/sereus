@@ -359,11 +359,15 @@ describe('Revocation: owner-signed tombstone re-issue', () => {
     expect((await db.queryCadrePeers()).map(row => row.peerId)).not.toContain(peerId);
     expect(await db.queryPeerRecord(peerId)).toBeNull();
     expect((await db.queryRevokedStamps('CadrePeer')).has(stamp!)).toBe(true);
+    // The seed bundle is an ADDRESS surface too — applySeed writes every seed peer's
+    // addrs into the joiner's peerstore — so a removed peer must not ride out in one.
+    expect((await node.createSeed()).peers.map(peer => peer.peerId)).not.toContain(peerId);
 
     // Removal is stamp-retirement, not an identity ban: the owner may re-admit the same
     // peer, and the fresh row carries a fresh nonce — the retired one stays dead.
     await node.authorizePeer(peerId, ['/ip4/192.168.1.100/tcp/4001']);
     expect((await db.queryCadrePeers()).map(row => row.peerId)).toContain(peerId);
+    expect((await node.createSeed()).peers.map(peer => peer.peerId)).toContain(peerId);
     const freshStampId = await db.queryCadrePeerStampId(peerId);
     expect(freshStampId).not.toBeNull();
     expect(freshStampId).not.toBe(stamp);

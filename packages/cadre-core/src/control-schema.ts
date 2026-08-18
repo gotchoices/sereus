@@ -148,8 +148,9 @@ declare schema CadreControl {
         -- NOTE: NotRevoked is a per-transaction check against LOCALLY VISIBLE rows, so a node that
         -- has not yet converged on the Revocation row can still accept a replayed add and end up
         -- holding the resurrected strand alongside its tombstone. CadrePeer has a read-side
-        -- mitigation for this class (CadreNode.listAuthorizedMembers drops rows whose stamp is
-        -- retired); Strand and ValidationKey deliberately do NOT, because neither has a
+        -- mitigation for this class (ControlDatabase.queryCadrePeers drops rows whose stamp is
+        -- retired, so every membership reader inherits it); Strand and ValidationKey deliberately
+        -- do NOT, because neither has a
         -- per-request authorization surface today. If one ever gains one, filter it there.
         constraint NotRevoked check on insert (
             not exists (select 1 from Revocation R where R.TableName = 'Strand' and R.StampId = new.StampId)

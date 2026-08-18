@@ -1236,6 +1236,14 @@ Whole-repo test truth at HEAD `9aee7b0`, `../optimystic` clean at `610d6d1`, `..
 | `packages/quereus-plugin-sereus` | 78 (1 todo) | **4** | all in `test/e2e/networked.e2e.spec.ts` — two real libp2p peers |
 | `packages/integration-tests` | 241 (1 expected-fail) | **13** | 8 scenario files, all of them multi-machine |
 
+> **Correction 2026-08-18.** The `packages/cadre-core` row above is superseded: its 5 failures were
+> the false `UNIQUE constraint failed: Revocation.TableName, Revocation.StampId` on a counter-only
+> `ReissuedAt` update, cleared by the `@optimystic/*` 0.24 / `@quereus/quereus` ^4.14 wave
+> (`10-revocation-reissue-same-pk-update-unique-collision`, now in `complete/`). Re-measured
+> 2026-08-18 from `packages/cadre-core`: `yarn test` → **1553 passed, 1 skipped, 0 failed** (the skip
+> is `key-store.spec.ts`'s POSIX-permission case, `skipIf(win32)`). The other rows were not re-run,
+> so treat them as of their original date.
+
 **Every failure in the repo is either a Quereus DML defect or a multi-machine one.** No
 single-node, single-process, or single-machine test fails anywhere.
 

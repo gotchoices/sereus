@@ -751,8 +751,8 @@ export class SeedBootstrapService {
     // `ApplySeedResult.ownerDialsFailed`). Recovery is not this loop's job —
     // `CadreNode.dialColdStartBootstrap` retries these same addresses on every
     // control-cohort reconcile pass until the control database has siblings.
-    // `createSeed` projects EVERY CadrePeer row, so an owner applying a seed
-    // minted after it joined finds ITSELF in the owner list. Dialing self always
+    // `createSeed` projects every non-revoked CadrePeer row, so an owner applying
+    // a seed minted after it joined finds ITSELF in the owner list. Dialing self always
     // throws, which would report a healthy owner as "seeded but stranded".
     // Optional-chained: partial libp2p handles (unit-test doubles) omit `peerId`,
     // and an undefined self simply matches nothing.
@@ -966,6 +966,13 @@ export class SeedBootstrapService {
    * This makes any owner node markable — not just the local one — and ties
    * `isOwner` to the control table rather than to `peerId === self`.
    *
+   * Read through {@link ControlDatabase.queryCadrePeers}, not a raw `CadrePeer`
+   * select: that reader drops any row whose `StampId` is retired in
+   * `CadreControl.Revocation`, so a removed member's addresses are never packed
+   * into a seed and pushed into a joiner's peerstore (`applySeed` adds every
+   * seed peer's addrs and dials the owner-flagged ones). A revoked peer is off
+   * the addressable surface everywhere, and this is one of its exits.
+   *
    * NOTE: this is the one owner lookup deliberately left on the REPLICATED
    * table rather than the node-local anchor. `SeedPeer.isOwner` is a dial hint
    * — the receiver dials owner-flagged peers first — not a trust decision, and
@@ -980,29 +987,22 @@ export class SeedBootstrapService {
     }
 
     const ownerKeys = await this.controlDatabase.getOwnerKeys();
-    const db = this.controlDatabase.getDatabase();
-    const peers: SeedPeer[] = [];
+    const rows = await this.controlDatabase.queryCadrePeers();
 
-    // Query CadrePeer table
-    for await (const row of db.eval('select PeerId, Multiaddr from CadreControl.CadrePeer')) {
-      const peerId = row.PeerId as string;
-      const multiaddr = row.Multiaddr as string | null;
-
+    return rows.map(({ peerId, multiaddr }) => {
       // Derive the peer's ed25519 key from its PeerId; a non-Ed25519 peer or an
       // unparsable id yields null and is treated as a non-owner rather than
       // failing the whole seed creation.
       const pubKeyB64 = ed25519PublicKeyB64FromPeerId(peerId);
       const isOwner = pubKeyB64 !== null && ownerKeys.has(pubKeyB64);
 
-      peers.push({
+      return {
         peerId,
         multiaddrs: multiaddr ? multiaddr.split(',') : [],
         isOwner,
         ...(isOwner ? { publicKey: pubKeyB64 } : {}),
-      });
-    }
-
-    return peers;
+      };
+    });
   }
 
   /**

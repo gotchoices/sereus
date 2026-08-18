@@ -69,3 +69,11 @@ up from the 4,770 recorded above on 2026-08-13. The growth is one feature —
 the relay/delegate-handling group in the list above: all of them are periodic control-mesh
 maintenance riding the reconcile pass, and none of them touch `CadreNode`'s public API. If
 a first seam is ever cut, that group is now large enough to be a plausible candidate.
+
+## Re-measured 2026-08-18 (review of `control-revocation-reissuable-tombstone`)
+
+`wc -l packages/cadre-core/src/cadre-node.ts` → **5104** lines, up from the 4770 recorded
+above on 2026-08-13. The revocation drain/queue work added another self-contained
+subsystem (`pendingRevocations`, `noteGuardedDelete`, `drainPendingRevocations`,
+`reconstructAuthoredMembership`) as more methods on the same class. Evidence for the
+existing ticket, not a new one — the growth rate is the point.

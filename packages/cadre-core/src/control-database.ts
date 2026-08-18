@@ -681,6 +681,14 @@ export class ControlDatabase {
    * membership-gate refresh path; control tables are a handful of rows today, so this
    * is cheap — if they ever grow, fold the exclusion into one statement or cache the
    * retired-stamp set.
+   *
+   * NOTE: this filter is HAND-MIRRORED by the gate suites' fake control databases
+   * (`test/membership-gate-helpers.ts` and `test/cadre-node-authorized-surface.spec.ts`),
+   * which feed the node rows directly. Nothing enforces that the copies stay true, so a
+   * change to the filter's SHAPE here (what it keys on, which table it consults) must be
+   * carried into both, or those suites keep passing against a contract the database no
+   * longer honours. Fine while the filter is one `Set.has` on `StampId`; if it grows a
+   * second dimension, give the fakes a shared fixture or a contract test instead.
    */
   async queryCadrePeers(): Promise<CadrePeerRow[]> {
     this.ensureInitialized();

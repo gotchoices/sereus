@@ -1439,7 +1439,11 @@ export class CadreNode implements SAppIdLookup {
 
     if (!existing) {
       if (!this.seedBootstrapService) {
-        log('registerSelf: not yet a CadrePeer member and no owner service to self-insert; skipping (an owner must add this peer first)');
+        // "No row" also covers "revoked": queryPeerRecord reads a row whose StampId is
+        // retired in Revocation as absent, so a removed node lands here every heartbeat
+        // and stops refreshing its own record — correct, but say so, or the message reads
+        // as "never added" for a node that was removed.
+        log('registerSelf: no readable CadrePeer row for self (never added, or removed and its stamp retired) and no owner service to self-insert; skipping');
         return 'skipped';
       }
       // First-time row: requires an owner signature (the node is its own
@@ -1461,9 +1465,10 @@ export class CadreNode implements SAppIdLookup {
       log('registerSelf: own CadrePeer row appeared mid-publish (concurrent authorize); self-updating to carry the signature');
     }
 
-    // Null only on the fall-through above, where the pre-race read missed the row a
+    // Reached on the fall-through above, where the pre-race read missed the row a
     // concurrent authorize then seated — so re-read to get that row's `UpdatedAt`, which
-    // the strictly-greater self-update rule is measured against.
+    // the strictly-greater self-update rule is measured against. The re-read can still
+    // come back null (see the branch below).
     //
     // NOTE: when `existing` is set it predates this publish, so a removePeer(self) racing
     // in would leave the UPDATE below matching no rows while still reporting 'refreshed'.
@@ -1471,7 +1476,13 @@ export class CadreNode implements SAppIdLookup {
     // if removing self ever becomes something that happens concurrently in practice.
     const current = existing ?? await this.controlDatabase.queryPeerRecord(peerId);
     if (!current) {
-      log('registerSelf: own CadrePeer row vanished mid-publish; skipping (next refresh re-inserts)');
+      // Two causes, and the second is a steady state rather than a race: the row really
+      // vanished mid-publish (next refresh re-inserts), or this node was REVOKED — its row
+      // is physically present, so insertCadrePeer's in-lock existence check no-op'd above,
+      // but queryPeerRecord reads it as absent because its stamp is retired. The revoked
+      // case repeats every heartbeat and never re-inserts; that is intended (a revoked node
+      // has nothing to publish), so this stays a skip, not an error.
+      log('registerSelf: own CadrePeer row not readable (vanished mid-publish, or this node is revoked and its stamp retired); skipping');
       return 'skipped';
     }
     const record = this.signSelfRecord(peerId, signingKey, addrs, current);
