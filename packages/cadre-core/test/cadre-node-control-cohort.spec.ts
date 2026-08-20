@@ -65,6 +65,9 @@ function assertDialableTogether(addrs: unknown): void {
   }
 }
 
+/** A stand-in relay peer id, for the circuit addresses these tests build. */
+const RELAY_ID = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
 /** A minimal control-node fake exposing only what reconcile reads. */
 function fakeControlNode(opts: FakeControlOpts): unknown {
   return {
@@ -296,6 +299,37 @@ describe('CadreNode.reconcileControlCohort', () => {
     expect(dialCalls).toHaveLength(1);
   });
 
+  it('normalizes the peerStore fallback list, which the address book hands back MIXED', async () => {
+    // The address book is not a tidier source than the record — it is a messier
+    // one. `@libp2p/peer-store` strips a trailing `/p2p/<peerId>` only when that
+    // id is the address's FIRST `/p2p/` component, so a direct address comes back
+    // bare while a relayed one keeps its suffix. Handing both to one `dial()` is
+    // the same InvalidParametersError that skipped the whole sibling — on the
+    // cold-start path, where the signed record is not resolvable yet and this
+    // fallback is the ONLY way in.
+    const node = new CadreNode(createConfig());
+    const sibling = await realPeerId();
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId: sibling, multiaddr: null }],
+      peerStoreGet: async () => ({
+        addresses: [
+          { multiaddr: multiaddr(`/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${sibling}`) },
+          { multiaddr: multiaddr('/ip4/9.9.9.9/tcp/4001/ws') }
+        ]
+      })
+    });
+    (node as unknown as { resolvePeerAddrs: () => Promise<unknown[]> }).resolvePeerAddrs =
+      async () => [];
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
+    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${sibling}`,
+      `/ip4/9.9.9.9/tcp/4001/ws/p2p/${sibling}`,
+    ]);
+  });
+
   it('tolerates a dial failure and continues the pass', async () => {
     const node = new CadreNode(createConfig());
     const resolvedFor: string[] = [];
@@ -449,8 +483,6 @@ describe('CadreNode.reconcileControlCohort', () => {
 // ══════════════════════════════════════════════════════════════════════════════
 
 describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling record', () => {
-  const RELAY_ID = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
-
   /** A signed record for a fresh Ed25519 peer carrying exactly `addrs`. */
   async function signedSibling(addrs: (peerId: string) => string[]): Promise<{
     peerId: string;
@@ -512,6 +544,29 @@ describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling r
     expect(dialCalls).toHaveLength(1);
     expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
       `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
+      `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
+    ]);
+  });
+
+  it('collapses two record entries that normalization makes identical', async () => {
+    // Suffixed and unsuffixed forms of the SAME address are distinct strings on
+    // the record and the same address after normalization. A surviving duplicate
+    // costs a real dial attempt — for `dialWake`, a whole slice of its budget.
+    const { peerId, record } = await signedSibling((self) => [
+      '/ip4/9.9.9.9/tcp/4001/ws',
+      `/ip4/9.9.9.9/tcp/4001/ws/p2p/${self}`,
+    ]);
+
+    const node = new CadreNode(createConfig());
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
+    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
       `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
     ]);
   });
@@ -848,6 +903,25 @@ describe('CadreNode.reconcileControlCohort — cold-start bootstrap branch', () 
     await node.reconcileControlCohort();
 
     expect(dialedAddrs(dialCalls)).toEqual([`/ip4/1.2.3.4/tcp/4001/ws/p2p/${owner}`]);
+  });
+
+  it('completes a bootstrap relay hop whose destination is missing', async () => {
+    // `…/p2p/<relay>/p2p-circuit` terminates in the RELAY's id, not the owner's.
+    // Binding by "does the LAST component name a peer" — libp2p's own rule —
+    // completes the circuit to the owner; the older "does any /p2p/ match" rule
+    // read the relay's id as a mismatch and dropped the only way in.
+    const node = new CadreNode(createConfig());
+    const owner = await realPeerId();
+    const { dialCalls } = injectCohort(node, { members: [] });
+    recordSeed(node, seedWith([
+      { peerId: owner, multiaddrs: [`/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`], isOwner: true }
+    ]));
+
+    await node.reconcileControlCohort();
+
+    expect(dialedAddrs(dialCalls)).toEqual([
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${owner}`
+    ]);
   });
 
   it('drops a bootstrap address that names a different peer, and skips the dial', async () => {

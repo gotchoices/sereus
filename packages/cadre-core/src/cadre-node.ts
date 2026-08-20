@@ -51,7 +51,6 @@ import {
   isPeerRecordFresh,
   orderSignalingFirst,
   isSignalingAddr,
-  trailingPeerId,
   withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
@@ -2010,33 +2009,62 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Guarantee every address this resolver hands out terminates in
-   * `/p2p/<peerId>` — the invariant every control-network dial path downstream
-   * relies on.
+   * Guarantee every address handed to a control-network dial terminates in
+   * `/p2p/<peerId>`, with no duplicates — the invariant every dial path
+   * downstream relies on.
    *
    * `libp2p.dial(addrs)` requires that the addresses in ONE dial either all name
-   * a peer id or none do; a record mixing a circuit address (which ends in
+   * a peer id or none do; a list mixing a circuit address (which ends in
    * `/p2p/<target>`) with a bare direct one (which ends in `/tcp/…`) makes that
    * call throw, and the whole peer is then silently skipped rather than one bad
-   * address. Normalizing here — the single place every control dial path gets
-   * its candidates from — makes that mixed list unrepresentable instead of
-   * leaving each call site to invent its own rule.
+   * address.
+   *
+   * Applied by ALL THREE sources of control-dial candidates, so no call site
+   * invents its own rule and none can produce a mixed list: the signed record
+   * ({@link resolvePeerAddrs}), the libp2p address book
+   * ({@link peerStoreAddrs}), and a seed's retained owner addresses
+   * ({@link bootstrapDialAddrs}).
    *
    * An address naming a DIFFERENT trailing peer id is dropped: it does not reach
    * `peerId`, so it does not belong in this peer's candidate list (libp2p's own
    * dial queue filters the same shape out one layer lower).
    */
   private normalizeDialAddrs(addrs: Multiaddr[], peerId: string): Multiaddr[] {
-    const out: Multiaddr[] = [];
+    // Keyed by the NORMALIZED string, so two entries differing only by the suffix
+    // (`/ip4/…/tcp/4001` and `/ip4/…/tcp/4001/p2p/<peerId>`) collapse into one.
+    // Normalization is what makes them equal; a surviving duplicate would cost a
+    // real dial attempt — a whole slice of `dialWake`'s budget — on an address
+    // already being tried.
+    const out = new Map<string, Multiaddr>();
     for (const addr of addrs) {
-      const normalized = withTrailingPeerId(addr, peerId);
-      if (!normalized) {
-        log('resolvePeerAddrs: dropping addr for %s that names a different peer: %s', peerId, addr.toString());
-        continue;
+      const bound = this.bindAddrToPeer(addr, peerId);
+      if (bound) {
+        out.set(bound.toString(), bound);
       }
-      out.push(normalized);
     }
-    return out;
+    return [...out.values()];
+  }
+
+  /**
+   * One address bound to `peerId`, or `null` when it cannot be — logged either
+   * way, never thrown, so every caller's list-shaping stays total.
+   *
+   * `withTrailingPeerId` encapsulates `/p2p/<peerId>`, which throws on a peer id
+   * that does not parse. Unreachable for a `CadrePeer` row (the binding gate
+   * above parsed it already), reachable for a seed-supplied one
+   * ({@link bootstrapDialAddrs}).
+   */
+  private bindAddrToPeer(addr: Multiaddr, peerId: string): Multiaddr | null {
+    try {
+      const bound = withTrailingPeerId(addr, peerId);
+      if (!bound) {
+        log('normalizeDialAddrs: dropping addr %s — it names a peer other than %s', addr.toString(), peerId);
+      }
+      return bound;
+    } catch (error) {
+      log('normalizeDialAddrs: cannot bind %s to %s: %o', addr.toString(), peerId, error);
+      return null;
+    }
   }
 
   /** Parse multiaddr strings, dropping (and logging) any that fail to parse. */
@@ -2371,6 +2399,16 @@ export class CadreNode implements SAppIdLookup {
    * Cold-start fallback: the libp2p peerStore multiaddrs for `peerId` (seeded by
    * {@link SeedBootstrapService.applySeed}). Returns `[]` on a missing entry or any
    * parse/lookup failure — never throws.
+   *
+   * Normalized through {@link normalizeDialAddrs} for the same reason
+   * {@link resolvePeerAddrs} is, and with more cause: the address book hands back
+   * a list that is inherently MIXED. `@libp2p/peer-store`'s
+   * `dedupeFilterAndSortAddresses` strips a trailing `/p2p/<peerId>` only when
+   * that id is the address's FIRST `/p2p/` component, so a direct address
+   * round-trips bare while a relayed one — whose first `/p2p/` names the relay —
+   * keeps its suffix (the same asymmetry `peer-addr-book.ts`'s `addrKey` exists
+   * to absorb). Feeding both to one `dial()` is exactly the
+   * `InvalidParametersError` that skipped the whole peer.
    */
   private async peerStoreAddrs(peerId: string): Promise<Multiaddr[]> {
     if (!this.controlNode) {
@@ -2380,7 +2418,10 @@ export class CadreNode implements SAppIdLookup {
       const peer = await this.controlNode.peerStore.get(peerIdFromString(peerId));
       // Re-parse through the top-level multiaddr parser so the returned type matches
       // resolvePeerAddrs (the peerStore bundles its own @multiformats/multiaddr copy).
-      return this.parseMultiaddrs(peer.addresses.map((a) => a.multiaddr.toString()));
+      return this.normalizeDialAddrs(
+        this.parseMultiaddrs(peer.addresses.map((a) => a.multiaddr.toString())),
+        peerId
+      );
     } catch (error) {
       log('reconcileControlCohort: peerStore lookup for %s failed: %o', peerId, error);
       return [];
@@ -2493,32 +2534,15 @@ export class CadreNode implements SAppIdLookup {
    * Bind a bootstrap peer's seed addresses to its peer id, so the dial
    * authenticates the peer it is aiming at rather than trusting whoever answers.
    *
-   * An address that already carries `/p2p/<id>` must carry THIS peer's id or it
-   * is dropped (a seed that disagrees with itself is not a dial target); one
-   * that carries none — an `addressOverrides`-published record, say — gets the
-   * id encapsulated. Unencapsulatable addresses are dropped rather than dialed
-   * bare.
+   * The same {@link normalizeDialAddrs} rule the resolved and address-book paths
+   * use, on the third and last source of control-dial candidates: an address that
+   * already terminates in `/p2p/<id>` must carry THIS peer's id or it is dropped
+   * (a seed that disagrees with itself is not a dial target); one that does not —
+   * a bare listen addr, or a relay hop with the destination missing — gets the id
+   * encapsulated; an unencapsulatable one is dropped rather than dialed bare.
    */
   private bootstrapDialAddrs(peerId: string, addrs: string[]): Multiaddr[] {
-    const out: Multiaddr[] = [];
-    for (const addr of this.parseMultiaddrs(addrs)) {
-      const embedded = trailingPeerId(addr);
-      if (embedded === peerId) {
-        out.push(addr);
-        continue;
-      }
-      if (embedded !== null) {
-        log('reconcileControlCohort(cold-start): addr %s names peer %s, not %s; dropping',
-          addr.toString(), embedded, peerId);
-        continue;
-      }
-      try {
-        out.push(addr.encapsulate(`/p2p/${peerId}`));
-      } catch (error) {
-        log('reconcileControlCohort(cold-start): cannot bind %s to %s: %o', addr.toString(), peerId, error);
-      }
-    }
-    return out;
+    return this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId);
   }
 
   /** Dial one cold-start bootstrap peer, best-effort. Returns whether it connected. */

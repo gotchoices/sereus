@@ -67,6 +67,26 @@ describe('CadreNode invite-address push model', () => {
     expect(invite.ownerAddrs).toEqual(['/ip4/192.168.1.10/tcp/4001']);
   });
 
+  it('appends the node own-peer suffix, and passes an unparsable entry through', async () => {
+    // Both app-supplied hooks take arbitrary strings, and whatever they return
+    // lands in this node's published CadrePeer row — one unsuffixed entry there
+    // gives every sibling a list `libp2p.dial` refuses. Normalizing on the way in
+    // means neither hook has to know the rule. An entry that does not parse is a
+    // pass-through, not a drop: publication does not police validity, and
+    // `resolvePeerAddrs` drops it on the read side.
+    const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
+    const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
+    node.initializeSeedBootstrap(ownerPrivateKey);
+
+    node.setInviteAddresses(['/dns4/home.duckdns.org/tcp/5000', 'not-a-multiaddr']);
+
+    const { invite } = await node.createInvite();
+    expect(invite.ownerAddrs).toEqual([
+      '/dns4/home.duckdns.org/tcp/5000/p2p/12D3KooWPushTestPeer',
+      'not-a-multiaddr',
+    ]);
+  });
+
   it('treats an empty pushed array as an explicit override (not a fallback)', async () => {
     const node = makeNode(['/ip4/192.168.1.10/tcp/4001']);
     const ownerPrivateKey = generatePrivateKey('ed25519', 'base64url') as string;
