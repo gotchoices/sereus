@@ -106,6 +106,9 @@ export function resolveListenAddrs(
     ? (configured.length > 0 ? [RELAY_SEARCH_LISTEN_ADDR] : [])
     : configured;
   const listenAddrs = network?.listenAddrs;
+  if (route === 'search') {
+    rejectConfiguredCircuitListenAddrs(listenAddrs ?? []);
+  }
   if (!listenAddrs && relayEntries.length === 0) {
     return undefined;
   }
@@ -136,6 +139,44 @@ export class RelayReservationFailedError extends Error {
       `${state.error ?? 'no /p2p-circuit address appeared'} — relays: ${relayAddrs.join(', ')}`
     );
     this.name = 'RelayReservationFailedError';
+  }
+}
+
+/**
+ * A hand-written `<relay>/p2p-circuit` entry in `network.listenAddrs` is the
+ * CONFIGURED listener shape, and it is unusable on the `'search'` route: libp2p
+ * dials that relay from inside `listen()`, the bring-up quiet period
+ * (`membership-connection-gater.ts`) denies exactly that dial, `listen()` fails, and
+ * the transport manager's default `FATAL_ALL` aborts `libp2p.start()`. The operator
+ * would see `UnsupportedListenAddressesError` from deep inside bring-up with nothing
+ * naming the cause, so name it here instead.
+ *
+ * `network.relayAddrs` is the exact replacement — same relay, and the reservation is
+ * driven after bring-up, which is the whole point of the route.
+ */
+function rejectConfiguredCircuitListenAddrs(listenAddrs: readonly string[]): void {
+  const configured = listenAddrs.filter(isConfiguredCircuitListenAddr);
+  if (configured.length > 0) {
+    throw new Error(
+      'network.listenAddrs names a relay directly ' +
+      `(${configured.join(', ')}), which a control node cannot listen on: libp2p would ` +
+      'dial that relay during control-database bring-up, when the node accepts no ' +
+      'connections. Move the relay to network.relayAddrs, which reserves after bring-up.'
+    );
+  }
+}
+
+/** `<something>/p2p-circuit` — the configured shape, as opposed to the bare search addr. */
+function isConfiguredCircuitListenAddr(listenAddr: string): boolean {
+  if (listenAddr === RELAY_SEARCH_LISTEN_ADDR) {
+    return false;
+  }
+  try {
+    return multiaddr(listenAddr).getComponents().some((c) => c.name === 'p2p-circuit');
+  } catch {
+    // Not our error to raise: libp2p reports an unparsable listen addr itself, and
+    // this helper only ever ADDS a denial.
+    return false;
   }
 }
 

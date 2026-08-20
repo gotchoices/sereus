@@ -747,6 +747,16 @@ export class CadreNode implements SAppIdLookup {
       // this node can be in the conversation. A failure above never reaches here —
       // `cleanup()` on the catch path opens the gate instead, so teardown (and a
       // retry by the embedder) is not gated.
+      //
+      // NOTE: the window ends HERE, not at the end of start(), so the awaited control-DB
+      // work that follows — `strandWatcher.start()`'s first poll — can run against a
+      // cohort a connection just joined. Fine now: every block that poll reads was
+      // created locally by the initialize() above, so a refusing sibling has nothing to
+      // refuse. If a boot ever fails with `BlockUnavailableError` from BELOW this line,
+      // that assumption broke. Do not simply move this clear later without measuring:
+      // `handleStrandAdded` runs inside `strandWatcher.start()` and seeds each strand
+      // node from CONNECTED siblings (`resolveCohortSeed`), so a longer window trades a
+      // bring-up hazard for boot-time strand seeds that are always empty.
       this.controlBringUpInFlight = false;
       log('Control database initialized');
 
@@ -844,7 +854,15 @@ export class CadreNode implements SAppIdLookup {
 
     } catch (error) {
       log('Failed to start CadreNode: %o', error);
+      // `driveControlRelayReservation` throws AFTER `control:connected` was emitted,
+      // so a subscriber can have seen this node come up. Balance the edge rather than
+      // leaving it dangling — `cleanup()` has torn the node down either way, and the
+      // events are what an embedder drives its "am I connected" UI from.
+      const wasConnected = this._running;
       await this.cleanup();
+      if (wasConnected) {
+        this.emit('control:disconnected', undefined);
+      }
       throw error;
     }
   }
@@ -885,19 +903,7 @@ export class CadreNode implements SAppIdLookup {
     }
 
     log('Stopping CadreNode');
-    // Stop the retry loop BEFORE tearing the node down, not after: `cleanup()`
-    // stops the control node partway through, and a tick that fires during it
-    // would dial and then poll a half-torn-down node for the whole reserve
-    // timeout — logging spurious dial failures and holding the process open.
-    this.relayReserveSupervisor?.stop();
-    this.relayReserveSupervisor = null;
     await this.cleanup();
-    // Drop the rest of the relay-reservation posture: a stopped node holds no
-    // reservation, so a restarted instance must not report the previous run's
-    // `reserved`.
-    this.relayReserveAddrs = [];
-    this.relayReserveError = null;
-    this._running = false;
     this.emit('control:disconnected', undefined);
     log('CadreNode stopped');
   }
@@ -3235,10 +3241,31 @@ export class CadreNode implements SAppIdLookup {
     }
   }
 
+  /**
+   * Return this node to its pre-{@link start} state. The ONE teardown — `stop()` and
+   * a failed `start()` both come here, so anything a stopped node must not still be
+   * doing belongs in this method and not in `stop()`. `stop()` adds only the
+   * `control:disconnected` emit, which a never-connected start has no edge for.
+   */
   private async cleanup(): Promise<void> {
     // Open the connection gate's bring-up quiet period unconditionally: teardown
     // must never be gated, and this is the path a FAILED start() takes.
     this.controlBringUpInFlight = false;
+
+    // Stop the relay retry loop BEFORE tearing the node down, not after: the control
+    // node is stopped partway through below, and a tick that fires during it would
+    // dial and then poll a half-torn-down node for the whole reserve timeout —
+    // logging spurious dial failures on a `.unref()`'d timer that nothing ever
+    // clears. `driveControlRelayReservation` starts this supervisor from inside
+    // `start()`, so a start that fails ON the reservation leaves one running unless
+    // it is stopped here.
+    this.relayReserveSupervisor?.stop();
+    this.relayReserveSupervisor = null;
+    // Drop the rest of the relay-reservation posture: a torn-down node holds no
+    // reservation, so neither a restarted instance nor a caller inspecting a failed
+    // start reports the previous attempt's `reserved`.
+    this.relayReserveAddrs = [];
+    this.relayReserveError = null;
 
     // Resolve + clear any in-flight wake windows first, so an in-flight check-in
     // or serviceWake unblocks and tears down cleanly rather than firing a stale
@@ -3334,6 +3361,13 @@ export class CadreNode implements SAppIdLookup {
         (err) => log('Failed to dispose control storage cache: %o', err)
       );
     }
+
+    // LAST, so every step above still ran against a node that considered itself up
+    // (several of them early-return while `_running` is false). A failed `start()`
+    // that had already flipped it — the reservation drive throws after that point —
+    // must not leave `isRunning` true over a torn-down node, which would report
+    // healthy and make the embedder's retry a no-op ("already running").
+    this._running = false;
   }
 
   // Hibernation callbacks
@@ -4043,6 +4077,12 @@ export class CadreNode implements SAppIdLookup {
    * strand node dials its reservation, since the relay's membership gate does not
    * know the strand's derived peerId (see delegate-admission.ts). Configuration is
    * authoritative; the live multiaddrs only ADD relays nobody configured.
+   *
+   * The `listenAddrs` half is now unreachable on a control node — `relay-addrs.ts`
+   * rejects a hand-written `<relay>/p2p-circuit` listen entry outright, because the
+   * bring-up quiet period denies the dial that listener makes from inside
+   * `libp2p.start()`. Kept because it costs one spread and this is the one place
+   * that would silently stop announcing if that rejection is ever relaxed.
    *
    * NOTE: a relay the STRAND node discovers on its own (autorelay — in neither
    * source) gets no announcement, and a membership-gated one will deny it; fine

@@ -226,5 +226,32 @@ describe('resolveListenAddrs', () => {
       expect(() => resolveListenAddrs({ relayAddrs: ['not-a-multiaddr'] }, 'search'))
         .toThrow(/network\.relayAddrs entry is not a valid multiaddr/);
     });
+
+    /**
+     * A hand-written `<relay>/p2p-circuit` listen entry is the CONFIGURED shape, and
+     * it cannot work on this route: libp2p dials the relay from inside `listen()`,
+     * the bring-up quiet period denies that dial, and the transport manager's
+     * `FATAL_ALL` turns the refusal into `UnsupportedListenAddressesError` out of
+     * `libp2p.start()` — a failure naming nothing an operator could act on. So the
+     * surface is closed here, loudly, pointing at the field that does work.
+     */
+    it('rejects a hand-written configured circuit entry in listenAddrs', () => {
+      expect(() => resolveListenAddrs({
+        listenAddrs: ['/ip4/0.0.0.0/tcp/4001', `/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`]
+      }, 'search')).toThrow(/Move the relay to network\.relayAddrs/);
+    });
+
+    it('leaves the bare search entry and every non-circuit entry alone', () => {
+      expect(resolveListenAddrs({
+        listenAddrs: [RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']
+      }, 'search')).toEqual([RELAY_SEARCH_LISTEN_ADDR, '/webrtc', '/ip4/0.0.0.0/tcp/4001']);
+    });
+
+    /** Strand nodes take the configured route, which is where that entry belongs. */
+    it('accepts the same entry on the configured route', () => {
+      const listenAddrs = [`/ip4/1.2.3.4/tcp/4001/p2p/${RELAY}/p2p-circuit`];
+
+      expect(resolveListenAddrs({ listenAddrs })).toEqual(listenAddrs);
+    });
   });
 });

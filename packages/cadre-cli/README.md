@@ -182,7 +182,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_IDENTITY_PROTOBUF` | `identity.protobufKeyFile` | Path to a libp2p protobuf-encoded private key (the `identity.key` written by `enroll create` / the host installer). Takes precedence over `CADRE_KEY_FILE` |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
-| `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on |
+| `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on. An entry naming a relay (`<relay addr>/p2p-circuit`) fails startup — use `CADRE_RELAY_ADDRS`, which reserves the slot after the control database is up |
 | `CADRE_ANNOUNCE_ADDRS` | `network.announceAddrs` | Comma-separated multiaddrs to advertise **instead of** `listenAddrs`. A non-empty value replaces everything the node advertises, including the `/p2p-circuit` address a `relayAddrs` reservation earns it — the node warns at start when both are set. A malformed entry fails startup |
 | `CADRE_APPEND_ANNOUNCE_ADDRS` | `network.appendAnnounceAddrs` | Comma-separated multiaddrs to advertise **in addition to** `listenAddrs` — the usual way to publish a reachable address without discarding the rest. Ignored while `announceAddrs` is non-empty. A malformed entry fails startup |
 | `CADRE_ENABLE_RELAY` | `network.enableRelay` | `true`/`1` enables this node's circuit-relay server. Unset ⇒ profile default (on for storage, off for transaction) |

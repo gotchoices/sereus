@@ -41,7 +41,9 @@ storage:
 
 # Network configuration (optional)
 network:
-  # Addresses to listen on
+  # Addresses to listen on. Do NOT name a relay here ("<relay addr>/p2p-circuit") —
+  # that form is rejected at start; use relayAddrs below, which reserves the slot
+  # once this node's control database is up.
   listenAddrs:
     - "/ip4/0.0.0.0/tcp/4001"
     - "/ip6/::/tcp/4001"

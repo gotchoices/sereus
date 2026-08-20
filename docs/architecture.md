@@ -979,7 +979,11 @@ interface CadreNodeConfig {
 
   // Network configuration
   network: {
-    listenAddrs?: string[];       // Addresses to listen on
+    // Addresses to listen on. A bare "/p2p-circuit" (the relay SEARCH listener) is fine
+    // here; naming a relay directly ("<relay>/p2p-circuit") is REJECTED at start on the
+    // control node — libp2p dials that relay from inside listen(), which the bring-up
+    // quiet period denies. Use relayAddrs, which reserves after bring-up.
+    listenAddrs?: string[];
     // Addresses to advertise INSTEAD OF listenAddrs. A non-empty value REPLACES the whole
     // advertised set — observed addrs and the /p2p-circuit addr a relayAddrs reservation
     // earns are dropped from it, so the node warns when both are configured.

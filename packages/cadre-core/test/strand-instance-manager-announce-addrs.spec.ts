@@ -30,6 +30,10 @@ vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDataba
  * terms `cadre-node-control-node-options.spec.ts` pins for the control node. Without
  * this, a deployment would advertise a reachable address for its control node while
  * every strand node it runs kept advertising an unreachable one.
+ *
+ * The last case widens that by one field: `network.relayAddrs` is inherited the same
+ * way but resolves DIFFERENTLY here than on the control node, and nothing else pins
+ * which of the two routes this caller takes.
  */
 describe('StrandInstanceManager announce-addrs wiring', () => {
   let authorPrivateKey: string;
@@ -108,5 +112,21 @@ describe('StrandInstanceManager announce-addrs wiring', () => {
     await expect(
       manager.startStrand(createStartConfig('announce-bad', { network: { announceAddrs: ['not-a-multiaddr'] } }))
     ).rejects.toThrow(/network\.announceAddrs entry is not a valid multiaddr/);
+  });
+
+  /**
+   * Same inherited `NetworkConfig`, the other address list. The control node resolves
+   * `relayAddrs` on the `'search'` route — one bare `/p2p-circuit`, reserved explicitly
+   * after control-DB bring-up — and a strand node must NOT follow it there: nothing
+   * drives an explicit reservation for a strand node, so a search entry would register
+   * a pending reservation nobody fills and leave every NAT'd strand node undialable,
+   * silently. The resolution rules themselves are `relay-addrs.spec.ts`'s; the only
+   * thing pinned here is WHICH route this caller takes.
+   */
+  it('resolves an inherited relayAddrs on the CONFIGURED route, not the control node\'s search route', async () => {
+    const relay = '/ip4/1.2.3.4/tcp/4001/p2p/12D3KooWDpJ7As7BWAwRMfu1VU2WCqNjvq387JEYKDBj4kx6nXTN';
+    const options = await strandOptions({ listenAddrs: ['/ip4/0.0.0.0/tcp/0'], relayAddrs: [relay] });
+
+    expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/0', `${relay}/p2p-circuit`]);
   });
 });
