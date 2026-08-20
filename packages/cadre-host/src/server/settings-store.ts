@@ -25,7 +25,11 @@ export class HostSettingsStore {
     this.configPath = configPath(opts.dataDir);
   }
 
-  /** Read the current host.config.json (runs v1→v2 migration on first read). */
+  // NOTE: a bad config (absent, malformed, wrong version) throws a plain Error, so
+  // /api/settings answers 500 code "internal" with the read message passed through.
+  // Fine while the UI just surfaces the text; if it ever needs to tell "your config
+  // file is unreadable" apart from a genuine server bug, give this a typed error.
+  /** Read the current host.config.json. Throws if absent, malformed, or not version 2. */
   read(): HostConfigFile {
     return readHostConfig(this.configPath);
   }

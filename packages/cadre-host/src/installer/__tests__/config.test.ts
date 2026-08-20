@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { readHostConfig, writeHostConfig, hostOwnsCadre, type HostConfigFile } from '../config.js';
+import { readHostConfig, updateHostConfig, writeHostConfig, hostOwnsCadre, type HostConfigFile } from '../config.js';
 
 describe('host.config.json round-trip', () => {
   let tmp: string;
@@ -64,6 +64,13 @@ describe('host.config.json round-trip', () => {
     expect(() => readHostConfig(path)).toThrow(/unsupported version=99/);
   });
 
+  it('rejects a file with no version field', () => {
+    const { version: _version, ...noVersion } = makeCfg();
+    const path = join(tmp, 'host.config.json');
+    writeFileSync(path, JSON.stringify(noVersion));
+    expect(() => readHostConfig(path)).toThrow(/unsupported version=undefined/);
+  });
+
   it('rejects malformed JSON', () => {
     const path = join(tmp, 'host.config.json');
     writeFileSync(path, 'not json');
@@ -79,6 +86,24 @@ describe('host.config.json round-trip', () => {
   it('refuses to write the wrong version', () => {
     const path = join(tmp, 'host.config.json');
     expect(() => writeHostConfig(path, { ...makeCfg(), version: 3 as never })).toThrow(/version=3/);
+  });
+
+  it('update patches fields and re-stamps the current version', () => {
+    const path = join(tmp, 'host.config.json');
+    writeHostConfig(path, makeCfg());
+    const next = updateHostConfig(path, { updates: { autoApply: true } });
+    expect(next.version).toBe(2);
+    expect(next.updates).toEqual({ autoApply: true });
+    expect(next.installId).toBe('abc123');
+    expect(readHostConfig(path)).toEqual(next);
+  });
+
+  it('update never lets a patch downgrade the version', () => {
+    const path = join(tmp, 'host.config.json');
+    writeHostConfig(path, makeCfg());
+    const patch = { version: 1 } as unknown as Partial<Omit<HostConfigFile, 'version'>>;
+    expect(updateHostConfig(path, patch).version).toBe(2);
+    expect(readHostConfig(path).version).toBe(2);
   });
 
   it('round-trips ownCadre and hostOwnsCadre reflects it', () => {
