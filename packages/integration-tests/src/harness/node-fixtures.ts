@@ -44,6 +44,13 @@ export interface ControlNodeOpts {
   profile?: 'storage' | 'transaction';
   enableRelay?: boolean;
   listenAddrs?: string[];
+  /**
+   * Relay servers to reserve a `/p2p-circuit` slot through — the fail-fast
+   * configured-reservation route (`relay-addrs.ts` folds each entry into the
+   * listen set as `<addr>/p2p-circuit`). Pair with `listenAddrs: []` to model a
+   * node with no inbound reachability of its own.
+   */
+  relayAddrs?: string[];
   hibernation?: boolean;
   /** Which strands this node participates in (default `'all'`). */
   strandFilter?: 'all' | 'none';
@@ -74,6 +81,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     network: {
       transports: wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
+      ...(opts.relayAddrs ? { relayAddrs: opts.relayAddrs } : {}),
       ...(opts.enableRelay ? { enableRelay: true } : {}),
       ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),
       ...(opts.connectionGater ? { connectionGater: opts.connectionGater } : {})
