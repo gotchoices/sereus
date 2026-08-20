@@ -1,10 +1,27 @@
 ----
 description: We still publish a package we have written off as deprecated, and every release now also packs and installs it as part of the pre-release check. Someone needs to decide whether to keep shipping it or stop.
-files: package.json, packages/strand-proto/, docs/STATUS.md, AGENTS.md
+files: package.json, packages/strand-proto/, docs/testing.md, docs/strand-proto.md, AGENTS.md, eslint.config.mjs, scripts/release-preflight.mjs
 difficulty: easy
 ----
 
-# Do we still publish `@serfab/strand-proto`?
+# Do we still publish `@serfab/strand-proto`? — **decided: no**
+
+> **Decision (2026-08-20, maintainer).** Stop. There are no live instances and no external
+> consumers, and the standing position is that any break we know we want should be taken now while
+> it is free. Delete the package, drop it from the publish chain and the release pre-flight, and
+> remove the eslint and type-check exemptions that exist only to carve it out. This ticket left
+> `blocked/` because the question it asked has been answered — what remains is execution, and the
+> shape of that is what the plan stage should settle.
+>
+> One thing the original ticket did not cover, now tracked by
+> `plan/retire-backwards-compatibility-affordances` item 5: `docs/strand-proto.md:4` holds the
+> protocol id at `/sereus/bootstrap/1.0.0` explicitly "for backward compatibility", while
+> `docs/architecture.md:518` says the live formation transport mirrors a *non-deprecated*
+> seed-bootstrap service. Establish whether those are the same protocol before deleting anything,
+> so a live protocol id does not leave with the dead package.
+>
+> Note also that this ticket's original `files:` named `docs/STATUS.md`, which no longer exists —
+> its content moved to `docs/testing.md` in `3ca8737`.
 
 ## What is true today
 
