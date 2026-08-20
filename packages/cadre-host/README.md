@@ -1,8 +1,15 @@
 # @serfab/cadre-host
 
-Self-hosted cadre node manager for basement-PC deployments. Runs one always-on host machine, manages cadre nodes for a small trust circle (family, friends, hobby group), exposes a localhost web UI, and handles NAT/DDNS so members behind residential connections can still be reached.
+Self-hosted cadre node manager for basement-PC deployments. Runs one always-on machine whose primary job is to **donate cadre nodes to other people's cadres**: a friend or family member keeps their own device as the authority for their cadre, and your box contributes always-on capacity by running an extra node that joins *theirs*. It exposes a localhost web UI to manage that, and can optionally also run a personal cadre of your own.
 
-The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider is a multi-tenant hosting service with API keys, billing, and Docker; cadre-host is a single-household manager with trust-circle auth, native child processes, and an installer.
+The sibling of [`@serfab/cadre-provider`](../cadre-provider/README.md): the provider donates nodes to paying tenants with API keys, billing, and Docker; cadre-host donates them for free to a handful of people you trust, as native child processes, with a one-shot installer.
+
+cadre-host has **two independent roles**, and only the first is on by default:
+
+- **Node donor (primary, always on).** Contribute nodes to cadres *other people* own. Who may ask is gated by **grant tokens** you hand out. Needs no cadre of your own.
+- **Founder (opt-in — `ownCadre.enabled` in `host.config.json`, default `false`).** *Also* run your own personal cadre on this machine. This is what turns on the trust circle (`/auth/*`) and the NAT/DDNS layer (`/nat/*`); both are unmounted and 404 until you enable it.
+
+[docs/cadre-host.md](../../docs/cadre-host.md) is the design source of truth for both roles.
 
 ## Install
 
@@ -25,25 +32,25 @@ npm install @serfab/cadre-host
 npx cadre-host install --data-dir ~/cadre/data
 ```
 
-From inside `~/cadre`, `npx cadre-host <command>` runs the local binary (`invite`, `trust`, `nat`, `uninstall`, …) without any path prefix — `npx` resolves it from `node_modules/.bin/`. **Caveat:** outside `~/cadre`, `npx cadre-host` won't find the local install and will silently download a fresh copy from the npm registry. To avoid that, either always `cd ~/cadre` first or symlink the binary onto your PATH:
+From inside `~/cadre`, `npx cadre-host <command>` runs the local binary (`grant`, `invite`, `nat`, `uninstall`, …) without any path prefix — `npx` resolves it from `node_modules/.bin/`. **Caveat:** outside `~/cadre`, `npx cadre-host` won't find the local install and will silently download a fresh copy from the npm registry. To avoid that, either always `cd ~/cadre` first or symlink the binary onto your PATH:
 
 ```bash
 ln -s ~/cadre/node_modules/.bin/cadre-host ~/.local/bin/cadre-host
-# now `cadre-host invite …` works from anywhere
+# now `cadre-host grant issue …` works from anywhere
 ```
 
 If you'd rather skip `npx` and the symlink, the explicit path `./node_modules/.bin/cadre-host <command>` always works from `~/cadre` too.
 
 The wizard (run either way):
 
-1. Prompts for the data directory, UI port, libp2p port, and UPnP toggle (defaults shown in `[...]`).
+1. Prompts for the data directory, UI port, libp2p port, UPnP toggle, and whether to **also run your own personal cadre on this machine** — the opt-in founder role, default **no** (defaults shown in `[...]`).
 2. Generates a fresh Ed25519 node identity (`<dataDir>/identity.key`, mode 600 on POSIX).
 3. Writes `<dataDir>/host.config.json` and seeds `<dataDir>/nat.json` with the chosen libp2p port.
 4. Registers a per-user service: `systemctl --user` unit (Linux), `LaunchAgent` (macOS), or NSSM service (Windows; requires `nssm.exe` on PATH — see `service/README.md`).
 5. Opens `http://127.0.0.1:<uiPort>/` in your browser.
-6. Issues a 24-hour enrollment invite and prints it as both a QR code and a paste-friendly token.
+6. **Founder installs only, and only when interactive:** issues a 24-hour enrollment invite for your own cadre and prints it as both a QR code and a paste-friendly token. A donor-only install has no cadre of its own to enroll into, so this step is silently skipped — you hand out a grant token instead (see [*After install*](#after-install--donating-your-first-node)).
 
-Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning.
+Run `cadre-host install --non-interactive --data-dir <path>` for unattended provisioning; add `--own-cadre` to enable the founder role without prompting.
 
 ### Root requirements
 
@@ -75,9 +82,13 @@ The rendered unit files live at:
 
 See [`service/README.md`](./service/README.md) for templates, manual-smoke instructions, and the cross-platform CI gap.
 
-## After install — getting your first user running
+## After install — donating your first node
 
-`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. In v1, cadre-host does not pre-spawn nodes; each one materializes when a person you trust enrolls a device against an invite you issue. This walkthrough goes from "install just finished" to "first member is enrolled."
+`cadre-host install` leaves you with a running management service, a local UI, and **no cadre nodes yet**. cadre-host never pre-spawns nodes; each one materializes when someone you trust asks for one. This walkthrough goes from "install just finished" to "first donated node is running."
+
+It assumes the **default install — donor-only**, i.e. you answered *no* to the wizard's *"Also run your own personal cadre on this machine?"*. In that mode this host's whole job is to lend always-on capacity to *other people's* cadres: your friend's phone stays the authority for their cadre, and your box runs an extra node that joins **theirs**. Your host never holds their owner key and never becomes the authority for their data. See [docs/cadre-host.md § Node donation](../../docs/cadre-host.md#node-donation-the-primary-role) for the full lifecycle.
+
+If you answered *yes*, everything below still applies — you additionally get the opt-in **founder** surfaces, covered in [the founder section](#the-founder-role--running-your-own-cadre-here-opt-in) after step 5.
 
 ### 1. Verify the service is running
 
@@ -102,39 +113,93 @@ The UI listens on `http://127.0.0.1:<uiPort>/` (default port 8765) on the host m
 
   The forward stays up as long as the SSH session does.
 
-### 3. Issue your first invite
+### 3. Issue your first grant token
 
-Decide whose cadre you want to host first — yourself (from your phone), a family member, or a friend. You'll deliver the invite to that device out-of-band (in person, Signal, etc.).
+Decide whose cadre you want to help keep online — a family member, a friend, or your own phone. That person already has (or is about to create) **their own** cadre; you are donating capacity to it, not enrolling them into anything of yours.
+
+Before anyone can ask, you issue them a **grant token**: a bearer credential meaning "this person may ask my host to donate nodes."
+
+```bash
+cadre-host grant issue "<label>"
+```
+
+`<label>` is a human-readable name **you** choose to identify this grantee in your grant list. It's purely for your own bookkeeping — the system doesn't use it for anything. Quote it if it has spaces. Examples:
+
+```bash
+cadre-host grant issue "Mom's cadre"
+cadre-host grant issue alice
+cadre-host grant issue "Friend — hobby group"
+```
+
+The command prints two things — a terminal-rendered QR code and the encoded token — both representing the same secret. The recipient can use either form. `--max-nodes N` caps how many donated nodes that grantee may keep running here at once (default 1); `--ttl 30d` gives the grant an expiry (`s`/`m`/`h`/`d` suffixes) — omit it and the grant never expires; `--no-qr` prints only the token.
+
+Hand the QR or token to the grantee in person if possible. **Anyone who gets the token can claim what it grants — the right to make your machine run nodes for them** — so treat it like a password. One difference from a trust-circle invite: a grant is **not** one-time. It stays spendable, up to `--max-nodes` at a time, until it expires or you revoke it.
+
+Terminology aside: your **trust circle** in the everyday sense is the handful of people you have handed a grant token to — the people allowed to have a node donated to them here. Don't confuse it with the *feature* named trust circle (`cadre-host trust`, the `/auth/*` routes, the UI's Trust Circle page): that one is membership in the host's **own** cadre and exists only in the founder role.
+
+### 4. The grantee requests a node
+
+The grantee's cadre authority — typically their phone — presents the grant token as `Authorization: Bearer <grant-token>` and drives the donation lifecycle against your host:
+
+1. `POST /grants` with their party id, bootstrap addresses, and owner public key(s) → your host spawns a child cadre node that pins **their** owner key and joins **their** cadre.
+2. `GET /grants/:id/peer` → the new node's peerId and multiaddrs.
+3. Their device signs a seed for that peer and `PUT /grants/:id/seed` hands it back; the node accepts it precisely because their owner key was pinned at spawn.
+4. `DELETE /grants/:id` when they're done — the node is stopped and removed.
+
+At that moment:
+
+- A child cadre node spawns inside your cadre-host process for this grantee's cadre.
+- The node appears on the Nodes page of the UI, and the grant it was spent against shows up in `cadre-host grant list`.
+- The node stays up: if it crashes or dies in a reboot, cadre-host respawns it from the donation's recorded spawn inputs.
+
+Until someone requests a node, the Nodes page in the UI stays empty — that's expected.
+
+**What is not built yet (v1):** `/grants` mounts on the same loopback-only management server as everything else, so today a grantee can only reach it from *this machine* or through an SSH tunnel like the one in step 2. Letting a friend's phone reach it across the internet is deferred (`backlog/feat-cadre-host-wan-grant-reachability`), and no app drives the four calls above for you yet — it is raw HTTP today. Issuing grants and running donated nodes work now; the last hop from a remote phone does not.
+
+### 5. Manage grants
+
+```bash
+$ cadre-host grant list
+Grants:
+  Zx8kq1...   Mom's cadre           max=2
+  Ld93af...   Friend — hobby group  max=1  (expires 2026-09-01T12:00:00Z)
+```
+
+Revoke a grant:
+
+```bash
+cadre-host grant revoke <token>
+```
+
+Revoking denies every future request on that token. **Nodes already donated under it are not torn down** — stop those from the UI's Nodes page, or let the grantee release them with `DELETE /grants/:id`.
+
+## The founder role — running your own cadre here (opt-in)
+
+Everything above needs no cadre of your own. If you *also* want this machine to run your **own** personal cadre — your devices, your trust circle, your data — that is the **founder** role. It is opt-in: answer *yes* to the wizard's *"Also run your own personal cadre on this machine?"*, or install with `cadre-host install --own-cadre`. It is stored as `ownCadre.enabled` in `<dataDir>/host.config.json` (default **false**) and is install-time only — to change it later, edit that file and restart the service.
+
+Until it is enabled, the founder-only surfaces are **not mounted** and return **404**:
+
+| Surface | Commands | Local UI page |
+| --- | --- | --- |
+| `/auth/*` — trust circle | `cadre-host invite`, `cadre-host trust list`, `cadre-host trust revoke` | Trust Circle |
+| `/nat/*` — NAT/DDNS | `cadre-host nat …` | Connectivity |
+| `/api/strands` | — | Strands |
+
+So if you followed the default install and `cadre-host invite` or `cadre-host nat status` reports a 404, nothing is broken — those belong to a role you didn't turn on. The UI still lists those three pages in its nav and they error when opened on a donor-only install; that's a known gap, not a misconfiguration.
+
+The rest of this section applies **only** with the founder role enabled.
+
+### Enrolling your own devices (founder role)
 
 ```bash
 cadre-host invite "<label>"
 ```
 
-`<label>` is a human-readable name **you** choose to identify this device or person in your member list. It's purely for your own bookkeeping — the system doesn't use it for anything. Quote it if it has spaces. Examples:
-
-```bash
-cadre-host invite "Mom's phone"
-cadre-host invite mylaptop
-cadre-host invite "Friend — tablet"
-```
-
-The command prints two things — a terminal-rendered QR code and an encoded invite string — both representing the same single-use token. The recipient can use either form. By default the token expires in 24 hours; override with `--ttl 7d` (or `30m`, `1h`, etc.).
+Same bookkeeping-only `<label>` rule as a grant. The command prints a QR code and an encoded invite string — both representing the same single-use token. By default the token expires in 24 hours; override with `--ttl 7d` (or `30m`, `1h`, etc.).
 
 Hand the QR or token to the device's owner in person if possible. **Anyone who gets the token can claim the cadre identity it grants**, so treat it like a one-time password.
 
-Terminology aside: cadre-host's **trust circle** is just the cryptographically-authenticated list of identities allowed to have a cadre node on this host. An invite adds one new identity to that list.
-
-### 4. The invitee redeems the invite
-
-On the invitee's device, they install a cadre-aware app — the React Native reference app at [`@serfab/reference-app-rn`](../reference-app-rn), or any sApp built on `@serfab/cadre-core` — and scan or paste the invite. The app dials your cadre-host over libp2p (NAT/DDNS permitting; see step 6) and redeems the token. At that moment:
-
-- A child cadre node spawns inside your cadre-host process for this member's identity.
-- The member appears in `cadre-host trust list` and on the Trust Circle and Nodes pages of the UI.
-- The invitee's device can now use that cadre to participate in strands (shared SQL databases) and connect to other members.
-
-Until someone redeems an invite, the Nodes page in the UI stays empty — that's expected.
-
-### 5. Manage members
+On the invitee's device, they install a cadre-aware app — the React Native reference app at [`@serfab/reference-app-rn`](../reference-app-rn), or any sApp built on `@serfab/cadre-core` — and scan or paste the invite. The app dials your cadre-host over libp2p (NAT/DDNS permitting; see below) and redeems the token, which authorizes their peer in *your* cadre and lets them participate in its strands (shared SQL databases).
 
 ```bash
 $ cadre-host trust list
@@ -156,9 +221,9 @@ cadre-host trust revoke <token-or-peerId>
 
 cadre-host auto-detects whether the argument is a pending-invite token or a member peerId. Force interpretation with `--kind invite` or `--kind member` if it ever guesses wrong.
 
-### 6. Reachability — can people actually reach you?
+### Reachability — can people actually reach you? (founder role)
 
-After install (and any time your network changes):
+Reachability work targets your **own** cadre's owner node. After enabling the founder role (and any time your network changes):
 
 ```bash
 cadre-host nat status     # current external IP, port-mapping state, reachability
@@ -179,9 +244,13 @@ cadre-host nat ddns external --hostname mybox.example.com
 
 If you use the DuckDNS form, the token is stored in the OS keychain when `libsecret` is installed (`sudo apt install libsecret-1-0` on Debian/Ubuntu), and unencrypted in `<dataDir>/nat-secrets.json` otherwise. The service logs a warning at startup when it falls back to unencrypted storage.
 
+Donated nodes do **not** depend on any of this — they dial outward into the grantee's cadre. Per-donated-node WAN reachability is separate, deferred work (`backlog/feat-cadre-host-wan-grant-reachability`).
+
 ## CLI reference
 
 All commands except `install`, `uninstall`, `start`, and `ui` talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
+
+Commands marked **founder role only** additionally need `ownCadre.enabled`; on a donor-only install their routes are unmounted and the command reports a 404.
 
 ### `cadre-host status`
 
@@ -197,21 +266,33 @@ Service running:   yes
 
 Print the local-UI URL (e.g. `http://127.0.0.1:8765`) and open it in the default browser. Reads `uiPort` from `host.config.json`; doesn't require the service to be running (if not, the browser will fail to connect — that's feedback enough). Pass `--no-browser` to just print the URL.
 
+### `cadre-host grant issue <label> [--max-nodes N] [--ttl <duration>] [--no-qr]`
+
+Issue a grant token — the credential that lets one person ask this host to donate cadre nodes into *their* cadre. `<label>` is whatever human-readable name helps you track the grantee — quote it if it has spaces. `--max-nodes` caps how many donated nodes that grantee may keep running here at once (default 1); `--ttl` gives the grant an expiry (`s`/`m`/`h`/`d` suffixes, e.g. `30d`) — omit it and the grant never expires. Prints a QR code and the encoded token; `--no-qr` prints the token only.
+
+### `cadre-host grant list`
+
+Print every issued grant token with its label, node cap, expiry, and revoked state.
+
+### `cadre-host grant revoke <token>`
+
+Revoke a grant token. Every future request presenting it is denied; **nodes already donated under it keep running** — stop those from the UI's Nodes page, or have the grantee release them with `DELETE /grants/:id`.
+
 ### `cadre-host invite <label> [--ttl <duration>]`
 
-Generate a single-use invite token to add a member to your trust circle. `<label>` is whatever human-readable name helps you track the invitee — quote it if it has spaces. `--ttl` defaults to `24h`; accepts `s`/`m`/`h`/`d` suffixes (e.g. `7d`, `30m`). Prints a QR code and the encoded invite string.
+**Founder role only.** Generate a single-use invite token to add a member to your trust circle. `<label>` is whatever human-readable name helps you track the invitee — quote it if it has spaces. `--ttl` defaults to `24h`; accepts `s`/`m`/`h`/`d` suffixes (e.g. `7d`, `30m`). Prints a QR code and the encoded invite string.
 
 ### `cadre-host trust list`
 
-Print all current trust-circle members (with peerIds) and pending invites (with tokens and expiry).
+**Founder role only.** Print all current trust-circle members (with peerIds) and pending invites (with tokens and expiry).
 
 ### `cadre-host trust revoke <token-or-peerId> [--kind invite|member|auto]`
 
-Revoke a pending invite (by token) or evict an existing member (by peerId). `--kind` defaults to `auto`, which decides based on whether the argument looks like a peerId.
+**Founder role only.** Revoke a pending invite (by token) or evict an existing member (by peerId). `--kind` defaults to `auto`, which decides based on whether the argument looks like a peerId.
 
 ### `cadre-host nat status [--json]`
 
-Print current NAT state — port-mapping mode, external IP, CGNAT detection, direct-reachability result, DDNS configuration. With `--json`, dumps the raw response from the management API.
+**Founder role only** (as is every `cadre-host nat` subcommand — NAT/DDNS maps a port for the host's *own* owner node). Print current NAT state — port-mapping mode, external IP, CGNAT detection, direct-reachability result, DDNS configuration. With `--json`, dumps the raw response from the management API.
 
 ### `cadre-host nat test [--json]`
 
@@ -239,7 +320,7 @@ Run the first-run wizard. See [**Install**](#install) at the top of this README.
 
 ### `cadre-host uninstall [--remove-data] [--yes]`
 
-Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe identity, trust circle, NAT state, and update state too.
+Stop and deregister the service. Preserves the data dir by default; pass `--remove-data --yes` to wipe identity, issued grants, donated-node records, trust circle, NAT state, and update state too.
 
 ```bash
 cadre-host uninstall                       # stop + deregister, keep data
@@ -248,9 +329,11 @@ cadre-host uninstall --remove-data --yes   # also delete the data dir
 
 ## What `cadre-host start` does today
 
-`start` loads `host.config.json` + the identity, brings up the trust-circle / NAT / update services, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Routes:
+`start` loads `host.config.json` + the identity, brings up the orchestrator, the donation grant layer, and the update service, and binds the Fastify management server on `127.0.0.1:<uiPort>` (loopback only). Only when `ownCadre.enabled` does it also spawn the host's own owner node and bring up the trust-circle and NAT services. Routes:
 
-- `/auth/*` (trust circle), `/nat/*` (NAT/DDNS), `/update/*` (update flow) — these match the CLI's contract.
+- `/grants-admin` (issue/list/revoke grants — no bearer; same-machine admin) and `/grants` (the bearer-gated surface a grantee drives to request, seed, and release a donated node) — the always-on donor surface.
+- `/update/*` (update flow) — matches the CLI's contract.
+- `/auth/*` (trust circle), `/nat/*` (NAT/DDNS), `/api/strands` — **founder role only**; left unmounted and 404 on a donor-only install.
 - `/api/status`, `/api/nodes`, `/api/nodes/:id/{logs,stop,start,restart}`, `/api/settings`, `/api/events` (Server-Sent Events) — the local-UI surface consumed by the Svelte SPA.
 - `/` — the SPA bundle (or a placeholder HTML when running from source before the SPA is built — see `6.5.2-cadre-host-local-ui-spa`).
 
@@ -266,7 +349,7 @@ The manifest URL is overridable two ways:
 
 Manifests are signed with Ed25519; cadre-host refuses to apply any release whose signature doesn't match the embedded release key. For CI / dev signing, set `CADRE_HOST_UPDATE_DEV_KEY` to a base64-encoded raw 32-byte public key.
 
-**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read identity, mutate trust circle, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on the trust-circle membership model for inter-cadre auth.
+**Threat model.** Any local process running as the cadre-host user can fully control cadre-host (read identity, issue or revoke grants, mutate the trust circle, install arbitrary global packages). Signature verification protects against a compromised release CDN — it is **not** a defense against local-machine compromise. Treat the host like any other long-running service: limit who can run shells as that user, keep the OS patched, and rely on grant tokens — plus, in the founder role, trust-circle membership — for inter-cadre auth.
 
 Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `npm install -g @serfab/cadre-host@<version>` (5-minute timeout), and restart the OS service unit so the new binary takes effect. On install failure, the previous version is reinstalled and the error is surfaced via `update-state.json` — the still-running binary continues to serve. The service-host restart is best-effort; if it fails, the binary swap already succeeded and the user can restart manually.
 
@@ -274,13 +357,16 @@ Apply flow: re-fetch + re-verify the manifest, record `applyInProgress`, run `np
 
 `cadre-host start` serves a Svelte 5 SPA at `http://127.0.0.1:<uiPort>/`. **Local-only by design:** the server binds to loopback (`127.0.0.1`) only and rejects requests whose `Host` or `Origin` header is not a loopback hostname, so the UI is unreachable from your LAN even though it has no login. To use it from another machine, SSH-port-forward as shown in [*After install*, step 2](#2-open-the-local-ui).
 
-Five pages cover the day-to-day operations:
+Six pages cover the day-to-day operations. Three of them belong to the opt-in founder role and are marked as such:
 
-- **Home / Status** — green/yellow/red dot, service version + uptime, trust-circle size, connectivity at a glance, "update available" banner.
-- **Trust Circle** — list members, invite a friend (modal generates a paste-friendly token + QR), revoke pending invites or remove members.
-- **Connectivity** — port-forwarding status, "Test reachability", DDNS provider configuration, manual port-forward instructions when UPnP isn't working.
-- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. `cadre-host` v1 doesn't auto-spawn nodes, so this list is usually empty until a trust-circle member completes enrollment.
+- **Home / Status** — green/yellow/red dot, service version + uptime, "update available" banner. Its trust-circle-size and connectivity tiles are fed by founder-only routes.
+- **Nodes** — per-managed-node detail, recent stats, log tail (last 200 lines, "Refresh" pulls again), start/stop/restart. `cadre-host` v1 doesn't auto-spawn nodes, so this list is empty until a grantee requests a donated node (or, in the founder role, until your own owner node starts).
 - **Settings** — update preferences (autoApply toggle, manifest URL override), install metadata (install ID, data dir, ports), uninstall pointer.
+- **Trust Circle** *(founder role only)* — list members, invite a friend (modal generates a paste-friendly token + QR), revoke pending invites or remove members.
+- **Connectivity** *(founder role only)* — port-forwarding status, "Test reachability", DDNS provider configuration, manual port-forward instructions when UPnP isn't working.
+- **Strands** *(founder role only)* — the shared SQL databases your own cadre belongs to.
+
+The SPA does not yet hide the founder-only pages on a donor-only install: they stay in the nav and error when opened, and Home's connectivity tile never resolves. There is no donor-side view of grants or donated nodes beyond the Nodes page. Tracked as `backlog/feat-cadre-host-donor-aware-ui`.
 
 The SPA opens an `EventSource` against `/api/events` and re-fetches the relevant slice when a node state changes, the trust circle changes, connectivity changes, or an update is announced. No login — the page is bound to loopback only, with an Origin/Host guard for DNS-rebind defence. See the threat-model note in the *Updates* section above and in [docs/cadre-host.md](../../docs/cadre-host.md) for the full security posture.
 
