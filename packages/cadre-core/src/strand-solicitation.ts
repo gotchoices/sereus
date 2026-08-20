@@ -41,7 +41,7 @@ export interface DisclosureValidator {
  * Discriminated result of resolving the host strand an invite binds to (responder side):
  *
  * - `unbound`: the invite carries no `StrandId` → the responder-provisions path (provision
- *   a NEW strand; legacy/open).
+ *   a NEW strand; unbound/open).
  * - `bound`: the invite names a host strand AND that strand row is present on this responder
  *   → provision-then-record (record consent against it, return it + its membership key).
  * - `missing`: the invite names a host strand but the row is ABSENT on this responder (e.g.

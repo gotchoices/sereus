@@ -950,7 +950,7 @@ graph TD
 ```typescript
 interface CadreNodeConfig {
   // Node identity (see "Node Key Material & the KeyStore Seam" below).
-  privateKey?: PrivateKey;        // Direct keypair injection (legacy path)
+  privateKey?: PrivateKey;        // Direct keypair injection
   keyStore?: KeyStore;            // Pluggable secure store; mutually exclusive with privateKey
   identityKeyId?: string;         // Slot id in keyStore (default 'cadre/identity')
 
@@ -1080,8 +1080,8 @@ any libp2p/network bring-up, into a private resolved field):
    - empty → `generateKeyPair('Ed25519')`, persist `privateKeyToProtobuf(key)`,
      then use it;
    - `get` rejects → propagate (do **not** generate — that would orphan the key).
-3. `privateKey` set → use it (legacy behavior).
-4. Neither → libp2p generates an ephemeral key (legacy behavior).
+3. `privateKey` set → use it.
+4. Neither → libp2p generates an ephemeral key.
 
 Step 2 lives in `identity-key.ts` and is a **package-root export**
 (`loadOrCreateIdentityKey`), not private to `CadreNode`, because an embedding app

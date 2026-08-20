@@ -394,8 +394,8 @@ export class StrandFormationManager {
    * 1. `recorder.provisionAndRecord` present (a real DB recorder) → atomic create-strand +
    *    record-consent, so the unbound redemption is single-use just like the bound path.
    *    Returns the new strand (+ key, null for an open responder-provisioned strand).
-   * 2. else `strandProvisioner` present → the legacy/mock contract: provision a bare strand,
-   *    NO inline usage write (those callers record usage explicitly via
+   * 2. else `strandProvisioner` present → the mock/transport-test contract: provision a bare
+   *    strand, NO inline usage write (those callers record usage explicitly via
    *    `recordFormationComplete`, or assert transport invariants only). Threads the invite's
    *    REAL `sAppId`.
    * 3. else → a structural placeholder (no recorder + no provisioner ⇒ no single-use semantics
@@ -406,8 +406,13 @@ export class StrandFormationManager {
    * `StrandProvisioner` mock-transport tests untouched; (b) would delete the provisioner
    * surface and churn ~6 unit + ~6 integration sites for ZERO production benefit (production
    * — `cadre-web.ts` / `cadre-phone.ts` — always publishes strand-BOUND invites and treats
-   * the responder-provisions placeholder as failure). The broader "should this fallback exist
-   * at all?" question lives in backlog `formation-initiatorcreates-cover-or-remove`.
+   * the responder-provisions placeholder as failure).
+   *
+   * NOTE: accepted tradeoff — arm 2 (`strandProvisioner`, no recorder) is kept for the
+   * mock/transport-test contract rather than removed; removal would churn ~6 unit + ~6
+   * integration sites for no production benefit, since production always publishes
+   * strand-bound invites. Revisit if production starts publishing unbound invites, or the
+   * mock-transport tests go away.
    */
   private async provisionUnbound(
     contact: FormationContactMessage,

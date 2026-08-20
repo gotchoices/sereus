@@ -408,8 +408,8 @@ export interface CadreNodeConfig {
    * Pluggable secure store for node key material. When set, the node loads its
    * identity from `keyStore` under {@link identityKeyId}, generating + persisting
    * a fresh Ed25519 key on first run (protobuf bytes are the canonical stored
-   * form). Mutually exclusive with {@link privateKey}. Absent ⇒ legacy behavior
-   * (use `privateKey`, else libp2p generates an ephemeral key).
+   * form). Mutually exclusive with {@link privateKey}. Absent ⇒ use `privateKey`
+   * when set, else libp2p generates an ephemeral key.
    *
    * In the single-key reference model the owner signing key is *derived from*
    * the node identity (see {@link CadreNode.getIdentityOwnerKey}), so

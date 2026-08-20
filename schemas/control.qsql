@@ -476,7 +476,7 @@ declare schema CadreControl {
         ExpiresAt datetime null,
         TotalUses int null check (TotalUses >= 0),
         ValidationUrl text null,   -- Web hook - send disclosure, IP address...
-        StrandId text null,   -- Host strand this invite binds to (provision-then-record). Non-null => the responder records consent against this pre-existing strand; null => legacy responder-provisions path.
+        StrandId text null,   -- Host strand this invite binds to (provision-then-record). Non-null => the responder records consent against this pre-existing strand; null => unbound invite: the responder provisions a fresh open strand and atomically records its one consent row.
         StampId text not null unique,   -- single-use authorization nonce (anti-replay)
         constraint AuthorizedInsert check on insert (
             -- Authorized by an owner signing over THIS row

@@ -842,7 +842,7 @@ export class ControlDatabase {
    * {@link queryRevokedStamps} rather than inlining the SQL, so tests can interpose on
    * that seam (see {@link queryCadrePeers}).
    *
-   * Missing/legacy column values are coalesced
+   * Missing/null column values are coalesced
    * to their empty form (`''` key/sig, `[]` addrs, `0` stamp) so the caller's
    * verify/freshness gates uniformly reject an unpublished or malformed row.
    * The split `addrs` re-join to the exact stored `Multiaddr` (split-on-`,` is
@@ -910,7 +910,7 @@ export class ControlDatabase {
   /**
    * Read a single peer's device push token (the full `DeviceToken` row) by PeerId.
    *
-   * Returns null when no row exists. Missing/legacy column values are coalesced to
+   * Returns null when no row exists. Missing/null column values are coalesced to
    * their empty form (`''` token/sig, `0` stamp) so the caller's verify/freshness
    * gates uniformly reject an unpublished or malformed row. `platform` is returned
    * verbatim (the resolver validates it against {@link PushPlatform} and re-verifies
@@ -1916,7 +1916,8 @@ export class ControlDatabase {
    * `StrandId` binds the invite to a pre-existing host strand (provision-then-record):
    * when set, a responder redeeming this token records a `FormationUsage` against that
    * strand and returns it (see {@link ControlFormationUsageRecorder.resolveStrand}); a
-   * null `StrandId` (the default) leaves the legacy responder-provisions path in place.
+   * null `StrandId` (the default) takes the unbound responder-provisions path: the
+   * responder provisions a fresh open strand and atomically records its one consent row.
    * Like ValidationUrl it is a nullable bound field, signed as `''` when absent.
    *
    * The ExpiresAt and TotalUses message fields must byte-match what the (auto-deferred,
