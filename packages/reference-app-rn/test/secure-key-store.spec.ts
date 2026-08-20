@@ -1,14 +1,6 @@
 import { describe, it, expect, vi } from 'vitest';
-import {
-	KeyStoreAccessError,
-	DEFAULT_IDENTITY_KEY_ID,
-	type KeyStore,
-} from '@serfab/cadre-core';
-import {
-	SecureStoreKeyStore,
-	migrateLegacyIdentity,
-	type SecureStoreKeyStoreOptions,
-} from '../src/secure-key-store';
+import { KeyStoreAccessError, DEFAULT_IDENTITY_KEY_ID } from '@serfab/cadre-core';
+import { SecureStoreKeyStore, type SecureStoreKeyStoreOptions } from '../src/secure-key-store';
 import { FakeSecureStore, INDEX_KEY } from './fake-secure-store';
 
 function makeStore(options?: SecureStoreKeyStoreOptions): { store: SecureStoreKeyStore; fake: FakeSecureStore } {
@@ -305,88 +297,5 @@ describe('SecureStoreKeyStore — index consistency', () => {
 			store.set('c', new Uint8Array([3])),
 		]);
 		expect((await store.list()).sort()).toEqual(['a', 'b', 'c']);
-	});
-});
-
-// ── Legacy identity migration ─────────────────────────────────────────────────
-
-describe('migrateLegacyIdentity', () => {
-	const LEGACY = new Uint8Array([8, 6, 7, 5, 3, 0, 9]);
-
-	it('copies legacy bytes into an empty slot once, then clears the legacy copy', async () => {
-		const { store } = makeStore();
-		const readLegacy = vi.fn(async () => LEGACY);
-		const deleteLegacy = vi.fn(async () => {});
-
-		const outcome = await migrateLegacyIdentity({
-			store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy, deleteLegacy,
-		});
-
-		expect(outcome).toBe('migrated');
-		expect(sameBytes(await store.get(DEFAULT_IDENTITY_KEY_ID), LEGACY)).toBe(true);
-		expect(deleteLegacy).toHaveBeenCalledTimes(1);
-	});
-
-	it('is a no-op when the secure slot is already populated (does not touch legacy)', async () => {
-		const { store } = makeStore();
-		await store.set(DEFAULT_IDENTITY_KEY_ID, new Uint8Array([42]));
-		const readLegacy = vi.fn(async () => LEGACY);
-
-		const outcome = await migrateLegacyIdentity({ store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy });
-
-		expect(outcome).toBe('already-present');
-		expect(readLegacy).not.toHaveBeenCalled();
-		expect(sameBytes(await store.get(DEFAULT_IDENTITY_KEY_ID), new Uint8Array([42]))).toBe(true);
-	});
-
-	it('reports no-legacy and leaves the slot empty when there is nothing to migrate', async () => {
-		const { store } = makeStore();
-		const outcome = await migrateLegacyIdentity({
-			store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy: async () => undefined,
-		});
-		expect(outcome).toBe('no-legacy');
-		await expect(store.get(DEFAULT_IDENTITY_KEY_ID)).resolves.toBeUndefined();
-	});
-
-	it('treats a zero-length legacy blob as no-legacy (never sets an empty slot)', async () => {
-		const { store } = makeStore();
-		const outcome = await migrateLegacyIdentity({
-			store, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy: async () => new Uint8Array(0),
-		});
-		expect(outcome).toBe('no-legacy');
-		await expect(store.get(DEFAULT_IDENTITY_KEY_ID)).resolves.toBeUndefined();
-	});
-
-	it('falls through (no throw) when the legacy read fails — caller generates fresh', async () => {
-		const { store } = makeStore();
-		const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-		try {
-			const outcome = await migrateLegacyIdentity({
-				store,
-				identityKeyId: DEFAULT_IDENTITY_KEY_ID,
-				readLegacy: async () => { throw new Error('legacy DB locked'); },
-			});
-			expect(outcome).toBe('legacy-read-failed');
-			await expect(store.get(DEFAULT_IDENTITY_KEY_ID)).resolves.toBeUndefined();
-		} finally {
-			warn.mockRestore();
-		}
-	});
-
-	it('propagates a KeyStoreAccessError from the secure slot (never migrates over an unreadable key)', async () => {
-		const readLegacy = vi.fn(async () => LEGACY);
-		const setSpy = vi.fn(async () => {});
-		const denied: KeyStore = {
-			get: async (id) => { throw new KeyStoreAccessError(id, 'denied'); },
-			set: setSpy,
-			delete: async () => {},
-			list: async () => [],
-		};
-
-		await expect(
-			migrateLegacyIdentity({ store: denied, identityKeyId: DEFAULT_IDENTITY_KEY_ID, readLegacy }),
-		).rejects.toBeInstanceOf(KeyStoreAccessError);
-		expect(readLegacy).not.toHaveBeenCalled();
-		expect(setSpy).not.toHaveBeenCalled();
 	});
 });

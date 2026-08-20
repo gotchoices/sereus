@@ -1110,10 +1110,9 @@ The phone node's identity (and the owner key derived from it) therefore lives
 in the platform enclave rather than the plaintext LevelDB the app used before.
 `cadre-phone.ts` constructs the store and passes it as `keyStore` — cadre-core's
 load-or-create path does the rest. `startPhoneNode` additionally calls
-`loadOrCreateIdentityKey` on that same store *before* constructing the node (after
-the legacy-identity migration, so it can never pre-empt it), because it needs the
-key to sign the ICE-manifest fetch; the node then loads the very key the app just
-resolved. Bridging details the backend handles:
+`loadOrCreateIdentityKey` on that same store *before* constructing the node,
+because it needs the key to sign the ICE-manifest fetch; the node then loads the
+very key the app just resolved. Bridging details the backend handles:
 
 - **Bytes ↔ text.** SecureStore stores strings; material is base64-encoded on
   `set`, decoded on `get` (lossless for the protobuf bytes).
@@ -1142,11 +1141,12 @@ Biometric gating remains *available* (`requireAuthentication: true` +
 requires an `NSFaceIDUsageDescription` string in `app.json` and is **unsupported
 under Expo Go**.
 
-**One-time migration.** On upgrade, if the secure slot is empty and the old
-plaintext LevelDB identity DB (`sereus-peer-identity`) holds a key, the app lifts
-it into the enclave once (then clears the plaintext copy), so the device keeps its
-PeerId/owner across the upgrade. A failed legacy read falls through to fresh
-generation (logged, never logging key material).
+**No migration path.** The enclave is the only store this app reads its identity
+from: an empty slot on first run means cadre-core generates the key straight into
+it. Earlier development builds kept the key in plaintext (MMKV, then LevelDB) and
+carried a one-time lift into the enclave, but no shipped device ever needed it and
+that code is gone — a device holding only a plaintext key would generate a fresh
+identity, not import the old one.
 
 **Reinstall & recovery behavior:**
 

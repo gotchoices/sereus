@@ -36,7 +36,7 @@ import type { Libp2pTransports } from '@optimystic/db-p2p';
 import * as SecureStore from 'expo-secure-store';
 import { LevelDBRawStorage, LevelDBKVStore, openOptimysticRNDb } from '@optimystic/db-p2p-storage-rn';
 import { LevelDB, LevelDBWriteBatch } from 'rn-leveldb';
-import { SecureStoreKeyStore, migrateLegacyIdentity, type SecureStoreKeyStoreOptions } from './secure-key-store';
+import { SecureStoreKeyStore, type SecureStoreKeyStoreOptions } from './secure-key-store';
 import {
   anchorSlotKey,
   bootstrapPeersKvKey,
@@ -59,7 +59,8 @@ import { loadIceConfig } from './ice-config';
 type TransportFactory = Libp2pTransports[number];
 
 // ── LevelDB helpers ──────────────────────────────────────────────────────────
-// Each strand (and the peer identity) gets its own LevelDB database file.
+// Each strand — and the node-local record store — gets its own LevelDB database
+// file. The peer identity is NOT here; it lives in the secure enclave (below).
 
 function openLevelDb(name: string) {
 	return openOptimysticRNDb({
@@ -100,59 +101,6 @@ const SECURE_STORE_OPTIONS: SecureStoreKeyStoreOptions = {
 
 const keyStore: KeyStore = new SecureStoreKeyStore(SecureStore, SECURE_STORE_OPTIONS);
 
-// Legacy plaintext identity DB (pre-secure-store). Retained only so a one-time
-// migration can lift an existing identity into the enclave on upgrade; new nodes
-// never write here. This dedicated DB only ever held the single identity blob.
-const PEER_IDENTITY_DB_NAME = 'sereus-peer-identity';
-
-/**
- * Read the legacy plaintext identity protobuf bytes from {@link PEER_IDENTITY_DB_NAME},
- * or undefined when the DB is empty/absent (fresh install). That DB only ever
- * held the single identity blob (written by the old `loadOrCreateRNPeerKey`), so
- * the first entry's value IS the identity. Throws only if the DB cannot be
- * opened/iterated — {@link migrateLegacyIdentity} treats that as "read failed →
- * generate fresh". Never logs key material.
- */
-async function readLegacyIdentityBytes(): Promise<Uint8Array | undefined> {
-	const db = openLevelDb(PEER_IDENTITY_DB_NAME);
-	try {
-		const iter = db.iterator();
-		try {
-			const first = await iter.next();
-			const value = first?.[1];
-			return value && value.byteLength > 0 ? value : undefined;
-		} finally {
-			await iter.close();
-		}
-	} finally {
-		await db.close();
-	}
-}
-
-/**
- * Best-effort removal of the legacy plaintext identity after a successful
- * migration, so the device stops keeping an unencrypted copy of the key.
- */
-async function deleteLegacyIdentity(): Promise<void> {
-	const db = openLevelDb(PEER_IDENTITY_DB_NAME);
-	try {
-		const keys: Uint8Array[] = [];
-		const iter = db.iterator({ keys: true });
-		try {
-			for (let entry = await iter.next(); entry; entry = await iter.next()) {
-				keys.push(entry[0]);
-			}
-		} finally {
-			await iter.close();
-		}
-		for (const key of keys) {
-			await db.delete(key);
-		}
-	} finally {
-		await db.close();
-	}
-}
-
 // ── Singleton ────────────────────────────────────────────────────────────────
 
 let node: CadreNode | null = null;
@@ -185,18 +133,6 @@ export function getPhoneNode(): CadreNode | null {
  */
 export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode> {
   if (node?.isRunning) return node;
-
-  // One-time: lift any pre-existing plaintext LevelDB identity into the secure
-  // store BEFORE the node's load-or-create path runs. If we didn't, cadre-core
-  // would see an empty slot and generate a fresh key, losing the device's PeerId
-  // and owner identity across the upgrade. Gated on the slot being empty, so
-  // it copies (and clears the legacy plaintext) at most once.
-  await migrateLegacyIdentity({
-    store: keyStore,
-    identityKeyId: DEFAULT_IDENTITY_KEY_ID,
-    readLegacy: readLegacyIdentityBytes,
-    deleteLegacy: deleteLegacyIdentity,
-  });
 
   // Durable node-local records: the trusted-owner anchor in the secure enclave,
   // the cold-start dial hints in app-private LevelDB. `node-local-slots.ts` has
@@ -237,9 +173,8 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // is mutually exclusive with `keyStore` and would take the identity out of the
   // secure-enclave path).
   //
-  // Ordering is load-bearing on BOTH sides: after `migrateLegacyIdentity` above
-  // (which may fill an empty slot — calling this first would generate a fresh key
-  // and orphan the migrated identity), and before `loadIceConfig` below.
+  // Ordering is load-bearing: this must run before `loadIceConfig` below, whose
+  // manifest request is signed with the node identity resolved here.
   //
   // Idempotent across a cold-start re-entry (`use-cadre`'s resume hook re-runs
   // startPhoneNode): it is a `get` then return, and unlike `nodeLocalDb` above it
