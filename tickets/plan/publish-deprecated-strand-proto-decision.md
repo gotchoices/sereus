@@ -1,6 +1,7 @@
 ----
-description: We still publish a package we have written off as deprecated, and every release now also packs and installs it as part of the pre-release check. Someone needs to decide whether to keep shipping it or stop.
+description: We still publish a package we wrote off as deprecated, and every release packs and installs it as part of the pre-release check. It has been decided that we stop shipping it, so it needs to come out of the build, the release process, and the repository.
 files: package.json, packages/strand-proto/, docs/testing.md, docs/strand-proto.md, AGENTS.md, eslint.config.mjs, scripts/release-preflight.mjs
+prereq: retire-backwards-compatibility-affordances
 difficulty: easy
 ----
 
