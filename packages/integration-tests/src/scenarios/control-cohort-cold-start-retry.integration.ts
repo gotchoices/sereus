@@ -73,19 +73,14 @@
  * `yarn workspace @serfab/cadre-core build`, run this scenario and require RED at
  * step 5; then restore the file, rebuild, and require green.
  *
- * ABOUT THE FEATURE, not the test: the cold-start branch is not the only thing
- * that can recover a stranded joiner in a live deployment. For as long as B's
- * libp2p peerStore still holds the owner's address — which `applySeed` puts
- * there — FRET's stabilization probes reconnect B on their own, typically within
- * a few seconds. The branch is the load-bearing path for the cases FRET cannot
- * serve: a peerStore whose address entries have aged out, and a process restart
- * (the peerStore is in-memory, while `bootstrapPeerStore` persists). Overlap,
- * not redundancy.
+ * ABOUT THE FEATURE, not the test: in a live deployment the cold-start branch
+ * overlaps with FRET's probes rather than standing alone — which cases each one
+ * actually covers is written up in `docs/architecture.md` (control-cohort
+ * reconcile → "Cold-start bootstrap retries"), not repeated here.
  */
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
-import { peerIdFromString } from '@libp2p/peer-id';
 import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import {
 	waitUntil, waitForCadrePeerConverged,
@@ -109,7 +104,8 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: false }));
 			await A.start();
 			await makeOwnOwner(A, aKey);
-			const aPeerId = A.peerId!.toString();
+			const aPeer = A.peerId!;
+			const aPeerId = aPeer.toString();
 
 			// B: a client-only reader (listens on nothing, so only B can start a
 			// connection) with a short reconcile cadence, so the cold-start branch
@@ -171,14 +167,13 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			//     `dialColdStartBootstrap` dials cadre-core's own `bootstrapPeerStore`,
 			//     which this deliberately does NOT touch, so it is left as the only
 			//     producer of the outbound connection step 5 waits for.
-			await B.getControlNode()!.peerStore.delete(peerIdFromString(aPeerId));
+			await B.getControlNode()!.peerStore.delete(aPeer);
 			await waitUntil(
 				async () => {
 					const store = B!.getControlNode()!.peerStore;
-					if (!(await store.has(peerIdFromString(aPeerId)))) {
-						return true;
-					}
-					return (await store.get(peerIdFromString(aPeerId))).addresses.length === 0;
+					// Tolerates both shapes libp2p may leave behind: entry gone, or a bare
+					// record with no addresses. Either one is un-dialable by peer id.
+					return !(await store.has(aPeer)) || (await store.get(aPeer)).addresses.length === 0;
 				},
 				{ timeoutMs: 5_000, intervalMs: 100, description: "B's peerStore holds no address for A" }
 			);
