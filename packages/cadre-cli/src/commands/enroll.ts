@@ -4,7 +4,6 @@ import path from 'node:path';
 import debug from 'debug';
 import { EnrollmentService, verifyPeerAuthorization } from '@serfab/cadre-core';
 import { peerIdFromString } from '@libp2p/peer-id';
-import { toString as uint8ArrayToString } from 'uint8arrays';
 
 const log = debug('cadre:cli:enroll');
 
@@ -23,7 +22,6 @@ export const enrollCommand = new Command('enroll')
         const result = await enrollment.createCadrePeer();
 
         const peerId = result.peerId.toString();
-        const privateKeyHex = uint8ArrayToString(result.privateKey, 'hex');
 
         // Save to files
         const outputDir = path.resolve(options.output);
@@ -34,7 +32,10 @@ export const enrollCommand = new Command('enroll')
         const keyPath = path.join(outputDir, `${options.name}.key`);
         const idPath = path.join(outputDir, `${options.name}.id`);
 
-        fs.writeFileSync(keyPath, privateKeyHex, 'utf-8');
+        // `result.privateKey` is already `privateKeyToProtobuf` output. Write those bytes
+        // verbatim — no hex or base64 layer — so this file is byte-identical in format to the
+        // `identity.key` cadre-host's installer writes, and is what `identity.keyFile` accepts.
+        fs.writeFileSync(keyPath, result.privateKey);
         fs.chmodSync(keyPath, 0o600); // Restrict permissions
         fs.writeFileSync(idPath, peerId, 'utf-8');
 

@@ -1,12 +1,15 @@
 # Example Cadre Node Configuration
 # Copy this file to cadre.yaml and customize for your deployment
 
-# Node identity (optional - generates new identity if not specified)
+# Node identity (optional - generates a throwaway identity if not specified, so a node
+# that must keep its peer id across restarts has to set this).
 identity:
-  # Path to private key file (generated via 'cadre enroll create')
+  # Path to the private key file: a libp2p protobuf-encoded private key, exactly as
+  # written by 'cadre enroll create' (and by cadre-host's installer as identity.key).
+  # This is the only accepted format — a file in any other shape fails startup with a
+  # clear error rather than being guessed at. 'keyFile' is the only key this block
+  # accepts; a retired or misspelled name fails startup too.
   keyFile: ./cadre-peer.key
-  # Or inline hex (not recommended for production)
-  # privateKeyHex: "..."
 
 # Control network connection
 controlNetwork:

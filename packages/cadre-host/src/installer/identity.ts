@@ -9,7 +9,14 @@
  * We persist the protobuf form (not raw bytes) because that's the format
  * libp2p's `privateKeyFromProtobuf` consumes directly and it preserves the
  * key type tag — future migrations to a different key algorithm don't
- * require a schema change here.
+ * require a schema change here. Raw bytes carry no type tag AND no way to tell
+ * a damaged file from a valid one: `privateKeyFromRaw` accepts any 64 bytes as
+ * an Ed25519 key without checking that the public half matches the private, so
+ * a truncated file would load as a *different* working identity.
+ *
+ * This is the repo-wide identity file format, not a cadre-host-local choice:
+ * `cadre enroll create` writes exactly these bytes, and `cadre-cli`'s
+ * `identity.keyFile` accepts nothing else (`config/loader.ts` → `loadIdentityKey`).
  */
 
 import { chmodSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';

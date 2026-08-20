@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import yaml from 'js-yaml';
 import debug from 'debug';
-import { privateKeyFromRaw, privateKeyFromProtobuf } from '@libp2p/crypto/keys';
+import { privateKeyFromProtobuf } from '@libp2p/crypto/keys';
 import type { PrivateKey } from '@libp2p/interface';
 import type { StrandFilter } from '@serfab/cadre-core';
 import { validatePushCredentials } from '@serfab/cadre-core';
@@ -43,6 +43,7 @@ export async function loadConfigFile(configPath: string): Promise<CliConfigFile>
  * Apply environment variable overrides to config
  */
 export function applyEnvironmentOverrides(config: CliConfigFile): CliConfigFile {
+  rejectRetiredIdentityEnv();
   const result = { ...config };
 
   for (const [envVar, configPath] of Object.entries(ENV_MAPPINGS)) {
@@ -169,63 +170,94 @@ function cloneBranch(existing: unknown): Record<string, unknown> {
 }
 
 /**
- * Load private key from file
- */
-export async function loadPrivateKey(keyPath: string): Promise<Uint8Array> {
-  const fullPath = path.resolve(keyPath);
-  log('Loading private key from: %s', fullPath);
-
-  if (!fs.existsSync(fullPath)) {
-    throw new Error(`Key file not found: ${fullPath}`);
-  }
-
-  const content = fs.readFileSync(fullPath);
-  // If it looks like hex, decode it
-  const text = content.toString('utf-8').trim();
-  if (/^[0-9a-fA-F]+$/.test(text)) {
-    return Buffer.from(text, 'hex');
-  }
-  // Otherwise return raw bytes
-  return new Uint8Array(content);
-}
-
-/**
- * Decode private-key bytes into a libp2p {@link PrivateKey}, accepting both the
- * protobuf form and a bare raw key.
+ * Load the node identity from a libp2p protobuf-encoded private key file.
  *
- * `cadre enroll create` writes `privateKeyToProtobuf(...)` (which carries the
- * key-type tag and therefore begins with the protobuf field-1 tag `0x08`),
- * while older/hand-made key files may hold the raw key bytes. Try the protobuf
- * decoder first (the documented `enroll create` output) and fall back to raw —
- * this is what lets a `keyFile` produced by `enroll create` actually start a
- * node (previously `privateKeyFromRaw` threw `No decoder for tag 8` on it).
+ * This is the ONE on-disk identity format: what `cadre enroll create` writes, what cadre-host's
+ * installer writes to `identity.key`, and what the docker entrypoint mints into `cadre-peer.key`.
+ * See `@serfab/cadre-host`'s `installer/identity.ts` for why the protobuf form rather than raw
+ * key bytes.
  */
-function decodePrivateKey(bytes: Uint8Array): PrivateKey {
-  try {
-    return privateKeyFromProtobuf(bytes);
-  } catch {
-    return privateKeyFromRaw(bytes);
-  }
-}
-
-/**
- * Load a libp2p protobuf-encoded private key from disk.
- *
- * This is the format cadre-host's installer writes to `identity.key`
- * (`privateKeyToProtobuf`). Unlike {@link loadPrivateKey} (which expects
- * hex-or-raw seed bytes), the protobuf form carries the key-type tag and is
- * decoded with `privateKeyFromProtobuf`.
- */
-export function loadProtobufPrivateKey(keyPath: string): PrivateKey {
+export function loadIdentityKey(keyPath: string): PrivateKey {
   const fullPath = path.resolve(keyPath);
-  log('Loading protobuf identity key from: %s', fullPath);
+  log('Loading identity key from: %s', fullPath);
 
   if (!fs.existsSync(fullPath)) {
     throw new Error(`Identity key file not found: ${fullPath}`);
   }
 
   const bytes = fs.readFileSync(fullPath);
-  return privateKeyFromProtobuf(new Uint8Array(bytes));
+  try {
+    // NOTE: no fallback decoder here, deliberately. `privateKeyFromRaw` accepts ANY 64 bytes as an
+    // Ed25519 key without validating them, so a truncated protobuf used to decode as a *different,
+    // valid* identity and the node came up under a PeerId nobody expected.
+    // NOTE: this catches structural damage only. A single flipped byte INSIDE the 64-byte payload
+    // still decodes, and still yields a different PeerId, because the payload carries no checksum.
+    // Closing that needs a recorded peer id to verify against —
+    // backlog/debt-identity-key-file-has-no-integrity-check.
+    return privateKeyFromProtobuf(new Uint8Array(bytes));
+  } catch (err) {
+    throw new Error(
+      `Invalid identity key file ${fullPath}: not a libp2p protobuf-encoded private key. ` +
+      `Regenerate it with 'cadre enroll create', or point identity.keyFile at the correct file.`,
+      { cause: err },
+    );
+  }
+}
+
+/** The only key the `identity` block accepts. Anything else is a typo or a retired name. */
+const IDENTITY_KEYS = new Set(['keyFile']);
+
+// NOTE: transitional — this map exists only to give old configs a pointed error instead of a
+// generic "unknown key". Safe to delete once no config in circulation names either key; the
+// IDENTITY_KEYS allowlist above is the permanent guard and must stay.
+const RETIRED_IDENTITY_KEYS = new Map<string, string>([
+  ['protobufKeyFile', "renamed to 'keyFile' — same libp2p protobuf format, no file change needed"],
+  ['privateKeyHex', "removed — write the key to a file ('cadre enroll create') and set 'keyFile'"],
+]);
+
+/**
+ * Reject anything in the `identity` block that is not the one accepted key.
+ *
+ * {@link loadConfigFile} is a bare `yaml.load(...) as CliConfigFile` cast — there is no schema
+ * validation anywhere — so a retired or merely misspelled key (`keyfile`, `keyPath`) would resolve
+ * to *no identity at all*, and the node would silently generate a fresh keypair and come up as a
+ * stranger to its own cadre. Fail loudly instead. Whole-config validation is
+ * `backlog/debt-cli-config-file-has-no-schema-validation`.
+ */
+function validateIdentityBlock(identity: unknown, configPath: string): void {
+  if (identity === undefined || identity === null) return;
+  if (typeof identity !== 'object' || Array.isArray(identity)) {
+    throw new Error(
+      `Invalid identity block in ${configPath}: expected an object with a 'keyFile' entry`,
+    );
+  }
+
+  for (const key of Object.keys(identity)) {
+    if (IDENTITY_KEYS.has(key)) continue;
+    const retired = RETIRED_IDENTITY_KEYS.get(key);
+    throw new Error(
+      retired
+        ? `Config ${configPath}: identity.${key} is no longer supported — ${retired}`
+        : `Config ${configPath}: unknown key identity.${key} — the identity block accepts only 'keyFile'`,
+    );
+  }
+}
+
+/**
+ * Reject the retired `CADRE_IDENTITY_PROTOBUF` env var by name.
+ *
+ * It mapped to `identity.protobufKeyFile`, which no longer exists. Silently ignoring it would
+ * leave a launcher that still sets it starting the node with no identity — a fresh keypair and a
+ * new PeerId, the exact failure this collapse exists to close.
+ */
+function rejectRetiredIdentityEnv(): void {
+  const retired = process.env.CADRE_IDENTITY_PROTOBUF;
+  if (retired !== undefined && retired.trim() !== '') {
+    throw new Error(
+      `CADRE_IDENTITY_PROTOBUF is no longer supported — set CADRE_KEY_FILE instead ` +
+      `(same libp2p protobuf key file, no file change needed)`,
+    );
+  }
 }
 
 /**
@@ -285,8 +317,10 @@ function validateResolvedPush(push: CliConfigFile['push']): void {
  * Resolve configuration: load file, apply env overrides, load keys
  */
 export async function resolveConfig(configPath: string): Promise<ResolvedConfig> {
+  const fullConfigPath = path.resolve(configPath);
   let fileConfig = await loadConfigFile(configPath);
   fileConfig = applyEnvironmentOverrides(fileConfig);
+  validateIdentityBlock(fileConfig.identity, fullConfigPath);
   validateResolvedPush(fileConfig.push);
 
   // Node-local state (bootstrap-peer store, trusted-owner anchor) lives in an
@@ -296,18 +330,14 @@ export async function resolveConfig(configPath: string): Promise<ResolvedConfig>
   // regardless of how the node's identity is sourced.
   const nodeStateDir = fileConfig.nodeState?.dir
     ? path.resolve(fileConfig.nodeState.dir)
-    : path.dirname(path.resolve(configPath));
+    : path.dirname(fullConfigPath);
 
-  // Load private key if specified. The protobuf identity (installer-written
-  // `identity.key`) takes precedence, then a raw/hex key file, then inline hex.
-  let privateKey: PrivateKey | undefined;
-  if (fileConfig.identity?.protobufKeyFile) {
-    privateKey = loadProtobufPrivateKey(fileConfig.identity.protobufKeyFile);
-  } else if (fileConfig.identity?.keyFile) {
-    privateKey = decodePrivateKey(await loadPrivateKey(fileConfig.identity.keyFile));
-  } else if (fileConfig.identity?.privateKeyHex) {
-    privateKey = decodePrivateKey(Buffer.from(fileConfig.identity.privateKeyHex, 'hex'));
-  }
+  // Load the node identity if one is configured. One key, one format — an absent `keyFile` means
+  // "no identity configured" (CadreNode generates an ephemeral keypair); a present-but-undecodable
+  // one throws rather than degrading to that, since a silent regeneration is a new PeerId.
+  const privateKey: PrivateKey | undefined = fileConfig.identity?.keyFile
+    ? loadIdentityKey(fileConfig.identity.keyFile)
+    : undefined;
 
   return {
     privateKey,

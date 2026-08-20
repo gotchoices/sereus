@@ -8,7 +8,7 @@
  *
  * Closes the loop the 6.7 delegation work left open: cadre-host's
  * `HostProcessOrchestrator` spawns the **real** `@serfab/cadre-cli` owner
- * node (`cadre-cli start --owner --admin-port … --identity-protobuf …`),
+ * node (`cadre-cli start --owner --admin-port … --identity-file …`),
  * and `OwnerNodeClient` drives it end-to-end over the loopback admin
  * channel. Unlike the cadre-host unit suites — which spawn a fake CLI binding
  * the admin port (`orchestrator-owner.test.ts`) or point the client at a

@@ -289,7 +289,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         ports,
         owner: false,
         buildConfig: () => this.buildChildConfig(request, workdir, push),
-        extraArgs: ['--identity-protobuf', identity.path],
+        extraArgs: ['--identity-file', identity.path],
         ...(extraEnv ? { extraEnv } : {}),
         ...(request.resources?.memoryLimit ? { memoryLimit: request.resources.memoryLimit } : {}),
       });
@@ -399,7 +399,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * orchestrator restart) can re-spawn it without re-supplying them.
    *
    * The owner node is spawned as `cadre-cli start --owner
-   * --admin-port <p> --identity-protobuf <identityPath>` so it carries the
+   * --admin-port <p> --identity-file <identityPath>` so it carries the
    * host's libp2p identity, founds/joins the control network, and exposes the
    * loopback admin channel the manager delegates to.
    */
@@ -441,7 +441,7 @@ export class HostProcessOrchestrator implements Orchestrator {
         ports,
         owner: true,
         buildConfig: (workdir) => this.buildOwnerChildConfig(config, profile, workdir, push),
-        extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-protobuf', config.identityPath],
+        extraArgs: ['--owner', '--admin-port', String(ports.admin), '--identity-file', config.identityPath],
       });
       const handle = this.handles.get(result.dockerId)!;
       return toNodeInfo(handle);
@@ -955,7 +955,7 @@ export class HostProcessOrchestrator implements Orchestrator {
    * docs/cadre-host.md § Two roles: donor and founder). It founds/joins the
    * control network for the host's own `partyId` (no bootstrap peers — it is the
    * founding node of the host's *own* cadre) and carries the host identity via
-   * `--identity-protobuf` (passed as a spawn arg).
+   * `--identity-file` (passed as a spawn arg).
    *
    * This is NOT the node cadre-host donates to a requester. Donated nodes are
    * generic (`createContainer` / `buildChildConfig`): they join the

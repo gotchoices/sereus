@@ -108,7 +108,7 @@ function runCli(args: string[], cwd: string): Promise<CliRun> {
  *
  * A cleanup failure is ignored — on Windows a handle released a moment ago can still hold the
  * directory, and losing that race must not fail a test whose assertions already passed. Same
- * treatment as `protobuf-identity.spec.ts`.
+ * treatment as `identity-key.spec.ts`.
  */
 async function withTempDir(tag: string, body: (dir: string) => Promise<void>): Promise<void> {
   const dir = mkdtempSync(join(tmpdir(), `cadre-oneshot-${tag}-`));
@@ -236,7 +236,7 @@ async function seedStrands(
  */
 function ownerCliConfig(dir: string, keyPath: string, partyId: string, blocksDir: string): string {
   return writeConfig(dir, {
-    identity: { protobufKeyFile: keyPath },
+    identity: { keyFile: keyPath },
     controlNetwork: { partyId, bootstrapNodes: [] },
     profile: 'storage',
     strandFilter: 'none',
@@ -250,7 +250,7 @@ describe('one-shot commands against a real solo node', () => {
     await withTempDir('list', async (dir) => {
       const { keyPath } = await writeIdentity(dir);
       const configPath = writeConfig(dir, {
-        identity: { protobufKeyFile: keyPath },
+        identity: { keyFile: keyPath },
         controlNetwork: { partyId: freshPartyId('list'), bootstrapNodes: [] },
         profile: 'transaction',
         storage: { type: 'memory' },

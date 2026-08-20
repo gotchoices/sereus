@@ -148,7 +148,7 @@ export class ProviderProcessOrchestrator implements RecoverableOrchestrator {
 		mkdirSync(volumeDir, { recursive: true });
 		mkdirSync(join(volumeDir, 'storage'), { recursive: true });
 
-		// entrypoint.sh's create_identity: materialise the hex identity key once
+		// entrypoint.sh's create_identity: materialise the protobuf identity key once
 		// per volume; a re-create of the same containerId reuses it, which is what
 		// keeps the node's peer id (and its node-local stores) stable.
 		const keyFile = join(volumeDir, `${KEY_NAME}.key`);

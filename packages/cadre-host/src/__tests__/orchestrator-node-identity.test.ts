@@ -6,9 +6,9 @@
  * opens the file-backed bootstrap-peer / trusted-owner stores only when a
  * protobuf identity key file is configured). The orchestrator therefore writes
  * `<workdir>/identity.key` once per container and passes it as
- * `--identity-protobuf`.
+ * `--identity-file`.
  *
- * A fake CLI records the `--identity-protobuf` argument it was launched with, so
+ * A fake CLI records the `--identity-file` argument it was launched with, so
  * the spawn wiring is observable without a real cadre node.
  */
 
@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { HostProcessOrchestrator, OWNER_CONTAINER_ID } from '../orchestrator/host-process-orchestrator.js';
 import { loadIdentity } from '../installer/identity.js';
 
-// Writes the --identity-protobuf argument (as seen on its own command line) next
+// Writes the --identity-file argument (as seen on its own command line) next
 // to the startup token, then behaves like a minimal long-lived node.
 const FAKE_CLI = `
 import fs from 'node:fs';
@@ -31,7 +31,7 @@ const tokenPath = get('--startup-token-file');
 const token = process.env.CADRE_STARTUP_TOKEN ?? '';
 if (tokenPath) {
   const dir = path.dirname(tokenPath);
-  try { fs.writeFileSync(path.join(dir, 'identity-arg.txt'), get('--identity-protobuf') ?? '', 'utf8'); } catch (e) { console.error(e); }
+  try { fs.writeFileSync(path.join(dir, 'identity-arg.txt'), get('--identity-file') ?? '', 'utf8'); } catch (e) { console.error(e); }
   if (token) { try { fs.writeFileSync(tokenPath, token, 'utf8'); } catch (e) { console.error(e); } }
 }
 process.on('SIGTERM', () => process.exit(0));
@@ -88,7 +88,7 @@ function sleep(ms: number): Promise<void> {
 }
 
 describe('HostProcessOrchestrator node identity', () => {
-  it('passes --identity-protobuf pointing at a real key inside the node workdir', async () => {
+  it('passes --identity-file pointing at a real key inside the node workdir', async () => {
     const rootDir = join(tmpRoot, 'a');
     const orch = makeOrchestrator(rootDir);
     await orch.init();

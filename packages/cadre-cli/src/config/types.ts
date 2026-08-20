@@ -5,18 +5,20 @@ import type { NodeProfile, LatencyHint, StrandFilter, PushCredentials } from '@s
  * CLI configuration file format (YAML/JSON)
  */
 export interface CliConfigFile {
-  /** Node identity - path to key file or inline key */
+  /**
+   * Node identity. `keyFile` is the only accepted key — the loader rejects anything else in this
+   * block (including the retired `protobufKeyFile` / `privateKeyHex`) rather than resolving to no
+   * identity and silently generating a fresh keypair.
+   */
   identity?: {
-    /** Path to file containing the private key (hex or raw bytes) */
-    keyFile?: string;
     /**
-     * Path to a libp2p protobuf-encoded private key (the format written by
-     * cadre-host's installer to `identity.key` via `privateKeyToProtobuf`).
-     * Loaded with `privateKeyFromProtobuf`. Takes precedence over `keyFile`.
+     * Path to the node's private key file: a **libp2p protobuf-encoded private key**
+     * (`privateKeyToProtobuf` output, raw binary — no hex or base64 layer). This is the one
+     * on-disk identity format in the repo; both writers emit exactly it — `cadre enroll create`
+     * as `<name>.key`, and cadre-host's installer as `identity.key`. A file in any other shape
+     * fails to load rather than being guessed at.
      */
-    protobufKeyFile?: string;
-    /** Inline private key as hex string (not recommended for production) */
-    privateKeyHex?: string;
+    keyFile?: string;
   };
 
   /** Control network configuration */
@@ -117,7 +119,6 @@ export const ENV_MAPPINGS = {
   CADRE_BOOTSTRAP_NODES: 'controlNetwork.bootstrapNodes',
   CADRE_PROFILE: 'profile',
   CADRE_KEY_FILE: 'identity.keyFile',
-  CADRE_IDENTITY_PROTOBUF: 'identity.protobufKeyFile',
   CADRE_STORAGE_PATH: 'storage.path',
   CADRE_STORAGE_TYPE: 'storage.type',
   CADRE_LISTEN_ADDRS: 'network.listenAddrs',
@@ -140,8 +141,8 @@ export interface ResolvedConfig {
    * Directory for this node's durable node-local stores (the bootstrap-peer
    * store and the trusted-owner anchor). Always set — resolved from
    * `nodeState.dir` / `CADRE_NODE_STATE_DIR` when given, else defaults to the
-   * directory containing the config file. Independent of how the node's
-   * identity is configured (`protobufKeyFile` / `keyFile` / `privateKeyHex`).
+   * directory containing the config file. Independent of the node's identity
+   * key file (`identity.keyFile`), which may live anywhere.
    */
   nodeStateDir: string;
   controlNetwork: {

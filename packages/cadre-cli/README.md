@@ -178,8 +178,7 @@ See [example.cadre.yaml](./example.cadre.yaml) for a complete configuration exam
 | `CADRE_PARTY_ID` | `controlNetwork.partyId` | Party/control network UUID |
 | `CADRE_BOOTSTRAP_NODES` | `controlNetwork.bootstrapNodes` | Comma-separated multiaddrs |
 | `CADRE_PROFILE` | `profile` | Node profile (transaction/storage) |
-| `CADRE_KEY_FILE` | `identity.keyFile` | Path to private key file |
-| `CADRE_IDENTITY_PROTOBUF` | `identity.protobufKeyFile` | Path to a libp2p protobuf-encoded private key (the `identity.key` written by `enroll create` / the host installer). Takes precedence over `CADRE_KEY_FILE` |
+| `CADRE_KEY_FILE` | `identity.keyFile` | Path to the node's private key file — a libp2p protobuf-encoded private key, the one accepted identity format (written by `cadre enroll create` and by cadre-host's installer as `identity.key`). A file in any other shape fails startup rather than being guessed at. `cadre start --identity-file <path>` sets this, so the flag outranks the config file |
 | `CADRE_STORAGE_PATH` | `storage.path` | Data storage directory |
 | `CADRE_STORAGE_TYPE` | `storage.type` | Storage type (memory/file) |
 | `CADRE_LISTEN_ADDRS` | `network.listenAddrs` | Comma-separated multiaddrs to listen on. An entry naming a relay (`<relay addr>/p2p-circuit`) fails startup — use `CADRE_RELAY_ADDRS`, which reserves the slot after the control database is up |
