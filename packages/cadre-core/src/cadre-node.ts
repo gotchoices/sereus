@@ -93,6 +93,7 @@ import {
   type CircuitRelayTarget
 } from './delegate-admission.js';
 import { resolveListenAddrs } from './relay-addrs.js';
+import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
   resolveRelayReservationState,
@@ -630,16 +631,7 @@ export class CadreNode implements SAppIdLookup {
 
     log('Starting CadreNode for party: %s', this.config.controlNetwork.partyId);
 
-    // NOTE: the only direct `console.*` in this library — a boot-time operator warning, not a
-    // diagnostic trace (those use `debug`, which an operator never sees without `DEBUG=`). If a
-    // second such warning ever appears here, route both through a `CadreNodeEvents` entry the
-    // embedder surfaces instead of growing a console surface inside a library.
-    if (this.config.network?.announceAddrs && this.config.network.announceAddrs.length > 0) {
-      console.warn(
-        'network.announceAddrs is set but not yet supported (no upstream db-p2p option to apply it) ' +
-        '— this node will keep advertising its listen/relay addresses instead.'
-      );
-    }
+    this.warnIfAnnounceAddrsDiscardRelay();
 
     try {
       const tTotal = performance.now();
@@ -1056,6 +1048,45 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Warn the operator when `network.announceAddrs` will silently cost this node the
+   * relay reachability it also configured.
+   *
+   * A non-empty announce set REPLACES everything libp2p advertises, so the
+   * `/p2p-circuit` address earned by a relay reservation is dropped from the node's
+   * advertised addresses even though the reservation itself is still held — peers
+   * behind NAT stop being able to reach it through that relay. Not an error: an
+   * operator whose relay slot is decorative may genuinely want only the announced
+   * address, so this reports and proceeds.
+   *
+   * Keyed off the RESOLVED listen addrs rather than `relayAddrs` alone, so a
+   * hand-written `/p2p-circuit` entry in `listenAddrs` — the same reservation by the
+   * longer route — is caught too.
+   *
+   * NOTE: the only direct `console.*` in this library — a boot-time operator warning, not a
+   * diagnostic trace (those use `debug`, which an operator never sees without `DEBUG=`). If a
+   * second such warning ever appears here, route both through a `CadreNodeEvents` entry the
+   * embedder surfaces instead of growing a console surface inside a library.
+   */
+  private warnIfAnnounceAddrsDiscardRelay(): void {
+    const network = this.config.network;
+    if (!replacesAdvertisedAddrs(network)) {
+      return;
+    }
+    const listensOnCircuit = (resolveListenAddrs(network) ?? [])
+      .some((addr) => addr.includes('/p2p-circuit'));
+    if (!listensOnCircuit) {
+      return;
+    }
+    console.warn(
+      'network.announceAddrs is set alongside a circuit-relay listener (from network.relayAddrs, ' +
+      'or a /p2p-circuit entry in network.listenAddrs). A non-empty announce set REPLACES every ' +
+      'address this node advertises, so the /p2p-circuit address earned from the relay reservation ' +
+      'will not be advertised and peers will stop reaching this node through that relay. ' +
+      'Use network.appendAnnounceAddrs instead to advertise an extra address without discarding the rest.'
+    );
+  }
+
+  /**
    * Map this node's config onto the control network's libp2p node options.
    *
    * Split out of {@link createControlNode} purely so the mapping is assertable without
@@ -1097,6 +1128,10 @@ export class CadreNode implements SAppIdLookup {
       // Configured `listenAddrs`, plus a `/p2p-circuit` listener for every
       // `network.relayAddrs` entry — that listener is what reserves the relay slot.
       ...(listenAddrs && { listenAddrs }),
+      // What this node ADVERTISES, which is not the same question as what it binds.
+      // Either field is present only when configured non-empty; a non-empty
+      // `announceAddrs` replaces the advertised set (see warnIfAnnounceAddrsDiscardRelay).
+      ...resolveAnnounceAddrs(network),
       // The CONTROL node composes the membership admission gate onto any
       // caller-supplied gater (deny from either wins on inbound; all other
       // hooks pass through). Strand cohort nodes keep the raw configured gater

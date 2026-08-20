@@ -19,6 +19,7 @@ import type {
 } from './types.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './types.js';
 import { resolveListenAddrs } from './relay-addrs.js';
+import { resolveAnnounceAddrs } from './announce-addrs.js';
 
 const log = debug('sereus:cadre:strand-manager');
 const timing = debug('sereus:cadre:timing');
@@ -363,6 +364,12 @@ export class StrandInstanceManager {
         // entries come either from a hand-written `network.listenAddrs` or from
         // `network.relayAddrs`, which `resolveListenAddrs` folds into the same list.
         ...(listenAddrs && { listenAddrs }),
+        // A strand node behind a reverse proxy has the same advertising need as the
+        // control node, and inherits the same `NetworkConfig` — so it announces the same
+        // addresses. Fine while the two differ only by port (both bind port 0); a
+        // deployment needing per-node announce addresses is a separate change, not a
+        // knob to invent here.
+        ...resolveAnnounceAddrs(config.network),
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;
       timing('[buildStrandRuntime:%s] createLibp2pNode: %dms', strandId, Math.round(performance.now() - t0));

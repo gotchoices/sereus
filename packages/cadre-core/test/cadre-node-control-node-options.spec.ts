@@ -26,10 +26,9 @@ import type { CadreNodeConfig } from '../src/types.js';
  * `cadre-node-identity.spec.ts` and are not repeated here — this file only
  * asks whether the resolved key (or its absence) reaches the node options.
  *
- * `NetworkConfig.announceAddrs` is still forwarded by nobody and is left
- * unasserted here — pinning "ignored" would cement the bug. Blocked on the
- * `announce-addrs-option` request filed against `@optimystic/db-p2p`;
- * `cadre-node-announce-addrs-warning.spec.ts` pins the interim warning.
+ * `NetworkConfig.announceAddrs` / `appendAnnounceAddrs` are asserted below like any
+ * other passthrough; the narrowed operator warning that survives alongside them lives
+ * in `cadre-node-announce-addrs-warning.spec.ts`.
  */
 
 function createConfig(overrides?: Partial<CadreNodeConfig>): CadreNodeConfig {
@@ -357,6 +356,94 @@ describe('CadreNode control-network node options', () => {
       expect(options.relay).toBe(false);
       expect(options.connectionGater).toBeDefined();
       expect(options.authorizeInboundStream).toBeInstanceOf(Function);
+    });
+  });
+
+  /**
+   * `announceAddrs` was settable in `cadre.yaml`, via `CADRE_ANNOUNCE_ADDRS`, and through
+   * the Docker entrypoint while being forwarded by nobody — an operator who named the
+   * address their node was actually reachable at kept advertising the one it merely bound.
+   * These pin the two upstream `NodeOptions` fields it now reaches, and the two rules that
+   * are easy to regress: empty means unset, and a typo fails at start.
+   */
+  describe('announceAddrs / appendAnnounceAddrs', () => {
+    it('forwards a configured announceAddrs — what the node advertises INSTEAD OF what it binds', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { announceAddrs: ['/dns4/mynode.example.com/tcp/4001'] }
+      })));
+
+      expect(options.announceAddrs).toEqual(['/dns4/mynode.example.com/tcp/4001']);
+      expect('appendAnnounceAddrs' in options).toBe(false);
+    });
+
+    it('forwards a configured appendAnnounceAddrs — advertised IN ADDITION TO what it binds', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { appendAnnounceAddrs: ['/dns4/mynode.example.com/tcp/4001'] }
+      })));
+
+      expect(options.appendAnnounceAddrs).toEqual(['/dns4/mynode.example.com/tcp/4001']);
+      expect('announceAddrs' in options).toBe(false);
+    });
+
+    /**
+     * Both at once is upstream's precedence to resolve, not ours: libp2p ignores
+     * `appendAnnounce` while `announce` is non-empty. This repo forwards what it was
+     * given rather than merging or dropping one locally, so the operator's config and
+     * the node's options stay the same document.
+     */
+    it('forwards both verbatim when both are configured, leaving precedence to libp2p', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: {
+          announceAddrs: ['/dns4/replaces.example.com/tcp/4001'],
+          appendAnnounceAddrs: ['/dns4/ignored.example.com/tcp/4001']
+        }
+      })));
+
+      expect(options.announceAddrs).toEqual(['/dns4/replaces.example.com/tcp/4001']);
+      expect(options.appendAnnounceAddrs).toEqual(['/dns4/ignored.example.com/tcp/4001']);
+    });
+
+    /**
+     * Deliberately UNLIKE the `listenAddrs: []` case above, where an empty array is a
+     * meaningful setting (React Native cannot listen). An empty announce array says
+     * nothing an operator could mean, and libp2p reads `announce: []` as "no override"
+     * anyway — so the key is dropped rather than forwarded, and cannot land as an
+     * explicit empty announce set if that upstream semantic ever changes.
+     */
+    it('drops an empty array rather than forwarding it as an explicit empty announce set', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { announceAddrs: [], appendAnnounceAddrs: [] }
+      })));
+
+      expect('announceAddrs' in options).toBe(false);
+      expect('appendAnnounceAddrs' in options).toBe(false);
+    });
+
+    it('omits both keys when network carries neither', () => {
+      const options = controlOptions(new CadreNode(createConfig({ network: { listenAddrs: [] } })));
+
+      expect('announceAddrs' in options).toBe(false);
+      expect('appendAnnounceAddrs' in options).toBe(false);
+    });
+
+    /**
+     * libp2p does NOT validate announce addrs at construction — `AddressManager` keeps
+     * them as raw strings and only parses on the first `getAnnounceAddrs()`. Left to it,
+     * a typo yields a node that starts cleanly and then throws `InvalidMultiaddrError`
+     * out of every `getMultiaddrs()` call, including an UNHANDLED one from the debounced
+     * peer-store update. `announce-addrs.ts` parses up front so the typo is a loud
+     * startup failure instead, matching what `relayAddrs` already does.
+     */
+    it('throws on a malformed entry, naming the config field and the offending value', () => {
+      const node = new CadreNode(createConfig({ network: { announceAddrs: ['not-a-multiaddr'] } }));
+
+      expect(() => controlOptions(node)).toThrow(/network\.announceAddrs entry is not a valid multiaddr: not-a-multiaddr/);
+    });
+
+    it('validates appendAnnounceAddrs on the same terms', () => {
+      const node = new CadreNode(createConfig({ network: { appendAnnounceAddrs: ['tcp/4001'] } }));
+
+      expect(() => controlOptions(node)).toThrow(/network\.appendAnnounceAddrs entry is not a valid multiaddr: tcp\/4001/);
     });
   });
 

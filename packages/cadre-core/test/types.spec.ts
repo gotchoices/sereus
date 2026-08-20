@@ -43,6 +43,7 @@ describe('Types', () => {
         network: {
           listenAddrs: ['/ip4/0.0.0.0/tcp/4001'],
           announceAddrs: ['/ip4/1.2.3.4/tcp/4001'],
+          appendAnnounceAddrs: ['/dns4/mynode.example.com/tcp/4001'],
           relayAddrs: []
         },
         hibernation: {

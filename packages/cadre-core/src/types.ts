@@ -174,26 +174,46 @@ export interface StorageConfig {
 export interface NetworkConfig {
   listenAddrs?: string[];
   /**
-   * Addresses to advertise to peers instead of `listenAddrs` — for a node behind
+   * Addresses to advertise to peers **instead of** `listenAddrs` — for a node behind
    * NAT or a reverse proxy that is reachable at a different address than it binds
-   * (e.g. `mynode.example.com:4001` in front of a `0.0.0.0:4001` listener).
+   * (e.g. `mynode.example.com:4001` in front of a `0.0.0.0:4001` listener). Reaches
+   * libp2p's `addresses.announce` via `@optimystic/db-p2p`'s `NodeOptions.announceAddrs`,
+   * on this node's control node and on every strand node it runs.
    *
-   * Accepted (settable in `cadre.yaml`, via `CADRE_ANNOUNCE_ADDRS`, and through the
-   * Docker entrypoint) but **not yet applied**: libp2p only takes announce addresses
-   * at construction (`addresses.announce` / `addresses.appendAnnounce`), and
-   * `@optimystic/db-p2p`'s `NodeOptions` has no field for either — there is nothing
-   * in this repo to wire this into. `CadreNode.start()` warns when this is set,
-   * rather than pretending it works. Unblocked by the `announce-addrs-option`
-   * request filed against `@optimystic/db-p2p`; wiring lands here once this repo's
-   * dependency range moves to a version carrying it.
+   * **A non-empty value REPLACES the advertised set entirely.** Observed addresses,
+   * and the `/p2p-circuit` address earned from a {@link relayAddrs} reservation, are
+   * all dropped from what peers are told — so a node configured with both this and
+   * `relayAddrs` stops being reachable through its relay. `CadreNode.start()` warns
+   * when it sees that combination; it does not refuse it, since a node whose relay
+   * slot is decorative may legitimately want only the announced address.
    *
-   * Use {@link relayAddrs} for reachability behind NAT today (a reserved relay slot
-   * gives the node a real dialable circuit address), or `inviteAddressResolver` to
-   * substitute a reachable address into invite payloads specifically — neither
-   * changes what this node advertises on the wire, but both cover the operator need
-   * this field cannot yet.
+   * Reach for {@link appendAnnounceAddrs} instead in the common case — one publicly
+   * reachable address ADDED to everything else the node advertises. Or for
+   * {@link relayAddrs} alone, when the node has no stable public address to name and
+   * a relay reservation is what makes it dialable. (`inviteAddressResolver` is a
+   * narrower tool again: it substitutes a reachable address into invite payloads
+   * only, and changes nothing about what this node advertises on the wire.)
+   *
+   * An empty array means "unset" — it is dropped rather than forwarded, so it cannot
+   * land as an explicit empty announce set. A malformed entry throws at node start:
+   * libp2p itself would not notice until its first address lookup (see
+   * `announce-addrs.ts`), so this repo parses each entry up front.
    */
   announceAddrs?: string[];
+  /**
+   * Addresses to advertise **in addition to** `listenAddrs` — the field most
+   * deployments actually want, since it makes a node reachable at a public address
+   * without discarding the observed and `/p2p-circuit` addresses it would otherwise
+   * advertise. Reaches libp2p's `addresses.appendAnnounce` via
+   * `@optimystic/db-p2p`'s `NodeOptions.appendAnnounceAddrs`.
+   *
+   * **Ignored while {@link announceAddrs} is non-empty** — that is libp2p's own
+   * precedence, applied upstream; this repo does not merge the two locally. Set one
+   * or the other, not both.
+   *
+   * Empty-array and malformed-entry handling match {@link announceAddrs}.
+   */
+  appendAnnounceAddrs?: string[];
   /**
    * Circuit-relay servers this node reserves a slot on, so peers can reach it
    * from behind NAT. Each entry is the relay's DIRECT dial multiaddr ending in

@@ -45,9 +45,14 @@ network:
   listenAddrs:
     - "/ip4/0.0.0.0/tcp/4001"
     - "/ip6/::/tcp/4001"
-  # Addresses to announce (if behind NAT/proxy) — accepted but NOT YET SUPPORTED:
-  # no upstream db-p2p option applies this yet (see NetworkConfig.announceAddrs doc
-  # comment). Use relayAddrs below for reachability behind NAT today.
+  # Extra addresses to announce (if behind NAT/proxy), ADDED to the ones above. This
+  # is the usual choice: the node stays reachable at its other addresses too.
+  # appendAnnounceAddrs:
+  #   - "/dns4/mynode.example.com/tcp/4001"
+  # Addresses to announce INSTEAD OF the ones above. A non-empty value REPLACES
+  # everything this node advertises — including the "/p2p-circuit" address a relayAddrs
+  # reservation earns it, so peers stop reaching this node through its relay (the node
+  # warns at start when both are set). Prefer appendAnnounceAddrs unless you mean that.
   # announceAddrs:
   #   - "/dns4/mynode.example.com/tcp/4001"
   # Circuit-relay servers to reserve a slot on, so peers can reach this node from

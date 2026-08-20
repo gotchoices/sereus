@@ -48,13 +48,21 @@ export interface CliConfigFile {
   network?: {
     listenAddrs?: string[];
     /**
-     * Addresses to advertise instead of `listenAddrs`. Accepted but NOT YET
-     * APPLIED — nothing carries it to libp2p yet, so the node warns at start
-     * and keeps advertising its listen/relay addresses. See
-     * `NetworkConfig.announceAddrs` in `@serfab/cadre-core`; use `relayAddrs`
-     * for reachability behind NAT today.
+     * Addresses to advertise INSTEAD OF `listenAddrs`, for a node reachable at a
+     * different address than it binds. A non-empty value replaces everything the
+     * node advertises — including the `/p2p-circuit` address a `relayAddrs`
+     * reservation earns it, which the node warns about at start. Prefer
+     * `appendAnnounceAddrs` unless you mean to discard the rest. A malformed entry
+     * fails startup. See `NetworkConfig.announceAddrs` in `@serfab/cadre-core`.
      */
     announceAddrs?: string[];
+    /**
+     * Addresses to advertise IN ADDITION TO `listenAddrs` — the usual way to make a
+     * node reachable at a public address without losing its other advertised ones.
+     * Ignored while `announceAddrs` is non-empty. See
+     * `NetworkConfig.appendAnnounceAddrs` in `@serfab/cadre-core`.
+     */
+    appendAnnounceAddrs?: string[];
     relayAddrs?: string[];
     /**
      * Enable circuit relay server - allows this node to relay connections for other peers.
@@ -107,6 +115,7 @@ export const ENV_MAPPINGS = {
   CADRE_STORAGE_TYPE: 'storage.type',
   CADRE_LISTEN_ADDRS: 'network.listenAddrs',
   CADRE_ANNOUNCE_ADDRS: 'network.announceAddrs',
+  CADRE_APPEND_ANNOUNCE_ADDRS: 'network.appendAnnounceAddrs',
   CADRE_RELAY_ADDRS: 'network.relayAddrs',
   CADRE_ENABLE_RELAY: 'network.enableRelay',
   CADRE_HIBERNATION_ENABLED: 'hibernation.enabled',
@@ -141,8 +150,10 @@ export interface ResolvedConfig {
   };
   network?: {
     listenAddrs?: string[];
-    /** Accepted but not yet applied — see `CadreConfig.network.announceAddrs`. */
+    /** Advertised INSTEAD OF `listenAddrs` — see `CadreConfig.network.announceAddrs`. */
     announceAddrs?: string[];
+    /** Advertised IN ADDITION TO `listenAddrs` — see `CadreConfig.network.appendAnnounceAddrs`. */
+    appendAnnounceAddrs?: string[];
     relayAddrs?: string[];
     enableRelay?: boolean;
   };

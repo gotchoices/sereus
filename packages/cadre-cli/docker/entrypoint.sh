@@ -86,6 +86,13 @@ EOF
     done
   fi
 
+  if [ -n "$CADRE_APPEND_ANNOUNCE_ADDRS" ]; then
+    echo "  appendAnnounceAddrs:" >> "$CADRE_CONFIG_FILE"
+    echo "$CADRE_APPEND_ANNOUNCE_ADDRS" | tr ',' '\n' | while read -r addr; do
+      [ -n "$addr" ] && echo "    - \"$addr\"" >> "$CADRE_CONFIG_FILE"
+    done
+  fi
+
   if [ -n "$CADRE_RELAY_ADDRS" ]; then
     echo "  relayAddrs:" >> "$CADRE_CONFIG_FILE"
     echo "$CADRE_RELAY_ADDRS" | tr ',' '\n' | while read -r addr; do
