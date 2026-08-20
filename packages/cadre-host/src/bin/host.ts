@@ -12,9 +12,9 @@
  * spin up an inline service, so cadre-host must be running.
  */
 
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, realpathSync } from 'node:fs';
 import { createRequire } from 'node:module';
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { dirname, join, resolve } from 'node:path';
 
 import { Command } from 'commander';
@@ -81,7 +81,7 @@ const program = new Command();
 program
   .name('cadre-host')
   .description('Sereus cadre node manager for self-hosted basement-PC deployments')
-  .version('0.6.0');
+  .version(readPackageVersion());
 
 // ============================================================================
 // install — run the first-run wizard + register the system service
@@ -244,7 +244,7 @@ program
       const serviceHost = createServiceHost(platform);
       const updateService = new UpdateService({
         dataDir: cfg.dataDir,
-        currentVersion: readPackageVersionForStart(),
+        currentVersion: readPackageVersion(),
         settings: cfg.updates,
         ...(cfg.updates.manifestUrl ? { manifestUrl: cfg.updates.manifestUrl } : {}),
         restart: async () => {
@@ -506,7 +506,7 @@ function parseIntArg(raw: string): number {
   return n;
 }
 
-function readPackageVersionForStart(): string {
+function readPackageVersion(): string {
   try {
     // dist/bin/host.js -> ../../package.json
     const here = dirname(fileURLToPath(import.meta.url));
@@ -1296,4 +1296,22 @@ function readSecretLine(prompt: string): Promise<string> {
   });
 }
 
-void program.parseAsync();
+/**
+ * True when this module is the process entry point rather than an import.
+ * `import.meta.url` is already realpath-resolved by Node's ESM loader, so
+ * `process.argv[1]` gets the same treatment before comparing — a package-manager
+ * bin symlink otherwise fails to match.
+ */
+function isEntryPoint(): boolean {
+  const entry = process.argv[1];
+  if (!entry) return false;
+  try {
+    return pathToFileURL(realpathSync(entry)).href === import.meta.url;
+  } catch {
+    return false;
+  }
+}
+
+export { program };
+
+if (isEntryPoint()) void program.parseAsync();

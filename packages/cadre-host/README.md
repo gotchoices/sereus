@@ -250,9 +250,11 @@ Donated nodes do **not** depend on any of this — they dial outward into the gr
 
 ## CLI reference
 
-All commands except `install`, `uninstall`, `start`, and `ui` talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
+All commands except `install`, `uninstall`, `start`, `ui`, and the `push` group talk to the running cadre-host management API over loopback. They print a connection error if the service isn't running.
 
 Commands marked **founder role only** additionally need `ownCadre.enabled`; on a donor-only install their routes are unmounted and the command reports a 404.
+
+The `cadre-host push` group is the exception on both counts. It needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json` — and it is **not** founder-role only, because donated nodes get push credentials too. Private keys land in the OS keychain when one is available, otherwise the `0600` fallback at `<dataDir>/nat-secrets.json`; the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so restart cadre-host to apply them immediately.
 
 ### `cadre-host status`
 
@@ -311,6 +313,26 @@ Configure cadre-host to push DNS updates itself. Currently the only `<provider>`
 ### `cadre-host nat ddns external --hostname <h>`
 
 Tell cadre-host that some other tool (your router firmware, a separate `ddclient`, etc.) is updating DNS, and to record the hostname for publishing to peers without trying to update it itself.
+
+### `cadre-host push fcm --project-id <id> --client-email <email> [--private-key-file <path>] [--private-key <pem>] [--data-dir <path>]`
+
+Store Firebase Cloud Messaging (Android) service-account credentials so the owner/storage node can wake suspended mobile apps. The three values come from the Firebase service-account JSON (`project_id`, `client_email`, `private_key`). Supply the key either as a file (`--private-key-file`, preferred) or inline (`--private-key`); with neither, the command exits with an error. See [docs/cadre-host.md § Push credentials](../../docs/cadre-host.md#push-credentials-fcmapns) for how to mint the credentials and how they reach the spawned node.
+
+### `cadre-host push apns --key-id <id> --team-id <id> --bundle-id <id> [--private-key-file <path>] [--private-key <pem>] [--production] [--data-dir <path>]`
+
+Store Apple Push Notification service (iOS) auth-key credentials. `--key-id`/`--team-id` identify the `.p8` auth key downloaded from the Apple Developer portal; `--bundle-id` becomes the `apns-topic`. As with `push fcm`, pass the key via `--private-key-file` (preferred) or `--private-key`. Targets the **sandbox** APNs host by default — pass `--production` for an App Store build. A token minted for one host is rejected by the other, so this must match the build under test.
+
+### `cadre-host push options [--cooldown-ms <ms>] [--debounce-ms <ms>] [--data-dir <path>]`
+
+Set the non-secret push tuning knobs: `--cooldown-ms` is the minimum gap between wakes for one (peer, strand) pair (anti-spam), `--debounce-ms` the per-strand burst-coalescing window. Pass only the flag(s) you want to change.
+
+### `cadre-host push clear <target> [--data-dir <path>]`
+
+Remove stored push credentials. `<target>` is `fcm`, `apns`, or `all`. Clearing `apns` also drops the bundle id / sandbox toggle from `host.config.json`. With nothing configured, no `push` block is written into the spawned node's `cadre.json` and the node falls back to control-network push-wake only.
+
+### `cadre-host push status [--data-dir <path>]`
+
+Print which push platforms are configured, the APNs bundle id and sandbox/production mode, and the current cooldown/debounce values. Never prints key material.
 
 ### `cadre-host start [--data-dir <path>] [--no-tui]`
 
