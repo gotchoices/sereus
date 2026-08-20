@@ -5,15 +5,14 @@
 Sereus uses [bumpp](https://github.com/antfu/bumpp) for version bumping and follows semver.
 Tags use the `v` prefix (e.g. `v0.1.0`). All packages in the monorepo share one version number.
 
-Six workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
+Five workspaces are publishable, and the `pub:*` scripts in the root `package.json` are the list of
 record — `yarn smoke:published` derives its set from them, so a package becomes covered the moment
 it gets a `pub:*` script:
 
-`strand-proto`, `quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`.
+`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`.
 
 Publish order matters and `yarn pub` already encodes it (dependency chain first):
-`strand-proto` → `quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` →
-`cadre-host`.
+`quereus-plugin-sereus` → `cadre-core` → `cadre-cli` → `cadre-provider` → `cadre-host`.
 
 ## Prerequisites
 
@@ -84,7 +83,6 @@ yarn pub
 Or publish individually:
 
 ```bash
-yarn pub:strand-proto
 yarn pub:quereus-plugin-sereus
 yarn pub:cadre-core
 yarn pub:cadre-cli
@@ -117,7 +115,7 @@ SEREUS_DIST_TAG=alpha yarn pub
 $env:SEREUS_DIST_TAG = 'alpha'; yarn pub
 ```
 
-The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is six
+The environment variable, not `--tag`, is what tags the whole `yarn pub` chain: `yarn pub` is five
 `&&`-ed publishes, and a `--tag` flag appended to the `yarn pub` invocation reaches only the last
 command in that chain. `--tag` works for a single package's own script, where there is no chain to
 lose the flag partway through:
@@ -159,8 +157,8 @@ menu; the actual go/no-go and the outward-facing publish are
 
 ## Recommendation
 
-**Version `0.10.0-alpha.0`, published under the `alpha` dist-tag, for five of the six packages
-(everything except `strand-proto`), with the declared dependency floors moved to `^0.19.0`.**
+**Version `0.10.0-alpha.0`, published under the `alpha` dist-tag, for all publishable packages,
+with the declared dependency floors moved to `^0.19.0`.**
 
 ### Why a minor bump, not a patch
 
@@ -189,18 +187,14 @@ required.
 > doc is stale the moment the next fix lands, and a downstream team once held a multi-device
 > project for two weeks on exactly that. Whatever this section says, verify against the suite.
 
-### Which packages ship: five, not six
+### `strand-proto` has been removed from the repo
 
-Drop `strand-proto` from this release. It is called deprecated in `AGENTS.md` and
-`eslint.config.mjs`; nothing in this repo depends on it; nothing in it has changed since the 0.9.0
-release commit except a type-check config edit. Publishing a new version of it would ship a
-version-number change and nothing else, while adding a workspace to every `yarn smoke:published`
-run.
-
-This is deliberately the *narrow* call. Not publishing a new version is not unpublishing: 0.9.0
-stays on npm and keeps resolving for any external consumer this repo cannot see. The permanent
-question — keep shipping it or stop for good — remains
-`tickets/blocked/publish-deprecated-strand-proto-decision`.
+The deprecated `@serfab/strand-proto` package — previously excluded from this release for being
+unmaintained — has since been deleted from this repo entirely (source, build, lint/typecheck
+carve-outs, and the publish chain). Its already-published `0.9.0` stays on npm and keeps resolving
+for any external consumer this repo cannot see; this repo simply no longer builds, tests, or
+publishes it. There is nothing left to decide here — the five packages listed above are now the
+complete publishable set.
 
 ### Dependency floors: moved to `^0.19.0` (landed 2026-08-03)
 
@@ -349,19 +343,13 @@ outward-facing and irreversible.
    ```bash
    yarn bump --release prerelease --preid alpha             # → 0.10.0-alpha.0
    ```
-6. **Publish five packages under the `alpha` tag** — not `yarn pub`, which also publishes
-   `strand-proto`. `--tag` reaches a single package's own script, so run each in order
-   (`quereus-plugin-sereus`, `cadre-core`, `cadre-cli`, `cadre-provider`, `cadre-host`):
+6. **Publish under the `alpha` tag:**
    ```bash
-   yarn pub:quereus-plugin-sereus --tag alpha
-   yarn pub:cadre-core --tag alpha
-   yarn pub:cadre-cli --tag alpha
-   yarn pub:cadre-provider --tag alpha
-   yarn pub:cadre-host --tag alpha
+   SEREUS_DIST_TAG=alpha yarn pub
    ```
-   `cadre-host` additionally refuses to publish while its embedded release key is the all-zeros
-   placeholder — see `scripts/publish-package.mjs`. Resolve that before its turn, or publish the
-   other four and hold it back.
+   `cadre-host` refuses to publish while its embedded release key is the all-zeros
+   placeholder — see `scripts/publish-package.mjs`. Resolve that before running this step, or
+   publish the other four individually (`yarn pub:<name> --tag alpha`) and hold `cadre-host` back.
 7. **Confirm `latest` did not move:**
    ```bash
    npm view @serfab/cadre-core dist-tags     # expect latest: 0.9.0, alpha: 0.10.0-alpha.0

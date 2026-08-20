@@ -39,7 +39,6 @@ This monorepo is split into three top-level areas:
 | [`@serfab/cadre-host`](packages/cadre-host) | Self-hosted cadre manager for an always-on home machine. Spawns cadre nodes as native child processes, ships a localhost Svelte UI, an installer (systemd-user / LaunchAgent / NSSM), DDNS + UPnP/PCP NAT layer, and a trust-circle invite flow. Sibling of `cadre-provider`. |
 | [`@serfab/cadre-provider`](packages/cadre-provider) | Reference provider service for hosting cadre nodes on behalf of paying users — Docker-based orchestration, API keys / JWT, quotas, billing hooks. |
 | [`@serfab/quereus-plugin-sereus`](packages/quereus-plugin-sereus) | Quereus plugin that exposes a Sereus strand as a SQL database. Composes the `@optimystic/quereus-plugin-crypto` and `@optimystic/quereus-plugin-optimystic` plugins and manages libp2p. |
-| [`@serfab/strand-proto`](packages/strand-proto) | Invitation-based libp2p bootstrap protocol for provisioning a shared strand. **Deprecated** — kept for reference while strand formation moves into `cadre-core`. |
 | [`@serfab/reference-app-rn`](packages/reference-app-rn) | React Native reference app: a peer-to-peer chat that exercises the full cadre + strand stack on phones. |
 | [`@serfab/reference-app-web`](packages/reference-app-web) | Svelte 5 + Vite SPA counterpart to the RN app; validates the Optimystic stack in a browser. |
 | [`@serfab/integration-tests`](packages/integration-tests) | Multi-process integration tests that drive real libp2p networking, storage, and multi-party scenarios across the cadre packages. |

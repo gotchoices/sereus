@@ -81,7 +81,7 @@ const config: KnipConfig = {
 			// through webpack (`resolve.fallback` for the node-* polyfills,
 			// `NormalModuleReplacementPlugin` for the shims — see webpack.config.js),
 			// `nativescript.config.ts` is read by the `ns` CLI, and `solo-smoke.ts` is a
-			// manual on-device helper with no importer (cf. strand-proto's test/manual).
+			// manual on-device helper with no importer.
 			// NOTE: `app/**/*-page.ts` is load-bearing — a page added under another
 			// name falls outside it, and knip then silently under-analyses the `src/`
 			// graph behind that page without turning the gate red. If page naming ever
@@ -139,12 +139,6 @@ const config: KnipConfig = {
 				'readable-stream',
 				'@types/readable-stream',
 			],
-		},
-
-		'packages/strand-proto': {
-			// Manual dial/listen smoke scripts, run by hand, not from a test runner
-			// (the bootstrap entry is auto-detected from package.json).
-			entry: ['test/manual/*.ts'],
 		},
 	},
 

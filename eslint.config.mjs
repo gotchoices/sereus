@@ -51,8 +51,6 @@ export default tseslint.config(
 			// Maestro e2e helper scripts run in Maestro's own JS engine with
 			// injected globals (http/json/output/env) — not node/browser ES modules.
 			'packages/reference-app-rn/maestro/**',
-			// deprecated package
-			'packages/strand-proto/**',
 			// repo tooling outside the package set (own tsconfigs / scope)
 			'ops/**',
 			'tess/**',

@@ -1,10 +1,1 @@
-{
-  "@serfab/strand-proto": {
-    "reason": "Deprecated, source-only by design. Its test/ has bit-rotted against current libp2p types; adding `test` to tsconfig.typecheck.json produces 11 errors (measured 2026-08-02: 4x TS2353 `peerId` no longer in Libp2pOptions, 2x TS5097 `.ts` import extensions, TS2339 Stream.stream, plus TS2322/TS2345/TS2352/TS2561 BootstrapMode widening). The package is not being revived.",
-    "files": [
-      "test/auto/bootstrap.integration.ts",
-      "test/auto/bootstrap.ts",
-      "test/auto/peerid-sanity.ts"
-    ]
-  }
-}
+{}

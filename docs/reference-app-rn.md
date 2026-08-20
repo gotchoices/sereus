@@ -630,7 +630,7 @@ For **closed strands** (private/invited):
 
 1. Party A creates an `OpenInvitation` containing a token, sAppId, and bootstrap addresses for A's cadre
 2. Invitation is shared out-of-band (JSON paste, deep link, etc.)
-3. Party B calls `formStrand(invitation)` — this dials Party A's cadre via `strand-proto`, negotiates strand creation
+3. Party B calls `formStrand(invitation)` — this dials Party A's cadre via the native formation transport, negotiates strand creation
 4. The responder (A) provisions the strand and inserts B as a member
 5. Both parties' cadre nodes join the strand network and begin replication
 

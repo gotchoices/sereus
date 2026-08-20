@@ -61,7 +61,7 @@ drift fails that package's own `yarn test` via `test-harness/build-targets-spec.
 script (`tsc --noEmit`) so type validation does not depend on the slower `yarn build`, and test
 files are type-checked where possible (vitest itself never type-checks).
 
-- Every TS package has a `typecheck` script; `yarn typecheck` validates all 10 workspaces.
+- Every TS package has a `typecheck` script; `yarn typecheck` validates all 9 workspaces.
 - Every package that **has** a `vitest.config.ts` also has that file inside its `typecheck` program, so a
   Vitest option the installed version no longer recognizes fails `yarn typecheck` instead of sitting
   silently unused (this bit once: a `test.poolOptions.forks.singleFork` removal in Vitest 4 went
@@ -69,9 +69,9 @@ files are type-checked where possible (vitest itself never type-checks).
   parallel despite binding real network ports; now expressed as top-level `pool: 'forks'` +
   `fileParallelism: false`).
   Covered via `tsconfig.typecheck.json` (`cadre-cli`, `cadre-core`, `cadre-host`, `cadre-provider`,
-  `quereus-plugin-sereus`, `strand-proto`, `integration-tests`) or the package's main `tsconfig.json`
+  `quereus-plugin-sereus`, `integration-tests`) or the package's main `tsconfig.json`
   (`reference-app-ns`, `reference-app-rn`, `reference-app-web`).
-  Verified by injecting an unknown key into each of the ten configs and confirming `TS2769
+  Verified by injecting an unknown key into each of the nine configs and confirming `TS2769
   … does not exist in type 'InlineConfig'` — including keys nested inside `test.projects[].test`
   (`ProjectConfig`), which is where the `poolOptions` precedent lived.
   Enforced going forward by `scripts/check-vitest-typecheck-coverage.mjs` (`yarn check:vitest-typecheck-coverage`,
@@ -132,15 +132,6 @@ files are type-checked where possible (vitest itself never type-checks).
     `reference-app-web` (`test/**/*.ts` + `vitest.config.ts` are in its `tsconfig.json` `include`; the Playwright
     specs stay in `tsconfig.e2e.json`, checked by the separate `typecheck:e2e` script — which is chained into
     that package's `build`, **not** into root `yarn typecheck`, so the fast gate does not cover them)
-  - Shippable **source only**, via a dedicated `tsconfig.typecheck.json` that also includes
-    `vitest.config.ts` (kept separate from the real `tsconfig.build.json` so widening the typecheck
-    program can't change what `yarn build` emits or where): `strand-proto` — deprecated. Its three test
-    files (`test/auto/*.ts`) **are** hidden by that narrower program: Vitest collects them and no `tsc`
-    program includes them. Adding `test` to the include produces 11 errors where the tests have bit-rotted
-    against current libp2p types (4x `TS2353` `peerId` no longer in `Libp2pOptions`, 2x `TS5097` `.ts`
-    import extensions, `TS2339` `Stream.stream`, plus `BootstrapMode` widening), and the package is not
-    being revived — so those three files are explicitly allowlisted in
-    `scripts/test-typecheck-allowlist.json` with that reason recorded there
   - `reference-app-ns` type-checks its whole `tsconfig.json` program (`tsc --noEmit -p tsconfig.json`), whose
     `include` lists `test/**/*.ts` and `vitest.config.ts` beside `app/` and `src/`. That program keeps
     `customConditions: ["react-native", "browser"]`, which turned out not to disturb resolution of
@@ -159,7 +150,7 @@ files are type-checked where possible (vitest itself never type-checks).
     `globalSetup` is not this repo's code to type-check. And `.svelte` is a non-issue for *this* gate:
     every Vitest `include` in the repo targets `*.ts`, so no `.svelte` file is ever collected (Svelte
     coverage remains the separate `svelte-check` gap above).
-  - The seven `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
+  - The six `tsconfig.typecheck.json` files are near-identical (`extends ./tsconfig.json`, widen `rootDir`,
     `noEmit`, list `vitest.config.ts`). There is no shared base config in this repo — each package's
     `tsconfig.json` is hand-duplicated too — so the boilerplate is consistent with existing practice rather
     than new debt. If a compiler option ever has to change across all of them at once, that is the point to
@@ -234,7 +225,7 @@ Svelte UIs via `eslint-plugin-svelte`). `yarn lint:fix` applies the auto-fixable
   not linted, to avoid a formatter war.
 - Scope notes: type-aware linting (`projectService`) is enabled only for the node/library `src` trees;
   the bundler/expo apps (`reference-app-web`, `reference-app-rn`, `cadre-host/ui`) get non-type-aware rules.
-  `maestro/` (Maestro JS engine), `strand-proto` (deprecated), and non-package trees (`tess/`, `ops/`,
+  `maestro/` (Maestro JS engine) and non-package trees (`tess/`, `ops/`,
   `scripts/`) are ignored.
 
 ## Declared dependency range vs linked workspace (keep them equal)

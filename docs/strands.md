@@ -1,7 +1,7 @@
 # Strand Management and Negotiation
 
 ## History
-An initial attempt at a strand negotiation (“strand initialization”) protocol lives in `sereus/packages/strand-proto/` and is discussed in `sereus/docs/strand-proto.md`.
+An initial attempt at a strand negotiation (“strand initialization”) protocol was built as a standalone package; it has since been superseded by the native `cadre-core` formation transport (`strand-formation-protocol.ts`) described above.
 
 ## Terminology
 - **party**: a person or entity that transacts data with other parties.

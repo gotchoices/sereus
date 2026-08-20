@@ -12,9 +12,9 @@
  * provision-then-record, resolves + records consent against) the strand and returns the
  * result on approval.
  *
- * Cadre-disclosure timing (see docs/strand-proto.md "Security & Privacy"): the
- * responder reveals its own party id + cadre addresses — and, for a closed strand
- * returned via provision-then-record, that strand's membership key — ONLY after the
+ * Cadre-disclosure timing: the responder reveals its own party id + cadre addresses
+ * — and, for a closed strand returned via provision-then-record, that strand's
+ * membership key — ONLY after the
  * token and disclosure validate; a rejection discloses none of them.
  */
 
