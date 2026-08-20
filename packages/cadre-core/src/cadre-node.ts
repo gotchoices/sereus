@@ -97,7 +97,7 @@ import {
   peerStrandKey,
   type CircuitRelayTarget
 } from './delegate-admission.js';
-import { resolveListenAddrs } from './relay-addrs.js';
+import { relayCircuitAddrs, resolveListenAddrs, RelayReservationFailedError } from './relay-addrs.js';
 import { replacesAdvertisedAddrs, resolveAnnounceAddrs } from './announce-addrs.js';
 import {
   superviseRelayReservation,
@@ -250,10 +250,11 @@ export class CadreNode implements SAppIdLookup {
   private eventHandlers: Map<keyof CadreNodeEvents, Set<EventHandler<never>>> = new Map();
 
   /**
-   * Relay multiaddrs the caller asked {@link reserveRelays} to reserve through.
-   * Empty (the default) means nobody asked, so {@link getRelayReservationState}
-   * reports `none` — this whole surface is opt-in and dormant for the CLI/host
-   * nodes, which use the configured `network.relayAddrs` route instead.
+   * Relay multiaddrs the caller asked {@link reserveRelays} to reserve through —
+   * or, on a node that names `network.relayAddrs`, the ones
+   * {@link driveControlRelayReservation} asked for at the end of {@link start}.
+   * Empty (the default) means neither happened, so {@link getRelayReservationState}
+   * reports `none`.
    */
   private relayReserveAddrs: string[] = [];
   /**
@@ -268,6 +269,24 @@ export class CadreNode implements SAppIdLookup {
    * supervisor to hold one — i.e. the pre-start `control node unavailable` case.
    */
   private relayReserveError: string | null = null;
+
+  /**
+   * True from just before the control libp2p node is created until
+   * {@link ControlDatabase.initialize} has settled — the connection gate's
+   * BRING-UP QUIET PERIOD (`membership-connection-gater.ts`), during which this
+   * node refuses every control connection in both directions.
+   *
+   * The invariant: the control database is built while this node holds zero
+   * control connections. Every same-party sibling connected in that window joins
+   * the Optimystic cohort the bring-up's block probes consult, and a sibling that
+   * has not yet replicated this node's `CadrePeer` row refuses them all — which
+   * fails `start()` outright and cannot be retried into convergence (writing the
+   * row that would clear the refusal needs the database being built).
+   *
+   * Cleared on FAILURE as well as success ({@link cleanup} clears it), so
+   * teardown is never gated.
+   */
+  private controlBringUpInFlight = false;
 
   /** Map of strandId -> sAppConfig for sAppId filtering and management */
   private sAppConfigs: Map<string, SAppConfig> = new Map();
@@ -683,6 +702,25 @@ export class CadreNode implements SAppIdLookup {
       // loaded before the first reconcile pass could consult them.
       this.initializeBootstrapPeerStore();
 
+      // Arm the connection gate's BRING-UP QUIET PERIOD before the libp2p node
+      // exists, so no connection can form ahead of it: `@libp2p/bootstrap` emits
+      // its discovery events ~1 s after `libp2p.start()` and the connection
+      // manager auto-dials from there, which is INSIDE createControlNode below.
+      // The invariant being protected is "zero control connections during
+      // control-database bring-up" — see the field's doc and
+      // `membership-connection-gater.ts` → "The bring-up quiet period".
+      //
+      // NOTE: without this gate the bootstrap arm is a RACE, not a guarantee — its
+      // safety margin is bring-up duration versus @libp2p/bootstrap's 1 s discovery
+      // fuse, and bring-up duration is (raw-storage operations) × per-operation
+      // latency. The cold-start operation count and the 50-90 ms/op figure a loaded
+      // phone actually sees live in `control-database.ts`'s `loadSchema` note (and
+      // are pinned by `control-start-storage-op-budget.spec.ts`): at the top of that
+      // range bring-up is 9-15 s, far past the fuse. So if this gate is ever removed
+      // or bypassed, that arm reopens for exactly the nodes most likely to hit it —
+      // phones joining a party, whose membership row has not replicated yet.
+      this.controlBringUpInFlight = true;
+
       // Create the control network libp2p node
       let t0 = performance.now();
       this.controlNode = await this.createControlNode();
@@ -705,6 +743,11 @@ export class CadreNode implements SAppIdLookup {
       });
       await this.controlDatabase.initialize();
       timing('[start] controlDatabase.initialize: %dms', Math.round(performance.now() - t0));
+      // The database exists locally now, so the quiet period has done its job and
+      // this node can be in the conversation. A failure above never reaches here —
+      // `cleanup()` on the catch path opens the gate instead, so teardown (and a
+      // retry by the embedder) is not gated.
+      this.controlBringUpInFlight = false;
       log('Control database initialized');
 
       // Attach the per-stream gate to the control DB's membership hub, so every
@@ -787,6 +830,14 @@ export class CadreNode implements SAppIdLookup {
       // lands the snapshot is empty, which the stream gate treats as cold
       // start and admits.
       void this.refreshMembershipGate('start');
+
+      // Reserve the configured relays LAST, so every step above ran against a
+      // cohort of one (see driveControlRelayReservation). Ahead of
+      // scheduleSelfRegistration, so this node's first published `CadrePeer` row
+      // already carries the `/p2p-circuit` address the reservation earns it.
+      // Throws on a relay that will not have us — start() is fail-fast for a node
+      // whose operator named a relay.
+      await this.driveControlRelayReservation();
 
       // Schedule self-registration in background
       this.scheduleSelfRegistration();
@@ -1122,7 +1173,11 @@ export class CadreNode implements SAppIdLookup {
   private buildControlNodeOptions(): Parameters<typeof createLibp2pNode>[0] {
     const { controlNetwork, network, profile } = this.config;
     const identityKey = this.identityKey;
-    const listenAddrs = resolveListenAddrs(network);
+    // `'search'`: `network.relayAddrs` contributes the bare `/p2p-circuit` SEARCH
+    // entry, which opens no connection — the reservation is driven explicitly at
+    // the END of `start()`, so the control database is built while this node holds
+    // zero control connections. See `relay-addrs.ts` and `start()`.
+    const listenAddrs = resolveListenAddrs(network, 'search');
 
     const enableRelay = this.relayServerEnabled();
 
@@ -1148,8 +1203,9 @@ export class CadreNode implements SAppIdLookup {
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
-      // Configured `listenAddrs`, plus a `/p2p-circuit` listener for every
-      // `network.relayAddrs` entry — that listener is what reserves the relay slot.
+      // Configured `listenAddrs`, plus the bare `/p2p-circuit` search listener when
+      // `network.relayAddrs` is set — that listener registers the pending reservation
+      // `driveControlRelayReservation` fills after bring-up.
       ...(listenAddrs && { listenAddrs }),
       // What this node ADVERTISES, which is not the same question as what it binds.
       // Either field is present only when configured non-empty; a non-empty
@@ -1164,7 +1220,8 @@ export class CadreNode implements SAppIdLookup {
       connectionGater: createMembershipConnectionGater(
         {
           admitInbound: (remotePeerId) => this.admitInboundControlConnection(remotePeerId),
-          admitRelayReservation: (remotePeerId) => this.admitControlRelayReservation(remotePeerId)
+          admitRelayReservation: (remotePeerId) => this.admitControlRelayReservation(remotePeerId),
+          bringUpInFlight: () => this.controlBringUpInFlight
         },
         network?.connectionGater
       ),
@@ -1786,6 +1843,20 @@ export class CadreNode implements SAppIdLookup {
     };
     this.controlNode.addEventListener('self:peer:update', this.selfPeerUpdateHandler);
 
+    // NOTE: a node AUTHORIZED AFTER IT BOOTED can wait a whole heartbeat (7.5 min)
+    // to publish its address. `registerSelf` no-ops while a node has no readable
+    // `CadrePeer` row, so its boot-time publish does nothing, and the two triggers
+    // wired here are the only ones after that: `self:peer:update` needs an ADDRESS
+    // CHANGE, and a relay-only node's addresses stop changing the moment its
+    // reservation lands — inside `start()`, before this listener exists. Harmless
+    // where a late-authorized node's addresses keep churning (NAT/relay rotation
+    // fire the event anyway), and invisible while parties authorize members before
+    // they boot. If late enrollment becomes the normal path — an invited phone is
+    // exactly that — republish on the membership-change seam that already exists
+    // (`ControlDatabase.setMembershipChangeListener`) rather than lengthening this
+    // list of triggers. Measured while writing
+    // `relay-only-control-addr.integration.ts` case 4, which drives `registerSelf()`
+    // explicitly because neither trigger is dependable there.
     this.recordRefreshTimer = setInterval(() => republish('heartbeat'), DEFAULT_PEER_RECORD_HEARTBEAT_MS);
     (this.recordRefreshTimer as { unref?: () => void } | null)?.unref?.();
 
@@ -3165,6 +3236,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   private async cleanup(): Promise<void> {
+    // Open the connection gate's bring-up quiet period unconditionally: teardown
+    // must never be gated, and this is the path a FAILED start() takes.
+    this.controlBringUpInFlight = false;
+
     // Resolve + clear any in-flight wake windows first, so an in-flight check-in
     // or serviceWake unblocks and tears down cleanly rather than firing a stale
     // window timer (or hanging) after the strand manager is stopped below.
@@ -3955,11 +4030,19 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * The circuit relays this node's strand nodes would reserve through: the
-   * union of the RESOLVED listen addrs' circuits — a hand-written
-   * `network.listenAddrs` circuit entry or a `network.relayAddrs` entry, which
-   * the strand node inherits verbatim either way — and the control node's own
-   * live `/p2p-circuit` multiaddrs (a reservation this node discovered rather
-   * than configured).
+   * union of CONFIGURED relays — `network.relayAddrs`, plus any hand-written
+   * `network.listenAddrs` circuit entry, both of which a strand node inherits
+   * verbatim — and the control node's own live `/p2p-circuit` multiaddrs (a
+   * reservation this node discovered rather than configured).
+   *
+   * The CONFIGURED half reads `network.relayAddrs` and `network.listenAddrs`
+   * directly rather than going through {@link resolveListenAddrs}: the control
+   * node's resolution takes the `'search'` route, whose bare `/p2p-circuit` entry
+   * names no relay, so a configured relay would be unannounceable here until this
+   * node's own reservation landed — and the announce must be in place BEFORE a
+   * strand node dials its reservation, since the relay's membership gate does not
+   * know the strand's derived peerId (see delegate-admission.ts). Configuration is
+   * authoritative; the live multiaddrs only ADD relays nobody configured.
    *
    * NOTE: a relay the STRAND node discovers on its own (autorelay — in neither
    * source) gets no announcement, and a membership-gated one will deny it; fine
@@ -3967,7 +4050,8 @@ export class CadreNode implements SAppIdLookup {
    */
   private circuitRelayTargets(): CircuitRelayTarget[] {
     return extractCircuitRelayTargets([
-      ...(resolveListenAddrs(this.config.network) ?? []),
+      ...relayCircuitAddrs(this.config.network?.relayAddrs ?? []),
+      ...(this.config.network?.listenAddrs ?? []),
       ...(this.controlNode?.getMultiaddrs().map(String) ?? [])
     ]);
   }
@@ -4452,15 +4536,60 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The boot-path half of {@link reserveRelays}: reserve through every
+   * `network.relayAddrs` entry, or fail `start()`.
+   *
+   * WHY IT RUNS HERE, AT THE END. `network.relayAddrs` used to resolve to a
+   * CONFIGURED circuit listener, which libp2p dials from inside `libp2p.start()`
+   * — so the relay was already a connected peer, and therefore already in this
+   * node's Optimystic cohort, before `ControlDatabase.initialize()` ran. Building
+   * that database is a long chain of cohort-consulting block probes (catalog
+   * hydration, then one per table, then the indexes), and a sibling that has not
+   * yet replicated this node's `CadrePeer` row correctly refuses every one of
+   * them, so bring-up died on `BlockUnavailableError` — deterministically, on
+   * every boot of a relay-only node. Retrying could not converge either: the
+   * condition that clears the refusal is this node's own row reaching the
+   * sibling, and writing that row needs the database the retry is building.
+   *
+   * So the invariant is ordering, not retrying: the control database is built
+   * while this node holds ZERO control connections (a cohort of one, entirely
+   * local), and only then does it reach out. Everything above in {@link start}
+   * has completed by the time this runs.
+   *
+   * BUDGET: the supervisor's first attempt — `relay-reservation.ts`'s
+   * `DEFAULT_RELAY_RESERVE_TIMEOUT_MS`, 10 s — is what `start()` waits on — deliberately the module default rather
+   * than a boot-specific one. A healthy dial-plus-reserve is sub-second even over
+   * a WAN, so 10 s is slack for a slow link; going much longer would make a dead
+   * relay indistinguishable from a hung start, and much shorter would fail nodes
+   * on links that were merely slow. The retries carry on in the background after
+   * this resolves, exactly as they do for a {@link reserveRelays} caller.
+   */
+  private async driveControlRelayReservation(): Promise<void> {
+    const relayAddrs = this.config.network?.relayAddrs ?? [];
+    if (relayAddrs.length === 0) {
+      return;
+    }
+    const t0 = performance.now();
+    const state = await this.reserveRelays([...relayAddrs]);
+    timing('[start] reserveRelays: %dms', Math.round(performance.now() - t0));
+    if (state.status !== 'reserved') {
+      throw new RelayReservationFailedError(relayAddrs, state);
+    }
+    log('Reserved a relay slot: %o', state.circuitAddrs);
+  }
+
+  /**
    * Start keeping a relay reservation: dial the given relay(s) from the control
    * node, ask the first one that answers for a reservation slot, wait until the
    * resulting `/p2p-circuit` address makes this node dialable — and keep a
    * supervisor running that re-drives whenever the reservation is later lost.
    *
-   * For nodes that listen on the bare `/p2p-circuit` SEARCH addr (a browser tab)
-   * rather than a configured `network.relayAddrs` circuit listener — see
-   * `relay-reservation.ts` for why the two are alternatives and why configuring
-   * both is a regression. Opt-in: nothing calls this for the CLI/host nodes.
+   * The FAIL-SOFT entry point, for a caller that discovers its relay at runtime
+   * (a browser tab, a host UI). A node that names `network.relayAddrs` gets the
+   * same drive from {@link driveControlRelayReservation} at the end of
+   * {@link start}, which is fail-fast instead. Both fill the pending reservation
+   * the bare `/p2p-circuit` search listener registered; calling this afterwards
+   * simply replaces the supervisor with one over the new list.
    *
    * Resolves once the FIRST attempt has settled, exactly as it did when it drove
    * once; the retries continue in the background until {@link stop} or the next

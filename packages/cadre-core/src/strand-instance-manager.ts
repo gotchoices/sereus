@@ -332,6 +332,14 @@ export class StrandInstanceManager {
     // Determine relay mode: if explicitly set in config, use that;
     // otherwise default to true for storage profile nodes.
     const enableRelay = config.network?.enableRelay ?? (config.profile === 'storage');
+    // The CONFIGURED relay route (the default), deliberately NOT the control node's
+    // `'search'` route: nothing drives an explicit reservation for a strand node, so
+    // a bare `/p2p-circuit` search entry would register a pending reservation that
+    // never gets filled and leave the strand node undialable. The ordering hazard
+    // that pushed the control node onto the search route does not exist here — a
+    // strand node's protocol ids are namespaced `/optimystic/strand-<id>/…`, so a
+    // relay dialed from inside `libp2p.start()` is never in the strand's cohort and
+    // cannot refuse its database bring-up. See `relay-addrs.ts`.
     const listenAddrs = resolveListenAddrs(config.network);
 
     try {
@@ -357,12 +365,13 @@ export class StrandInstanceManager {
         // `/ip4/0.0.0.0/tcp/4001`) would have control + strand nodes racing to
         // bind one port — EADDRINUSE. Unverified; if a deployment configures a
         // fixed port and strands fail to start, rewrite the port per node here.
-        // An inherited `/p2p-circuit` addr, by contrast, is deliberate — it is
-        // what gives a NAT'd strand node a reachable relay slot — and works
+        // An inherited configured `/p2p-circuit` addr, by contrast, is deliberate —
+        // it is what gives a NAT'd strand node a reachable relay slot — and works
         // because the launch path announces this strand's derived peerId to
         // the relay first (delegate admission; see cadre-node.ts). Those circuit
         // entries come either from a hand-written `network.listenAddrs` or from
-        // `network.relayAddrs`, which `resolveListenAddrs` folds into the same list.
+        // `network.relayAddrs`, which `resolveListenAddrs` folds into the same list
+        // on the configured route this call takes (see the comment above it).
         ...(listenAddrs && { listenAddrs }),
         // A strand node behind a reverse proxy has the same advertising need as the
         // control node, and inherits the same `NetworkConfig` — so it announces the same

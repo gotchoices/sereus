@@ -1,32 +1,49 @@
 /**
  * Translate `network.relayAddrs` — the operator-facing "use these relay servers"
- * setting — into the mechanism this repo already has for reserving a circuit-relay
- * slot: a `…/p2p/<relayPeerId>/p2p-circuit` entry in the node's listen addrs.
+ * setting — into the listen entry a node needs before it can hold a circuit-relay
+ * slot, and validate the operator's entries while doing it.
  *
- * `@libp2p/circuit-relay-v2`'s transport is always present on the Node path
- * (`../optimystic/packages/db-p2p/src/libp2p-node.ts` pushes `circuitRelayTransport()`
- * unconditionally), and listening on a relay's circuit addr is what makes libp2p dial
- * that relay and hold a reservation. Everything downstream of the listen list —
- * the reservation itself, `CadreNode.circuitRelayTargets()` picking delegate-announce
- * targets, strand nodes inheriting the listen addrs, the `/p2p-circuit`-first address
- * publishing in `registerSelf` — then works unchanged.
+ * `@libp2p/circuit-relay-v2`'s listener branches on the SHAPE of the listen addr,
+ * and the same `relayAddrs` list resolves to either shape depending on WHO is
+ * listening ({@link RelayListenRoute}):
  *
- * So `relayAddrs` is a second, friendlier door onto an existing mechanism:
+ * | route          | listen entry                                | libp2p behaviour                                          |
+ * | -------------- | ------------------------------------------- | --------------------------------------------------------- |
+ * | `'configured'` | `<relayAddr>/p2p-circuit`, one per relay      | dial that relay from inside `listen()` and reserve, or throw |
+ * | `'search'`     | a single bare `/p2p-circuit`                  | register a pending reservation; open no connection          |
  *
- *   effective listen addrs = listenAddrs ++ relayAddrs.map(a => a + '/p2p-circuit')
+ * The CONTROL node takes the `'search'` route, and `CadreNode.start()` drives the
+ * reservation explicitly (`relay-reservation.ts`) once the control database is up.
+ * That ordering is the point: a configured circuit listener dials the relay from
+ * inside `libp2p.start()`, so the control database was being built while a sibling
+ * relay was already in this node's cohort — and a sibling that has not yet
+ * replicated this node's `CadrePeer` row correctly refuses its control-DB streams,
+ * which killed `start()` outright. See `cadre-node.ts` → `start()`.
  *
- * NOTE: this is the FAIL-FAST route to a reservation — libp2p's transport manager
- * throws when a configured circuit listener cannot listen, so naming a relay that
- * is down means the node does not start. The fail-soft route is the bare
- * `/p2p-circuit` search listener driven by `relay-reservation.ts`. The two are
- * ALTERNATIVES, not layers: configuring `relayAddrs` on a node that already
- * reserves via the search listener adds the fatal listener back and the node
- * stops booting when its relay is down.
+ * STRAND nodes keep the `'configured'` route (`strand-instance-manager.ts`): they
+ * inherit the control node's `NetworkConfig`, nothing drives an explicit
+ * reservation for them, and their relay connection cannot disturb a control-DB
+ * bring-up (a strand node's protocol ids are namespaced `/optimystic/strand-<id>/…`,
+ * so the relay is never in its cohort).
+ *
+ * `network.relayAddrs` is FAIL-FAST for the operator on both routes, just from
+ * different places: a malformed entry throws here at config resolution, and on the
+ * control node a first reservation attempt that does not land throws out of
+ * `start()` (`RelayReservationFailedError`). Naming a relay that is down still
+ * means the node does not come up.
+ *
+ * The bare `/p2p-circuit` search listener cannot open a connection on its own:
+ * libp2p fills a pending reservation from `RelayDiscovery`, which nominates a peer
+ * only once the relay-hop protocol id is in that peer's peer-store protocol list,
+ * and that list is written exclusively by IDENTIFY — which `@optimystic/db-p2p`
+ * namespaces per network, so a cadre node and a stock relay never identify each
+ * other. See `relay-reservation.ts`'s module doc and `docs/architecture.md`.
  */
 
 import { multiaddr, type Component } from '@multiformats/multiaddr';
 import { circuitRelayTargetOrThrow } from './delegate-admission.js';
 import type { NetworkConfig } from './types.js';
+import type { RelayReservationState } from './relay-reservation.js';
 
 /**
  * The direct listener a node keeps when it configures `relayAddrs` but no
@@ -39,6 +56,21 @@ import type { NetworkConfig } from './types.js';
  * ever changes its default, this constant has to follow.
  */
 const DEFAULT_DIRECT_LISTEN_ADDR = '/ip4/0.0.0.0/tcp/0';
+
+/**
+ * libp2p's relay SEARCH listener: registers one pending reservation and dials
+ * nothing. One entry covers every configured relay — the pending reservation is
+ * per-listener, not per-relay, and `relay-reservation.ts` fills it with whichever
+ * relay answers first.
+ */
+export const RELAY_SEARCH_LISTEN_ADDR = '/p2p-circuit';
+
+/**
+ * Which listener shape `network.relayAddrs` resolves to for this caller — see the
+ * table in the module doc. Defaults to `'configured'` everywhere except the
+ * control node's own libp2p options.
+ */
+export type RelayListenRoute = 'configured' | 'search';
 
 /**
  * The circuit-listen multiaddr for each configured relay: `<relayAddr>/p2p-circuit`.
@@ -57,20 +89,54 @@ export function relayCircuitAddrs(relayAddrs: readonly string[]): string[] {
 
 /**
  * The listen multiaddrs a node actually binds: configured `listenAddrs` plus the
- * circuit-listen addr of every configured relay, deduplicated, order-stable
- * (configured entries first). Returns `undefined` when neither field is set, so
- * callers keep omitting `listenAddrs` and inherit db-p2p's default.
+ * relay listen entry `route` calls for, deduplicated, order-stable (configured
+ * entries first). Returns `undefined` when neither field is set, so callers keep
+ * omitting `listenAddrs` and inherit db-p2p's default.
+ *
+ * Every `relayAddrs` entry is validated on BOTH routes — the `'search'` route
+ * discards the resolved circuit addrs, but an operator typo must fail at config
+ * resolution either way.
  */
-export function resolveListenAddrs(network: NetworkConfig | undefined): string[] | undefined {
-  const circuits = relayCircuitAddrs(network?.relayAddrs ?? []);
+export function resolveListenAddrs(
+  network: NetworkConfig | undefined,
+  route: RelayListenRoute = 'configured'
+): string[] | undefined {
+  const configured = relayCircuitAddrs(network?.relayAddrs ?? []);
+  const relayEntries = route === 'search'
+    ? (configured.length > 0 ? [RELAY_SEARCH_LISTEN_ADDR] : [])
+    : configured;
   const listenAddrs = network?.listenAddrs;
-  if (!listenAddrs && circuits.length === 0) {
+  if (!listenAddrs && relayEntries.length === 0) {
     return undefined;
   }
   // An explicitly empty `listenAddrs` (the React Native "cannot listen" case) stays
-  // empty — but a relay named alongside it still gets its circuit listener, since
-  // acquiring one is the whole point of configuring a relay.
-  return dedupe([...(listenAddrs ?? [DEFAULT_DIRECT_LISTEN_ADDR]), ...circuits]);
+  // empty — but a relay named alongside it still gets its listen entry, since
+  // acquiring a slot is the whole point of configuring a relay.
+  return dedupe([...(listenAddrs ?? [DEFAULT_DIRECT_LISTEN_ADDR]), ...relayEntries]);
+}
+
+/**
+ * Thrown out of `CadreNode.start()` when the boot-path reservation drive for
+ * `network.relayAddrs` produces no `/p2p-circuit` address on its FIRST attempt.
+ *
+ * This is what keeps `network.relayAddrs` fail-fast now that the control node
+ * takes the `'search'` route: libp2p's own `UnsupportedListenAddressesError` used
+ * to abort start from inside `listen()`, and an operator who names a relay is
+ * telling the node it has no other reachability — coming up undialable is worse
+ * than not coming up. Names the relays and the reservation's own reason, both of
+ * which the libp2p error omitted.
+ */
+export class RelayReservationFailedError extends Error {
+  constructor(
+    readonly relayAddrs: readonly string[],
+    readonly state: RelayReservationState
+  ) {
+    super(
+      `network.relayAddrs reservation failed (status: ${state.status}): ` +
+      `${state.error ?? 'no /p2p-circuit address appeared'} — relays: ${relayAddrs.join(', ')}`
+    );
+    this.name = 'RelayReservationFailedError';
+  }
 }
 
 /**

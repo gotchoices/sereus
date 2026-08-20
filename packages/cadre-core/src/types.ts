@@ -223,18 +223,26 @@ export interface NetworkConfig {
    * `/p2p-circuit` suffix (one is appended for you; an entry that already has
    * one is passed through unchanged).
    *
-   * This is sugar for a circuit entry in {@link listenAddrs}: `relay-addrs.ts`
-   * resolves the two into one listen list, and listening on a relay's circuit
-   * addr is what makes libp2p dial it and hold the reservation. A relay named
-   * here therefore also becomes a delegate-announce target, so this node's
-   * strand nodes may reserve on it too (see `delegate-admission.ts`).
+   * On the CONTROL node this adds libp2p's bare `/p2p-circuit` SEARCH listener to
+   * {@link listenAddrs} (`relay-addrs.ts`) and `CadreNode.start()` drives the
+   * reservation itself once the control database is up — the ordering matters,
+   * because a listener that dials its relay from inside `libp2p.start()` put a
+   * sibling in this node's cohort before its own database existed, and a sibling
+   * that had not yet replicated this node's membership row refused the bring-up.
+   * STRAND nodes inherit the older per-relay `<relay>/p2p-circuit` listener, which
+   * has no such ordering hazard. A relay named here also becomes a
+   * delegate-announce target, so this node's strand nodes may reserve on it too
+   * (see `delegate-admission.ts`).
    *
    * Setting this gives the node a listener even when `listenAddrs` is `[]` —
    * that is the point of naming a relay, but note that React Native hosts
    * (`reference-app-rn`'s `cadre-phone.ts`) deliberately do NOT listen, and
    * must not acquire a listener by accident.
    *
-   * A malformed entry throws at node start rather than being silently dropped.
+   * FAIL-FAST both ways: a malformed entry throws at node start rather than being
+   * silently dropped, and a first reservation attempt that lands no
+   * `/p2p-circuit` address throws `RelayReservationFailedError` out of `start()`.
+   * The fail-soft posture over the same machinery is `CadreNode.reserveRelays()`.
    */
   relayAddrs?: string[];
   /**

@@ -120,6 +120,93 @@ describe('createMembershipConnectionGater (composition + fail-open)', () => {
   });
 });
 
+// ── the bring-up quiet period (denyDialPeer + denyInboundEncryptedConnection) ──
+
+/**
+ * While `ControlDatabase.initialize()` is in flight the gate denies BOTH
+ * directions, whatever the per-peer policy would have said. The invariant is
+ * "zero control connections during control-database bring-up": any connected
+ * same-party sibling joins the Optimystic cohort the bring-up's block probes
+ * consult, and one that has not yet replicated this node's membership row
+ * refuses every probe — `start()` then fails and no retry can converge. The
+ * wire-level proof (a `bootstrapNodes` node whose bring-up is deliberately
+ * pushed past `@libp2p/bootstrap`'s 1 s discovery fuse) is
+ * `control-bring-up-quiet-period.integration.ts`.
+ */
+describe('createMembershipConnectionGater (bring-up quiet period)', () => {
+  /** A policy that would admit everyone, gated by a flag the test flips. */
+  function quietable(): { policy: InboundAdmissionPolicy; open(): void } {
+    let inFlight = true;
+    return {
+      policy: { ...policyOf(() => 'admit'), bringUpInFlight: () => inFlight },
+      open: () => { inFlight = false; }
+    };
+  }
+
+  it('denies inbound connections while bring-up is in flight, and admits once it opens', async () => {
+    const { policy, open } = quietable();
+    const gater = createMembershipConnectionGater(policy);
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('sibling'), MA_CONN)).toBe(true);
+    open();
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('sibling'), MA_CONN)).toBe(false);
+  });
+
+  it('denies OUTBOUND dials while bring-up is in flight, and admits once it opens', async () => {
+    const { policy, open } = quietable();
+    const gater = createMembershipConnectionGater(policy);
+
+    expect(await gater.denyDialPeer!(fakePeerId('sibling'))).toBe(true);
+    open();
+    expect(await gater.denyDialPeer!(fakePeerId('sibling'))).toBe(false);
+  });
+
+  /**
+   * Inbound is not safe by omission: during bring-up this node's authorized set is
+   * still empty, so `admitInboundControlConnection`'s cold-start carve-out admits
+   * EVERYONE — an inbound sibling enlists in the cohort exactly like an outbound
+   * one would. Hence both directions, not just the dial.
+   */
+  it('overrides an admit verdict — the quiet period is not a membership decision', async () => {
+    const admitEveryone = vi.fn<InboundAdmissionPolicy['admitInbound']>(() => 'admit');
+    const gater = createMembershipConnectionGater({
+      admitInbound: admitEveryone,
+      admitRelayReservation: () => true,
+      bringUpInFlight: () => true
+    });
+
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('cold-start-stranger'), MA_CONN)).toBe(true);
+    // Short-circuits before the policy is consulted at all — no control-DB read
+    // from inside a window whose whole point is that the DB does not exist yet.
+    expect(admitEveryone).not.toHaveBeenCalled();
+  });
+
+  it('leaves the relay-reservation hook alone — a reservation is decided on its own terms', async () => {
+    const gater = createMembershipConnectionGater({
+      admitInbound: () => 'admit',
+      admitRelayReservation: () => true,
+      bringUpInFlight: () => true
+    });
+
+    expect(await gater.denyInboundRelayReservation!(fakePeerId('reserver'))).toBe(false);
+  });
+
+  it('is inert for a policy that does not implement it — every non-CadreNode caller', async () => {
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit'));
+
+    expect(await gater.denyDialPeer!(fakePeerId('anyone'))).toBe(false);
+    expect(await gater.denyInboundEncryptedConnection!(fakePeerId('anyone'), MA_CONN)).toBe(false);
+  });
+
+  it('still honors a base gater\'s own denyDialPeer once the window is open', async () => {
+    const base: ConnectionGater = { denyDialPeer: (peerId) => peerId.toString() === 'blocked' };
+    const gater = createMembershipConnectionGater(policyOf(() => 'admit'), base);
+
+    expect(await gater.denyDialPeer!(fakePeerId('blocked'))).toBe(true);
+    expect(await gater.denyDialPeer!(fakePeerId('anyone-else'))).toBe(false);
+  });
+});
+
 // ── the relay-reservation seam (admit-for-relay + denyInboundRelayReservation) ─
 
 describe('createMembershipConnectionGater (relay-reservation seam)', () => {

@@ -4,28 +4,32 @@
  * (live) status derivation.
  *
  * `@libp2p/circuit-relay-v2`'s listener branches on the SHAPE of the listen
- * address, and the two shapes are alternatives, not layers:
+ * address:
  *
  * | listen addr                                       | libp2p behaviour                                                                     | unreachable relay          |
  * | ------------------------------------------------- | ------------------------------------------------------------------------------------ | -------------------------- |
  * | `<dial addr>/p2p/<relayPeerId>/p2p-circuit`        | CONFIGURED reservation: dial that exact relay and reserve, or fail                     | `listen()` throws          |
  * | bare `/p2p-circuit`                                | SEARCH mode: register a pending reservation, to be filled by relay discovery           | nothing throws, no reserve |
  *
- * The configured shape is what `relay-addrs.ts` builds out of `network.relayAddrs`.
- * It is **fail-fast by construction**: libp2p's transport manager throws
- * `UnsupportedListenAddressesError` when any configured listen address fails to
- * listen under the default `FATAL_ALL` fault tolerance, so naming a relay that is
- * down means the node does not start. Good for a server; wrong for a browser tab,
- * which must still boot (solo, undialable) when its relay is down.
+ * A search listener needs someone to (a) dial the relay and (b) fill the pending
+ * reservation it created, then report whether one actually landed. That is this
+ * module. It is **fail-soft by construction**: nothing here throws.
  *
- * So a browser-shaped node listens on bare `/p2p-circuit` and needs someone to
- * (a) dial the relay and (b) fill the pending reservation that listener created,
- * then report whether one actually landed. That is this module. It is **fail-soft
- * by construction**: nothing here throws.
+ * EVERY cadre CONTROL node now takes that route — `network.relayAddrs` resolves
+ * to the bare search entry (`relay-addrs.ts` → `RelayListenRoute`) and
+ * `CadreNode.start()` drives this module once the control database is up. The
+ * configured shape would dial the relay from inside `libp2p.start()`, putting a
+ * sibling in this node's cohort before its own control database existed, and a
+ * sibling that has not yet replicated this node's `CadrePeer` row correctly
+ * refuses its control-DB streams — which killed `start()` outright.
  *
- * Do NOT "consolidate" the two by also setting `network.relayAddrs` on a node
- * that reserves this way — that re-introduces the fatal configured listener
- * alongside the search listener and the tab stops booting when the relay is down.
+ * So the two shapes are no longer alternative ROUTES, only alternative failure
+ * postures on top of the same drive: a node that names `network.relayAddrs` gets
+ * a `RelayReservationFailedError` out of `start()` when the first attempt lands
+ * nothing (fail-fast, the operator asked for this relay), while a node that calls
+ * `CadreNode.reserveRelays()` itself gets a non-`reserved` status and stays up
+ * (fail-soft, the browser-tab posture). Configuring both is now redundant, not
+ * fatal. STRAND nodes still take the configured shape — see `relay-addrs.ts`.
  *
  * ⚠️ WHY THE RESERVATION IS REQUESTED EXPLICITLY RATHER THAN LEFT TO DISCOVERY.
  * libp2p fills a search listener's pending reservation from `RelayDiscovery`,
@@ -68,7 +72,8 @@ const log = debug('sereus:cadre:relay-reservation');
 
 /**
  * Relay-reservation posture for a node that reserves through the SEARCH listen
- * addr (bare `/p2p-circuit`) rather than a configured `network.relayAddrs` entry.
+ * addr (bare `/p2p-circuit`) — every cadre control node, whether its relays came
+ * from `network.relayAddrs` or from an explicit `CadreNode.reserveRelays()` call.
  *  - `none`     — no relay addrs supplied; the node is undialable by design.
  *  - `dialing`  — a drive is in flight.
  *  - `reserved` — the node currently holds at least one `/p2p-circuit` addr.

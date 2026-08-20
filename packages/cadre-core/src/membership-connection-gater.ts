@@ -113,12 +113,45 @@
  * stranger carve-outs — an enrollment window admits a stranger's connection
  * for seed delivery, yet its repo streams are still refused.
  *
+ * ## The bring-up quiet period
+ *
+ * One state is decided BEFORE any of the above, and is not about the remote peer
+ * at all: while this node's control-database bring-up is in flight
+ * (`InboundAdmissionPolicy.bringUpInFlight`), the gate denies BOTH directions —
+ * `denyDialPeer` and `denyInboundEncryptedConnection` — and then opens.
+ *
+ * The invariant it protects is "`ControlDatabase.initialize()` runs while this
+ * node holds ZERO control connections". Building that database is a long chain
+ * of cohort-consulting block probes, and every connected same-party sibling is in
+ * the cohort those probes consult. A sibling that has not yet replicated this
+ * node's `CadrePeer` row correctly refuses them at its own fail-closed per-stream
+ * gate, so ONE connection in this window turns bring-up into
+ * `BlockUnavailableError` and `start()` rejects. Retrying cannot converge: the
+ * condition that would clear the refusal is this node's own row reaching the
+ * sibling, and writing that row needs the database the retry is building. So the
+ * only fix is to not be in the conversation yet — which is what this window is.
+ *
+ * The ordering is arranged so nothing SHOULD open a connection here anyway:
+ * `network.relayAddrs` resolves to a listener that dials nothing and reserves
+ * after bring-up (`relay-addrs.ts`), and the control-cohort reconcile pass is
+ * scheduled post-start. This window is what makes that a property rather than an
+ * accident of ordering — the live case it actually catches is
+ * `controlNetwork.bootstrapNodes`, where `@libp2p/bootstrap` emits its discovery
+ * events ~1 s after `libp2p.start()` and the connection manager auto-dials from
+ * there, which is a race bring-up wins only while raw-storage latency stays low.
+ *
+ * A denial here costs a retry, not a partition: libp2p's connection manager
+ * re-dials on its auto-dial cadence, the reservation supervisor re-drives, and a
+ * denied inbound peer reconnects. The window opens on bring-up FAILURE too (via
+ * `CadreNode.cleanup`), so teardown is never gated.
+ *
  * ## Fail-open, deliberately
  *
- * This layer only ever denies on a POSITIVE determination of "unauthorized
- * outsider while no stranger path is open". Any error, missing dependency, or
- * ambiguous state admits the connection (and the reservation) and defers to the
- * fail-closed stream gates — a DB hiccup must not partition a legitimate cadre.
+ * Outside that window this layer only ever denies on a POSITIVE determination of
+ * "unauthorized outsider while no stranger path is open". Any error, missing
+ * dependency, or ambiguous state admits the connection (and the reservation) and
+ * defers to the fail-closed stream gates — a DB hiccup must not partition a
+ * legitimate cadre.
  */
 
 import debug from 'debug';
@@ -165,9 +198,10 @@ export const ADMISSION_DECISION_TIMEOUT_MS = 2_000;
  * How long an `'admit-for-relay'` connection may exist without a relay
  * reservation being ADMITTED at the `denyInboundRelayReservation` hook, after
  * which the gate aborts the underlying connection. A reserving client asks for
- * its slot immediately after the connection upgrades (both the configured
- * `relayAddrs` listener and the explicit `relay-reservation.ts` drive do), so a
- * connection idle past this deadline is not reserving.
+ * its slot immediately after the connection upgrades (`relay-reservation.ts`
+ * dials and requests in one drive; a strand node's configured circuit listener
+ * does the same from inside its own `listen()`), so a connection idle past this
+ * deadline is not reserving.
  */
 export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
 
@@ -230,6 +264,16 @@ export interface InboundAdmissionPolicy {
   admitInbound(remotePeerId: string): Promise<InboundConnectionVerdict> | InboundConnectionVerdict;
   /** Should this peer be granted a circuit-relay reservation slot? */
   admitRelayReservation(remotePeerId: string): Promise<boolean> | boolean;
+  /**
+   * True while this node's control-database bring-up is in flight — the
+   * {@link createMembershipConnectionGater} quiet period (see the module doc).
+   * Peer-independent, unlike the two decisions above, and SYNCHRONOUS: it is
+   * read on the outbound-dial path, where an await would be a new stall.
+   *
+   * Optional — a policy that omits it is never quiet, which is the right default
+   * for every caller that is not a booting `CadreNode`.
+   */
+  bringUpInFlight?(): boolean;
 }
 
 /**
@@ -295,7 +339,11 @@ export class UnauthorizedReservationBudget {
  * hook the circuit-relay server consults per RESERVE request (inert on a node
  * whose relay server is off; libp2p never calls it there).
  *
- * Composition semantics: every hook of `base` is preserved as-is; on the two
+ * `denyDialPeer` is composed too, but ONLY for the bring-up quiet period (see
+ * the module doc): outside that window outbound dials are never gated by
+ * membership — this node decides for itself who to talk to.
+ *
+ * Composition semantics: every hook of `base` is preserved as-is; on the three
  * composed hooks a deny from EITHER the base gater or the admission policy
  * denies. A policy error — or a decision slower than `decisionTimeoutMs` —
  * takes the fail-open outcome (connection admitted / reservation admitted, see
@@ -328,10 +376,25 @@ export function createMembershipConnectionGater(
   reserveDeadlineMs: number = RELAY_ADMISSION_RESERVE_DEADLINE_MS
 ): ConnectionGater {
   const pendingReservations = new PendingReserveDeadlines(reserveDeadlineMs);
+  const quiet = (): boolean => policy.bringUpInFlight?.() ?? false;
   return {
     ...base,
+    denyDialPeer: async (peerId: PeerId): Promise<boolean> => {
+      if (await base?.denyDialPeer?.(peerId)) {
+        return true;
+      }
+      if (quiet()) {
+        log('Control-database bring-up in flight — refusing the outbound dial to %s', peerId.toString());
+        return true;
+      }
+      return false;
+    },
     denyInboundEncryptedConnection: async (peerId: PeerId, maConn: MultiaddrConnection): Promise<boolean> => {
       if (await base?.denyInboundEncryptedConnection?.(peerId, maConn)) {
+        return true;
+      }
+      if (quiet()) {
+        log('Control-database bring-up in flight — refusing the inbound connection from %s', peerId.toString());
         return true;
       }
       const remotePeerId = peerId.toString();

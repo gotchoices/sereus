@@ -347,13 +347,13 @@ export async function startCadre(): Promise<CadreNode> {
 			// reservation and never throws when a relay is unreachable. It does NOT make
 			// the tab depend on libp2p's relay *discovery* — cadre-core fills that pending
 			// reservation by asking the relay directly (discovery could never see this
-			// relay; see `relay-reservation.ts`). `network.relayAddrs` is the other
-			// route to a reservation — it builds a `<relay>/p2p-circuit` CONFIGURED
-			// listener that is fatal at start when the relay is down (libp2p's
-			// transport manager defaults to FATAL_ALL). A browser tab must still boot
-			// solo when its relay is down, and strand nodes inherit the resolved
-			// listen addrs verbatim, so do NOT set `network.relayAddrs` here — the two
-			// are alternatives, not layers. See cadre-core `relay-reservation.ts`.
+			// relay; see `relay-reservation.ts`). `network.relayAddrs` would produce the
+			// same bare entry on the control node, but it is deliberately NOT set here:
+			// it makes a reservation that does not land on the first attempt FATAL to
+			// `start()`, and a browser tab must still boot solo when its relay is down.
+			// It would also give this tab's strand nodes a per-relay CONFIGURED circuit
+			// listener, which is fatal in the same way. So the tab keeps the explicit
+			// `reserveRelays` call below — same drive, fail-soft posture.
 			listenAddrs: relayAddrs.length > 0 ? ['/p2p-circuit', '/webrtc'] : [],
 			// Permissive dial gater. libp2p's browser default denies dialing
 			// insecure-WebSocket and private/loopback addresses, which blocks the

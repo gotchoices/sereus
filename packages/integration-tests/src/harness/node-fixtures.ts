@@ -17,6 +17,7 @@ import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { CadreNode, ed25519KeyPairFromLibp2p, signSchema } from '@serfab/cadre-core';
 import type { CadreNodeConfig, SAppConfig } from '@serfab/cadre-core';
+import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
 import { signMessageEd25519 } from './test-network.js';
@@ -45,10 +46,12 @@ export interface ControlNodeOpts {
   enableRelay?: boolean;
   listenAddrs?: string[];
   /**
-   * Relay servers to reserve a `/p2p-circuit` slot through — the fail-fast
-   * configured-reservation route (`relay-addrs.ts` folds each entry into the
-   * listen set as `<addr>/p2p-circuit`). Pair with `listenAddrs: []` to model a
-   * node with no inbound reachability of its own.
+   * Relay servers to reserve a `/p2p-circuit` slot through — the FAIL-FAST route:
+   * `relay-addrs.ts` gives the control node a bare `/p2p-circuit` search listener
+   * and `CadreNode.start()` drives the reservation after control-DB bring-up,
+   * throwing when the first attempt lands nothing. Pair with `listenAddrs: []` to
+   * model a node with no inbound reachability of its own. The fail-soft
+   * alternative is to leave this unset and call `node.reserveRelays(...)`.
    */
   relayAddrs?: string[];
   /**
@@ -60,6 +63,12 @@ export interface ControlNodeOpts {
   hibernation?: boolean;
   /** Which strands this node participates in (default `'all'`). */
   strandFilter?: 'all' | 'none';
+  /**
+   * Sleep this long before EVERY raw-storage operation, which multiplies the
+   * duration of control-database bring-up by a known factor (`slow-raw-storage.ts`).
+   * For scenarios that need bring-up to still be running when something else fires.
+   */
+  storageOpDelayMs?: number;
   /** Override the proactive control-cohort reconcile cadence (ms). */
   reconcileMs?: number;
   /** Override the strand watcher poll cadence (ms; `CadreNode` default 5000). */
@@ -68,9 +77,11 @@ export interface ControlNodeOpts {
   pinnedOwnerKeys?: string[];
   /**
    * Test-supplied libp2p connection gater. On the control node it is composed
-   * under the built-in membership admission gate, which preserves every hook
-   * except `denyInboundEncryptedConnection` — so a test's outbound-deny hooks
-   * (`denyDialPeer` etc.) are honored unchanged.
+   * under the built-in membership admission gate: a deny from EITHER side wins on
+   * `denyInboundEncryptedConnection`, `denyDialPeer` and
+   * `denyInboundRelayReservation`, and every other hook passes through untouched.
+   * So a test's own deny hooks are always honored; the built-in gate only ever
+   * ADDS denials (membership, and the bring-up quiet period).
    */
   connectionGater?: ConnectionGater;
 }
@@ -81,7 +92,11 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     controlNetwork: { partyId: opts.partyId, bootstrapNodes: opts.bootstrapNodes ?? [] },
     profile: opts.profile ?? 'transaction',
     strandFilter: { mode: opts.strandFilter ?? 'all' },
-    storage: { provider: () => new MemoryRawStorage() },
+    storage: {
+      provider: opts.storageOpDelayMs === undefined
+        ? () => new MemoryRawStorage()
+        : slowMemoryStorageProvider(opts.storageOpDelayMs)
+    },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
     network: {

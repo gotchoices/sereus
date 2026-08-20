@@ -17,18 +17,44 @@
  * separately, so a failure names the link that broke rather than "the address never
  * showed up".
  *
- * Cases 2 and 3 boot a relay-only node the relay has NOT authorized — the state
- * a genuine member is in during the window between booting and its `CadrePeer`
- * row replicating to the relay (case 2 uses a different-party reserver for
- * isolation; see its comment). Before the fix, A's membership connection gate
- * killed the reservation stream mid-handshake; both cases originally
- * characterized that failure and were FLIPPED when the relay-reservation seam
- * landed (`membership-connection-gater.ts` → "The relay-reservation seam"): the
+ * Cases 2 and 3 boot a relay-only node the relay has NOT authorized — the state a
+ * genuine member is in during the window between booting and its `CadrePeer` row
+ * replicating to the relay. Before the relay-reservation seam landed
+ * (`membership-connection-gater.ts` → "The relay-reservation seam"), A's
+ * membership connection gate killed the reservation stream mid-handshake; the
  * relay now admits the connection for relay purposes and decides at the
  * reservation hook, where an unplaced peer gets a slot from the bounded
- * unauthorized-reservation budget.
+ * unauthorized-reservation budget. Case 2 takes the `network.relayAddrs` route,
+ * case 3 the explicit `reserveRelays` one. Both reach link 2 of case 1's chain
+ * (the relay's peerStore learns the circuit address) without authorization,
+ * because that link rides the reservation rather than the membership row.
  *
- * Cases 4 and 5 pin the bounds of that admission: an admitted-for-relay
+ * That case-2 route needed a SECOND fix to survive its own bring-up. A
+ * `relayAddrs` entry used to resolve to a `<relay>/p2p-circuit` CONFIGURED listen
+ * address, which libp2p dials from inside `libp2p.start()` — so A was already in
+ * C's Optimystic cohort when C built its control database, and A's fail-closed
+ * per-stream gate refused every block probe of that bring-up
+ * (`BlockUnavailableError`, every boot). `relayAddrs` now resolves to the bare
+ * `/p2p-circuit` SEARCH listener and `CadreNode.start()` reserves explicitly at
+ * the END of bring-up, so the database is built against a cohort of one. See
+ * `relay-addrs.ts`.
+ *
+ * WHAT NO CASE HERE PROVES, AND WHY. Nothing walks links 3-4 (the node publishes
+ * the address into its own `CadrePeer` row; a third member reads it) for a node
+ * authorized AFTER it booted. Such a case was written and withdrawn: once the
+ * unauthorized node holds its reservation it is a connected same-party peer, so
+ * it joins the owner's Optimystic cohort while holding none of the party's
+ * blocks — and the owner's own `authorizePeer` then fails its OwnerKey read with
+ * `Block default/OwnerKey is unavailable (claimed-elsewhere)`. Measured: roughly
+ * half of runs, and in those runs it did NOT recover — a 60 s retry loop reissued
+ * the same failure to the end. That is a control-database convergence defect, not
+ * a relay one; it is recorded as an arm of
+ * `tickets/backlog/bug-control-reads-not-retried-on-transient-failure` (whose
+ * "transient" framing this measurement contradicts). Until it is fixed, "boots
+ * unauthorized and later converges" cannot be asserted here without a test that
+ * fails half the time.
+ *
+ * Cases 4 and 5 pin the bounds of the relay's admission: an admitted-for-relay
  * stranger still cannot speak any control-DB protocol and is dropped when it
  * takes no reservation (case 4), and the unauthorized budget genuinely caps —
  * the peer past the cap is refused while an authorized member still reserves
@@ -143,23 +169,23 @@ describe('E2E relay-only control node circuit address', () => {
 		}
 	}, 180_000);
 
-	it('an UNRECOGNIZED relay-only control node still reserves through the membership gate (fail-fast route)', async () => {
-		// The relay-side admission decision under test is "a peer I cannot place
-		// asks for a reservation over the configured `relayAddrs` route" — before
-		// the fix, `start()` rejected with UnsupportedListenAddressesError (the
-		// gate killed the reservation stream mid-handshake); now the seam admits
-		// the connection and grants the reservation from the unauthorized budget.
+	it('an UNAUTHORIZED SAME-PARTY relay-only control node still reserves through the membership gate (relayAddrs route)', async () => {
+		// Two fixes meet here, and this case is only meaningful with both:
 		//
-		// C is deliberately a DIFFERENT party's node: A cannot place it either way
-		// (the admission decision is identical), and a same-party unauthorized C
-		// would couple this case to a separate defect downstream of the fixed one —
-		// once its connection survives, its control-DB schema hydration enlists A,
-		// whose fail-closed per-stream gate refuses it, and `start()` fails with
-		// BlockUnavailableError before the circuit address can be asserted. That
-		// boot-ordering residual is tracked in
-		// `bug-fail-fast-relay-boot-blocked-by-stream-gate`; the same-party window
-		// end-to-end (boot solo, reserve unauthorized, then get authorized) is
-		// case 3's fail-soft route.
+		//  - The relay-side admission: "a peer I cannot place asks for a
+		//    reservation." Before the relay-reservation seam, A's gate killed the
+		//    reservation stream mid-handshake and `start()` rejected with
+		//    UnsupportedListenAddressesError.
+		//  - The reserver-side ordering: C is in A's PARTY, so once its connection
+		//    to A survives, A is in C's Optimystic cohort. While `relayAddrs`
+		//    resolved to a configured circuit listener that dialed from inside
+		//    `libp2p.start()`, that happened BEFORE C built its control database, and
+		//    A's fail-closed per-stream gate refused every block probe of the
+		//    bring-up (`BlockUnavailableError`). C now builds its database solo and
+		//    reserves afterwards.
+		//
+		// So a same-party reserver is the point of this case, not an incidental
+		// choice: it is the shape a genuine member actually boots in.
 		const partyId = `relay-ctrl-denied-${Date.now()}`;
 		let A: CadreNode | undefined;
 		let C: CadreNode | undefined;
@@ -180,7 +206,7 @@ describe('E2E relay-only control node circuit address', () => {
 			expect(await A.isAuthorizedMember(cPeerId)).toBe(false);
 
 			C = new CadreNode(controlNodeConfig({
-				partyId: `${partyId}-outsider`,
+				partyId,
 				privateKey: cKey,
 				strandFilter: 'none',
 				listenAddrs: [],
@@ -195,6 +221,21 @@ describe('E2E relay-only control node circuit address', () => {
 
 			expect(startError).toBeUndefined();
 			expect(addrs.some(isCircuit)).toBe(true);
+			// The reservation is what `start()` waited on, so the posture is already
+			// settled by the time start resolves — not merely on its way.
+			expect(C.getRelayReservationState().status).toBe('reserved');
+
+			// And the address is not only C's own belief: identify/push carries it into
+			// the relay's peerStore even for a peer the relay cannot place. That is link 2
+			// of case 1's chain, reached here WITHOUT authorization — it rides the
+			// reservation, not the membership row. Links 3 and 4 need the control
+			// database and are out of reach for an unauthorized node; see the file
+			// header for why no case walks them.
+			await waitUntil(async () => (await peerStoreAddrsFor(A!, cPeerId)).some(isCircuit), {
+				timeoutMs: 20_000,
+				intervalMs: 250,
+				description: "relay node's peerStore holds a circuit address for the unauthorized node",
+			});
 		} finally {
 			await Promise.allSettled([C?.stop(), A?.stop()]);
 		}

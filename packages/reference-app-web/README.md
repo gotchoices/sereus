@@ -140,10 +140,12 @@ the relay is back — no page reload. A resting `error` now means nothing is goi
 to try again (no node, or the node was stopped). The Home badge refreshes on the
 4 s poll; `createInvitation` reads it at the decision point.
 
-`network.relayAddrs` is deliberately NOT set on the browser config: that is the
-fail-fast route (a configured circuit listener that cannot listen aborts node
-start), and a tab must still boot solo when its relay is down. The two are
-alternatives, not layers.
+`network.relayAddrs` is deliberately NOT set on the browser config. It drives the
+same reservation, but with the fail-fast posture: a first attempt that lands no
+slot aborts `CadreNode.start()`, and a tab must still boot solo when its relay is
+down. (It would also give the tab's strand nodes a per-relay circuit listener,
+which is fatal at start in the same way.) So the tab keeps the explicit
+`reserveRelays()` call.
 
 The reservation is **requested explicitly**, not left to libp2p's relay discovery.
 Discovery only nominates a peer it has learned the relay protocol from over

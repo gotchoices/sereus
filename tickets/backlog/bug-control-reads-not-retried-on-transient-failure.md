@@ -74,3 +74,45 @@ whose failure decides whether a node can answer inbound streams at all — and b
 reads have to succeed for the call to succeed, so a single transient blip in *either* now
 fails the whole membership read. Nothing about the fix changes: the read seam this ticket
 asks for still covers both. Only the count of unretried hops per membership read went up.
+
+## A second instance, and it is NOT transient (measured 2026-08-20)
+
+Found while implementing `control-db-bring-up-runs-before-first-connection`. The
+shape is the same — a control-database read failing outright — but the recovery
+assumption above does not hold, which matters for how this ticket is scoped.
+
+**Setup.** A party owner A (storage profile, relay server on). A node C in the
+same party boots with no listener of its own and reserves a circuit-relay slot on
+A, while A has not yet authorized it. C is now a connected same-party peer holding
+none of the party's blocks, so it joins the Optimystic cohort those blocks are
+replicated to. The owner then authorizes C.
+
+**What happens.** A's own `authorizePeer` — which reads `OwnerKey` before it can
+owner-sign the new row — fails with:
+
+```
+Error during query on table 'OwnerKey': Query failed:
+  Block default/OwnerKey is unavailable (claimed-elsewhere):
+  the repo could not determine whether it exists
+```
+
+Roughly half of runs (3 of 4, then 2 of 4 across two measurement rounds of an
+integration scenario written for this). **In the failing runs it did not recover**:
+a retry loop reissuing the same call every second for 60 s got the identical error
+every time. So for this instance "repeating it a moment later would work" — the
+premise in the `description:` above — is false.
+
+**Why that is worth recording here rather than as its own ticket.** It resolves at
+the same site (control-database reads have no failure handling of their own), and
+whatever is built here has to decide what it does about a failure that never
+clears. A blind retry budget would simply spend 10 s and fail anyway; the
+distinction between "a cohort member did not answer" and "a cohort member answered,
+claims the block, and has nothing" has to be visible to the caller. The second
+condition is a cohort-membership problem — a peer is seated for a block it cannot
+serve — and is adjacent to the fork in
+`tickets/blocked/control-peer-row-refresh-invisible-to-third-node`.
+
+**Consequence today.** "A relay-only node boots before its membership row exists,
+and converges once the owner authorizes it" cannot be asserted end-to-end. The
+boot half is fixed and covered (`relay-only-control-addr.integration.ts` cases 2
+and 3); the convergence half has no test, and the file header there says so.

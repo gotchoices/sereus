@@ -69,3 +69,26 @@ second opinion on whether it matters for `CadreNode.stop()`; this ticket is that
 opinion. `CadreNode.stop()` was changed during that review to stop the supervisor
 *before* tearing the node down, which removes the case where a *newly scheduled*
 attempt starts during shutdown — it does not touch an attempt already running.
+
+## Second instance: an attempt now runs inside `start()` too (2026-08-20)
+
+`control-db-bring-up-runs-before-first-connection` moved the `network.relayAddrs`
+route off libp2p's own configured circuit listener and onto an explicit
+reservation drive at the end of `CadreNode.start()`
+(`CadreNode.driveControlRelayReservation`). Every node that names a relay in its
+config therefore has an attempt in flight during startup, where before only the
+nodes that called `reserveRelays()` themselves did.
+
+This does not change the root cause or the fix — it widens who is exposed:
+
+- A node whose `start()` is failing for its own reasons runs `cleanup()` while
+  that attempt is still going, so the misleading-log half now decorates startup
+  failures as well as shutdowns.
+- A process that starts a node and immediately stops it (a test, a CLI that
+  fails validation right after start) can hold up to the drive timeout — 10 s by
+  default — in the polling wait.
+
+Nothing here is new behaviour to design; the same `AbortSignal` on
+`driveRelayReservation`, tripped from `RelayReservationSupervisor.stop()`, covers
+it, because `CadreNode.stop()`/`cleanup()` already stop the supervisor. Recorded
+so the "how to confirm" step above also exercises the start path.

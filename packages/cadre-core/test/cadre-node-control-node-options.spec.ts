@@ -450,17 +450,41 @@ describe('CadreNode control-network node options', () => {
   /**
    * `relayAddrs` was settable in `cadre.yaml`, via `CADRE_RELAY_ADDRS`, and through the
    * Docker entrypoint while being read by nobody — a node told to use a relay quietly
-   * kept no reservation and stayed unreachable behind NAT. The listen addr IS the
-   * reservation, so these two assertions are the ones that would have caught it; the
-   * resolution rules themselves are owned by `relay-addrs.spec.ts`.
+   * kept no reservation and stayed unreachable behind NAT. So the assertions here are
+   * "the setting reaches the listen list" and "the setting reaches the announce
+   * targets"; the resolution rules themselves are owned by `relay-addrs.spec.ts`.
    */
   describe('relayAddrs', () => {
-    it('reaches listenAddrs as a circuit addr, alongside the configured listen addrs', () => {
+    /**
+     * The listen entry is the bare SEARCH addr, NOT `<relay>/p2p-circuit`. A
+     * configured circuit listener dials the relay from inside `libp2p.start()`,
+     * which put a sibling in this node's Optimystic cohort before
+     * `ControlDatabase.initialize()` ran and killed bring-up against a sibling that
+     * had not yet replicated this node's membership row. `CadreNode.start()` drives
+     * the reservation explicitly after bring-up instead (see
+     * `driveControlRelayReservation`), so this assertion is what keeps the ordering
+     * from silently regressing.
+     */
+    it('reaches listenAddrs as the bare /p2p-circuit search entry, so start() opens no connection', () => {
       const options = controlOptions(new CadreNode(createConfig({
         network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'], relayAddrs: [RELAY_ADDR] }
       })));
 
-      expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', `${RELAY_ADDR}/p2p-circuit`]);
+      expect(options.listenAddrs).toEqual(['/ip4/0.0.0.0/tcp/4001', '/p2p-circuit']);
+    });
+
+    it('contributes one search entry however many relays are named', () => {
+      const options = controlOptions(new CadreNode(createConfig({
+        network: { listenAddrs: [], relayAddrs: [RELAY_ADDR, `/ip4/9.9.9.9/tcp/4001/p2p/${RELAY_PEER_ID}`] }
+      })));
+
+      expect(options.listenAddrs).toEqual(['/p2p-circuit']);
+    });
+
+    it('still validates every entry at option-build time, even though the search entry discards them', () => {
+      const node = new CadreNode(createConfig({ network: { relayAddrs: ['/ip4/1.2.3.4/tcp/4001'] } }));
+
+      expect(() => controlOptions(node)).toThrow(/network\.relayAddrs entry names no relay peerId/);
     });
 
     it('becomes a delegate-announce target, so this node\'s strand nodes may reserve on it too', () => {
@@ -468,7 +492,9 @@ describe('CadreNode control-network node options', () => {
 
       // Without this, a configured relay would hold the CONTROL node's reservation but
       // deny the strand node's — the strand runs as a derived transport peerId the
-      // relay's membership gate does not know (see delegate-admission.ts).
+      // relay's membership gate does not know (see delegate-admission.ts). The target
+      // must survive the search-entry mapping above: a bare `/p2p-circuit` names no
+      // relay, so `circuitRelayTargets` reads `network.relayAddrs` itself.
       expect(circuitRelayTargets(node)).toEqual([
         { relayPeerId: RELAY_PEER_ID, relayAddr: RELAY_ADDR }
       ]);
@@ -478,6 +504,16 @@ describe('CadreNode control-network node options', () => {
       const node = new CadreNode(createConfig({ network: { listenAddrs: ['/ip4/0.0.0.0/tcp/4001'] } }));
 
       expect(circuitRelayTargets(node)).toEqual([]);
+    });
+
+    it('still announces to a hand-written configured circuit entry in listenAddrs', () => {
+      const node = new CadreNode(createConfig({
+        network: { listenAddrs: [`${RELAY_ADDR}/p2p-circuit`] }
+      }));
+
+      expect(circuitRelayTargets(node)).toEqual([
+        { relayPeerId: RELAY_PEER_ID, relayAddr: RELAY_ADDR }
+      ]);
     });
   });
 

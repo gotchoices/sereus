@@ -380,8 +380,14 @@ export {
   type InboundConnectionVerdict
 } from './membership-connection-gater.js';
 
-// Relay reservation via the bare `/p2p-circuit` search listener (fail-soft;
-// the fail-fast alternative is `network.relayAddrs`, see relay-reservation.ts)
+// Thrown out of `CadreNode.start()` when a `network.relayAddrs` reservation does
+// not land on its first attempt — the fail-fast posture of that config field now
+// that the control node reserves AFTER control-database bring-up (relay-addrs.ts).
+export { RelayReservationFailedError, RELAY_SEARCH_LISTEN_ADDR } from './relay-addrs.js';
+
+// Relay reservation via the bare `/p2p-circuit` search listener — the one route
+// every control node takes; `network.relayAddrs` is its fail-fast posture
+// (see relay-reservation.ts)
 export {
   circuitMultiaddrs,
   superviseRelayReservation,

@@ -56,10 +56,11 @@ network:
   # announceAddrs:
   #   - "/dns4/mynode.example.com/tcp/4001"
   # Circuit-relay servers to reserve a slot on, so peers can reach this node from
-  # behind NAT. Give each relay's direct dial address ending in its peerId — the
-  # "/p2p-circuit" suffix is appended for you and added to listenAddrs. A relay
-  # named here also relays for this node's strand nodes. A malformed entry fails
-  # startup rather than being silently ignored.
+  # behind NAT. Give each relay's direct dial address ending in its peerId. The node
+  # listens on a bare "/p2p-circuit" alongside listenAddrs and asks the relay for a
+  # slot at the end of startup, once its control database is up. A relay named here
+  # also relays for this node's strand nodes. A malformed entry fails startup rather
+  # than being silently ignored, and so does a relay that grants no reservation.
   # relayAddrs:
   #   - "/dns4/relay.example.com/tcp/4001/p2p/12D3KooW..."
   # Enable circuit relay server - allows this node to relay connections for other peers.
