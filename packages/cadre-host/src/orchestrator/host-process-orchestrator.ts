@@ -564,6 +564,11 @@ export class HostProcessOrchestrator implements Orchestrator {
       CADRE_HEALTH_PORT: String(ports.health),
       CADRE_METRICS_PORT: String(ports.metrics),
       CADRE_LISTEN_ADDRS: `/ip4/0.0.0.0/tcp/${ports.p2p}`,
+      // NOTE: the scrub above drops every CADRE_* var and `extraEnv` is built only from
+      // pinnedOwnerKeys, so a managed child advertises only the port assigned to it here
+      // — `CADRE_ANNOUNCE_ADDRS`/`CADRE_APPEND_ANNOUNCE_ADDRS` cannot reach it. Fine while
+      // children are reached at that port or through a relay; if a host is ever fronted by
+      // a proxy or DNS name, plumb an announce var through from host config.
       CADRE_SEED_TOKEN: seedToken,
       // Pin each child's node-local state (trusted-owner anchor, retained
       // cold-start dial targets) to its OWN workdir. This is the same value the

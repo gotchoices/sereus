@@ -631,10 +631,13 @@ export class CadreNode implements SAppIdLookup {
 
     log('Starting CadreNode for party: %s', this.config.controlNetwork.partyId);
 
-    this.warnIfAnnounceAddrsDiscardRelay();
-
     try {
       const tTotal = performance.now();
+
+      // Config pre-flight, inside the guarded region: resolving the listen addrs it reads
+      // throws on a malformed `relayAddrs` entry, and that failure belongs on the same
+      // logged-and-cleaned-up path as every other one in start().
+      this.warnIfAnnounceAddrsDiscardRelay();
 
       // Install the WebRTC TURN-relay tracker BEFORE any libp2p bring-up, so it
       // wraps globalThis.RTCPeerConnection before the control node can create one.

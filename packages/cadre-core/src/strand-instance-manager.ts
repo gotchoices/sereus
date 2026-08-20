@@ -366,9 +366,17 @@ export class StrandInstanceManager {
         ...(listenAddrs && { listenAddrs }),
         // A strand node behind a reverse proxy has the same advertising need as the
         // control node, and inherits the same `NetworkConfig` — so it announces the same
-        // addresses. Fine while the two differ only by port (both bind port 0); a
-        // deployment needing per-node announce addresses is a separate change, not a
-        // knob to invent here.
+        // addresses.
+        //
+        // NOTE: an announce addr naming a PORT therefore names the control node's port,
+        // not this strand node's — the same second-node-on-one-host problem the listen
+        // NOTE above describes, and the reason both belong to one fix. It is currently
+        // unreachable: naming a fixed public port means configuring a fixed
+        // `listenAddrs` port, and that collides at bind time before any strand node gets
+        // far enough to advertise anything. Whatever gives strand nodes their own listen
+        // port has to give them their own announce addrs in the same pass, or a strand
+        // will advertise an address that reaches the control node. Tracked as an arm of
+        // `tickets/backlog/strand-network-nat-relay-reachability.md`.
         ...resolveAnnounceAddrs(config.network),
         ...(config.network?.connectionGater && { connectionGater: config.network.connectionGater })
       }) as Libp2pNodeWithRepo;

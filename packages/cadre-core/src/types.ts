@@ -195,9 +195,11 @@ export interface NetworkConfig {
    * only, and changes nothing about what this node advertises on the wire.)
    *
    * An empty array means "unset" — it is dropped rather than forwarded, so it cannot
-   * land as an explicit empty announce set. A malformed entry throws at node start:
-   * libp2p itself would not notice until its first address lookup (see
-   * `announce-addrs.ts`), so this repo parses each entry up front.
+   * land as an explicit empty announce set. An empty *entry* is a different thing and
+   * is rejected: a list of one blank string is non-empty, so it would replace every
+   * advertised address with nothing. Malformed entries are rejected on the same terms,
+   * both at node start — libp2p itself would not notice either until its first address
+   * lookup (see `announce-addrs.ts`), so this repo checks each entry up front.
    */
   announceAddrs?: string[];
   /**
@@ -211,7 +213,7 @@ export interface NetworkConfig {
    * precedence, applied upstream; this repo does not merge the two locally. Set one
    * or the other, not both.
    *
-   * Empty-array and malformed-entry handling match {@link announceAddrs}.
+   * Empty-array, blank-entry and malformed-entry handling all match {@link announceAddrs}.
    */
   appendAnnounceAddrs?: string[];
   /**

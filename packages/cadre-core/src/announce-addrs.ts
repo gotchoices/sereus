@@ -19,9 +19,14 @@
  *   does `announce.map(ma => ma.toString())`; `getAnnounceAddrs()` does `multiaddr(a)`).
  *   Parsing each entry up front converts that into a loud failure at node start, which is
  *   what {@link relayCircuitAddrs} already does for `network.relayAddrs`.
+ *
+ *   Parsing alone is not enough, though: `''` and `'/'` both parse into a component-less
+ *   multiaddr, and a set holding only those is non-empty by the rule above — so it would
+ *   replace every advertised address with nothing at all. An entry naming no address is
+ *   therefore rejected alongside one that fails to parse.
  */
 
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import type { NetworkConfig } from './types.js';
 
 /**
@@ -65,12 +70,24 @@ function configuredAddrs(field: string, addrs: readonly string[] | undefined): s
   return addrs.map((addr) => validated(field, addr));
 }
 
-/** `addr` unchanged, having proved it parses — with the config field named on failure. */
+/** `addr` unchanged, having proved it names a real address — config field named on failure. */
 function validated(field: string, addr: string): string {
+  if (parsed(field, addr).getComponents().length === 0) {
+    // `''` and `'/'` PARSE: both yield a component-less multiaddr that stringifies to
+    // `/`. Forwarded, they make an announce set that is non-empty but names nothing —
+    // which by the replacement rule above costs the node every address it would
+    // otherwise advertise, silently. A templated `cadre.yaml` whose address variable went
+    // unsubstituted is the realistic way in, so it is rejected rather than forwarded.
+    throw new Error(`${field} entry names no address: ${JSON.stringify(addr)}`);
+  }
+  return addr;
+}
+
+/** `addr` as a multiaddr, with the config field named on a parse failure. */
+function parsed(field: string, addr: string): Multiaddr {
   try {
-    multiaddr(addr);
+    return multiaddr(addr);
   } catch (err) {
     throw new Error(`${field} entry is not a valid multiaddr: ${addr}`, { cause: err });
   }
-  return addr;
 }

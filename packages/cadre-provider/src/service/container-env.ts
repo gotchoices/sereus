@@ -51,6 +51,12 @@ export function buildNodeEnv(spec: NodeEnvSpec): string[] {
     `CADRE_HEALTH_PORT=${ports.health}`,
     `CADRE_METRICS_PORT=${ports.metrics}`,
     `CADRE_LISTEN_ADDRS=/ip4/0.0.0.0/tcp/${ports.p2p}`,
+    // NOTE: this list is closed, so a tenant node advertises only the address it binds
+    // inside its container — there is no `CADRE_APPEND_ANNOUNCE_ADDRS` here. Fine while
+    // tenants are reached at the provider's published host port or through a relay; if a
+    // deployment ever fronts tenant nodes with a proxy or DNS name, add the var (and
+    // decide whether the provider derives it from the published port or the tenant
+    // supplies it — the provider is the side that knows the port mapping).
     // NOTE: emitted unconditionally — the provider always mints a token. A
     // caller passing '' would ship a present-but-empty var, which cadre-cli
     // reads as "seed endpoint disabled"; guard it here if a consumer ever

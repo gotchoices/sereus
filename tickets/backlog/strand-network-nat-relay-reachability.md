@@ -30,6 +30,37 @@ a peer can dial that circuit address on the strand network
 case, every strand a NAT'd node joins needs its own relay slot — a real cost to
 validate and possibly optimize (shared relay, multiplexed reservation, etc.).
 
+### 1b. A strand node's addresses are the control node's, verbatim
+
+Added while reviewing `announce-addrs-passthrough`, which made this concrete. A strand
+node is built from the *same* `network` block as the control node, so it inherits that
+block's address settings unchanged — both the addresses it binds and (now) the addresses
+it tells peers to use. Neither is right for a second node on the same machine:
+
+- **Binding.** Give the machine a fixed port (`listenAddrs: ["/ip4/0.0.0.0/tcp/4001"]`,
+  which is what `cadre-cli`'s own example config ships) and the control node takes it
+  first; every strand node then tries to bind the port already in use and fails. Already
+  noted in a comment at the site, marked unverified — nobody has run it.
+- **Advertising.** Give the machine a public address with a port
+  (`announceAddrs`/`appendAnnounceAddrs`, e.g. `/dns4/mynode.example.com/tcp/4001`) and
+  every strand node advertises the *control* node's address. A peer that dials it reaches
+  the control node, finds a different node than the one it asked for, and gives up. With
+  `announceAddrs` — which replaces the whole advertised set rather than adding to it —
+  that bad address is the only one the strand node publishes, so it becomes undialable.
+
+Not reachable today: the fixed public port implies a fixed bind port, and the binding
+failure above stops the strand node before it advertises anything. That makes the second
+half latent rather than live — but it is latent behind exactly the fix the first half
+needs, so whatever gives strand nodes their own listen port must give them their own
+announce addresses in the same pass. Both live in the `createLibp2pNode` call in
+`buildStrandRuntime` (`packages/cadre-core/src/strand-instance-manager.ts`), and there is
+a `NOTE:` at each.
+
+Open question for whoever picks this up: is a strand node meant to be separately dialable
+at a *published* address at all, or is its reachability entirely the relay/circuit story
+above? If the latter, the answer may be to stop inheriting these two fields rather than to
+derive per-node values for them.
+
 ### 2. Cross-party strand discovery
 
 The control network is single-party, so control-mesh address resolution only
