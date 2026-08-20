@@ -4,7 +4,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, resolve } from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
@@ -33,7 +33,7 @@ describe('cadre-host CLI smoke test', () => {
     }
   });
 
-  it('prints version', () => {
+  it('prints the version from package.json', () => {
     if (!existsSync(binPath)) {
       throw new Error(`cadre-host bin not built at ${binPath}; run \`yarn build\` first`);
     }
@@ -41,6 +41,11 @@ describe('cadre-host CLI smoke test', () => {
     const stdout = execFileSync(process.execPath, [binPath, '--version'], {
       encoding: 'utf8',
     });
-    expect(stdout.trim().length).toBeGreaterThan(0);
+    // The built CLI reads package.json at runtime, so this holds even against a
+    // stale dist — it catches the version falling back to '0.0.0-unknown'.
+    const pkg = JSON.parse(
+      readFileSync(resolve(here, '../../package.json'), 'utf8'),
+    ) as { version: string };
+    expect(stdout.trim()).toBe(pkg.version);
   });
 });

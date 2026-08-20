@@ -3,13 +3,15 @@
 /**
  * CLI entrypoint for cadre-host — the self-hosted cadre node manager.
  *
- * Most subcommands are still stubs at this stage (real implementations land
- * in the sibling tickets cadre-host-nat, cadre-host-installer,
- * cadre-host-local-ui).
+ * Most subcommands (`status`, `invite`, `trust`, `grant`, `nat`) are thin HTTP
+ * clients against the running cadre-host management API on loopback — they
+ * don't spin up an inline service, so cadre-host must be running.
  *
- * The `invite` and `trust` commands talk to the running cadre-host
- * management API over loopback. They are thin HTTP clients — they don't
- * spin up an inline service, so cadre-host must be running.
+ * The exceptions operate on disk directly and need no running service:
+ * `install`, `uninstall`, `start`, `ui`, and the `push` group.
+ *
+ * Every command here needs a matching `### ` heading in the package README's
+ * `## CLI reference`; `__tests__/cli-reference.test.ts` enforces that.
  */
 
 import { existsSync, readFileSync, realpathSync } from 'node:fs';
@@ -1301,6 +1303,13 @@ function readSecretLine(prompt: string): Promise<string> {
  * `import.meta.url` is already realpath-resolved by Node's ESM loader, so
  * `process.argv[1]` gets the same treatment before comparing — a package-manager
  * bin symlink otherwise fails to match.
+ *
+ * NOTE: accepted tradeoff — a false negative here is a CLI that exits 0 having
+ * printed nothing, which is a quiet failure. Gating on `process.env.VITEST`
+ * instead was rejected (a test-runner variable has no business in shipped CLI
+ * source); the counter-guard is `src/__tests__/cli.smoke.test.ts`, which spawns
+ * `dist/bin/host.js --help` and asserts on non-empty stdout. Revisit if that
+ * smoke test is ever weakened or removed.
  */
 function isEntryPoint(): boolean {
   const entry = process.argv[1];

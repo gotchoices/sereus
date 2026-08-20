@@ -11,6 +11,14 @@
  * heading. The flag list inside a heading is *not* validated — doing so would
  * turn a wording tweak into a red build for no correctness gain.
  *
+ * NOTE: a heading advertising a flag the CLI no longer accepts therefore slips
+ * through; if that drift is ever observed in practice, compare the bracketed
+ * tokens against `cmd.options` rather than widening the parse.
+ *
+ * NOTE: every `### ` heading inside the section must be a command reference —
+ * the malformed-heading assertion is a hard failure, not a skip. Explanatory
+ * prose belongs in the section preamble or under a different `## ` section.
+ *
  * Importing `../host.js` is inert: its module scope only builds the commander
  * tree and reads `package.json` for `.version()`. Nothing spawns, binds, or
  * exits until an action fires, and `parseAsync()` is gated behind an
@@ -39,8 +47,8 @@ const IMPLICIT_HELP = 'help';
 interface CommandNode {
   /** Space-joined path below `cadre-host`, e.g. `push fcm`, `nat ddns set`. */
   path: string;
-  /** True when the command has no subcommands of its own. */
-  leaf: boolean;
+  /** True when the command is a *visible leaf* — no subcommands, not hidden. */
+  requiresHeading: boolean;
 }
 
 /**
@@ -59,7 +67,7 @@ function collectCommands(cmd: Command, prefix: string[] = [], visible = true): C
     const path = [...prefix, child.name()];
     const childVisible = visible && visibleChildren.has(child);
     const subcommands = child.commands.filter((c) => c.name() !== IMPLICIT_HELP);
-    out.push({ path: path.join(' '), leaf: subcommands.length === 0 && childVisible });
+    out.push({ path: path.join(' '), requiresHeading: subcommands.length === 0 && childVisible });
     out.push(...collectCommands(child, path, childVisible));
   }
   return out;
@@ -123,7 +131,9 @@ describe('README CLI reference matches the commander tree', () => {
   const documented = new Set(headings.map((h) => h.path).filter((p): p is string => p !== null));
 
   it('has a heading for every leaf command', () => {
-    const missing = commands.filter((c) => c.leaf && !documented.has(c.path)).map((c) => `cadre-host ${c.path}`);
+    const missing = commands
+      .filter((c) => c.requiresHeading && !documented.has(c.path))
+      .map((c) => `cadre-host ${c.path}`);
     expect(
       missing,
       `Commands with no "### " heading under "## CLI reference" in ${readmePath}:\n  ${missing.join('\n  ')}`,

@@ -254,7 +254,7 @@ All commands except `install`, `uninstall`, `start`, `ui`, and the `push` group 
 
 Commands marked **founder role only** additionally need `ownCadre.enabled`; on a donor-only install their routes are unmounted and the command reports a 404.
 
-The `cadre-host push` group is the exception on both counts. It needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json` — and it is **not** founder-role only, because donated nodes get push credentials too. Private keys land in the OS keychain when one is available, otherwise the `0600` fallback at `<dataDir>/nat-secrets.json`; the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so restart cadre-host to apply them immediately.
+The `cadre-host push` group is the exception on both counts. It needs **no running service** — the commands write straight to the data dir's secret store and `host.config.json` — and it is **not** founder-role only, because donated nodes get push credentials too. Private keys land in the OS keychain when one is available, otherwise a plain-JSON fallback at `<dataDir>/nat-secrets.json` (mode `0600` on POSIX; **on Windows the permission bits don't apply, so any account on the machine can read it** — install keytar's native dependency to avoid that); the non-secret bits (APNs bundle id / sandbox toggle, cooldown, debounce) land in `host.config.json`. Credentials are re-resolved on every node spawn, so restart cadre-host to apply them immediately.
 
 ### `cadre-host status`
 
