@@ -401,18 +401,14 @@ export class StrandFormationManager {
    * 3. else → a structural placeholder (no recorder + no provisioner ⇒ no single-use semantics
    *    exist to enforce).
    *
-   * Plan tradeoff — option (a) "record usage on the fallback" over (b) "remove the fallback":
-   * (a) closes the single-use hole with a targeted atomic create+record and leaves the
-   * `StrandProvisioner` mock-transport tests untouched; (b) would delete the provisioner
-   * surface and churn ~6 unit + ~6 integration sites for ZERO production benefit (production
-   * — `cadre-web.ts` / `cadre-phone.ts` — always publishes strand-BOUND invites and treats
-   * the responder-provisions placeholder as failure).
-   *
-   * NOTE: accepted tradeoff — arm 2 (`strandProvisioner`, no recorder) is kept for the
-   * mock/transport-test contract rather than removed; removal would churn ~6 unit + ~6
-   * integration sites for no production benefit, since production always publishes
-   * strand-bound invites. Revisit if production starts publishing unbound invites, or the
-   * mock-transport tests go away.
+   * NOTE: accepted tradeoff — the plan chose (a) "record usage on the fallback" over (b)
+   * "remove the fallback", so arm 2 (`strandProvisioner`, no recorder) is kept. (a) closes the
+   * single-use hole with a targeted atomic create+record and leaves the `StrandProvisioner`
+   * mock-transport tests untouched; (b) would delete the provisioner surface and churn ~6 unit
+   * + ~6 integration sites for ZERO production benefit (production — `cadre-web.ts` /
+   * `cadre-phone.ts` — always publishes strand-BOUND invites and treats the
+   * responder-provisions placeholder as failure). Revisit if production starts publishing
+   * unbound invites, or the mock-transport tests go away.
    */
   private async provisionUnbound(
     contact: FormationContactMessage,

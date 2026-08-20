@@ -120,7 +120,7 @@ describe('control authorization binding (row-bound + single-use stamp)', () => {
    * cast(new.TotalUses as text)). Tests pass an already-canonical datetime literal for
    * ExpiresAt (DATETIME parse is idempotent on it), so no per-test engine
    * canonicalisation is needed. The raw inserts below omit the StrandId column (defaults
-   * null → signs as ''), so these tests exercise the unbound/legacy path.
+   * null → signs as ''), so these tests exercise the unbound path.
    */
   function inviteMessage(action: 'add' | 'remove', fields: {
     token: string;

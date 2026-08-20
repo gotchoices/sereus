@@ -132,7 +132,7 @@ describe('CadreNode identity resolution', () => {
 		expect(node.peerId).toBeUndefined();
 	});
 
-	it('uses config.privateKey verbatim when no keyStore is set (legacy path)', async () => {
+	it('uses config.privateKey verbatim when no keyStore is set', async () => {
 		const key = await generateKeyPair('Ed25519');
 		const node = new CadreNode(makeConfig({ privateKey: key }));
 		await resolve(node);

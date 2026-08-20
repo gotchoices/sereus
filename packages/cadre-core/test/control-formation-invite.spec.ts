@@ -1351,7 +1351,7 @@ describe('control formation invite (consent path: FormationInvite + FormationUsa
         memberPrivateKey: hostMemberKey,
       });
 
-      // Unbound invite (legacy/open path): no StrandId → kind 'unbound'.
+      // Unbound invite (unbound/open path): no StrandId → kind 'unbound'.
       const unbound = 'invite-unbound-' + rand();
       await db.insertFormationInvite(unbound, 'sapp-unbound', ownerPublicKey, signMessage);
       expect(await recorder.resolveStrand(unbound)).toEqual({ kind: 'unbound' });
