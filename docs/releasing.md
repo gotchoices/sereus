@@ -343,7 +343,7 @@ outward-facing and irreversible.
    ```bash
    yarn bump --release prerelease --preid alpha             # → 0.10.0-alpha.0
    ```
-6. **Publish under the `alpha` tag:**
+6. **Publish under the `alpha` tag** (PowerShell: `$env:SEREUS_DIST_TAG = 'alpha'; yarn pub`):
    ```bash
    SEREUS_DIST_TAG=alpha yarn pub
    ```

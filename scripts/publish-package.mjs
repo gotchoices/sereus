@@ -14,7 +14,7 @@ const TAG_SHAPE = /^[a-z0-9][a-z0-9._-]*$/i;
 /**
  * `--tag <name>` on this invocation's own argv beats `SEREUS_DIST_TAG` in the
  * environment, which beats nothing (npm's own `latest` default applies). Both forms
- * are needed: `yarn pub` is six `&&`-ed publishes, so an argv flag appended to the
+ * are needed: `yarn pub` is five `&&`-ed publishes, so an argv flag appended to the
  * `yarn pub` invocation reaches only the last one. The env var is the only form that
  * tags the whole chain: `SEREUS_DIST_TAG=alpha yarn pub`.
  *
@@ -149,7 +149,7 @@ async function main() {
 	const manifest = readManifest(packageDir);
 	const tag = resolveDistTag(process.argv.slice(3), process.env);
 
-	// Fire before `yarn clean && yarn build`: `yarn pub` is six sequential publishes,
+	// Fire before `yarn clean && yarn build`: `yarn pub` is five sequential publishes,
 	// so a refusal here costs seconds, while one caught after the build of package
 	// four (with one..three already on npm under the resolved tag) costs a full
 	// rebuild and cannot undo what already published.

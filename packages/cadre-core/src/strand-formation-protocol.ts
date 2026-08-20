@@ -1,9 +1,9 @@
 /**
  * Native cadre-core strand-formation transport.
  *
- * Mirrors the non-deprecated `seed-bootstrap.ts` protocol service: a dedicated
+ * Mirrors the `seed-bootstrap.ts` protocol service: a dedicated
  * libp2p protocol id, length-prefixed JSON frames, and small single-purpose
- * session helpers. It replaces the deprecated `@serfab/strand-proto` transport,
+ * session helpers. It replaces the removed `@serfab/strand-proto` package's transport,
  * carrying the caller's REAL invitation token + disclosure and BOTH parties'
  * real cadre peer addresses end-to-end (no `{ partyId: sessionId }` / `cadre-*.local`
  * placeholders), and validating the responder's result on the initiator side.
@@ -14,8 +14,8 @@
  *
  * Cadre-disclosure timing: the responder reveals its own party id + cadre addresses
  * — and, for a closed strand returned via provision-then-record, that strand's
- * membership key — ONLY after the
- * token and disclosure validate; a rejection discloses none of them.
+ * membership key — ONLY after the token and disclosure validate; a rejection
+ * discloses none of them.
  */
 
 import debug from 'debug';
@@ -248,12 +248,12 @@ class FrameReader {
 
 // ── Result validation ────────────────────────────────────────────────────────
 
-/** Matches the deprecated strand-proto placeholder cadre addrs (`cadre-a-1.local`, …). */
+/** Matches the placeholder cadre addrs (`cadre-a-1.local`, …) of the removed strand-proto transport. */
 const PLACEHOLDER_CADRE_ADDR = /^cadre-[ab]-\d+\.local$/;
 
 /**
  * Structural check on a `responderCreates` result: the responder must have approved,
- * disclosed a non-empty real identity + cadre (not the deprecated `cadre-*.local`
+ * disclosed a non-empty real identity + cadre (not the legacy `cadre-*.local`
  * placeholders), and returned a strand vouched for by the responder party with a real id.
  *
  * `createdBy: 'responder'` means "the responder party vouches for / returns this strand."

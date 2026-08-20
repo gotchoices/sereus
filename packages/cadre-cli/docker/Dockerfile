@@ -3,7 +3,6 @@
 # workspace toolchain (the repo is a Yarn 4.12.0 / node-modules workspace).
 #
 # Build closure for @serfab/cadre-cli is two workspaces: cadre-core -> cadre-cli.
-# (strand-proto is deprecated and no longer a dependency of either package.)
 #
 # IMPORTANT — intentional deviations from the repo install:
 #   * This image uses a Docker-specific workspace root
