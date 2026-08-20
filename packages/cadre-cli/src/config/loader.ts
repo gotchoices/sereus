@@ -178,6 +178,12 @@ function cloneBranch(existing: unknown): Record<string, unknown> {
  * key bytes.
  */
 export function loadIdentityKey(keyPath: string): PrivateKey {
+  // NOTE: a relative path resolves against the process working directory, NOT the config file's
+  // directory (which is what `nodeStateDir` falls back to). Every shipped launcher passes an
+  // absolute path — the docker entrypoint, cadre-host's spawn args, and `cadre-install.sh`'s sed
+  // over `example.cadre.yaml` — so the two only diverge for a hand-written relative `keyFile`, and
+  // then they fail loudly ("Identity key file not found") rather than quietly. If a launcher ever
+  // needs a config-relative key path, resolve it against the config directory here instead.
   const fullPath = path.resolve(keyPath);
   log('Loading identity key from: %s', fullPath);
 
@@ -232,7 +238,14 @@ function validateIdentityBlock(identity: unknown, configPath: string): void {
     );
   }
 
-  for (const key of Object.keys(identity)) {
+  const block = identity as Record<string, unknown>;
+  rejectUnknownIdentityKeys(block, configPath);
+  rejectUnusableKeyFile(block, configPath);
+}
+
+/** Every key in the block must be the one accepted name — not a retired one, not a misspelling. */
+function rejectUnknownIdentityKeys(block: Record<string, unknown>, configPath: string): void {
+  for (const key of Object.keys(block)) {
     if (IDENTITY_KEYS.has(key)) continue;
     const retired = RETIRED_IDENTITY_KEYS.get(key);
     throw new Error(
@@ -244,11 +257,33 @@ function validateIdentityBlock(identity: unknown, configPath: string): void {
 }
 
 /**
+ * A named-but-valueless `keyFile` is the allowlist's blind spot: `identity:\n  keyFile:` parses to
+ * `{ keyFile: null }`, passes the name check, then fails the truthiness test in
+ * {@link resolveConfig} and resolves to *no identity* — so the node generates a fresh keypair and
+ * comes up as a stranger to its own cadre. Same for `''`, whitespace, or a non-string. The operator
+ * plainly meant to configure an identity; say so instead of re-keying the node.
+ */
+function rejectUnusableKeyFile(block: Record<string, unknown>, configPath: string): void {
+  if (!('keyFile' in block)) return;
+  const keyFile = block.keyFile;
+  if (typeof keyFile === 'string' && keyFile.trim() !== '') return;
+
+  throw new Error(
+    `Config ${configPath}: identity.keyFile must be a path to a libp2p protobuf private key file, ` +
+    `got ${JSON.stringify(keyFile)}. Remove the identity block entirely to run without a stable ` +
+    `peer id; leaving it empty would silently start the node under a NEW one.`,
+  );
+}
+
+/**
  * Reject the retired `CADRE_IDENTITY_PROTOBUF` env var by name.
  *
  * It mapped to `identity.protobufKeyFile`, which no longer exists. Silently ignoring it would
  * leave a launcher that still sets it starting the node with no identity — a fresh keypair and a
  * new PeerId, the exact failure this collapse exists to close.
+ *
+ * NOTE: transitional, like {@link RETIRED_IDENTITY_KEYS} — deletable once no launcher in
+ * circulation still exports the variable.
  */
 function rejectRetiredIdentityEnv(): void {
   const retired = process.env.CADRE_IDENTITY_PROTOBUF;

@@ -162,6 +162,36 @@ describe('enroll create → loadIdentityKey', () => {
     // Binary, not hex text: byte-identical in format to cadre-host's installer `identity.key`.
     expect(readFileSync(keyPath)[0]).toBe(0x08);
   });
+
+  // The key file IS the identity — a second `enroll create` over a live one costs the node its
+  // place in its cadre with no way back. The loader's invalid-key error tells operators to
+  // "regenerate it with 'cadre enroll create'", so aiming that at a directory holding a good key
+  // is a realistic slip, not a contrived one.
+  it('refuses to overwrite an existing key file, leaving it byte-for-byte intact', async () => {
+    const dir = mkdtempSync(join(tmpdir(), 'cadre-enroll-clobber-'));
+    tmpDirs.push(dir);
+
+    vi.spyOn(console, 'log').mockImplementation(() => undefined);
+    const errors: string[] = [];
+    vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
+      errors.push(args.map(String).join(' '));
+    });
+    // Throwing (rather than a no-op) so the assertions cannot pass by accident: a no-op stub lets
+    // execution run on past `process.exit` and write the file the guard was meant to protect.
+    vi.spyOn(process, 'exit').mockImplementation(((code?: number) => {
+      throw new Error(`process.exit(${code ?? 0})`);
+    }) as never);
+
+    const { bytes } = await protobufKey();
+    const keyPath = join(dir, 'node.key');
+    writeFileSync(keyPath, bytes);
+
+    await expect(enrollCommand.parseAsync(['create', '--output', dir, '--name', 'node'], { from: 'user' }))
+      .rejects.toThrow('process.exit(1)');
+
+    expect(errors.join('\n')).toMatch(/Refusing to overwrite/);
+    expect(new Uint8Array(readFileSync(keyPath))).toEqual(bytes);
+  });
 });
 
 describe('resolveConfig identity block', () => {
@@ -249,6 +279,58 @@ describe('resolveConfig identity block', () => {
 
     await expect(resolveConfig(writeConfig(dir, { keyfile: keyFile })))
       .rejects.toThrow(/unknown key identity\.keyfile/);
+  });
+
+  // The allowlist's blind spot: `identity:\n  keyFile:` in YAML parses to `{ keyFile: null }`, so
+  // the NAME check passes and the value then fails the truthiness test that selects the loader —
+  // resolving to no identity and re-keying the node, the very outcome the block exists to prevent.
+  // `''` and whitespace are the same slip written differently; a non-string is a hand-edit typo.
+  it.each([
+    ['null (a keyFile: line with no value)', null],
+    ['an empty string', ''],
+    ['whitespace only', '   '],
+    ['a non-string', 42],
+  ])('rejects identity.keyFile set to %s rather than re-keying the node', async (_label, keyFile) => {
+    const dir = tmpDir('empty-keyfile');
+
+    await expect(resolveConfig(writeConfig(dir, { keyFile })))
+      .rejects.toThrow(/identity\.keyFile must be a path/);
+  });
+
+  it('rejects an identity block that is not an object', async () => {
+    const dir = tmpDir('scalar-identity');
+    const configPath = join(dir, 'cadre.json');
+    writeFileSync(configPath, JSON.stringify({
+      identity: '/some/path.key',
+      controlNetwork: { partyId: 'test-party', bootstrapNodes: [] },
+      profile: 'storage',
+      storage: { type: 'memory' },
+    }));
+
+    await expect(resolveConfig(configPath)).rejects.toThrow(/Invalid identity block/);
+  });
+
+  // An empty `identity: {}` names nothing, so it stays legal — the node runs without a stable peer
+  // id, same as omitting the block. Pinned so the guard above is not widened by accident.
+  it('accepts an empty identity block as "no identity configured"', async () => {
+    const dir = tmpDir('empty-block');
+
+    const resolved = await resolveConfig(writeConfig(dir, {}));
+
+    expect(resolved.privateKey).toBeUndefined();
+  });
+
+  // A valueless keyFile must not veto an identity the environment supplies — this is the docker
+  // entrypoint's repair path, where CADRE_KEY_FILE is authoritative over whatever the file says.
+  it('lets CADRE_KEY_FILE rescue a config whose keyFile has no value', async () => {
+    const dir = tmpDir('empty-keyfile-env');
+    const { key, keyFile } = await writeEnrolledKey(dir, 'from-env.key');
+    process.env.CADRE_KEY_FILE = keyFile;
+
+    const resolved = await resolveConfig(writeConfig(dir, { keyFile: null }));
+
+    expect(peerIdFromPrivateKey(resolved.privateKey!).toString())
+      .toBe(peerIdFromPrivateKey(key).toString());
   });
 
   it('rejects the retired CADRE_IDENTITY_PROTOBUF env var, naming CADRE_KEY_FILE', async () => {

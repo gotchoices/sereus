@@ -99,6 +99,12 @@ Create a new peer identity:
 cadre enroll create --output ./keys --name my-node
 ```
 
+Writes `<name>.key` (the private key, mode 600) and `<name>.id` (the Peer ID). The key file is
+the libp2p protobuf format — the one identity format `identity.keyFile` accepts. The command
+**refuses to overwrite an existing `<name>.key`**: that file is the node's identity, and
+replacing it changes the node's Peer ID irrecoverably. Move or delete it first if you really
+mean to re-key.
+
 Verify an owner's signature over a peer ID. This is an **offline check**:
 it confirms the signature is valid but does **not** contact the control network
 or register the peer. Membership is granted by the running owner node
@@ -386,10 +392,16 @@ docker compose up -d
 ```
 
 Node state (peer key, storage) lives in the `sereus_cadre_data` volume. Back up
-the peer identity — losing it changes the node's PeerID:
+the peer identity — losing it changes the node's PeerID. The key file is **binary**
+(a libp2p protobuf private key), so copy it as a file rather than piping it through
+a TTY, which would mangle the bytes:
 
 ```bash
-docker compose exec cadre-node cat /data/cadre-peer.key > cadre-peer.key.bak
+docker compose cp cadre-node:/data/cadre-peer.key ./cadre-peer.key.bak
+# to restore, stop the node first so it re-reads the key on its next start:
+docker compose stop cadre-node
+docker compose cp ./cadre-peer.key.bak cadre-node:/data/cadre-peer.key
+docker compose start cadre-node
 ```
 
 ## Programmatic Usage

@@ -32,6 +32,19 @@ export const enrollCommand = new Command('enroll')
         const keyPath = path.join(outputDir, `${options.name}.key`);
         const idPath = path.join(outputDir, `${options.name}.id`);
 
+        // Never overwrite an existing key: the file IS the node's identity, and replacing it
+        // silently costs the node its place in its cadre with no way back. Both callers that
+        // run this unattended (the docker entrypoint, the integration harness) already skip
+        // when the file exists — this is the guard for the operator who follows the "regenerate
+        // it with 'cadre enroll create'" advice in the loader's invalid-key error and happens to
+        // aim at a directory that already holds a good key.
+        if (fs.existsSync(keyPath)) {
+          console.error(`✗ Refusing to overwrite an existing identity key: ${keyPath}`);
+          console.error('  That file is the node\'s identity — replacing it changes its Peer ID.');
+          console.error('  Move or delete it first, or pass a different --output / --name.');
+          process.exit(1);
+        }
+
         // `result.privateKey` is already `privateKeyToProtobuf` output. Write those bytes
         // verbatim — no hex or base64 layer — so this file is byte-identical in format to the
         // `identity.key` cadre-host's installer writes, and is what `identity.keyFile` accepts.
