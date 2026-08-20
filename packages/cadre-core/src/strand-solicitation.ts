@@ -286,18 +286,17 @@ export class StrandSolicitationService {
    * This generates a member key, contacts the responder's cadre, and negotiates
    * strand formation.
    *
-   * @param invitation The open invitation (or just token for legacy API)
+   * @param invitation The open invitation
    * @param disclosure Identity/context information to share with the responder
    * @param node Optional libp2p node for real protocol handling
    * @returns The member key and strand info if successful
    */
   async formStrand(
-    invitation: OpenInvitation | string,
+    invitation: OpenInvitation,
     disclosure: StrandFormationDisclosure,
     node?: Libp2p
   ): Promise<FormStrandResult> {
-    // Handle legacy API where just token was passed
-    const token = typeof invitation === 'string' ? invitation : invitation.token;
+    const token = invitation.token;
     log('Forming strand with token: %s', token);
 
     // Generate a new keypair for this strand membership
@@ -310,8 +309,8 @@ export class StrandSolicitationService {
 
     log('Generated member key: %s', memberKey);
 
-    // If we have a full invitation and a node, use the real protocol
-    if (typeof invitation !== 'string' && node) {
+    // If we have a node, use the real protocol
+    if (node) {
       log('Using native cadre-core formation transport');
       const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(privateKey);
       const usageStampId = generateStampId(memberKey);

@@ -35,7 +35,14 @@ describe('StrandSolicitationService', () => {
         purpose: 'Test strand formation'
       };
 
-      const result = await service.formStrand('test-token', disclosure);
+      const invitation: OpenInvitation = {
+        token: 'test-token',
+        sAppId: 'sapp-123',
+        expiration: new Date(Date.now() + 3600000),
+        bootstrap: []
+      };
+
+      const result = await service.formStrand(invitation, disclosure);
 
       expect(result.memberKey).toBeDefined();
       expect(result.memberKey.startsWith('12D3KooW')).toBe(true); // Ed25519 peer ID
@@ -49,8 +56,21 @@ describe('StrandSolicitationService', () => {
       const service = new StrandSolicitationService();
       const disclosure: StrandFormationDisclosure = { partyId: 'party-123' };
 
-      const result1 = await service.formStrand('token-1', disclosure);
-      const result2 = await service.formStrand('token-2', disclosure);
+      const invitation1: OpenInvitation = {
+        token: 'token-1',
+        sAppId: 'sapp-123',
+        expiration: new Date(Date.now() + 3600000),
+        bootstrap: []
+      };
+      const invitation2: OpenInvitation = {
+        token: 'token-2',
+        sAppId: 'sapp-123',
+        expiration: new Date(Date.now() + 3600000),
+        bootstrap: []
+      };
+
+      const result1 = await service.formStrand(invitation1, disclosure);
+      const result2 = await service.formStrand(invitation2, disclosure);
 
       expect(result1.memberKey).not.toBe(result2.memberKey);
       expect(result1.strandId).not.toBe(result2.strandId);
