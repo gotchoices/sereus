@@ -37,13 +37,16 @@ describe('HealthServer', () => {
   let server: HealthServer | null = null;
   let node: MockNode;
 
-  async function startServer(seedToken?: string): Promise<{ base: string }> {
+  async function startServer(seedToken?: string): Promise<{ base: string; metricsBase: string }> {
     node = new MockNode();
-    // Port 0 + healthBoundPort lets the suite run without a fixed port.
+    // Port 0 + healthBoundPort/metricsBoundPort lets the suite run without a fixed port.
     server = new HealthServer({ healthPort: 0, metricsPort: 0, seedToken });
     server.attach(node as unknown as CadreNode);
     await server.start();
-    return { base: `http://127.0.0.1:${server.healthBoundPort}` };
+    return {
+      base: `http://127.0.0.1:${server.healthBoundPort}`,
+      metricsBase: `http://127.0.0.1:${server.metricsBoundPort}`,
+    };
   }
 
   afterEach(async () => {
@@ -68,6 +71,16 @@ describe('HealthServer', () => {
       expect((await fetch(`${base}/health`)).status).toBe(200);
       expect((await fetch(`${base}/ready`)).status).toBe(200);
       expect((await fetch(`${base}/status`)).status).toBe(200);
+    });
+
+    it('GET /metrics reports cadre_connections_total and drops the retired cadre_peers_connected alias', async () => {
+      const { metricsBase } = await startServer();
+      const res = await fetch(`${metricsBase}/metrics`);
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).toContain('cadre_connections_total ');
+      expect(body).not.toContain('cadre_peers_connected');
+      expect(body).not.toContain('\n\n\n');
     });
   });
 

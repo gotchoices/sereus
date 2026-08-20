@@ -69,8 +69,6 @@ export interface MetricsData {
   cadre_strands_hibernating: number;
 
   // Connection metrics (sourced from CadreNode.getConnectionPaths())
-  /** Total connected peers; kept for back-compat with existing scrape configs (== cadre_connections_total). */
-  cadre_peers_connected: number;
   cadre_connections_total: number;
   cadre_connections_relayed: number;
   cadre_connections_direct: number;
@@ -113,6 +111,13 @@ export class HealthServer {
     const addr = this.healthServer?.address();
     if (addr && typeof addr === 'object') return addr.port;
     return this.options.healthPort;
+  }
+
+  /** The actually-bound metrics port (useful when constructed with port 0). */
+  get metricsBoundPort(): number {
+    const addr = this.metricsServer?.address();
+    if (addr && typeof addr === 'object') return addr.port;
+    return this.options.metricsPort;
   }
 
   /** Start the health and metrics servers */
@@ -194,7 +199,6 @@ export class HealthServer {
       cadre_strands_active: active,
       cadre_strands_idle: idle,
       cadre_strands_hibernating: hibernating,
-      cadre_peers_connected: paths.total, // back-compat alias for cadre_connections_total
       cadre_connections_total: paths.total,
       cadre_connections_relayed: paths.relayed,
       cadre_connections_direct: paths.direct,
@@ -240,9 +244,6 @@ export class HealthServer {
 
   private formatConnectionMetrics(data: MetricsData): string[] {
     const lines = [
-      '', '# HELP cadre_peers_connected Number of connected peers (alias of cadre_connections_total)',
-      '# TYPE cadre_peers_connected gauge',
-      `cadre_peers_connected ${data.cadre_peers_connected}`,
       '', '# HELP cadre_connections_total Total open connections',
       '# TYPE cadre_connections_total gauge',
       `cadre_connections_total ${data.cadre_connections_total}`,
