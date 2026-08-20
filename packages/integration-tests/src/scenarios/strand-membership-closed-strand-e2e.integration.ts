@@ -182,7 +182,7 @@ function createTestNodeConfig(
 		network: {
 			transports: wsTransports(),
 			listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws'],
-			...(opts.enableRelay ? { enableRelay: true } : {}),
+			...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
 		},
 		hibernation: { enabled: false },
 	};

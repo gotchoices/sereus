@@ -2435,6 +2435,13 @@ export class CadreNode implements SAppIdLookup {
       if (!this._running || !this.controlNode) {
         return;
       }
+      // NOTE: a connection this node still holds in `status: 'open'` after the remote
+      // has already aborted it counts as connected here, so the cold-start retry stays
+      // suppressed for that peer until the connection monitor's next ping notices the
+      // abort — measured at ~9 s in `control-cohort-cold-start-retry.integration.ts`.
+      // Bounded and self-healing today; it would start to matter if the connection
+      // monitor's ping interval were lengthened, or if recovery ever had to meet a
+      // deadline tighter than one ping interval.
       if (connected.has(peerId)) {
         continue;
       }

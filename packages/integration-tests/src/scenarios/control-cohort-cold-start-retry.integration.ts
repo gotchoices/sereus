@@ -40,21 +40,52 @@
  * also the sharper model of the failure this scenario is about: an owner that
  * refuses, or is simply unreachable, at the moment the seed lands.
  *
- * KNOWN GAP — this scenario does not currently prove what it was written to
- * prove. The intent is that without the cold-start branch in
- * `reconcileControlCohort` step 5 below times out; measured 2026-08-20, it does
- * NOT — with `CadreNode.dialColdStartBootstrap` neutralized the scenario still
- * passes, because some other dialer (libp2p's own auto-dial from the peerStore
- * `applySeed` populated, or the optimystic read path, not yet attributed) opens
- * B's outbound connection to A. In normal operation the cold-start branch IS the
- * path that dials — the sibling list is empty exactly as step 5 assumes — but
- * the assertion cannot tell that from its absence. Do not read a green run here
- * as protecting `cold-start-control-redial` until
- * `tickets/fix/cold-start-redial-assertion-has-no-teeth.md` is resolved.
+ * WHY STEP 3b STRIPS A FROM B's peerStore — read this before deleting that
+ * step. Without it the scenario proves nothing: measured 2026-08-20, with
+ * `CadreNode.dialColdStartBootstrap` neutralized it still went green in ~3.5 s,
+ * because a SECOND dialer produces B's outbound connection. That dialer is
+ * p2p-fret's stabilization loop (`FretService.stabilizeOnce`, re-armed every
+ * 300 ms in active mode). It dials A by BARE PEER ID, and libp2p resolves a bare
+ * id to an address out of B's libp2p peerStore — the entry
+ * `SeedBootstrapService.applySeed` wrote when it made the dial step 3 watches
+ * fail. FRET only treats a peer as dialable while it holds an address for it
+ * (`isDialable = hasAddresses || isConnected`, and the address set is rebuilt
+ * wholesale from `peerStore.all()` on every tick), so deleting that one entry
+ * takes out the whole competing route — FRET's, optimystic's bare-peer-id dial
+ * paths, and libp2p's own reconnect machinery lose their address for A together.
+ *
+ * `dialColdStartBootstrap` never touches the libp2p peerStore. It dials the
+ * multiaddrs cadre-core retained in its OWN `bootstrapPeerStore` at seed-apply
+ * time (`recordSeedBootstrapPeers`), binding each to A's peer id. The two
+ * dialers have INDEPENDENT address sources, which is exactly what lets step 3b
+ * remove one and leave the other intact; afterwards the cold-start branch is the
+ * only thing left that can produce an outbound B→A connection, so step 5
+ * measures that branch and nothing else. Nothing re-populates the stripped entry
+ * in between: identify needs a connection (there is none), `warmSiblingAddrBook`
+ * needs siblings (the table is empty), and `applySeed` has already run. Once the
+ * cold-start dial lands, identify refills the entry normally — the strip is a
+ * one-shot, and step 6 is unaffected.
+ *
+ * Measured at `370ad30` with the strip in place: branch intact → green 3/3
+ * (~4 s); branch early-returning → RED 3/3, with no dialer at all reconnecting B
+ * to A inside the full 45 s window. To re-verify after changing either side, add
+ * an early `return` at the top of `CadreNode.dialColdStartBootstrap`, run
+ * `yarn workspace @serfab/cadre-core build`, run this scenario and require RED at
+ * step 5; then restore the file, rebuild, and require green.
+ *
+ * ABOUT THE FEATURE, not the test: the cold-start branch is not the only thing
+ * that can recover a stranded joiner in a live deployment. For as long as B's
+ * libp2p peerStore still holds the owner's address — which `applySeed` puts
+ * there — FRET's stabilization probes reconnect B on their own, typically within
+ * a few seconds. The branch is the load-bearing path for the cases FRET cannot
+ * serve: a peerStore whose address entries have aged out, and a process restart
+ * (the peerStore is in-memory, while `bootstrapPeerStore` persists). Overlap,
+ * not redundancy.
  */
 
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
+import { peerIdFromString } from '@libp2p/peer-id';
 import { CadreNode, ed25519KeyPairFromLibp2p, pinnedKeyTrustPolicy } from '@serfab/cadre-core';
 import {
 	waitUntil, waitForCadrePeerConverged,
@@ -130,6 +161,28 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 				{ timeoutMs: 10_000, intervalMs: 200, description: "B's cold-start seed dial is refused" }
 			);
 
+			// 3b. Strip A from B's libp2p peerStore. LOAD-BEARING, not tidy-up — this
+			//     is what gives step 5 its teeth, and the module doc above explains why
+			//     at length. Short version: `applySeed`'s refused dial left A's address
+			//     in that store, p2p-fret's stabilization loop dials A by bare peer id
+			//     off exactly that entry, and it reconnects B on its own — so step 5
+			//     passed even with the cold-start branch neutralized. Deleting the entry
+			//     removes FRET's route and every other bare-peer-id dialer's with it.
+			//     `dialColdStartBootstrap` dials cadre-core's own `bootstrapPeerStore`,
+			//     which this deliberately does NOT touch, so it is left as the only
+			//     producer of the outbound connection step 5 waits for.
+			await B.getControlNode()!.peerStore.delete(peerIdFromString(aPeerId));
+			await waitUntil(
+				async () => {
+					const store = B!.getControlNode()!.peerStore;
+					if (!(await store.has(peerIdFromString(aPeerId)))) {
+						return true;
+					}
+					return (await store.get(peerIdFromString(aPeerId))).addresses.length === 0;
+				},
+				{ timeoutMs: 5_000, intervalMs: 100, description: "B's peerStore holds no address for A" }
+			);
+
 			// 4. A vouches B, exactly as a delayed/retried onboarding would. Nothing
 			//    dials on B's behalf here: B listens on nothing, so A cannot reach it,
 			//    and B's one seed dial is already spent.
@@ -138,7 +191,8 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			// 5. THE REGRESSION ASSERTION. Only the cold-start branch of
 			//    `reconcileControlCohort` can produce this connection — B's CadrePeer
 			//    table is still empty, so the steady-state sibling path has nothing to
-			//    enumerate. `direction === 'outbound'` proves B dialed it.
+			//    enumerate, and step 3b removed the peerStore address every bare-peer-id
+			//    dialer needs. `direction === 'outbound'` proves B dialed it.
 			await waitUntil(
 				() => connectionsTo(B!, aPeerId).some((c) => c.direction === 'outbound'),
 				{ timeoutMs: 45_000, intervalMs: 250, description: 'B re-dials A from its retained seed addresses' }
