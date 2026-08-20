@@ -25,9 +25,32 @@
  *    exists can only be one B dialed.
  *  - The assertion checks `direction === 'outbound'` on B's side as well.
  *
- * Without the cold-start branch in `reconcileControlCohort`, step 5 below times
- * out: B logs `refreshAuthorizedControlPeers(reconcile)` every pass and never
- * dials anything.
+ * A third detail is what makes the FORCED refusal reachable at all: A passes
+ * `enableRelay: false`, and must keep passing it. Relay is NOT off by default
+ * here — `CadreNode.relayServerEnabled` defaults it to `profile === 'storage'`,
+ * and A is a storage node — so omitting the flag leaves the relay server ON. On
+ * a node running it the gater answers an unplaceable peer with
+ * `'admit-for-relay'` rather than a deny (see `membership-connection-gater.ts` →
+ * "The relay-reservation seam"): B's dial is ADMITTED and only aborted at the
+ * 5 s not-reserving deadline, and B — which learns of that abort no sooner than
+ * its next connection-monitor ping — holds the dead connection `open` for
+ * several seconds beyond that. Step 3 below then never observes the refusal it
+ * exists to pin, and step 5 would be satisfied by the seed dial's own still-live
+ * connection rather than by a re-dial, proving nothing. A relay-less owner is
+ * also the sharper model of the failure this scenario is about: an owner that
+ * refuses, or is simply unreachable, at the moment the seed lands.
+ *
+ * KNOWN GAP — this scenario does not currently prove what it was written to
+ * prove. The intent is that without the cold-start branch in
+ * `reconcileControlCohort` step 5 below times out; measured 2026-08-20, it does
+ * NOT — with `CadreNode.dialColdStartBootstrap` neutralized the scenario still
+ * passes, because some other dialer (libp2p's own auto-dial from the peerStore
+ * `applySeed` populated, or the optimystic read path, not yet attributed) opens
+ * B's outbound connection to A. In normal operation the cold-start branch IS the
+ * path that dials — the sibling list is empty exactly as step 5 assumes — but
+ * the assertion cannot tell that from its absence. Do not read a green run here
+ * as protecting `cold-start-control-redial` until
+ * `tickets/fix/cold-start-redial-assertion-has-no-teeth.md` is resolved.
  */
 
 import { describe, it, expect } from 'vitest';
@@ -47,9 +70,12 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 		try {
 			const partyId = `cold-retry-${Date.now()}`;
 
-			// A: owner + storage (holds the CadrePeer blocks) + relay.
+			// A: owner + storage (holds the CadrePeer blocks). `enableRelay: false` is
+			// load-bearing and overrides the storage-profile default — see the module
+			// doc: with the relay server on, A's gate admits B for relay instead of
+			// refusing it, and step 3's forced refusal never happens.
 			const aKey = await generateKeyPair('Ed25519');
-			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: true }));
+			A = new CadreNode(controlNodeConfig({ partyId, privateKey: aKey, profile: 'storage', enableRelay: false }));
 			await A.start();
 			await makeOwnOwner(A, aKey);
 			const aPeerId = A.peerId!.toString();
@@ -95,7 +121,8 @@ describe('Cold-start bootstrap retry (first dial refused)', () => {
 			expect(applied.ownerDialsAttempted).toBe(1);
 
 			// 3. Confirm the first dial really did not stick. A's deny lands AFTER the
-			//    dialer's upgrade completes (see createMembershipConnectionGater), so
+			//    dialer's upgrade completes (noise negotiates the muxer in the security
+			//    handshake's early data, see createMembershipConnectionGater), so
 			//    `dial()` may resolve and the connection die moments later — poll for
 			//    the settled state rather than asserting on the dial's return value.
 			await waitUntil(

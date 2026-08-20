@@ -43,6 +43,13 @@ export interface ControlNodeOpts {
   privateKey?: PrivateKey;
   bootstrapNodes?: string[];
   profile?: 'storage' | 'transaction';
+  /**
+   * Run the circuit-relay server? Left unset this is NOT off — `CadreNode`
+   * defaults it to `profile === 'storage'`, so a storage node relays unless a
+   * scenario says otherwise. Pass `false` explicitly to get a storage node whose
+   * gate refuses an unplaceable peer outright, instead of admitting it for relay
+   * and dropping it at the not-reserving deadline.
+   */
   enableRelay?: boolean;
   listenAddrs?: string[];
   /**
@@ -103,7 +110,10 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       transports: wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
       ...(opts.relayAddrs ? { relayAddrs: opts.relayAddrs } : {}),
-      ...(opts.enableRelay ? { enableRelay: true } : {}),
+      // Forwarded on `!== undefined`, not on truthiness: `false` is a meaningful
+      // value here (it overrides the storage-profile default), and a truthiness
+      // test would silently drop it and leave the relay server on.
+      ...(opts.enableRelay !== undefined ? { enableRelay: opts.enableRelay } : {}),
       ...(opts.unauthorizedRelayReservationCap !== undefined
         ? { unauthorizedRelayReservationCap: opts.unauthorizedRelayReservationCap } : {}),
       ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),
