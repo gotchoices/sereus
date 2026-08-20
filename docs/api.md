@@ -53,7 +53,16 @@ type OpenInvitation = {
 
 Invitee forms:
 ```ts
-formStrand(token: string, disclosure: object): { memberKey: string, invitePrivateKey: string };
+formStrand(
+    invitation: OpenInvitation,
+    disclosure: StrandFormationDisclosure,
+    node?: Libp2p
+): Promise<{
+    memberKey: string,
+    invitePrivateKey: string,
+    strandId: string,
+    memberPrivateKey?: string,   // closed strands only
+}>;
 ```
 
 ## Validate Strand Formation (approval hook)

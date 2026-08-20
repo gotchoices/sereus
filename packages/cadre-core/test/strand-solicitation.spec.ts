@@ -26,6 +26,19 @@ async function createLibp2pNodeWithKeys(port: number = 0): Promise<Libp2p> {
   });
 }
 
+/**
+ * A minimal, unexpired invitation for the no-`node` path of `formStrand`, which reads
+ * only `token`. Real-protocol cases build their invitation from `createOpenInvitation`.
+ */
+function nodelessInvitation(token: string): OpenInvitation {
+  return {
+    token,
+    sAppId: 'sapp-123',
+    expiration: new Date(Date.now() + 3600000),
+    bootstrap: []
+  };
+}
+
 describe('StrandSolicitationService', () => {
   describe('formStrand', () => {
     it('should generate member key and private key', async () => {
@@ -35,14 +48,7 @@ describe('StrandSolicitationService', () => {
         purpose: 'Test strand formation'
       };
 
-      const invitation: OpenInvitation = {
-        token: 'test-token',
-        sAppId: 'sapp-123',
-        expiration: new Date(Date.now() + 3600000),
-        bootstrap: []
-      };
-
-      const result = await service.formStrand(invitation, disclosure);
+      const result = await service.formStrand(nodelessInvitation('test-token'), disclosure);
 
       expect(result.memberKey).toBeDefined();
       expect(result.memberKey.startsWith('12D3KooW')).toBe(true); // Ed25519 peer ID
@@ -56,21 +62,8 @@ describe('StrandSolicitationService', () => {
       const service = new StrandSolicitationService();
       const disclosure: StrandFormationDisclosure = { partyId: 'party-123' };
 
-      const invitation1: OpenInvitation = {
-        token: 'token-1',
-        sAppId: 'sapp-123',
-        expiration: new Date(Date.now() + 3600000),
-        bootstrap: []
-      };
-      const invitation2: OpenInvitation = {
-        token: 'token-2',
-        sAppId: 'sapp-123',
-        expiration: new Date(Date.now() + 3600000),
-        bootstrap: []
-      };
-
-      const result1 = await service.formStrand(invitation1, disclosure);
-      const result2 = await service.formStrand(invitation2, disclosure);
+      const result1 = await service.formStrand(nodelessInvitation('token-1'), disclosure);
+      const result2 = await service.formStrand(nodelessInvitation('token-2'), disclosure);
 
       expect(result1.memberKey).not.toBe(result2.memberKey);
       expect(result1.strandId).not.toBe(result2.strandId);

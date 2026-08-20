@@ -565,7 +565,7 @@ sequenceDiagram
     participant B as Party B (Initiator)
     Note over A: Strand pre-created; FormationInvite<br/>bound to it (StrandId) created
     Note over B: Receives invitation out-of-band
-    B->>A: formStrand(token, disclosure)
+    B->>A: formStrand(invitation, disclosure)
     Note over A: Validate token, validate identity,<br/>resolve bound strand, record FormationUsage
     A->>B: Response with strand info + membership key
     Note over A,B: Both add to Strand table →<br/>triggers node participation
