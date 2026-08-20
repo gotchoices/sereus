@@ -1,7 +1,6 @@
 ----
 description: We still publish a package we wrote off as deprecated, and every release packs and installs it as part of the pre-release check. It has been decided that we stop shipping it, so it needs to come out of the build, the release process, and the repository.
 files: package.json, packages/strand-proto/, docs/testing.md, docs/strand-proto.md, AGENTS.md, eslint.config.mjs, scripts/release-preflight.mjs
-prereq: retire-backwards-compatibility-affordances
 difficulty: easy
 ----
 
@@ -14,12 +13,26 @@ difficulty: easy
 > `blocked/` because the question it asked has been answered — what remains is execution, and the
 > shape of that is what the plan stage should settle.
 >
-> One thing the original ticket did not cover, now tracked by
-> `plan/retire-backwards-compatibility-affordances` item 5: `docs/strand-proto.md:4` holds the
-> protocol id at `/sereus/bootstrap/1.0.0` explicitly "for backward compatibility", while
-> `docs/architecture.md:518` says the live formation transport mirrors a *non-deprecated*
-> seed-bootstrap service. Establish whether those are the same protocol before deleting anything,
-> so a live protocol id does not leave with the dead package.
+> **The protocol-id question is answered — nothing live leaves with the package.** The compatibility
+> sweep (`plan/retire-backwards-compatibility-affordances`, item 5) asked whether
+> `/sereus/bootstrap/1.0.0` — held at that string "for backward compatibility" per
+> `docs/strand-proto.md:4` — is the same protocol as the live formation transport. It is not. A
+> repo-wide search puts that id in exactly two places, both inside the dead package:
+> `packages/strand-proto/src/bootstrap.ts:13` (`DEFAULT_PROTOCOL_ID`) and
+> `packages/strand-proto/README.md:22`, plus the two mentions in `docs/strand-proto.md` (lines 4 and
+> 14) that describe it. The three live protocol ids are unrelated strings, defined and used entirely
+> outside the package: `/sereus/formation/1.0.0` (`strand-formation-protocol.ts:36`),
+> `/sereus/seed/1.0.0` (`seed-bootstrap.ts:38`), and `/sereus/strand-addr/1.0.0`
+> (`strand-addr-protocol.ts`). "Seed-bootstrap" in `docs/architecture.md:518` names
+> `seed-bootstrap.ts` — the `/sereus/seed/1.0.0` service — not this package; the sentence means the
+> formation transport copies its *frame format*, not its id.
+>
+> So there is no live id being held at a historical string, and nothing to rename. Two consequences
+> for this ticket's own scope, both wording rather than code: `docs/strand-proto.md` goes with the
+> package (its "remains ... for backward compatibility" line has no other home), and
+> `docs/architecture.md:518` currently defines the formation transport by contrast with "the
+> deprecated `strand-proto`" — once the package is gone that comparison names nothing, so rewrite
+> the sentence to describe the transport on its own terms.
 >
 > Note also that this ticket's original `files:` named `docs/STATUS.md`, which no longer exists —
 > its content moved to `docs/testing.md` in `3ca8737`.
