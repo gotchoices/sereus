@@ -178,6 +178,14 @@ export const RELAY_ADMISSION_RESERVE_DEADLINE_MS = 5_000;
  * in flight, not as public relay capacity. Overridable per node via
  * `network.unauthorizedRelayReservationCap` (0 refuses every unauthorized
  * reservation — the strict pre-seam posture).
+ *
+ * NOTE: this cap shares the relay server's own reservation store, whose default
+ * size is 15 (`@libp2p/circuit-relay-v2`'s `DEFAULT_MAX_RESERVATION_STORE_SIZE`);
+ * unplaced peers may therefore occupy up to this many of those slots, and the
+ * rest are what members and delegates compete for. This module cannot read the
+ * server's size, so the two are kept apart by hand — if either is raised, keep
+ * this one well under the store's, or a fleet of unplaceable peers can crowd
+ * genuine members out of the server's own store (which the gate cannot override).
  */
 export const MAX_UNAUTHORIZED_RELAY_RESERVATIONS = 8;
 
@@ -232,7 +240,9 @@ export interface InboundAdmissionPolicy {
  * {@link UNAUTHORIZED_RESERVATION_TTL_MS} for why that mirrors the relay
  * server's own hold). Injectable `now` keeps expiry testable without fake
  * timers. Authorized members and delegates are never run through this — the
- * policy admits them before consulting the budget.
+ * policy admits them before consulting the budget, and `release`s the slot such
+ * a peer took while it was still unplaceable, so the boot-ordering window a
+ * member passes through costs the budget nothing once its row lands.
  */
 export class UnauthorizedReservationBudget {
   private readonly admitted = new Map<string, number>();
@@ -256,6 +266,16 @@ export class UnauthorizedReservationBudget {
     }
     this.admitted.set(remotePeerId, now + this.ttlMs);
     return true;
+  }
+
+  /**
+   * Give back the slot `remotePeerId` holds, if any — called when the peer has
+   * become admissible on its own merits (its membership row replicated, or a
+   * delegate grant landed), so the slot it took during the boot-ordering window
+   * does not stay spent for the remaining TTL on a peer that no longer needs it.
+   */
+  release(remotePeerId: string): void {
+    this.admitted.delete(remotePeerId);
   }
 
   private prune(now: number): void {
@@ -395,6 +415,12 @@ interface PendingReserveDeadline {
  * timer for the peer. Timers are unref'd so an armed deadline never holds a
  * process open, and a timer that fires against an already-closed connection is
  * a swallowed no-op.
+ *
+ * Disarming is final for the connections it cancelled: a peer that reserved
+ * once and then lets its reservation lapse keeps a mute connection (the
+ * fail-closed stream gates refuse it every members-only protocol) until either
+ * side closes it. Bounded — only a peer the reservation policy already admitted
+ * can reach that state, so unplaceable peers are bounded by the budget cap.
  */
 class PendingReserveDeadlines {
   private readonly byPeer = new Map<string, Set<PendingReserveDeadline>>();

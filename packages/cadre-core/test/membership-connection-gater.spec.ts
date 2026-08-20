@@ -14,7 +14,7 @@ import {
 import { StrandSolicitationService } from '../src/strand-solicitation.js';
 import { SEED_PROTOCOL } from '../src/seed-bootstrap.js';
 import { FORMATION_PROTOCOL } from '../src/strand-formation-protocol.js';
-import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith } from './membership-gate-helpers.js';
+import { MEMBER, STRANGER, createConfig, makeOwner, vouchedRow, bareRow, inject, anchorWith, fakeDb } from './membership-gate-helpers.js';
 
 /**
  * Unit coverage for the control-network inbound admission gates
@@ -212,6 +212,18 @@ describe('UnauthorizedReservationBudget', () => {
     expect(budget.tryAdmit('a', 900)).toBe(true); // refreshed: now expires at 1_900
     expect(budget.tryAdmit('b', 1_500)).toBe(false);
     expect(budget.tryAdmit('b', 1_900)).toBe(true); // a's refreshed entry lapsed
+  });
+
+  it('release gives a slot back, and releasing an absent peer is a no-op', () => {
+    const budget = new UnauthorizedReservationBudget(1, 1_000);
+
+    expect(budget.tryAdmit('a', 0)).toBe(true);
+    expect(budget.tryAdmit('b', 0)).toBe(false);
+    budget.release('never-admitted');
+    expect(budget.size).toBe(1);
+    budget.release('a');
+    expect(budget.size).toBe(0);
+    expect(budget.tryAdmit('b', 0)).toBe(true);
   });
 
   it('a cap of zero refuses everyone', () => {
@@ -545,6 +557,39 @@ describe('CadreNode.admitControlRelayReservation', () => {
     expect(await admitReservation(node, STRANGER)).toBe(true);
     expect(await admitReservation(node, STRANGER)).toBe(true);
     expect(budgetOf(node).size).toBe(1);
+  });
+
+  it('gives the budget slot back once the unplaced peer\'s own row lands', async () => {
+    // The boot-ordering window closing: a member that reserved before its
+    // CadrePeer row replicated here must not keep the slot spent for the rest
+    // of the entry's TTL, or a party that restarts often silts the budget up
+    // with peers that no longer need it.
+    const owner = makeOwner();
+    const node = new CadreNode(createConfig([], { network: { enableRelay: true, unauthorizedRelayReservationCap: 1 } }));
+    inject(node, { members: [vouchedRow(MEMBER, owner)], anchor: await anchorWith('p', owner.publicKey) });
+
+    expect(await admitReservation(node, STRANGER)).toBe(true);
+    expect(budgetOf(node).size).toBe(1);
+    expect(await admitReservation(node, 'peer-other-unplaced')).toBe(false);
+
+    // STRANGER's row replicates in — now admitted on its own merits.
+    fakeDb(node).queryCadrePeers = async () => [vouchedRow(MEMBER, owner), vouchedRow(STRANGER, owner)];
+
+    expect(await admitReservation(node, STRANGER)).toBe(true);
+    expect(budgetOf(node).size).toBe(0);
+    expect(await admitReservation(node, 'peer-other-unplaced')).toBe(true);
+  });
+
+  it('a delegate grant frees the slot the peer took before the announce landed', async () => {
+    const node = await establishedNode(1);
+
+    expect(await admitReservation(node, STRANGER)).toBe(true);
+    expect(budgetOf(node).size).toBe(1);
+
+    node.grantDelegateAdmission(MEMBER, 'strand-1', STRANGER);
+
+    expect(await admitReservation(node, STRANGER)).toBe(true);
+    expect(budgetOf(node).size).toBe(0);
   });
 
   it('refuses the peer past the cap while still admitting the member', async () => {

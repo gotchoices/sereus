@@ -24,6 +24,16 @@
  *   4. An un-enrolled node (empty anchor, no members) admits strangers — the
  *      precondition of seed delivery to a brand-new node.
  *
+ * Every receiver here takes the fixture's default `transaction` profile, so
+ * none of them runs the circuit-relay server — which is what keeps case 1's
+ * outright deny the right expectation. On a RELAY-ENABLED node the same
+ * determination is expressed as `'admit-for-relay'` instead, and the outsider
+ * is dropped a few seconds later by the not-reserving deadline
+ * (`membership-connection-gater.ts` → "The relay-reservation seam"; proven in
+ * `relay-only-control-addr.integration.ts`). Do not add `enableRelay` or the
+ * storage profile to a node in this file without moving its assertion to that
+ * observable.
+ *
  * No cross-node replication is required anywhere here (all membership rows are
  * written locally on the receiver), so this scenario is untouched by the
  * blocked optimystic convergence issue.

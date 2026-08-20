@@ -1316,22 +1316,40 @@ export class CadreNode implements SAppIdLookup {
    *     genuine member reserves before its `CadrePeer` row replicates here.
    *     Cap via `network.unauthorizedRelayReservationCap` (0 = refuse every
    *     unauthorized reservation).
+   *
+   * Every uncounted admission also RELEASES the budget slot the peer may hold
+   * from an earlier reservation taken while it was still unplaceable — a member
+   * that boots, reserves, and only then has its row replicate here would
+   * otherwise keep that slot spent for the rest of the entry's TTL.
+   *
+   * The connection gate's stranger carve-outs (an open enrollment window, an
+   * outstanding formation invitation) deliberately do NOT extend here: they
+   * exist so a stranger's SEED or FORMATION stream can ride a connection, and
+   * neither needs relay capacity. A genuine invitee that does need a relay slot
+   * takes one from the budget like any other unplaced peer, so an open window
+   * never becomes an unbounded grant of this node's forwarding capacity.
    */
   private async admitControlRelayReservation(remotePeerId: string): Promise<boolean> {
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
-      return true;
+      return this.admitReservationUncounted(remotePeerId);
     }
     if (this.delegateAdmission.has(remotePeerId)) {
-      return true;
+      return this.admitReservationUncounted(remotePeerId);
     }
     const authorized = await this.listAuthorizedMembers();
     if (authorized.length === 0 || authorized.some((m) => m.peerId === remotePeerId)) {
-      return true;
+      return this.admitReservationUncounted(remotePeerId);
     }
     const admitted = this.unauthorizedRelayReservations.tryAdmit(remotePeerId);
     log('admitControlRelayReservation: %s %s under the unauthorized-reservation budget',
       admitted ? 'admitting' : 'REFUSING', remotePeerId);
     return admitted;
+  }
+
+  /** Admit a reservation on the peer's own merits, giving back any budget slot it still holds. */
+  private admitReservationUncounted(remotePeerId: string): true {
+    this.unauthorizedRelayReservations.release(remotePeerId);
+    return true;
   }
 
   /**

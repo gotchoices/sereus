@@ -69,6 +69,13 @@ export interface CliConfigFile {
      * Defaults to true for storage profile nodes, false for transaction profile.
      */
     enableRelay?: boolean;
+    /**
+     * Cap on concurrent circuit-relay reservations this node's relay server grants to
+     * peers it cannot (yet) recognize as authorized members. Default 8; 0 refuses every
+     * unauthorized reservation. Only meaningful while `enableRelay` is on. See
+     * `NetworkConfig.unauthorizedRelayReservationCap` in `@serfab/cadre-core`.
+     */
+    unauthorizedRelayReservationCap?: number;
   };
 
   /** Hibernation settings */
@@ -156,6 +163,8 @@ export interface ResolvedConfig {
     appendAnnounceAddrs?: string[];
     relayAddrs?: string[];
     enableRelay?: boolean;
+    /** See `CadreConfig.network.unauthorizedRelayReservationCap`. */
+    unauthorizedRelayReservationCap?: number;
   };
   hibernation?: {
     enabled: boolean;
