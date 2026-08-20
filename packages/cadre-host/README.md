@@ -148,7 +148,7 @@ The grantee's cadre authority — typically their phone — presents the grant t
 
 At that moment:
 
-- A child cadre node spawns inside your cadre-host process for this grantee's cadre.
+- cadre-host spawns a child cadre-node process for this grantee's cadre (the manager itself never joins a cadre).
 - The node appears on the Nodes page of the UI, and the grant it was spent against shows up in `cadre-host grant list`.
 - The node stays up: if it crashes or dies in a reboot, cadre-host respawns it from the donation's recorded spawn inputs.
 
@@ -171,7 +171,9 @@ Revoke a grant:
 cadre-host grant revoke <token>
 ```
 
-Revoking denies every future request on that token. **Nodes already donated under it are not torn down** — stop those from the UI's Nodes page, or let the grantee release them with `DELETE /grants/:id`.
+Revoking denies every future request on that token — including the grantee's own `DELETE /grants/:id`, which is refused (403) once the grant is revoked.
+
+**Nodes already donated under it keep running, and there is no supported way to tear them down from the host side yet.** Stopping one from the UI's Nodes page does not stick: the respawn supervisor treats a live donation as "expected to be running" and brings it straight back. So if you want a node *gone*, ask the grantee to release it with `DELETE /grants/:id` **before** you revoke the grant. Tracked as `backlog/bug-cadre-host-donated-node-teardown-unavailable`.
 
 ## The founder role — running your own cadre here (opt-in)
 
@@ -276,7 +278,7 @@ Print every issued grant token with its label, node cap, expiry, and revoked sta
 
 ### `cadre-host grant revoke <token>`
 
-Revoke a grant token. Every future request presenting it is denied; **nodes already donated under it keep running** — stop those from the UI's Nodes page, or have the grantee release them with `DELETE /grants/:id`.
+Revoke a grant token. Every future request presenting it is denied, the grantee's own `DELETE /grants/:id` included. **Nodes already donated under it keep running and cannot yet be torn down host-side** — see [*Manage grants*](#5-manage-grants).
 
 ### `cadre-host invite <label> [--ttl <duration>]`
 
