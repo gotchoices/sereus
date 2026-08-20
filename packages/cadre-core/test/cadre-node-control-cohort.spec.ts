@@ -1,10 +1,12 @@
 import { describe, it, expect } from 'vitest';
-import { multiaddr } from '@multiformats/multiaddr';
+import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import { CadreNode } from '../src/cadre-node.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerEntry, type BootstrapPeerStore } from '../src/bootstrap-peer-store.js';
-import type { CadreNodeConfig, ControlNetworkSeed, SeedPeer } from '../src/types.js';
+import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
+import { signPeerRecord } from '../src/peer-record.js';
+import type { CadreNodeConfig, ControlNetworkSeed, PeerAddressRecord, SeedPeer } from '../src/types.js';
 
 /**
  * Unit coverage for the proactive control-cohort reconcile orchestration
@@ -38,13 +40,38 @@ interface FakeControlOpts {
   peerStoreGet?: () => Promise<unknown>;
 }
 
+/**
+ * libp2p's own precondition on a multi-address dial, reproduced from
+ * `libp2p/dist/src/get-peer.js` (`getPeerAddress`): the addresses handed to ONE
+ * `dial()` must either all name the same peer id or none may name one, judged by
+ * each address's LAST `/p2p/` component. A mixed list throws before any
+ * transport is touched.
+ *
+ * The fake enforces it so these tests fail the way production does: a sibling
+ * whose record mixed a `…/p2p-circuit/p2p/<sibling>` address with a bare direct
+ * one was skipped on every reconcile pass, forever, with the pass reporting
+ * `dialed=0` and only a debug line to show for it.
+ */
+function assertDialableTogether(addrs: unknown): void {
+  if (!Array.isArray(addrs)) {
+    return;
+  }
+  const ids = (addrs as Multiaddr[]).map((addr) => {
+    const p2p = multiaddr(addr.toString()).getComponents().filter((c) => c.name === 'p2p');
+    return p2p.length > 0 ? (p2p[p2p.length - 1].value ?? null) : null;
+  });
+  if (new Set(ids).size > 1) {
+    throw new Error('Multiaddrs must all have the same peer id or have no peer id');
+  }
+}
+
 /** A minimal control-node fake exposing only what reconcile reads. */
 function fakeControlNode(opts: FakeControlOpts): unknown {
   return {
     peerId: { toString: () => opts.selfPeerId ?? 'self-peer' },
     getConnections: () =>
       (opts.connections ?? []).map((id) => ({ remotePeer: { toString: () => id } })),
-    dial: async (addrs: unknown) => { opts.dialCalls.push(addrs); },
+    dial: async (addrs: unknown) => { assertDialableTogether(addrs); opts.dialCalls.push(addrs); },
     peerStore: {
       // Cold-start fallback target; unused when resolvePeerAddrs returns addrs.
       get: opts.peerStoreGet ?? (async () => { throw new Error('peerStore miss'); }),
@@ -91,6 +118,14 @@ function injectCohort(
     mergeThrows?: boolean;
     /** Cold-start fallback source; the default misses (no entry). */
     peerStoreGet?: () => Promise<unknown>;
+    /**
+     * Signed `CadrePeer` records keyed by peerId. When given, the pass runs the
+     * REAL `resolvePeerAddrs` against them (binding + self-signature + freshness
+     * + trust gates, and the `/p2p/<peerId>` normalization) instead of the fixed
+     * one-address stub — the only way to assert on the addresses a dial actually
+     * receives.
+     */
+    records?: Map<string, PeerAddressRecord>;
   }
 ): {
   dialCalls: Array<unknown>;
@@ -128,10 +163,18 @@ function injectCohort(
         throw new Error('reap boom');
       }
       return 0;
-    }
+    },
+    queryPeerRecord: async (id: string) => opts.records?.get(id) ?? null
   };
-  (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
-    async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
+  if (opts.records) {
+    const real = (node as unknown as { resolvePeerAddrs(id: string): Promise<Multiaddr[]> })
+      .resolvePeerAddrs.bind(node);
+    (node as unknown as { resolvePeerAddrs: (id: string) => Promise<Multiaddr[]> }).resolvePeerAddrs =
+      async (id: string) => { resolvedFor.push(id); return real(id); };
+  } else {
+    (node as unknown as { resolvePeerAddrs: (id: string) => Promise<unknown[]> }).resolvePeerAddrs =
+      async (id: string) => { resolvedFor.push(id); return [multiaddr('/ip4/1.2.3.4/tcp/4001')]; };
+  }
 
   return { dialCalls, resolvedFor, queryCalls: () => queries, reapCalls, mergeCalls };
 }
@@ -404,6 +447,96 @@ describe('CadreNode.reconcileControlCohort', () => {
 // (`peerIdFromString`); the synthetic `sibling-1` ids the dial tests use would
 // be dropped before any write.
 // ══════════════════════════════════════════════════════════════════════════════
+
+describe('CadreNode.reconcileControlCohort — inconsistently-suffixed sibling record', () => {
+  const RELAY_ID = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+  /** A signed record for a fresh Ed25519 peer carrying exactly `addrs`. */
+  async function signedSibling(addrs: (peerId: string) => string[]): Promise<{
+    peerId: string;
+    record: PeerAddressRecord;
+  }> {
+    const key = await generateKeyPair('Ed25519');
+    const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
+    const peerId = peerIdFromPrivateKey(key).toString();
+    const record = signPeerRecord(
+      { peerId, publicKey: publicKeyB64, addrs: addrs(peerId), updatedAt: Date.now() },
+      privateKeyB64
+    );
+    return { peerId, record };
+  }
+
+  it('dials a sibling whose record mixes a suffixed circuit addr with a bare direct one', async () => {
+    // The exact record shape push-wake-e2e seeds, and the one that made every
+    // reconcile pass skip this sibling: `libp2p.dial([suffixed, unsuffixed])`
+    // throws InvalidParametersError before touching a transport.
+    const { peerId, record } = await signedSibling((self) => [
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${self}`,
+      '/ip4/10.255.0.1/tcp/4001/ws',
+    ]);
+
+    const node = new CadreNode(createConfig());
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    // dialed=1, not merely "the pass did not throw": the fake dial applies
+    // libp2p's all-or-none peer-id precondition, so a mixed list records nothing.
+    expect(dialCalls).toHaveLength(1);
+    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
+      `/ip4/10.255.0.1/tcp/4001/ws/p2p/${peerId}`,
+    ]);
+  });
+
+  it('normalizes a relay hop whose destination is missing, keeping signaling first', async () => {
+    // `…/p2p/<relay>/p2p-circuit` names the RELAY, not the sibling — the shape
+    // `groupAddrsByPeerId` drops rather than misattribute. Resolution completes
+    // it to the sibling instead of leaving a third handling of the same input.
+    const { peerId, record } = await signedSibling(() => [
+      '/ip4/9.9.9.9/tcp/4001/ws',
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit`,
+    ]);
+
+    const node = new CadreNode(createConfig());
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
+    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+      `/dns4/r.example.org/tcp/4001/p2p/${RELAY_ID}/p2p-circuit/p2p/${peerId}`,
+      `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
+    ]);
+  });
+
+  it('drops an addr naming a different peer rather than poisoning the whole list', async () => {
+    const other = peerIdFromPrivateKey(await generateKeyPair('Ed25519')).toString();
+    const { peerId, record } = await signedSibling(() => [
+      '/ip4/9.9.9.9/tcp/4001/ws',
+      `/ip4/8.8.8.8/tcp/4001/ws/p2p/${other}`,
+    ]);
+
+    const node = new CadreNode(createConfig());
+    const { dialCalls } = injectCohort(node, {
+      members: [{ peerId: 'self-peer', multiaddr: null }, { peerId, multiaddr: null }],
+      records: new Map([[peerId, record]]),
+    });
+
+    await node.reconcileControlCohort();
+
+    expect(dialCalls).toHaveLength(1);
+    expect((dialCalls[0] as Multiaddr[]).map(String)).toEqual([
+      `/ip4/9.9.9.9/tcp/4001/ws/p2p/${peerId}`,
+    ]);
+  });
+});
 
 describe('CadreNode.reconcileControlCohort — address-book warming', () => {
   it('merges every sibling, including already-connected ones and ones the dial cap dropped', async () => {

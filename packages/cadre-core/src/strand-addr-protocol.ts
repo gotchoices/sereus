@@ -347,6 +347,18 @@ export async function collectStrandAddrs(
  * failure. Tries each dial target in order (peerId first to reuse an open control
  * connection, then explicit addrs) until one answers; a total failure is logged
  * and folded to `[]` so a single dead sibling never aborts the collection.
+ *
+ * A total failure logs ONE line naming every target and its cause. `[]` alone
+ * cannot tell the caller "this sibling was unreachable" apart from "this sibling
+ * answered and has no strand address" — and per-target lines scattered through a
+ * concurrent fan-out do not reassemble into that answer either. The return
+ * contract is unchanged: best-effort `[]`, never a throw.
+ *
+ * NOTE: cost is (targets × `timeoutMs`) with no whole-sibling budget, the same
+ * shape `dialWake` bounds with `DEFAULT_WAKE_DIAL_BUDGET_MS`. Fine today —
+ * `dialTargets` yields the peerId plus whatever `resolvePeerAddrs` returned,
+ * which for a cadre device is one or two addresses. If a sibling's record ever
+ * carries a long address list, give this the same whole-sibling budget.
  */
 async function dialOneSibling(
   node: Libp2p,
@@ -363,6 +375,7 @@ async function dialOneSibling(
     return [];
   }
 
+  const failures: string[] = [];
   for (const target of targets) {
     try {
       // One deadline per attempt: its signal aborts the in-flight dialProtocol and
@@ -374,9 +387,13 @@ async function dialOneSibling(
       );
       return response.multiaddrs;
     } catch (err) {
+      const error = err instanceof Error ? err : new Error(String(err));
+      failures.push(`${describeTarget(target)} — ${error.message}`);
       log('Strand-addr dial to %s via %s failed: %o', peer.peerId, describeTarget(target), err);
     }
   }
+  log('Strand-addr dial to %s failed on all %d target(s), contributing no addrs: %s',
+    peer.peerId, failures.length, failures.join('; '));
   return [];
 }
 

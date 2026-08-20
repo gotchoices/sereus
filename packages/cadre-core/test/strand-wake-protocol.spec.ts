@@ -298,6 +298,116 @@ describe('dialWake — sender round-trip against a live receiver', () => {
     await expect(dialWake(node, [], { strandId: 's' })).rejects.toThrow(/no dialable/i);
   });
 
+  /** Await a dial expected to reject and hand back its Error (never the ack). */
+  async function dialWakeError(dial: Promise<WakeAck>): Promise<Error> {
+    let ack: WakeAck;
+    try {
+      ack = await dial;
+    } catch (err) {
+      return err instanceof Error ? err : new Error(String(err));
+    }
+    throw new Error(`expected dialWake to reject, but it resolved: ${JSON.stringify(ack)}`);
+  }
+
+  it('names EVERY candidate and its cause when they all fail', async () => {
+    // The misdirection this replaces: each failure went to a debug log and only
+    // `lastError` was thrown, so a two-address wake reported the address tried
+    // LAST while the interesting failure (the signaling addr, tried first) was
+    // invisible. An entire fix-stage ticket was written about the wrong address.
+    const node = {
+      dialProtocol: async (addr: { toString(): string }) => {
+        throw new Error(`unreachable via ${addr.toString()}`);
+      }
+    } as unknown as Libp2p;
+
+    const circuit = multiaddr('/ip4/9.9.9.9/tcp/4001/p2p-circuit');
+    const direct = multiaddr('/ip4/10.255.0.1/tcp/4001/ws');
+
+    const err = await dialWakeError(dialWake(node, [circuit, direct], { strandId: 's' }));
+
+    // Both candidates, each with its own cause — not only whichever was last.
+    expect(err.message).toContain(`${circuit.toString()} — unreachable via ${circuit.toString()}`);
+    expect(err.message).toContain(`${direct.toString()} — unreachable via ${direct.toString()}`);
+    // …and in candidate order, so the signaling addr reads first.
+    expect(err.message.indexOf(circuit.toString())).toBeLessThan(err.message.indexOf(direct.toString()));
+  });
+
+  it('carries the FIRST failure as the cause of the aggregated error', async () => {
+    const node = {
+      dialProtocol: async (addr: { toString(): string }) => {
+        throw new Error(`boom ${addr.toString()}`);
+      }
+    } as unknown as Libp2p;
+
+    const first = multiaddr('/ip4/1.1.1.1/tcp/1');
+    const err = await dialWakeError(dialWake(node, [first, multiaddr('/ip4/2.2.2.2/tcp/2')], { strandId: 's' }));
+
+    expect(err.message).toMatch(/all 2 candidate addresses/);
+    expect((err.cause as Error).message).toBe(`boom ${first.toString()}`);
+  });
+
+  it('throws the single failure unchanged when there is only one candidate', async () => {
+    const node = {
+      dialProtocol: async () => { throw new Error('the only reason'); }
+    } as unknown as Libp2p;
+
+    await expect(dialWake(node, [multiaddr('/ip4/1.1.1.1/tcp/1')], { strandId: 's' }))
+      .rejects.toThrow('the only reason');
+  });
+
+  it('bounds the WHOLE call by budgetMs, reporting the candidates it never tried', async () => {
+    // Three blackholing addresses: pre-fix this cost 3 x timeoutMs with nothing
+    // choosing that number. The budget makes the target peer the unit, and the
+    // untried candidates are named rather than silently skipped.
+    const node = {
+      dialProtocol: () => new Promise<never>(() => { /* blackhole: never settles */ })
+    } as unknown as Libp2p;
+
+    const addrs = [
+      multiaddr('/ip4/1.1.1.1/tcp/1'),
+      multiaddr('/ip4/2.2.2.2/tcp/2'),
+      multiaddr('/ip4/3.3.3.3/tcp/3'),
+    ];
+    const started = Date.now();
+    const err = await dialWakeError(dialWake(node, addrs, { strandId: 's' }, { timeoutMs: 200, budgetMs: 300 }));
+    const elapsed = Date.now() - started;
+
+    // Two attempts fit in the 300ms budget (200 + 100); the third never runs.
+    expect(elapsed).toBeLessThan(1_000);
+    expect(err.message).toMatch(/all 3 candidate addresses/);
+    expect(err.message).toContain('/ip4/3.3.3.3/tcp/3 — not tried');
+  });
+
+  it('gives the last candidate inside the budget whatever remains of it', async () => {
+    // The second attempt must still RUN (shortened), not be reported untried:
+    // a reachable peer whose first address is stale still gets a genuine try.
+    const instance = makeInstance('push');
+    const receiver = makeService(instance, { wake: async () => { instance.status = 'active'; } });
+
+    let attempts = 0;
+    const node = {
+      dialProtocol: async () => {
+        attempts++;
+        if (attempts === 1) {
+          return await new Promise<never>(() => { /* blackhole: burns the first slice */ });
+        }
+        const { clientStream, serverStream } = duplexPair();
+        void runHandleStream(receiver, serverStream, 'member-peer');
+        return clientStream;
+      }
+    } as unknown as Libp2p;
+
+    const ack = await dialWake(
+      node,
+      [multiaddr('/ip4/1.1.1.1/tcp/1'), multiaddr('/ip4/2.2.2.2/tcp/2')],
+      { strandId: 'push' },
+      { timeoutMs: 200, budgetMs: 400 },
+    );
+
+    expect(attempts).toBe(2);
+    expect(ack.accepted).toBe(true);
+  });
+
   it('rejects on timeout and aborts the client stream when the receiver never replies', async () => {
     // The receiver opens the stream but never writes/closes the ack — pre-fix the
     // sender's unbounded ack-read leaked the dangling stream. The per-attempt

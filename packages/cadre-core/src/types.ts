@@ -283,6 +283,11 @@ export interface NetworkConfig {
    * (and other owner-address contexts). When unset, `libp2pNode.getMultiaddrs()`
    * is used. Hosts behind NAT supply this to substitute their DDNS hostname
    * and externally-mapped port — see `@serfab/cadre-host`'s NatService.
+   *
+   * Returned addresses need NOT carry a `/p2p/<peerId>` suffix: `CadreNode`
+   * appends its own before publishing or dialing any of them, so a resolver
+   * cannot leave a sibling with the mixed suffixed/unsuffixed list that
+   * `libp2p.dial` rejects. Returning them already suffixed is equally fine.
    */
   inviteAddressResolver?: () => Promise<string[]>;
   /**

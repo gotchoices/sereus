@@ -44,8 +44,34 @@ export const WAKE_PROTOCOL = '/sereus/strand-wake/1.0.0';
  */
 const MAX_WAKE_SIZE = 64 * 1024;
 
-/** Default time to wait for the ack before abandoning a wake dial (ms). */
+/** Default time to wait for the ack before abandoning ONE wake dial attempt (ms). */
 const DEFAULT_WAKE_TIMEOUT_MS = 10_000;
+
+/**
+ * Default budget for a WHOLE {@link dialWake} call, in ms — every candidate
+ * address together, not each one.
+ *
+ * Without it the cost of a wake is (candidate count × {@link
+ * DEFAULT_WAKE_TIMEOUT_MS}), a number nothing chooses or bounds. That is not
+ * hypothetical: an address behind a dropped NAT mapping, or any host that
+ * blackholes rather than sending a RST, burns its full attempt timeout instead
+ * of failing in milliseconds, so a two-address peer costs 20 s and a
+ * five-address one costs 50 s.
+ *
+ * This makes the TARGET PEER the unit rather than the address — the same
+ * decision, for the same reason, as
+ * `DEFAULT_CONTROL_COHORT_DIAL_TIMEOUT_MS` in `control-cohort.ts`, and the same
+ * chosen number. 20 s is deliberately wider than one attempt timeout so a
+ * reachable peer whose signaling address is stale still gets a genuine try at
+ * its direct one; a peer needing longer than that is not "asleep and reachable",
+ * which is the only case a wake is for. The last attempt inside the budget gets
+ * whatever remains of it, so the call returns at the budget, not past it.
+ *
+ * Override per call with {@link DialWakeOptions.budgetMs} — tests that drive
+ * dead addresses on purpose set it low so a dial's duration is a chosen number
+ * rather than a transitive libp2p default stretched by machine load.
+ */
+export const DEFAULT_WAKE_DIAL_BUDGET_MS = 20_000;
 
 /** Default time the receiver waits for an inbound wake frame before aborting (ms). */
 const DEFAULT_WAKE_READ_TIMEOUT_MS = 10_000;
@@ -234,10 +260,21 @@ export class StrandWakeService {
 
 /** Options for {@link dialWake}. */
 export interface DialWakeOptions {
-  /** Per-dial timeout in ms (default {@link DEFAULT_WAKE_TIMEOUT_MS}). */
+  /** Per-ATTEMPT timeout in ms (default {@link DEFAULT_WAKE_TIMEOUT_MS}). */
   timeoutMs?: number;
+  /**
+   * Budget for the whole call — every candidate together (default
+   * {@link DEFAULT_WAKE_DIAL_BUDGET_MS}).
+   */
+  budgetMs?: number;
   /** Override the protocol id (defaults to {@link WAKE_PROTOCOL}). */
   protocolId?: string;
+}
+
+/** One candidate's outcome, kept so the thrown error can name every attempt. */
+interface WakeDialFailure {
+  addr: Multiaddr;
+  error: Error;
 }
 
 /**
@@ -246,7 +283,22 @@ export interface DialWakeOptions {
  *
  * Tries each candidate address in order (signaling/relay first, as produced by
  * `CadreNode.resolvePeerAddrs`) until one dials, so a NAT'd peer is reachable via
- * its circuit-relay address. Throws if no address is dialable.
+ * its circuit-relay address. Each attempt is bounded by `timeoutMs` and the call
+ * as a whole by `budgetMs` (see {@link DEFAULT_WAKE_DIAL_BUDGET_MS}); a candidate
+ * the budget leaves no room for is reported as untried rather than silently
+ * dropped.
+ *
+ * Throws if no address is dialable — with an error naming EVERY candidate and
+ * why it failed, not merely the last one. That distinction is not cosmetic:
+ * with only the last candidate's message the failure that mattered (usually the
+ * signaling address, tried first) is invisible outside a debug log, and the
+ * surfaced message points at whichever address happened to be tried last.
+ *
+ * The candidate loop is deliberately explicit rather than one
+ * `dialProtocol(addrs)` call. libp2p sorts any multi-address dial with
+ * `defaultAddressSorter`, whose `circuitRelayAddressesLast` pass would demote
+ * exactly the signaling address this ordering puts first — silently inverting
+ * it, with no per-dial sorter override to opt out of.
  */
 export async function dialWake(
   node: Libp2p,
@@ -259,23 +311,57 @@ export async function dialWake(
   }
   const protocolId = options.protocolId ?? WAKE_PROTOCOL;
   const timeoutMs = options.timeoutMs ?? DEFAULT_WAKE_TIMEOUT_MS;
+  const budgetMs = options.budgetMs ?? DEFAULT_WAKE_DIAL_BUDGET_MS;
+  const deadline = Date.now() + budgetMs;
 
-  let lastError: Error | null = null;
+  const failures: WakeDialFailure[] = [];
   for (const addr of addrs) {
+    // Whatever is left of the whole-call budget caps this attempt, so the last
+    // candidate inside the budget still gets a real (if shortened) try.
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) {
+      failures.push({ addr, error: new Error(`not tried — the ${budgetMs}ms wake dial budget was spent on earlier addresses`) });
+      continue;
+    }
+    const attemptMs = Math.min(timeoutMs, remaining);
     try {
       // One deadline per attempt: its signal aborts the in-flight dialProtocol and
       // resets the live stream, so neither the connect nor the ack-read leaks.
       return await withDeadline(
-        timeoutMs,
+        attemptMs,
         `Wake dial ${addr.toString()}`,
-        (signal) => sendWake(node, addr, protocolId, request, timeoutMs, signal),
+        (signal) => sendWake(node, addr, protocolId, request, attemptMs, signal),
       );
     } catch (err) {
-      lastError = err instanceof Error ? err : new Error(String(err));
+      failures.push({ addr, error: err instanceof Error ? err : new Error(String(err)) });
       log('Wake dial to %s failed: %o', addr.toString(), err);
     }
   }
-  throw lastError ?? new Error('Wake dial failed');
+  throw wakeDialError(failures);
+}
+
+/**
+ * Fold every candidate's failure into the one error {@link dialWake} throws.
+ *
+ * A single candidate throws its own error unchanged, so a one-address wake reads
+ * exactly as it always has (and `rejects.toThrow(/timed out/)` still means what
+ * it says). Several candidates produce one message naming each address and its
+ * cause, with the FIRST failure as `cause` — the first candidate is the
+ * signaling address, which is the one that matters when a relayed peer goes
+ * unreachable.
+ */
+function wakeDialError(failures: WakeDialFailure[]): Error {
+  if (failures.length === 0) {
+    return new Error('Wake dial failed');
+  }
+  if (failures.length === 1) {
+    return failures[0].error;
+  }
+  const detail = failures.map((f) => `${f.addr.toString()} — ${f.error.message}`).join('; ');
+  return new Error(
+    `Wake dial failed for all ${failures.length} candidate addresses: ${detail}`,
+    { cause: failures[0].error },
+  );
 }
 
 /**

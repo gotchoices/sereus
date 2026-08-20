@@ -55,14 +55,15 @@ async function bootOwnerNode(): Promise<BootedNode> {
  */
 async function insertForeignMember(
   owner: BootedNode,
-  addrs: string[],
+  addrs: string[] | ((peerId: string) => string[]),
   updatedAt: number,
   overrides?: Partial<PeerAddressRecord>
 ): Promise<{ peerId: string; record: PeerAddressRecord }> {
   const key = await generateKeyPair('Ed25519');
   const { privateKeyB64, publicKeyB64 } = ed25519KeyPairFromLibp2p(key);
   const peerId = peerIdFromPrivateKey(key).toString();
-  const signed = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs, updatedAt }, privateKeyB64);
+  const resolvedAddrs = typeof addrs === 'function' ? addrs(peerId) : addrs;
+  const signed = signPeerRecord({ peerId, publicKey: publicKeyB64, addrs: resolvedAddrs, updatedAt }, privateKeyB64);
   const record = { ...signed, ...overrides };
   await owner.node.getSeedBootstrapService()!.insertSelfPeerRecord(record);
   return { peerId, record };
@@ -120,9 +121,16 @@ describe('peer-record resolution layer (real control DB)', () => {
     expect(stored!.updatedAt).toBeGreaterThan(0);
     expect(verifyPeerRecordSignature(stored!)).toBe(true);
 
-    // Resolution returns the addrs signaling-first.
+    // `direct` was pushed WITHOUT a /p2p/ suffix; publication appends this node's
+    // own, so the row a sibling replicates is already uniformly suffixed and no
+    // sibling can end up with a list `libp2p.dial` refuses.
+    expect(new Set(stored!.addrs)).toEqual(new Set([sig, `${direct}/p2p/${peerId}`]));
+
+    // Resolution returns the addrs signaling-first, every one ending in the
+    // target's own /p2p/<peerId>.
     const resolved = (await node.resolvePeerAddrs(peerId)).map((m) => m.toString());
-    expect(resolved).toEqual([sig, direct]);
+    expect(resolved).toEqual([sig, `${direct}/p2p/${peerId}`]);
+    expect(resolved.every((a) => a.endsWith(`/p2p/${peerId}`))).toBe(true);
 
     // signalingOnly returns only the /p2p-circuit addr.
     const signalingOnly = (await node.resolvePeerAddrs(peerId, { signalingOnly: true })).map((m) => m.toString());
@@ -131,14 +139,37 @@ describe('peer-record resolution layer (real control DB)', () => {
 
   it('resolves a different member from its PeerId alone', async () => {
     const { node } = booted;
-    const memberAddrs = ['/ip4/9.9.9.9/tcp/4001'];
-    const memberSig = '/dns4/relay.example.org/tcp/4001/p2p/12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/p2p-circuit/p2p/12D3KooWMember';
-    const { peerId } = await insertForeignMember(booted, [...memberAddrs, memberSig], Date.now());
+    const direct = '/ip4/9.9.9.9/tcp/4001';
+    // The member's own record, written by someone else: a circuit addr already
+    // ending in ITS peer id plus a bare direct one. Exactly the mix a dial
+    // rejects unless resolution normalizes it first.
+    const { peerId } = await insertForeignMember(
+      booted,
+      (member) => [direct, circuitAddr(member)],
+      Date.now()
+    );
 
     const resolved = (await node.resolvePeerAddrs(peerId)).map((m) => m.toString());
-    // signaling-first
+    // signaling-first, uniformly suffixed
     expect(resolved[0]).toContain('/p2p-circuit');
-    expect(new Set(resolved)).toEqual(new Set([memberSig, ...memberAddrs]));
+    expect(new Set(resolved)).toEqual(new Set([circuitAddr(peerId), `${direct}/p2p/${peerId}`]));
+  }, 60_000);
+
+  it('drops a resolved addr that terminates in a DIFFERENT peer id', async () => {
+    const { node } = booted;
+    // A record naming someone else's peer id: dialing it would not reach this
+    // member, and leaving it in makes the whole list mixed-peer-id — which
+    // `libp2p.dial` rejects outright, taking the reachable addr down with it.
+    const foreign = '/dns4/relay.example.org/tcp/4001/p2p/12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/p2p-circuit/p2p/12D3KooWMember';
+    const { peerId } = await insertForeignMember(
+      booted,
+      (member) => ['/ip4/9.9.9.9/tcp/4001', foreign, circuitAddr(member)],
+      Date.now()
+    );
+
+    const resolved = (await node.resolvePeerAddrs(peerId)).map((m) => m.toString());
+    expect(resolved).not.toContain(foreign);
+    expect(new Set(resolved)).toEqual(new Set([circuitAddr(peerId), `/ip4/9.9.9.9/tcp/4001/p2p/${peerId}`]));
   }, 60_000);
 
   it('re-publishes with a new addr and strictly greater UpdatedAt on address change', async () => {
@@ -154,8 +185,9 @@ describe('peer-record resolution layer (real control DB)', () => {
     const second = await node.getControlDatabase()!.queryPeerRecord(peerId);
 
     expect(second!.updatedAt).toBeGreaterThan(first!.updatedAt);
-    expect(second!.addrs).toContain('/ip4/2.2.2.2/tcp/4001');
-    expect(second!.addrs).not.toContain('/ip4/1.1.1.1/tcp/4001');
+    // Published with this node's own /p2p/ suffix appended (see normalizeSelfAddrs).
+    expect(second!.addrs).toContain(`/ip4/2.2.2.2/tcp/4001/p2p/${peerId}`);
+    expect(second!.addrs).not.toContain(`/ip4/1.1.1.1/tcp/4001/p2p/${peerId}`);
     expect(verifyPeerRecordSignature(second!)).toBe(true);
   }, 60_000);
 
@@ -320,7 +352,7 @@ describe('peer-record resolution layer (real control DB)', () => {
 
     const resolved = (await node.resolvePeerAddrs(dronePeerId)).map((m) => m.toString());
     expect(resolved[0]).toContain('/p2p-circuit');
-    expect(new Set(resolved)).toEqual(new Set([droneSig, direct]));
+    expect(new Set(resolved)).toEqual(new Set([droneSig, `${direct}/p2p/${dronePeerId}`]));
   }, 60_000);
 
   it('resolves to empty for a non-member', async () => {

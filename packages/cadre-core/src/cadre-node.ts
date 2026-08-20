@@ -52,6 +52,7 @@ import {
   orderSignalingFirst,
   isSignalingAddr,
   trailingPeerId,
+  withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -1943,6 +1944,10 @@ export class CadreNode implements SAppIdLookup {
    * Survivors are returned signaling (`/p2p-circuit`) first, filtered to
    * signaling-only when requested, as parsed `Multiaddr`s (unparsable addrs
    * dropped). Any gate failure yields an empty array rather than throwing.
+   *
+   * Every returned address is normalized to terminate in `/p2p/<peerId>` — see
+   * {@link normalizeDialAddrs} for why that invariant, not each dial site's own
+   * handling, is what keeps a mixed list from taking a whole peer offline.
    */
   async resolvePeerAddrs(peerId: string, opts: ResolveOpts = {}): Promise<Multiaddr[]> {
     if (!this.controlDatabase) {
@@ -1995,12 +2000,43 @@ export class CadreNode implements SAppIdLookup {
 
     // Order signaling-first (the on-record order was what we verified above),
     // optionally restrict to signaling addrs, then parse — dropping any addr
-    // that does not parse as a multiaddr.
+    // that does not parse as a multiaddr — and finally normalize every survivor
+    // onto `/p2p/<peerId>` so no caller ever sees a mixed list.
     let addrs = orderSignalingFirst(record.addrs);
     if (opts.signalingOnly) {
       addrs = addrs.filter(isSignalingAddr);
     }
-    return this.parseMultiaddrs(addrs);
+    return this.normalizeDialAddrs(this.parseMultiaddrs(addrs), peerId);
+  }
+
+  /**
+   * Guarantee every address this resolver hands out terminates in
+   * `/p2p/<peerId>` — the invariant every control-network dial path downstream
+   * relies on.
+   *
+   * `libp2p.dial(addrs)` requires that the addresses in ONE dial either all name
+   * a peer id or none do; a record mixing a circuit address (which ends in
+   * `/p2p/<target>`) with a bare direct one (which ends in `/tcp/…`) makes that
+   * call throw, and the whole peer is then silently skipped rather than one bad
+   * address. Normalizing here — the single place every control dial path gets
+   * its candidates from — makes that mixed list unrepresentable instead of
+   * leaving each call site to invent its own rule.
+   *
+   * An address naming a DIFFERENT trailing peer id is dropped: it does not reach
+   * `peerId`, so it does not belong in this peer's candidate list (libp2p's own
+   * dial queue filters the same shape out one layer lower).
+   */
+  private normalizeDialAddrs(addrs: Multiaddr[], peerId: string): Multiaddr[] {
+    const out: Multiaddr[] = [];
+    for (const addr of addrs) {
+      const normalized = withTrailingPeerId(addr, peerId);
+      if (!normalized) {
+        log('resolvePeerAddrs: dropping addr for %s that names a different peer: %s', peerId, addr.toString());
+        continue;
+      }
+      out.push(normalized);
+    }
+    return out;
   }
 
   /** Parse multiaddr strings, dropping (and logging) any that fail to parse. */
@@ -4790,6 +4826,10 @@ export class CadreNode implements SAppIdLookup {
    * Push the multiaddrs that future invites should advertise. Pass `null` to
    * revert to the libp2p-reported addresses (the default). The host calls this
    * at spawn and on every NAT change.
+   *
+   * Entries need NOT carry a `/p2p/<peerId>` suffix — {@link resolveInviteAddresses}
+   * appends this node's own before anything publishes or dials them (see
+   * {@link normalizeSelfAddrs}). Passing them suffixed is equally fine.
    */
   setInviteAddresses(addresses: string[] | null): void {
     this.latestInviteAddresses = addresses;
@@ -4798,16 +4838,58 @@ export class CadreNode implements SAppIdLookup {
 
   /**
    * Resolve the addresses to embed in invites. Prefers pushed addresses, then
-   * any config-supplied resolver, then the libp2p-observed multiaddrs.
+   * any config-supplied resolver, then the libp2p-observed multiaddrs. The two
+   * app-supplied sources are normalized onto `/p2p/<self>` (see
+   * {@link normalizeSelfAddrs}) so neither hook has to remember the suffix;
+   * libp2p's own addresses already carry it.
    */
   private async resolveInviteAddresses(): Promise<string[]> {
     if (this.latestInviteAddresses !== null) {
-      return this.latestInviteAddresses;
+      return this.normalizeSelfAddrs(this.latestInviteAddresses);
     }
     if (this.config.network?.inviteAddressResolver) {
-      return this.config.network.inviteAddressResolver();
+      return this.normalizeSelfAddrs(await this.config.network.inviteAddressResolver());
     }
+    // Not normalized: this branch is libp2p's own output, which already
+    // encapsulates the peer id into every address it reports. Only the two app
+    // hooks above take arbitrary strings and therefore need the guarantee.
     return this.getMultiaddrs();
+  }
+
+  /**
+   * Normalize addresses an app handed us for THIS node onto `/p2p/<self>`, the
+   * same invariant {@link normalizeDialAddrs} enforces on the way out.
+   *
+   * `setInviteAddresses` (the admin API `PUT /admin/invite-addresses`) and
+   * `network.inviteAddressResolver` both take arbitrary strings, and whatever
+   * they return ends up in this node's published `CadrePeer` record — so ONE
+   * unsuffixed entry from either hook is enough to give every sibling in the
+   * party a mixed candidate list for this peer. Establishing the suffix here,
+   * where those strings enter the system, means neither hook has to know the
+   * rule; `cadre-host`'s `buildInviteAddresses` already appends it, and
+   * re-normalizing an already-suffixed address is a no-op.
+   *
+   * Unparsable and other-peer-addressed entries are passed through untouched
+   * rather than dropped: publication is not the place to police an address's
+   * validity, and {@link resolvePeerAddrs} already drops both on the read side.
+   * Before `start()` resolves an identity there is no peer id to append, so the
+   * list is returned as given.
+   */
+  private normalizeSelfAddrs(addrs: string[]): string[] {
+    const selfPeerId = this.peerId?.toString();
+    if (!selfPeerId) {
+      return addrs;
+    }
+    return addrs.map((addr) => {
+      let parsed: Multiaddr;
+      try {
+        parsed = multiaddr(addr);
+      } catch (error) {
+        log('normalizeSelfAddrs: leaving unparsable multiaddr %s as-is: %o', addr, error);
+        return addr;
+      }
+      return withTrailingPeerId(parsed, selfPeerId)?.toString() ?? addr;
+    });
   }
 
   /**

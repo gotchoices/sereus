@@ -319,8 +319,10 @@ describe('E2E push-wake over the control network', () => {
 			//   • S's membership row (`authorizePeer`), so Rx's wake gate `isAuthorizedMember(S)` passes.
 			//   • Rx's self-signed address record (`seedReceiverRecord` — one owner insert
 			//     carrying Rx's own `Sig`), so S's `resolvePeerAddrs(Rx)` passes. The synthetic
-			//     direct addr is kept so signaling-first ordering (circuit sorts ahead of
-			//     direct) stays observable.
+			//     direct addr is kept for two reasons: signaling-first ordering (circuit sorts
+			//     ahead of direct) stays observable, and it is written WITHOUT a `/p2p/` suffix
+			//     while the circuit addr has one — the mixed list `libp2p.dial` refuses, so the
+			//     resolver's normalization is pinned end-to-end here and not only in unit tests.
 			const syntheticDirect = '/ip4/10.255.0.1/tcp/4001/ws';
 			await L.authorizePeer(sPeerId);
 			await seedReceiverRecord(L, rxPeerId, rxKey, [rxCircuitAddr, syntheticDirect]);
@@ -336,6 +338,12 @@ describe('E2E push-wake over the control network', () => {
 			const resolved = (await S.resolvePeerAddrs(rxPeerId)).map((m) => m.toString());
 			expect(resolved.length).toBeGreaterThan(0);
 			expect(resolved[0]).toContain('/p2p-circuit');
+			// Uniformly suffixed with Rx's own peer id, however each addr was written:
+			// the circuit one already ended in it, the synthetic direct one did not.
+			// A single unsuffixed survivor makes `libp2p.dial(resolved)` throw
+			// InvalidParametersError and Rx is then skipped entirely, not partially.
+			expect(resolved.every((a) => a.endsWith(`/p2p/${rxPeerId}`))).toBe(true);
+			expect(resolved).toContain(`${syntheticDirect}/p2p/${rxPeerId}`);
 
 			// Start Rx LAST: genuinely NAT'd — no direct listen addr, only a relayed slot on
 			// L, named via `network.relayAddrs` (see header note) so `Rx.start()` reserves it
@@ -660,7 +668,11 @@ describe('E2E push-wake over the control network', () => {
 				async () => (await S!.resolvePeerAddrs(rxPeerId)).length > 0,
 				{ timeoutMs: 30_000, description: "S resolves Rx's address record via replication" },
 			);
-			expect((await S.resolvePeerAddrs(rxPeerId)).length).toBeGreaterThan(0);
+			const replicated = (await S.resolvePeerAddrs(rxPeerId)).map((m) => m.toString());
+			expect(replicated.length).toBeGreaterThan(0);
+			// Same invariant on the replication-backed route: whatever Rx published,
+			// what the sender dials is uniformly suffixed with Rx's peer id.
+			expect(replicated.every((a) => a.endsWith(`/p2p/${rxPeerId}`))).toBe(true);
 
 			await bringUpHibernatingStrand(Rx, strandId);
 

@@ -249,6 +249,7 @@ export {
   StrandWakeService,
   dialWake,
   WAKE_PROTOCOL,
+  DEFAULT_WAKE_DIAL_BUDGET_MS,
   type StrandWakeServiceOptions,
   type DialWakeOptions
 } from './strand-wake-protocol.js';
@@ -272,6 +273,7 @@ export {
   isPeerRecordFresh,
   isSignalingAddr,
   orderSignalingFirst,
+  withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS

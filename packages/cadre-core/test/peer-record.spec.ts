@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
+import { multiaddr } from '@multiformats/multiaddr';
 import { digest, sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p } from '../src/ed25519-key.js';
 import { ed25519PublicKeyB64FromPeerId } from '../src/seed-bootstrap.js';
@@ -11,6 +12,8 @@ import {
   isPeerRecordFresh,
   isSignalingAddr,
   orderSignalingFirst,
+  trailingPeerId,
+  withTrailingPeerId,
   currentMemberTrustPolicy,
   DEFAULT_PEER_RECORD_MAX_AGE_MS,
   DEFAULT_PEER_RECORD_HEARTBEAT_MS
@@ -151,5 +154,59 @@ describe('currentMemberTrustPolicy', () => {
       peerId, publicKey: publicKeyB64, partyId: 'p', record,
     });
     expect(decision).toBe(true);
+  });
+});
+
+describe('withTrailingPeerId', () => {
+  const TARGET = '12D3KooWTargetAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const RELAY = '12D3KooWRelayAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+  const OTHER = '12D3KooWOtherAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA';
+
+  /** Normalize a string addr and return the string, or null when it was dropped. */
+  const normalize = (addr: string, peerId = TARGET): string | null =>
+    withTrailingPeerId(multiaddr(addr), peerId)?.toString() ?? null;
+
+  it('appends the suffix to a direct addr that carries no /p2p/ at all', () => {
+    expect(normalize('/ip4/1.2.3.4/tcp/4001')).toBe(`/ip4/1.2.3.4/tcp/4001/p2p/${TARGET}`);
+  });
+
+  it('appends the suffix to a ws addr too (the shape the push-wake scenario uses)', () => {
+    expect(normalize('/ip4/10.255.0.1/tcp/4001/ws')).toBe(`/ip4/10.255.0.1/tcp/4001/ws/p2p/${TARGET}`);
+  });
+
+  it('leaves a circuit addr already ending in /p2p/<target> untouched', () => {
+    const addr = `/dns4/r.example.org/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${TARGET}`;
+    expect(normalize(addr)).toBe(addr);
+    // Identity, not merely an equal string — no needless re-encapsulation.
+    const parsed = multiaddr(addr);
+    expect(withTrailingPeerId(parsed, TARGET)).toBe(parsed);
+  });
+
+  it('appends the target to a relay hop whose destination is missing', () => {
+    // The trailing peer id here is the RELAY's, so the naive "it already has a
+    // /p2p/, leave it" rule would file a circuit-to-nowhere under the target.
+    const hop = `/dns4/r.example.org/tcp/4001/p2p/${RELAY}/p2p-circuit`;
+    expect(trailingPeerId(multiaddr(hop))).toBe(RELAY);
+    expect(normalize(hop)).toBe(`${hop}/p2p/${TARGET}`);
+  });
+
+  it('drops an addr terminating in a DIFFERENT peer id (it does not reach the target)', () => {
+    expect(normalize(`/ip4/1.2.3.4/tcp/4001/p2p/${OTHER}`)).toBeNull();
+    expect(normalize(`/dns4/r/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${OTHER}`)).toBeNull();
+  });
+
+  it('is idempotent — normalizing an already-normalized addr changes nothing', () => {
+    const once = normalize('/ip4/1.2.3.4/tcp/4001');
+    expect(once).not.toBeNull();
+    expect(normalize(once!)).toBe(once);
+  });
+
+  it('leaves a normalized list uniform, which is what libp2p.dial requires', () => {
+    const mixed = [
+      `/dns4/r/tcp/4001/p2p/${RELAY}/p2p-circuit/p2p/${TARGET}`,
+      '/ip4/10.255.0.1/tcp/4001/ws',
+    ];
+    const normalized = mixed.map((a) => normalize(a));
+    expect(normalized.every((a) => a?.endsWith(`/p2p/${TARGET}`))).toBe(true);
   });
 });

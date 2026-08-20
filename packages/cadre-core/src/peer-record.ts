@@ -136,6 +136,39 @@ export function trailingPeerId(addr: Multiaddr): string | null {
 }
 
 /**
+ * `addr` guaranteed to terminate in `/p2p/<peerId>` — the shape every dial path
+ * needs — or `null` when it cannot, because the address already terminates in a
+ * DIFFERENT peer id and therefore does not reach `peerId` at all.
+ *
+ * Three input shapes, matching what a `CadrePeer` record can legitimately carry:
+ *
+ * - no `/p2p/` component (`/ip4/1.2.3.4/tcp/4001`) — the suffix is appended;
+ * - a relay hop with the destination missing (`…/p2p/<relay>/p2p-circuit`) — the
+ *   last component is the circuit, not a peer id, so the suffix is appended and
+ *   the address becomes the full `…/p2p/<relay>/p2p-circuit/p2p/<peerId>`;
+ * - already terminating in `/p2p/<X>` — returned untouched when `X` is `peerId`,
+ *   dropped otherwise.
+ *
+ * This is deliberately the same rule libp2p applies internally in
+ * `calculateMultiaddrs` (append when the LAST component is not `p2p`) followed by
+ * its wrong-peer-id filter, so a normalized list matches what libp2p would have
+ * built anyway. Normalizing before the dial is what keeps a list from mixing
+ * suffixed and unsuffixed entries, which `getPeerAddress` rejects outright
+ * ("Multiaddrs must all have the same peer id or have no peer id") — taking the
+ * whole peer down with it, not just the odd address.
+ *
+ * Never use before signature verification: verification runs against the
+ * original on-record strings.
+ */
+export function withTrailingPeerId(addr: Multiaddr, peerId: string): Multiaddr | null {
+  const components = addr.getComponents();
+  if (components[components.length - 1]?.name !== 'p2p') {
+    return addr.encapsulate(`/p2p/${peerId}`);
+  }
+  return trailingPeerId(addr) === peerId ? addr : null;
+}
+
+/**
  * Return `addrs` with signaling (`/p2p-circuit`) addrs first, otherwise stable.
  * Used to present the WebRTC dial input ahead of direct addrs. Does NOT mutate
  * the input and must not be used before signature verification (verification
