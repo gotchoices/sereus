@@ -70,10 +70,15 @@
  * Scenario 2 — NAT receiver listen address: with
  * `@libp2p/circuit-relay-v2@4.x`, a *discovered* relay reservation is skipped
  * unless a `/p2p-circuit` listen address has populated the pending-reservation
- * queue (reservation-store.ts `HadEnoughRelaysError` guard). So the NAT'd receiver
- * listens on the relay's explicit `…/p2p-circuit` address — it still has no direct
- * dialable address (genuinely NAT'd), but the reservation is deterministic rather
- * than discovery-timing dependent. (The ticket's `listenAddrs: []` never reserves.)
+ * queue (reservation-store.ts `HadEnoughRelaysError` guard). A control node cannot
+ * name the relay directly in `listenAddrs` (the CONFIGURED shape) — libp2p would
+ * dial it from inside `listen()`, before control-database bring-up accepts any
+ * connection (`relay-addrs.ts` → `rejectConfiguredCircuitListenAddrs`). So the
+ * NAT'd receiver instead names the relay in `network.relayAddrs` with
+ * `listenAddrs: []`: `CadreNode.start()` resolves that to the bare SEARCH listen
+ * addr and explicitly drives the reservation once bring-up finishes — it still has
+ * no direct dialable address (genuinely NAT'd), and the reservation is
+ * deterministic rather than discovery-timing dependent.
  *
  * Scenario 2 — NAT receiver is NOT hibernated, by design. Scenario 2's unique
  * subject is the SENDER reaching a NAT'd peer: the signaling-first resolve and the
@@ -107,7 +112,6 @@ import {
 } from '@serfab/cadre-core';
 import type { WakeAck, PeerAddressRecord } from '@serfab/cadre-core';
 import {
-	waitUntil,
 	waitForCadrePeerConverged,
 	waitForCrossNodeControlSync,
 	createSignedSAppConfig,
@@ -180,8 +184,6 @@ async function bringUpHibernatingStrand(Rx: CadreNode, strandId: string): Promis
 	await Rx.hibernateStrand(strandId);
 	expect(Rx.getStrand(strandId)?.status).toBe('hibernating');
 }
-
-const RESERVATION_WAIT = { timeoutMs: 20_000, intervalMs: 250 } as const;
 
 // ═════════════════════════════════════════════════════════════════════════════
 
@@ -334,36 +336,38 @@ describe('E2E push-wake over the control network', () => {
 			expect(resolved[0]).toContain('/p2p-circuit');
 
 			// Start Rx LAST: genuinely NAT'd — no direct listen addr, only a relayed slot on
-			// L (explicit `…/p2p-circuit` listen, see header note). It bootstraps to L; it never
-			// genesises and writes nothing the assertions hinge on (its background `registerSelf`
-			// only self-UPDATEs its own already-resolvable row). (NOT hibernated — see header note.)
+			// L, named via `network.relayAddrs` (see header note) so `Rx.start()` reserves it
+			// itself, after control-database bring-up, instead of the rejected CONFIGURED
+			// `…/p2p-circuit` listen entry. It bootstraps to L; it never genesises and writes
+			// nothing the assertions hinge on (its background `registerSelf` only self-UPDATEs
+			// its own already-resolvable row). (NOT hibernated — see header note.)
 			Rx = new CadreNode(controlNodeConfig({
 				partyId,
 				privateKey: rxKey,
 				bootstrapNodes: [lAddr],
-				listenAddrs: [`${lAddr}/p2p-circuit`],
+				listenAddrs: [],
+				relayAddrs: [lAddr],
 			}));
 			await Rx.start();
 			expect(Rx.peerId!.toString()).toBe(rxPeerId);
+
+			// `Rx.start()` throws (`RelayReservationFailedError`) unless the circuit
+			// reservation lands before it returns, so by this point Rx already holds the
+			// slot — confirm it, and that Rx published NO direct address alongside it: the
+			// receiver this scenario claims to test is reachable ONLY via the relay.
+			const startAddrs = controlAddrs(Rx);
+			expect(startAddrs.length).toBeGreaterThan(0);
+			expect(startAddrs.every((a) => a.includes('/p2p-circuit'))).toBe(true);
 
 			// ENROLLMENT: Rx was enrolled by L's owner — pin the owner key into Rx's
 			// node-local anchor so S's replicated row (vouched by L) passes Rx's
 			// `isAuthorizedMember` wake gate.
 			await Rx.trustOwnerKeys([lOwnerPub], 'invite');
 
-			await waitUntil(() => Rx!.getControlNode()!.getConnections().length > 0, {
-				...RESERVATION_WAIT,
-				description: 'Rx connects to the relay',
-			});
-
-			// Wait for the relay reservation to materialise as a /p2p-circuit addr, so the
-			// relay slot the wake dial traverses genuinely exists. Confirm it matches the
-			// address record L vouched for (the constructed addr was correct).
-			let circuitAddr = '';
-			await waitUntil(() => {
-				circuitAddr = controlAddrs(Rx!).find((a) => a.includes('/p2p-circuit')) ?? '';
-				return circuitAddr.length > 0;
-			}, { ...RESERVATION_WAIT, description: "Rx's circuit-relay reservation appears" });
+			// The reservation confirmed right after `Rx.start()` above is the exact slot L
+			// vouched for in Rx's address record (the constructed addr was correct) — no
+			// extra wait needed, since `start()` already blocked until it landed.
+			const circuitAddr = startAddrs.find((a) => a.includes('/p2p-circuit')) ?? '';
 			expect(circuitAddr).toBe(rxCircuitAddr);
 
 			// Converge Rx on S's membership via replication through L — with NO local
