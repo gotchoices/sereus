@@ -48,8 +48,8 @@ import {
 
 /**
  * LevelDB database holding the node-local records that are NOT trust-bearing.
- * Its own database (not a strand's, not the legacy identity's) so clearing it
- * cannot disturb replicated strand data or the identity migration path.
+ * Its own database (not a strand's) so clearing it cannot disturb replicated
+ * strand data.
  */
 export const NODE_LOCAL_DB_NAME = 'sereus-node-local';
 

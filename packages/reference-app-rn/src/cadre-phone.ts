@@ -95,6 +95,14 @@ function createStorage(strandId: string) {
 // (its `null ⇒ absent` read would misreport an invalidated anchor as empty), so
 // turning `requireAuthentication` on here fails startup loudly rather than
 // quietly risking the anchor.
+//
+// NOTE: the enclave is the only identity store this app reads. Development
+// builds predating it kept the key in a plaintext `sereus-peer-identity`
+// LevelDB database; nothing opens or deletes that database any more, so a dev
+// device still holding one keeps an unencrypted key on disk indefinitely while
+// the app generates a fresh identity into the enclave. No shipped build ever
+// wrote it. If one is ever found in the field, delete it on start rather than
+// reviving an import path.
 const SECURE_STORE_OPTIONS: SecureStoreKeyStoreOptions = {
 	keychainAccessible: SecureStore.AFTER_FIRST_UNLOCK,
 };
