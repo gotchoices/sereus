@@ -5,9 +5,9 @@
  * compiles. Vitest strips types and runs; it never type-checks the files it executes, so a test file
  * only has type safety if some `tsc` program happens to include it. Nothing enforced that, and it
  * bit once: `cadre-provider` excluded its own test directory from `tsconfig.typecheck.json` to get
- * past a batch of errors and no follow-up was filed, while docs/STATUS.md simultaneously claimed
+ * past a batch of errors and no follow-up was filed, while a hand-maintained doc simultaneously claimed
  * packages were covered that weren't and uncovered that were. See
- * tickets/complete/debt-guard-test-files-typechecked.md and docs/STATUS.md "Type-check coverage".
+ * tickets/complete/debt-guard-test-files-typechecked.md and docs/testing.md "Type-check coverage".
  *
  * The sibling gate `scripts/check-vitest-typecheck-coverage.mjs` enforces the level in from here
  * (each `vitest.config.ts` is itself type-checked). Shared mechanics live in
@@ -55,7 +55,7 @@ function displayPath(path) {
 // files today, so such a file passes this gate unchecked rather than failing it unfixably.
 // NOTE: `.svelte` is deliberately a non-issue here — every Vitest `include` in the repo targets
 // `*.ts`, so no `.svelte` file is ever collected. Svelte type-check coverage is a separate,
-// already-recorded gap (docs/STATUS.md → "Known coverage gaps").
+// already-recorded gap (docs/testing.md → "Known coverage gaps").
 function isTypeScriptFile(path) {
 	const lower = toPosix(path).toLowerCase();
 	return TS_EXTENSIONS.some((extension) => lower.endsWith(extension));

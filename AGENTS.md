@@ -4,7 +4,7 @@ Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for 
 
 - `packages/` — monorepo libs + apps. Cadre runtimes: `@serfab/cadre-core` (library), `@serfab/cadre-cli` (headless CLI), `@serfab/cadre-host` (self-hosted manager w/ local UI, installer, NAT, trust-circle), `@serfab/cadre-provider` (multi-tenant Docker host). SQL access: `@serfab/quereus-plugin-sereus`. Reference apps: `reference-app-rn`, `reference-app-web`. Cross-package real-network tests: `integration-tests`. `strand-proto` deprecated.
 - `ops/` — operational tooling (Docker stacks, systemd scaffolds, infra test scripts) for libp2p relay/bootstrap nodes. Not app code.
-- `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/STATUS.md`](docs/STATUS.md) cover subsystems.
+- `docs/` — design + protocol docs. [`docs/architecture.md`](docs/architecture.md) is entry point; [`docs/cadre-host.md`](docs/cadre-host.md), [`docs/strands.md`](docs/strands.md), [`docs/cadre-consistency.md`](docs/cadre-consistency.md), [`docs/testing.md`](docs/testing.md) cover subsystems. Current work state lives in [`tickets/`](tickets/), not in docs.
 - `schemas/` — Quereus schema artifacts (e.g. `cadre.qsql`, `strand.qsql`).
 - `test-harness/` — test infrastructure shared across packages (stale-build guard). Not a workspace, never built; imported by relative path from packages' vitest `globalSetup`.
 - `tickets/` + `tess/` — AI-driven ticket workflow (see "Tickets" below).
@@ -14,7 +14,7 @@ Focus: Sereus monorepo. Also have `../quereus` + `../optimystic` workspaces for 
 Most style rules machine-enforced by `yarn lint` (ESLint flat config in
 `eslint.config.mjs`), a fully-enforced gate — every encoded rule is `error`, no
 `warn` backlog. **Lowercase SQL reserved words** and **no runtime inline `import()`** are not
-machine-checkable, human-review-only (see `docs/STATUS.md` → "Lint coverage").
+machine-checkable, human-review-only (see [`docs/testing.md`](docs/testing.md) → "Lint coverage").
 
 - Lowercase SQL reserved words (e.g., `select * from Table`)
 - No inline `import()` unless dynamically loading

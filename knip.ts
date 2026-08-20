@@ -14,7 +14,7 @@ import type { KnipConfig } from 'knip';
  * `error` (they fail the gate). Dead-code rules (unused files / exports /
  * types) are downgraded to `warn` so they surface without blocking the gate;
  * cleaning the existing dead-code backlog across the reference apps and host UI
- * is deliberately out of scope for this ticket (see docs/STATUS.md).
+ * is deliberately deferred (see docs/testing.md → "Dependency-check coverage").
  *
  * Cross-platform: all file discovery is config-driven (no shell globs on the
  * CLI), so the gate runs identically under PowerShell and POSIX shells.

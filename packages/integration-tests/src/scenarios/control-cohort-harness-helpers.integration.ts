@@ -29,7 +29,7 @@ import type { TestParty, TestCadreNode, CohortNodeSource } from '../harness/inde
  * The real `CadreNode` branch of `resolveControlLibp2p` is discriminated purely by the
  * presence of `getControlNode`, so this stands in for one without booting a cadre — which
  * the only scenario that uses real `CadreNode`s cannot currently do (see
- * `docs/STATUS.md` → `control-write-degraded-cohort-member`).
+ * `control-write-degraded-cohort-member.integration.ts`).
  *
  * NOTE: a stand-in cannot catch a `CadreNode` that GAINS a `libp2p` property, which would
  * silently re-route the resolver to the `TestCadreNode` branch (see the doc comment on

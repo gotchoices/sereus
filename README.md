@@ -78,7 +78,7 @@ The public site lives in [`docs/web/`](docs/web/) (Overview, Architecture, Stack
 
 ### Status
 
-Active development. Core concepts are stable; APIs/tooling are evolving. [`docs/STATUS.md`](docs/STATUS.md) is the living checklist. Early adopters should expect rapid iteration and close-to-the-code workflows.
+Active development. Core concepts are stable; APIs/tooling are evolving. Current work state lives in [`tickets/`](tickets/); known pre-existing test failures in [`tickets/.pre-existing-known.md`](tickets/.pre-existing-known.md). Early adopters should expect rapid iteration and close-to-the-code workflows.
 
 ### Credits
 

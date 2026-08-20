@@ -8,7 +8,12 @@ repro: verified
 
 # A node with zero connections cannot resolve a coordinator for any key
 
-**Why this is in `blocked/`:** the one code site that must change is
+> **Resolved — archived from `blocked/`.** Everything below was written while this sat in
+> `blocked/`, and its "why this is blocked" framing is preserved as the record of that state, not
+> as current status. Sereus mitigates via the schema-DDL retry; the upstream grace-period defect is
+> tracked in `../optimystic`.
+
+**Why this was in `blocked/`:** the one code site that must change is
 `../optimystic/packages/db-p2p/src/libp2p-key-network.ts`, in a repository this one may read but
 not edit. Nothing in Sereus can reach it — the knob that would soften it
 (`SelfCoordinationConfig.gracePeriodMs`) is never plumbed by any caller, in either repo, so there

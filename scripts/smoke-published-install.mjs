@@ -73,7 +73,7 @@ const EXTRA_REPORTED = ['libp2p', '@libp2p/websockets', '@libp2p/crypto', '@libp
  *
  * `@optimystic/db-p2p-storage-fs` is here for the warm-start cases, which restart
  * across real files rather than a shared heap object. It is also the one
- * `@optimystic/*` package with no root `resolutions` entry (see `docs/STATUS.md` →
+ * `@optimystic/*` package with no root `resolutions` entry (see `docs/testing.md` →
  * "declared range"), so it always resolves from the registry — which makes exercising
  * it here more interesting than the linked ones, not less.
  *

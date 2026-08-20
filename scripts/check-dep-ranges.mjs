@@ -5,7 +5,7 @@
  * and tests against. Development resolves those packages to `link:../<repo>/...`
  * siblings, so nothing here ever exercises the version a registry consumer installs
  * except the declared range itself. See tickets/fix/0.2-debt-declared-dep-range-drift-gate.md
- * and docs/STATUS.md "Declared dependency range vs linked workspace".
+ * and docs/testing.md "Declared dependency range vs linked workspace".
  */
 import { readFileSync, existsSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';

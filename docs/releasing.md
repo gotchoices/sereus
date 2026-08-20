@@ -22,7 +22,7 @@ Publish order matters and `yarn pub` already encodes it (dependency chain first)
   `tickets/.pre-existing-known.md` and you have read what it is
 - `yarn smoke:published` passes — this is the one that installs the packages the way a customer
   does. It is not part of `yarn test` (it needs the network). See
-  [`STATUS.md`](STATUS.md#installing-what-a-customer-installs--yarn-smokepublished-a-release-step-not-a-test).
+  [`testing.md`](testing.md#installing-what-a-customer-installs--yarn-smokepublished-a-release-step-not-a-test).
 - Clean working tree (`git status` shows no uncommitted changes)
 
 ## Quick Release
@@ -171,25 +171,28 @@ node donation are new subsystems. `0.9.1` would understate all of that.
 
 ### Why a prerelease under `alpha`, not `latest`
 
-Cross-machine replication is known-broken with a traced root cause (see
-[`STATUS.md`](STATUS.md#release-readiness--measured-2026-08-03)). `latest` is what
-`npm install @serfab/cadre-core` returns and therefore means "this is the version to use" — which,
-for a library whose whole premise is multiple devices sharing data, would be a claim we cannot
-support. The tag costs the one consumer who is waiting on this nothing: the reply drafted in
+Multi-machine replication is not yet clean. The coordinator defect that made it fail outright is
+fixed upstream, but a handful of cross-machine scenarios stay red on defects this repo does not own
+— see the open entries in [`tickets/blocked/`](../tickets/blocked) and the current measurement in
+[`tickets/.pre-existing-known.md`](../tickets/.pre-existing-known.md) before deciding a tag.
+`latest` is what `npm install @serfab/cadre-core` returns and therefore means "this is the version
+to use" — which, for a library whose whole premise is multiple devices sharing data, is a claim to
+make deliberately rather than by default. The tag costs the one consumer who is waiting on this
+nothing: the reply drafted in
 `tickets/blocked/report-dependency-floor-bump-to-embedding-app` already asks them to **pin** to the
 new version rather than track `latest`.
 
-Leaving `latest` at 0.9.0 also has a concrete benefit: 0.9.0 resolves to the pre-defect `0.14.1`
-line of the sibling packages, so it at least imports. Anything published from current HEAD does not
-(see the blocker below).
+Once the remaining cross-machine scenarios go green, promote with `npm dist-tag add`, no republish
+required.
 
-Once the coordinator fix lands upstream and multi-machine goes green, promote with
-`npm dist-tag add`, no republish required.
+> **Read the current measurement, not this paragraph.** A release-readiness claim written into a
+> doc is stale the moment the next fix lands, and a downstream team once held a multi-device
+> project for two weeks on exactly that. Whatever this section says, verify against the suite.
 
 ### Which packages ship: five, not six
 
-Drop `strand-proto` from this release. It is called deprecated in `AGENTS.md`, `eslint.config.mjs`
-and `STATUS.md`; nothing in this repo depends on it; nothing in it has changed since the 0.9.0
+Drop `strand-proto` from this release. It is called deprecated in `AGENTS.md` and
+`eslint.config.mjs`; nothing in this repo depends on it; nothing in it has changed since the 0.9.0
 release commit except a type-check config edit. Publishing a new version of it would ship a
 version-number change and nothing else, while adding a workspace to every `yarn smoke:published`
 run.

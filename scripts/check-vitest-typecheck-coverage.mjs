@@ -9,7 +9,7 @@
  * major version unnoticed. The fix was pulling `vitest.config.ts` into each package's type-check
  * program (`tsconfig.typecheck.json` or the package's main `tsconfig.json`); this script guards
  * that from drifting back. See tickets/plan/16-debt-guard-vitest-config-typechecked.md and
- * docs/STATUS.md "Type-check coverage".
+ * docs/testing.md "Type-check coverage".
  *
  * The sibling gate `scripts/check-test-file-typecheck-coverage.mjs` enforces the level out from
  * here: the *test files* this config makes Vitest run are also inside a `tsc` program. Shared
