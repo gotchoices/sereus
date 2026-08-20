@@ -372,7 +372,12 @@ export {
   STRANGER_OPEN_PROTOCOLS,
   DEFAULT_ENROLLMENT_WINDOW_MS,
   ADMISSION_DECISION_TIMEOUT_MS,
-  type InboundAdmissionPolicy
+  RELAY_ADMISSION_RESERVE_DEADLINE_MS,
+  MAX_UNAUTHORIZED_RELAY_RESERVATIONS,
+  UNAUTHORIZED_RESERVATION_TTL_MS,
+  UnauthorizedReservationBudget,
+  type InboundAdmissionPolicy,
+  type InboundConnectionVerdict
 } from './membership-connection-gater.js';
 
 // Relay reservation via the bare `/p2p-circuit` search listener (fail-soft;

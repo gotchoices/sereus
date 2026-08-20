@@ -202,16 +202,19 @@ describe('E2E per-stream control-DB stream authorization', () => {
 			const dPeerId = D.peerId!.toString();
 			const dNode = D.getControlNode()!;
 
-			// ── (a) Un-announced: the inbound connection is DENIED ────────────────
-			// The deny fires on A's side of the upgrade (after noise), so D's dial()
-			// may resolve before A aborts — D then sees its connection close moments
-			// later, and A never registers one (membership-connection-gater.ts).
+			// ── (a) Un-announced: the connection does not survive ─────────────────
+			// A runs the relay server, so the un-announced stranger is admitted FOR
+			// RELAY ONLY (membership-connection-gater.ts → "The relay-reservation
+			// seam") — and since it never asks for a reservation, the not-reserving
+			// deadline (5 s) aborts the connection. Either way D ends up with no
+			// open connection to A. (On a relay-less node the same dial is denied
+			// outright at the upgrade.)
 			await dNode.dial(aAddr).catch(() => undefined);
 			await waitUntil(
 				() => !dNode.getConnections().some(
 					(c) => c.remotePeer.toString() === aPeerId && c.status === 'open'
 				),
-				{ timeoutMs: 15_000, intervalMs: 250, description: 'stranger connection torn down by the gate' }
+				{ timeoutMs: 20_000, intervalMs: 250, description: 'un-announced stranger connection torn down' }
 			);
 			expect(
 				A.getControlNode()!.getConnections().some(

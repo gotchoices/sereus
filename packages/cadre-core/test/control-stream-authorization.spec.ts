@@ -41,9 +41,9 @@ function refresh(node: CadreNode): Promise<void> {
   }).refreshAuthorizedControlPeers('test');
 }
 
-function admitConnection(node: CadreNode, remotePeerId: string): Promise<boolean> {
+function admitConnection(node: CadreNode, remotePeerId: string): Promise<'admit' | 'deny' | 'admit-for-relay'> {
   return (node as unknown as {
-    admitInboundControlConnection(remotePeerId: string): Promise<boolean>;
+    admitInboundControlConnection(remotePeerId: string): Promise<'admit' | 'deny' | 'admit-for-relay'>;
   }).admitInboundControlConnection(remotePeerId);
 }
 
@@ -130,7 +130,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     const node = await establishedNode();
     node.openEnrollmentWindow(Date.now() + 60_000);
 
-    expect(await admitConnection(node, STRANGER)).toBe(true);
+    expect(await admitConnection(node, STRANGER)).toBe('admit');
     expect(authorize(node, STRANGER)).toBe(false);
     expect(authorize(node, MEMBER)).toBe(true);
   });
@@ -142,7 +142,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     const node = await establishedNode();
     node.grantDelegateAdmission(MEMBER, 'strand-1', STRANGER);
 
-    expect(await admitConnection(node, STRANGER)).toBe(true);
+    expect(await admitConnection(node, STRANGER)).toBe('admit');
     expect(authorize(node, STRANGER)).toBe(false);
     expect(authorize(node, MEMBER)).toBe(true);
   });
@@ -159,7 +159,7 @@ describe('CadreNode.authorizeInboundControlStream', () => {
     });
     await refresh(node);
 
-    expect(await admitConnection(node, STRANGER)).toBe(true);
+    expect(await admitConnection(node, STRANGER)).toBe('admit');
     expect(authorize(node, STRANGER)).toBe(false);
   });
 

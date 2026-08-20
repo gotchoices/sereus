@@ -81,7 +81,12 @@ import {
   StrandSolicitationService,
   type StrandSolicitationServiceOptions
 } from './strand-solicitation.js';
-import { createMembershipConnectionGater, DEFAULT_ENROLLMENT_WINDOW_MS } from './membership-connection-gater.js';
+import {
+  createMembershipConnectionGater,
+  DEFAULT_ENROLLMENT_WINDOW_MS,
+  UnauthorizedReservationBudget,
+  type InboundConnectionVerdict
+} from './membership-connection-gater.js';
 import { StrandWakeService, dialWake } from './strand-wake-protocol.js';
 import { StrandAddrService, collectStrandAddrs, type StrandAddrPeer } from './strand-addr-protocol.js';
 import {
@@ -330,12 +335,26 @@ export class CadreNode implements SAppIdLookup {
   /**
    * In-memory delegate admission grants (see `delegate-admission.ts`): the
    * strand-node transport peerIds this party's members have announced over the
-   * strand-addr RPC, admitted at the CONNECTION level so a member's NAT'd
-   * strand node can hold a circuit-relay reservation on this node. Consulted
-   * ONLY by {@link admitInboundControlConnection}; the fail-closed per-stream
-   * gate ({@link authorizeInboundControlStream}) never honors it.
+   * strand-addr RPC, admitted at the CONNECTION and RESERVATION levels so a
+   * member's NAT'd strand node can hold a circuit-relay reservation on this
+   * node (without spending the unauthorized-reservation budget). Consulted
+   * ONLY by {@link admitInboundControlConnection} and
+   * {@link admitControlRelayReservation}; the fail-closed per-stream gate
+   * ({@link authorizeInboundControlStream}) never honors it.
    */
   private readonly delegateAdmission = new DelegateAdmissionStore();
+
+  /**
+   * Bounded budget of concurrent circuit-relay reservations granted to peers
+   * this node cannot (yet) place as members — the boot-ordering window where a
+   * genuine sibling reserves before its `CadrePeer` row has replicated here.
+   * Consulted only by {@link admitControlRelayReservation} (the gater's
+   * `denyInboundRelayReservation` policy); authorized members and announced
+   * delegates are admitted before it and never counted. Cap from
+   * `network.unauthorizedRelayReservationCap` (default
+   * `MAX_UNAUTHORIZED_RELAY_RESERVATIONS`).
+   */
+  private readonly unauthorizedRelayReservations: UnauthorizedReservationBudget;
 
   /**
    * When this node last ANNOUNCED a delegate, keyed `<targetPeerId>\n<strandId>`
@@ -502,6 +521,9 @@ export class CadreNode implements SAppIdLookup {
     this.config = config;
     this.strandManager = new StrandInstanceManager();
     this.enrollmentService = new EnrollmentService();
+    this.unauthorizedRelayReservations = new UnauthorizedReservationBudget(
+      config.network?.unauthorizedRelayReservationCap
+    );
 
     // Create hibernation manager with callbacks
     const hibernationCallbacks: HibernationCallbacks = {
@@ -1102,9 +1124,7 @@ export class CadreNode implements SAppIdLookup {
     const identityKey = this.identityKey;
     const listenAddrs = resolveListenAddrs(network);
 
-    // Determine relay mode: if explicitly set in config, use that;
-    // otherwise default to true for storage profile nodes (better connectivity/uptime)
-    const enableRelay = network?.enableRelay ?? (profile === 'storage');
+    const enableRelay = this.relayServerEnabled();
 
     // The control node's own storage, resolved once per runtime (see
     // {@link resolveControlStorage}) rather than per call.
@@ -1136,12 +1156,16 @@ export class CadreNode implements SAppIdLookup {
       // `announceAddrs` replaces the advertised set (see warnIfAnnounceAddrsDiscardRelay).
       ...resolveAnnounceAddrs(network),
       // The CONTROL node composes the membership admission gate onto any
-      // caller-supplied gater (deny from either wins on inbound; all other
-      // hooks pass through). Strand cohort nodes keep the raw configured gater
-      // (see strand-instance-manager.ts) — their peers are legitimately
+      // caller-supplied gater (deny from either wins on the inbound-encrypted
+      // and relay-reservation hooks; all other hooks pass through). Strand
+      // cohort nodes keep the raw configured gater (see
+      // strand-instance-manager.ts) — their peers are legitimately
       // cross-party, so cadre membership must not gate them.
       connectionGater: createMembershipConnectionGater(
-        { admitInbound: (remotePeerId) => this.admitInboundControlConnection(remotePeerId) },
+        {
+          admitInbound: (remotePeerId) => this.admitInboundControlConnection(remotePeerId),
+          admitRelayReservation: (remotePeerId) => this.admitControlRelayReservation(remotePeerId)
+        },
         network?.connectionGater
       ),
       // Fail-closed per-stream authorization for the four Optimystic control-DB
@@ -1156,6 +1180,18 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Does this node's CONTROL libp2p run the circuit-relay server? An explicit
+   * `network.enableRelay` wins; otherwise storage-profile nodes default to on
+   * (better connectivity/uptime). Shared by {@link buildControlNodeOptions}
+   * (which configures the server from it) and
+   * {@link admitInboundControlConnection} (whose deny/admit-for-relay branch
+   * must agree with whether a reservation is even servable here).
+   */
+  private relayServerEnabled(): boolean {
+    return this.config.network?.enableRelay ?? (this.config.profile === 'storage');
+  }
+
+  /**
    * Decide whether an inbound CONTROL-network connection from `remotePeerId`
    * should be admitted — the policy behind the connection gater wired in
    * {@link createControlNode}. Deny only on a positive "unauthorized outsider
@@ -1164,7 +1200,7 @@ export class CadreNode implements SAppIdLookup {
    * `membership-connection-gater.ts` for the layer's rationale and the
    * stranger-open protocol allowlist).
    *
-   * Admits when ANY of:
+   * Returns `'admit'` when ANY of:
    *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
    *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
    *     configured bootstrap/relay infrastructure);
@@ -1201,43 +1237,101 @@ export class CadreNode implements SAppIdLookup {
    *    this node yet is denied even though the formation handler would have
    *    accepted it, exactly like the unreplicated-membership-row case below.
    *
+   * When every check falls through, the verdict depends on whether this node
+   * runs the circuit-relay server ({@link relayServerEnabled}): without one,
+   * `'deny'`; with one, `'admit-for-relay'` — a circuit-relay reservation is
+   * established by the reserving peer DIALING the relay, so a connection deny
+   * here kills the reservation, and that deny is NOT self-healing: an outbound
+   * reconcile re-dial re-establishes a data link, but no outbound dial can
+   * grant the remote peer a reservation, and a relay-only peer has no address
+   * of its own to dial back — the reservation IS its address. The gater admits
+   * such a connection, decides the reservation via
+   * {@link admitControlRelayReservation}, and drops the connection if no
+   * reservation is admitted in time (see `membership-connection-gater.ts` →
+   * "The relay-reservation seam").
+   *
    * NOTE: check 4/5 runs a control-DB read per inbound connection
    * (`listAuthorizedMembers`); connections are rare and cadres small, and this
    * layer is fail-open behind `ADMISSION_DECISION_TIMEOUT_MS`, so the live
    * read is safe here — unlike the per-stream gate, which must consult the
    * materialized {@link authorizedControlPeers} snapshot instead.
-   * NOTE: a sibling whose membership row has not yet replicated to
-   * this node is denied until the row converges (typically via the owner);
-   * either side's next outbound reconcile dial (outbound is never gated)
-   * re-establishes the link — self-healing, but visible as a transient deny.
+   * NOTE: on a relay-DISABLED node, a sibling whose membership row has not yet
+   * replicated here is denied until the row converges (typically via the
+   * owner); either side's next outbound reconcile dial (outbound is never
+   * gated) re-establishes the DATA link — self-healing for data, visible as a
+   * transient deny. That self-healing story never covered a reservation, which
+   * is exactly why the relay-enabled path above exists.
    */
-  private async admitInboundControlConnection(remotePeerId: string): Promise<boolean> {
+  private async admitInboundControlConnection(remotePeerId: string): Promise<InboundConnectionVerdict> {
     if (this.admitControlPeerUnconditionally(remotePeerId)) {
-      return true;
+      return 'admit';
     }
     if (Date.now() < this.enrollmentWindowUntil) {
+      return 'admit';
+    }
+    if (this.delegateAdmission.has(remotePeerId)) {
+      return 'admit';
+    }
+    const authorized = await this.listAuthorizedMembers();
+    if (authorized.length === 0) {
+      return 'admit';
+    }
+    if (authorized.some((m) => m.peerId === remotePeerId)) {
+      return 'admit';
+    }
+    try {
+      if (await this.strandSolicitationService?.hasOutstandingInvitation()) {
+        return 'admit';
+      }
+    } catch (error) {
+      log('admitInboundControlConnection: outstanding-invitation check threw for %s — admitting (fail-open): %o', remotePeerId, error);
+      return 'admit';
+    }
+    if (this.relayServerEnabled()) {
+      log('admitInboundControlConnection: admitting %s FOR RELAY ONLY — not an authorized member and no enrollment path open; the gater drops the connection unless a reservation is admitted', remotePeerId);
+      return 'admit-for-relay';
+    }
+    log('admitInboundControlConnection: DENYING inbound from %s — not an authorized member and no enrollment path open', remotePeerId);
+    return 'deny';
+  }
+
+  /**
+   * Should `remotePeerId` be granted a circuit-relay reservation slot on this
+   * node's relay server? The policy behind the gater's
+   * `denyInboundRelayReservation` hook (see `membership-connection-gater.ts` →
+   * "The relay-reservation seam"); the circuit-relay server consults it per
+   * RESERVE request, so it is never called on a node whose relay server is off.
+   *
+   * Admits when ANY of:
+   *  1. a shared-baseline check admits ({@link admitControlPeerUnconditionally}
+   *     — not running / DB torn down, absent-or-empty trusted-owner anchor, or
+   *     configured bootstrap/relay infrastructure);
+   *  2. the peer holds a live delegate admission grant — a member's strand
+   *     node reserving here (see `delegate-admission.ts`); never counted
+   *     against the unauthorized budget;
+   *  3. the authorized-member set is empty (cold start) or the peer IS an
+   *     authorized member — members are never counted against the budget; or
+   *  4. the peer takes (or already holds) a slot in the bounded
+   *     unauthorized-reservation budget — the boot-ordering window where a
+   *     genuine member reserves before its `CadrePeer` row replicates here.
+   *     Cap via `network.unauthorizedRelayReservationCap` (0 = refuse every
+   *     unauthorized reservation).
+   */
+  private async admitControlRelayReservation(remotePeerId: string): Promise<boolean> {
+    if (this.admitControlPeerUnconditionally(remotePeerId)) {
       return true;
     }
     if (this.delegateAdmission.has(remotePeerId)) {
       return true;
     }
     const authorized = await this.listAuthorizedMembers();
-    if (authorized.length === 0) {
+    if (authorized.length === 0 || authorized.some((m) => m.peerId === remotePeerId)) {
       return true;
     }
-    if (authorized.some((m) => m.peerId === remotePeerId)) {
-      return true;
-    }
-    try {
-      if (await this.strandSolicitationService?.hasOutstandingInvitation()) {
-        return true;
-      }
-    } catch (error) {
-      log('admitInboundControlConnection: outstanding-invitation check threw for %s — admitting (fail-open): %o', remotePeerId, error);
-      return true;
-    }
-    log('admitInboundControlConnection: DENYING inbound from %s — not an authorized member and no enrollment path open', remotePeerId);
-    return false;
+    const admitted = this.unauthorizedRelayReservations.tryAdmit(remotePeerId);
+    log('admitControlRelayReservation: %s %s under the unauthorized-reservation budget',
+      admitted ? 'admitting' : 'REFUSING', remotePeerId);
+    return admitted;
   }
 
   /**
@@ -1255,7 +1349,8 @@ export class CadreNode implements SAppIdLookup {
   /**
    * Record (or refresh) a delegate admission grant: `delegatePeerId` is the
    * transport peerId of `announcerPeerId`'s strand-`strandId` node, admitted
-   * at the CONNECTION level (all a circuit-relay reservation needs) for
+   * at the CONNECTION and RESERVATION levels (all a circuit-relay reservation
+   * needs, without spending the unauthorized-reservation budget) for
    * `DELEGATE_GRANT_TTL_MS`. Called by the strand-addr responder after its
    * authorized-membership gate has passed; public so tests can drive the
    * admission policy without a full strand launch. A re-announce for the same

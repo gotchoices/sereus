@@ -244,6 +244,16 @@ export interface NetworkConfig {
    */
   enableRelay?: boolean;
   /**
+   * Cap on concurrent circuit-relay reservations this node's relay server grants to
+   * peers it cannot (yet) recognize as authorized members — the boot-ordering window
+   * where a genuine member reserves its relay slot before its membership row has
+   * replicated here (see `membership-connection-gater.ts` → "The relay-reservation
+   * seam"). Authorized members and announced delegate peers are never counted against
+   * it. Default `MAX_UNAUTHORIZED_RELAY_RESERVATIONS` (8); 0 refuses every
+   * unauthorized reservation. Only meaningful while {@link enableRelay} is on.
+   */
+  unauthorizedRelayReservationCap?: number;
+  /**
    * Custom libp2p transports. When omitted, the default transports from
    * `@optimystic/db-p2p` are used (TCP + circuit relay for Node.js).
    *

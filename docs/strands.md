@@ -81,14 +81,22 @@ A single phone party connects to a more robust party with multiple nodes.
 `ops/` infrastructure stacks) has no membership gate and relays for anyone. A **party
 control node** that also runs the relay server (the default for every storage-profile node)
 is party-private infrastructure: it relays for its own party's nodes — including the extra
-transport identities its members' strand nodes run as — and for nobody else. The mechanism
-for the latter is a **member-announced delegate grant**: before a member's control node
-starts a strand node, it announces the derived transport peerId that strand node will run
-as, over the already-authenticated `/sereus/strand-addr/1.0.0` RPC, and the relay's
-connection gate holds a short-lived, in-memory admission grant for exactly that peerId
-(`packages/cadre-core/src/delegate-admission.ts`). The grant admits the *connection* only —
-control-DB streams stay member-gated. So a single-node NAT'd (SN) party finds a willing
-relay in its own party's storage nodes, or in the ungated dedicated relays.
+transport identities its members' strand nodes run as. The mechanism for the latter is a
+**member-announced delegate grant**: before a member's control node starts a strand node,
+it announces the derived transport peerId that strand node will run as, over the
+already-authenticated `/sereus/strand-addr/1.0.0` RPC, and the relay holds a short-lived,
+in-memory admission grant for exactly that peerId
+(`packages/cadre-core/src/delegate-admission.ts`). The grant admits the *connection* and
+the *reservation* only — control-DB streams stay member-gated. The connection gate is no
+longer the sole relay admission control: the relay question proper is decided at the
+circuit-relay server's reservation hook (`membership-connection-gater.ts` → "The
+relay-reservation seam"), where members and delegates are admitted outright and a peer the
+relay cannot (yet) place — typically a genuine member whose `CadrePeer` row has not
+replicated to the relay — is admitted within a small bounded budget
+(`network.unauthorizedRelayReservationCap`, default 8); an admitted-for-relay connection
+that never reserves is dropped after a few seconds. So a single-node NAT'd (SN) party
+finds a willing relay in its own party's storage nodes, or in the ungated dedicated
+relays, and is never locked out of its first address by replication ordering.
   - Grants live only in the relay's memory, so a relay **restart** drops them all and the
     announcing member is not told. A strand node whose reservation re-dials in that window
     is denied until the announcer's next refresh pass re-announces (at most half the grant

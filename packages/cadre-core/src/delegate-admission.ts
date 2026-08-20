@@ -5,24 +5,26 @@
  * A strand node runs as its own libp2p instance with its own transport peerId,
  * derived from the cadre identity key + strandId (`strand-transport-key.ts`).
  * That derivation uses the member's PRIVATE seed by design, so no third party —
- * including a co-cadre relay — can recompute it. When a NAT'd member's strand
- * node tries to reserve a circuit-relay slot on a sibling's control node, the
- * relay's membership connection gater sees an unknown peerId and denies the
- * connection, which kills the reservation and fails the strand's
- * `libp2p.start()` outright.
+ * including a co-cadre relay — can recompute it: a sibling's relay sees an
+ * unknown peerId it has no way to place as a member.
  *
- * The resolution (docs/strands.md → "Relays and admission"): a party control
+ * The resolution (docs/strands.md → "Relay willingness"): a party control
  * node running a relay is party-private infrastructure — it relays for its own
  * party's nodes, including the extra transport identities its members' strand
- * nodes run as, and for nobody else. The mechanism is a **member-announced
- * delegate grant**: before a member's control node starts a strand node, it
- * tells its siblings (over the already-authenticated `/sereus/strand-addr/1.0.0`
- * RPC) the derived peerId that strand node will use, and the receiver holds a
- * short-lived, in-memory admission grant for exactly that peerId. The grant is
- * consulted ONLY by the connection-level gate
- * (`CadreNode.admitInboundControlConnection`); the fail-closed per-stream gate
- * (`authorizeInboundControlStream`) never honors it, so a delegate gets the
- * connection (all a circuit-relay `hop` reservation needs) and nothing more.
+ * nodes run as. The mechanism is a **member-announced delegate grant**: before
+ * a member's control node starts a strand node, it tells its siblings (over the
+ * already-authenticated `/sereus/strand-addr/1.0.0` RPC) the derived peerId
+ * that strand node will use, and the receiver holds a short-lived, in-memory
+ * admission grant for exactly that peerId. The grant is consulted by the
+ * connection-level gate (`CadreNode.admitInboundControlConnection`) and by the
+ * relay-reservation admission (`CadreNode.admitControlRelayReservation`) — a
+ * granted delegate is admitted outright, never drawing on the small
+ * unauthorized-reservation budget that unplaced peers share
+ * (`membership-connection-gater.ts` → "The relay-reservation seam") and never
+ * racing its not-reserving connection deadline. The fail-closed per-stream gate
+ * (`authorizeInboundControlStream`) never honors a grant, so a delegate gets
+ * the connection and its reservation (all a circuit-relay `hop` needs) and
+ * nothing more.
  *
  * A grant is a delegation of trust to an already-trusted member: the receiver
  * cannot verify that the announced peerId really is the member's strand node,

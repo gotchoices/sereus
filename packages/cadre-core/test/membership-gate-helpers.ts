@@ -21,13 +21,14 @@ export const MEMBER = 'peer-member';
 /** A peer with no row at all — the outsider the gates exist to refuse. */
 export const STRANGER = 'peer-stranger';
 
-export function createConfig(bootstrapNodes: string[] = []): CadreNodeConfig {
+export function createConfig(bootstrapNodes: string[] = [], extra: Partial<CadreNodeConfig> = {}): CadreNodeConfig {
   return {
     controlNetwork: {
       partyId: 'membership-gate-test-' + Math.random().toString(36).slice(2),
       bootstrapNodes
     },
-    profile: 'transaction'
+    profile: 'transaction',
+    ...extra
   };
 }
 

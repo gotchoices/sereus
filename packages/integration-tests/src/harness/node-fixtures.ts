@@ -51,6 +51,12 @@ export interface ControlNodeOpts {
    * node with no inbound reachability of its own.
    */
   relayAddrs?: string[];
+  /**
+   * Cap on concurrent relay reservations granted to peers this node cannot (yet)
+   * recognize as members (`network.unauthorizedRelayReservationCap`) — lets a
+   * scenario prove the budget bounds without booting `MAX_UNAUTHORIZED_RELAY_RESERVATIONS`+1 nodes.
+   */
+  unauthorizedRelayReservationCap?: number;
   hibernation?: boolean;
   /** Which strands this node participates in (default `'all'`). */
   strandFilter?: 'all' | 'none';
@@ -83,6 +89,8 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],
       ...(opts.relayAddrs ? { relayAddrs: opts.relayAddrs } : {}),
       ...(opts.enableRelay ? { enableRelay: true } : {}),
+      ...(opts.unauthorizedRelayReservationCap !== undefined
+        ? { unauthorizedRelayReservationCap: opts.unauthorizedRelayReservationCap } : {}),
       ...(opts.reconcileMs !== undefined ? { controlCohort: { reconcileMs: opts.reconcileMs } } : {}),
       ...(opts.connectionGater ? { connectionGater: opts.connectionGater } : {})
     },
