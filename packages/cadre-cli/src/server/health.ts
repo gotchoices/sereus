@@ -9,6 +9,12 @@ const log = debug('cadre:cli:health');
 /** Maximum seed request body size (256 KiB) — seeds are small. Mirrors AdminServer. */
 const MAX_SEED_BODY_BYTES = 256 * 1024;
 
+/** A listening server's real port, which differs from the requested one when port 0 was asked for. */
+function boundPort(server: http.Server | null, requested: number): number {
+  const addr = server?.address();
+  return addr && typeof addr === 'object' ? addr.port : requested;
+}
+
 export interface HealthServerOptions {
   /** Port for health check endpoint (default: 8080) */
   healthPort?: number;
@@ -108,16 +114,12 @@ export class HealthServer {
 
   /** The actually-bound health port (useful when constructed with port 0). */
   get healthBoundPort(): number {
-    const addr = this.healthServer?.address();
-    if (addr && typeof addr === 'object') return addr.port;
-    return this.options.healthPort;
+    return boundPort(this.healthServer, this.options.healthPort);
   }
 
   /** The actually-bound metrics port (useful when constructed with port 0). */
   get metricsBoundPort(): number {
-    const addr = this.metricsServer?.address();
-    if (addr && typeof addr === 'object') return addr.port;
-    return this.options.metricsPort;
+    return boundPort(this.metricsServer, this.options.metricsPort);
   }
 
   /** Start the health and metrics servers */
@@ -207,6 +209,9 @@ export class HealthServer {
     };
   }
 
+  // NOTE: the emitted text is hand-built from string literals, so a field added to MetricsData
+  // but never formatted (or vice versa) is silent — the well-formedness test only checks the
+  // lines that are emitted. If this metric set grows much, drive the text off a field table.
   private formatPrometheusMetrics(data: MetricsData): string {
     const lines: string[] = [
       '# HELP cadre_node_running Whether the cadre node is running (1=yes, 0=no)',
@@ -216,11 +221,7 @@ export class HealthServer {
       '# HELP cadre_node_uptime_seconds Uptime of the cadre node in seconds',
       '# TYPE cadre_node_uptime_seconds counter',
       `cadre_node_uptime_seconds ${data.cadre_node_uptime_seconds.toFixed(3)}`,
-      '',
-      '# HELP cadre_strands_total Total number of strands',
-      '# TYPE cadre_strands_total gauge',
     ];
-    // Continued in next sections due to line limit
     return lines
       .concat(this.formatStrandMetrics(data))
       .concat(this.formatConnectionMetrics(data))
@@ -229,6 +230,8 @@ export class HealthServer {
 
   private formatStrandMetrics(data: MetricsData): string[] {
     return [
+      '', '# HELP cadre_strands_total Total number of strands',
+      '# TYPE cadre_strands_total gauge',
       `cadre_strands_total ${data.cadre_strands_total}`,
       '', '# HELP cadre_strands_active Number of active strands',
       '# TYPE cadre_strands_active gauge',

@@ -13,11 +13,11 @@ class MockNode {
   readonly partyId = 'party-xyz';
   get peerId() { return { toString: () => '12D3KooWSelf' }; }
 
+  connectionPaths = { total: 0, relayed: 0, direct: 0, stuckOnRelay: 0, byTransport: {} as Record<string, number>, paths: [] };
+
   getStrands() { return new Map(); }
   getMultiaddrs(): string[] { return ['/ip4/127.0.0.1/tcp/4001']; }
-  getConnectionPaths() {
-    return { total: 0, relayed: 0, direct: 0, stuckOnRelay: 0, byTransport: {}, paths: [] };
-  }
+  getConnectionPaths() { return this.connectionPaths; }
 
   async applySeed(seed: unknown) {
     this.applySeedCalls.push(seed);
@@ -81,6 +81,47 @@ describe('HealthServer', () => {
       expect(body).toContain('cadre_connections_total ');
       expect(body).not.toContain('cadre_peers_connected');
       expect(body).not.toContain('\n\n\n');
+    });
+
+    it('GET /metrics reports live connection counts and only in-use transports', async () => {
+      const { metricsBase } = await startServer();
+      node.connectionPaths = {
+        total: 3, relayed: 1, direct: 2, stuckOnRelay: 1,
+        byTransport: { tcp: 2, webrtc: 0, ws: 1 },
+        paths: [],
+      };
+      const body = await (await fetch(`${metricsBase}/metrics`)).text();
+      expect(body).toContain('cadre_connections_total 3');
+      expect(body).toContain('cadre_connections_relayed 1');
+      expect(body).toContain('cadre_connections_direct 2');
+      expect(body).toContain('cadre_connections_stuck_on_relay 1');
+      expect(body).toContain('cadre_connections_by_transport{transport="tcp"} 2');
+      expect(body).toContain('cadre_connections_by_transport{transport="ws"} 1');
+      // Zero-count transports are filtered out rather than emitted as an all-zero series.
+      expect(body).not.toContain('transport="webrtc"');
+    });
+
+    it('GET /metrics emits well-formed Prometheus text: HELP, TYPE, then samples per block', async () => {
+      const { metricsBase } = await startServer();
+      node.connectionPaths = { total: 1, relayed: 0, direct: 1, stuckOnRelay: 0, byTransport: { tcp: 1 }, paths: [] };
+      const body = await (await fetch(`${metricsBase}/metrics`)).text();
+      expect(body.startsWith('\n')).toBe(false);
+      expect(body.endsWith('\n')).toBe(false);
+
+      const blocks = body.split('\n\n');
+      expect(blocks.length).toBeGreaterThan(1);
+      for (const block of blocks) {
+        const [help, type, ...samples] = block.split('\n');
+        const name = /^# HELP (\S+) \S/.exec(help ?? '')?.[1];
+        expect(name, `bad HELP line: ${help}`).toBeTruthy();
+        expect(type, `bad TYPE line for ${name}`).toMatch(new RegExp(`^# TYPE ${name} (gauge|counter)$`));
+        expect(samples.length, `no samples for ${name}`).toBeGreaterThan(0);
+        for (const sample of samples) {
+          expect(sample, `bad sample for ${name}`).toMatch(
+            new RegExp(`^${name}(\\{[^}]*\\})? -?\\d+(\\.\\d+)?$`),
+          );
+        }
+      }
     });
   });
 
