@@ -5,10 +5,10 @@
  * orchestrator) each own their own files under `<dataDir>/`; this is NOT
  * an umbrella config.
  *
- * Schema versions:
- *   v1 — initial layout from 6.4.1.
- *   v2 — adds `updates: { autoApply, manifestUrl? }` for the update-flow
- *        (6.4.2). v1 files are silently upgraded on read with autoApply=false.
+ * Schema version: 2. `version` is a forward guard — a file whose version
+ * does not match `CURRENT_VERSION` is rejected on read rather than
+ * reinterpreted, so a future incompatible layout fails loudly instead of
+ * being silently misread.
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -119,7 +119,7 @@ export function updateHostConfig(
     ...current,
     ...patch,
     updates: { ...current.updates, ...(patch.updates ?? {}) },
-    version: 2,
+    version: CURRENT_VERSION,
   };
   writeHostConfig(filePath, next);
   return next;
@@ -137,12 +137,6 @@ export function readHostConfig(filePath: string): HostConfigFile {
     throw new Error(`host.config.json at ${filePath} is not a JSON object`);
   }
   const obj = parsed as Record<string, unknown>;
-  if (obj.version === 1) {
-    // Silent in-place upgrade. v1 lacks `updates`; default to notify-only.
-    const upgraded = upgradeV1(obj, filePath);
-    writeHostConfig(filePath, upgraded);
-    return upgraded;
-  }
   if (obj.version !== CURRENT_VERSION) {
     throw new Error(
       `host.config.json at ${filePath} has unsupported version=${obj.version} (this build expects ${CURRENT_VERSION})`,
@@ -152,38 +146,6 @@ export function readHostConfig(filePath: string): HostConfigFile {
     throw new Error(`host.config.json at ${filePath} is missing required fields`);
   }
   return obj;
-}
-
-/** v1 → v2 migration: stamp `updates: { autoApply: false }` and bump version. */
-function upgradeV1(obj: Record<string, unknown>, filePath: string): HostConfigFile {
-  if (!isV1Shape(obj)) {
-    throw new Error(`host.config.json at ${filePath} is missing required v1 fields`);
-  }
-  return {
-    version: 2,
-    installId: obj.installId as string,
-    uiPort: obj.uiPort as number,
-    libp2pPort: obj.libp2pPort as number,
-    dataDir: obj.dataDir as string,
-    identityPath: obj.identityPath as string,
-    upnpEnabled: obj.upnpEnabled as boolean,
-    installedAt: obj.installedAt as string,
-    installerVersion: obj.installerVersion as string,
-    updates: { autoApply: false },
-  };
-}
-
-function isV1Shape(v: Record<string, unknown>): boolean {
-  return (
-    typeof v.installId === 'string' &&
-    typeof v.uiPort === 'number' &&
-    typeof v.libp2pPort === 'number' &&
-    typeof v.dataDir === 'string' &&
-    typeof v.identityPath === 'string' &&
-    typeof v.upnpEnabled === 'boolean' &&
-    typeof v.installedAt === 'string' &&
-    typeof v.installerVersion === 'string'
-  );
 }
 
 function isHostConfigShape(v: unknown): v is HostConfigFile {

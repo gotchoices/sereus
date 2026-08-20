@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -39,7 +39,7 @@ describe('host.config.json round-trip', () => {
     expect(readHostConfig(path)).toEqual(cfg);
   });
 
-  it('upgrades v1 files in place on read', () => {
+  it('rejects v1 files without rewriting them', () => {
     const path = join(tmp, 'host.config.json');
     const v1 = {
       version: 1,
@@ -52,13 +52,10 @@ describe('host.config.json round-trip', () => {
       installedAt: '2026-01-01T00:00:00.000Z',
       installerVersion: '0.6.0',
     };
-    writeFileSync(path, JSON.stringify(v1));
-    const upgraded = readHostConfig(path);
-    expect(upgraded.version).toBe(2);
-    expect(upgraded.updates).toEqual({ autoApply: false });
-    // Reading again should be idempotent and stay v2.
-    const reRead = readHostConfig(path);
-    expect(reRead.version).toBe(2);
+    const raw = JSON.stringify(v1);
+    writeFileSync(path, raw);
+    expect(() => readHostConfig(path)).toThrow(/unsupported version=1/);
+    expect(readFileSync(path, 'utf8')).toBe(raw);
   });
 
   it('rejects unknown versions', () => {

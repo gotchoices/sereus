@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -180,15 +180,16 @@ describe('/api/settings routes', () => {
     expect(res.statusCode).toBe(400);
   });
 
-  it('reads v1 host.config.json and migrates to v2 on first read', async () => {
-    writeV1Config(dataDir);
+  it('rejects a v1 host.config.json without rewriting it', async () => {
+    const path = writeV1Config(dataDir);
+    const raw = readFileSync(path, 'utf8');
     app = Fastify();
     registerErrorHandler(app);
     registerSettingsRoutes(app, { settingsStore: new HostSettingsStore({ dataDir }), nat: fakeNat().svc });
     const res = await app.inject({ method: 'GET', url: '/api/settings' });
-    expect(res.statusCode).toBe(200);
-    const body = res.json() as { data: { version: number; updates: { autoApply: boolean } } };
-    expect(body.data.version).toBe(2);
-    expect(body.data.updates.autoApply).toBe(false);
+    expect(res.statusCode).toBe(500);
+    const body = res.json() as { error: { message: string } };
+    expect(body.error.message).toMatch(/unsupported version=1/);
+    expect(readFileSync(path, 'utf8')).toBe(raw);
   });
 });
