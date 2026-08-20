@@ -83,8 +83,8 @@
  * Scenario 2 — NAT receiver is NOT hibernated, by design. Scenario 2's unique
  * subject is the SENDER reaching a NAT'd peer: the signaling-first resolve and the
  * relayed dial over a libp2p "limited" (circuit) connection. (That dial used to
- * fail outright with `LimitedConnectionError`; this ticket fixed it — see the
- * `runOnLimitedConnection` change in `strand-wake-protocol.ts`.) The full
+ * fail outright with `LimitedConnectionError`, until `strand-wake-protocol.ts`
+ * started passing `runOnLimitedConnection` on the wake dial.) The full
  * hibernating→`active` resume is already proven on the direct path (scenario 1)
  * and is the SAME receiver code regardless of transport. Driving a *hibernating*
  * NAT receiver to `active` additionally requires the woken strand's `networked`
@@ -94,7 +94,9 @@
  * "strand-cohort discovery over the control network is TODO" gap, not a wake-
  * transport defect, so scenario 2 wakes an already-active strand (the "already
  * live → accepted" branch) to keep the assertion about the relay transport, not
- * the strand cluster. See the review handoff for the follow-up this should spawn.
+ * the strand cluster. The follow-up is tracked in
+ * `tickets/backlog/strand-network-nat-relay-reachability.md` (§1, per-strand NAT
+ * reachability).
  */
 
 import { describe, it, expect } from 'vitest';
@@ -392,7 +394,7 @@ describe('E2E push-wake over the control network', () => {
 			expect(strand.status).toBe('active');
 
 			// The relayed wake dial — the path the in-memory tests cannot prove. It
-			// fails entirely without the `runOnLimitedConnection` fix this ticket made.
+			// fails entirely unless the wake dial passes `runOnLimitedConnection`.
 			const ack: WakeAck = await S.pushWake(rxPeerId, strandId, 'nat wake');
 			expect(ack).toEqual({ accepted: true, status: 'active' });
 			expect(Rx.getStrand(strandId)?.status).toBe('active');
