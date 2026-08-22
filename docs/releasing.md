@@ -90,6 +90,12 @@ yarn pub:cadre-provider
 yarn pub:cadre-host
 ```
 
+**`cadre-host` refuses to publish while its embedded release key is the all-zeros placeholder.**
+The guard is in `scripts/publish-package.mjs`. Either provision a real key, or publish the other
+four and hold `cadre-host` back. The escape hatch `CADRE_HOST_ALLOW_PLACEHOLDER_KEY=1` exists for
+testing the publish path and should not be used for a real release — an installer signed with a
+key everyone has is an installer nobody can trust.
+
 ### 5. Create a GitHub release
 
 ```bash
@@ -147,217 +153,13 @@ script ensures this stays in sync. Do not manually edit version numbers in indiv
       `yarn pub:<name> --tag <tag>`
 - [ ] GitHub release created with real notes
 
----
+## Where the last release landed
 
-# The interim release — recommendation and runbook (drafted 2026-08-03)
+The most recent release is `v0.11.0`, published to `latest` on 2026-08-18. The go/no-go reasoning
+for it, and the two standing constraints it left behind, are in
+[`tickets/complete/cut-the-interim-release.md`](../tickets/complete/cut-the-interim-release.md).
 
-Everything below concerns the next release specifically. It is a recommendation with reasons, not a
-menu; the actual go/no-go and the outward-facing publish are
-`tickets/blocked/cut-the-interim-release`.
-
-## Recommendation
-
-**Version `0.10.0-alpha.0`, published under the `alpha` dist-tag, for all publishable packages,
-with the declared dependency floors moved to `^0.19.0`.**
-
-### Why a minor bump, not a patch
-
-The change set since 0.9.0 is not a patch. The declared minimum for the underlying
-database/networking layer moved five minor versions (`^0.14.1` → `^0.19.0`), which changes what a
-consumer's dependency tree resolves to; the control-database schema gained tables; push delivery and
-node donation are new subsystems. `0.9.1` would understate all of that.
-
-### Why a prerelease under `alpha`, not `latest`
-
-Multi-machine replication is not yet clean. The coordinator defect that made it fail outright is
-fixed upstream, but a handful of cross-machine scenarios stay red on defects this repo does not own
-— see the open entries in [`tickets/blocked/`](../tickets/blocked) and the current measurement in
-[`tickets/.pre-existing-known.md`](../tickets/.pre-existing-known.md) before deciding a tag.
-`latest` is what `npm install @serfab/cadre-core` returns and therefore means "this is the version
-to use" — which, for a library whose whole premise is multiple devices sharing data, is a claim to
-make deliberately rather than by default. The tag costs the one consumer who is waiting on this
-nothing: the reply drafted in
-`tickets/blocked/report-dependency-floor-bump-to-embedding-app` already asks them to **pin** to the
-new version rather than track `latest`.
-
-Once the remaining cross-machine scenarios go green, promote with `npm dist-tag add`, no republish
-required.
-
-> **Read the current measurement, not this paragraph.** A release-readiness claim written into a
-> doc is stale the moment the next fix lands, and a downstream team once held a multi-device
-> project for two weeks on exactly that. Whatever this section says, verify against the suite.
-
-### `strand-proto` has been removed from the repo
-
-The deprecated `@serfab/strand-proto` package — previously excluded from this release for being
-unmaintained — has since been deleted from this repo entirely (source, build, lint/typecheck
-carve-outs, and the publish chain). Its already-published `0.9.0` stays on npm and keeps resolving
-for any external consumer this repo cannot see; this repo simply no longer builds, tests, or
-publishes it. There is nothing left to decide here — the five packages listed above are now the
-complete publishable set.
-
-### Dependency floors: moved to `^0.19.0` (landed 2026-08-03)
-
-`../optimystic` cut `v0.19.0` on 2026-08-03 and it is on npm as `latest`, so that is now both what
-this repo links and what a consumer installing the sibling packages gets. Because these are `0.x`
-versions, `^0.18.0` meant `>=0.18.0 <0.19.0` and *excluded* it, so `yarn check:dep-ranges` was red on
-22 ranges. All 24 declared `@optimystic/*` ranges moved to `^0.19.0` on 2026-08-03
-(`tickets/complete/0.15-bump-optimystic-floors-to-0.19`) — the 22 the gate covers plus the two
-`db-p2p-storage-fs` ones it does not (that package is not a `link:` target); the gate now reports
-zero too-old ranges.
-
-This is not a speculative bump to a version nobody can install. `0.19.0` is a
-**version-numbers-only** release (`git show --stat 9b86eb3` in that repo is twelve `package.json`
-files, one line each) sitting directly on the commit every measurement above was taken against — so
-it is the same code, published.
-
-It carries neither of the two fixes this release cares about: not the coordinator fix that
-cross-machine replication needs, and not the `chai` import chain that blocks publishing at all. If a
-*fixed* sibling release appears before this release is cut, take that one instead, and re-measure
-the "not ready" section of the notes below rather than reprinting it.
-
-## The blocker that must clear first
-
-**A release built from current HEAD cannot be imported by anyone who installs it.**
-`@optimystic/quereus-plugin-optimystic` imports a test-only entry point of `@optimystic/db-p2p` from
-its shipped runtime code, and one file behind that entry point imports `chai`, which is a
-development dependency and is therefore not installed for consumers. Loading
-`@serfab/cadre-core` from a registry install throws `ERR_MODULE_NOT_FOUND` before running a line of
-our code. Verified by real tarball install; present in every published `0.16.2` and later,
-**including `0.19.0`**, and still unfixed at `../optimystic`'s HEAD.
-
-Full analysis, and the three concrete upstream sites,
-are in `tickets/blocked/optimystic-testing-barrel-breaks-consumer-install`.
-
-**Recommended route: fix it upstream and wait for a `0.18.1`.** The change is small and belongs
-where the defect is. The alternative — declaring `chai` as a real dependency of our own packages —
-does work (verified), but it ships a test-assertion library to every customer to cover another
-project's bug, and it is easy to forget to remove. If it is chosen, time-box it: it should be a
-declared dependency on `@serfab/cadre-core` and `@serfab/quereus-plugin-sereus` with a `NOTE:`
-naming this ticket, plus a `backlog/debt-` ticket to remove it.
-
-## Draft release notes — `v0.10.0-alpha.0`
-
-Paste as the GitHub release body and adjust the version if it changes. Re-measure before publishing
-if more than a few days have passed; the numbers are the point.
-
-> ## `@serfab/*` 0.10.0-alpha.0
->
-> This is an **interim, single-machine release**, published under the `alpha` dist-tag. It does not
-> become what `npm install @serfab/cadre-core` returns — install it explicitly, and pin it.
->
-> ### Why it exists
->
-> The published 0.9.0 declares a minimum version of its underlying database and networking layer
-> (`@optimystic/*`) that is two minor versions behind the one we actually build and test against.
-> An app installing 0.9.0 from npm therefore gets a lower layer nobody here has ever tested on — and
-> ends up with two incompatible copies of the SQL engine loaded in one process. This release
-> declares the tested versions, so an install resolves to a single, coherent set.
->
-> ### What is tested and working
->
-> Everything on this list is covered by tests that pass at the released commit:
->
-> - **A single node, on its own** — a "cadre of one", the first-run state of every embedding app.
->   Control reads and writes complete from local state without consulting a network it knows is
->   empty, across both node profiles and across a restart. Verified against the packages as
->   actually published, installed from the registry into a clean project.
-> - **A node whose known peers are all unreachable** — answers control reads and writes from local
->   rows rather than hanging.
-> - **The control database** — ownership and validation keys, peer records, device tokens, strand
->   records, formation invitations and their redemption (including approval-gated redemption over a
->   real HTTP approver), revocation, and the authorization rules over all of it.
-> - **Strand formation and membership**, including closed strands, invitation binding, single-use
->   and multi-use invitations, cancellation, and manager promotion — proven over real libp2p between
->   processes on one machine.
-> - **Node enrollment and seeding** — owner-signed seeds, cold-start trust anchoring, pinned owner
->   keys, rejection of tampered, expired, and self-asserted seeds.
-> - **Connection-level membership gating** — strangers refused at the connection layer, members and
->   invitees admitted, delegates admitted narrowly.
-> - **Push-wake and hibernation** — strand hibernation, check-in wake, push-wake over a real direct
->   dial and over a circuit relay, and the FCM/APNs delivery layer.
-> - **Self-hosting and multi-tenant hosting** — `cadre-host` node donation, grant tokens, the
->   trust-circle flow, respawn of a crashed donated node, and `cadre-provider` per-tenant container
->   provisioning and credential isolation.
->
-> ### What is NOT ready — read this before building on it
->
-> **Cross-machine replication does not work in this release.** This is not "experimental" or "under
-> active development". It is a known defect with a traced root cause, and it will bite you:
->
-> - When a second machine joins, a read of a shared table can be answered "nothing was ever saved
->   here" by whichever machine the lookup routes to, even when another machine in the group holds
->   the data. That machine never asks its peers before answering.
-> - Once that happens, the writing machine refuses every subsequent write to that table with
->   `holds committed revision N, but its header block read as absent`. **The state is permanent for
->   that collection, not transient** — the routing does not change back.
-> - It is a routing race, so it does not fail on every run. A green run proves nothing.
->
-> The fault is a single line in `@optimystic/db-p2p`, not in this project, and no code change here
-> can work around it. It is fixed by a new `@optimystic/*` release, not by a new `@serfab/*` one.
->
-> Concretely, **do not** build on: data shared between two or more devices, a phone syncing with a
-> home server, donated or provider-hosted nodes carrying a copy of your data, or any read that is
-> expected to reach a row written on a different machine. Do build on: a single node holding its
-> own data, and everything in the working list above.
->
-> Two smaller known issues: owner-signed revocation re-issue fails on a defect in the SQL engine's
-> handling of an update that does not touch the primary key, and a small number of strand-mesh
-> operations between two peers hit the same absent-block routing race described above.
->
-> ### Upgrading from 0.9.0
->
-> Pin the exact version — this is a prerelease and will not be matched by a `^0.9.0` range. If you
-> added manual timeouts around single-node control reads or writes as a workaround, remove them and
-> tell us whether anything still hangs; we were not able to reproduce a single-node freeze at either
-> version.
-
-## What the human has to run, in order
-
-Nothing below can be done by an agent: step 1 is another team's repo, and steps 5–8 are
-outward-facing and irreversible.
-
-1. **Get the `chai` import chain fixed upstream and published.** In `../optimystic`, stop
-   `packages/quereus-plugin-optimystic/src/optimystic-adapter/collection-factory.ts` importing
-   `@optimystic/db-p2p/testing` from shipped runtime code (or drop
-   `packages/db-p2p/src/testing/raw-storage-conformance.ts` from that barrel), then publish — likely
-   `0.19.1`. Nothing else on this list is worth starting until an installable version exists.
-   *If you instead choose the local workaround, see "The blocker that must clear first" above.*
-2. **Point the floors at whatever that publishes.** They already sit at `^0.19.0` (landed
-   2026-08-03) and the gate is green; if the fix ships as something later, move them again:
-   ```bash
-   yarn upgrade:optimystic && yarn install && yarn check:dep-ranges
-   ```
-   This gate must report zero too-old ranges before going further.
-3. **Re-measure.** The numbers in the notes above are from 2026-08-03 and the multi-machine
-   failures are races:
-   ```bash
-   yarn build
-   cd packages/integration-tests && npx vitest run          # expect ~8 files red, all multi-machine
-   ```
-4. **Prove the published artifact imports.** This is the gate that was red:
-   ```bash
-   yarn smoke:published
-   ```
-5. **Bump.** Choose prerelease / `alpha`:
-   ```bash
-   yarn bump --release prerelease --preid alpha             # → 0.10.0-alpha.0
-   ```
-6. **Publish under the `alpha` tag** (PowerShell: `$env:SEREUS_DIST_TAG = 'alpha'; yarn pub`):
-   ```bash
-   SEREUS_DIST_TAG=alpha yarn pub
-   ```
-   `cadre-host` refuses to publish while its embedded release key is the all-zeros
-   placeholder — see `scripts/publish-package.mjs`. Resolve that before running this step, or
-   publish the other four individually (`yarn pub:<name> --tag alpha`) and hold `cadre-host` back.
-7. **Confirm `latest` did not move:**
-   ```bash
-   npm view @serfab/cadre-core dist-tags     # expect latest: 0.9.0, alpha: 0.10.0-alpha.0
-   ```
-8. **Send the reply** drafted in
-   `tickets/blocked/report-dependency-floor-bump-to-embedding-app`, with the real version number in
-   it, and record where it went so the next person has the channel.
-9. **Cut the GitHub release** with the notes above:
-   ```bash
-   gh release create v0.10.0-alpha.0 --notes-file <notes> --prerelease
-   ```
+> **Never take a release-readiness claim from a document.** Any statement about what is green is
+> stale the moment the next fix lands, and a downstream team once held a multi-device project for
+> two weeks on exactly that. Measure against the suite and
+> [`tickets/.pre-existing-known.md`](../tickets/.pre-existing-known.md) at the time you cut.

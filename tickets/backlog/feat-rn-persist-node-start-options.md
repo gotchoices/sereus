@@ -50,3 +50,15 @@ with a freshly generated id and the app reads an empty record and refuses the ne
 bundle, so the user has to paste the invitation again every launch. The storage works; it is
 simply never read back. (The first consequence — waking from a notification into a killed
 process — does not apply: the NativeScript app has no push-wake path.)
+
+## Visibility (added 2026-08-22)
+
+An outside documentation review of the published `v0.11.0` tree (2026-08-19, item 6) hit this
+from the other direction and called it buried: the consequence is that **a solo phone re-founds a
+new party on every relaunch**, so records are durable but not observable across a restart — and
+that is exactly the "start solo, add nodes later" story the project leads with. Today it is stated
+once in [`docs/reference-app-rn.md`](../../docs/reference-app-rn.md) and once inside a very long
+paragraph in [`docs/architecture.md`](../../docs/architecture.md), in both cases as an aside.
+
+Whoever picks this up should also lift the caveat to somewhere a reader planning a solo-first
+deployment will actually meet it, and delete it from both places when the ticket lands.
