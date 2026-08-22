@@ -6,6 +6,49 @@ difficulty: hard
 repro: verified
 ----
 
+> **Gate run 2026-08-22 — the named upstream rule is gone and the symptom is WORSE. Stays blocked,
+> but the analysis below needs re-pointing before anyone works it.**
+>
+> **Measured: 7 of 7 red today.** Two full integration runs plus the five isolated runs this
+> ticket's own unblock condition asks for:
+>
+> | observation | result |
+> | --- | --- |
+> | full-suite runs ×2 (2026-08-22) | red both |
+> | isolated runs ×5 (the stated gate) | **red 5/5** |
+>
+> Every one carries the identical verdict — `Block default/OwnerKey is unavailable
+> (claimed-elsewhere): the repo could not determine whether it exists`, raised from a deferred row
+> constraint during bring-up. The body describes "about four times in ten"; it is now every run.
+>
+> **The corroboration floor this ticket blames has already been changed upstream.**
+> `quorumSize` in `../optimystic/packages/db-p2p/src/cluster/quorum-restore.ts` now computes
+> `Math.max(1, Math.min(CORROBORATION_FLOOR, corroboratorCapacity))` — so a capacity of one yields
+> a floor of one, which is exactly what this ticket's unblock condition asked for. Three upstream
+> tickets naming that code are in `../optimystic/tickets/complete/`:
+> `corroboration-floor-defaults-to-two-for-large-meshes`, `corroboration-floor-uses-assumed-cluster-size`,
+> and `1-bug-read-repair-unrepairable-small-cluster`.
+>
+> So **the unblock condition as written is satisfied and the failure is unchanged.** Whatever
+> produces `claimed-elsewhere` today is not the floor. The verdict is minted at
+> `../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts:436-443` (`absence === 'claimed'` →
+> `'claimed-elsewhere'`); that mapping, not `quorum-restore.ts`, is where a fresh investigation
+> should start. The `files:` header above is stale in the same way.
+>
+> **The green→red flip is real and unexplained.** On 2026-08-18 (HEAD `8418d24`, `@optimystic/*`
+> `^0.24.0`) this scenario passed both full runs and the delta note in
+> `tickets/.pre-existing-known.md` says so. Today, at `^0.24.2`, it is 7/7 red. Two commits touched
+> the scenario file in between (`1b875ee` and `969cd42`), and **neither explains it**: both land in
+> scenario 2's setup plus one added assertion in scenario 4, while the failure is a query error
+> during bring-up, not an assertion. That leaves the 0.24.0 → 0.24.2 upstream step as the
+> unexamined candidate — `../optimystic` landed `relay-cannot-dial-its-own-reservation-holders` and
+> `address-book-merge-logs-under-two-namespaces` in that window. Worth a bisect before anything else.
+>
+> **This is the defect an outside embedding team is holding multi-device work on** (their report is
+> in `tmp/cross-machine-replication-known-broken-0.11.0.md`, which names this class and asks for a
+> signal when it clears). It has not cleared. Any release note must say so.
+
+
 # Blocked (b): a block only one machine holds cannot be read by anyone else
 
 **Category (b) — dependency outside this repo.** The rule that fails is

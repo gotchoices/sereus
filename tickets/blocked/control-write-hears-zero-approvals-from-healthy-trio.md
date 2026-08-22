@@ -6,6 +6,40 @@ repro: verified
 difficulty: hard
 ----
 
+> **Gate attempt 2026-08-22 — the `0/3` symptom has not appeared in any observation since the
+> upstream fix, but the five-run gate is NOT complete. Stays blocked.**
+>
+> The body's unblock gate is "≥ 5 runs of `control-write-degraded-cohort-member.integration.ts`".
+> What exists so far:
+>
+> | observation | result |
+> | --- | --- |
+> | isolated rounds ×4 (2026-08-21) | no `0/3` in any round |
+> | isolated round ×1 (2026-08-22) | passed — 6 passed, 1 expected fail |
+> | full-suite run (2026-08-22, 2nd) | scenario green |
+>
+> **Every shortfall observed was `2/3 approvals (needed 3, 0 rejections)`, never `0/3`.** That is
+> the file's deliberately-degraded case (`authorize with never-answering member`, ~20 s by design)
+> behaving exactly as specified — not this ticket's symptom. The upstream fixes the body's
+> 2026-08-12 update describes are in `../optimystic/tickets/complete/`
+> (`2-member-must-answer-a-lost-conflict-race`, `3-bug-orphaned-pending-after-divergent-commit`),
+> and this repo consumes published `^0.24.2`, so the mechanism should be gone.
+>
+> **Why the gate did not finish, and why it was not forced.** Rounds 2–5 aborted in the suite's
+> stale-build guard: `../quereus`'s ticket runner is live and editing
+> `packages/quereus/src/core/database.ts` (plus `database-auto-analyze.ts`), which stales the
+> linked dist. Rebuilding would have completed the count, but it would have measured this scenario
+> against another repo's **uncommitted, mid-implement** engine work — and `database.ts` is the
+> statement-concurrency core these very scenarios exercise. A number obtained that way is worse
+> than no number.
+>
+> **Do not retire this on the evidence above.** Six clean observations with no `0/3` is suggestive,
+> not conclusive, for a race the body measured at roughly 1-in-3. The sibling ticket
+> `forked-control-collection-sync-livelocks` passed two full suites on 2026-08-21 and then failed 2
+> of 3 isolated runs the same day. Finish the five rounds once `../quereus` is quiet and its dist
+> is built from a committed tree.
+
+
 # A healthy trio's control write hears zero approvals
 
 **Blocked on `../optimystic`.** The cause is found, measured, and filed upstream as
