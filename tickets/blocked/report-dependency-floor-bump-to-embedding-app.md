@@ -128,3 +128,42 @@ specific remaining failures are tracked individually (`secondary-index-seek-blin
 `control-peer-row-refresh-invisible-to-third-node`, `block-held-by-only-one-machine-is-unreadable`).
 A blanket "sharing data across machines does not work" would now be inaccurate in the other
 direction, which is its own kind of unhelpful.
+
+---
+
+## A second thing the same channel needs to carry (added 2026-08-22)
+
+A separate report from an embedding team is sitting unanswered in
+`tmp/cross-machine-replication-known-broken-0.11.0.md`. It is not a bug report — it is a **hold
+notice**: they have stopped multi-device work on their health/chat apps, they state their reading
+of our docs, and they ask two things. Both are answerable now, and both are blocked on the same
+missing thing as the reply above: **nobody here has a channel to them.** Whoever sends one reply
+should send both.
+
+**Their reading was correct for what v0.11.0's docs said, and those docs overstated it.** They
+quote `STATUS.md` and `releasing.md` saying cross-machine replication "does not work" and "a green
+run proves nothing". Measured at HEAD on 2026-08-22 — two full real-network integration runs — the
+suite is **245 and 243 passing of 251**, with 41 of 44 multi-node scenario files green. The honest
+statement is not "does not work"; it is "works, with three named exceptions". That correction is
+now in [`README.md`](../../README.md) under Status, and the sentences they quoted have been
+removed rather than softened.
+
+**Their gate, answered condition by condition:**
+
+| their condition | status |
+| --- | --- |
+| 1. upstream fix published for the block-unavailable class, floors moved to it | **not met** — see below |
+| 2. the in-repo cross-node convergence test unblocked and green | **met** — both tests in `control-delete-while-alone-convergence` run; they no longer die in setup |
+
+On condition 1, be precise rather than encouraging: the specific upstream rule that ticket blamed
+(the read-repair corroboration floor) **has** been changed upstream exactly as asked, and the
+symptom is **unchanged and now constant** — 7 of 7 runs red on 2026-08-22, where it was green twice
+on 2026-08-18. So the fix they are waiting for has not landed, and the defect is currently more
+reproducible, not less. Do not report condition 1 as close.
+
+They also flag honestly that they never reproduced the two-node break themselves — their harness is
+single-process. Worth acknowledging: they were right anyway, and the class they named is real.
+
+**What not to say.** Do not tell them multi-device is ready. Do not tell them the earlier warning
+was wrong — it was over-broad, not wrong, and the failure mode it described (permanent, not
+transient, for the affected collection) is still accurate for the one class that still reproduces.

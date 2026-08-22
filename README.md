@@ -77,7 +77,27 @@ The public site lives in [`docs/web/`](docs/web/) (Overview, Architecture, Stack
 
 ### Status
 
-Active development. Core concepts are stable; APIs/tooling are evolving. Current work state lives in [`tickets/`](tickets/); known pre-existing test failures in [`tickets/.pre-existing-known.md`](tickets/.pre-existing-known.md). Early adopters should expect rapid iteration and close-to-the-code workflows.
+Active development. Core concepts are stable; APIs/tooling are evolving. Current work state lives in [`tickets/`](tickets/). Early adopters should expect rapid iteration and close-to-the-code workflows.
+
+**Multi-device replication: works, with named exceptions.** A single node holding its own data is
+solid. Several machines sharing a copy is exercised by a real-network integration suite — nodes on
+real transports, no mocked networking — and most of it passes. It is not uniformly reliable, and
+the gaps are specific rather than general:
+
+- **A block only one machine holds can be unreadable by the others** — an outright error, not a
+  delay. Currently reproduces on every run of the scenario that covers it.
+- **A row written on one machine can stay invisible to a third** when that machine's copy of the
+  control collection forks.
+- **Concurrent joins to the same invitation from two machines** do not converge.
+
+All three sit in the underlying `@optimystic/db-p2p` layer rather than in this repository. Each is
+tracked with a reproduction and a measured rate in
+[`tickets/blocked/`](tickets/blocked/), and every currently-failing test is listed in
+[`tickets/.pre-existing-known.md`](tickets/.pre-existing-known.md) with the ticket that owns it.
+
+If you are deciding whether to build on this, **read that file rather than this paragraph** — it
+carries dates and rates, and it is updated with each measurement. A statement of readiness in a
+README is stale the moment the next fix lands.
 
 ### Credits
 
