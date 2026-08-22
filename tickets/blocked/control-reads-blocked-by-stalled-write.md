@@ -1,3 +1,4 @@
+----
 description: Reads of the shared settings hang while a settings change is stuck waiting on a slow machine, and the cause is in the separate database engine project rather than in this one — someone needs to decide whether to fix it there or work around it here.
 prereq:
 files: packages/cadre-core/src/control-database.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, ../quereus/packages/quereus/src/core/database.ts

@@ -1,9 +1,29 @@
+----
 description: A test that proves two devices can pass data over a connection one of them just opened can no longer get far enough to check that — it now fails seconds after start-up, for an unrelated reason that lives in the shared database library rather than in this project.
 prereq:
 files: packages/integration-tests/src/scenarios/control-cohort-edge-carries-data.integration.ts, packages/integration-tests/src/harness/control-trio.ts, ../optimystic/tickets/fix/isolated-read-cannot-confirm-a-never-written-block.md
 difficulty: hard
 repro: verified
 ----
+
+> **Audit 2026-08-21 — premise still holds, but the unblock condition may already have been met.**
+> The scenario `control-cohort-edge-carries-data` still dies before reaching the carry step, so the
+> original stream-reset symptom remains unobservable and the ticket's reasoning stands. Two things
+> have moved:
+>
+> - **The masking failure's fingerprint changed.** It is now
+>   `Block default/Revocation is unavailable (cohort-unreachable)` during boot, measured in the
+>   full-suite runs of 2026-08-20 and 2026-08-21. The body below describes the earlier shape.
+> - **The upstream ticket named as the unblock condition,
+>   `../optimystic/tickets/fix/isolated-read-cannot-confirm-a-never-written-block.md`, is no longer
+>   on that repo's board** — only a run log from 2026-08-13 remains, so it was processed and has
+>   since been pruned from `complete/` (30-day policy). If it landed, this ticket's stated unblock
+>   condition is *already satisfied* and the next step it prescribes — re-run the scenario ~6 times
+>   and see what the carry step does — is actionable now rather than blocked.
+>
+> Given that, the alternative the body already offers (delete this and open a fresh ticket against
+> whatever the carry step actually does today) looks like the stronger option, since none of the
+> original stream-reset analysis has been reproduced since 2026-08-12.
 
 # Blocked on an upstream read failure that lands before this ticket's symptom
 

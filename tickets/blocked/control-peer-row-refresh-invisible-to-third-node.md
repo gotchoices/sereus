@@ -1,9 +1,25 @@
+----
 description: When a third machine joins a group, one of the machines already there can end up with its own private, permanently out-of-date copy of the shared member directory — so it never learns how to reach the newcomer. It keeps writing to its private copy successfully, and nothing anywhere reports a problem. The code that would notice and merge the two copies lives in a separate repository, so it cannot be fixed here.
 prereq:
 files: ../optimystic/packages/db-core/src/collection/collection.ts, ../optimystic/packages/db-p2p/src/repo/coordinator-repo.ts, ../optimystic/packages/db-p2p/src/cluster/quorum-restore.ts, ../optimystic/packages/db-core/src/transactor/transactor-source.ts, packages/integration-tests/src/harness/control-trio.ts, packages/integration-tests/src/scenarios/control-cohort-three-node-isolation.integration.ts, packages/cadre-core/src/cadre-node.ts
 difficulty: hard
 repro: verified
 ----
+
+> **Audit 2026-08-21 — still real, but narrower than the body claims.** Measured across the
+> full-suite runs of 2026-08-20 and 2026-08-21, of the four scenarios this ticket names:
+>
+> | scenario | status |
+> | --- | --- |
+> | `control-cohort-edge-carries-data` | still fails, both runs |
+> | `control-cohort-three-node-isolation` | intermittent — failed one run, passed the other |
+> | `control-write-degraded-cohort-member` | **7/7 passing, both runs** |
+> | `control-write-while-alone-convergence` | **2/2 passing, both runs** |
+>
+> The last two no longer demonstrate anything. That does not clear the ticket — the fork it
+> describes is still visible through `control-cohort-edge-carries-data` — but anyone re-measuring
+> should not expect those two to reproduce it, and the blast radius stated in the body is wider
+> than what is currently observable.
 
 # Blocked (b): node B's control collection silently forks and never merges back
 

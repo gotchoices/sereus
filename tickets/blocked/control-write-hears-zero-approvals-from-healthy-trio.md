@@ -1,3 +1,4 @@
+----
 description: On a three-machine party where nothing is broken, a control write sometimes gets no votes at all from the other machines and fails, and retrying it right away fails the same way. The cause is in the networking library this project depends on but does not edit, so someone needs to decide how to proceed.
 prereq:
 files: packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, packages/cadre-core/src/control-write-retry.ts, docs/architecture.md, tickets/.pre-existing-known.md

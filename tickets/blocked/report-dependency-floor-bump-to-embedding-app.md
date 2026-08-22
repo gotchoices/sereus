@@ -1,156 +1,130 @@
 ----
-description: An outside app team reported a freeze and is waiting to hear back from us. We fixed the version mismatch on our side, but the fix only reaches them when we publish a new release, and nobody on this repo has a way to contact them — a human needs to send the reply and decide when to publish.
-prereq:
-files: packages/cadre-core/package.json, packages/cadre-core/test/control-database-solo.spec.ts, docs/STATUS.md
+description: An outside app team reported a freeze and is still waiting to hear back from us. The fix they need has now been published, so all that is left is for a person who can reach them to send the reply — nobody on this repo has a contact channel for them.
+files: packages/cadre-core/package.json, packages/cadre-core/test/control-database-solo.spec.ts, docs/testing.md, scripts/smoke-published-install.mjs
 difficulty: easy
 ----
 
-# Human action: reply to the reporting app, and publish a release that carries the fix
+# Human action: reply to the reporting app — the fix they need is now published
 
-## Why this is here rather than in a working stage
+> **Fact-checked 2026-08-21.** This ticket sat unchanged from 2026-08-03 while the world moved
+> underneath it. **One of its two blockers is gone**, and the draft reply it carried had become
+> wrong in almost every particular — it told the reporter to pin `0.10.0-alpha.0` from an `alpha`
+> dist-tag and warned that cross-machine replication does not work. None of that is true now. The
+> reply below has been rewritten; the investigation findings, which still stand, are preserved
+> verbatim in intent.
 
-Two things block it, both outside what an agent in this repo can do:
+## Why this is still blocked — one reason now, not two
 
-1. **No channel to the reporter.** The report reached us second-hand. There is no issue link,
-   email, or contact recorded anywhere in the repo, so the reply cannot be sent from here.
-2. **The fix is not yet published.** `@serfab/cadre-core` is at version 0.9.0 both in this repo
-   and on npm. The corrected dependency versions are committed but unreleased, so *no published
-   version carries them*. Cutting a release is a human decision (`yarn release`), not something
-   to do inside a ticket.
+**No channel to the reporter.** The report reached us second-hand. There is no issue link, email,
+or contact recorded anywhere in the repo, so the reply cannot be sent from here. A person who knows
+who they are has to send it and then record the channel so the next person does not hit this wall.
+
+~~The fix is not yet published.~~ **Resolved.** `@serfab/cadre-core@0.11.0` was published to the
+`latest` dist-tag on 2026-08-18 (`ef3e54d`), together with the other four packages. Verified
+against the registry:
+
+| | declares `@optimystic/*` | declares `@quereus/quereus` |
+| --- | --- | --- |
+| `0.9.0` (what the reporter has) | `^0.14.1` | `^4.4.0` |
+| `0.11.0` (current `latest`) | `^0.24.0` | `^4.14.0` |
+
+So the corrected floors are live, and a plain `npm install @serfab/cadre-core` now returns them —
+no pinning, no dist-tag instructions. (A further tightening to `^0.24.2` / `^4.16.0` landed in
+`3bf4b35` and will ship with the next release; it is not needed for this reply.)
 
 ## Background, in plain terms
 
-Our library depends on a lower-level database and networking layer published by a sibling
-project. Each of our packages declares the **oldest version it will accept**. That declared
-minimum had drifted two minor versions behind the version we actually develop and test against,
-because this repo is wired to use a local copy of the sibling project rather than the published
-one. So an app installing our library from npm got an older layer underneath than anything we
-had ever tested on.
+Our library depends on a lower-level database and networking layer published by a sibling project.
+Each of our packages declares the **oldest version it will accept**. That declared minimum had
+drifted well behind the version we actually develop and test against, because this repo is wired to
+use local copies of the sibling projects rather than the published ones. So an app installing our
+library from npm got an older layer underneath than anything we had ever tested on.
 
-An app in that situation reported that a brand-new node with no other members froze
-indefinitely when reading or writing its own settings. They worked around it with manual
-timeouts.
+An app in that situation reported that a brand-new node with no other members froze indefinitely
+when reading or writing its own settings. They worked around it with manual timeouts.
 
 ## What has been done on our side
 
-- Every one of our packages that depends on that lower layer now declares the version we
-  actually test against, and there is a written rule in `docs/STATUS.md` to keep the two in
-  lockstep from now on.
-- Permanent test coverage was added for exactly the configuration the reporter runs — a single
-  node with no other members, no inbound listening address, and no bootstrap peers — across both
-  node profiles plus a restart. It completes in milliseconds here.
-- **We could not reproduce their freeze**, at either the old or the new dependency version. So
-  the version mismatch is a real problem that we have fixed, but it is not proven to be the
-  cause of what they saw. The reply must say that plainly rather than promising a fix.
+- Every package that depends on that lower layer declares the version we test against, and the rule
+  keeping the two in lockstep is written down in [`docs/testing.md`](../../docs/testing.md)
+  ("Declared dependency range vs linked workspace"), enforced by `scripts/check-dep-ranges.mjs`.
+- Permanent coverage was added for exactly the reporter's configuration — a single node, no other
+  members, no inbound listening address, no bootstrap peers — across both node profiles plus a
+  restart. It completes in milliseconds.
+- **We could not reproduce their freeze**, at either the old or the new dependency version. The
+  version mismatch is a real problem that we fixed, but it is not proven to be the cause of what
+  they saw. The reply says so plainly rather than promising a fix.
 
-## Findings from installing the published packages (2026-08-03)
+## Findings from installing the published packages (measured 2026-08-03, still standing)
 
-Everything above was measured against local copies of the sibling project. It has now been
-re-measured against **what the registry actually serves**: our packages were packed and installed
-into a throwaway project outside this repo, with every other dependency resolved from the public
-registry. Two configurations were run, each doing the reporter's exact scenario — a single node, no
-other members, no inbound listening address, no bootstrap peers, both node profiles, plus a restart.
+Measured against what the registry actually serves — our packages packed and installed into a
+throwaway project outside this repo, every other dependency from the public registry, running the
+reporter's exact scenario.
 
-**1. The reporter's exact configuration — published `@serfab/cadre-core` 0.9.0, which pulls in
-version 0.14.1 of the lower layer. All three cases passed, in 92–216 ms.** No hang, at any step.
+1. **The reporter's exact configuration — published `0.9.0`, pulling lower-layer `0.14.1`. All
+   three cases passed, 92–216 ms.** No hang at any step.
+2. **Our code at the corrected minimum. All three cases passed, 84–196 ms.** Also no hang.
 
-**2. Our current code against the corrected minimum, version 0.18.0 of the lower layer. All three
-cases passed, in 84–196 ms.** Also no hang.
+There was a specific reason to expect a reproduction: the sibling project had recently fixed *a
+node with zero connections cannot resolve a coordinator for any key*, which sounds like a very
+close match for "a single-member node froze reading its own settings". Running the two versions
+side by side settles it — the old version does not hang here either, so that fix does not explain
+what they saw.
 
-So the freeze **still does not reproduce**, now including on the precise version combination the
-reporter downloads. The "we were not able to reproduce" sentence in the reply below stands as
-written and must not be softened.
+One other real finding, still worth telling them: **the reporter's install contains two
+incompatible copies of the SQL engine.** At the `^0.14.1` floor, the sibling project's plugins
+require an old `0.16.x` line of `@quereus/quereus` while our packages require `4.x`, so the install
+ends up with both loaded in one process. A genuine defect in the published `0.9.0`, and a plausible
+source of odd behaviour, though it produced no hang in our runs. `0.11.0` resolves to a single copy.
 
-There was a specific reason to expect it might reproduce: the sibling project recently fixed a
-defect summarised as *a node with zero connections cannot resolve a coordinator for any key*, which
-sounded like a very close match for "a single-member node froze reading its own settings". Testing
-the two versions side by side is what settles it — the old version does not hang here either, so
-that fix is not an explanation for what they saw.
-
-Two other things surfaced, both real, neither a hang:
-
-- **Publishing is currently blocked.** At the corrected minimum, simply loading our library from a
-  registry install crashes immediately — see `optimystic-testing-barrel-breaks-consumer-install`.
-  Until that is resolved, telling the reporter to upgrade would send them to a release that does not
-  load. The reply below has been adjusted accordingly.
-- **The reporter's install contains two incompatible copies of the SQL engine.** At the 0.14.1
-  floor, the sibling project's plugins require an old 0.16.x line of `@quereus/quereus` while our
-  packages require 4.x, so a customer install ends up with both loaded in one process. That is a
-  genuine defect in the published 0.9.0 and a plausible source of odd behaviour, though it did not
-  produce a hang in our runs. Correcting the declared minimum to 0.18.0 removes it — at that
-  version everything agrees on a single 4.6.0.
-
-The script that produced these measurements is being landed as
-`implement/0-release-smoke-published-install` so this is repeatable rather than a one-off.
-
-## The version to tell them (settled 2026-08-03)
-
-**`@serfab/cadre-core@0.10.0-alpha.0`, installed by exact version.** The reasoning — why a minor
-bump rather than a patch, and why it goes out under an `alpha` dist-tag instead of becoming what a
-plain `npm install` returns — is in [`docs/releasing.md`](../../docs/releasing.md) under "The
-interim release". The short version: cross-machine replication is known-broken with a traced
-upstream root cause, so this must not be the version npm hands to everyone by default.
-
-The dist-tag costs the reporter nothing, because the reply below already asks them to pin. But it
-does mean **the version has to be written out exactly** — `npm install @serfab/cadre-core` and any
-`^0.9.0` range will *not* pick up a prerelease. The reply has been adjusted to say so.
-
-Two things to re-check before sending, because both can change:
-
-- The version number, if the release is cut as something other than `0.10.0-alpha.0`.
-- Whether cross-machine replication is still broken. It is as of 2026-08-03 (see `docs/STATUS.md` →
-  "Release readiness"). If the upstream coordinator fix has landed by the time this is sent, the
-  last paragraph of the reply should say so instead.
+That measurement is now repeatable rather than a one-off: it is `yarn smoke:published`
+(`scripts/smoke-published-install.mjs`), and it passed on 2026-08-21 against the current tree.
 
 ## What a human needs to do
 
-- **First**, resolve `optimystic-testing-barrel-breaks-consumer-install`. Until it is resolved, a
-  release built from current HEAD cannot be loaded at all by anyone installing it, so cutting one
-  would make the reporter's situation worse rather than better.
-- Then cut the release. The ordered runbook — what to run, in what order, and what to check after
-  each step — is at the end of [`docs/releasing.md`](../../docs/releasing.md); the go/no-go decision
-  is `blocked/cut-the-interim-release`.
-- Send the reply below (adjust the version number if it changed). Do not send it before the release
-  exists: it asks them to upgrade.
-- Record where the reply went, so the next person has the channel.
+- Send the reply below.
+- Record where it went, so the next person has the channel.
+
+The two prerequisites this ticket used to list — resolve the consumer-install blocker, then cut a
+release — are both done. `optimystic-testing-barrel-breaks-consumer-install` is in `complete/`, and
+`cut-the-interim-release` is in `complete/` because the release went out.
 
 ## Draft reply
 
-> The minimum version our library declared for its underlying database/networking layer was two
-> minor versions behind the version we actually develop and test against, so installing
-> `@serfab/cadre-core` 0.9.0 from npm gave you an older layer underneath than anything we had
-> tested on. Every one of our packages now declares the tested version. **This ships in
-> 0.10.0-alpha.0 — 0.9.0 on npm still carries the old minimum**, so please pin to the new version
-> rather than reinstalling 0.9.0.
+> The minimum version our library declared for its underlying database/networking layer had drifted
+> well behind the version we actually develop and test against, so installing `@serfab/cadre-core`
+> 0.9.0 from npm gave you an older layer underneath than anything we had tested on. Every one of our
+> packages now declares the tested version.
 >
-> Please install it by writing the version out exactly (`"@serfab/cadre-core": "0.10.0-alpha.0"`).
-> It is published under an `alpha` dist-tag, so a plain `npm install @serfab/cadre-core` and any
-> `^0.9.0` range will keep giving you 0.9.0. The tag is deliberate and is explained at the end of
-> this message.
+> **This is fixed in 0.11.0, which is the current default install** — `npm install
+> @serfab/cadre-core` will get it, and a `^0.9.0` range will not, so please update the version you
+> depend on.
 >
-> Once you are on it, please drop the manual timeouts you added around the settings read and
-> write, and tell us whether a single-member node still freezes. We have added permanent coverage
-> for your exact setup — the same transport, no inbound listening address, no bootstrap peers,
-> both node profiles, plus a restart — and it completes in milliseconds for us.
+> Once you are on it, please drop the manual timeouts you added around the settings read and write,
+> and tell us whether a single-member node still freezes. We have added permanent coverage for your
+> exact setup — the same transport, no inbound listening address, no bootstrap peers, both node
+> profiles, plus a restart — and it completes in milliseconds for us.
 >
-> One more thing worth knowing about 0.9.0: because of the version mismatch, that install also
-> ends up with two incompatible copies of our SQL engine loaded at once. We have not seen it cause
-> a hang, but it is not a configuration we would expect to behave predictably. The new release
-> resolves to a single copy.
+> One more thing worth knowing about 0.9.0: because of the version mismatch, that install also ends
+> up with two incompatible copies of our SQL engine loaded at once. We have not seen it cause a
+> hang, but it is not a configuration we would expect to behave predictably. 0.11.0 resolves to a
+> single copy.
 >
-> Please be aware we were **not** able to reproduce your freeze at either version — including on
-> the exact combination of published versions that 0.9.0 installs, running your configuration
-> (single member, no inbound listening address, no bootstrap peers, both node profiles, plus a
-> restart). It completes in well under a second for us. If you still see it after upgrading, send
-> us a stack trace or a debug log from the frozen call (`DEBUG=cadre*,optimystic*`) — without a
-> reproduction we cannot promise the version mismatch was the whole story.
->
-> Finally, the reason this goes out under an `alpha` tag rather than as the default install: sharing
-> data **across two or more machines does not currently work**. A read can be answered "nothing was
-> ever saved here" by whichever machine it routes to, even when another machine in the group holds
-> the row, and after that the writing machine refuses further writes to that table until it
-> restarts. We have traced it to a single line in the layer underneath us and it is fixed by a
-> release of that layer, not of ours. If everything you run is a single node holding its own data —
-> which is what your report describes — this does not affect you and the release is a strict
-> improvement. If you were planning on multi-device sync, please wait for us to promote a version to
-> the default tag.
+> Please be aware we were **not** able to reproduce your freeze at either version — including on the
+> exact combination of published versions that 0.9.0 installs, running your configuration (single
+> member, no inbound listening address, no bootstrap peers, both node profiles, plus a restart). It
+> completes in well under a second for us. If you still see it after upgrading, send us a stack
+> trace or a debug log from the frozen call (`DEBUG=cadre*,optimystic*`) — without a reproduction we
+> cannot promise the version mismatch was the whole story.
+
+## Before sending, re-check one thing
+
+**Whether a newer release has superseded 0.11.0.** If so, name that version instead. Everything
+else in the reply is version-independent.
+
+The old instruction to re-check "whether cross-machine replication is still broken" has been
+dropped from the reply: multi-node operation now works in the great majority of scenarios, and the
+specific remaining failures are tracked individually (`secondary-index-seek-blind-to-sibling-rows`,
+`control-peer-row-refresh-invisible-to-third-node`, `block-held-by-only-one-machine-is-unreadable`).
+A blanket "sharing data across machines does not work" would now be inaccurate in the other
+direction, which is its own kind of unhelpful.

@@ -6,6 +6,22 @@ difficulty: hard
 repro: verified
 ----
 
+> **Audit 2026-08-21 — still real, evidence refreshed.** The symptom reproduces:
+> `strand-formation-concurrent-redemption` fails all 3 cases in both full-suite runs on 2026-08-20
+> and 2026-08-21. Two corrections to the body below, neither changing the conclusion:
+>
+> - The measurement context is stale. It says the defect was measured against `../optimystic`'s
+>   built `dist` at **0.22.0, clean at `6cc08ac`**. That checkout is now at **0.24.2** and the
+>   failure is unchanged, so this is not a regression that a rebuild fixes.
+> - The upstream ticket it names,
+>   `../optimystic/tickets/fix/secondary-index-update-never-reaches-the-sibling.md`, is **no longer
+>   on that repo's board**. Only a run log survives
+>   (`../optimystic/tickets/.logs/secondary-index-update-never-reaches-the-sibling.fix.2026-08-13…log`),
+>   which means it was picked up and processed on 2026-08-13 and has since aged out of `complete/`
+>   — that repo prunes completed tickets after 30 days. Whether a fix landed cannot be told from
+>   here; what *can* be told is that the symptom persists. Someone with `../optimystic` open should
+>   check what that fix stage concluded before any more work is spent here.
+
 # Blocked (b): a secondary-index seek on a sibling node never sees replicated rows
 
 **Category (b) — dependency outside this repo.** The defect is in the distributed commit

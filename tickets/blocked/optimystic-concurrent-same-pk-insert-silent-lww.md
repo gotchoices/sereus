@@ -5,6 +5,15 @@ difficulty: hard
 repro: verified
 ----
 
+> **Audit 2026-08-21 — unchanged; one reference corrected.** No Sereus scenario names this defect
+> directly, so there is nothing to re-measure from here and the unblock condition stands as
+> written. The body points at `tickets/plan/28-formation-unique-token-redesign.md`, which no longer
+> exists at that path: it landed and is now
+> [`tickets/complete/formation-unique-token-redesign.md`](../complete/formation-unique-token-redesign.md)
+> (the sequence prefix was dropped on completion). The redesign it describes therefore *has*
+> shipped, which is worth knowing when weighing how much of this ticket's original motivation
+> survives.
+
 # Blocked (b): optimystic silently last-writer-wins on a concurrent same-primary-key insert
 
 **Category (b) — a dependency outside this repo.** Unblock: an `@optimystic/db-core`
