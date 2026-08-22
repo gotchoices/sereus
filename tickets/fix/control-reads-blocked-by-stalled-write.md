@@ -5,6 +5,46 @@ files: packages/cadre-core/src/control-database.ts, packages/integration-tests/s
 difficulty: hard
 ----
 
+> **Upstream surface read out, 2026-08-22 — the opt-in is NOT a call this repo makes.**
+> The "adopt the new Quereus version, opt `ControlDatabase`'s read methods into committed-read
+> concurrency" framing above predates the upstream design and is wrong about the second half.
+> Measured against the installed dependencies, not the tickets:
+>
+> - **Routing is automatic.** `Database._isConcurrentReadEligible(block)` decides at routing time
+>   and `Statement` (`../quereus/packages/quereus/src/core/statement.ts:585`) is the only caller of
+>   `_beginConcurrentRead()`. Both are `@internal`; there is no public "read concurrently" API and
+>   nothing for `ControlDatabase` to call.
+> - **The module half is already declared and already installed.**
+>   `readonly readCommittedSnapshot = true` sits at
+>   `../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts:2547`, and the same
+>   declaration is present in this repo's `node_modules` copy — so the whole mechanism is live at
+>   HEAD without any change here.
+>
+> **Which makes the interesting question a different one: why is the reproducer still red?**
+> `it.fails('a control read answers locally while a write is stalled')` is still the suite's
+> "1 expected fail", so with both halves in place a read is still being routed onto the mutex. The
+> eligibility gate is narrow and fails closed — a statement is disqualified if *any* of these hold:
+>
+> | disqualifier | where |
+> | --- | --- |
+> | not in autocommit and not an implicit transaction | `_isConcurrentReadEligible` |
+> | any node with side effects | `isCommittedReadSafeSubtree` |
+> | **any table-valued function call at all**, pure ones included | `PlanNodeType.TableFunctionCall` |
+> | any table whose module does not declare `readCommittedSnapshot` | `getModuleReadCommittedSnapshot` |
+>
+> Start the fix stage there rather than at the Sereus read methods. The two candidates worth
+> checking first, because control reads use both: whether the read runs inside an explicit
+> transaction (`withWriteLock` does not lock reads, but something else may hold one open), and
+> whether any control read touches a table that is **not** the optimystic module — a `kv` or
+> catalog table on a different module disqualifies the whole statement, and the control database is
+> not homogeneous. The `with context` clauses the authorization rules require are also worth
+> checking against the TVF rule.
+>
+> **Do not weaken the reproducer to make it pass.** If the answer turns out to be "this specific
+> read can never be eligible", that is a finding to write down and take back upstream, not a reason
+> to relax the assertion.
+
+
 > **UNBLOCKED 2026-08-21 — both upstream halves have landed; moved out of `blocked/`.**
 > This sat waiting on "the upstream opt-in landing" in `../quereus` and `../optimystic`. Verified
 > directly in the sibling checkouts rather than from ticket text:
