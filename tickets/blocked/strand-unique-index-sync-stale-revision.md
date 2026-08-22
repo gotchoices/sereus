@@ -5,6 +5,27 @@ files: packages/integration-tests/src/scenarios/strand-membership-closed-strand-
 difficulty: hard
 ----
 
+> **Audit 2026-08-21 — its first unblock condition is satisfied; the symptom did not reproduce, but
+> that is not the same as gone.** The body's unblock condition part 1 said the failure could not be
+> re-measured because `../optimystic`'s runner was mid-work with uncommitted changes across
+> `packages/db-p2p`, masking it. **That masking is over**: `../optimystic` is clean at its `v0.24.2`
+> release commit, and this repo consumes published `^0.24.2`. So re-measurement is possible now.
+>
+> Measured, across all three scenarios this ticket names:
+>
+> | scenario | full-suite ×2 | isolated ×3 |
+> | --- | --- | --- |
+> | `strand-formation-e2e` | 22/22 passing both | not run in isolation |
+> | `strand-membership-closed-strand-e2e` | 6/6 passing both | 3/3 passing |
+> | `rbac-signed-write` | 1/1 passing both | 3/3 passing |
+>
+> **This is an absence of evidence, not evidence of absence.** The body describes a failure that
+> happens *sometimes* on the founder's first write after a second node attaches, so five green
+> observations do not disprove it — the sibling ticket
+> `forked-control-collection-sync-livelocks` passed both full-suite runs this same day and then
+> failed 2 of 3 isolated runs. Before retiring this, run the three scenarios in isolation enough
+> times to say something with a rate attached, the way that ticket now does.
+
 # Blocked (b): a table's unique-index sub-collection cannot sync on a two-node strand
 
 **Category (b) — dependency outside this repo.** The throw comes from

@@ -5,6 +5,43 @@ files: packages/cadre-core/src/control-database.ts, packages/integration-tests/s
 difficulty: hard
 ----
 
+> **UNBLOCKED 2026-08-21 — both upstream halves have landed; moved out of `blocked/`.**
+> This sat waiting on "the upstream opt-in landing" in `../quereus` and `../optimystic`. Verified
+> directly in the sibling checkouts rather than from ticket text:
+>
+> - **Quereus** ships the engine side: `ConcurrentReadScope` and a `concurrentReads` registry in
+>   `packages/quereus/src/core/database.ts`, and a per-module concurrency declaration in
+>   `packages/quereus/src/vtab/module.ts` (`'reentrant-reads'`, plus an opt-in flag whose doc says
+>   "Omit (default `false`) to decline the engine's concurrent committed-read" path).
+> - **The optimystic vtab opts in**: `packages/quereus-plugin-optimystic/src/optimystic-module.ts`
+>   declares `readonly concurrencyMode = 'reentrant-reads' as const` and implements
+>   `initializeForCommittedRead()`.
+> - **Sereus is already on versions carrying both** — `@quereus/quereus ^4.16.0` and
+>   `@optimystic/* ^0.24.2` as of `3bf4b35`, and both resolve to published releases.
+>
+> So step 1 of this ticket's own plan ("adopt the new Quereus version") is done. What remains is
+> entirely in this repository: opt `ControlDatabase`'s read methods into committed-read
+> concurrency, then flip the reproducer. Routed to `fix/` rather than straight to `implement/`
+> because the exact opt-in surface still has to be read out of the new Quereus API before the
+> change can be specified — that is research, which is what the fix stage is for.
+>
+> **The acceptance test already exists and is still red-by-design.** `it.fails('a control read
+> answers locally while a write is stalled')` at
+> `packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts:825`
+> is the "1 expected fail" that shows up in every full-suite run. When this lands it becomes a
+> plain `it`, and the count of expected failures in the suite goes to zero.
+>
+> Two upstream references in the body below are now dangling and should not be chased:
+> `../quereus/tickets/plan/concurrent-committed-reads` was processed (`df53afdfc`) and has left
+> that board, and no `feat-concurrent-committed-read-readiness` remains in `../optimystic`. Both
+> repos prune completed tickets after 30 days, so the pointers outlived the work — the code above
+> is the evidence that matters, not the tickets.
+>
+> **Caveat on the scenario itself:** `control-write-degraded-cohort-member` is intermittently red
+> for an unrelated reason (measured 1 failure in 5 runs on 2026-08-21, at suite-setup level rather
+> than in this ticket's case). Do not read a red file as this ticket's symptom without checking
+> which case failed.
+
 # Control reads block behind a stalled control write — cause is in Quereus, not Sereus
 
 ## Decision made (2026-08-04): option (A), fix upstream

@@ -5,6 +5,26 @@ files: ../optimystic/packages/db-core/src/collection/collection.ts (syncInternal
 difficulty: medium
 ----
 
+> **Audit 2026-08-21 — confirmed still real, and the reproduction rate is measured.** This ticket
+> was a candidate for retirement because its scenario passed both full-suite runs (2026-08-20 and
+> 2026-08-21). Running it in isolation says otherwise:
+>
+> | observation | result |
+> | --- | --- |
+> | full-suite runs ×2 | 2/2 passing each |
+> | isolated runs ×3 | **2 failed, 1 passed** |
+>
+> The failing case is consistently
+> `control-delete-while-alone-convergence > survives ANOTHER restart of the remover before any
+> connection (first-growth sweep)` — the second of the file's two tests, not the first. **Do not
+> retire this ticket**, and note the shape: it fails *more* in isolation than under whole-suite
+> load, which is the opposite of the boot-race pattern most of the other intermittents here show.
+> Anyone re-measuring should run the file alone rather than trusting a green full-suite run.
+>
+> The scratch scenario the body mentions, `zz-scratch-delete-alone.integration.ts`, no longer
+> exists — it was deleted, as the body anticipated. `control-delete-while-alone-convergence` is
+> now the only live reproducer.
+
 # Blocked (b): a forked control collection livelocks optimystic's sync retry loop
 
 **Category (b) — dependency outside this repo.** The defect is in
