@@ -6,7 +6,97 @@ difficulty: hard
 repro: verified
 ----
 
-> **Upstream owner filed 2026-08-24, with a concrete candidate for the green→red flip.**
+> **Correction 2026-08-24, same day — the candidate named just above was REFUTED upstream.**
+> The `direction !== 'outbound'` theory rested on an inbound relayed `remoteAddr` being a dialable
+> circuit address. It is not, and the upstream fix stage settled it from the vendored
+> `@libp2p/circuit-relay-v2@4.x` source rather than by argument:
+>
+> - The listener composes that address as **our** connection-to-the-relay encapsulated with
+>   `/p2p-circuit/p2p/<dialer>` (`transport/index.js:272`). The relay it names is the one **we** hold
+>   a reservation with — not one the dialer is reachable on.
+> - A dialer needs no reservation to open a circuit; the relay requires one for the **destination**
+>   only (`server/index.js:219-223`). So a third party dialing that address reaches the dialer only
+>   if the dialer coincidentally shares our relay.
+> - And in that coincidental case the dialer's genuine circuit address has already arrived by
+>   `identify`, so publishing the composed one adds nothing.
+>
+> The decline is being pinned as a `NOTE:` at the predicate so it stops being re-derived.
+>
+> **A real defect was found next door, with the same symptom shape.** `findCluster` answers "which
+> addresses may we publish for this peer" as connections **∪ peerStore**; the three redirect
+> resolvers (`repo/service.ts:162`, `cluster/service.ts:123`, `libp2p-node-base.ts:577`) answer it
+> with connections alone. The peerStore arm is the only place a relay-only peer's real circuit
+> address ever comes from, so a cohort member that only ever dialed **us** is described by
+> `findCluster` with an address and by a repo redirect with none — and `RepoService.checkRedirect`
+> has no cluster record to fall back on. Now
+> `../optimystic/tickets/implement/1-third-party-address-set-has-two-definitions.md`.
+>
+> **The link to this ticket is still unproven.** That upstream ticket says so itself — "nobody has
+> measured this in production; it is filed on the strength of reading the two code paths side by
+> side". It is a plausible mechanism for `claimed-elsewhere` against a relay-only holder, not a
+> demonstrated one. Re-run this ticket's five-run gate once it lands, and do not record it as the
+> cause until the scenario actually goes green.
+
+
+> **REFUTED 2026-08-24 (same day, later) — `a8f64d0` is not the cause. The candidate below is
+> withdrawn; the green→red flip is still unexplained.**
+>
+> The upstream fix ticket asked for was worked and its premise killed on three independent grounds.
+> Reported back here as promised.
+>
+> 1. **The rule is unreachable in this scenario.** Scenario 4 builds no relay and no NAT'd node.
+>    `controlNodeConfig` (`packages/integration-tests/src/harness/node-fixtures.ts:97-125`) gives
+>    A, S and Rx `listenAddrs: ['/ip4/127.0.0.1/tcp/0/ws']` and no `relayAddrs`; the scenario's own
+>    header calls it "full mesh, A the only writer", and line 640 seeds Rx's record from
+>    `controlAddrs(Rx)` — a real direct listen address. **No `/p2p-circuit` connection exists in
+>    scenario 4**, so how `publishableConnectionAddr` treats inbound relayed connections cannot
+>    affect it. The candidate above described **scenario 2** (the NAT/relay case), not scenario 4.
+>
+> 2. **The chronology rules it out.** This ticket's own *Measurement conditions* record the
+>    `responders: 1, required: 2` capture with `../optimystic` clean at `235539e` — which is
+>    version **0.24.0**, dated 2026-08-19, and is an ancestor of `a8f64d0` (2026-08-21). The exact
+>    failure signature was already reproducing 4-of-9 two days **before** the direction rule
+>    existed. `a8f64d0` cannot have introduced it. (It could in principle have moved the *rate*
+>    4/9 → 7/7, but by point 1 it has no lever in this scenario to do so with.)
+>
+> 3. **The mechanism was wrong anyway.** An inbound relayed `remoteAddr` is not a third-party
+>    address. `@libp2p/circuit-relay-v2@4.x` composes it as
+>    `ourConnectionToTheRelay.remoteAddr` + `/p2p-circuit/p2p/<dialer>`
+>    (`dist/src/transport/index.js:272`), so the relay it names is **the one we hold a reservation
+>    with**, not one the dialer is reachable on. The relay's `handleConnect` requires a reservation
+>    for the **destination** only (`dist/src/server/index.js:219-223`, `NO_RESERVATION`) — a dialer
+>    needs none — so a third party reaches the dialer at that address only if the dialer happens to
+>    share our relay. Separately, `findCluster` already unions live-connection addresses with the
+>    peerStore, so a relay-only peer's genuine self-advertised circuit address (learned by
+>    `identify`) is published regardless of connection direction. The premise "a relay-only peer has
+>    no publishable address at all" is false for `findCluster`.
+>
+> `../optimystic/tickets/fix/1-inbound-relayed-connection-addr-is-never-published.md` is closed
+> without a behaviour change. `publishableConnectionAddr` keeps `direction !== 'outbound'`, and the
+> decline is being recorded as a `NOTE:` at that predicate so it is not re-filed.
+>
+> **What the investigation did find, and what it does not explain.** The redirect address resolvers
+> (`repo/service.ts`, `cluster/service.ts`, and the resolver `libp2p-node-base.ts` injects) read
+> live connections only, while `findCluster` reads connections **plus** the peerStore — so a
+> relay-only member can be published with an address by one path and with nothing by the other.
+> That is a genuine upstream inconsistency and is now
+> `../optimystic/tickets/implement/1-third-party-address-set-has-two-definitions.md`. It is **not**
+> a candidate for this ticket: scenario 4 has no relay-only member, and `claimed-elsewhere` here was
+> measured with every cohort peer answering (no `cluster-fetch:peers-silent`), which is not what an
+> address gap looks like.
+>
+> **Suggested next step for the flip, since the upstream-address theory is dead.** The 0.24.0 →
+> 0.24.2 range also contains `3216929` (dependency upgrades) and the `db-p2p-adopt-fret-framing`
+> pair (`42b1d2e` / `235539e`) — but `235539e` is the SHA this ticket already measured red at, so
+> the range that remains genuinely unexamined is `235539e..daeac29`, and within it only `3216929`
+> plausibly touches timing this scenario depends on. A real bisect over those four commits, with
+> `DEBUG='optimystic:db-p2p:coordinator-repo*'` captured at each end, would settle it — and would
+> also confirm whether today's 7/7 still carries `responders: 1, required: 2` or has become a
+> different failure wearing the same error string. Nobody has captured DEBUG at 0.24.2 yet; the
+> 2026-08-22 gate matched on the error text alone.
+
+> ~~**Upstream owner filed 2026-08-24, with a concrete candidate for the green→red flip.**~~
+> **(Withdrawn — see the refutation directly above.)**
 > The 2026-08-22 note above left "what changed between `@optimystic/*` 0.24.0 and 0.24.2" as the
 > open question. Reading that range turned up one commit that fits: `a8f64d0`
 > (`1-findcluster-publishes-inbound-source-addresses`) added
