@@ -6,6 +6,33 @@ difficulty: hard
 repro: verified
 ----
 
+> **Upstream re-filed 2026-08-24, and the previous attempt's conclusion matters more than this
+> ticket knew.** The 2026-08-21 audit above asked someone with `../optimystic` open to check what
+> that repo's 2026-08-13 fix stage concluded. Done — the run log survives and says:
+>
+> - It **corrected this ticket's log reading.** The 3-block pend is all *data*-collection blocks for
+>   a first commit, and `NetworkTransactor.commit` legitimately splits the tail from the rest.
+>   Nothing was being dropped. The sharper symptom is that the index collection is absent from the
+>   write transaction entirely.
+> - It **could not reproduce** — eight two-node shapes on that repo's mock mesh all converged.
+>   "Trigger needs something the mock mesh lacks."
+> - It filed two tickets, both since completed
+>   (`1-index-maintenance-must-track-the-declared-index-set`,
+>   `1.5-schema-catalog-index-list-is-lossy`), and said plainly that they do **not** verify this
+>   symptom fixed — "what they guarantee is that the divergence becomes a named error instead of
+>   empty rows."
+>
+> **That guarantee is not holding, which is the new information.** Measured 2026-08-22 against
+> `v0.24.2` with both landed, the failure is still a 30 s timeout on empty rows with nothing raised.
+> Re-filed as `../optimystic/tickets/fix/1-two-node-index-divergence-guard-never-fires.md`.
+>
+> **And the attribution may be wrong.** Each node holds exactly its *own* row and neither sees the
+> other's — symmetric. Index blindness is not obviously symmetric: a node that never maintained an
+> index should fail to find any row through it, including one it wrote itself. That reads at least
+> as much like the collection views having forked, which is
+> `control-peer-row-refresh-invisible-to-third-node` and `forked-control-collection-sync-livelocks`.
+> The upstream ticket asks that question first rather than assuming this ticket's title.
+
 > **Audit 2026-08-21 — still real, evidence refreshed.** The symptom reproduces:
 > `strand-formation-concurrent-redemption` fails all 3 cases in both full-suite runs on 2026-08-20
 > and 2026-08-21. Two corrections to the body below, neither changing the conclusion:

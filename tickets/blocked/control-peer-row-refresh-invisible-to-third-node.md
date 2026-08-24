@@ -6,6 +6,26 @@ difficulty: hard
 repro: verified
 ----
 
+> **Upstream owner filed 2026-08-24 — and the one this ticket named never existed.**
+> The body says an upstream ticket
+> `../optimystic/tickets/fix/collection-view-forks-silently-when-repair-cannot-reach-quorum.md`
+> was "created by this pass". **It is not in that repository** — not on the board, not in
+> `complete/`, and no run log, which that repo writes for every ticket it processes. It was never
+> created, or was removed without one. So the analysis below sat unowned for twelve days while
+> three integration suites failed on it.
+>
+> Now filed, carrying the measured record verbatim:
+> `../optimystic/tickets/fix/1-stale-read-returned-as-authoritative-when-repair-cannot-converge.md`.
+> It leads with the half of this that is self-contained and fixable on its own — `CoordinatorRepo.get`
+> acts on an `inconclusive` outcome only when the block is **missing**, so a present-but-stale block
+> is returned to the caller as authoritative with nothing raised — ahead of the harder convergence
+> question.
+>
+> Two sibling tickets were filed there at the same time and may be the same defect:
+> `1-two-node-index-divergence-guard-never-fires` (the shape behind
+> `secondary-index-seek-blind-to-sibling-rows`) and, less likely,
+> `1-inbound-relayed-connection-addr-is-never-published`. Each cross-references the others.
+
 > **Audit 2026-08-21 — still real, but narrower than the body claims.** Measured across the
 > full-suite runs of 2026-08-20 and 2026-08-21, of the four scenarios this ticket names:
 >

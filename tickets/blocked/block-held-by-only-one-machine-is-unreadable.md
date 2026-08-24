@@ -6,6 +6,29 @@ difficulty: hard
 repro: verified
 ----
 
+> **Upstream owner filed 2026-08-24, with a concrete candidate for the green→red flip.**
+> The 2026-08-22 note above left "what changed between `@optimystic/*` 0.24.0 and 0.24.2" as the
+> open question. Reading that range turned up one commit that fits: `a8f64d0`
+> (`1-findcluster-publishes-inbound-source-addresses`) added
+>
+> ```ts
+> if (conn.direction !== 'outbound') return undefined
+> ```
+>
+> to `publishableConnectionAddr`. The reasoning is sound for an inbound **direct** connection — its
+> `remoteAddr` is the far side's ephemeral source socket, useless to a third party. But it rejects
+> inbound **relayed** connections too, whose `remoteAddr` is a real `/p2p-circuit/` address anyone
+> can dial. The consequence is that a peer reachable *only* through a relay has no publishable
+> address at all — and the receiver in this ticket's failing scenario is deliberately, genuinely
+> NAT'd and relay-only.
+>
+> Filed as `../optimystic/tickets/fix/1-inbound-relayed-connection-addr-is-never-published.md`,
+> marked `repro: suspected` on purpose: the correlation is strong and the mechanism fits, but nobody
+> has yet watched a redirect payload lose a circuit address and then watched this read fail. That
+> ticket's first job is to prove or kill the link, and it is asked to report back **either way** —
+> a clean refutation is worth as much here, because this ticket's own stated unblock condition has
+> already been met once (the corroboration floor) without the symptom moving.
+
 > **Gate run 2026-08-22 — the named upstream rule is gone and the symptom is WORSE. Stays blocked,
 > but the analysis below needs re-pointing before anyone works it.**
 >
