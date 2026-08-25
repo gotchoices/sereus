@@ -5,6 +5,22 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/t
 difficulty: hard
 repro: verified
 ----
+> **THE REPRODUCER IS NO LONGER LIVE — read this before re-measuring.** Acting on the measurement
+> below, `FormationUsageByToken` was removed from the control schema (`fix/formation-usage-index-tripwire-fired`,
+> commit `0658819`), because the seat cap counted through that index under-reports without bound
+> across machines. `strand-formation-concurrent-redemption` now **passes**, and its entries were
+> removed from `tickets/.pre-existing-known.md`.
+>
+> **That does not mean this defect cleared.** To reproduce it again, re-add the single line
+> `index FormationUsageByToken on FormationUsage (Token);` to BOTH copies of the control schema
+> (`schemas/control.qsql` and `packages/cadre-core/src/control-schema.ts` — a drift spec holds them
+> identical), rebuild, and run that scenario. This repo is still the only place the defect has ever
+> reproduced, which is why the recipe is written down in three places rather than one.
+>
+> The defect also remains live in production shape without that index: every `unique` constraint in
+> the control schema is enforced through a secondary index (`_uniq_1`, `_uniq_5`, `_uniq_6`), so
+> cross-machine uniqueness has the same exposure. That arm is `strand-unique-index-sync-stale-revision`.
+
 > **MEASURED 2026-08-25 (second pass) — the read path was instrumented, and this ticket's TITLE is
 > wrong. The seek is not blind. It finds exactly one entry: its own.**
 >
