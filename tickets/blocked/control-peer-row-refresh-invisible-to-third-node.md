@@ -6,6 +6,42 @@ difficulty: hard
 repro: verified
 ----
 
+> **Correction 2026-08-24 — one of the two arms this repo has been reporting was already fixed
+> upstream, and had been since 2026-08-12.**
+>
+> The upstream ticket filed tonight led with the claim that `CoordinatorRepo.get` acts on an
+> `inconclusive` outcome only when the block is **missing**, so a present-but-stale block is
+> returned to the caller as authoritative. That is quoted from this ticket's own 2026-08-12
+> analysis, and it is **no longer true** — `../optimystic`'s `coordinator-serves-stale-data-as-if-confirmed`
+> fixed it and was reviewed 2026-08-12; the fix stage re-verified that tonight. The claim was
+> carried forward here for twelve days without being re-read against the code it describes.
+>
+> **The other arm is real, and is now measured rather than argued.** The repair genuinely cannot
+> converge in this shape, and the arithmetic that decides it was swept directly
+> (`resolveClusterPolicy` / `corroboratorCapacity` / `quorumSize`):
+>
+> | nodes | peers who answered | capacity | corroborators needed | converges? |
+> | --- | --- | --- | --- | --- |
+> | 2 | 1 | 1 | 1 | yes |
+> | **3** | **1** | **2** | **2** | **NO** |
+> | 3 | 2 | 2 | 2 | yes |
+> | **4** | **1** | **3** | **2** | **NO** |
+> | 4 | 2 | 3 | 2 | yes |
+>
+> Row 2 is exactly this ticket: three nodes, B can reach only A, so one peer answers, two
+> corroborators are required, and no amount of retrying changes that. It is arithmetic, not a race.
+>
+> **And nothing says so.** 1821 `cluster-fetch:no-quorum` and 954 `read-repair-triggered` in one
+> boot, 2 repairs applied, no error raised — a fact the node knew at the moment of every single
+> decline, which then cost twelve days to re-derive from logs. Now
+> `../optimystic/tickets/implement/1-repair-deadlock-is-never-named.md`, which also reports that the
+> cohort-size advice printed at startup is wrong about how many machines are needed.
+>
+> Note what this does **not** claim: naming the deadlock does not make this scenario converge. It
+> converts a silent permanent stall into a loud one. The convergence question stays open on the
+> parent fix ticket.
+
+
 > **Upstream owner filed 2026-08-24 — and the one this ticket named never existed.**
 > The body says an upstream ticket
 > `../optimystic/tickets/fix/collection-view-forks-silently-when-repair-cannot-reach-quorum.md`
