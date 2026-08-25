@@ -547,17 +547,25 @@ redemption is refused as `InvitationExhaustedError`, which
 `StrandFormationManager.provisionAsResponder` reports to the joiner as the same `'Invalid token'`
 a spent invite would give, never as a retryable conflict.
 
-**The "at most the number of concurrent redeemers" bound does not hold today on a
-multi-machine party** (measured 2026-08-12). Every per-token usage read —
-`countFormationUsage`, and through it the cap and `hasOutstandingFormationInvite` — descends
-the `FormationUsageByToken` secondary index, and the storage layer currently replicates the
-data tree of a row written elsewhere but not that row's index entry. Each node therefore
-counts only the redemptions it recorded itself, so the cap over-admits without bound rather
-than by the concurrency, and a spent invite still reads as outstanding to the membership
-connection gate. The defect is upstream in Optimystic; tracked here in
-`tickets/blocked/secondary-index-seek-blind-to-sibling-rows`, with
-`integration-tests` scenario `strand-formation-concurrent-redemption` as the standing
-re-measurement instrument. The bound above is the design's intent and returns with the fix.
+**That bound was broken between 2026-08-04 and 2026-08-25, and is restored by reading the
+usage rows through a table scan rather than a secondary index.** `formation-unique-token-redesign`
+declared a `FormationUsageByToken` index to spare the scan, which put every per-token usage
+read — `countFormationUsage`, and through it the cap and `hasOutstandingFormationInvite` — onto
+an index descent. Across machines that descent returns only the rows the reading machine wrote:
+each node counted only its own redemptions, so the cap over-admitted without bound rather than
+by the concurrency, and a spent invite still read as outstanding to the membership connection
+gate. The index was removed on 2026-08-25 and those reads went back to the scan they had before,
+which converges across machines.
+
+The engine defect is upstream in Optimystic and is unfixed — each machine's copy of an index
+sub-collection sits at a different revision while their copies of the table itself agree, and
+the refresh that runs immediately before a descent does not close the gap. It is tracked here in
+`tickets/blocked/secondary-index-seek-blind-to-sibling-rows`. **Every unique constraint in this
+schema is still enforced through such an index**, so cross-machine uniqueness is exposed to the
+same staleness; that arm is tracked separately in
+`tickets/blocked/strand-unique-index-sync-stale-revision`. Re-declaring
+`FormationUsageByToken` is what restores the reproducer — it is what makes the
+`integration-tests` scenario `strand-formation-concurrent-redemption` fail.
 
 ```mermaid
 sequenceDiagram
