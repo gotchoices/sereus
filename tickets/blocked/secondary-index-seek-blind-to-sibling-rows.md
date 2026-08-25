@@ -48,6 +48,28 @@ repro: verified
 > host wiring, not distributed-systems behaviour: the sibling opens its database by catalog
 > **hydration** rather than a re-declared `create table`, it runs a write-through raw-storage cache,
 > and the two machines hold different node roles.
+>
+> **The command, once the trace lands and `../optimystic` is rebuilt.** The namespace is
+> `optimystic:quereus-plugin:txn-bridge`, and the line names every collection a write staged and
+> flushed:
+>
+> ```bash
+> cd packages/integration-tests
+> DEBUG='optimystic:quereus-plugin:txn-bridge' >   npx vitest run src/scenarios/strand-formation-concurrent-redemption.integration.ts >   2>&1 | tee /tmp/collections-trace.txt
+> grep 'commit:collections' /tmp/collections-trace.txt
+> ```
+>
+> Expect one `commit:collections mode=<legacy|session> count=N …` line per commit. What to read:
+>
+> | what the trace shows | what it means |
+> | --- | --- |
+> | `count=1` on the `FormationUsage` insert | the index collection really is absent from the write — the twelve-day-old claim, confirmed |
+> | `count=2`, same collection ids on both nodes | the write carries the index; the divergence is downstream of the commit |
+> | `count=2`, **different** index collection ids per node | both committed, to different index trees — a collection-invention divergence, which upstream added a reader-arm race case for |
+>
+> The third row is the one no previous investigation could have seen, and it is why the trace
+> distinguishes it explicitly. Whatever it shows, put the answer on the upstream ticket — three
+> passes have now ended in source-reading for want of exactly this line.
 
 
 > **Upstream re-filed 2026-08-24, and the previous attempt's conclusion matters more than this
