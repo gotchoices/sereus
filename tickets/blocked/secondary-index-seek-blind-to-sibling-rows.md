@@ -6,6 +6,40 @@ difficulty: hard
 repro: verified
 ----
 
+> **Correction 2026-08-25 — the shared-index-key lead was WRONG, and the misreading is worth
+> recording so nobody repeats it.**
+>
+> A ticket was filed upstream overnight
+> (`fix/1-two-nodes-writing-one-index-key-was-never-tested`) arguing that every reproduction
+> attempt had given the two machines **disjoint index keys**, while this repo's failing case has
+> them sharing one — `FormationUsage` keys on a per-redemption nonce and indexes on the invite
+> token, so two redeemers of one invite write one index entry.
+>
+> **The schema half of that is correct. The "never tested" half is not.** It was inferred from one
+> line of the 144-ordering sweep's exclusion list — *"No same-primary-key conflict. Each node writes
+> its own disjoint id (100 / 200)"* — which is about **primary keys**. That sweep has a separate
+> `token` dimension which crosses `same-token`, i.e. the shared **index** key was inside the 144
+> cases all along, and those cases pass. The exclusion list was quoted accurately and read wrongly:
+> one spec's stated scope was generalised to the whole suite.
+>
+> Upstream added six further cases anyway for three neighbouring situations that genuinely had not
+> been tried (notably: the index tree starting **empty**, with both machines creating it, rather
+> than a committed seed row already existing). **All six pass** —
+> `review/1-two-node-shared-index-key-coverage`. That is a **seventh** failure to reproduce there.
+>
+> **Where this leaves the investigation.** Seven negatives upstream, deterministic failure here.
+> Every distributed-systems explanation tried has been eliminated. What has *not* been eliminated is
+> the difference the last three passes have each named and none has tested: **host wiring**. The
+> sibling here opens its database by catalog **hydration** rather than a re-declared `create table`;
+> it runs a write-through raw-storage cache (`packages/quereus-plugin-sereus/src/cached-storage.ts`);
+> and the two machines hold different node roles.
+>
+> **Stop filing sweeps upstream.** The next useful step is on this side: run the scenario with the
+> revision trace (`revs=<id>:<rev>`, `:none` = invented; plus `index:tree-open` and
+> `collection:invented`) and find out whether the two machines are even reading the same index
+> collection. That instrument exists and has not yet been run here.
+
+
 > **ANSWERED 2026-08-25 — this ticket's central claim is REFUTED by direct measurement. The index
 > IS in the write transaction.** Ran with the new upstream trace
 > (`DEBUG='optimystic:quereus-plugin:txn-bridge'`, optimystic built at `f008c0b`). Every write to
