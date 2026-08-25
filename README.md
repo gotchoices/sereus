@@ -85,9 +85,10 @@ real transports, no mocked networking — and most of it passes. It is not unifo
 the gaps are specific rather than general:
 
 - **A block only one machine holds can be unreadable by the others** — an outright error, not a
-  delay. Intermittent: roughly one run in five of the scenario that covers it, measured
-  2026-08-25. It was every run until an upstream fix on 2026-08-24, so treat a green run as
-  telling you nothing.
+  delay. Intermittent and frequent: **4 failures in 10 measured runs** of the scenario that covers
+  it (2026-08-24/25). It failed every run before an upstream fix on 2026-08-24; that fix reduced
+  the rate without eliminating it. The rate is not well determined and a green run tells you
+  nothing.
 - **A row written on one machine can stay invisible to a third** when that machine's copy of the
   control collection forks.
 - **Concurrent joins to the same invitation from two machines** do not converge.
