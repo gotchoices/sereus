@@ -6,6 +6,31 @@ difficulty: hard
 repro: verified
 ----
 
+> **Gate re-run 2026-08-24 after the upstream fix — 4 of 5 green. Improved, NOT fixed. Stays blocked.**
+>
+> | measurement | result |
+> | --- | --- |
+> | isolated ×7, 2026-08-22 (pre-fix) | **0 passed, 7 failed** |
+> | isolated ×5, 2026-08-24 (post-fix) | **4 passed, 1 failed** |
+> | full suite, same session | failed |
+>
+> The one failure carries the same `Block default/OwnerKey is unavailable (claimed-elsewhere)`
+> verdict as every previous one, so this is the same defect at a lower rate, not a new one.
+>
+> **What this settles.** `../optimystic`'s `1-third-party-address-set-has-two-definitions` — the
+> three redirect resolvers publishing connections alone where `findCluster` published connections ∪
+> peerStore — was filed there with an explicitly **unproven** link to this scenario. The link is now
+> demonstrated: 0/7 → 4/5 is far outside noise. That ticket asked to be told either way; it should
+> be told this.
+>
+> **What it does not settle.** Something else still produces the same verdict about one run in five.
+> This ticket's unblock condition is five clean runs and it has four. Do not close it, and do not
+> record the upstream fix as the cause — record it as *a* cause.
+>
+> **The rate change makes this harder to work, not easier.** Every prior investigation had a
+> deterministic reproducer. The next one will need to run the scenario repeatedly to catch a
+> failure, and a green run now proves nothing.
+
 > **Correction 2026-08-24, same day — the candidate named just above was REFUTED upstream.**
 > The `direction !== 'outbound'` theory rested on an inbound relayed `remoteAddr` being a dialable
 > circuit address. It is not, and the upstream fix stage settled it from the vendored
