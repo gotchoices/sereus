@@ -811,18 +811,22 @@ describe('control writes with a connected-but-degraded cohort member (forced 3-p
 	}, 180_000);
 
 	/**
-	 * EXPECTED FAILURE — this case is the standing reproducer for the open ticket
-	 * `fix/control-reads-blocked-by-stalled-write`: a plain local read on the
-	 * writing node does not answer until the stalled write settles, so
-	 * `hasOwnerKey (during stall)` blows the 15 s read deadline every run.
+	 * This was the standing reproducer for `fix/control-reads-blocked-by-stalled-write`
+	 * and carried `it.fails` from 2026-08-04 until 2026-08-25: a plain local read on the
+	 * writing node did not answer until the stalled write settled, so
+	 * `hasOwnerKey (during stall)` blew the 15 s read deadline every run.
 	 *
-	 * It is `it.fails` and NOT `it.skip` deliberately: vitest still runs the body
-	 * and still fails the suite if it ever PASSES, so the day the fix lands this
-	 * turns red and whoever lands it promotes this back to a plain `it` (the fix
-	 * ticket's "done means" says so). The assertions below are the real ones —
-	 * nothing here is weakened to manufacture the failure.
+	 * It passes now because `ControlDatabase.readEval` asks Quereus for a committed read
+	 * (`readConcurrency: 'committed'`) while a write is in flight, which runs the read off
+	 * the database's exec mutex. Nothing here was weakened — the assertions are the ones
+	 * that were always written, and the reads below are the real API surface.
+	 *
+	 * Keep the shape: this case is what would catch the routing being lost, and the
+	 * `within(...)` deadlines are what make "the read blocked" a failure rather than a
+	 * slow pass. If it ever times out again, read `readEval`'s comment first — the opt-in
+	 * is per call and deliberately NOT taken when no write is in flight.
 	 */
-	it.fails('a control read answers locally while a write is stalled', async () => {
+	it('a control read answers locally while a write is stalled', async () => {
 		const target = await randomPeerId();
 		const bPeerId = B.peerId!.toString();
 		activeDegradation = await degradeClusterHandler(C, partyId, Infinity);

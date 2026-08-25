@@ -4,6 +4,57 @@ prereq:
 files: packages/cadre-core/src/control-database.ts, packages/integration-tests/src/scenarios/control-write-degraded-cohort-member.integration.ts, ../quereus/packages/quereus/src/core/database.ts
 difficulty: hard
 ----
+> **RESOLVED 2026-08-25 — and the note below it is WRONG about the one thing it was most
+> confident about.**
+>
+> The 2026-08-22 note said: *"Routing is automatic. `Database._isConcurrentReadEligible(block)`
+> decides at routing time … Both are `@internal`; there is no public 'read concurrently' API and
+> nothing for `ControlDatabase` to call."* It then sent the fix stage off to find which of the four
+> eligibility rules was disqualifying control reads.
+>
+> **No rule was firing. The reads were never asking.** `Statement.tryRouteConcurrent`
+> (`../quereus/packages/quereus/src/core/statement.ts:558`) opens with
+>
+> ```ts
+> if (options?.readConcurrency !== 'committed') return false;
+> ```
+>
+> — the eligibility check below it never runs for a caller that did not opt in.
+> `StatementOptions.readConcurrency` is public (`../quereus/packages/quereus/src/common/types.ts:81`)
+> and honoured by `Database.eval`, which is what this repo's reads use. So the ORIGINAL plan's
+> step 2 — "opt `ControlDatabase`'s read methods into committed-read concurrency" — was right all
+> along, and the note that retired it cost a pass.
+>
+> **What landed.** All 15 reads in `ControlDatabase` now go through one private `readEval` helper
+> that spells the opt-in once.
+>
+> **It is opted in only while a write is in flight, and that condition is load-bearing — do not
+> simplify it away.** The first attempt asked for a committed read unconditionally. That is wrong,
+> and measurably so: `readConcurrency: 'committed'` does not merely take the read off the exec
+> mutex, it connects the table with `_readCommitted`, and the optimystic vtab serves such a
+> connection from `OptimysticCommittedTable` — a pinned pre-transaction snapshot that **never
+> refreshes from the network**, where an ordinary read calls `update()` on the collection first.
+> With every read opted in, this very scenario could no longer observe a sibling publishing its own
+> `CadrePeer` row and died at suite setup (`Timeout waiting for B self-publishes its CadrePeer
+> record after 45000ms`) on **two runs out of two**, where the same file had passed in isolation an
+> hour earlier. Gating on `this.db!.getAutocommit()` restricts the committed arm to exactly the
+> situation the ticket is about — a writer's transaction is open, so the read would otherwise
+> block — and leaves every ordinary read on the refreshing path. The check races the writer
+> harmlessly in both directions: losing it either reads normally (today's behaviour) or reads
+> committed state.
+>
+> **That coupling is worth carrying upstream.** "Runs off the mutex" and "never refreshes" are one
+> flag in the current design. A consumer that wants the first and not the second has no way to say
+> so, which is why the opt-in here has to be conditional rather than a property of the database.
+>
+> **Verified.** `it.fails('a control read answers locally while a write is stalled')` was promoted
+> to a plain `it`. Isolated: passes, whole case in 23.6 s where it used to burn the 15 s read
+> deadline. Whole file: 7/7, including `isMember (post-failure)`. The suite's expected-failure count
+> goes from 1 to 0.
+>
+> **Do not read a red run of this file as this ticket returning** — it has a separate, documented
+> boot race (`Timeout waiting for B self-publishes its CadrePeer record`) that struck one of the
+> verification runs. Check which case failed.
 
 > **Upstream surface read out, 2026-08-22 — the opt-in is NOT a call this repo makes.**
 > The "adopt the new Quereus version, opt `ControlDatabase`'s read methods into committed-read

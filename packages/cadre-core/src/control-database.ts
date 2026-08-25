@@ -1,7 +1,7 @@
 import debug from 'debug';
 import { toString as uint8ArrayToString } from 'uint8arrays';
 import { Database, registerPlugin } from '@quereus/quereus';
-import type { VTablePluginInfo, FunctionPluginInfo, SqlParameters } from '@quereus/quereus';
+import type { VTablePluginInfo, FunctionPluginInfo, SqlParameters, SqlValue } from '@quereus/quereus';
 import cryptoPlugin from '@optimystic/quereus-plugin-crypto/plugin';
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import { digest, randomBytes } from '@optimystic/quereus-plugin-crypto';
@@ -554,12 +554,61 @@ export class ControlDatabase {
   }
 
   /**
+   * Every read in this class runs through here, and this is the ONE place the
+   * committed-read opt-in is spelled.
+   *
+   * A control read normally queues on the database's exec mutex, so it does not answer
+   * until whatever statement holds that mutex finishes. When a control WRITE is parked
+   * against an unresponsive cohort member that is minutes, and a read that only wants
+   * the last committed state waits the whole time for no reason
+   * (`fix/control-reads-blocked-by-stalled-write`).
+   *
+   * Quereus's remedy is `readConcurrency: 'committed'` — a PER-CALL opt-in
+   * (`Statement.tryRouteConcurrent` refuses anything that did not ask for it by name)
+   * that runs an eligible read off the mutex against each table's last committed state.
+   * Routing is best-effort and never an error: an ineligible statement falls back to
+   * the serialized path silently — any side-effecting node, any table-valued function
+   * call (pure ones included), any table whose module does not declare
+   * `readCommittedSnapshot`, or an EXPLICIT transaction being open on this database.
+   *
+   * **It is asked for only while a write is in flight, and that condition is the whole
+   * point.** The opt-in does not merely move the read off the mutex: it connects the
+   * table with `_readCommitted`, and the optimystic vtab serves such a connection from
+   * a pinned pre-transaction snapshot that NEVER refreshes from the network, where an
+   * ordinary read calls `update()` on the collection first. Taking that path
+   * unconditionally therefore trades "reads block behind a stalled write" for "reads
+   * stop seeing what other machines wrote" — measured, not theorised: with every read
+   * opted in, `control-write-degraded-cohort-member` could no longer observe a sibling
+   * publishing its own `CadrePeer` row and failed at suite setup on two runs out of two.
+   *
+   * `getAutocommit()` reports the whole `Database` rather than this call (the same
+   * property {@link assertCommitBoundary} leans on), which is exactly what is wanted:
+   * false means some writer's transaction is open, which is the only situation where a
+   * read would have blocked. The check races that writer harmlessly in both directions
+   * — losing it either reads normally (today's behaviour) or reads committed state.
+   *
+   * What a committed read gives up is observing a write that has not finished
+   * committing, and that is safe for every caller here: an AWAITED write is committed by
+   * the time it returns, and a read inside {@link inTransaction} is disqualified by the
+   * open explicit transaction and stays serialized, so it still sees its own
+   * transaction's rows. A read after an UNAWAITED write on this database would be wrong
+   * — no such caller exists, and {@link withWriteLock} is what keeps it that way.
+   */
+  private readEval(sql: string, params?: SqlParameters): AsyncIterableIterator<Record<string, SqlValue>> {
+    if (this.db!.getAutocommit()) {
+      return this.db!.eval(sql, params);
+    }
+    log('read-eval: a write is in flight, asking for a committed read: %s', sql);
+    return this.db!.eval(sql, params, { readConcurrency: 'committed' });
+  }
+
+  /**
    * Query all strands from the control database
    */
   async queryStrands(): Promise<StrandRow[]> {
     this.ensureInitialized();
     const results: StrandRow[] = [];
-    for await (const row of this.db!.eval('select Id, MemberPrivateKey, Type from CadreControl.Strand')) {
+    for await (const row of this.readEval('select Id, MemberPrivateKey, Type from CadreControl.Strand')) {
       results.push({
         Id: row.Id as string,
         MemberPrivateKey: row.MemberPrivateKey as string | null,
@@ -577,7 +626,7 @@ export class ControlDatabase {
    */
   async queryStrand(strandId: string): Promise<StrandRow | null> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select Id, MemberPrivateKey, Type from CadreControl.Strand where Id = ?',
       [strandId]
     )) {
@@ -606,7 +655,7 @@ export class ControlDatabase {
     if (!CONTROL_TABLE_SET.has(table)) {
       throw new Error(`Unknown CadreControl table: ${table}`);
     }
-    for await (const row of this.db!.eval(`select count(1) as Count from CadreControl.${table}`)) {
+    for await (const row of this.readEval(`select count(1) as Count from CadreControl.${table}`)) {
       return (row.Count as number) ?? 0;
     }
     return 0;
@@ -626,7 +675,7 @@ export class ControlDatabase {
    */
   async hasOwnerKey(): Promise<boolean> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval('select count(1) as Count from CadreControl.OwnerKey')) {
+    for await (const row of this.readEval('select count(1) as Count from CadreControl.OwnerKey')) {
       return (row.Count as number) > 0;
     }
     return false;
@@ -659,7 +708,7 @@ export class ControlDatabase {
   async getOwnerKeys(): Promise<Set<string>> {
     this.ensureInitialized();
     const keys = new Set<string>();
-    for await (const row of this.db!.eval('select Key from CadreControl.OwnerKey')) {
+    for await (const row of this.readEval('select Key from CadreControl.OwnerKey')) {
       keys.add(row.Key as string);
     }
     return keys;
@@ -694,7 +743,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
     const rows: CadrePeerRow[] = [];
-    for await (const row of this.db!.eval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
+    for await (const row of this.readEval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
         continue;
@@ -722,7 +771,7 @@ export class ControlDatabase {
   async queryValidationKeys(): Promise<string[]> {
     this.ensureInitialized();
     const keys: string[] = [];
-    for await (const row of this.db!.eval('select Key from CadreControl.ValidationKey')) {
+    for await (const row of this.readEval('select Key from CadreControl.ValidationKey')) {
       keys.push(row.Key as string);
     }
     return keys.sort();
@@ -749,7 +798,7 @@ export class ControlDatabase {
   ): Promise<string | null> {
     this.ensureInitialized();
     const sql = `select StampId from CadreControl.${table} where ${GUARDED_KEY_COLUMN[table]} = ?`;
-    for await (const row of this.db!.eval(sql, [keyValue])) {
+    for await (const row of this.readEval(sql, [keyValue])) {
       return (row.StampId as string | null) ?? null;
     }
     return null;
@@ -803,7 +852,7 @@ export class ControlDatabase {
   async queryRevokedStamps(tableName: RevocableTable): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
-    for await (const row of this.db!.eval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
+    for await (const row of this.readEval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
       stamps.add(row.StampId as string);
     }
     return stamps;
@@ -820,7 +869,7 @@ export class ControlDatabase {
   async queryRevocations(): Promise<RevocationRow[]> {
     this.ensureInitialized();
     const rows: RevocationRow[] = [];
-    for await (const row of this.db!.eval('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation')) {
+    for await (const row of this.readEval('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation')) {
       rows.push({
         tableName: row.TableName as RevocableTable,
         rowKey: row.RowKey as string,
@@ -852,7 +901,7 @@ export class ControlDatabase {
   async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
       [peerId]
     )) {
@@ -922,7 +971,7 @@ export class ControlDatabase {
    */
   async queryDeviceToken(peerId: string): Promise<DeviceTokenRow | null> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select PeerId, Platform, Token, UpdatedAt, Sig, StampId from CadreControl.DeviceToken where PeerId = ?',
       [peerId]
     )) {
@@ -2274,7 +2323,7 @@ export class ControlDatabase {
     strandId: string | null;
   } | null> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?',
       [token]
     )) {
@@ -2312,7 +2361,7 @@ export class ControlDatabase {
    */
   async countFormationUsage(token: string): Promise<number> {
     this.ensureInitialized();
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select count(1) as Count from CadreControl.FormationUsage where Token = ?',
       [token]
     )) {
@@ -2347,7 +2396,7 @@ export class ControlDatabase {
     // prune redeemed/expired rows.
     const metered: Array<{ token: string; totalUses: number }> = [];
     let unlimitedOutstanding = false;
-    for await (const row of this.db!.eval(
+    for await (const row of this.readEval(
       'select Token, ExpiresAt, TotalUses from CadreControl.FormationInvite'
     )) {
       const expiresAtMs = parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null);
