@@ -6,6 +6,43 @@ difficulty: hard
 repro: verified
 ----
 
+> **ANSWERED 2026-08-25 — this ticket's central claim is REFUTED by direct measurement. The index
+> IS in the write transaction.** Ran with the new upstream trace
+> (`DEBUG='optimystic:quereus-plugin:txn-bridge'`, optimystic built at `f008c0b`). Every write to
+> the failing table carries both collections, both **staged**:
+>
+> ```
+> commit:collections mode=legacy count=2 >   default/FormationUsage=staged default/FormationUsage/index/FormationUsageByToken=staged
+> ```
+>
+> Four such lines — two machines × two cases, exactly what the scenario should produce. Every other
+> indexed write in the run has the same shape, including a three-collection one
+> (`default/Strand` + `_uniq_1` + `_uniq_3`).
+>
+> **So "the insert transaction pends 3 blocks including the new index leaf, commits only 2, and the
+> index collection's HEADER block is never in the transaction at all" — the sharpest claim in the
+> body below, carried since 2026-08-12 — is wrong.** The 2026-08-13 upstream fix stage had already
+> corrected half of it (the 3-block pend is all data-collection blocks; `NetworkTransactor.commit`
+> legitimately splits the tail). This closes the rest. **Nobody should spend another pass on the
+> staging or flushing path.**
+>
+> **Where the defect actually is:** after the commit — replication, or the sibling's read of the
+> index collection. The row is written with its index, and the sibling still cannot descend to it
+> while a primary-key descent and a full scan on that same sibling both find it.
+>
+> **The next question, and the limit of what we can currently see.** The trace prints collection
+> **URIs**, and both machines print the same one. Identical URIs do not prove identical *lineage* —
+> the two machines could be committing into two independently invented collections wearing one
+> name. That is the collection-invention race upstream already suspects and added a reader-arm case
+> for. Answering it needs block id and revision in the trace, or instrumentation of the sibling's
+> read path instead. Filed upstream as
+> `1-index-collection-is-written-and-still-unreadable-on-the-sibling`.
+>
+> Incidental, unexplained, probably nothing: 123 of the 136 `commit:collections` lines in that run
+> were `count=0`. Presumably read-only or no-op transactions; nobody has checked that a `count=0`
+> commit is always legitimate.
+
+
 > **Correction 2026-08-24 — the re-attribution suggested above is REFUTED. This ticket's own title
 > was right all along.**
 >
