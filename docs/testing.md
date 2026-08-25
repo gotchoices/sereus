@@ -55,6 +55,28 @@ worth not re-litigating:
 The guard is unit-covered by `test-harness/build-freshness.spec.ts`, and per-package target-list
 drift fails that package's own `yarn test` via `test-harness/build-targets-spec.ts`.
 
+### When it fires because a sibling's own runner is mid-ticket
+
+`../optimystic` and `../quereus` run ticket automation of their own, and while it is working, their
+`src` is newer than their `dist` continuously. The guard then aborts **every** guarded suite here —
+7 of 9 packages — in global setup, so `yarn test` and `yarn check` fail without running a single
+test. The message names the sibling and says to build it.
+
+**Do not follow that remedy while the sibling's runner is active.** Building mid-ticket compiles a
+half-finished change into the `dist` this repo measures against; for `../quereus` that is
+`core/database.ts` and the planner, which is exactly what the control-database scenarios exercise.
+A green or red result obtained that way describes nothing that will ever be published.
+
+Check before building:
+
+```bash
+ls ../quereus/tickets/.in-progress ../optimystic/tickets/.in-progress   # absent = idle
+git -C ../quereus status --short                                        # clean = between tickets
+```
+
+Only when a sibling is both idle and clean is its tree worth building. This matters most before a
+release measurement, where the whole point is to describe code someone can install.
+
 ## Type-check coverage
 
 `yarn typecheck` (root) fans out to **every** TS workspace. Each package defines a `typecheck`
