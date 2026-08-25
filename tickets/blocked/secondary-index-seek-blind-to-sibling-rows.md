@@ -5,6 +5,79 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/t
 difficulty: hard
 repro: verified
 ----
+> **MEASURED 2026-08-25 (second pass) — the read path was instrumented, and this ticket's TITLE is
+> wrong. The seek is not blind. It finds exactly one entry: its own.**
+>
+> The previous note said the next useful step was on this side — run the scenario and find out
+> whether the two machines are even reading the same index collection. Done. Upstream had already
+> landed the read-side instrument (`index:seek`, namespace `optimystic:quereus-plugin:module`), so no
+> new tooling was needed:
+>
+> ```bash
+> cd packages/integration-tests
+> DEBUG='optimystic:quereus-plugin:module,optimystic:quereus-plugin:txn-bridge' \
+>   npx vitest run src/scenarios/strand-formation-concurrent-redemption.integration.ts
+> ```
+>
+> **Both machines resolve the same index collection id.** `index:tree-open` prints one id,
+> `default/FormationUsage/index/FormationUsageByToken`, and nothing else. The collection-invention
+> divergence the last three passes suspected is not what this is.
+>
+> At the failing read:
+>
+> | | case 1 | case 2 |
+> | --- | --- | --- |
+> | node A, index `rev=` | **3** | **4** |
+> | node B, index `rev=` | **2** | **3** |
+> | node A / node B, `main_rev=` | 2 / 2 | 4 / 4 |
+> | `matched=`, both nodes | 1 | 1 |
+> | `arm=` | live | live |
+>
+> **The main table collection agrees across the two machines; the index sub-collection differs by
+> exactly one revision.** Same instant, same process. That is the entire finding, and it is the first
+> thing measured here that explains the two controls this ticket has carried since 2026-08-12 —
+> why a full scan and a primary-key descent both converge on the sibling while the index seek does
+> not. They read the collection that refreshed.
+>
+> Three claims in the body below are refuted by this, and they should not be quoted again:
+>
+> - **"the sibling's index root stays at its schema-init empty state and every index descent there
+>   honestly finds nothing"** — `matched=1`, not 0. Each machine's index tree holds the entry that
+>   machine wrote. The tree is neither empty nor unbuilt.
+> - **"a silent per-index split-brain with no merge"** — accurate as a description of the *symptom*,
+>   but the mechanism is a revision gap on one collection, not a split of the index as such.
+> - The title's **"blind to sibling rows"** — it is not blindness. It is staleness that a refresh
+>   does not clear: `arm=live` means `update()` ran on both trees immediately before the descent
+>   (`optimystic-module.ts` ~845 awaits it on the main tree and the index tree in the same block),
+>   and node A emitted ~100 such lines over a 30 s poll at 250 ms without `rev=` moving once.
+>
+> **One more host-wiring hypothesis dies here, on this side of the boundary.** The write-through
+> raw-storage cache is **not in the failing path at all**: `wrapStorageWithCache`
+> (`packages/quereus-plugin-sereus/src/cached-storage.ts`) returns `MemoryRawStorage` unwrapped on
+> upstream's own guidance, and `packages/integration-tests/src/harness/` uses `MemoryRawStorage`
+> throughout. Of the three host-wiring differences the 2026-08-24 note named, this one is now
+> eliminated; catalog hydration and the asymmetric node roles are untouched.
+>
+> **What this run could NOT settle, and why.** `index:seek`, `index:tree-open` and
+> `commit:collections` carry no node identity — they log through db-core's `createLogger`, which has
+> no `peerId` parameter, and both machines share one process. The A/B attribution above is
+> **positional**: the scenario polls node A for 30 s (the ~100 identical lines) and then reads A and
+> B once each in its failure handler, so the trailing pair is B. That works for the read side and
+> **not** for the four `commit:collections` lines, which leaves one question open:
+>
+> - one lineage that node B failed to follow (B stale, A current because A wrote last), or
+> - two independent lineages under one collection id, each counting its own revisions — the fourth
+>   commit bases on index revision 2 *after* the second commit already landed revision 3.
+>
+> Same read-side fingerprint, different fixes. Nothing printed today separates them.
+>
+> **Filed upstream as `../optimystic/tickets/backlog/bug-index-subcollection-sits-one-revision-behind-on-the-sibling.md`**,
+> asking for the one thing that would settle it: thread a peer id through db-core's `createLogger`
+> for those three lines, the way db-p2p's already does — that logger carries the mechanism and a NOTE
+> explicitly inviting this use. **This ticket stays blocked**; the defect is still upstream. But the
+> search has moved off the write path and off collection invention for good, and re-running the
+> scenario once attribution lands answers the last question from this repo, which is the only place
+> the defect reproduces.
 
 > **Correction 2026-08-25 — the shared-index-key lead was WRONG, and the misreading is worth
 > recording so nobody repeats it.**
