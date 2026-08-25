@@ -6,6 +6,50 @@ difficulty: hard
 repro: verified
 ----
 
+> **Correction 2026-08-24 — the re-attribution suggested above is REFUTED. This ticket's own title
+> was right all along.**
+>
+> The note added earlier today argued that each node holding only its own row is symmetric, that
+> index blindness should not be symmetric, and that the fork tickets were therefore at least as good
+> a fit. Upstream settled it against that reading, using **this repo's own control measurement**: on
+> the same sibling, in the same window, a **primary-key descent converges** while the
+> **secondary-index seek does not**, and a **full scan of the same table sees the row**. A forked or
+> unrepaired data collection cannot produce that combination — it would fail the scan and the PK
+> descent too. So this is *not* the same defect as `forked-control-collection-sync-livelocks` or
+> `control-peer-row-refresh-invisible-to-third-node`, and the secondary-index attribution stands.
+>
+> Two more things ruled out by measurement rather than argument:
+>
+> - **The corroboration floor is not involved.** This repo declares `assumedClusterSize: 2` in both
+>   its control and strand cluster policies, and has since 2026-08-02 — twenty days before the
+>   failing measurement — so for a two-machine cohort the floor relaxes to one voter and repair is
+>   possible. (This does **not** transfer to the three-node fork ticket, whose cohort has two other
+>   peers and therefore a capacity of 2 regardless; that ticket's arithmetic is unchanged.)
+> - **The guards from the two completed upstream tickets cannot fire here, and no change to them
+>   would help.** They throw when the planner routes a seek into an index the table does not
+>   maintain. Each machine *does* serve its own rows through that same seek, which proves it
+>   maintains the index. The guard is correct; its condition is simply absent.
+>
+> **Still not reproducible upstream — now on real libp2p, not just the mock mesh.** A new
+> two-real-node spec drives two Quereus databases over two `NetworkTransactor`s against an indexed
+> table under *this repo's* cluster configuration (replication factor 16, `assumedClusterSize: 2`),
+> sequential and concurrent. Both converge. So the trigger is not the mock transport, not write
+> concurrency, not the cluster-size configuration, and not composite text primary keys.
+>
+> **What this repo has to do next.** Upstream is landing `1-name-the-collections-a-write-carries`:
+> two log lines naming which collections a write actually staged and flushed. It fixes nothing by
+> design — it makes the twelve-day-old claim ("the index collection is absent from the write
+> transaction entirely") decidable from a log for the first time. Three investigations have now
+> ended in source-reading because no log could answer it. **Once it lands, re-run
+> `strand-formation-concurrent-redemption` here with that logging enabled and capture the output** —
+> this is the only machine where the defect reproduces, so this repo is where the answer lives.
+>
+> The remaining differences between the passing upstream instrument and the failing run here are
+> host wiring, not distributed-systems behaviour: the sibling opens its database by catalog
+> **hydration** rather than a re-declared `create table`, it runs a write-through raw-storage cache,
+> and the two machines hold different node roles.
+
+
 > **Upstream re-filed 2026-08-24, and the previous attempt's conclusion matters more than this
 > ticket knew.** The 2026-08-21 audit above asked someone with `../optimystic` open to check what
 > that repo's 2026-08-13 fix stage concluded. Done — the run log survives and says:
@@ -125,3 +169,79 @@ the old write-while-alone / one-member-cohort arm.
   only the index view diverges; and the currency machinery optimystic shipped 2026-08-12
   (`coordinator-serves-stale-data-as-if-confirmed`) cannot flag it, because no peer ever
   holds a higher revision of the index collection to raise doubt against.
+
+---
+
+## Report back from `../optimystic`, 2026-08-24 — two attributions refuted, this one survives
+
+The upstream fix ticket this file asked for
+(`../optimystic/tickets/fix/1-two-node-index-divergence-guard-never-fires`) has been worked.
+It could not reproduce the symptom and did not land a fix; what it *did* settle is worth
+recording here, because two of the three competing explanations this ticket has been carrying
+are now closed.
+
+**1. The read-repair corroboration floor is NOT the cause — checked, not assumed.** The upstream
+ticket arrived carrying a strong hypothesis from
+`../optimystic/tickets/complete/1-repair-deadlock-is-never-named`: a two-machine cohort that
+declares no cohort size can never repair a block, permanently and silently, because the
+corroboration floor of two can never be met by a single peer. It asked this repo to grep its
+startup logs for `cluster-policy` → `repair-fault-tolerance`. **No grep was needed.** This repo
+declares `assumedClusterSize: 2` in both `CONTROL_CLUSTER_POLICY` and `STRAND_CLUSTER_POLICY`
+(`packages/quereus-plugin-sereus/src/cluster-size.ts`), and has since `42cd12c` on **2026-08-02**
+— twenty days before the 2026-08-22 measurement. `corroboratorCapacity(1, 2) = 1`, so the floor
+relaxes to one voter and a two-machine cohort repairs normally. Ruled out.
+
+**2. The data-tree fork family is NOT the cause either, and this ticket's own evidence is what
+rules it out.** The upstream ticket argued the symmetry (each node holding only its own row) reads
+more like two forked collection views than like index blindness, and asked whether this ticket,
+`forked-control-collection-sync-livelocks` and `control-peer-row-refresh-invisible-to-third-node`
+are one defect. They are not. The controls recorded in this file settle it: on the same sibling,
+in the same 30 s window, a **primary-key** descent (`queryFormationInvite`) converges, and B's
+**full scan** of `FormationUsage` sees A's row while B's index seek does not. A forked or
+unrepaired data collection cannot produce that. **The secondary-index attribution in this ticket's
+title stands.**
+
+**3. The guards from the two completed upstream tickets cannot fire on this path, and widening
+them will not help.** That guard throws when the query planner routes a seek into an index the
+table does not maintain. In the concurrent case each node serves *its own* row through that same
+seek, which proves each node does maintain the index. The guard is correct; its precondition is
+simply absent here. So "the divergence becomes a named error instead of empty rows" was never
+going to hold for this shape — not because the guard regressed, but because it is looking for a
+different failure.
+
+**4. Still not reproducible upstream, and the search space is now much smaller.** A new
+plugin-layer instrument landed there
+(`packages/quereus-plugin-optimystic/test/two-node-secondary-index-libp2p.integration.spec.ts`):
+two **real libp2p** nodes, each driving its own Quereus `Database` over its own
+`NetworkTransactor`, against a table with a secondary index, under *this repo's* cluster
+configuration (replication factor 16 with `assumedClusterSize: 2`), in both a
+sequential-single-writer and a concurrent-both-writers shape. Both converge. Combined with the
+existing mock-mesh coverage, the trigger is **not** the transport, **not** write concurrency,
+**not** the cluster-size configuration, and **not** composite text primary keys.
+
+What is left is host wiring, and it is all on this side of the boundary: the sibling opens its
+control database through catalog **hydration** rather than a re-declared `create table`; it runs
+the write-through raw-storage cache (`packages/quereus-plugin-sereus/src/cached-storage.ts`); the
+two machines hold different roles (A owner/storage, B plain member/transaction); the index is
+declared through the batch schema script (`index FormationUsageByToken on FormationUsage (Token)`)
+rather than a standalone `create index`; and the schema carries many tables rather than one.
+
+**What happens next, and what this ticket should do.** Upstream filed
+`../optimystic/tickets/implement/1-name-the-collections-a-write-carries` — deliberately
+observability only, no behavioural change. It adds two debug lines: one naming every collection id
+a write transaction actually carries, and one naming the collection URI each maintained index
+resolves to. Those exist specifically so **this** repo's next run of
+`strand-formation-concurrent-redemption.integration.ts` can answer, from a log rather than by
+reasoning, the two questions nobody has been able to close:
+
+- was the index collection in the commit at all (this ticket's sharpest standing claim), and
+- did the two machines commit to the **same** index collection id, or to two different ones?
+
+Two machines resolving different index-tree ids would produce exactly the symmetric symptom
+reported here while leaving the main table untouched, and nothing printed today can tell that
+apart from "the index was never committed".
+
+**This ticket's unblock condition is unchanged and it stays blocked** — the defect is still
+upstream and still unfixed. But when the trace lands and `../optimystic` is rebuilt, re-running
+the scenario with the new debug namespace enabled is a cheap, decisive step that does not need to
+wait for a fix, and it is the fastest way to give the upstream ticket the one fact it lacks.
