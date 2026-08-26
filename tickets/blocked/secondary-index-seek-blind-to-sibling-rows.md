@@ -5,6 +5,42 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/t
 difficulty: hard
 repro: verified
 ----
+> **UPSTREAM MOVED, 2026-08-26 — the trace now carries node attribution, and the silence has a
+> name. Neither is a fix.** The report filed from here
+> (`bug-index-subcollection-sits-one-revision-behind-on-the-sibling`) was worked and split into two,
+> both since completed:
+>
+> - **`index-trace-cannot-tell-a-forked-collection-from-a-lagging-one`** — answers the one thing
+>   this repo's measurement could not. All three trace lines (`index:seek`, `index:tree-open`,
+>   `commit:collections`) gained a **`node=`** field, so the four commit lines are attributable and
+>   "node B failed to follow one lineage" is now separable from "two lineages under one collection
+>   id". That was the explicit ask; it landed as asked.
+> - **`a-refresh-that-fails-to-close-a-known-gap-says-nothing`** — names the site of the silence
+>   measured here. `Collection.update()` reads the log tail's `latest` (the authoritative
+>   most-recently-committed revision for the id) onto a throwaway `TransactorSource`, then advances
+>   the collection only as far as a *separate* `Log.getFrom` walk reports. If that walk yields less,
+>   or nothing, `advanceContext` declines to move and `update()` **returns normally**. There is a
+>   log line for a collection refusing to move backwards (`collection:context-not-lowered`) and none
+>   for one failing to move forwards past a revision it just read. That is exactly the
+>   `arm=live`-ran-and-the-gap-survived shape measured here.
+>
+> **What this repo should do when convenient** — it is the only place the defect reproduces, and the
+> reproducer is currently switched off (see below). Restore it, run it against the attributed trace,
+> and settle fork-vs-lag:
+>
+> ```bash
+> # 1. re-add `index FormationUsageByToken on FormationUsage (Token);` to BOTH schema copies
+> #    (schemas/control.qsql and packages/cadre-core/src/control-schema.ts), then `yarn build`
+> cd packages/integration-tests
+> DEBUG='optimystic:quereus-plugin:module,optimystic:quereus-plugin:txn-bridge' >   npx vitest run src/scenarios/strand-formation-concurrent-redemption.integration.ts
+> # 2. read `node=` on the four commit:collections lines, then REMOVE the index line again
+> ```
+>
+> Same `node=` on commits whose base revisions chain (1 → 2 → 3) means one lineage and a follower
+> that fell behind; different `node=` on commits that each base on the same revision means two
+> lineages. Put the answer on the upstream ticket either way — and take the index line back out
+> afterwards, because leaving it in restores the seat-cap over-admission this repo just fixed.
+
 > **THE REPRODUCER IS NO LONGER LIVE — read this before re-measuring.** Acting on the measurement
 > below, `FormationUsageByToken` was removed from the control schema (`fix/formation-usage-index-tripwire-fired`,
 > commit `0658819`), because the seat cap counted through that index under-reports without bound
