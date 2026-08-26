@@ -3,6 +3,37 @@ files: packages/reference-app-rn/vitest.config.ts, packages/reference-app-web/vi
 difficulty: easy
 ---
 
+> **DONE 2026-08-25 — repo-level shape, the one this ticket preferred.**
+>
+> `scripts/check-stale-build-guard-wiring.mjs` (`yarn check:stale-build-guard-wiring`, chained into
+> root `yarn typecheck`) walks each package for modules whose **import specifier** names
+> `build-freshness`, asks Vitest itself which `globalSetup`/`setupFiles` it would execute
+> (`createVitest`), and fails naming the package and the exact line to restore. Asking Vitest rather
+> than reading the config as text is what makes it hold for a computed setup list, a spread base, or
+> a multi-project config — `quereus-plugin-sereus` declares its `globalSetup` twice, inside two
+> projects, and a text scrape would have had to understand that.
+>
+> Matching the import SPECIFIER rather than the substring matters: several configs explain in a
+> comment why they wire the guard, and `cadre-provider`'s says in prose that it deliberately has
+> none. A bare-substring gate would have failed all of them on day one and been switched off.
+>
+> `scripts/check-stale-build-guard-wiring.test.mjs` (`yarn test:stale-build-guard-wiring`, chained
+> into root `yarn test`) proves it catches drift rather than merely passing today: 4 fixture cases,
+> the load-bearing one being a package whose setup file is still on disk and still imports the
+> harness while its config no longer names it — the exact state a deleted line leaves behind.
+> Verified both directions: green on this repo, exit 1 with the package named on the fixture.
+>
+> **Two corrections to the body below.** It says seven packages wire the guard; there are now
+> **nine** — `reference-app-ns` and `cadre-host` are also in, and `cadre-host` keeps its setup under
+> `src/__tests__/` rather than `test/`, which is why the gate discovers modules by walking rather
+> than by assuming a path.
+>
+> **What it still cannot catch**, stated at the gate and in `docs/testing.md`: a package that gains
+> a `workspace:`/`link:` dependency and never writes a setup module at all — `cadre-provider`'s
+> case. The gate is driven by the module existing, so there is nothing to compare against when
+> there is none. That gap is unchanged by this work and is called out where the `NOTE:` about it
+> already lives.
+
 # The stale-build guard can be switched off by accident, silently
 
 ## Background

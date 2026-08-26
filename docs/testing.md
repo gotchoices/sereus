@@ -55,6 +55,25 @@ worth not re-litigating:
 The guard is unit-covered by `test-harness/build-freshness.spec.ts`, and per-package target-list
 drift fails that package's own `yarn test` via `test-harness/build-targets-spec.ts`.
 
+Both of those check what the guard *does*. What checks that it is switched **on** is
+`scripts/check-stale-build-guard-wiring.mjs` (`yarn check:stale-build-guard-wiring`, chained into
+root `yarn typecheck`). Deleting the one `globalSetup: ['./test/global-setup.ts']` line from a
+package's vitest config used to switch the guard off silently: the setup file stays on disk, stays
+type-checked, and stays imported by that package's `build-targets.spec.ts`, so no lint rule and no
+test failed — the suite simply went back to reporting green about code it never ran, which is the
+exact failure the guard exists to prevent. The gate walks each package for modules whose **import
+specifier** names `build-freshness` (so a config or comment that merely mentions it is not mistaken
+for a use), asks Vitest itself which `globalSetup`/`setupFiles` it would execute (`createVitest`, so
+a computed or multi-project config is handled like a literal array rather than scraped as text), and
+fails naming the package and the line to restore. Nine packages own such a module today.
+`scripts/check-stale-build-guard-wiring.test.mjs` (`yarn test:stale-build-guard-wiring`, chained into
+root `yarn test`) proves it catches the drift rather than merely passing today — the unwired case,
+the never-used case, and the mentions-it-in-prose false positive.
+
+**What that gate cannot catch:** a package that gains a `workspace:`/`link:` dependency and never
+writes a setup module at all — `cadre-provider`'s case above. It is driven by the module existing,
+so there is nothing for it to compare against when there is none.
+
 ### When it fires because a sibling's own runner is mid-ticket
 
 `../optimystic` and `../quereus` run ticket automation of their own, and while it is working, their
