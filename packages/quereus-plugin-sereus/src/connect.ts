@@ -20,7 +20,7 @@ export async function connectToStrand(
 		async registerCrypto(database) {
 			await registerPlugin(database, cryptoPlugin);
 		},
-		async createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, storage }) {
+		async createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, clusterPolicy, storage }) {
 			// Dynamically import to keep the module cross-platform friendly: this
 			// pulls the Node-only `@optimystic/db-p2p` (TCP) entry, and is only
 			// reached when actually creating a node (never for injected nodes).
@@ -31,6 +31,7 @@ export async function connectToStrand(
 				networkName,
 				fretProfile,
 				clusterSize,
+				clusterPolicy,
 				...(storage && { storage }),
 			}) as Promise<Libp2p>;
 		},

@@ -3,10 +3,10 @@ import type { Database, VTablePluginInfo, FunctionPluginInfo, CollationPluginInf
 import optimysticPlugin from '@optimystic/quereus-plugin-optimystic/plugin';
 import type { Libp2p } from '@libp2p/interface';
 import type { IRepo } from '@optimystic/db-core';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import type { IRawStorage, NodeOptions } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
-import { resolveStrandClusterSize } from './cluster-size.js';
+import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
 import { wrapStorageWithCache } from './cached-storage.js';
 
 const log = debug('sereus:plugin:strand');
@@ -82,6 +82,19 @@ export interface CreateNodeContext {
 	 * default of 10, which gates writes on any smaller party.
 	 */
 	clusterSize: number;
+	/**
+	 * The strand cluster policy, resolved here so no platform has to remember it.
+	 * Pass it to `createLibp2pNode` verbatim.
+	 *
+	 * Omitting it does NOT fall back to something equivalent: Optimystic then computes
+	 * its read-repair corroboration floor against `clusterSize` instead of against
+	 * {@link STRAND_CLUSTER_POLICY}'s `assumedClusterSize`, which is a stricter demand
+	 * than a two-machine strand can meet — so repair of a damaged block gives up where
+	 * it would otherwise succeed. That is the same defect class that took the *control*
+	 * network's e2e suite down before `42cd12c`; see `cluster-size.ts` for the reasoning
+	 * written out in full.
+	 */
+	clusterPolicy: NonNullable<NodeOptions['clusterPolicy']>;
 	/** Resolved persistent storage to back the node, if any. */
 	storage?: IRawStorage;
 }
@@ -217,7 +230,7 @@ export async function composeStrand(
 				coordinatedRepo = options.coordinatedRepo;
 				log('Using injected libp2p node');
 			} else {
-				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, storage });
+				const created = await platform.createNode({ networkName, bootstrapNodes, fretProfile, port, clusterSize, clusterPolicy: STRAND_CLUSTER_POLICY, storage });
 				createdNode = created;
 				node = created;
 				const repo = (created as Libp2pNodeWithRepo).coordinatedRepo;

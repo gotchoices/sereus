@@ -5,6 +5,28 @@ files: packages/quereus-plugin-sereus/src/connect.ts, packages/quereus-plugin-se
 tradeoffs: The one field that actually differs only moves the read-repair corroboration floor, and no shipped configuration reaches this code path — every Sereus app injects a node built by cadre-core with the correct policy — so this is a latent inconsistency in a dormant path rather than a live defect.
 ----
 
+> **DONE 2026-08-25 — resolved in `composeStrand`, which is the option this ticket preferred.**
+>
+> `CreateNodeContext` gained a required `clusterPolicy` field, `composeStrand` fills it with
+> `STRAND_CLUSTER_POLICY` next to the existing `resolveStrandClusterSize` call, and both platforms
+> (`connect.ts`, `connect-browser.ts`) forward it to `createLibp2pNode`. Because the field is
+> required rather than optional, a third platform cannot forget it — it will not compile.
+>
+> Pinned by a test rather than left to the `satisfies`: `plugin.spec.ts` →
+> *"should create the node with the strand cluster policy"* asserts `createLibp2pNode` is called
+> with the policy object, which covers the whole seam (composeStrand → platform → node) rather than
+> just the context. The existing mock of `createLibp2pNode` in that file made this cheap, as the
+> ticket predicted.
+>
+> Verified: `yarn lint` and the package `typecheck` exit 0; `@serfab/quereus-plugin-sereus` suite
+> 9 files / 90 passed + 1 todo.
+>
+> One correction to the framing above. The ticket calls this "a latent inconsistency in a dormant
+> path rather than a live defect", which was true of shipped apps and is worth keeping in view — but
+> the path stopped being dormant when `retire-strand-mode-in-cadre-core` moved this package's own
+> e2e specs onto the factory, which is how it was found. So the specs that exercise it were already
+> running against the wrong corroboration floor.
+
 # `connectToStrand` creates strand nodes without `STRAND_CLUSTER_POLICY`
 
 ## The two node factories disagree

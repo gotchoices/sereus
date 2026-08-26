@@ -9,6 +9,7 @@ import {
 	CONTROL_REPLICATION_BREADTH,
 	DEFAULT_STRAND_CLUSTER_SIZE,
 	MIN_CLUSTER_SIZE,
+	STRAND_CLUSTER_POLICY,
 	resolveStrandClusterSize
 } from '../src/cluster-size.js';
 
@@ -371,6 +372,28 @@ describe('connectToStrand', () => {
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		expect(createLibp2pNode).toHaveBeenCalledWith(
 			expect.objectContaining({ clusterSize: 5 }),
+		);
+
+		await result.shutdown();
+	});
+
+	it('should create the node with the strand cluster policy', async () => {
+		// This package DEFINES `STRAND_CLUSTER_POLICY` and, until 2026-08-25, its own node
+		// factory did not pass it — only cadre-core's did. Omitting it is not equivalent to
+		// passing it: optimystic then computes the read-repair corroboration floor against
+		// `clusterSize` rather than against `assumedClusterSize`, demanding more distinct
+		// corroborators than a two-machine strand can field, so repair of a damaged block
+		// gives up where it would otherwise succeed. That is the same defect that took the
+		// CONTROL network's e2e suite down before `42cd12c`, which is why it is pinned here
+		// rather than left to the `satisfies` on the constant.
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-cluster-policy',
+			transactor: 'local',
+		});
+
+		const { createLibp2pNode } = await import('@optimystic/db-p2p');
+		expect(createLibp2pNode).toHaveBeenCalledWith(
+			expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY }),
 		);
 
 		await result.shutdown();
