@@ -3,6 +3,41 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-module.ts
 difficulty: hard
 ----
 
+> **Question 3 is ANSWERED, 2026-08-25: a secondary-index seek is NOT safe across machines, and
+> the seat cap that hung on one has been taken off it.**
+>
+> The third numbered question above — added by the review of `formation-unique-token-redesign` —
+> said `countFormationUsage` had moved from a scan onto a descent through the
+> `FormationUsageByToken` index, that this count enforces an invitation's use limit, and that "no
+> miss has been observed on an index seek; the point is that nobody has checked".
+>
+> Checked. It misses. Measured with optimystic's `index:seek` trace: two machines resolve the SAME
+> index collection, their copies of the main table agree, and their copies of the index
+> sub-collection differ by exactly one revision, each matching only the entry that machine wrote —
+> with `arm=live`, so a refresh ran immediately before the descent and did not close the gap. A
+> node therefore counted only its own redemptions, and the cap over-admitted **without bound** on a
+> multi-machine party.
+>
+> The index was removed (`complete/formation-usage-index-tripwire-fired`), returning that read to
+> the scan it had before 2026-08-04. Full detail and the reproduction recipe are in
+> `blocked/secondary-index-seek-blind-to-sibling-rows`; the engine defect is upstream and unfixed
+> (`../optimystic/tickets/fix/2-bug-index-subcollection-sits-one-revision-behind-on-the-sibling.md`).
+>
+> **This does NOT answer question 1, and the two must not be conflated.** Question 1 asks whether
+> the full-primary-key point-lookup shortcut is unreliable and whether that is multi-column
+> specific. The finding above is about a *secondary index* collection sitting at a stale revision —
+> a different collection and a different mechanism from a descent of the main table's own tree.
+> Nothing here says anything about single- or multi-column primary-key lookups, and this repo's own
+> control measurement points the other way for them: a primary-key descent converges on a sibling
+> in the same window where the index seek does not. Questions 1 and 2 remain open exactly as
+> written.
+>
+> **What this ticket should still deliver**, narrowed by one arm: a statement of which lookup
+> shapes are safe on a networked strand. One line of it can now be written — *a secondary-index
+> seek can serve a stale view of the index collection and silently return fewer rows than exist* —
+> and that line should carry the caveat that every `unique` constraint in the control schema is
+> enforced through such an index (`blocked/strand-unique-index-sync-stale-revision`).
+
 ## Background
 
 When a query puts an equality on **every** primary-key column of a table, the optimystic
