@@ -5,6 +5,39 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/t
 difficulty: hard
 repro: verified
 ----
+> **ANSWERED 2026-08-27 — it is a FORK, not a lag. Measured here, with the reproducer temporarily
+> restored, on the attributed trace upstream had just landed.**
+>
+> The open question this ticket carried — *one lineage node B failed to follow, or two lineages
+> under one collection id?* — is settled. Both machines commit from the same base, same revision AND
+> same action id (`index/FormationUsageByToken:1@-UzaWOQiXI12s6PU5PE5lA`, printed on both nodes'
+> `commit:collections`). At the failing read:
+>
+> | | node `s7s6dQ` | node `cREUdA` |
+> | --- | --- | --- |
+> | `main_rev=` | `2@fR1TfGRxHLN_Icl0ZK-XIw` | `2@fR1TfGRxHLN_Icl0ZK-XIw` |
+> | `rev=` (index) | `3@qpIlrfyFciQszMpLcVLSGA` | `2@vR5WcYtFvwoW2nYPa8BqCg` |
+> | `matched=` | 1 | 1 |
+>
+> Case 2 repeats it: `main_rev=4@RcFaAT8zpfk2WP9CrpASwg` on **both**, index `4@8K0ee…` vs
+> `3@Hwfkd…`.
+>
+> **The main collection of the same table converges to a byte-identical action id while the index
+> sub-collection does not.** That control is what makes this airtight, and it kills the last
+> "perhaps it is merely slow" reading — nothing is waiting on the network, because the sibling
+> collection of the same table got there under the same writes. A lagging follower would hold the
+> **same** action at a lower revision; these hold **different** actions descending from a common
+> ancestor both of them named, and stay diverged.
+>
+> Filed upstream as `bug-index-subcollection-forks-and-never-merges` (`a5eb7152`). The index line was
+> removed again immediately after the run — leaving it in restores the seat-cap over-admission
+> `complete/formation-usage-index-tripwire-fired` fixed.
+>
+> **Consequence worth stating for this repo:** every `unique` constraint in the control schema is
+> enforced through a secondary index, so a forked uniqueness index would let two machines each admit
+> a row the other considers a duplicate. That is `strand-unique-index-sync-stale-revision`, and this
+> measurement makes its mechanism concrete rather than suspected.
+
 > **UPSTREAM MOVED, 2026-08-26 — the trace now carries node attribution, and the silence has a
 > name. Neither is a fix.** The report filed from here
 > (`bug-index-subcollection-sits-one-revision-behind-on-the-sibling`) was worked and split into two,
