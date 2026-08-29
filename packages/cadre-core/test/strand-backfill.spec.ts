@@ -63,6 +63,8 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
     listPendingTransactions: () => { throw new Error('backfill must not call listPendingTransactions'); },
     getTransaction: refuse('getTransaction'),
     saveTransaction: refuse('saveTransaction'),
+    getBlockProof: refuse('getBlockProof'),
+    saveBlockProof: refuse('saveBlockProof'),
     saveMaterializedBlock: refuse('saveMaterializedBlock'),
     promotePendingTransaction: refuse('promotePendingTransaction')
   };
@@ -108,7 +110,7 @@ interface CapturedPush {
   ids: string[];
   buffers: Uint8Array[];
   reason: string | undefined;
-  meta: Record<string, { rev: number; actionId: string }> | undefined;
+  meta: { blockMeta?: Record<string, { rev: number; actionId: string }>; blockProofs?: Record<string, unknown> } | undefined;
   options: { dialTimeoutMs?: number; responseTimeoutMs?: number } | undefined;
 }
 
@@ -182,7 +184,7 @@ describe('StrandBackfill', () => {
       expect(push.reason).toBe('replication');
       expect(push.options).toEqual({ dialTimeoutMs: 3000, responseTimeoutMs: 10_000 });
       for (const [i, id] of push.ids.entries()) {
-        expect(push.meta?.[id]).toEqual({ rev: blocks[id]!.latest!.rev, actionId: blocks[id]!.latest!.actionId });
+        expect(push.meta?.blockMeta?.[id]).toEqual({ rev: blocks[id]!.latest!.rev, actionId: blocks[id]!.latest!.actionId });
         // The buffer is the block's own JSON, encoded once.
         expect(JSON.parse(new TextDecoder().decode(push.buffers[i]!))).toEqual(blocks[id]!.block);
       }

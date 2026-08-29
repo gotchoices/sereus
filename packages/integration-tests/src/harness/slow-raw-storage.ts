@@ -20,7 +20,7 @@
  * per-ITEM latency is not what bring-up duration is made of.
  */
 
-import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
@@ -91,6 +91,16 @@ export class SlowRawStorage implements IRawStorage {
 	async saveTransaction(blockId: BlockId, actionId: ActionId, transform: Transform): Promise<void> {
 		await this.slow();
 		return this.inner.saveTransaction(blockId, actionId, transform);
+	}
+
+	async getBlockProof(blockId: BlockId, rev: number): Promise<BlockCommitProof | undefined> {
+		await this.slow();
+		return this.inner.getBlockProof(blockId, rev);
+	}
+
+	async saveBlockProof(blockId: BlockId, rev: number, proof: BlockCommitProof): Promise<void> {
+		await this.slow();
+		return this.inner.saveBlockProof(blockId, rev, proof);
 	}
 
 	async getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {

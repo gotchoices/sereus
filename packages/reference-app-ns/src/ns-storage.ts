@@ -14,6 +14,17 @@
 
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+
+/**
+ * The commit proof `IRawStorage` stores, derived from the interface rather than imported by
+ * name. `@optimystic/db-p2p`'s `exports` map sends React-Native-condition resolvers — this app
+ * included — to its `rn` entry, and that entry does not re-export `BlockCommitProof` even
+ * though it DOES export the `IRawStorage` that requires it. Deriving keeps this file honest
+ * against whichever entry resolves, and follows the type automatically if it changes.
+ * Upstream gap tracked in `../optimystic/tickets/backlog/bug-rn-entry-omits-with-read-cache.md`;
+ * import it by name once the rn entry exports it.
+ */
+type StoredBlockProof = Parameters<IRawStorage['saveBlockProof']>[2];
 import { openOptimysticNSDb, SqliteRawStorage } from '@optimystic/db-p2p-storage-ns';
 
 /**
@@ -105,6 +116,14 @@ class LazyNsRawStorage implements IRawStorage {
 		transform: Transform,
 	): Promise<void> {
 		return (await this.storage()).saveTransaction(blockId, actionId, transform);
+	}
+
+	async getBlockProof(blockId: BlockId, rev: number): Promise<StoredBlockProof | undefined> {
+		return (await this.storage()).getBlockProof(blockId, rev);
+	}
+
+	async saveBlockProof(blockId: BlockId, rev: number, proof: StoredBlockProof): Promise<void> {
+		return (await this.storage()).saveBlockProof(blockId, rev, proof);
 	}
 
 	async getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {

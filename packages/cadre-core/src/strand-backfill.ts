@@ -1,7 +1,7 @@
 import debug from 'debug';
 import type { Connection, Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionId, IPeerNetwork } from '@optimystic/db-core';
-import { BlockTransferClient, type IRawStorage } from '@optimystic/db-p2p';
+import { BlockTransferClient, type BlockCommitProof, type IRawStorage } from '@optimystic/db-p2p';
 
 // NOTE: this copies the WHOLE local store to every newly connected strand peer, which is
 // right while a strand mesh is one party's handful of machines (see docs/architecture.md →
@@ -124,6 +124,19 @@ interface Chunk {
   ids: string[];
   buffers: Uint8Array[];
   meta: Record<string, { rev: number; actionId: ActionId }>;
+  /**
+   * The cohort commit proof retained for each block's pushed revision, where one exists.
+   *
+   * A receiver running the default `requirePushCertificate: true` REJECTS a block pushed
+   * without one, so this is what makes peer-join catch-up land at all — a push carrying only
+   * `meta` is the legacy shape and is refused. Sparse deliberately: a block whose proof was
+   * never retained is still offered with its meta, which is the only thing that lets a
+   * receiver migrating with the flag off land the replica at this node's revision rather than
+   * a fabricated rev 1. Upstream's rule is the other direction and holds here by construction:
+   * a proof is never attached WITHOUT its meta, because both are written from the same
+   * `latest` in one place.
+   */
+  proofs: Record<string, BlockCommitProof>;
   bytes: number;
 }
 
@@ -257,7 +270,7 @@ export class StrandBackfill {
 
     const client = this.createPushClient(peerId);
     const encoder = new TextEncoder();
-    let chunk: Chunk = { ids: [], buffers: [], meta: {}, bytes: 0 };
+    let chunk: Chunk = { ids: [], buffers: [], meta: {}, proofs: {}, bytes: 0 };
     let chunkFailed = false;
     let anyChunkDelivered = false;
     /**
@@ -270,10 +283,13 @@ export class StrandBackfill {
 
     const flush = async (): Promise<void> => {
       if (chunk.ids.length === 0) return;
-      const { ids, buffers, meta } = chunk;
-      chunk = { ids: [], buffers: [], meta: {}, bytes: 0 };
+      const { ids, buffers, meta, proofs } = chunk;
+      chunk = { ids: [], buffers: [], meta: {}, proofs: {}, bytes: 0 };
       try {
-        const response = await client.pushBlocks(ids, buffers, 'replication', meta, {
+        // ONE certification value rather than two arguments, so a caller cannot pair a proof
+        // for one revision with meta for another — both were written from the same `latest`.
+        const response = await client.pushBlocks(ids, buffers, 'replication',
+          { blockMeta: meta, blockProofs: proofs }, {
           dialTimeoutMs: this.config.dialTimeoutMs,
           responseTimeoutMs: this.config.responseTimeoutMs
         });
@@ -347,6 +363,13 @@ export class StrandBackfill {
       chunk.ids.push(blockId);
       chunk.buffers.push(buffer);
       chunk.meta[blockId] = { rev: latest.rev, actionId: latest.actionId };
+      // Read the proof for EXACTLY the revision being pushed, from the same `latest` the meta
+      // above was written from. Absent is normal (nothing retained a proof for that revision);
+      // the block still ships with its meta and the receiver decides.
+      const proof = await storage.getBlockProof(blockId, latest.rev);
+      if (proof) {
+        chunk.proofs[blockId] = proof;
+      }
       chunk.bytes += buffer.length;
       result.offered += 1;
     }

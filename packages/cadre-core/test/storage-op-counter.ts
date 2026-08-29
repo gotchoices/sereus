@@ -1,4 +1,4 @@
-import type { BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, BlockMetadata, IRawStorage } from '@optimystic/db-p2p';
 import type { ActionId, ActionRev, BlockId, IBlock, Transform } from '@optimystic/db-core';
 
 /**
@@ -179,6 +179,16 @@ export class CountingRawStorage implements IRawStorage {
 	saveTransaction(blockId: BlockId, actionId: ActionId, transform: Transform): Promise<void> {
 		this.counter.record('saveTransaction', blockId);
 		return this.inner.saveTransaction(blockId, actionId, transform);
+	}
+
+	getBlockProof(blockId: BlockId, rev: number): Promise<BlockCommitProof | undefined> {
+		this.counter.record('getBlockProof', blockId);
+		return this.inner.getBlockProof(blockId, rev);
+	}
+
+	saveBlockProof(blockId: BlockId, rev: number, proof: BlockCommitProof): Promise<void> {
+		this.counter.record('saveBlockProof', blockId);
+		return this.inner.saveBlockProof(blockId, rev, proof);
 	}
 
 	getMaterializedBlock(blockId: BlockId, actionId: ActionId): Promise<IBlock | undefined> {
