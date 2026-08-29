@@ -72,12 +72,10 @@ function isInsideNodeModules(path) {
 // Vitest resolves the config (including `extends`, plugins and nested `projects:`) and globs the
 // matching files without importing or executing any of them — `globalSetup` does not run here.
 async function collectRunFiles(packageDir) {
-	// Isolated `cacheDir`, for the reason spelled out in
-	// `check-stale-build-guard-wiring.mjs`: a Vitest boot from a GATE writes a dependency-optimizer
-	// cache into the package's own `node_modules/.vite`, and a real run that later picks up that
-	// cache fails to collect every spec with `Cannot read properties of undefined (reading
-	// 'config')` — a broken-looking suite that is not broken. Measured there and fixed the same way
-	// here, because this gate boots Vitest over the same packages.
+	// Isolated `cacheDir` for the reason spelled out in `check-stale-build-guard-wiring.mjs`: a gate
+	// boots Vitest in a different mode and config from a real run, so it should not share the
+	// package's dependency-optimizer cache. Hygiene, not a fix for an observed failure — see the
+	// honesty note at that site.
 	const vitest = await createVitest('test', {
 		root: packageDir,
 		watch: false,

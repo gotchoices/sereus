@@ -91,13 +91,17 @@ function harnessImporters(dir) {
  * called, and `globalSetup` does not execute during config resolution.
  */
 async function executedSetupModules(packageDir) {
-	// `cacheDir` is redirected to a throwaway directory ON PURPOSE. Booting Vitest here writes a
-	// dependency-optimizer cache under the package's own `node_modules/.vite`, and a cache written
-	// by THIS boot — a different mode and config from a real run — then poisoned the real run: every
-	// spec in the package failed to collect with `Cannot read properties of undefined (reading
-	// 'config')`, which reads like a broken test and is not one. Measured: clearing the caches made
-	// it go away. A gate must not be able to break the suite it guards, so it writes its cache
-	// somewhere it cannot be picked up.
+	// `cacheDir` is redirected to a throwaway directory so a GATE never writes into the dependency
+	// optimizer cache a real run of that package reads. Hygiene, not a fix for anything observed: a
+	// gate boots Vitest in a different mode and config from a real run, and the two sharing
+	// `node_modules/.vite` is a coupling with no upside.
+	//
+	// HONESTY NOTE, because the first version of this comment claimed otherwise: this was written
+	// while chasing whole-package collection failures (`Cannot read properties of undefined (reading
+	// 'config')`), and it did NOT cause them and did not fix them. That symptom is Vitest workers
+	// failing to start on a memory-saturated machine — a single spec collects fine, the same suite
+	// fails once dozens of workers spawn. If you meet that error, check free memory and stray node
+	// processes before suspecting anything in this repo.
 	const vitest = await createVitest('test', {
 		root: packageDir,
 		watch: false,
