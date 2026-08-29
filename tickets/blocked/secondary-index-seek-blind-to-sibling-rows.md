@@ -5,6 +5,39 @@ files: ../optimystic/packages/quereus-plugin-optimystic/src/optimystic-adapter/t
 difficulty: hard
 repro: verified
 ----
+> **MECHANISM NAMED 2026-08-29 — the engine now says it itself: two actions occupy ONE revision
+> slot, and the not-lowered guard makes that permanent.**
+>
+> Upstream landed a divergence diagnostic (`make-a-refresh-able-to-say-the-two-copies-disagree`)
+> because nothing anywhere could report a fork — both copies count their own revisions correctly, so
+> counters alone can never disagree. Ran the reproducer here against it, with the index line
+> temporarily restored and removed again straight after. **It fires, on its first run anywhere:**
+>
+> ```
+> collection:lineage-divergence id=default/FormationUsage/index/FormationUsageByToken rev=1 held=63cJ50MoBCietBFJBvxWeQ read=vPYEKDif1s1ItefiE-5DQw
+> collection:lineage-divergence id=default/FormationUsage/index/FormationUsageByToken rev=2 held=W0vdcSKMif20MB6UYylCjQ read=NEJ50gSY7mr9KGV5QUKQDw
+> collection:context-not-lowered id=default/FormationUsage/index/FormationUsageByToken held=4 read=3
+> ```
+>
+> **At the same revision number the held action id differs from the stored one** — twice. That is the
+> fork stated exactly, and it retires the last ambiguity this ticket carried. Then
+> `context-not-lowered` seals it: the node holds rev 4, storage offers 3, and the guard that refuses
+> to move a collection backwards declines. The guard is right in isolation — it is what stops a stale
+> read rewinding a collection — but on a forked lineage it is what makes the fork permanent.
+>
+> **It fires only on the index sub-collection.** Same run, same two nodes, same writes: the main
+> table collection converges to a byte-identical action id. Consistent with every measurement here
+> since 2026-08-25.
+>
+> **It is not db-core's reconciliation path.** Upstream's `two-handle-collection-fork.spec.ts` drives
+> two handles over one transactor through five shapes — invented-by-both and seeded, sequential and
+> concurrent, single-block and fan-out-4 — and every one converges. So the fork is produced ABOVE
+> that layer, which is where the search now belongs.
+>
+> Report staged for upstream; their runner was mid-ticket with a scratch reproduction spec of their
+> own (`zz-repro-index-drift.spec.ts`), so it is filed when their tree is idle rather than dirtied
+> under them.
+
 > **ANSWERED 2026-08-27 — it is a FORK, not a lag. Measured here, with the reproducer temporarily
 > restored, on the attributed trace upstream had just landed.**
 >
