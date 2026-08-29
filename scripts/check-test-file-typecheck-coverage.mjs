@@ -19,7 +19,8 @@
  * (`../../test-harness/`). Globbing resolves the config without importing or running any test file.
  */
 import { existsSync } from 'node:fs';
-import { join, dirname, relative, isAbsolute } from 'node:path';
+import { join, dirname, relative, isAbsolute, basename } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createVitest } from 'vitest/node';
 import {
@@ -71,7 +72,17 @@ function isInsideNodeModules(path) {
 // Vitest resolves the config (including `extends`, plugins and nested `projects:`) and globs the
 // matching files without importing or executing any of them — `globalSetup` does not run here.
 async function collectRunFiles(packageDir) {
-	const vitest = await createVitest('test', { root: packageDir, watch: false });
+	// Isolated `cacheDir`, for the reason spelled out in
+	// `check-stale-build-guard-wiring.mjs`: a Vitest boot from a GATE writes a dependency-optimizer
+	// cache into the package's own `node_modules/.vite`, and a real run that later picks up that
+	// cache fails to collect every spec with `Cannot read properties of undefined (reading
+	// 'config')` — a broken-looking suite that is not broken. Measured there and fixed the same way
+	// here, because this gate boots Vitest over the same packages.
+	const vitest = await createVitest('test', {
+		root: packageDir,
+		watch: false,
+		cacheDir: join(tmpdir(), `test-file-typecheck-coverage-cache-${basename(packageDir)}`),
+	});
 	try {
 		const files = (await vitest.globTestSpecifications()).map((specification) => specification.moduleId);
 		// Setup and global-setup modules are executed by Vitest exactly like specs are, and are

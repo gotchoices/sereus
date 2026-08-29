@@ -31,7 +31,8 @@
  * that stops executing one simply drops out of its list.
  */
 import { readFileSync, readdirSync } from 'node:fs';
-import { join, dirname, relative, sep } from 'node:path';
+import { join, dirname, relative, basename, sep } from 'node:path';
+import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { createVitest } from 'vitest/node';
 import { normalizePath, vitestConfigPaths, workspacePackageDirs, readJson } from './lib/typecheck-programs.mjs';
@@ -90,7 +91,18 @@ function harnessImporters(dir) {
  * called, and `globalSetup` does not execute during config resolution.
  */
 async function executedSetupModules(packageDir) {
-	const vitest = await createVitest('test', { root: packageDir, watch: false });
+	// `cacheDir` is redirected to a throwaway directory ON PURPOSE. Booting Vitest here writes a
+	// dependency-optimizer cache under the package's own `node_modules/.vite`, and a cache written
+	// by THIS boot — a different mode and config from a real run — then poisoned the real run: every
+	// spec in the package failed to collect with `Cannot read properties of undefined (reading
+	// 'config')`, which reads like a broken test and is not one. Measured: clearing the caches made
+	// it go away. A gate must not be able to break the suite it guards, so it writes its cache
+	// somewhere it cannot be picked up.
+	const vitest = await createVitest('test', {
+		root: packageDir,
+		watch: false,
+		cacheDir: join(tmpdir(), `stale-build-guard-wiring-cache-${basename(packageDir)}`),
+	});
 	try {
 		const modules = [];
 		for (const project of vitest.projects) {
