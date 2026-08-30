@@ -24,6 +24,12 @@ import {
 interface FakeBlock {
   latest?: ActionRev;
   block?: IBlock;
+  /**
+   * The cohort commit proof retained for `latest.rev`, if any. Absent is the ordinary case and
+   * the one most of these cases use: a block whose proof was never retained still ships, carrying
+   * only its meta, and the receiver decides what to do with it.
+   */
+  proof?: unknown;
 }
 
 /** A block whose JSON encoding is padded to a controllable size. */
@@ -63,7 +69,13 @@ function makeStorage(blocks: Record<string, FakeBlock>, opts: { listBlockIds?: b
     listPendingTransactions: () => { throw new Error('backfill must not call listPendingTransactions'); },
     getTransaction: refuse('getTransaction'),
     saveTransaction: refuse('saveTransaction'),
-    getBlockProof: refuse('getBlockProof'),
+    // Backfill READS proofs — a push that carries none is refused by a receiver running the
+    // default `requirePushCertificate: true`, so reading them is the point, not a leak. It must
+    // never WRITE one, so that half still refuses.
+    getBlockProof: async (blockId, rev) => {
+      const entry = blocks[blockId];
+      return entry?.latest?.rev === rev ? entry.proof : undefined;
+    },
     saveBlockProof: refuse('saveBlockProof'),
     saveMaterializedBlock: refuse('saveMaterializedBlock'),
     promotePendingTransaction: refuse('promotePendingTransaction')
@@ -189,6 +201,27 @@ describe('StrandBackfill', () => {
         expect(JSON.parse(new TextDecoder().decode(push.buffers[i]!))).toEqual(blocks[id]!.block);
       }
     }
+  });
+
+  it('attaches the retained commit proof for the revision it pushes, and nothing for a block without one', async () => {
+    // A push carrying no proof is refused by a receiver running the default
+    // `requirePushCertificate: true`, so "the proof reached the wire" is what makes peer-join
+    // catch-up land at all. Pinned here because the failure is silent at the sender: the push
+    // succeeds locally and the block simply never appears on the peer.
+    const blocks: Record<string, FakeBlock> = {
+      withProof: { ...committed('withProof', 3), proof: { marker: 'proof-for-rev-3' } },
+      bare: committed('bare', 1),
+    };
+    const { backfill, pushes } = makeBackfill(blocks);
+
+    await backfill.catchUpPeer(peer('p1'));
+
+    const certification = pushes[0]?.meta;
+    expect(certification?.blockProofs?.withProof).toEqual({ marker: 'proof-for-rev-3' });
+    // Absent, not null or an empty object: a proof is never invented for a block that has none,
+    // and its meta still ships so a receiver migrating with the flag off can still land it.
+    expect(certification?.blockProofs).not.toHaveProperty('bare');
+    expect(certification?.blockMeta?.bare).toBeDefined();
   });
 
   it('skips a block whose metadata has no latest — counted uncommitted, never pushed', async () => {

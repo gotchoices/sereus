@@ -24,7 +24,7 @@
     "lint": "eslint .",
     "lint:fix": "eslint . --fix",
     "check": "yarn lint && yarn build && yarn typecheck && yarn test && yarn smoke:published",
-    "test": "yarn workspaces foreach -A run test && yarn test:dep-ranges && yarn test:published-smoke-support && yarn test:publish-package && yarn test:release-preflight && yarn test:vitest-typecheck-coverage && yarn test:test-file-typecheck-coverage && yarn test:stale-build-guard-wiring",
+    "test": "yarn workspaces foreach -A --exclude sereus-workspace run test && yarn test:dep-ranges && yarn test:published-smoke-support && yarn test:publish-package && yarn test:release-preflight && yarn test:vitest-typecheck-coverage && yarn test:test-file-typecheck-coverage && yarn test:stale-build-guard-wiring",
     "test:dep-ranges": "node --test scripts/check-dep-ranges.test.mjs",
     "test:published-smoke-support": "node --test scripts/smoke-published-install.test.mjs",
     "test:publish-package": "node --test scripts/publish-package.test.mjs",
