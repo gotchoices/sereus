@@ -136,6 +136,9 @@ _(TODO: not yet documented here. See the strand-formation and seed-bootstrap cov
 
 _(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
 
+Binding a human-readable legal agreement into the invitation/join signatures is a
+design-stage plan: see [`strand-contracts.md`](strand-contracts.md).
+
 ## Closed-Strand Member Key Handling
 
 A closed strand's read-gating secret is the control-layer `Strand.MemberPrivateKey`
