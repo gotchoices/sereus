@@ -136,6 +136,25 @@ is policy, not schema: the sApp's own constraints can gate writes on
 `exists (select 1 from Signature ...)`, and the contract text can state grace terms for the
 window between joining and signing.
 
+### Unilateral instruments (representations & warranties)
+
+Because signatures are per-signer rows each carrying their **own** `ParamsCid`, the table is
+not limited to mutual n-party contracts. A representations-and-warranties style document is a
+role-generic template ("the Declarant represents…") plus signer-specific params (declarant
+binding, date, jurisdiction) executed by **one** party — a single `Signature` row. The mutual
+contract is just the special case where every member signs the same pair. Different members
+may execute different instruments against the same strand (per-member attestations, riders),
+all held in `Document` and all recognized by the registry — standard R&W clauses are
+maximally reusable text, exactly what per-segment recognition rewards. Which instruments
+*must* be executed, and by whom, is the same acceptance-policy layer as the effective-
+agreement question (see Amendment Pathway): strand paperwork generalizes to a set of
+(template, required-signers) obligations stated in the contract text.
+
+One consequence for the sketch above: `primary key (ContractCid, SignerKey)` encodes
+sign-once-per-template-per-key, which forbids re-execution — and attestations are often
+renewed (fresh date in a new params object, same template). The key likely needs `ParamsCid`
+(nullable-in-PK to be resolved) or a per-row stamp; flagged in open questions.
+
 **Pre-join review still happens.** The formation disclosure (and invite payload) carries the
 agreement pair so the breakdown runs *before* a party commits to joining. The joiner's
 existing disclosure signature (`FormationUsage.PeerSig` — see [architecture.md → Strand
@@ -332,10 +351,14 @@ column so the taxonomy can grow without migration.
    convention is worth picking before v1 ships.
 3. **Effective-agreement policy.** Which supersession-chain head governs when signatures are
    partial (see Amendment Pathway) — the main vNext design item.
-4. **Params schema validation.** Until the `<var:>` declaration lands, nothing machine-checks
+4. **Re-execution / renewal.** The `Signature` PK forbids the same key re-signing the same
+   template — wrong for renewable attestations. Widen the key with `ParamsCid` or a row
+   stamp, and decide how `ReplacesCid` reads when only the params changed (same contract,
+   fresh date).
+5. **Params schema validation.** Until the `<var:>` declaration lands, nothing machine-checks
    that a params object supplies what the template's prose expects — review is the check.
-5. **Engine `cid()` function.** Would move `Document` verification from app layer into a CHECK;
+6. **Engine `cid()` function.** Would move `Document` verification from app layer into a CHECK;
    depends on Quereus function surface.
-6. **Registry scale.** `KnownDocument` grows monotonically with review history; fine at
+7. **Registry scale.** `KnownDocument` grows monotonically with review history; fine at
    personal scale, same "bounded by something other than forever" note as other append-only
    control tables.
