@@ -15,8 +15,10 @@ party agrees to when joining, bound into the same signatures that admit them.
 
 Two goals:
 
-1. **Binding**: a party's join signature provably covers the exact terms in force, the way a
-   MyCHIPs tally signature covers the tally contract's hash.
+1. **Binding**: a party's signature provably covers the exact terms in force, the way a
+   MyCHIPs tally signature covers the tally contract's hash. Signing is its own act, recorded
+   in the strand — **joining a strand and signing its contract are separate events** (see
+   [Signing](#signing-separate-from-joining)).
 2. **Recognition**: a party keeps a registry of contract documents it has already reviewed, so
    that when considering a new strand it is shown a *breakdown* — which sections are standard
    text it has approved before, which differ from an approved version, and which are novel and
@@ -84,35 +86,62 @@ Two nullable columns on the `Header` singleton in `schemas/strand.qsql`:
 	ParamsCid text,
 ```
 
-`Header` is `InsertOnly`, so the founding agreement is immutable with the header — the same
-immutability the consent digests below rely on. A constraint ties the pair together
+`Header` is `InsertOnly`, so the pair it names is immutable with the header. It is the
+**offered founding agreement** — what is on the table — not proof anyone executed it;
+execution lives in the `Signature` table below. A constraint ties the pair together
 (`ParamsCid` null unless `ContractCid` present). Open and closed strands both carry the
-columns; a contract on an open strand is possible (see open questions).
+columns.
 
-## Consent Binding
+## Signing (Separate from Joining)
 
-Both join paths bind the agreement pair into an already-verifiable signature. All new digests
-are domain-tagged and versioned — `('Strand.Consent', 'v1', ContractCid, ParamsCid)` framing —
-so the amendment pathway below can introduce a successor digest without ambiguity.
+Joining a strand and signing its contract are **distinct acts**. Joining (invite consumption,
+formation) admits a party's nodes to the network and, on a closed strand, seats its `Member`
+row — those flows are untouched by this design. Signing is a first-class event of its own,
+recorded in the strand database:
 
-1. **Formation (control layer).** The formation disclosure the joiner signs
-   (`StrandSolicitationService.formStrand` signs the `'consent'` digest over token, nonce,
-   peer key, and canonical disclosure text — see [architecture.md → Strand
-   Formation](architecture.md#strand-formation)) gains the agreement pair as structured
-   disclosure content. The existing `FormationUsage.PeerSig` machinery then already stores a
-   re-verifiable record: *party X signed contract (C, P) to join strand Z*. No new control
-   schema; the disclosure text becomes (or embeds) a canonicalized structure carrying the
-   pair.
-2. **Strand RBAC (closed-strand invite consumption).** `ConsumedInvite.ValidUsage` currently
-   verifies a digest over `InviteKey || MemberKey`. It widens to cover the header's agreement
-   pair, read from the committed `Header` row (immutable, so the reference is stable). A
-   member's join signature then provably names the exact terms. Invite *issuance*
-   (`Invite.InviteValid`) widens the same way, so the issuing manager also attests the terms
-   the invitation offers.
+```sql
+	table Signature (
+		ContractCid text,
+		ParamsCid text null,
+		SignerKey text,
+		-- prior agreement this signing supersedes, null for a first signing
+		ReplacesCid text null,
+		SignedAt datetime,
+		-- ed25519 over ('Strand.Signature', 'v1', ContractCid, ParamsCid,
+		--               ReplacesCid, SignerKey, SignedAt)
+		Sig text,
+		primary key (ContractCid, SignerKey),
+		constraint InsertOnly check on update, delete (false),
+	);
+```
 
-The strand's membership tables thereby serve as the agreement's signature block, exactly as a
-tally's signature section does — every `ConsumedInvite` / `FormationUsage` row is a
-re-checkable "signed the contract" record with no separate signature store.
+Why the separation:
+
+- **Review can happen in-band.** A party may join, sync the `Document` table, take its time
+  over the breakdown, and sign afterwards — instead of the legal act being welded to the
+  admission handshake.
+- **The signature block is strand data.** Every member's nodes replicate the `Signature` rows,
+  so any reader re-verifies who has executed which agreement — the tally-signature-section
+  analog, held where the contract itself is held.
+- **More than one document, more than one moment.** NDAs, riders, and replacement agreements
+  (below) are each their own signing event against the same table; nothing about admission
+  needs to change when the strand's paperwork grows.
+- **Open strands become signable.** An open strand has no join signature at all, but any
+  participant can still file a `Signature` row (see open questions for who counts as a valid
+  signer there).
+
+On a closed strand the CHECK verifies `Sig` against an existing `Member.Key` and that the
+`ContractCid` names a committed `Document` row. What an admitted-but-unsigned member may *do*
+is policy, not schema: the sApp's own constraints can gate writes on
+`exists (select 1 from Signature ...)`, and the contract text can state grace terms for the
+window between joining and signing.
+
+**Pre-join review still happens.** The formation disclosure (and invite payload) carries the
+agreement pair so the breakdown runs *before* a party commits to joining. The joiner's
+existing disclosure signature (`FormationUsage.PeerSig` — see [architecture.md → Strand
+Formation](architecture.md#strand-formation)) then serves as a re-verifiable **receipt of
+having been shown the terms** — deliberately distinct from executing them, which only a
+`Signature` row does.
 
 ## Self-Contained Storage: `Strand.Document`
 
@@ -189,16 +218,19 @@ When a party considers joining a strand:
 2. **Classify** each node of the tree against the registry:
    - **approved** — exact CID match; render collapsed/green, with a context marker when
      `ContextCid` also matches the parent.
-   - **modified** — a sibling `as`-alias or title matches a document the party has approved,
-     but the CID differs; render a sentence-level diff against the approved version. (Stroc's
-     structured paragraphs are what make this diff meaningful — this is the payoff.)
+   - **modified** — the document declares it `replaces` a CID the party has approved (see
+     [Supersession](#supersession-replaces)), or — fallback heuristic — a sibling `as`-alias
+     or title matches an approved document; render a sentence-level diff against the approved
+     version. (Stroc's structured paragraphs are what make this diff meaningful — this is the
+     payoff.)
    - **rejected** — the party has explicitly rejected this CID before; flag loudly.
    - **novel** — no registry row; must be read.
 3. **Render**: outline of the whole composition ("9 sections — 7 previously approved, 1
    modified, 1 new"), parameters as a data table, novel text expanded.
 4. **On acceptance**: the registry gains the wrapper CID and any newly approved segment CIDs
-   (each with `ContextCid` = the wrapper); the consent signature from [Consent
-   Binding](#consent-binding) proceeds.
+   (each with `ContextCid` = the wrapper). Acceptance clears the way to join; **executing**
+   the agreement is the separate `Signature` row from [Signing](#signing-separate-from-joining)
+   — filed immediately after joining in the common case, later if the party wants more time.
 5. **Policy knob**: a party may opt into auto-accepting a join when *every* segment is already
    `approved` and the parameters pass a party-defined filter — low-friction entry to public
    strands built entirely from standard text.
@@ -216,6 +248,29 @@ have read this text before", never "this text is safe regardless of context" —
 meaning depends on its siblings (defined terms, cross-references). The legal act is always the
 signature over the root pair; segment approval is a review aid, not a legal shortcut.
 
+## Supersession (`replaces`)
+
+"This contract replaces that one" exists at two layers, deliberately kept apart:
+
+1. **Authorial lineage — in the document.** Stroc gains an optional `replaces` metadata field
+   (array of CIDs, part of the hashed content): the author's assertion that this document
+   supersedes those versions. This is what gives the breakdown a *deterministic* diff target —
+   "v3 of the Ethics clause, and you approved v2" — instead of leaning on the title-match
+   heuristic. The claim is advisory: anyone can publish a document claiming to replace
+   anything, so the registry treats a `replaces` link as a diff hint and lineage display,
+   never as inherited approval. (Publisher signatures, vNext, are what would let a trusted
+   author's lineage carry more weight.) Requires a small Stroc spec addition.
+2. **Executed supersession — in the strand.** A `Signature` row's `ReplacesCid` names the
+   agreement that signing supersedes *for that signer*. A replacement agreement's documents
+   are inserted into `Document`, and members sign the new pair with `ReplacesCid` pointing at
+   the old — the chain of executed agreements is walkable and re-verifiable from strand data
+   alone. The two layers should normally agree (the new contract's `replaces` names the old
+   `ContractCid`), and the breakdown flags a mismatch.
+
+The registry rows follow along: reviewing a successor shows the party's verdict on the
+predecessor plus the structural diff, so re-approval effort is proportional to what actually
+changed.
+
 ## Hash Canonicalization
 
 One encoding everywhere: **CIDv1, DAG-JSON codec (0x0129), SHA-256, base32-lower** (`bafy…`) —
@@ -227,18 +282,23 @@ republished before anything here ships.
 
 ## Amendment Pathway (vNext)
 
-Deliberately unimplemented in v1; the design keeps the door open:
+Separating signing from joining collapses amendment machinery into what already exists: an
+amendment **is** a replacement agreement plus fresh signatures — no dedicated
+`Amendment`/`Acceptance` tables.
 
-- `Header` stays `InsertOnly`; its pair is the **founding** agreement.
-- vNext adds append-only `Strand.Amendment (Seq, ContractCid, ParamsCid, ProposerKey,
-  ProposerSig, …)` plus `AmendmentAcceptance (Seq, MemberKey, Sig)`. An amendment becomes
-  effective when its acceptance policy is met — the policy itself expressible in the contract
-  text; default all-current-members.
-- The **effective agreement** is the head of the accepted chain (the founding pair when no
-  amendments exist). New joiners sign the effective head, under a successor consent digest
-  tag (`'Strand.Consent', 'v2', …` covering the chain position) — which is why every v1 digest
-  is domain-tagged and versioned from the start.
-- Until then, renegotiation = form a new strand.
+- `Header` stays `InsertOnly`; its pair is the **founding offer**, never rewritten.
+- To amend: insert the successor documents into `Document` (the successor contract's
+  `replaces` field naming the current `ContractCid`), then members sign the new
+  `(ContractCid, ParamsCid)` with `ReplacesCid` set — ordinary `Signature` rows.
+- The **effective agreement** for a signer set is the head of the executed supersession
+  chain. *When* a proposed replacement becomes effective for the strand as a whole — all
+  current members signed, a quorum, a manager-declared cutover — is acceptance **policy**,
+  expressible in the contract text itself; default all-current-members. Making that policy
+  machine-checkable (a constraint or view over `Signature`) is the vNext work; the storage
+  and signature shapes above need nothing new.
+- New joiners are shown and sign the effective head; digests are domain-tagged and versioned
+  (`'Strand.Signature', 'v1', …`) so any future shape change is a new tag, not an ambiguity.
+- Until the policy layer lands, renegotiation = form a new strand.
 
 ## Publisher Trust (vNext)
 
@@ -251,22 +311,31 @@ column so the taxonomy can grow without migration.
 
 | Piece | Where |
 |-------|-------|
-| CID compute/verify, tree resolution, structural diff | `@stroc/core` (external workspace, consumed as a dependency; Stroc's stated destiny is the Sereus family) |
-| Formation disclosure structure, `/sereus/doc/1.0.0` fetch RPC, registry writers | `@serfab/cadre-core` |
+| CID compute/verify, tree resolution, structural diff, `replaces` field | `@stroc/core` (external workspace, consumed as a dependency; Stroc's stated destiny is the Sereus family) |
+| Formation disclosure structure, `/sereus/doc/1.0.0` fetch RPC, registry writers, signing writer | `@serfab/cadre-core` |
 | `KnownDocument` table | `schemas/control.qsql` |
-| `Header.ContractCid`/`ParamsCid`, `Document` table, widened invite digests | `schemas/strand.qsql` |
+| `Header.ContractCid`/`ParamsCid`, `Document` + `Signature` tables | `schemas/strand.qsql` |
 | Breakdown viewer (seeded from Stroc's Lit view mode), registry management UI | reference apps |
 
 ## Open Questions
 
-1. **Open strands.** An open strand has no `Member` rows and no RBAC join signature; only
-   formation-time joiners sign anything. Later drop-in participants never do. Current stance:
-   an open strand's contract has terms-of-use semantics (posted, not countersigned); revisit
-   if a use case needs signed consent from every open-strand participant.
-2. **Params schema validation.** Until the `<var:>` declaration lands, nothing machine-checks
+1. **Open-strand signers.** The `Signature` table makes an open strand's contract signable,
+   but with no `Member` table there is no key roster to verify signers against — any keypair
+   can file a row. Options: accept that (a signature still proves *some* key executed the
+   terms, and the sApp decides which keys matter), or introduce a lightweight signer registry
+   for open strands. Unresolved; until then an open strand's contract has terms-of-use
+   semantics with optional unverified countersignatures.
+2. **Unsigned-member capabilities.** The join/sign gap means an admitted member may hold the
+   strand's data before executing its contract. Whether that window is bounded (sign within
+   N days, manager may evict), and what the sApp lets an unsigned member write, are policy
+   decisions — the doc's stance is schema-supports, contract-text-decides, but a default
+   convention is worth picking before v1 ships.
+3. **Effective-agreement policy.** Which supersession-chain head governs when signatures are
+   partial (see Amendment Pathway) — the main vNext design item.
+4. **Params schema validation.** Until the `<var:>` declaration lands, nothing machine-checks
    that a params object supplies what the template's prose expects — review is the check.
-3. **Engine `cid()` function.** Would move `Document` verification from app layer into a CHECK;
+5. **Engine `cid()` function.** Would move `Document` verification from app layer into a CHECK;
    depends on Quereus function surface.
-4. **Registry scale.** `KnownDocument` grows monotonically with review history; fine at
+6. **Registry scale.** `KnownDocument` grows monotonically with review history; fine at
    personal scale, same "bounded by something other than forever" note as other append-only
    control tables.

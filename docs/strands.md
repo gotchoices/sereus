@@ -136,8 +136,9 @@ _(TODO: not yet documented here. See the strand-formation and seed-bootstrap cov
 
 _(TODO: not yet documented here. See the invitation/enrollment flow in [`docs/architecture.md`](architecture.md) ("Enrollment and Bootstrap") and the [`@serfab/cadre-core` README](../packages/cadre-core/README.md).)_
 
-Binding a human-readable legal agreement into the invitation/join signatures is a
-design-stage plan: see [`strand-contracts.md`](strand-contracts.md).
+Attaching a human-readable legal agreement to a strand — reviewed before joining, executed
+as a separate in-strand signing act — is a design-stage plan: see
+[`strand-contracts.md`](strand-contracts.md).
 
 ## Closed-Strand Member Key Handling
 
