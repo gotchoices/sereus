@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionRev, IBlock, IPeerNetwork } from '@optimystic/db-core';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import type { BlockCommitProof, IRawStorage } from '@optimystic/db-p2p';
 import {
   StrandBackfill,
   MAX_BLOCK_MESSAGE_BYTES,
@@ -29,7 +29,7 @@ interface FakeBlock {
    * the one most of these cases use: a block whose proof was never retained still ships, carrying
    * only its meta, and the receiver decides what to do with it.
    */
-  proof?: unknown;
+  proof?: BlockCommitProof;
 }
 
 /** A block whose JSON encoding is padded to a controllable size. */
@@ -40,6 +40,14 @@ function makeBlock(id: string, fill = ''): IBlock {
 /** A committed, materialized fake block at rev 1 (the common case). */
 function committed(id: string, rev = 1, fill = ''): FakeBlock {
   return { latest: { rev, actionId: `a-${id}-${rev}` }, block: makeBlock(id, fill) };
+}
+
+/**
+ * A stand-in retained proof. The backfill only relays the artifact it read — it never verifies
+ * one — so these cases pin identity through the wire, not proof validity.
+ */
+function fakeProof(marker: string): BlockCommitProof {
+  return { marker } as unknown as BlockCommitProof;
 }
 
 /**
@@ -209,7 +217,7 @@ describe('StrandBackfill', () => {
     // catch-up land at all. Pinned here because the failure is silent at the sender: the push
     // succeeds locally and the block simply never appears on the peer.
     const blocks: Record<string, FakeBlock> = {
-      withProof: { ...committed('withProof', 3), proof: { marker: 'proof-for-rev-3' } },
+      withProof: { ...committed('withProof', 3), proof: fakeProof('proof-for-rev-3') },
       bare: committed('bare', 1),
     };
     const { backfill, pushes } = makeBackfill(blocks);
