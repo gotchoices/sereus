@@ -1520,6 +1520,17 @@ export interface SealStrandParams {
  * schema rejects a mis-tagged or mis-counted approval regardless of what this
  * writer (or any raw writer) presents.
  *
+ * NOTE: a seal approval is a bearer token for its row incarnation, like every other
+ * self-signed approval here — but the `'seal'` branch's post-image count of 0 is
+ * satisfied for EVERY row deleted in the same transaction, so N managers each
+ * presenting a valid `'seal'` approval seal jointly (pinned as an accepted case in
+ * `strand-seal.spec.ts`). Unreachable today: this writer mints a seal signature only
+ * while its caller is the SOLE manager, and spends it immediately, so a second
+ * manager never has one to combine. If seal-approval MINTING is ever split from
+ * spending — offline signing, a two-phase seal, a queued approval — one manager
+ * holding another's unspent seal approval could freeze the strand irreversibly
+ * without its current consent; re-gate here (or narrow the schema branch) then.
+ *
  * @param db - The closed strand's database.
  * @param params - The sole manager's own keypair.
  * @throws If more than one manager exists (the caller wants {@link removeManager}),

@@ -1,5 +1,5 @@
-description: Four strand test files each keep their own copy of the same short helper that writes a "this row was retired" record; move it into the shared test-helper file so there is one copy.
-files: packages/cadre-core/test/strand-spec-helpers.ts, packages/cadre-core/test/strand-approval-replay.spec.ts, packages/cadre-core/test/strand-member-revocation.spec.ts, packages/cadre-core/test/strand-membership-peer-registration.spec.ts, packages/cadre-core/test/strand-membership-manager-rotation.spec.ts
+description: Five strand test files each keep their own copy of the same few short test helpers; move them into the shared test-helper file so there is one copy of each.
+files: packages/cadre-core/test/strand-spec-helpers.ts, packages/cadre-core/test/strand-approval-replay.spec.ts, packages/cadre-core/test/strand-member-revocation.spec.ts, packages/cadre-core/test/strand-membership-peer-registration.spec.ts, packages/cadre-core/test/strand-membership-manager-rotation.spec.ts, packages/cadre-core/test/strand-seal.spec.ts
 difficulty: easy
 ----
 
@@ -15,15 +15,24 @@ copied around:
 
 | Helper | Copies | Where |
 | --- | --- | --- |
-| `fileTombstone` | 4 | `strand-approval-replay.spec.ts:100`, `strand-member-revocation.spec.ts:66`, `strand-membership-peer-registration.spec.ts:51`, `strand-membership-manager-rotation.spec.ts:64` |
-| `memberPeerStamp` | 2 | `strand-approval-replay.spec.ts:78`, `strand-membership-peer-registration.spec.ts:36` |
+| `fileTombstone` | 5 | `strand-approval-replay.spec.ts:108`, `strand-member-revocation.spec.ts:66`, `strand-membership-peer-registration.spec.ts:51`, `strand-membership-manager-rotation.spec.ts:65`, `strand-seal.spec.ts:103` |
+| `memberPeerStamp` | 2 | `strand-approval-replay.spec.ts:86`, `strand-membership-peer-registration.spec.ts:36` |
+| `managerStamp` | 2 | `strand-membership-manager-rotation.spec.ts:50`, `strand-seal.spec.ts:77` |
+| `seatMember` | 2 | `strand-approval-replay.spec.ts:124`, `strand-seal.spec.ts:140` |
 
-Counted with `grep -rn "async function fileTombstone\|function memberPeerStamp" packages/cadre-core/test`.
-Three of the four `fileTombstone` bodies are byte-identical; the fourth
+Counted with `grep -rn "async function fileTombstone\|function memberPeerStamp\|async function managerStamp\|async function seatMember" packages/cadre-core/test`
+(2026-09-02, after `strand-seal-tests-and-docs`).
+Four of the five `fileTombstone` bodies are byte-identical; the odd one out
 (`strand-member-revocation.spec.ts`) has drifted — its parameter order is
 `(db, stampId, retiree, tableName = 'Member')` rather than `(db, tableName, stampId, retiree)`.
 That drift is the cost this ticket is really about: the same helper now reads two different
 ways depending on which file you opened.
+
+`strand-seal.spec.ts` (landed 2026-09-02) added the fifth `fileTombstone`, a second
+`managerStamp` and a second `seatMember`; its copy of `fileTombstone` is byte-identical to
+the three-way-identical group and its `managerStamp` is identical to the rotation spec's.
+It also carries a `hasRevocation` reader with no sibling yet — one copy, so not part of this
+move, but it belongs in the same shared module the day a second file wants it.
 
 `fileTombstone` writes the `Strand.Revocation` row that retires a stamp, signed by the retiring
 party. Every raw `DELETE` test that wants its assertion pinned to the `Authorized` constraint
@@ -46,10 +55,11 @@ is the natural type for the parameter if the union route is taken.
 
 ## Expected end state
 
-One exported `fileTombstone` and one exported `memberPeerStamp` in `strand-spec-helpers.ts`, one
-argument order, all four spec files importing them, no local copies left. `yarn lint`,
-`yarn typecheck`, and the cadre-core `strand-*` suites stay green — the helper bodies are not
-changing behaviour, only location, so any test that flips is a real regression.
+One exported `fileTombstone`, `memberPeerStamp`, `managerStamp` and `seatMember` in
+`strand-spec-helpers.ts`, one argument order each, all five spec files importing them, no
+local copies left. `yarn lint`, `yarn typecheck`, and the cadre-core `strand-*` suites stay
+green — the helper bodies are not changing behaviour, only location, so any test that flips
+is a real regression.
 
 ## Explicitly out of scope
 

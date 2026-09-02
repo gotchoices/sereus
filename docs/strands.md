@@ -231,9 +231,11 @@ enforces these invariants:
   ever held. It is irreversible: a lone remaining member cannot re-found the strand later
   and start admitting again. What remains possible is everything that does not grow the
   membership — members can still leave, and can still register or clear their own device
-  records. Any invitation still outstanding when the strand is sealed dies with it: it can
-  never be redeemed, which matters because after the seal there is nobody left who could
-  even cancel it.
+  records. One piece of housekeeping does go away with the managers: a device record left
+  behind by a member who was already removed can only be cleared by a manager, so after
+  the seal it stays forever. Any invitation still outstanding when the strand is sealed
+  dies with it: it can never be redeemed, which matters because after the seal there is
+  nobody left who could even cancel it.
 - **The founding manager is the only unsigned seat**, and only in the founding state: at
   most one member exists, the founder's member row is already present, and no manager
   exists yet. Every later manager needs a signature. (This is why a strand is bootstrapped

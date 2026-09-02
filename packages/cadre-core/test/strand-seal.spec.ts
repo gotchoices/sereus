@@ -8,6 +8,8 @@ import {
   consumeInvite,
   issueInvite,
   leaveStrand,
+  registerMemberPeer,
+  removeMemberPeer,
   revokeMember,
   sealStrand,
   isStrandSealed,
@@ -80,7 +82,11 @@ async function managerStamp(db: Database, key: string): Promise<string> {
 }
 
 /** Whether `Strand.Revocation` holds the tombstone retiring `stampId` from `tableName`. */
-async function hasRevocation(db: Database, tableName: string, stampId: string): Promise<boolean> {
+async function hasRevocation(
+  db: Database,
+  tableName: 'Member' | 'Manager' | 'MemberPeer',
+  stampId: string,
+): Promise<boolean> {
   for await (const row of db.eval('select TableName, StampId from Strand.Revocation')) {
     if (row.TableName === tableName && row.StampId === stampId) return true;
   }
@@ -407,6 +413,42 @@ describe('a sealed strand', () => {
 
     expect(await tableCount(db, 'Manager')).toBe(0);
     expect(await tableCount(db, 'Member')).toBe(2);
+  }, 30_000);
+
+  it('still lets a member manage its OWN device records and leave, but nobody clears another\'s', async () => {
+    const { db, founder } = await openStrand('c');
+    const other = await seatMember(db, founder);
+    await registerMemberPeer(db, { memberKeyPair: other, peerId: 'other-device' });
+    await sealStrand(db, { managerKeyPair: founder });
+
+    // The docs' "what remains possible" claim, pinned rather than argued.
+    // MemberPeer.Authorized's self branch verifies against the row's OWN MemberKey and
+    // never reads Manager, so the seal takes nothing away from a member's control of its
+    // own devices; MemberExists passes because the ex-manager is still a member.
+    await registerMemberPeer(db, { memberKeyPair: founder, peerId: 'founder-device' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(2);
+    await removeMemberPeer(db, { memberKeyPair: founder, peerId: 'founder-device' });
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    // The MANAGER arm of the same writer reads committed.Manager, now empty, so the
+    // post-revocation cleanup loop is gone for good — the consequence the sealing
+    // paragraph of docs/strands.md now states. Nothing else can reject: the row is there
+    // (so the writer reaches the DELETE) and the founder's tombstone satisfies
+    // Revocation.Authorized (it is still a committed Member).
+    await expect(removeMemberPeer(db, {
+      managerKeyPair: founder,
+      memberKey: other.publicKeyB64,
+      peerId: 'other-device',
+    })).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
+
+    // And a plain member may still walk out on its own: leaving is self-signed, so no
+    // manager approves it, MinOneMember sees the founder surviving, and NotAManager is
+    // vacuous on a strand with no Manager rows.
+    await leaveStrand(db, { memberKeyPair: other });
+    expect(await tableCount(db, 'Member')).toBe(1);
+    // Its device record outlives it as an orphan nobody is left to clear.
+    expect(await tableCount(db, 'MemberPeer')).toBe(1);
   }, 30_000);
 
   it('kills a pre-seal invitation: consuming it rolls the whole join back (NotSealed)', async () => {
