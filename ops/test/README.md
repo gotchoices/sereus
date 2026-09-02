@@ -1,6 +1,6 @@
 ## Ops tests: libp2p infra checks
 
-Small, dependency-free scripts to validate that a remote libp2p node is reachable and behaves like a good neighbor (identify/ping and optionally DHT queries).
+Small scripts to validate that a remote libp2p node is reachable and behaves like a good neighbor (identify/ping and optionally DHT queries), plus standalone STUN and TURN-credential checks.
 
 These scripts are meant for ops validation of:
 - relay nodes
@@ -10,30 +10,34 @@ These scripts are meant for ops validation of:
 
 ### Usage
 
-From the repo root. `check-node`, `pair:listen`, and `pair:dial` depend on libp2p
-and need a one-time install first (`check-stun` and `check-turn-creds` use only
-Node's standard library and need no install — see below):
+Commands below are written from an **ops root** — the directory holding the git
+clone, named `sereus` here (see `../docker/README.md` → "Recommended production
+layout"). Running from inside the repo instead, drop the leading `sereus/`.
+
+`check-stun` and `check-turn-creds` use only Node's standard library and run as
+they are. `check-node` and the `relay-bootstrap-pair` scripts need libp2p, so
+install their dependencies once:
 
 ```bash
 npm --prefix sereus/ops/test install
 ```
 
 ```bash
-npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/relay.sereus.org --relay
-npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/bootstrap.sereus.org --dht
-npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/bootstrap.sereus.org --dht --all
+node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay
+node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht
+node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht --all
 ```
 
 If your local DNS resolver can’t see the `_dnsaddr` record yet (propagation/caching), force DoH:
 
 ```bash
-npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
+node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
 ```
 
 You can also pass a concrete multiaddr (must include `/p2p/<peerId>`), e.g.:
 
 ```bash
-npm --prefix sereus/ops/test run check-node -- --target /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
+node sereus/ops/test/check-node.mjs --target /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
 ```
 
 ### What it checks
@@ -73,7 +77,7 @@ node sereus/ops/test/check-turn-creds.mjs --self-test
 
 > Signature verification for peer assertions is **not** mirrored here — that needs
 > `@libp2p/crypto` and lives in the issuer's own self-test:
-> `npm --prefix ops/docker/turn-credential-issuer run selftest`.
+> `npm --prefix sereus/ops/docker/turn-credential-issuer run selftest`.
 
 **Live check (requires a deployed issuer)** — fetch a deployed issuer's manifest,
 assert a STUN entry is present, and (when a TURN entry is present) parse the
@@ -111,12 +115,12 @@ Run (on two devices):
 
 ```bash
 # Listener machine
-npm --prefix sereus/ops/test run pair:listen -- \
+node sereus/ops/test/relay-bootstrap-pair/listener.mjs \
   --relay /dnsaddr/relay.sereus.org \
   --bootstrap /dnsaddr/bootstrap.sereus.org
 
 # Dialer machine (after copying printed PEER_ID from listener)
-npm --prefix sereus/ops/test run pair:dial -- \
+node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --peer <LISTENER_PEER_ID>
 ```
@@ -129,7 +133,7 @@ Start simple, then add discovery:
 - Dialer:
 
 ```bash
-npm --prefix sereus/ops/test run pair:dial -- \
+node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --dial-addr "<PASTE_FROM_LISTENER>"
 ```
@@ -137,7 +141,7 @@ npm --prefix sereus/ops/test run pair:dial -- \
 2) **Relay synthesis fallback** (still no DHT discovery, but less copy/paste)
 
 ```bash
-npm --prefix sereus/ops/test run pair:dial -- \
+node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --peer <LISTENER_PEER_ID> \
   --relay /dnsaddr/relay.sereus.org
@@ -157,6 +161,6 @@ Troubleshooting:
 - A reservation is only valid while the listener maintains an active connection to the relay; the listener keeps this alive (best-effort) by periodically pinging the relay.
 
 Optional checks:
-- Add `--bootstrap-check` to `pair:dial` to explicitly validate the bootstrap node is responding to DHT queries (`dht.findPeer(bootstrapPeerId)`).
+- Add `--bootstrap-check` to the dialer to explicitly validate the bootstrap node is responding to DHT queries (`dht.findPeer(bootstrapPeerId)`).
 
 

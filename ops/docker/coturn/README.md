@@ -71,7 +71,7 @@ same `TURN_SECRET` so coturn accepts the credentials it signs. coturn checks eac
 credential's expiry against its own clock — run NTP on both hosts.
 
 ### Validate
-A live STUN check needs a deployed, publicly reachable server:
+From your ops root. A live STUN check needs a deployed, publicly reachable server:
 
 ```bash
 node sereus/ops/test/check-stun.mjs --host stun.sereus.org --port 3478

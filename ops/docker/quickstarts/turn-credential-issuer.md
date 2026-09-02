@@ -45,7 +45,7 @@ manifest stays STUN-only. Run **NTP** on both the issuer and coturn hosts — co
 checks credential expiry against its own clock. See `../turn-credential-issuer/README.md`.
 
 ### Validate
-Scheme self-test (no network):
+From your ops root — scheme self-test (no network):
 
 ```bash
 node sereus/ops/test/check-turn-creds.mjs --self-test

@@ -42,7 +42,7 @@ The three install paths in use today:
   `packages/*`), or
 - it carries its own lockfile — `tess/package-lock.json`, `tess/ui/package-lock.json`, or
 - it is documented as a standalone `npm --prefix` install —
-  `ops/docker/turn-credential-issuer`, `ops/docker/libp2p-infra`.
+  `ops/docker/turn-credential-issuer`, `ops/docker/libp2p-infra`, `ops/test`.
 
 The third path is the awkward one: "documented as" is not a machine-readable fact.
 Whoever picks this up should decide how to represent it — an explicit allowlist
@@ -61,6 +61,10 @@ Surveyed state at time of filing (six non-root manifests):
 | `tess/ui` | 6 dev | own `package-lock.json` |
 | `test-harness` | none | n/a |
 | `ops/test` | 12 | **none** — the defect |
+
+Since filing, `bug-ops-test-not-a-yarn-workspace` has landed: `ops/test` now
+installs standalone (`npm --prefix ops/test install`) and belongs on the third
+path, not in the defect row. The table above is left as the original survey.
 
 ## Where it fits
 

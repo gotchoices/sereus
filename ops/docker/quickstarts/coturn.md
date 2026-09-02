@@ -33,7 +33,7 @@ host it over HTTPS. Full publication + rotation guidance:
 - `../../docs/ice-servers.md`
 
 ### Validate
-A live STUN binding check requires a deployed, reachable server:
+From your ops root. A live STUN binding check requires a deployed, reachable server:
 
 ```bash
 node sereus/ops/test/check-stun.mjs --host stun.sereus.org --port 3478

@@ -24,7 +24,7 @@ Follow `../../docs/dnsaddr.md` and publish a TXT record at:
 - `_dnsaddr.bootstrap.sereus.org`
 
 ### Validate
-From the repo root:
+From your ops root (one-time: `npm --prefix sereus/ops/test install`):
 
 ```bash
 node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht --dns-mode doh

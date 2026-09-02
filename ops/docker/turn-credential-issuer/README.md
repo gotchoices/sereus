@@ -248,7 +248,7 @@ old TTL window has drained.
 The issuer's own self-test — pins the peer-assertion wire format against a fixed
 vector, drives every row of the admission table, and boots the real handler on an
 ephemeral **loopback** port to cover routing, the CORS preflight, and token
-extraction (no outbound network; agent-runnable):
+extraction (no outbound network; agent-runnable). From your ops root:
 
 ```bash
 npm --prefix sereus/ops/docker/turn-credential-issuer install

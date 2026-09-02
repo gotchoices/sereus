@@ -24,7 +24,7 @@ Follow `../../docs/dnsaddr.md` and publish a TXT record at:
 - `_dnsaddr.relay.sereus.org`
 
 ### Validate
-From the repo root:
+From your ops root (one-time: `npm --prefix sereus/ops/test install`):
 
 ```bash
 node sereus/ops/test/check-node.mjs --target /dnsaddr/relay.sereus.org --relay --dns-mode doh

@@ -16,7 +16,7 @@ const TEST_PROTOCOL = '/sereus/ops/test/relay-bootstrap-pair/1.0.0'
 
 function usage() {
   console.log(`Usage:
-  npm --prefix sereus/ops/test run pair:dial -- \\
+  node sereus/ops/test/relay-bootstrap-pair/dialer.mjs \\
     --bootstrap <multiaddr|/dnsaddr/...> \\
     [--peer <peerId>] [--relay <multiaddr|/dnsaddr/...>] [--dial-addr <multiaddr>] [--dns-mode auto|system|doh] [--timeout-ms N] [--verbose]
 

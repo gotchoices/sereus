@@ -31,7 +31,7 @@ Follow `../../docs/dnsaddr.md`. You can publish either (or both):
 Even if both TXT records point to the same node today, keeping two names lets you split roles later without changing clients.
 
 ### Validate
-From the repo root:
+From your ops root (one-time: `npm --prefix sereus/ops/test install`):
 
 ```bash
 node sereus/ops/test/check-node.mjs --target /dnsaddr/bootstrap.sereus.org --dht --dns-mode doh

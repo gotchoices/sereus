@@ -24,3 +24,11 @@ packages/reference-app-rn/ios/
 packages/reference-app-web/e2e/.fixture-state.json
 packages/reference-app-web/test-results/
 packages/reference-app-web/playwright-report/
+
+# Standalone npm projects under ops/ (installed with `npm --prefix ops/<dir>`)
+# follow the repo convention of not committing npm lockfiles — every install
+# regenerates one, and it should not land in a commit.
+# NOTE: no lockfile means their caret ranges resolve fresh on every install, so
+# these diagnostic scripts can drift without anyone editing them; if one ever
+# starts failing for no reason anybody changed, commit lockfiles for ops/ instead.
+ops/**/package-lock.json

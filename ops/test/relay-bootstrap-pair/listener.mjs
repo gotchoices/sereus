@@ -16,7 +16,7 @@ const TEST_PROTOCOL = '/sereus/ops/test/relay-bootstrap-pair/1.0.0'
 
 function usage() {
   console.log(`Usage:
-  npm --prefix sereus/ops/test run pair:listen -- \\
+  node sereus/ops/test/relay-bootstrap-pair/listener.mjs \\
     --relay <multiaddr|/dnsaddr/...> \\
     --bootstrap <multiaddr|/dnsaddr/...> [--dns-mode auto|system|doh] [--verbose]
 
