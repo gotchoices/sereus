@@ -1539,13 +1539,19 @@ export class CadreNode implements SAppIdLookup {
    *
    * The SOLE caller is {@link drainMembershipGate}, which serializes refreshes —
    * so two reads can no longer settle out of order.
+   *
+   * Reads WITHOUT the transient-failure retry, deliberately: `ControlDatabase` drives
+   * this listener with its write lock HELD (`notifyMembershipChanged`), so a retrying
+   * read here would sleep its backoff holding the lock and stall every other local
+   * writer. Nothing is lost — this refresh already keeps the previous snapshot on
+   * failure and is re-driven by the next membership write and by the timed reconcile.
    */
   private async refreshAuthorizedControlPeers(reason: string): Promise<void> {
     if (!this._running || !this.controlDatabase) {
       return;
     }
     try {
-      const members = await this.listAuthorizedMembers();
+      const members = await this.listAuthorizedMembers(false);
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
       log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
     } catch (error) {
@@ -4980,13 +4986,18 @@ export class CadreNode implements SAppIdLookup {
    * legit member goes un-authorized on readers that only pin the new key. Full
    * rotation handling (re-vouch on rotate) is the
    * `flip-strand-membership-rotation-known-gap` work, not this predicate's.
+   *
+   * @param retry - Whether the underlying membership read may retry a transient cluster
+   *   failure. Only {@link refreshAuthorizedControlPeers} passes `false`, because it runs
+   *   as the control database's membership listener with that database's write lock held;
+   *   see its comment.
    */
-  async listAuthorizedMembers(): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
+  async listAuthorizedMembers(retry = true): Promise<Array<{ peerId: string; multiaddr: string | null }>> {
     if (!this.controlDatabase) {
       throw new Error('CadreNode must be started before listing members');
     }
     const selfPeerId = this.peerId?.toString();
-    const rows = await this.controlDatabase.queryCadrePeers();
+    const rows = await this.controlDatabase.queryCadrePeers(retry);
     const authorized = rows
       .filter(row => row.peerId !== selfPeerId && this.hasAnchoredVoucher(row))
       .map(({ peerId, multiaddr }) => ({ peerId, multiaddr }));

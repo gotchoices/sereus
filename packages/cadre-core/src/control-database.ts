@@ -567,15 +567,16 @@ export class ControlDatabase {
    * here (almost all via {@link readRows}, which adds the transient-failure retry), and
    * this is the ONE place the committed-read opt-in is spelled.
    *
-   * Called directly — bypassing the retry — only by reads issued from INSIDE a locked
-   * write body, where a backoff sleep would hold the write lock and the write funnel
-   * re-runs the read anyway (see the NOTE on {@link readRows}).
+   * Reached only through {@link readRows}, which drops straight here for the call sites
+   * that pass `retry: false` — reads issued from INSIDE a locked write body, where a
+   * backoff sleep would hold the write lock and the write funnel re-runs the read anyway
+   * (see the NOTE on {@link readRows}).
    *
    * A control read normally queues on the database's exec mutex, so it does not answer
    * until whatever statement holds that mutex finishes. When a control WRITE is parked
    * against an unresponsive cohort member that is minutes, and a read that only wants
    * the last committed state waits the whole time for no reason
-   * (`fix/control-reads-blocked-by-stalled-write`).
+   * (`complete/control-reads-blocked-by-stalled-write`).
    *
    * Quereus's remedy is `readConcurrency: 'committed'` — a PER-CALL opt-in
    * (`Statement.tryRouteConcurrent` refuses anything that did not ask for it by name)
@@ -650,19 +651,36 @@ export class ControlDatabase {
    * nothing else; several reads are in flight concurrently in a real party, so an
    * unlabelled line cannot be attributed — keep new call sites labelled.
    *
-   * NOTE: reads issued from INSIDE a locked write body must use {@link readRowsOnce}
-   * instead. `retryControlWrite`'s contract is that backoff sleeps happen with NO lock
-   * held; a read retrying its own backoff inside a locked body would sleep holding the
-   * write lock (stalling every other local writer), and the write funnel already re-runs
-   * the body's reads when it re-runs the body. See {@link queryStampId} /
-   * {@link assertSeatRemains} for the per-call opt-outs.
+   * `retry: false` drops straight to {@link readRowsOnce}: reads issued from INSIDE a
+   * locked write body must not retry on their own. `retryControlWrite`'s contract is that
+   * backoff sleeps happen with NO lock held; a read retrying its own backoff inside a
+   * locked body would sleep holding the write lock (stalling every other local writer),
+   * and the write funnel already re-runs the body's reads when it re-runs the body. See
+   * {@link queryStampId} / {@link assertSeatRemains} / {@link queryCadrePeers} for the
+   * per-call opt-outs.
+   *
+   * NOTE: nothing structural enforces that opt-out — it is per-call because an unlocked
+   * read runs CONCURRENTLY with a locked body, so `this`-state cannot tell the two apart,
+   * and there is no async-context primitive available on every target platform (browser,
+   * React Native) to carry the answer. Reads reached through a CALLBACK invoked under the
+   * lock are the easy miss: `notifyMembershipChanged` runs its listener with the lock
+   * held, and its membership read is opted out at {@link queryCadrePeers}. If another
+   * under-lock callback seam is ever added, audit its read graph the same way.
    */
-  private readRows(sql: string, params?: SqlParameters, label?: string): Promise<Record<string, SqlValue>[]> {
+  private readRows(
+    sql: string,
+    params: SqlParameters | undefined,
+    label: string,
+    retry = true
+  ): Promise<Record<string, SqlValue>[]> {
+    if (!retry) {
+      return this.readRowsOnce(sql, params);
+    }
     // The label lands LAST so the call site's name survives the spec-injected pacing —
     // it changes log attribution only, never behaviour (same layering as lockedWithRetry).
     return retryControlRead(
       () => this.readRowsOnce(sql, params),
-      { ...this.controlReadRetryPacing, ...(label !== undefined ? { label } : {}) }
+      { ...this.controlReadRetryPacing, label }
     );
   }
 
@@ -803,12 +821,21 @@ export class ControlDatabase {
    * carried into both, or those suites keep passing against a contract the database no
    * longer honours. Fine while the filter is one `Set.has` on `StampId`; if it grows a
    * second dimension, give the fakes a shared fixture or a contract test instead.
+   *
+   * `retry: false` is passed by exactly one caller —
+   * `CadreNode.refreshAuthorizedControlPeers`, the membership-gate snapshot refresh —
+   * because {@link notifyMembershipChanged} invokes that listener with the write lock
+   * HELD, and a retrying read there would sleep its backoff holding the lock (see the
+   * NOTE on {@link readRows}). It costs nothing: that refresh is best-effort, keeps the
+   * previous snapshot on failure, and is re-driven by the next write and by the timed
+   * reconcile. BOTH of this method's reads take the flag — retrying either one under the
+   * lock is the same defect.
    */
-  async queryCadrePeers(): Promise<CadrePeerRow[]> {
+  async queryCadrePeers(retry = true): Promise<CadrePeerRow[]> {
     this.ensureInitialized();
-    const revoked = await this.queryRevokedStamps('CadrePeer');
+    const revoked = await this.queryRevokedStamps('CadrePeer', retry);
     const rows: CadrePeerRow[] = [];
-    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer', undefined, 'cadre-peers')) {
+    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer', undefined, 'cadre-peers', retry)) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
         continue;
@@ -874,10 +901,7 @@ export class ControlDatabase {
   ): Promise<string | null> {
     this.ensureInitialized();
     const sql = `select StampId from CadreControl.${table} where ${GUARDED_KEY_COLUMN[table]} = ?`;
-    const rows = retry
-      ? await this.readRows(sql, [keyValue], `stamp-${table}`)
-      : await this.readRowsOnce(sql, [keyValue]);
-    for (const row of rows) {
+    for (const row of await this.readRows(sql, [keyValue], `stamp-${table}`, retry)) {
       return (row.StampId as string | null) ?? null;
     }
     return null;
@@ -927,11 +951,14 @@ export class ControlDatabase {
    * NOTE: re-reads the whole retired set on every call, and the caller runs per inbound
    * gate request while the table only ever grows. Cheap today (a cadre removes peers
    * rarely); if removals ever become routine, cache the set and invalidate it on write.
+   *
+   * `retry: false` is forwarded by {@link queryCadrePeers} for the one caller that reads
+   * under the write lock — see that method's note.
    */
-  async queryRevokedStamps(tableName: RevocableTable): Promise<Set<string>> {
+  async queryRevokedStamps(tableName: RevocableTable, retry = true): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
-    for (const row of await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps')) {
+    for (const row of await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps', retry)) {
       stamps.add(row.StampId as string);
     }
     return stamps;
@@ -1891,7 +1918,8 @@ export class ControlDatabase {
    * {@link assertCommitBoundary} (any `CadrePeer` path) or silently join each other's
    * open transaction — a torn commit if either side rolls back. This lock closes that
    * class: every public write method of this class runs its statement(s) under it, and
-   * `SeedBootstrapService` wraps its direct `db.exec` writes in it too. The race is
+   * `SeedBootstrapService` reaches it through {@link execWrite} rather than touching the
+   * `Database` directly, so it is covered too. The race is
    * real, not theoretical: the background self-record publish on a control connection
    * opening (`CadreNode.drainPendingControlReplication` → `registerSelf`) collided with
    * a foreground `authorizePeer` — both `CadrePeer` inserts — and tripped the boundary
@@ -2415,10 +2443,7 @@ export class ControlDatabase {
   } | null> {
     this.ensureInitialized();
     const sql = 'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?';
-    const rows = retry
-      ? await this.readRows(sql, [token], 'formation-invite')
-      : await this.readRowsOnce(sql, [token]);
-    for (const row of rows) {
+    for (const row of await this.readRows(sql, [token], 'formation-invite', retry)) {
       return {
         token: row.Token as string,
         sAppId: row.sAppId as string,
@@ -2458,10 +2483,7 @@ export class ControlDatabase {
   async countFormationUsage(token: string, retry = true): Promise<number> {
     this.ensureInitialized();
     const sql = 'select count(1) as Count from CadreControl.FormationUsage where Token = ?';
-    const rows = retry
-      ? await this.readRows(sql, [token], 'formation-usage-count')
-      : await this.readRowsOnce(sql, [token]);
-    for (const row of rows) {
+    for (const row of await this.readRows(sql, [token], 'formation-usage-count', retry)) {
       return (row.Count as number) ?? 0;
     }
     return 0;
@@ -2512,6 +2534,12 @@ export class ControlDatabase {
     if (unlimitedOutstanding) {
       return true;
     }
+    // NOTE: this loop issues one retried read per metered invite, each carrying its own
+    // CONTROL_READ_RETRY_BUDGET_MS, on a path the inbound admission gate awaits under a
+    // 2 s FAIL-OPEN deadline — so with N unexpired metered invites the worst case is
+    // (1 + N) budgets, not one. Fine while a cadre holds a couple of live invites and
+    // transient read failures are rare; if a party ever keeps many metered invites open,
+    // give this whole method one shared deadline rather than raising the per-read budget.
     for (const invite of metered) {
       if (await this.countFormationUsage(invite.token) < invite.totalUses) {
         return true;

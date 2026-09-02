@@ -40,8 +40,10 @@ export const CONTROL_READ_ATTEMPTS = 3;
 
 /**
  * Backoff before read retry N, jittered ±50% and capped at the largest base by the shared
- * loop — worst case ~750 ms of total sleep. Much shorter than the write list because the
- * whole loop must fit under {@link CONTROL_READ_RETRY_BUDGET_MS}.
+ * loop — so worst case 150 ms + 400 ms = 550 ms of total sleep (the second delay's
+ * upside jitter is clipped by the cap). Much shorter than the write list because the
+ * whole loop must fit under {@link CONTROL_READ_RETRY_BUDGET_MS}; the spec pins that
+ * relationship rather than the number.
  */
 export const CONTROL_READ_RETRY_DELAYS_MS: readonly number[] = [100, 400];
 

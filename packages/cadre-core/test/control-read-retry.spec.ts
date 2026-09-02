@@ -480,4 +480,39 @@ describe('ControlDatabase — read retry', () => {
 			slots.controlWriteRetryPacing = savedWritePacing;
 		}
 	});
+
+	/**
+	 * The same no-lock-during-backoff contract, reached through a CALLBACK rather than a
+	 * read written inside the locked body: `notifyMembershipChanged` runs the membership
+	 * listener with the write lock HELD, and that listener re-materializes the gate
+	 * snapshot through `queryCadrePeers`. With that scan rigged to fail transiently, the
+	 * refresh must not sleep a backoff — the sleep would happen holding the lock.
+	 *
+	 * The write itself must still SUCCEED: the notify is best-effort and swallows its
+	 * failures, keeping the previous snapshot. Asserted on the sleep counter rather than
+	 * the eval count because the node's timed reconcile can also drive this read.
+	 */
+	it('does not retry the membership-gate refresh read the write lock is holding', async () => {
+		const slots = pacingSlots(db);
+		const savedReadPacing = slots.controlReadRetryPacing;
+		let readSleeps = 0;
+		// Narrow marker: the membership SCAN only, not insertCadrePeer's own stamp guard.
+		const rig = rigEval('select PeerId, Multiaddr, StampId', () =>
+			failingIteration(transientClusterFailure()));
+		try {
+			slots.controlReadRetryPacing = { sleep: () => { readSleeps++; return Promise.resolve(); } };
+
+			await expect(db.insertCadrePeer(
+				{ peerId: 'read-retry-notify-peer', publicKey: null, multiaddr: '', updatedAt: Date.now(), sig: null },
+				owner.publicKey,
+				owner.sign
+			)).resolves.toBe(true);
+
+			expect(rig.calls()).toBeGreaterThanOrEqual(1);
+			expect(readSleeps).toBe(0);
+		} finally {
+			rig.restore();
+			slots.controlReadRetryPacing = savedReadPacing;
+		}
+	});
 });
