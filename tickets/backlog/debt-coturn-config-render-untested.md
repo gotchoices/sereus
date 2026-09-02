@@ -49,9 +49,10 @@ reasonable thing to leave as an opt-in job rather than part of the normal test r
 
 ## Wiring note
 
-`ops/` is outside the root `workspaces` glob, so a test placed there is not picked
-up by `yarn test`, `yarn lint`, or `yarn typecheck` as things stand — see
-`bug-ops-test-not-a-yarn-workspace`, which is the open question about how `ops/`
-scripts should be invoked at all. Whoever takes this can either wait on that
-decision or side-step it by putting the check somewhere the root test script
-already reaches. Not a hard dependency, but read that ticket first.
+`ops/` is outside the root `workspaces` glob and stays that way — `ops/test` is a
+standalone npm project (`npm --prefix ops/test install`), not a yarn workspace, and
+nothing folds it into `workspaces`. So a check placed under `ops/` is still not
+picked up by `yarn test`, `yarn lint`, or `yarn typecheck`. Whoever takes this must
+either put the check somewhere the root test script already reaches, or accept that
+it runs only via its own `npm --prefix` invocation, documented and run by hand (or
+from a separate CI step) like the other `ops/test` and `ops/docker` checks.

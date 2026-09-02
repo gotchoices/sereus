@@ -10,24 +10,30 @@ These scripts are meant for ops validation of:
 
 ### Usage
 
-From the repo root:
+From the repo root. `check-node`, `pair:listen`, and `pair:dial` depend on libp2p
+and need a one-time install first (`check-stun` and `check-turn-creds` use only
+Node's standard library and need no install — see below):
 
 ```bash
-yarn workspace @serfab/ops-test check-node -- --target /dnsaddr/relay.sereus.org --relay
-yarn workspace @serfab/ops-test check-node -- --target /dnsaddr/bootstrap.sereus.org --dht
-yarn workspace @serfab/ops-test check-node -- --target /dnsaddr/bootstrap.sereus.org --dht --all
+npm --prefix sereus/ops/test install
+```
+
+```bash
+npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/relay.sereus.org --relay
+npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/bootstrap.sereus.org --dht
+npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/bootstrap.sereus.org --dht --all
 ```
 
 If your local DNS resolver can’t see the `_dnsaddr` record yet (propagation/caching), force DoH:
 
 ```bash
-yarn workspace @serfab/ops-test check-node -- --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
+npm --prefix sereus/ops/test run check-node -- --target /dnsaddr/relay.sereus.org --relay --dns-mode doh
 ```
 
 You can also pass a concrete multiaddr (must include `/p2p/<peerId>`), e.g.:
 
 ```bash
-yarn workspace @serfab/ops-test check-node -- --target /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
+npm --prefix sereus/ops/test run check-node -- --target /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
 ```
 
 ### What it checks
@@ -43,7 +49,7 @@ coming from — the address-discovery step a WebRTC peer uses to attempt a **dir
 connection.
 
 ```bash
-yarn workspace @serfab/ops-test check-stun -- --host stun.sereus.org --port 3478
+node sereus/ops/test/check-stun.mjs --host stun.sereus.org --port 3478
 ```
 
 > Requires a **deployed, publicly reachable** STUN server — there is no local STUN
@@ -62,7 +68,7 @@ vectors and drives the TURN gating matrix. Two `<id>` forms are pinned: the plai
 (which must survive the sanitizer byte-for-byte, or attribution silently breaks):
 
 ```bash
-yarn workspace @serfab/ops-test check-turn-creds -- --self-test
+node sereus/ops/test/check-turn-creds.mjs --self-test
 ```
 
 > Signature verification for peer assertions is **not** mirrored here — that needs
@@ -75,7 +81,7 @@ username as `<future-unix>:<id>` and, with `--secret`, re-derive the HMAC and
 assert it matches the served credential:
 
 ```bash
-yarn workspace @serfab/ops-test check-turn-creds -- \
+node sereus/ops/test/check-turn-creds.mjs \
   --url https://turn-issuer.sereus.org/ice-servers.json --secret <TURN_SECRET>
 ```
 
@@ -105,12 +111,12 @@ Run (on two devices):
 
 ```bash
 # Listener machine
-yarn workspace @serfab/ops-test pair:listen -- \
+npm --prefix sereus/ops/test run pair:listen -- \
   --relay /dnsaddr/relay.sereus.org \
   --bootstrap /dnsaddr/bootstrap.sereus.org
 
 # Dialer machine (after copying printed PEER_ID from listener)
-yarn workspace @serfab/ops-test pair:dial -- \
+npm --prefix sereus/ops/test run pair:dial -- \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --peer <LISTENER_PEER_ID>
 ```
@@ -123,7 +129,7 @@ Start simple, then add discovery:
 - Dialer:
 
 ```bash
-yarn workspace @serfab/ops-test pair:dial -- \
+npm --prefix sereus/ops/test run pair:dial -- \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --dial-addr "<PASTE_FROM_LISTENER>"
 ```
@@ -131,7 +137,7 @@ yarn workspace @serfab/ops-test pair:dial -- \
 2) **Relay synthesis fallback** (still no DHT discovery, but less copy/paste)
 
 ```bash
-yarn workspace @serfab/ops-test pair:dial -- \
+npm --prefix sereus/ops/test run pair:dial -- \
   --bootstrap /dnsaddr/bootstrap.sereus.org \
   --peer <LISTENER_PEER_ID> \
   --relay /dnsaddr/relay.sereus.org
