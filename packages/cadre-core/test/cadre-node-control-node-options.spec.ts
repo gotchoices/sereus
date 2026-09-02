@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeAll } from 'vitest';
 import type { createLibp2pNode, IRawStorage } from '@optimystic/db-p2p';
 import { CachedRawStorage, MemoryRawStorage, defaultCachePool } from '@optimystic/db-p2p';
-import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import type { ConnectionGater, MultiaddrConnection, PeerId } from '@libp2p/interface';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
@@ -142,7 +142,7 @@ describe('CadreNode control-network node options', () => {
   });
 
   describe('storage', () => {
-    it('calls a factory provider exactly once with the literal "control" strand id, and hands the node the cached wrap', () => {
+    it('calls a factory provider exactly once with the literal "control" strand id, and hands the node the cached wrap', async () => {
       const calls: string[] = [];
       const instance = {} as IRawStorage;
       const config = createConfig({ storage: { provider: (strandId) => { calls.push(strandId); return instance; } } });
@@ -153,23 +153,24 @@ describe('CadreNode control-network node options', () => {
       // The node gets the write-through cached view of the provided storage, and the
       // wrap is memoized per inner instance — a second resolution of the same instance
       // must reuse the same cache, never stack a second one over the same backend.
-      // NOTE: asserting THROUGH the helper takes an extra holder claim on that cache
-      // which this test never releases. Harmless here (nothing tears the node down, and
-      // the pool-count tests below use their own instances), but a test that both
-      // asserts this way and measures `defaultCachePool().stats()` after a cleanup would
-      // read one registration too many.
+      // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
+      // must balance, and the node under test still holds the claim keeping it live.
+      const cached = wrapStorageWithCache(instance, 'control');
       expect(options.storage).toBeInstanceOf(CachedRawStorage);
-      expect(options.storage).toBe(wrapStorageWithCache(instance, 'control'));
+      expect(options.storage).toBe(cached);
+      await disposeStorageCache(cached);
     });
 
-    it('passes an instance provider through the same memoized cached wrap', () => {
+    it('passes an instance provider through the same memoized cached wrap', async () => {
       const instance = {} as IRawStorage;
       const config = createConfig({ storage: { provider: instance } });
 
       const options = controlOptions(new CadreNode(config));
 
+      const cached = wrapStorageWithCache(instance, 'control');
       expect(options.storage).toBeInstanceOf(CachedRawStorage);
-      expect(options.storage).toBe(wrapStorageWithCache(instance, 'control'));
+      expect(options.storage).toBe(cached);
+      await disposeStorageCache(cached);
     });
 
     it('passes a MemoryRawStorage instance through unwrapped (nothing to save caching memory)', () => {

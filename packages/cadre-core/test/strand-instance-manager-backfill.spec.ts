@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
 import { StrandInstanceManager } from '../src/strand-instance-manager.js';
-import { wrapStorageWithCache } from '@serfab/quereus-plugin-sereus';
+import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { signSchema } from '../src/schema-verification.js';
 import type { IRawStorage } from '@optimystic/db-p2p';
 import type { StrandRow, SAppConfig } from '../src/types.js';
@@ -112,10 +112,12 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     expect(deps.strandId).toBe('bf-wiring');
     // The catch-up gets the same CACHED view the strand node writes through — the
     // memoized wrap of the provided store, not a second cache over the same backend.
-    // NOTE: asserting THROUGH the helper takes an extra holder claim this test never
-    // releases, so the strand's cache outlives a `stopStrand` here. Harmless while
-    // nothing in this file measures the shared pool's occupancy.
-    expect(deps.storage).toBe(wrapStorageWithCache(storage, 'bf-wiring'));
+    // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
+    // must balance, and an unreleased claim would keep this strand's cache registered
+    // in the process-wide pool past a `stopStrand`.
+    const cached = wrapStorageWithCache(storage, 'bf-wiring');
+    expect(deps.storage).toBe(cached);
+    await disposeStorageCache(cached);
     expect(deps.protocolPrefix).toBe('/optimystic/strand-bf-wiring');
   });
 

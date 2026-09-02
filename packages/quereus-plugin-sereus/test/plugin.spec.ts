@@ -6,6 +6,7 @@ import { defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
+import { composeStrand } from '../src/compose-strand.js';
 import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
 	CONTROL_REPLICATION_BREADTH,
@@ -481,6 +482,24 @@ describe('connectToStrand', () => {
 		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
 
 		await disposeStorageCache(heldElsewhere);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('releases the claim it took when plugin registration fails before setup starts', async () => {
+		// The wrap happens before ANY registration, so the window between it and the
+		// composition's own teardown is not empty: a crypto or optimystic registration
+		// that throws would otherwise leave the claim — and the backing store's pool
+		// registration — held for the process lifetime, with no holder able to release it.
+		const storage = { getStoreIdentity: () => 'test://registration-failure' } as unknown as IRawStorage;
+		const before = defaultCachePool().stats().stores.length;
+
+		await expect(composeStrand(db, { strandId: 'test-strand-reg-fail', transactor: 'test', storage }, {
+			registerCrypto() {
+				throw new Error('crypto registration exploded');
+			},
+			createNode: () => Promise.reject(new Error('never reached')),
+		})).rejects.toThrow('crypto registration exploded');
+
 		expect(defaultCachePool().stats().stores.length).toBe(before);
 	});
 

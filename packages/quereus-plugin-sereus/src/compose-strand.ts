@@ -207,31 +207,24 @@ export async function composeStrand(
 		await disposeStorageCache(storage);
 	};
 
-	// 1. Register crypto plugin (digest, sign, verify, etc.)
-	await platform.registerCrypto(db);
-	log('Registered crypto plugin');
-
-	// 2. Register optimystic plugin with transactor defaults. On the local
-	// transactor with persistent storage, hand the same instance to the plugin so
-	// DML persists on the host backend (not in-memory).
-	const pluginConfig: Record<string, unknown> = {
-		default_transactor: resolvedTransactor,
-		default_key_network: 'libp2p',
-		default_network_name: networkName,
-		enable_cache: enableCache,
-	};
-	if (resolvedTransactor === 'local' && storage) {
-		pluginConfig.rawStorageFactory = () => storage;
+	// 1-2. Register the crypto and optimystic plugins. Guarded on its own, because the
+	// wrap above has ALREADY taken a holder claim: a registration that throws must release
+	// it, or the claim — and the backing store's registration in the shared cache pool —
+	// outlives the failed connect for the process lifetime, and no other scope can retire
+	// the cache. Separate from the larger try below, which has a collection factory and
+	// possibly a node to tear down as well; neither exists yet here.
+	let pluginResult: OptimysticPluginResult;
+	try {
+		pluginResult = await registerStrandPlugins(db, platform, {
+			resolvedTransactor,
+			networkName,
+			enableCache,
+			storage,
+		});
+	} catch (err) {
+		await releaseStorageCache();
+		throw err;
 	}
-	// The plugin's published signature is `Record<string, SqlValue>` but it
-	// also reads `rawStorageFactory` (a function reference) from the same map.
-	// Cast through unknown rather than widen the public type.
-	const pluginResult = optimysticPlugin(
-		db,
-		pluginConfig as unknown as Parameters<typeof optimysticPlugin>[1],
-	) as unknown as OptimysticPluginResult;
-	applyRegistrations(db, pluginResult);
-	log('Registered optimystic vtables and functions');
 
 	const { collectionFactory } = pluginResult;
 
@@ -358,4 +351,46 @@ export async function composeStrand(
 			log('Strand connection %s shut down', strandId);
 		},
 	};
+}
+
+/**
+ * Steps 1-2 of {@link composeStrand}: register the crypto plugin, then the optimystic
+ * plugin carrying this strand's transactor defaults. Split out so the composition can
+ * guard the pair against the storage-cache claim it has already taken.
+ */
+async function registerStrandPlugins(
+	db: Database,
+	platform: StrandPlatform,
+	strand: {
+		resolvedTransactor: StrandTransactor;
+		networkName: string;
+		enableCache: boolean;
+		storage: IRawStorage | undefined;
+	},
+): Promise<OptimysticPluginResult> {
+	await platform.registerCrypto(db);
+	log('Registered crypto plugin');
+
+	// On the local transactor with persistent storage, hand the same instance to the
+	// plugin so DML persists on the host backend (not in-memory).
+	const pluginConfig: Record<string, unknown> = {
+		default_transactor: strand.resolvedTransactor,
+		default_key_network: 'libp2p',
+		default_network_name: strand.networkName,
+		enable_cache: strand.enableCache,
+	};
+	if (strand.resolvedTransactor === 'local' && strand.storage) {
+		const storage = strand.storage;
+		pluginConfig.rawStorageFactory = () => storage;
+	}
+	// The plugin's published signature is `Record<string, SqlValue>` but it also reads
+	// `rawStorageFactory` (a function reference) from the same map. Cast through unknown
+	// rather than widen the public type.
+	const pluginResult = optimysticPlugin(
+		db,
+		pluginConfig as unknown as Parameters<typeof optimysticPlugin>[1],
+	) as unknown as OptimysticPluginResult;
+	applyRegistrations(db, pluginResult);
+	log('Registered optimystic vtables and functions');
+	return pluginResult;
 }

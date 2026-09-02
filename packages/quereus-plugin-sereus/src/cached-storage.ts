@@ -123,6 +123,11 @@ export function wrapStorageWithCache(storage: IRawStorage, label: string): IRawS
 		// Already the wrapper this module handed out: cadre-core wraps at its own seams
 		// and passes the wrapper down to `composeStrand`, which wraps again. Count the
 		// new holder rather than stacking a second cache over one backend.
+		// NOTE: a RETIRED wrapper (last holder already released) is also returned as-is,
+		// uncounted — the caller gets a dead cache with no error. No call site can reach
+		// that today: both retire sites drop their reference in the same block that
+		// releases. If a caller ever holds a wrapper across its own release, make this
+		// branch throw on an absent claim rather than hand back the corpse.
 		addHolder(storage);
 		return storage;
 	}
