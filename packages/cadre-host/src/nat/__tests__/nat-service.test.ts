@@ -87,6 +87,21 @@ function makeDetector(opts: { router?: string | null; pub?: string | null }): Ex
   });
 }
 
+/**
+ * The provider call a `putDdns` lands on. Injected wherever a case configures a real
+ * provider, so no case here reaches www.duckdns.org — an outbound request in a unit
+ * test is a hang waiting for a machine without network. DuckDNS's own contract (the
+ * plain-text `OK`) is covered in the ddns specs.
+ */
+function okFetch(): typeof fetch {
+  return (async () => ({
+    ok: true,
+    status: 200,
+    statusText: 'OK',
+    async text() { return 'OK'; },
+  })) as unknown as typeof fetch;
+}
+
 let tmpRoot: string;
 beforeEach(() => {
   tmpRoot = mkdtempSync(join(tmpdir(), 'cadre-host-nat-svc-'));
@@ -169,6 +184,7 @@ describe('NatService', () => {
       secretsStore: secrets,
       portMapper: mapper,
       externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+      fetch: okFetch(),
     });
     await svc.start();
     await svc.putDdns({
@@ -218,6 +234,7 @@ describe('NatService', () => {
       secretsStore: secrets,
       portMapper: mapper,
       externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+      fetch: okFetch(),
     });
     await svc.start();
     const status = await svc.putDdns({
@@ -474,6 +491,7 @@ describe('createNatHandlers', () => {
       secretsStore: makeSecrets(),
       portMapper: mapper,
       externalIpDetector: makeDetector({ pub: '1.2.3.4' }),
+      fetch: okFetch(),
     });
     await svc.start();
     const h = createNatHandlers(svc);

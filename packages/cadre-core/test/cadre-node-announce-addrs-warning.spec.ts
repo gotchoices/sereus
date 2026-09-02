@@ -111,10 +111,11 @@ describe('CadreNode announceAddrs warning', () => {
   /**
    * The matrix above would keep passing if `start()` stopped calling the check at all, so
    * one arm pays for a real bring-up. It asserts the failure too: the only configuration
-   * that both warns AND reaches libp2p names a relay, and libp2p treats a circuit addr it
-   * cannot listen on as fatal (see `relay-addrs.ts`). `relay.example.com` is reserved for
-   * documentation and does not resolve, so the rejection is the expected outcome — what
-   * matters is that the warning is emitted BEFORE it, as a pre-flight config check.
+   * that both warns AND reaches libp2p names a relay, and a relay that yields no
+   * `/p2p-circuit` address aborts start with `RelayReservationFailedError`
+   * (see `relay-addrs.ts`). `relay.example.com` is reserved for documentation and does not
+   * resolve, so the rejection is the expected outcome — what matters is that the warning is
+   * emitted BEFORE it, as a pre-flight config check.
    */
   it('is emitted by start(), ahead of libp2p bring-up', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -124,7 +125,7 @@ describe('CadreNode announceAddrs warning', () => {
     }));
 
     try {
-      await expect(node.start()).rejects.toThrow(/failed to be listened on|ENOTFOUND/);
+      await expect(node.start()).rejects.toThrow(/network\.relayAddrs reservation failed/);
 
       expect(warn.mock.calls
         .map((call) => String(call[0]))

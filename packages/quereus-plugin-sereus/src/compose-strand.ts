@@ -7,7 +7,7 @@ import type { IRawStorage, NodeOptions } from '@optimystic/db-p2p';
 import type { StrandConnectionOptions, SereusPluginResult, StrandTransactor, Libp2pNodeWithRepo } from './types.js';
 import { STRAND_SCHEMA } from './strand-schema.js';
 import { resolveStrandClusterSize, STRAND_CLUSTER_POLICY } from './cluster-size.js';
-import { wrapStorageWithCache } from './cached-storage.js';
+import { wrapStorageWithCache, disposeStorageCache } from './cached-storage.js';
 
 const log = debug('sereus:plugin:strand');
 const timing = debug('sereus:plugin:strand:timing');
@@ -183,6 +183,20 @@ export async function composeStrand(
 		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
 		: options.storage;
 	const storage = resolvedStorage ? wrapStorageWithCache(resolvedStorage, strandId) : resolvedStorage;
+	// This composition OWNS the cache when the wrap it just made is a new object: the
+	// embedder handed over a bare store, so nothing upstream holds the wrapper to release
+	// it. (cadre-core's seams wrap first and pass the wrapper down, which comes back
+	// unchanged and stays theirs to dispose.) Owned means `shutdown` must dispose it —
+	// the wrapper's registration claims the backing store in the shared cache pool, and a
+	// claim outliving its strand makes the next connect over that same directory throw.
+	const ownedStorageCache = storage !== undefined && storage !== resolvedStorage ? storage : undefined;
+
+	/** Release the owned cache registration, if any. Idempotent — dispose is. */
+	const releaseStorageCache = async (): Promise<void> => {
+		if (ownedStorageCache) {
+			await disposeStorageCache(ownedStorageCache);
+		}
+	};
 
 	// 1. Register crypto plugin (digest, sign, verify, etc.)
 	await platform.registerCrypto(db);
@@ -307,6 +321,7 @@ export async function composeStrand(
 		if (createdNode) {
 			await createdNode.stop();
 		}
+		await releaseStorageCache();
 		throw err;
 	}
 
@@ -330,6 +345,7 @@ export async function composeStrand(
 			if (createdNode) {
 				await createdNode.stop();
 			}
+			await releaseStorageCache();
 			log('Strand connection %s shut down', strandId);
 		},
 	};

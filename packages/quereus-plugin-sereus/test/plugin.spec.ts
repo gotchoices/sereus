@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
+import type { IRawStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
@@ -408,6 +409,33 @@ describe('connectToStrand', () => {
 
 		const { createLibp2pNode } = await import('@optimystic/db-p2p');
 		expect(createLibp2pNode).not.toHaveBeenCalled();
+	});
+
+	it('releases the storage cache it wrapped, so a relaunch over the same backing store connects', async () => {
+		// `wrapStorageWithCache` claims the BACKING store in the shared cache pool (two
+		// write-through caches over one backend never converge, so upstream refuses the
+		// second). The claim is freed on dispose — and when this composition did the
+		// wrapping, its `shutdown` is the only thing holding that release. Two DISTINCT
+		// instances naming one identity is the shape that matters: it is what a relaunch
+		// over one directory (a fresh `FileRawStorage` on the same path) actually looks
+		// like, and the per-instance wrap memo cannot paper over it.
+		const makeStorage = () => ({
+			getStoreIdentity: () => 'test://relaunch-store',
+		}) as unknown as IRawStorage;
+
+		const first = await connectToStrand(db, {
+			strandId: 'test-strand-relaunch',
+			transactor: 'test',
+			storage: makeStorage(),
+		});
+		await first.shutdown();
+
+		const second = await connectToStrand(db, {
+			strandId: 'test-strand-relaunch',
+			transactor: 'test',
+			storage: makeStorage(),
+		});
+		await second.shutdown();
 	});
 
 	it('should stop created node on shutdown', async () => {
