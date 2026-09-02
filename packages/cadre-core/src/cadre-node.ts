@@ -3416,11 +3416,12 @@ export class CadreNode implements SAppIdLookup {
       this.controlNode = null;
     }
 
-    // Release the control store's cache registration LAST — after the database and
-    // node that write through it are down. Dropping the field is what lets a
-    // stop()/start() cycle re-resolve the provider against a live cache instead of
-    // handing the restarted node a retired wrapper. Logged, never thrown: a
-    // cache-bookkeeping failure must not abort a teardown.
+    // Release the control store's claim on its cache LAST — after the database and
+    // node that write through it are down. The wrapper counts holders, so this empties
+    // and unregisters the cache only if no other scope still holds it. Dropping the
+    // field is what lets a stop()/start() cycle re-resolve the provider against a live
+    // cache instead of handing the restarted node a retired wrapper. Logged, never
+    // thrown: a cache-bookkeeping failure must not abort a teardown.
     if (this.controlStorage) {
       const controlStorage = this.controlStorage;
       this.controlStorage = null;

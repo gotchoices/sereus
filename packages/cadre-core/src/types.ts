@@ -128,12 +128,12 @@ export const HIBERNATION_TIMEOUTS: Record<LatencyHint, HibernationTimeouts> = {
  * cadre-core disposes only its own cache wrapper — it never closes the store you
  * returned. Closing the underlying handle stays the embedder's job.
  *
- * **Prefer the factory form for any persistent backend.** One instance handed to
- * every scope also shares ONE cache wrapper (`wrapStorageWithCache` memoizes per
- * inner instance), and no scope solely owns it — so the first scope to stop retires
- * the wrapper the still-running scopes are reading through. See
- * `tickets/backlog/debt-storage-cache-wrap-unrefcounted.md`; an in-memory store is
- * unaffected, since it is never wrapped.
+ * Either form is safe with a persistent backend. One instance handed to every scope
+ * also shares ONE cache wrapper (`wrapStorageWithCache` memoizes per inner instance),
+ * which counts its holders: a scope stopping releases only its own claim, and the
+ * wrapper is retired when the last scope releases it. The factory form is still the
+ * better default for a different reason — it partitions each strand's data, which
+ * simplifies cleanup.
  */
 export type RawStorageProvider = IRawStorage | ((strandId: string) => IRawStorage);
 

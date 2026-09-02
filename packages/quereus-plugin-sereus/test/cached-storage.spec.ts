@@ -132,3 +132,123 @@ describe('disposeStorageCache', () => {
 		await expect(disposeStorageCache(wrapStorageWithCache(inner, 'memory'))).resolves.toBeUndefined();
 	});
 });
+
+/**
+ * The holder count that makes the pair safe when several scopes reach one store.
+ *
+ * `CadreNodeConfig.storage.provider` may be a single `IRawStorage` handed to the control
+ * database and to every workspace, and the SQL plugin's `composeStrand` wraps again over
+ * whatever cadre-core already wrapped. All of them land on ONE cache (that is the memo's
+ * whole job), so an unconditional release would let the first scope to stop retire a cache
+ * the others are still reading through — and the next scope to start, finding the memo
+ * empty, would build a SECOND cache over the same backend. Two write-through caches over
+ * one store never converge: each keeps its own read state, including remembered
+ * "this block does not exist" answers, so a block one scope writes reads back absent to
+ * the other.
+ *
+ * So wrap takes a claim and dispose releases one, and only the last release retires
+ * anything. The pool's `stats().stores.length` is the observable for "still registered",
+ * measured against a baseline taken in-test — the pool is process-wide and the specs above
+ * leave registrations behind. Sound only while vitest runs this file sequentially (its
+ * default); marking the file `concurrent` would race the baselines.
+ */
+describe('wrapStorageWithCache / disposeStorageCache holder count', () => {
+	it('keeps the cache live and memoized while another holder still holds it', async () => {
+		const before = defaultCachePool().stats().stores.length;
+		const inner = {} as IRawStorage;
+		const control = wrapStorageWithCache(inner, 'shared-instance');
+		const workspaceA = wrapStorageWithCache(inner, 'shared-instance');
+		expect(workspaceA).toBe(control);
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(workspaceA);
+
+		// The control database and every other holder are still reading through it.
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+		// And a scope starting now joins that same cache rather than minting a rival.
+		expect(wrapStorageWithCache(inner, 'shared-instance')).toBe(control);
+
+		await disposeStorageCache(control);
+		await disposeStorageCache(control);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('retires the cache, and re-wraps fresh, only once the LAST holder releases', async () => {
+		const before = defaultCachePool().stats().stores.length;
+		const inner = {} as IRawStorage;
+		const first = wrapStorageWithCache(inner, 'last-holder');
+		wrapStorageWithCache(inner, 'last-holder');
+
+		await disposeStorageCache(first);
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(first);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+
+		const relaunched = wrapStorageWithCache(inner, 'last-holder');
+		expect(relaunched).not.toBe(first);
+		expect(relaunched).toBeInstanceOf(CachedRawStorage);
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(relaunched);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('ignores a release with no claim behind it, in either order', async () => {
+		// Over-release must not drive the count negative (which would leave the NEXT
+		// holder's release retiring nothing) nor consume a successor's claim.
+		const before = defaultCachePool().stats().stores.length;
+		const inner = {} as IRawStorage;
+		const retired = wrapStorageWithCache(inner, 'over-release');
+
+		await disposeStorageCache(retired);
+		await disposeStorageCache(retired);
+		await disposeStorageCache(retired);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+
+		// Other order: the surplus releases of the retired wrapper arrive while its
+		// successor over the same inner instance is live.
+		const successor = wrapStorageWithCache(inner, 'over-release');
+		await disposeStorageCache(retired);
+
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+		expect(wrapStorageWithCache(inner, 'over-release')).toBe(successor);
+
+		await disposeStorageCache(successor);
+		await disposeStorageCache(successor);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('counts a re-wrap of the wrapper itself, so the re-wrapper can release its own claim', async () => {
+		// The shape `composeStrand` is in: cadre-core wraps the store and passes the
+		// WRAPPER down, which comes back unchanged. Its `shutdown()` releases
+		// unconditionally, so that release must be its own claim and not cadre-core's.
+		const before = defaultCachePool().stats().stores.length;
+		const cadreCore = wrapStorageWithCache({} as IRawStorage, 'passed-down');
+
+		const composition = wrapStorageWithCache(cadreCore, 'passed-down');
+		expect(composition).toBe(cadreCore);
+		await disposeStorageCache(composition);
+
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(cadreCore);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+
+	it('leaves a cache the embedder built itself alone', async () => {
+		// No claim was ever taken on it here, so this module never retires it — closing
+		// a host's own cache out from under it is the mirror of the defect above.
+		const before = defaultCachePool().stats().stores.length;
+		const embedderOwned = new CachedRawStorage({} as IRawStorage, undefined, 'embedder-owned');
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		expect(wrapStorageWithCache(embedderOwned, 'embedder-owned')).toBe(embedderOwned);
+		await disposeStorageCache(embedderOwned);
+
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await embedderOwned.dispose();
+		expect(defaultCachePool().stats().stores.length).toBe(before);
+	});
+});

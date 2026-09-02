@@ -490,9 +490,10 @@ export class StrandInstanceManager {
   }
 
   /**
-   * Drop the strand's owned store and release its cache registration with the shared
-   * pool. Called only where the strand's whole lifetime ends (`stopStrand`, and the
-   * failed-launch rollback) — never on a quiesce.
+   * Drop the strand's owned store and release this strand's claim on its cache. The
+   * wrapper counts holders, so the cache is emptied and unregistered from the shared
+   * pool only if no other scope still holds it. Called only where the strand's whole
+   * lifetime ends (`stopStrand`, and the failed-launch rollback) — never on a quiesce.
    *
    * A dispose failure is logged, not thrown: the store is already unreferenced here,
    * and failing the stop over a cache-bookkeeping error would leave the caller unable

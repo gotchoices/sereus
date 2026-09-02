@@ -153,6 +153,11 @@ describe('CadreNode control-network node options', () => {
       // The node gets the write-through cached view of the provided storage, and the
       // wrap is memoized per inner instance — a second resolution of the same instance
       // must reuse the same cache, never stack a second one over the same backend.
+      // NOTE: asserting THROUGH the helper takes an extra holder claim on that cache
+      // which this test never releases. Harmless here (nothing tears the node down, and
+      // the pool-count tests below use their own instances), but a test that both
+      // asserts this way and measures `defaultCachePool().stats()` after a cleanup would
+      // read one registration too many.
       expect(options.storage).toBeInstanceOf(CachedRawStorage);
       expect(options.storage).toBe(wrapStorageWithCache(instance, 'control'));
     });

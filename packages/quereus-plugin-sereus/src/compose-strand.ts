@@ -178,24 +178,33 @@ export async function composeStrand(
 	// transactor's `rawStorageFactory` and node creation, so it must be decided
 	// up front (before pluginConfig is built). Wrapped in the write-through
 	// raw-storage cache (cached-storage.ts) — idempotent, so a caller that
-	// already wrapped (cadre-core's seams) passes through unchanged.
+	// already wrapped (cadre-core's seams) passes through unchanged, with this
+	// composition counted as one more holder of that same cache.
 	const resolvedStorage = platform.resolveStorage
 		? await platform.resolveStorage({ strandId, resolvedTransactor, requestedStorage: options.storage })
 		: options.storage;
 	const storage = resolvedStorage ? wrapStorageWithCache(resolvedStorage, strandId) : resolvedStorage;
-	// This composition OWNS the cache when the wrap it just made is a new object: the
-	// embedder handed over a bare store, so nothing upstream holds the wrapper to release
-	// it. (cadre-core's seams wrap first and pass the wrapper down, which comes back
-	// unchanged and stays theirs to dispose.) Owned means `shutdown` must dispose it —
-	// the wrapper's registration claims the backing store in the shared cache pool, and a
-	// claim outliving its strand makes the next connect over that same directory throw.
-	const ownedStorageCache = storage !== undefined && storage !== resolvedStorage ? storage : undefined;
 
-	/** Release the owned cache registration, if any. Idempotent — dispose is. */
+	/**
+	 * Release THIS composition's claim on the storage cache — the matching half of the
+	 * wrap above, which took one. `wrapStorageWithCache` counts holders, so this is
+	 * unconditionally correct whoever created the wrapper: the cache stays live while
+	 * cadre-core (or any other seam over the same store) still holds a claim, and is
+	 * emptied and unregistered from the shared cache pool when the last one goes. Holding
+	 * a claim past the strand's life is not free — the registration claims the backing
+	 * store in the pool, and a claim outliving its strand makes the next connect over that
+	 * same directory throw.
+	 *
+	 * Latched, so a caller that calls `shutdown()` twice releases one claim, not two — a
+	 * second release would consume another scope's claim.
+	 */
+	let storageCacheReleased = false;
 	const releaseStorageCache = async (): Promise<void> => {
-		if (ownedStorageCache) {
-			await disposeStorageCache(ownedStorageCache);
+		if (storageCacheReleased || !storage) {
+			return;
 		}
+		storageCacheReleased = true;
+		await disposeStorageCache(storage);
 	};
 
 	// 1. Register crypto plugin (digest, sign, verify, etc.)

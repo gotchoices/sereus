@@ -112,6 +112,9 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     expect(deps.strandId).toBe('bf-wiring');
     // The catch-up gets the same CACHED view the strand node writes through — the
     // memoized wrap of the provided store, not a second cache over the same backend.
+    // NOTE: asserting THROUGH the helper takes an extra holder claim this test never
+    // releases, so the strand's cache outlives a `stopStrand` here. Harmless while
+    // nothing in this file measures the shared pool's occupancy.
     expect(deps.storage).toBe(wrapStorageWithCache(storage, 'bf-wiring'));
     expect(deps.protocolPrefix).toBe('/optimystic/strand-bf-wiring');
   });

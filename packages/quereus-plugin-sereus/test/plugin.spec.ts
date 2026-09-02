@@ -2,10 +2,11 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { Database, type SqlValue } from '@quereus/quereus';
 import type { Libp2p } from '@libp2p/interface';
 import { DEFAULT_SUPER_MAJORITY_THRESHOLD, type IRepo } from '@optimystic/db-core';
-import type { IRawStorage } from '@optimystic/db-p2p';
+import { defaultCachePool, type IRawStorage } from '@optimystic/db-p2p';
 import { digest } from '@optimystic/quereus-plugin-crypto';
 import { parseConfig } from '../src/plugin.js';
 import { connectToStrand } from '../src/connect.js';
+import { wrapStorageWithCache, disposeStorageCache } from '../src/cached-storage.js';
 import {
 	CONTROL_REPLICATION_BREADTH,
 	DEFAULT_STRAND_CLUSTER_SIZE,
@@ -436,6 +437,51 @@ describe('connectToStrand', () => {
 			storage: makeStorage(),
 		});
 		await second.shutdown();
+	});
+
+	it('leaves the shared cache pool flat over repeated connect/shutdown cycles', async () => {
+		// `shutdown()` releases this composition's own claim on the storage cache — the
+		// leak this closes is one abandoned pool registration per connect, in a process
+		// meant to run for weeks. `wrapStorageWithCache` counts holders, so the release
+		// needs no ownership guess and is safe to make unconditionally.
+		const storage = { getStoreIdentity: () => 'test://cycle-store' } as unknown as IRawStorage;
+		const before = defaultCachePool().stats().stores.length;
+
+		for (let cycle = 0; cycle < 3; cycle++) {
+			const result = await connectToStrand(db, {
+				strandId: 'test-strand-cycles',
+				transactor: 'test',
+				storage,
+			});
+			expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+			await result.shutdown();
+
+			expect(defaultCachePool().stats().stores.length).toBe(before);
+		}
+	});
+
+	it('does not retire a cache another scope wrapped and still holds', async () => {
+		// cadre-core wraps the store at its own seam and passes the WRAPPER down here,
+		// where it comes back unchanged. `shutdown()` releasing unconditionally must
+		// therefore release only THIS composition's claim: the strand runtime stopping
+		// cannot be allowed to empty the cache the control database reads through.
+		const inner = { getStoreIdentity: () => 'test://held-elsewhere' } as unknown as IRawStorage;
+		const before = defaultCachePool().stats().stores.length;
+		const heldElsewhere = wrapStorageWithCache(inner, 'held-elsewhere');
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		const result = await connectToStrand(db, {
+			strandId: 'test-strand-held-elsewhere',
+			transactor: 'test',
+			storage: heldElsewhere,
+		});
+		await result.shutdown();
+
+		expect(defaultCachePool().stats().stores.length).toBe(before + 1);
+
+		await disposeStorageCache(heldElsewhere);
+		expect(defaultCachePool().stats().stores.length).toBe(before);
 	});
 
 	it('should stop created node on shutdown', async () => {
