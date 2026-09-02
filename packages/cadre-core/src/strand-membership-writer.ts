@@ -234,6 +234,12 @@ async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Mana
  * `Manager.Authorized` (see the schema's bootstrap-branch comment). Unfiltered
  * scan + JavaScript comparison, the module's scan-not-seek idiom (rationale on
  * {@link scanMemberPeers}).
+ *
+ * NOTE: walks the whole append-only `Strand.Revocation` table when no `Manager`
+ * tombstone is present (it returns on the first one it finds). Cheap at strand
+ * scale; if membership churn ever makes that table large — the growth the
+ * `Revocation` schema comment already flags, tracked by `debt-strand-tombstone-reap`
+ * — this wants a stored "founding closed" marker rather than a scan per call.
  */
 async function strandHasManagerRevocation(db: Database): Promise<boolean> {
   for await (const row of db.eval('select TableName from Strand.Revocation')) {
@@ -1517,17 +1523,29 @@ export interface SealStrandParams {
  * @param db - The closed strand's database.
  * @param params - The sole manager's own keypair.
  * @throws If more than one manager exists (the caller wants {@link removeManager}),
- *   or the supplied keypair holds no `Manager` row while one exists, or any schema
- *   constraint rejects; the whole delete+tombstone transaction rolls back. A strand
- *   that is ALREADY sealed logs and returns quietly (restart-safe, matching
- *   {@link bootstrapFounderMembership} and {@link removeManager}'s absent-row no-op).
+ *   or the supplied keypair holds no `Manager` row while one exists, or the strand
+ *   holds no `Manager` row and has never retired one (not founded yet — see
+ *   {@link isStrandSealed}), or any schema constraint rejects; the whole
+ *   delete+tombstone transaction rolls back. A strand that is ALREADY sealed logs
+ *   and returns quietly (restart-safe, matching {@link bootstrapFounderMembership}
+ *   and {@link removeManager}'s absent-row no-op).
  */
 export async function sealStrand(db: Database, params: SealStrandParams): Promise<void> {
   const { managerKeyPair } = params;
   const managerCount = await strandTableCount(db, 'Manager');
   if (managerCount === 0) {
-    log('Strand already sealed (no Manager rows); skipping seal');
-    return;
+    // Zero managers is NOT by itself a seal — a closed strand between its Header
+    // and Manager founding inserts looks identical. The retired `Manager` stamp is
+    // what separates "frozen forever" from "still foundable"; returning quietly on
+    // the latter would report a seal that never happened.
+    if (await strandHasManagerRevocation(db)) {
+      log('Strand already sealed (no Manager rows, manager stamp retired); skipping seal');
+      return;
+    }
+    throw new Error(
+      'Cannot seal: the strand holds no Manager row and has never retired one — it is '
+      + 'not founded yet, not sealed. Bootstrap the founding manager first.',
+    );
   }
   if (managerCount > 1) {
     throw new Error(
@@ -1568,17 +1586,31 @@ async function strandIsClosed(db: Database): Promise<boolean> {
 }
 
 /**
- * Whether the strand is sealed: a CLOSED strand with no `Manager` rows.
+ * Whether the strand is sealed: a CLOSED strand that holds no `Manager` rows AND
+ * has retired at least one `Manager` stamp into `Strand.Revocation`.
  *
- * The `Header.Type` read is load-bearing, not decoration: an OPEN strand never
- * holds `Manager` rows at all (`Manager.OnlyClosed`), so a bare manager-count
- * test would wrongly report every open strand as sealed. Reads locally visible
- * rows — a node that has not yet converged on the seal still reports `false`
- * (the schema's seal-propagation NOTE).
+ * All three conjuncts are load-bearing:
+ * - `Header.Type` — an OPEN strand never holds `Manager` rows at all
+ *   (`Manager.OnlyClosed`), so a bare manager-count test would report every open
+ *   strand as sealed.
+ * - the manager count — sealing IS the empty `Manager` table.
+ * - the retired `Manager` stamp — "sealed" means admission is frozen FOREVER, and
+ *   what makes it permanent is the founding branch of `Manager.Authorized`
+ *   refusing to re-seat a generation-0 manager once any `Manager` stamp has been
+ *   retired. Without this conjunct a closed strand that is merely NOT FOUNDED YET
+ *   reads as sealed: {@link bootstrapFounderMembership} commits `Header`,
+ *   `Member` and `Manager` as three sequential statements, so the window between
+ *   the first and the last is exactly "closed, zero managers, still foundable".
+ *
+ * Reads locally visible rows — a node that has not yet converged on the seal
+ * still reports `false` (the schema's seal-propagation NOTE).
  *
  * @param db - The strand's database.
- * @returns `true` iff the strand is closed and holds zero `Manager` rows.
+ * @returns `true` iff the strand is closed, holds zero `Manager` rows, and has
+ *   permanently closed its founding branch.
  */
 export async function isStrandSealed(db: Database): Promise<boolean> {
-  return await strandIsClosed(db) && await strandTableCount(db, 'Manager') === 0;
+  return await strandIsClosed(db)
+    && await strandTableCount(db, 'Manager') === 0
+    && await strandHasManagerRevocation(db);
 }

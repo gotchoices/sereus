@@ -26,6 +26,12 @@ only when the post-delete manager count is zero — which permanently freezes me
 - `ConsumedInvite.NotSealed` (`exists (select 1 from Manager)`, deferred) kills any
   invitation issued before the seal.
 
+On the writer side, `isStrandSealed` reports sealed only when all three hold: the strand
+is closed, the `Manager` table is empty, and a `Manager` stamp has been retired. The
+third conjunct is what separates a sealed strand from one that is simply not founded
+yet, and `sealStrand` uses the same distinction (quiet no-op when already sealed, throw
+when not founded).
+
 ## New spec file: `packages/cadre-core/test/strand-seal.spec.ts`
 
 Follow the house shape of `strand-membership-manager-rotation.spec.ts`: import
@@ -40,8 +46,25 @@ Cases:
 
 - **The sole manager seals.** `sealStrand` succeeds; `count(Manager) === 0`; the
   `Revocation` row for the retired stamp exists; the founder's `Member` row survives.
-- **`isStrandSealed`.** `false` before the seal, `true` after; and `false` on an **open**
-  strand (`openStrand('o')`), which never holds `Manager` rows at all.
+- **`isStrandSealed`.** `false` before the seal, `true` after; `false` on an **open**
+  strand (`openStrand('o')`), which never holds `Manager` rows at all; and `false` on a
+  closed strand that is not FOUNDED yet — `Header` inserted, `Manager` not. That last
+  case is the reason the predicate is three conjuncts and not two (closed, zero
+  managers, **and** a retired `Manager` stamp): founding commits `Header`, `Member` and
+  `Manager` as three sequential statements, so mid-bootstrap looks exactly like a seal
+  unless the retired stamp is checked. Build the state by inserting a `Header` with
+  `Type = 'c'` directly (or by whatever bootstrap seam the helpers already expose)
+  rather than by racing `bootstrapFounderMembership`.
+- **`sealStrand` on a closed strand that is not founded yet throws** — zero managers with
+  no retired `Manager` stamp is "still foundable", not "frozen", so returning quietly
+  would report a seal that never happened. Distinct from the already-sealed no-op below;
+  pin that the two branches really are distinguished (message mentions "not founded").
+- **A founder restart of a SEALED strand is a quiet no-op.** Seal, then call
+  `bootstrapFounderMembership` again with the founder's params: it must return without
+  throwing and leave `count(Manager) === 0` — `insertFounderManagerIfAbsent` mirrors the
+  schema's own `Revocation`-gate rather than driving a rejected insert. Pair it with the
+  "founding a fresh closed strand still works" case: together they pin that the gate
+  discriminates rather than blanket-skipping.
 - **A raw `resign`-tagged delete of the sole manager rejects `/Authorized/`.** Sign
   `['Strand.Manager','resign',founderKey,stamp]` by hand, delete + tombstone in one
   transaction. Post-image count is 0, so only the `seal` branch could accept and the tag
@@ -109,8 +132,11 @@ Positive path: `sealStrand(db, { managerKeyPair: x })` then succeeds.
   register: a node that has not yet received the seal still shows the manager's seat, so
   that one ex-manager's own key could still admit someone there until the deletion
   reaches it; no other party gains anything, and a cross-node guard is not attempted.
-- `:284` refers to "the floor above, with the same local-count caveat" — check it still
-  points at a floor that exists.
+- The last-member bullet (`:283`) opens "A member-count floor mirrors the last-manager
+  …" — there is no last-manager floor any more, so that comparison has to be rewritten
+  (say what the member floor guarantees on its own terms), and the "the floor above,
+  with the same local-count caveat" clause just after it must point at a floor that
+  still exists.
 
 **`docs/architecture.md`:**
 
@@ -128,7 +154,9 @@ Positive path: `sealStrand(db, { managerKeyPair: x })` then succeeds.
   zero requires a `seal`-tagged self-signature, and the still-open item is seal
   propagation rather than concurrent removals converging to zero.
 - Add a sentence, where the strand membership writers are listed (`:644-668`), for
-  `sealStrand` and `isStrandSealed`.
+  `sealStrand` and `isStrandSealed`. State what "sealed" actually means — closed, no
+  managers, and a retired `Manager` stamp — so the doc does not leave a reader thinking
+  an empty `Manager` table alone is the definition.
 
 Do not touch `tickets/complete/*` mentions of `MinOneManager` — those are history.
 
