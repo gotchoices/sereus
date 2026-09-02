@@ -178,8 +178,9 @@ export { ControlFormationUsageRecorder } from './control-formation-recorder.js';
 export { generateStrandMemberKey, strandMemberKeyPair } from './strand-member-key.js';
 
 // Strand membership writer (founder bootstrap, invite issuance/consumption,
-// manager-admit, member-peer registration, manager rotation, + shared signing
-// primitives reused across the flows).
+// manager-admit, member-peer registration, manager rotation, sealing — the sole
+// manager permanently freezing admission — + shared signing primitives reused
+// across the flows).
 export {
   signStrandPayload,
   verifyStrandPayload,

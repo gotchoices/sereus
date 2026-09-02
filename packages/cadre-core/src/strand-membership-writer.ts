@@ -229,6 +229,22 @@ async function strandTableCount(db: Database, table: 'Header' | 'Member' | 'Mana
 }
 
 /**
+ * Whether any `Strand.Revocation` row has ever retired a `Manager` seat — the
+ * exact condition that permanently closes the founding branch of
+ * `Manager.Authorized` (see the schema's bootstrap-branch comment). Unfiltered
+ * scan + JavaScript comparison, the module's scan-not-seek idiom (rationale on
+ * {@link scanMemberPeers}).
+ */
+async function strandHasManagerRevocation(db: Database): Promise<boolean> {
+  for await (const row of db.eval('select TableName from Strand.Revocation')) {
+    if (row.TableName === 'Manager') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Insert the singleton `Strand.Header` if absent.
  *
  * Every `Header` column is NOT NULL (Quereus defaults unqualified columns to NOT
@@ -304,10 +320,23 @@ async function insertFounderMemberIfAbsent(db: Database, memberKey: string, stra
  * `Manager.OnlyClosed` is a deferred (subquery) check evaluated at commit. The
  * sequential auto-commit Header→Member→Manager order in
  * {@link bootstrapFounderMembership} satisfies both.
+ *
+ * SEALED strands are skipped, not re-founded: a strand whose sole manager has
+ * {@link sealStrand}ed also has zero `Manager` rows, but its founding branch is
+ * closed for good (the schema's bootstrap branch requires no `Manager`-table
+ * `Revocation` row to exist). Attempting the founding insert here would be
+ * schema-rejected and turn every founder restart of a sealed strand into a
+ * loud failure — so this mirrors the schema's own gate and returns quietly.
+ * A crash BETWEEN the founding Member and Manager inserts leaves no Revocation
+ * rows at all, so that restart still completes the founding.
  */
 async function insertFounderManagerIfAbsent(db: Database, memberKey: string, strandId: string): Promise<void> {
   if (await strandTableCount(db, 'Manager') > 0) {
     log('Manager already present for strand %s; skipping founder Manager', strandId);
+    return;
+  }
+  if (await strandHasManagerRevocation(db)) {
+    log('Strand %s has retired a manager seat (sealed); skipping founder Manager', strandId);
     return;
   }
   await db.exec(
@@ -814,8 +843,8 @@ export interface RevokeMemberParams {
  * A manager must resign its `Manager` row before (or in the same transaction
  * as) losing membership — `Member.NotAManager` rejects un-membering a key that
  * still holds a Manager row. And the strand never drops to zero members
- * (`Member.MinOneMember`, a local-count floor with the same cross-node caveat
- * as `MinOneManager`).
+ * (`Member.MinOneMember`, a local-count floor with the cross-node caveat its
+ * schema NOTE states).
  *
  * @param db - The closed strand's database.
  * @param params - The revoking manager keypair and the target member key.
@@ -1382,13 +1411,19 @@ export interface RemoveManagerParams {
  * — deferred — IS enforced here: a signer that is neither an existing manager nor
  * the target itself is rejected at commit.
  *
- * THE LAST MANAGER CANNOT BE REMOVED. `Manager.MinOneManager` (`check on delete`,
- * deferred, so it sees the POST-delete count) rejects any delete that would leave the
- * strand with zero managers — an admin-less closed strand could never admit anyone
- * again, since `Invite`, `addMemberByManager`, and `addManager` all require a
- * `Manager` row. The bootstrap branch of `Manager.Authorized` is gated to INSERTs
+ * THE SOLE MANAGER CANNOT ORDINARILY RESIGN — it SEALS instead. The `'resign'`
+ * branch of `Manager.Authorized` requires at least one manager in the POST-delete
+ * image, so a resignation that would empty the `Manager` table is schema-rejected;
+ * emptying it deliberately is a distinct, self-signed act — {@link sealStrand} —
+ * that permanently freezes admission. This writer refuses the sole-manager
+ * self-resignation up front with an error naming `sealStrand`; that TS guard is UX,
+ * not the trust boundary — the schema rejects a mis-counted `'resign'` approval
+ * regardless. Reading the count inside a caller-joined transaction is correct: an
+ * add-then-resign hand-off composed in one transaction sees 2 and passes, while
+ * the already-rejected delete-then-add swap sees 1 and is refused here as well as
+ * by the schema. The bootstrap branch of `Manager.Authorized` is gated to INSERTs
  * (`old.MemberKey is null`), so it does not waive the signature check on a delete
- * that drops the count toward the floor: a second-to-last removal is authorized
+ * that drops the count toward zero: a second-to-last removal is authorized
  * exactly like any other.
  *
  * HAND-OFF ORDER: a sole manager transferring control must ADD the successor FIRST
@@ -1397,15 +1432,19 @@ export interface RemoveManagerParams {
  * successor's insert has no other manager to authorize it once the sole manager's
  * row is gone.
  *
- * Cross-node caveat: `MinOneManager` counts rows visible to THIS transaction, so two
- * nodes concurrently removing different managers can each see a survivor and still
- * converge to zero. Noted in the schema; a cross-node floor is not attempted here.
+ * Cross-node caveat: the `'resign'`/`'seal'` branches count rows visible to THIS
+ * transaction, so two nodes concurrently removing different managers can each see
+ * a survivor and still converge to zero — an unintended seal. Noted in the schema
+ * (the `Manager` table's seal-propagation NOTE); a cross-node floor is not
+ * attempted here.
  *
  * @param db - The closed strand's database.
  * @param params - The authorizing keypair and the target manager key.
- * @throws If `Manager.Authorized` rejects (a signer that is neither another existing
- *   manager nor the target itself) or `Manager.MinOneManager` rejects (the removal
- *   would leave no managers); the whole delete+tombstone transaction rolls back.
+ * @throws If the signer IS the target and it is the sole manager (before writing —
+ *   the operation the caller wants is {@link sealStrand}), or if `Manager.Authorized`
+ *   rejects (a signer that is neither another existing manager nor the target
+ *   itself, or a raw sole-manager `'resign'` whose post-image count is zero); the
+ *   whole delete+tombstone transaction rolls back.
  */
 export async function removeManager(db: Database, params: RemoveManagerParams): Promise<void> {
   const { byManagerKeyPair, targetManagerKey } = params;
@@ -1415,6 +1454,12 @@ export async function removeManager(db: Database, params: RemoveManagerParams): 
     return;
   }
   const tag = byManagerKeyPair.publicKeyB64 === targetManagerKey ? 'resign' : 'remove';
+  if (tag === 'resign' && await strandTableCount(db, 'Manager') === 1) {
+    throw new Error(
+      'Cannot resign as the SOLE manager: an ordinary resignation never empties the '
+      + 'Manager table. To permanently freeze admission instead, call sealStrand.',
+    );
+  }
   const signature = signStrandApproval(
     ['Strand.Manager', tag, targetManagerKey, target.stampId],
     byManagerKeyPair.privateKeyB64,
@@ -1429,4 +1474,111 @@ export async function removeManager(db: Database, params: RemoveManagerParams): 
     await insertRevocation(db, 'Manager', target.stampId, byManagerKeyPair);
   });
   log('Removed manager %s by %s', targetManagerKey, byManagerKeyPair.publicKeyB64);
+}
+
+// ── Sealing (the sole manager permanently freezes admission) ──────────────────
+
+/** Parameters for {@link sealStrand}. */
+export interface SealStrandParams {
+  /**
+   * The SOLE manager's strand keypair. Its `publicKeyB64` must be the one live
+   * `Strand.Manager` row; it signs the seal-tagged digest over its own key and
+   * live stamp, and files the accompanying tombstone (it is still a committed
+   * member, which is what `Revocation.Authorized` checks).
+   */
+  managerKeyPair: Ed25519KeyPair;
+}
+
+/**
+ * Seal the strand: the SOLE manager deliberately steps down, permanently freezing
+ * membership.
+ *
+ * A sealed strand has zero `Manager` rows, and every admission path — issuing or
+ * cancelling an invitation, consuming one issued BEFORE the seal
+ * (`ConsumedInvite.NotSealed`), admitting a member, promoting a manager — requires
+ * one, so nobody can ever be let in again. That freeze is a privacy guarantee to
+ * everyone who contributed: no key holds the power to admit a party who would then
+ * read the strand's whole history. Sealing is irreversible — the founding branch
+ * of `Manager.Authorized` closes for good once any manager stamp is retired into
+ * `Strand.Revocation`. What remains possible: members may {@link leaveStrand}
+ * (floored by `MinOneMember`), manage their own `MemberPeer` rows, and file
+ * `Revocation` tombstones.
+ *
+ * The `'seal'` branch of `Manager.Authorized` accepts a self-signed delete only
+ * when the POST-image manager count is ZERO — a distinct action tag from
+ * `'resign'`, so a captured resignation approval can never seal and a raw writer
+ * cannot seal by accident. Like {@link removeManager}, the delete pairs with its
+ * `Strand.Revocation` tombstone in one transaction.
+ *
+ * The TS count/identity checks below are UX guards, not the trust boundary — the
+ * schema rejects a mis-tagged or mis-counted approval regardless of what this
+ * writer (or any raw writer) presents.
+ *
+ * @param db - The closed strand's database.
+ * @param params - The sole manager's own keypair.
+ * @throws If more than one manager exists (the caller wants {@link removeManager}),
+ *   or the supplied keypair holds no `Manager` row while one exists, or any schema
+ *   constraint rejects; the whole delete+tombstone transaction rolls back. A strand
+ *   that is ALREADY sealed logs and returns quietly (restart-safe, matching
+ *   {@link bootstrapFounderMembership} and {@link removeManager}'s absent-row no-op).
+ */
+export async function sealStrand(db: Database, params: SealStrandParams): Promise<void> {
+  const { managerKeyPair } = params;
+  const managerCount = await strandTableCount(db, 'Manager');
+  if (managerCount === 0) {
+    log('Strand already sealed (no Manager rows); skipping seal');
+    return;
+  }
+  if (managerCount > 1) {
+    throw new Error(
+      `Cannot seal: ${managerCount} managers exist and sealing is the SOLE manager's act. `
+      + 'The other managers must step down first (removeManager).',
+    );
+  }
+  const self = await managerRow(db, managerKeyPair.publicKeyB64);
+  if (self == null) {
+    throw new Error('Cannot seal: the supplied keypair does not hold the sole Manager row.');
+  }
+  const signature = signStrandApproval(
+    ['Strand.Manager', 'seal', managerKeyPair.publicKeyB64, self.stampId],
+    managerKeyPair.privateKeyB64,
+  );
+  await inStrandTransaction(db, async () => {
+    await db.exec(
+      `delete from Strand.Manager
+         with context ManagerKey = ?, Signature = ?
+         where MemberKey = ?`,
+      [managerKeyPair.publicKeyB64, signature, managerKeyPair.publicKeyB64],
+    );
+    await insertRevocation(db, 'Manager', self.stampId, managerKeyPair);
+  });
+  log('Sealed strand: sole manager %s stepped down', managerKeyPair.publicKeyB64);
+}
+
+/**
+ * Whether the strand is `Type = 'c'` (closed). Reads the singleton `Header` via
+ * the same `db.eval` scan idiom as {@link strandTableCount}; a strand with no
+ * `Header` row yet reports `false`.
+ */
+async function strandIsClosed(db: Database): Promise<boolean> {
+  for await (const row of db.eval('select Type from Strand.Header')) {
+    return row.Type === 'c';
+  }
+  return false;
+}
+
+/**
+ * Whether the strand is sealed: a CLOSED strand with no `Manager` rows.
+ *
+ * The `Header.Type` read is load-bearing, not decoration: an OPEN strand never
+ * holds `Manager` rows at all (`Manager.OnlyClosed`), so a bare manager-count
+ * test would wrongly report every open strand as sealed. Reads locally visible
+ * rows — a node that has not yet converged on the seal still reports `false`
+ * (the schema's seal-propagation NOTE).
+ *
+ * @param db - The strand's database.
+ * @returns `true` iff the strand is closed and holds zero `Manager` rows.
+ */
+export async function isStrandSealed(db: Database): Promise<boolean> {
+  return await strandIsClosed(db) && await strandTableCount(db, 'Manager') === 0;
 }

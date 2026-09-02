@@ -100,6 +100,18 @@ declare schema Strand {
         -- rows — no caller-supplied context decides admission (unlike NotExpired's Now).
         constraint NotCancelled check on insert (
             not exists (select 1 from CancelledInvite C where C.InviteKey = new.InviteKey)
+        ),
+        -- A SEALED strand (a closed strand whose Manager table its sole manager has
+        -- deliberately emptied — see the Manager table comment) admits nobody, and that
+        -- includes the holder of an unspent invitation issued BEFORE the seal.
+        -- cancelInvite itself needs a manager, so after sealing nobody could kill such
+        -- an invitation — this gate is what kills it. The subquery reads the LIVE
+        -- Manager table and defers to commit, so it sees the post-image: at least one
+        -- manager must survive the transaction, and sealing plus consuming in the SAME
+        -- transaction is rejected too. Blocking this insert blocks the whole join, for
+        -- exactly the reason NotCancelled gives above.
+        constraint NotSealed check on insert (
+            exists (select 1 from Manager)
         )
     ) with context (InviteSignature text null, Now datetime null);
 
@@ -128,7 +140,8 @@ declare schema Strand {
     -- "forever".
     -- NOTE: a cancellation must PROPAGATE before the holder redeems — a holder consuming
     -- on a node that has not yet seen this row still gets in. Same convergence class as
-    -- the NotRevoked / MinOneMember / MinOneManager local-visibility notes; not solved here.
+    -- the NotRevoked / MinOneMember local-visibility notes and the Manager table's
+    -- seal-propagation note; not solved here.
     table CancelledInvite (
         InviteKey text primary key,
         constraint OnlyClosed check (
@@ -374,7 +387,7 @@ declare schema Strand {
         -- NOTE: a per-transaction check against locally visible rows. Two partitioned nodes
         -- — one promoting X, one removing X's Member and Manager rows — can each pass
         -- locally and converge to a Manager row with no Member row. Same convergence class
-        -- as the MinOneMember / MinOneManager / NotRevoked notes; not solved here.
+        -- as the MinOneMember / NotRevoked / seal-propagation notes; not solved here.
         constraint MemberExists check on insert (
             exists (select 1 from Member M where M.Key = new.MemberKey)
         ),
@@ -382,17 +395,21 @@ declare schema Strand {
         -- (which proves only that old.MemberKey consented) double as a hand-off: the
         -- former-manager branch would accept re-pointing the row at any new key.
         constraint NoUpdate check on update (false),
-        -- A closed strand must never lose its last manager. Every admit path (Invite,
-        -- addMemberByManager, addManager) requires an existing Manager row, so an
-        -- admin-less strand can never admit anyone again. Deferred (subquery), so the
-        -- count it sees is the POST-delete count.
-        -- NOTE: this is a per-transaction check against locally visible rows. Two nodes
-        -- that concurrently remove different managers can each see a surviving one and
-        -- still converge to zero; if partitioned rotation ever becomes a real workflow,
-        -- the floor needs a cross-node guard, not a local count.
-        constraint MinOneManager check on delete (
-            (select count(1) from Manager) >= 1
-        ),
+        -- A closed strand loses its LAST manager only by SEALING — a distinct,
+        -- self-signed act (the 'seal' branch of Authorized below), never an ordinary
+        -- resignation and never an admin removal. There is deliberately NO
+        -- min-one-manager floor: a strand with no managers is frozen, not bricked.
+        -- Every admission path (Invite, addMemberByManager, addManager) requires a
+        -- Manager row, so a sealed strand's membership can never grow again — and that
+        -- freeze is the privacy guarantee its remaining members are buying: nobody
+        -- holds the power to admit a party who would then read the strand's whole
+        -- history. Sealing is irreversible: the founding branch of Authorized closes
+        -- for good once any manager stamp has been retired into Revocation.
+        -- NOTE: a seal must PROPAGATE before it binds a given node — a node that has
+        -- not yet converged on the delete still shows the manager row, so the
+        -- ex-manager's OWN key could still admit there until the delete arrives. Only
+        -- that one key; no stranger gains anything. Same convergence class as the
+        -- MinOneMember / NotRevoked local-visibility notes; not solved here.
         constraint Authorized check on insert, delete (
             -- Every signed branch below is a domain/action-tagged digest bound to the
             -- row's StampId — the same single-use idiom as Member.Authorized: an
@@ -407,22 +424,46 @@ declare schema Strand {
             -- is belt-and-braces since MemberExists above enforces it on EVERY insert —
             -- kept so this branch's own claim ("this manager IS that member") reads in
             -- place rather than by cross-reference.
+            -- The Revocation gate closes this branch FOREVER once any manager seat has
+            -- been retired: founding happens exactly once per strand (Header, then
+            -- Member, then Manager, with no Revocation rows in existence), so on a
+            -- SEALED strand a lone surviving member cannot re-seat itself as a
+            -- generation-0 founder and start admitting. Accepted, deliberate: between
+            -- its own founding Member and Manager inserts a founder could, with its own
+            -- key, file a junk Revocation('Manager', ...) tombstone (RowIsGone permits
+            -- stamps naming no real row) and permanently block its own founding — pure
+            -- self-harm needing the founder's private key; no other party can reach
+            -- that window (there are no other committed members yet).
             (old.MemberKey is null
                 and new.Generation = 0
                 and (select count(1) from Manager) <= 1
                 and (select count(1) from Member) <= 1
-                and exists (select 1 from Member M where M.Key = new.MemberKey))
+                and exists (select 1 from Member M where M.Key = new.MemberKey)
+                and not exists (select 1 from Revocation R where R.TableName = 'Manager'))
 
-                -- or authorized by this former manager (self-resignation), over the
-                -- resign-tagged digest bound to its own row's stamp. The 'resign' tag
-                -- (vs the admin branch's 'remove') is belt-and-braces — the two
-                -- branches verify against different keys; the anti-replay fix is the
-                -- stamp: once this manager is re-promoted under a fresh stamp, a
-                -- captured resignation no longer removes it.
+                -- or removed by the departing manager ITSELF, over one of two
+                -- self-signed, action-tagged digests bound to its own row's stamp. The
+                -- POST-image manager count is what distinguishes the two: 'resign' is
+                -- an ordinary departure that leaves at least one manager standing,
+                -- while 'seal' is the delete that empties the table and permanently
+                -- freezes admission (see the table comment above). The tag is what
+                -- makes each a signed statement of THAT intent — a captured
+                -- resignation approval can never seal, nor a seal approval merely
+                -- resign — and the stamp is still what makes each single-use: once
+                -- this manager is re-promoted under a fresh stamp, neither captured
+                -- approval removes the new row. Both counts are subqueries, so the
+                -- whole check defers to commit and the counts are the post-image.
                 or (
                     old.MemberKey is not null
                         and old.MemberKey = context.ManagerKey
+                        and (select count(1) from Manager) >= 1
                         and verify(digest('Strand.Manager', 'resign', old.MemberKey, old.StampId), context.Signature, old.MemberKey, 'ed25519')
+                )
+                or (
+                    old.MemberKey is not null
+                        and old.MemberKey = context.ManagerKey
+                        and (select count(1) from Manager) = 0
+                        and verify(digest('Strand.Manager', 'seal', old.MemberKey, old.StampId), context.Signature, old.MemberKey, 'ed25519')
                 )
 
                 -- or a promotion signed by an EARLIER-generation manager, over the
@@ -475,7 +516,7 @@ declare schema Strand {
     -- NOTE: the guarded tables' NotRevoked CHECK runs against locally visible rows, so
     -- a node that has not yet converged on a Revocation row can still accept a replayed
     -- add and the resurrected row coexists with the tombstone after merge — the same
-    -- convergence class as the MinOneMember / MinOneManager local-count notes.
+    -- convergence class as the MinOneMember / Manager seal-propagation notes.
     -- NOTE: this table only grows — one row per membership deletion, plus any junk any
     -- member chooses to file, and Immutable means rows never go away. Fine at strand
     -- scale; if membership churn ever gets large it needs pruning bounded by something
