@@ -15,6 +15,8 @@ import type { ControlTable, RevocableTable, ControlDomain, ControlAction } from 
 import { requireEd25519PublicKeyB64 } from './ed25519-key.js';
 import { retryControlWrite, SCHEMA_INIT_RETRY_POLICY } from './control-write-retry.js';
 import type { ControlWriteRetryOptions } from './control-write-retry.js';
+import { retryControlRead } from './control-read-retry.js';
+import type { ControlReadRetryOptions } from './control-read-retry.js';
 
 export type { ControlTable, RevocableTable, ControlDomain, ControlAction } from './control-authorization.js';
 
@@ -379,6 +381,13 @@ export class ControlDatabase {
    * having to restate the policy's attempts or classifier.
    */
   private controlWriteRetryPacing: ControlWriteRetryOptions = {};
+  /**
+   * Pacing seams for {@link readRows}'s retry — the read twin of
+   * {@link controlWriteRetryPacing}, with the same contract: production leaves this
+   * empty, specs inject a recorded `sleep` / fake `now` so no test waits out a real
+   * backoff. Applied OVER the read policy's defaults but UNDER the call site's `label`.
+   */
+  private controlReadRetryPacing: ControlReadRetryOptions = {};
 
   constructor(config: ControlDatabaseConfig) {
     this.config = config;
@@ -554,8 +563,13 @@ export class ControlDatabase {
   }
 
   /**
-   * Every read in this class runs through here, and this is the ONE place the
-   * committed-read opt-in is spelled.
+   * One UNRETRIED drain of a control read to rows — every read in this class bottoms out
+   * here (almost all via {@link readRows}, which adds the transient-failure retry), and
+   * this is the ONE place the committed-read opt-in is spelled.
+   *
+   * Called directly — bypassing the retry — only by reads issued from INSIDE a locked
+   * write body, where a backoff sleep would hold the write lock and the write funnel
+   * re-runs the read anyway (see the NOTE on {@link readRows}).
    *
    * A control read normally queues on the database's exec mutex, so it does not answer
    * until whatever statement holds that mutex finishes. When a control WRITE is parked
@@ -594,12 +608,62 @@ export class ControlDatabase {
    * transaction's rows. A read after an UNAWAITED write on this database would be wrong
    * — no such caller exists, and {@link withWriteLock} is what keeps it that way.
    */
-  private readEval(sql: string, params?: SqlParameters): AsyncIterableIterator<Record<string, SqlValue>> {
+  private async readRowsOnce(sql: string, params?: SqlParameters): Promise<Record<string, SqlValue>[]> {
+    let iterator: AsyncIterableIterator<Record<string, SqlValue>>;
     if (this.db!.getAutocommit()) {
-      return this.db!.eval(sql, params);
+      iterator = this.db!.eval(sql, params);
+    } else {
+      log('read-eval: a write is in flight, asking for a committed read: %s', sql);
+      iterator = this.db!.eval(sql, params, { readConcurrency: 'committed' });
     }
-    log('read-eval: a write is in flight, asking for a committed read: %s', sql);
-    return this.db!.eval(sql, params, { readConcurrency: 'committed' });
+    const rows: Record<string, SqlValue>[] = [];
+    for await (const row of iterator) {
+      rows.push(row);
+    }
+    return rows;
+  }
+
+  /**
+   * {@link readRowsOnce} plus the bounded transient-failure retry
+   * ({@link retryControlRead}) — the funnel every UNLOCKED control read goes through, so a
+   * read that failed because the cluster could not be asked properly (a stream reset
+   * mid-scan, a partially unreachable cohort) is re-presented a moment later instead of
+   * surfacing to every reader.
+   *
+   * MATERIALIZES the read rather than returning a lazy iterator, and that shape is what
+   * makes the retry possible at all: the failure happens during ITERATION, not at call
+   * time, and a half-consumed iterator cannot be retried without re-yielding rows the
+   * caller already saw. Materializing is safe here — every caller either drains to an
+   * array anyway or takes the first row of a statement that yields at most one (a
+   * primary-key lookup or a `count(1)`); nothing streams.
+   *
+   * Each ATTEMPT is a fresh {@link readRowsOnce} call, so the committed-read opt-in
+   * (`getAutocommit()`) is re-evaluated per attempt — a write can finish between attempts
+   * and change the right answer.
+   *
+   * The retry's budget ({@link CONTROL_READ_RETRY_BUDGET_MS}, 1.5 s) is deliberately far
+   * under the write funnel's: the tightest caller deadline over a control read is the
+   * inbound admission gate's 2 s FAIL-OPEN timeout, and a read that outlives it spends its
+   * retries after the gate has already admitted (see `control-read-retry.ts`).
+   *
+   * `label` names the read in the retry loop's `Control read [<label>] …` debug lines and
+   * nothing else; several reads are in flight concurrently in a real party, so an
+   * unlabelled line cannot be attributed — keep new call sites labelled.
+   *
+   * NOTE: reads issued from INSIDE a locked write body must use {@link readRowsOnce}
+   * instead. `retryControlWrite`'s contract is that backoff sleeps happen with NO lock
+   * held; a read retrying its own backoff inside a locked body would sleep holding the
+   * write lock (stalling every other local writer), and the write funnel already re-runs
+   * the body's reads when it re-runs the body. See {@link queryStampId} /
+   * {@link assertSeatRemains} for the per-call opt-outs.
+   */
+  private readRows(sql: string, params?: SqlParameters, label?: string): Promise<Record<string, SqlValue>[]> {
+    // The label lands LAST so the call site's name survives the spec-injected pacing —
+    // it changes log attribution only, never behaviour (same layering as lockedWithRetry).
+    return retryControlRead(
+      () => this.readRowsOnce(sql, params),
+      { ...this.controlReadRetryPacing, ...(label !== undefined ? { label } : {}) }
+    );
   }
 
   /**
@@ -608,7 +672,7 @@ export class ControlDatabase {
   async queryStrands(): Promise<StrandRow[]> {
     this.ensureInitialized();
     const results: StrandRow[] = [];
-    for await (const row of this.readEval('select Id, MemberPrivateKey, Type from CadreControl.Strand')) {
+    for (const row of await this.readRows('select Id, MemberPrivateKey, Type from CadreControl.Strand', undefined, 'strands')) {
       results.push({
         Id: row.Id as string,
         MemberPrivateKey: row.MemberPrivateKey as string | null,
@@ -626,9 +690,10 @@ export class ControlDatabase {
    */
   async queryStrand(strandId: string): Promise<StrandRow | null> {
     this.ensureInitialized();
-    for await (const row of this.readEval(
+    for (const row of await this.readRows(
       'select Id, MemberPrivateKey, Type from CadreControl.Strand where Id = ?',
-      [strandId]
+      [strandId],
+      'strand'
     )) {
       return {
         Id: row.Id as string,
@@ -655,7 +720,7 @@ export class ControlDatabase {
     if (!CONTROL_TABLE_SET.has(table)) {
       throw new Error(`Unknown CadreControl table: ${table}`);
     }
-    for await (const row of this.readEval(`select count(1) as Count from CadreControl.${table}`)) {
+    for (const row of await this.readRows(`select count(1) as Count from CadreControl.${table}`, undefined, 'count-rows')) {
       return (row.Count as number) ?? 0;
     }
     return 0;
@@ -675,7 +740,7 @@ export class ControlDatabase {
    */
   async hasOwnerKey(): Promise<boolean> {
     this.ensureInitialized();
-    for await (const row of this.readEval('select count(1) as Count from CadreControl.OwnerKey')) {
+    for (const row of await this.readRows('select count(1) as Count from CadreControl.OwnerKey', undefined, 'owner-key-exists')) {
       return (row.Count as number) > 0;
     }
     return false;
@@ -708,7 +773,7 @@ export class ControlDatabase {
   async getOwnerKeys(): Promise<Set<string>> {
     this.ensureInitialized();
     const keys = new Set<string>();
-    for await (const row of this.readEval('select Key from CadreControl.OwnerKey')) {
+    for (const row of await this.readRows('select Key from CadreControl.OwnerKey', undefined, 'owner-keys')) {
       keys.add(row.Key as string);
     }
     return keys;
@@ -743,7 +808,7 @@ export class ControlDatabase {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
     const rows: CadrePeerRow[] = [];
-    for await (const row of this.readEval('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer')) {
+    for (const row of await this.readRows('select PeerId, Multiaddr, StampId, VouchOwner, VouchSig from CadreControl.CadrePeer', undefined, 'cadre-peers')) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
         continue;
@@ -771,7 +836,7 @@ export class ControlDatabase {
   async queryValidationKeys(): Promise<string[]> {
     this.ensureInitialized();
     const keys: string[] = [];
-    for await (const row of this.readEval('select Key from CadreControl.ValidationKey')) {
+    for (const row of await this.readRows('select Key from CadreControl.ValidationKey', undefined, 'validation-keys')) {
       keys.push(row.Key as string);
     }
     return keys.sort();
@@ -791,14 +856,28 @@ export class ControlDatabase {
    * `table` and its {@link GUARDED_KEY_COLUMN} column are interpolated into the SQL; both
    * come from closed literal unions — no caller-supplied string can reach the statement
    * (same injection-surface discipline as {@link countRows}'s `CONTROL_TABLE_SET` guard).
+   *
+   * NOTE: `retry: false` is passed by exactly the call sites that run INSIDE a locked
+   * write body — {@link deleteGuardedRow} and {@link insertCadrePeer}'s insert-if-absent
+   * guard. A read retrying there would sleep its backoff HOLDING the write lock
+   * (`retryControlWrite`'s contract is that backoff sleeps happen with no lock held), and
+   * the write funnel already re-runs the body's reads when it re-runs the body. The
+   * unlocked callers — the public stamp readers, {@link reauthorizeCadrePeer} and
+   * {@link reapRevokedRow}, whose stamp reads run BEFORE their locks are taken — keep the
+   * default retried path. Explicit per call rather than an ambient flag: unlocked reads
+   * run concurrently with a locked body, so `this`-state cannot tell the two apart.
    */
   private async queryStampId(
     table: RevocableTable,
-    keyValue: string
+    keyValue: string,
+    retry = true
   ): Promise<string | null> {
     this.ensureInitialized();
     const sql = `select StampId from CadreControl.${table} where ${GUARDED_KEY_COLUMN[table]} = ?`;
-    for await (const row of this.readEval(sql, [keyValue])) {
+    const rows = retry
+      ? await this.readRows(sql, [keyValue], `stamp-${table}`)
+      : await this.readRowsOnce(sql, [keyValue]);
+    for (const row of rows) {
       return (row.StampId as string | null) ?? null;
     }
     return null;
@@ -852,7 +931,7 @@ export class ControlDatabase {
   async queryRevokedStamps(tableName: RevocableTable): Promise<Set<string>> {
     this.ensureInitialized();
     const stamps = new Set<string>();
-    for await (const row of this.readEval('select StampId from CadreControl.Revocation where TableName = ?', [tableName])) {
+    for (const row of await this.readRows('select StampId from CadreControl.Revocation where TableName = ?', [tableName], 'revoked-stamps')) {
       stamps.add(row.StampId as string);
     }
     return stamps;
@@ -869,7 +948,7 @@ export class ControlDatabase {
   async queryRevocations(): Promise<RevocationRow[]> {
     this.ensureInitialized();
     const rows: RevocationRow[] = [];
-    for await (const row of this.readEval('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation')) {
+    for (const row of await this.readRows('select TableName, RowKey, StampId, ReissuedAt from CadreControl.Revocation', undefined, 'revocations')) {
       rows.push({
         tableName: row.TableName as RevocableTable,
         rowKey: row.RowKey as string,
@@ -901,9 +980,10 @@ export class ControlDatabase {
   async queryPeerRecord(peerId: string): Promise<PeerAddressRecord | null> {
     this.ensureInitialized();
     const revoked = await this.queryRevokedStamps('CadrePeer');
-    for await (const row of this.readEval(
+    for (const row of await this.readRows(
       'select PeerId, PublicKey, Multiaddr, UpdatedAt, Sig, StampId from CadreControl.CadrePeer where PeerId = ?',
-      [peerId]
+      [peerId],
+      'peer-record'
     )) {
       const stampId = (row.StampId as string | null) ?? null;
       if (stampId !== null && revoked.has(stampId)) {
@@ -971,9 +1051,10 @@ export class ControlDatabase {
    */
   async queryDeviceToken(peerId: string): Promise<DeviceTokenRow | null> {
     this.ensureInitialized();
-    for await (const row of this.readEval(
+    for (const row of await this.readRows(
       'select PeerId, Platform, Token, UpdatedAt, Sig, StampId from CadreControl.DeviceToken where PeerId = ?',
-      [peerId]
+      [peerId],
+      'device-token'
     )) {
       return {
         peerId: row.PeerId as string,
@@ -1220,7 +1301,8 @@ export class ControlDatabase {
       buildAuthorizationMessage('CadreControl.CadrePeer', 'vouch', [row.peerId, stampId])
     );
     return await this.mutateCadrePeer('peer-insert', async () => {
-      if (await this.queryStampId('CadrePeer', row.peerId) !== null) {
+      // retry: false — this guard runs inside the locked write body (see queryStampId's NOTE).
+      if (await this.queryStampId('CadrePeer', row.peerId, false) !== null) {
         log('CadrePeer row already present for %s; insert skipped (already a member)', row.peerId);
         return false;
       }
@@ -1404,7 +1486,8 @@ export class ControlDatabase {
     signMessage: (message: Uint8Array) => string
   ): Promise<boolean> {
     this.ensureInitialized();
-    const stampId = await this.queryStampId(table, keyValue);
+    // retry: false — this runs inside the locked write body (see queryStampId's NOTE).
+    const stampId = await this.queryStampId(table, keyValue, false);
     if (stampId === null) {
       log('delete %s: no row for %s (already absent)', table, keyValue);
       return false;
@@ -2262,13 +2345,17 @@ export class ControlDatabase {
     // is still open (tracked by `debt-composite-pk-point-lookup-unreliable-untracked`). A
     // spurious empty result only costs the attempt its NAMED exhaustion error, reverting it to
     // today's generic `Authorized` refusal — never a seat the invite does not have.
+    // Both reads pass retry: false — assertSeatRemains only ever runs inside the locked
+    // write bodies of redeemInvitation / recordFormationUsage, where a read retrying its
+    // own backoff would sleep holding the write lock and the write funnel re-runs these
+    // reads anyway (see the NOTE on readRows).
     const totalUses = knownTotalUses !== undefined
       ? knownTotalUses
-      : (await this.queryFormationInvite(token))?.totalUses ?? null;
+      : (await this.queryFormationInvite(token, false))?.totalUses ?? null;
     if (totalUses == null) {
       return;
     }
-    const used = await this.countFormationUsage(token);
+    const used = await this.countFormationUsage(token, false);
     if (used >= totalUses) {
       throw new InvitationExhaustedError(token, used, totalUses);
     }
@@ -2313,8 +2400,12 @@ export class ControlDatabase {
    * Read a `FormationInvite` row by token, or null when absent. `expiresAtMs` is
    * the parsed epoch-ms of the stored `datetime` (null when the invite never
    * expires); the caller compares it against the wall clock for freshness.
+   *
+   * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
+   * locked write body — same per-call opt-out, and for the same reason, as
+   * {@link queryStampId}'s. Every unlocked caller keeps the default retried path.
    */
-  async queryFormationInvite(token: string): Promise<{
+  async queryFormationInvite(token: string, retry = true): Promise<{
     token: string;
     sAppId: string;
     expiresAtMs: number | null;
@@ -2323,10 +2414,11 @@ export class ControlDatabase {
     strandId: string | null;
   } | null> {
     this.ensureInitialized();
-    for await (const row of this.readEval(
-      'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?',
-      [token]
-    )) {
+    const sql = 'select Token, sAppId, ExpiresAt, TotalUses, ValidationUrl, StrandId from CadreControl.FormationInvite where Token = ?';
+    const rows = retry
+      ? await this.readRows(sql, [token], 'formation-invite')
+      : await this.readRowsOnce(sql, [token]);
+    for (const row of rows) {
       return {
         token: row.Token as string,
         sAppId: row.sAppId as string,
@@ -2358,13 +2450,18 @@ export class ControlDatabase {
    * `schemas/control.qsql`, and the engine defect in
    * `blocked/secondary-index-seek-blind-to-sibling-rows`. Do NOT re-declare the index to
    * speed this up while that ticket is open.
+   *
+   * `retry: false` is passed only by {@link assertSeatRemains}, which runs INSIDE a
+   * locked write body — same per-call opt-out, and for the same reason, as
+   * {@link queryStampId}'s. Every unlocked caller keeps the default retried path.
    */
-  async countFormationUsage(token: string): Promise<number> {
+  async countFormationUsage(token: string, retry = true): Promise<number> {
     this.ensureInitialized();
-    for await (const row of this.readEval(
-      'select count(1) as Count from CadreControl.FormationUsage where Token = ?',
-      [token]
-    )) {
+    const sql = 'select count(1) as Count from CadreControl.FormationUsage where Token = ?';
+    const rows = retry
+      ? await this.readRows(sql, [token], 'formation-usage-count')
+      : await this.readRowsOnce(sql, [token]);
+    for (const row of rows) {
       return (row.Count as number) ?? 0;
     }
     return 0;
@@ -2396,8 +2493,10 @@ export class ControlDatabase {
     // prune redeemed/expired rows.
     const metered: Array<{ token: string; totalUses: number }> = [];
     let unlimitedOutstanding = false;
-    for await (const row of this.readEval(
-      'select Token, ExpiresAt, TotalUses from CadreControl.FormationInvite'
+    for (const row of await this.readRows(
+      'select Token, ExpiresAt, TotalUses from CadreControl.FormationInvite',
+      undefined,
+      'outstanding-invites'
     )) {
       const expiresAtMs = parseNullableStoredDatetimeMs(row.ExpiresAt as string | number | null);
       if (expiresAtMs !== null && expiresAtMs <= nowMs) {

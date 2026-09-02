@@ -24,6 +24,17 @@ export {
   type ControlWriteRetryOptions
 } from './control-write-retry.js';
 
+// Bounded retry for transient control-read failures (classifier + policy behind
+// ControlDatabase.readRows; the loop is shared with the write side via control-retry.ts)
+export {
+  CONTROL_READ_ATTEMPTS,
+  CONTROL_READ_RETRY_DELAYS_MS,
+  CONTROL_READ_RETRY_BUDGET_MS,
+  isRetriableControlReadFailure,
+  retryControlRead,
+  type ControlReadRetryOptions
+} from './control-read-retry.js';
+
 // Control-plane authorization field vector (the domain/action tagging every signer shares)
 export { controlAuthorizationFields, type ControlDomain, type ControlAction } from './control-authorization.js';
 

@@ -1,7 +1,5 @@
-import debug from 'debug';
-import { unwrapError } from '@quereus/quereus';
-
-const log = debug('sereus:cadre:control-db');
+import { chainMessages, retryControlOperation } from './control-retry.js';
+import type { ControlRetryOptions } from './control-retry.js';
 
 /**
  * Bounded retry for TRANSIENT control-write failures — the classifier and loop behind
@@ -29,7 +27,9 @@ const log = debug('sereus:cadre:control-db');
  * list must be safe for all ~19 callers.
  *
  * Lives outside `control-database.ts` so a spec can drive the classifier against real engine
- * errors without importing the whole database class.
+ * errors without importing the whole database class. The loop itself lives in
+ * `control-retry.ts`, shared with the READ policy (`control-read-retry.ts`) — this module
+ * owns the write policies: their classifiers, attempt counts, backoff and budget.
  */
 
 /**
@@ -167,8 +167,12 @@ const SUPER_MAJORITY_SHORTFALL_UNANSWERED =
  * An aggregate whose details came out EMPTY (possible when `formatBatchStatuses` has no
  * batches to format) carries neither token, matches nothing here, and is not retried — an
  * unattributable failure is not a proven non-commit.
+ *
+ * Exported for the READ classifier (`control-read-retry.ts`), which reuses it verbatim: a
+ * `get` batch formats the same single-block `[block:` token, and a read can never produce
+ * the commit-phase `[blocks:` shape at all.
  */
-function isUncommittedTransactorAggregate(message: string): boolean {
+export function isUncommittedTransactorAggregate(message: string): boolean {
 	return TRANSACTOR_AGGREGATE.test(message) && message.includes(SINGLE_BLOCK_BATCH_TOKEN);
 }
 
@@ -222,25 +226,6 @@ function isSelfCoordinationGraceRefusal(message: string): boolean {
 }
 
 /**
- * Every message in the failure's `cause` chain.
- *
- * `unwrapError` declares its `message` as `string`, but it follows `.cause` without checking what
- * that holds — a chain link that is not an `Error` (a stream rejected with a bare string reason,
- * an `AbortSignal.reason` that is a plain object) yields `undefined` there, and calling
- * `.includes` on it would throw a `TypeError` out of this classifier, INSIDE `retryControlWrite`'s
- * catch, replacing the real control-write failure with a confusing one. Non-strings are dropped:
- * a link nobody can read is a link that matches nothing, which is already the conservative answer.
- *
- * NOTE: a cause chain with a CYCLE would spin forever inside `unwrapError` itself. No error in
- * this repo builds one; if a hang ever localises to a control-write failure path, look there.
- */
-function chainMessages(error: Error): string[] {
-	return unwrapError(error)
-		.map(({ message }) => message)
-		.filter(message => typeof message === 'string');
-}
-
-/**
  * The error messages that mean "the cohort did not answer AND nothing committed", and nothing
  * else. The observed one-shot failure was `registerSelf()` racing a connection still forming:
  * a read/pend-phase transactor aggregate with `cause=The stream has been reset`.
@@ -282,7 +267,8 @@ const RETRIABLE_SCHEMA_INIT_MATCHERS: readonly ((message: string) => boolean)[] 
  * Did this control write fail because the cluster cohort did not ANSWER — i.e. is
  * re-presenting the SAME signed write a moment later the right response?
  *
- * Classifies by MESSAGE, walking the `cause` chain with Quereus' own {@link unwrapError} —
+ * Classifies by MESSAGE, walking the `cause` chain with the shared {@link chainMessages}
+ * (Quereus' own `unwrapError` underneath) —
  * the failure surface is not recognisable by type. The transactor and the coordinator both throw bare `Error`s, and by
  * the time one reaches `ControlDatabase` it is wrapped in a `QuereusError` (the real chain
  * is `QuereusError` → `Error` → `Error`), so the match must work at any depth. Anything
@@ -336,41 +322,16 @@ function matchesRetriableMessage(
 }
 
 /**
- * Policy and pacing for {@link retryControlWrite}. Production callers pass nothing (or a named
- * policy such as {@link SCHEMA_INIT_RETRY_POLICY}); specs inject a recorded `sleep`, a shorter
- * delay list, or a fake clock so no test ever waits out a real backoff.
+ * Policy and pacing overrides for {@link retryControlWrite}. Production callers pass nothing
+ * (or a named policy such as {@link SCHEMA_INIT_RETRY_POLICY}); specs inject a recorded
+ * `sleep`, a shorter delay list, or a fake clock so no test ever waits out a real backoff.
  *
- * Every field defaults to the shipped control-write policy, so an omitted field is byte-identical
- * to the behaviour before per-call-site policies existed.
+ * Every field defaults to the shipped control-write policy ({@link CONTROL_WRITE_ATTEMPTS},
+ * {@link CONTROL_WRITE_RETRY_DELAYS_MS}, {@link isRetriableControlWriteFailure}), so an
+ * omitted field is byte-identical to the behaviour before per-call-site policies existed.
+ * The field shapes and semantics live on the shared {@link ControlRetryOptions}.
  */
-export interface ControlWriteRetryOptions {
-	/**
-	 * Total attempts, first included. Default {@link CONTROL_WRITE_ATTEMPTS}, floored at 1 —
-	 * below that the loop would run the body zero times and rethrow a `lastError` nobody set.
-	 */
-	attempts?: number;
-	/** Backoff base before retry N (last entry repeats). Default {@link CONTROL_WRITE_RETRY_DELAYS_MS}. */
-	delaysMs?: readonly number[];
-	/**
-	 * Which failures are transient enough to re-present. Default
-	 * {@link isRetriableControlWriteFailure}; the only other shipped value is
-	 * {@link isRetriableSchemaInitFailure}, via {@link SCHEMA_INIT_RETRY_POLICY}.
-	 */
-	isRetriable?: (error: unknown) => boolean;
-	/**
-	 * Operation label stamped into every log line this loop emits (rendered as
-	 * `Control write [<label>] …`), and NOTHING else — no behavioural effect. The debug
-	 * log is the only surface where the loop's decisions are observable (the rethrown
-	 * error is unchanged and no attempt counter is exposed), and several writes retry
-	 * CONCURRENTLY in a real party, so an unlabelled line cannot be attributed to a
-	 * write. The degraded-cohort scenario asserts on these lines per-operation.
-	 */
-	label?: string;
-	/** The sleep primitive. Default: `setTimeout`. */
-	sleep?: (ms: number) => Promise<void>;
-	/** Clock for the elapsed-budget check. Default: `Date.now`. */
-	now?: () => number;
-}
+export type ControlWriteRetryOptions = ControlRetryOptions;
 
 /**
  * The one non-default retry policy: `ControlDatabase.loadSchema`'s distributed DDL, which
@@ -406,78 +367,17 @@ export const SCHEMA_INIT_RETRY_POLICY: Readonly<ControlWriteRetryOptions> = {
  * so the exact messages downstream code and the degraded-cohort-member scenario assert on
  * survive. A non-retriable failure propagates from the attempt that raised it.
  */
-export async function retryControlWrite<T>(
+export function retryControlWrite<T>(
 	attempt: () => Promise<T>,
 	options: ControlWriteRetryOptions = {}
 ): Promise<T> {
-	const attempts = Math.max(1, options.attempts ?? CONTROL_WRITE_ATTEMPTS);
-	const delays = options.delaysMs ?? CONTROL_WRITE_RETRY_DELAYS_MS;
-	const isRetriable = options.isRetriable ?? isRetriableControlWriteFailure;
-	const sleep = options.sleep ?? defaultSleep;
-	const now = options.now ?? Date.now;
-	// Empty when unlabelled, so an unlabelled line is byte-identical to what this loop
-	// logged before labels existed.
-	const tag = options.label ? ` [${options.label}]` : '';
-	const start = now();
-	let lastError: unknown;
-	let attemptsMade = 0;
-	for (let attemptNumber = 1; attemptNumber <= attempts; attemptNumber++) {
-		attemptsMade = attemptNumber;
-		try {
-			const result = await attempt();
-			if (attemptNumber > 1) {
-				log('Control write%s committed on attempt %d/%d', tag, attemptNumber, attempts);
-			}
-			return result;
-		} catch (error) {
-			if (!isRetriable(error)) {
-				// The ONLY trace that this funnel saw a failure and declined it. Without it the
-				// log is silent either way, so "the classifier vetoed this one" is
-				// indistinguishable from "the retry is not wired into this path at all".
-				log('Control write%s failed non-transiently on attempt %d/%d, not retried here: %s',
-					tag, attemptNumber, attempts, error);
-				throw error;
-			}
-			lastError = error;
-			if (attemptNumber === attempts) {
-				break;
-			}
-			const elapsed = now() - start;
-			if (elapsed >= CONTROL_WRITE_RETRY_BUDGET_MS) {
-				break;
-			}
-			const delay = jitteredDelay(delays, attemptNumber);
-			log('Control write%s failed transiently (attempt %d/%d), retrying in %d ms: %s',
-				tag, attemptNumber, attempts, delay, error);
-			await sleep(delay);
-		}
-	}
-	log('Control write%s failed after %d/%d attempt(s): %s', tag, attemptsMade, attempts, lastError);
-	throw lastError;
-}
-
-/**
- * Backoff for the retry that follows attempt `attemptNumber`: the matching base delay
- * (last entry repeats), jittered ±50%, then capped at the list's largest base so no single
- * sleep exceeds it (see {@link CONTROL_WRITE_RETRY_DELAYS_MS} for why). `Math.random` is
- * fine here — the jitter only de-synchronizes concurrent retriers, nothing is derived
- * from it.
- *
- * NOTE: the cap bites on the LAST delay, whose base IS the largest, so ~half of those sleeps
- * land exactly on the cap rather than spread — de-synchronization is only partial there.
- * Harmless while retriers are a handful of party nodes whose attempts already start seconds
- * apart; if a party ever retries in a tight synchronized herd, raise the cap above the
- * largest base instead of jittering about it.
- */
-function jitteredDelay(delays: readonly number[], attemptNumber: number): number {
-	if (delays.length === 0) {
-		return 0;
-	}
-	const base = delays[Math.min(attemptNumber - 1, delays.length - 1)]!;
-	const jittered = base * (0.5 + Math.random());
-	return Math.min(jittered, Math.max(...delays));
-}
-
-function defaultSleep(ms: number): Promise<void> {
-	return new Promise(resolve => setTimeout(resolve, ms));
+	return retryControlOperation(attempt, {
+		attempts: CONTROL_WRITE_ATTEMPTS,
+		delaysMs: CONTROL_WRITE_RETRY_DELAYS_MS,
+		budgetMs: CONTROL_WRITE_RETRY_BUDGET_MS,
+		isRetriable: isRetriableControlWriteFailure,
+		// The default prefix, named anyway: the degraded-cohort scenario asserts on
+		// `Control write [<label>] …` lines byte-for-byte.
+		logPrefix: 'Control write',
+	}, options);
 }
