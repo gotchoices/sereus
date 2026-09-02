@@ -1,3 +1,10 @@
+<!-- resume-note -->
+RESUME: A prior agent run on this ticket did not complete.
+  Prior run: 2026-09-02T06:50:09.587Z (agent: claude)
+  Log file: C:\projects\sereus\tickets\.logs\1-strand-seal-schema-and-writer.implement.2026-09-02T06-50-09-585Z.log
+Read the log to see what was done. Resume where it left off.
+If the prior run hit a timeout or repeated error, be cautious not to rush into the same situation.
+<!-- /resume-note -->
 description: Let the last manager of a private strand deliberately step down, permanently freezing who belongs to it, so the remaining members can be sure nobody new will ever be let in.
 files: schemas/strand.qsql, packages/quereus-plugin-sereus/src/strand-schema.ts, packages/cadre-core/src/strand-membership-writer.ts, packages/cadre-core/src/index.ts, packages/cadre-core/test/strand-membership-manager-rotation.spec.ts, packages/cadre-core/test/strand-membership-network-transactor-parity.spec.ts
 difficulty: hard
