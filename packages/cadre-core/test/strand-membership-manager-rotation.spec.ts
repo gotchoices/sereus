@@ -8,6 +8,7 @@ import {
   addManager,
   admitManager,
   removeManager,
+  sealStrand,
   signStrandApproval,
   generateStrandStampId,
 } from '../src/strand-membership-writer.js';
@@ -468,29 +469,52 @@ describe('removeManager', () => {
     expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [a2.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
-  // ── The min-one-manager floor + the no-bootstrap-bypass pin ─────────────────
+  // ── Sealing (the only path to zero managers) + the no-bootstrap-bypass pin ──
   //
-  // `Manager.MinOneManager` (`check on delete`, deferred → sees the POST-delete
-  // count) keeps a closed strand from ever reaching zero managers: every admit path
-  // (Invite, addMemberByManager, addManager) needs a Manager row, so an admin-less
-  // strand is frozen forever. And `Manager.Authorized`'s bootstrap branch is gated to
-  // INSERTs (`old.MemberKey is null`), so a delete that drops the count toward the
-  // floor no longer waives the signature check.
+  // The 'resign' branch of `Manager.Authorized` (deferred → sees the POST-delete
+  // count) requires at least one surviving manager, so an ordinary resignation can
+  // never empty the Manager table; only the distinct, self-signed 'seal' branch
+  // accepts the emptying delete — permanently freezing admission (every admit path
+  // needs a Manager row). And `Manager.Authorized`'s bootstrap branch is gated to
+  // INSERTs (`old.MemberKey is null`), so a delete that drops the count toward
+  // zero no longer waives the signature check.
 
-  it('rejects the SOLE manager resigning (min-one-manager floor)', async () => {
+  it('rejects the SOLE manager resigning (sealing is the only path to zero managers)', async () => {
     const { db, founder } = await openStrand('c');
     expect(await tableCount(db, 'Manager')).toBe(1);
 
-    // A valid self-resignation signature — rejected purely because it would empty
-    // the Manager table.
-    // Authorized passes (the self-resignation branch is satisfied), so MinOneManager
-    // is the ONLY constraint that can reject — pinning the name proves the floor fired.
+    // The writer refuses up front, naming sealStrand — a UX guard, not the trust
+    // boundary.
     await expect(
       removeManager(db, { byManagerKeyPair: founder, targetManagerKey: founder.publicKeyB64 }),
-    ).rejects.toThrow(/MinOneManager/);
-
+    ).rejects.toThrow(/sealStrand/);
     expect(await tableCount(db, 'Manager')).toBe(1);
-    expect(await db.get('select MemberKey from Strand.Manager where MemberKey = ?', [founder.publicKeyB64])).toBeTruthy();
+
+    // A RAW resign-tagged delete bypasses that guard; the 'resign' branch requires
+    // a post-delete count >= 1 and no other branch matches a valid self-signature
+    // over the 'resign' tag, so Authorized is the rejector. The tombstone rides the
+    // transaction so RevocationRecorded stays satisfied and the pin stays truthful.
+    const founderStamp = await managerStamp(db, founder.publicKeyB64);
+    const resignSignature = signStrandApproval(
+      ['Strand.Manager', 'resign', founder.publicKeyB64, founderStamp],
+      founder.privateKeyB64,
+    );
+    await expect(inTransaction(db, async () => {
+      await db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [founder.publicKeyB64, resignSignature, founder.publicKeyB64],
+      );
+      await fileTombstone(db, 'Manager', founderStamp, founder);
+    })).rejects.toThrow(/Authorized/);
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // Sealing — the distinct, self-signed act — succeeds: the Manager table empties
+    // and the founder's Member row survives (the strand is frozen, not bricked).
+    await sealStrand(db, { managerKeyPair: founder });
+    expect(await tableCount(db, 'Manager')).toBe(0);
+    expect(await db.get('select Key from Strand.Member where Key = ?', [founder.publicKeyB64])).toBeTruthy();
   }, 30_000);
 
   it('rejects a stranger removing the last manager (no unsigned drop to zero)', async () => {
@@ -498,9 +522,11 @@ describe('removeManager', () => {
     const stranger = freshKeyPair();
     expect(await tableCount(db, 'Manager')).toBe(1);
 
-    // Both MinOneManager (post-delete count 0) and Authorized (stranger signature)
-    // reject this; which one reports first is engine evaluation order, so only the
-    // fact of a CHECK rejection is pinned.
+    // The stranger's remove-tagged delete matches no Authorized branch (the remove
+    // branch finds no live authorizer in the empty post-image; both self branches
+    // need old.MemberKey = context.ManagerKey), and the stranger-signed tombstone
+    // fails Revocation.Authorized too; which reports first is engine evaluation
+    // order, so only the fact of a CHECK rejection is pinned.
     await expect(
       removeManager(db, { byManagerKeyPair: stranger, targetManagerKey: founder.publicKeyB64 }),
     ).rejects.toThrow(/CHECK constraint failed/);
@@ -517,7 +543,7 @@ describe('removeManager', () => {
 
     // Post-delete count would be 1 — the old, ungated `count(Manager) <= 1` branch
     // accepted exactly this. Now it must fail on the signature.
-    // MinOneManager is satisfied (1 would remain), so Authorized is the only rejector.
+    // One manager still remains post-delete, so Authorized is the only rejector.
     await expect(
       removeManager(db, { byManagerKeyPair: stranger, targetManagerKey: a2.publicKeyB64 }),
     ).rejects.toThrow(/Authorized/);
@@ -598,7 +624,8 @@ describe('removeManager', () => {
 
     // The successor's INSERT has no other manager to authorize it (the founder's row
     // is gone in the post-image) and the bootstrap branch is gated off, so Authorized
-    // rejects — not MinOneManager, which the successor row satisfies.
+    // rejects — the founder's own delete passes (its 'resign' branch sees the
+    // successor row in the post-image count).
     await expect(swap()).rejects.toThrow(/Authorized/);
 
     expect(await tableCount(db, 'Manager')).toBe(1);

@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { admitManager, removeManager } from '../src/strand-membership-writer.js';
+import { addManager, admitManager, removeManager, sealStrand } from '../src/strand-membership-writer.js';
 import { freshKeyPair, tableCount, openStrand } from './strand-spec-helpers.js';
 
 /**
@@ -9,8 +9,8 @@ import { freshKeyPair, tableCount, openStrand } from './strand-spec-helpers.js';
  * Every `strand-membership-*.spec.ts` suite runs on the LOCAL transactor
  * (`openRawStrand`'s default), because that is what a solo test strand launches
  * on today. The deferred, subquery-bearing `CHECK` constraints those suites pin
- * — `Manager.Authorized`, `Manager.MinOneManager` — are what stop an
- * unauthorized party from removing a strand's administrators. Reading the code
+ * — above all `Manager.Authorized` — are what stop an unauthorized party from
+ * removing a strand's administrators. Reading the code
  * says enforcement lives in Quereus and the optimystic vtab session, not in the
  * transactor; this spec is the proof, gathered when the network transactor
  * became the only production path (`retire-strand-mode-in-cadre-core`).
@@ -19,8 +19,9 @@ import { freshKeyPair, tableCount, openStrand } from './strand-spec-helpers.js';
  * through the network transactor (`openStrand(type, 'network')`), mirroring a
  * named test in `strand-membership-manager-rotation.spec.ts` — which keeps
  * running on the local transactor. Enough, not exhaustive: three cases covering
- * a rejected delete, the deferred post-image floor, and an accepted multi-step
- * flow exercise the constraint machinery's distinct shapes.
+ * a rejected delete, an accepted seal followed by a deferred-CHECK rejection,
+ * and an accepted multi-step flow exercise the constraint machinery's distinct
+ * shapes.
  *
  * Every case boots a real (isolated) libp2p node, so the case count stays low
  * and the per-test timeout generous.
@@ -44,8 +45,8 @@ describe('strand membership constraints, network transactor parity', () => {
 
 		const notAManager = freshKeyPair();
 		// Post-delete count would be 1, so the insert-only bootstrap branch cannot
-		// waive the signature and MinOneManager is satisfied — Authorized is the
-		// constraint doing the rejecting, same as the mirrored local-transactor test.
+		// waive the signature — Authorized is the constraint doing the rejecting,
+		// same as the mirrored local-transactor test.
 		await expect(
 			removeManager(db, { byManagerKeyPair: notAManager, targetManagerKey: other.publicKeyB64 }),
 		).rejects.toThrow(/Authorized/);
@@ -54,21 +55,27 @@ describe('strand membership constraints, network transactor parity', () => {
 	}, 60_000);
 
 	// Mirrors: `strand-membership-manager-rotation.spec.ts` →
-	// "rejects the SOLE manager resigning (min-one-manager floor)".
-	// `Manager.MinOneManager` (`check on delete`, deferred → sees the POST-delete
-	// count) must keep a closed strand from reaching zero managers. The signature
-	// is a valid self-resignation, so MinOneManager is the only possible rejector
-	// — pinning the name proves the floor fired on this transactor.
-	it('rejects the sole manager resigning (Manager.MinOneManager, deferred, on delete)', async () => {
+	// "rejects the SOLE manager resigning (sealing is the only path to zero managers)".
+	// The 'seal' branch of `Manager.Authorized` (deferred → sees the POST-delete
+	// count) must accept the sole manager's self-signed seal on this transactor
+	// too, and the same deferred constraint must then reject any later admission —
+	// one accepted flow plus one deferred-CHECK rejection, both proven above the
+	// transactor.
+	it('accepts the sole manager sealing, then rejects re-admission (Manager.Authorized, deferred)', async () => {
 		const { db, founder, transactor } = await openStrand('c', 'network');
 		expect(transactor).toBe('network');
 		expect(await tableCount(db, 'Manager')).toBe(1);
 
-		await expect(
-			removeManager(db, { byManagerKeyPair: founder, targetManagerKey: founder.publicKeyB64 }),
-		).rejects.toThrow(/MinOneManager/);
+		await sealStrand(db, { managerKeyPair: founder });
+		expect(await tableCount(db, 'Manager')).toBe(0);
 
-		expect(await tableCount(db, 'Manager')).toBe(1);
+		// The ex-manager's own key is the strongest re-admission attempt: still a
+		// committed Member, but the promotion branch finds no live authorizer and
+		// the bootstrap branch is closed for good by the seal's Manager tombstone.
+		await expect(
+			addManager(db, { byManagerKeyPair: founder, newManagerKey: founder.publicKeyB64 }),
+		).rejects.toThrow(/Authorized/);
+		expect(await tableCount(db, 'Manager')).toBe(0);
 	}, 60_000);
 
 	// Mirrors the acceptance halves of `strand-membership-manager-rotation.spec.ts` →
