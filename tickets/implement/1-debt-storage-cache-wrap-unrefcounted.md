@@ -2,9 +2,6 @@
 description: When several parts of the app are told to use one shared data store, they all quietly end up sharing a single memory cache that none of them owns — so the first part to shut down throws that cache away while the others are still using it, and the next part to start builds a second, competing cache over the same data.
 files: packages/quereus-plugin-sereus/src/cached-storage.ts, packages/quereus-plugin-sereus/src/compose-strand.ts, packages/quereus-plugin-sereus/src/types.ts, packages/quereus-plugin-sereus/test/cached-storage.spec.ts, packages/cadre-core/src/types.ts, docs/architecture.md
 difficulty: medium
-severity: wrong-result
-likelihood: unusual
-tradeoffs: No shipped wiring hits it today — every provider in this repo either hands out a distinct store per scope or hands out an in-memory store, which is never cached at all — so a maintainer could reasonably wait until a real embedder configures a shared persistent store, and just tighten the documented contract instead.
 ---
 
 # The cache wrapper has no owner count, so one scope's shutdown speaks for all of them
@@ -117,3 +114,42 @@ already owns the helper's contract.
 `docs/architecture.md`'s storage section and the `RawStorageProvider` doc comment in
 `packages/cadre-core/src/types.ts` both now steer embedders to the per-scope factory
 form and point here. Those steers should be relaxed back to neutral once this lands.
+
+## Update 2026-09-01 — the second arm was closed the unsafe way; reconcile it
+
+While chasing the 0.26 upgrade's peer-join failures, `composeStrand` was given the release this
+ticket's *second arm* describes — `shutdown()` (and the failed-setup rollback) now call
+`disposeStorageCache` on the wrapper, guarded by an `ownedStorageCache` check that treats "the wrap
+call returned a different object than the store I was handed" as ownership
+(`packages/quereus-plugin-sereus/src/compose-strand.ts`, `releaseStorageCache`). Landed in commit
+`9804bf7`, with a regression test in `packages/quereus-plugin-sereus/test/plugin.spec.ts`
+("releases the storage cache it wrapped, so a relaunch over the same backing store connects").
+
+That was the right *symptom* fix — `@optimystic/db-p2p` 0.26 makes a second cache over one backing
+store throw, so a second `connectToStrand` over one directory failed outright — and it is exactly
+the shape this ticket predicted would be unsafe: the `ownedStorageCache` test cannot tell "I created
+this wrapper" from "the memo handed me a wrapper another scope created", so under the shared-instance
+provider form the first `shutdown()` still retires a cache other scopes hold. The hazard is no
+longer purely latent.
+
+**So this ticket now has a concrete before-state to replace, not just a gap to fill.** The
+ownership count replaces `ownedStorageCache`: with a count, `shutdown()` releasing its own claim is
+unconditionally correct, and the guard and its comment come out. Keep the plugin.spec regression
+test passing — a connect/shutdown/connect cycle over one backing store identity must still work.
+
+## TODO
+
+- Give `wrapStorageWithCache` / `disposeStorageCache` a holder count keyed on the wrapper, per
+  *What "fixed" should mean* above. Keep the unwrapped-store no-op and the late-double-dispose
+  behaviour the existing tests pin.
+- Replace `compose-strand.ts`'s `ownedStorageCache` guard with an unconditional release of its own
+  claim; delete the guard's comment about ownership inference.
+- Extend `packages/quereus-plugin-sereus/test/cached-storage.spec.ts` with the four cases listed in
+  *What to cover in tests*, including the repeated connect/shutdown pool-count-flat case.
+- Relax the steers added while this was open: the storage section of `docs/architecture.md` and the
+  `RawStorageProvider` doc comment in `packages/cadre-core/src/types.ts` currently push embedders at
+  the per-scope factory form because of this defect.
+- Run `yarn workspace @serfab/quereus-plugin-sereus test` and `yarn workspace @serfab/cadre-core test`;
+  both must pass. Note in the review handoff that `packages/integration-tests` carries two
+  deterministic failures unrelated to this change (see `tickets/.pre-existing-known.md`, delta
+  2026-09-01).
