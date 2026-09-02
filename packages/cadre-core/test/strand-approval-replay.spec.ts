@@ -5,6 +5,7 @@ import {
   revokeMember,
   addManager,
   removeManager,
+  sealStrand,
   registerMemberPeer,
   removeMemberPeer,
   leaveStrand,
@@ -14,7 +15,7 @@ import { freshKeyPair, tableCount, openStrand, inTransaction } from './strand-sp
 import type { Ed25519KeyPair } from '../src/ed25519-key.js';
 
 /**
- * The six CAPTURE-AND-REPLAY attacks the single-use stamp mechanism closes.
+ * The CAPTURE-AND-REPLAY attacks the single-use stamp mechanism closes.
  *
  * Every one of R1-R6 below was reproduced as SUCCEEDING against a real closed
  * strand before `Strand.*` approvals were bound to a per-row `StampId` and paired
@@ -23,11 +24,18 @@ import type { Ed25519KeyPair } from '../src/ed25519-key.js';
  * the replay was derived from — so a rejection can never come from the strand
  * being in a state where the operation is impossible anyway.
  *
+ * R3b is the one case with no pre-stamp incarnation to reproduce: the `'seal'`
+ * branch of `Manager.Authorized` was introduced with the stamp binding already in
+ * place, so it was never exploitable. It is here to pin that the newest branch
+ * inherits the same single-use discipline as the rest — a seal approval, like a
+ * resignation, dies with the row incarnation it was minted for.
+ *
  * | #  | Captured approval                      | Replayed as                          | Rejector       |
  * |----|----------------------------------------|--------------------------------------|----------------|
  * | R1 | addManager promotion of X at gen 1     | re-insert Manager(X, 1) after removal| NotRevoked     |
  * | R2 | removeManager removal of X             | delete Manager(X) after re-promotion | Authorized     |
  * | R3 | X's own resignation                    | delete Manager(X) after re-promotion | Authorized     |
+ * | R3b| X's own SEAL approval                  | delete Manager(X) after re-seating   | Authorized     |
  * | R4 | addMemberByManager admission of X      | re-insert Member(X) after revocation | NotRevoked     |
  * | R5 | revokeMember removal of X              | delete Member(X) after re-admission  | Authorized     |
  * | R6 | registerMemberPeer binding (M, P)      | re-insert (M, P) after removal       | NotRevoked     |
@@ -321,6 +329,58 @@ describe('Strand.Manager approval replay', () => {
     // current stamp) still works.
     await removeManager(db, { byManagerKeyPair: x, targetManagerKey: x.publicKeyB64 });
     expect(await isManager(db, x.publicKeyB64)).toBe(false);
+  }, 30_000);
+
+  it('R3b: a captured seal cannot seal a re-seated signer (Authorized)', async () => {
+    const { db, founder } = await openStrand();
+    const x = await seatMember(db, founder);
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: x.publicKeyB64 });
+    const firstStamp = (await managerRow(db, x.publicKeyB64)).stampId;
+
+    // X's own SEAL proof over its first incarnation. Unlike R3's resignation this
+    // one is never legitimately spendable at capture time — two managers exist, so
+    // the seal branch (post-image count = 0) cannot accept it yet. It is exactly
+    // the approval a manager would hold after preparing to seal and then being
+    // removed instead.
+    const capturedSeal = signStrandApproval(
+      ['Strand.Manager', 'seal', x.publicKeyB64, firstStamp],
+      x.privateKeyB64,
+    );
+
+    // X is removed, then re-promoted under a FRESH stamp, and finally the founder
+    // resigns — a valid 'resign' because X survives it (post-image count 1) —
+    // leaving X as the SOLE manager. That is the one state in which a seal is
+    // acceptable at all, so the rejection below cannot be blamed on the strand
+    // simply not being sealable.
+    await removeManager(db, { byManagerKeyPair: founder, targetManagerKey: x.publicKeyB64 });
+    await addManager(db, { byManagerKeyPair: founder, newManagerKey: x.publicKeyB64 });
+    const secondStamp = (await managerRow(db, x.publicKeyB64)).stampId;
+    expect(secondStamp).not.toBe(firstStamp);
+    await removeManager(db, { byManagerKeyPair: founder, targetManagerKey: founder.publicKeyB64 });
+    expect(await tableCount(db, 'Manager')).toBe(1);
+
+    // THE REPLAY, mounted by a party that never held X's private key: it names X as
+    // context.ManagerKey (the seal branch requires old.MemberKey =
+    // context.ManagerKey) and presents X's captured proof. The post-image count is
+    // 0, so the seal branch is the ONLY reachable one — 'resign' needs a survivor
+    // and the admin-removal branch needs a live authorizer the post-image no longer
+    // has — and it hashes the SECOND stamp, so the captured signature fails.
+    await expect(inTransaction(db, async () => {
+      await db.exec(
+        `delete from Strand.Manager
+           with context ManagerKey = ?, Signature = ?
+           where MemberKey = ?`,
+        [x.publicKeyB64, capturedSeal, x.publicKeyB64],
+      );
+      await fileTombstone(db, 'Manager', secondStamp, founder);
+    })).rejects.toThrow(/Authorized/);
+    expect(await isManager(db, x.publicKeyB64)).toBe(true);
+
+    // POSITIVE PATH: X sealing for real (a fresh self-signature over the current
+    // stamp) empties the Manager table.
+    await sealStrand(db, { managerKeyPair: x });
+    expect(await isManager(db, x.publicKeyB64)).toBe(false);
+    expect(await tableCount(db, 'Manager')).toBe(0);
   }, 30_000);
 });
 

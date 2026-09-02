@@ -220,9 +220,20 @@ enforces these invariants:
   longer exists and can never exist again, so it cannot be replayed to re-remove,
   re-admit, or re-appoint anyone. Re-adding the same key mints a fresh marker, which the
   old approval does not cover.
-- **The last manager can never be removed.** A strand with no managers can never admit
-  another member or appoint another manager, so it would be frozen permanently. Any
-  removal that would empty the table is rejected.
+- **The last manager can only step down by *sealing* the strand.** An ordinary
+  resignation is rejected when it would leave no manager behind; emptying the table is a
+  separate, deliberate act carrying its own distinct signature, so it can never happen by
+  accident and a resignation someone collected can never be turned into one. Sealing
+  permanently freezes who belongs to the strand: with no managers, nobody can be invited,
+  admitted, or promoted ever again — and that is the point of it. A strand that can never
+  grow is a privacy guarantee to everyone already in it, because no key is left holding
+  the power to let in a party who would then be able to read everything the strand has
+  ever held. It is irreversible: a lone remaining member cannot re-found the strand later
+  and start admitting again. What remains possible is everything that does not grow the
+  membership — members can still leave, and can still register or clear their own device
+  records. Any invitation still outstanding when the strand is sealed dies with it: it can
+  never be redeemed, which matters because after the seal there is nobody left who could
+  even cancel it.
 - **The founding manager is the only unsigned seat**, and only in the founding state: at
   most one member exists, the founder's member row is already present, and no manager
   exists yet. Every later manager needs a signature. (This is why a strand is bootstrapped
@@ -239,8 +250,8 @@ outright, so every manager can do everything a manager needs to — admit member
 invitations, promote other managers, revoke a member, clear a device record, and resign its
 own seat. Admitting a brand-new key as a member and promoting it to manager in the same
 step is supported, so a key can go straight from stranger to manager without ever passing
-through a member-but-not-yet-manager gap. Like the floors above, the rule is checked
-against what one node can see (see known gaps below).
+through a member-but-not-yet-manager gap. Like the sealing rule above, this one is
+checked against what one node can see (see known gaps below).
 
 ### Removing Members
 
@@ -280,8 +291,11 @@ Membership removal is governed by the same signed-approval discipline as admissi
   would let any member re-point someone else's device record at its own key — clearing a
   record it has no authority to delete — since an edit is only ever checked against the
   values being written, not the ones being replaced.
-- **The last member can never be removed.** A member-count floor mirrors the last-manager
-  floor above, with the same local-count caveat (see known gaps below).
+- **The last member can never be removed.** A strand always keeps at least one member
+  holding its data, so any removal — or self-departure — that would empty the membership
+  is rejected. This holds on a sealed strand too: the last member cannot leave even
+  though no manager remains to stop them. Like the rules above, the count is taken from
+  what one node can see (see known gaps below).
 - **Revocation is forward-looking only.** A revoked member keeps whatever strand data its
   nodes already replicated, and it still holds the strand's member private key. Cutting
   off its *future* reads means rotating the read gate, which currently means re-forming
@@ -289,12 +303,17 @@ Membership removal is governed by the same signed-approval discipline as admissi
 
 Known gaps remain, all out of scope of the rules above:
 
-- **Membership rules are checked against the rows one node can see.** The last-manager and
-  last-member floors each count locally, so two nodes each removing a different manager (or
-  member) can both believe a survivor remains. The manager-must-also-be-a-member rule has
-  the same shape: one node promoting a key while another node removes that key's membership
-  can each pass locally and merge into a manager seat with no membership behind it. A
-  cross-node guard is not attempted; tracked in the schema's own notes next to the checks.
+- **Membership rules are checked against the rows one node can see.** The last-member
+  floor counts locally, so two nodes each removing a different member can both believe a
+  survivor remains. The manager-must-also-be-a-member rule has the same shape: one node
+  promoting a key while another node removes that key's membership can each pass locally
+  and merge into a manager seat with no membership behind it. A cross-node guard is not
+  attempted; tracked in the schema's own notes next to the checks.
+- **A seal only binds a node once it gets there.** Sealing is a deletion like any other,
+  and it has to reach a node before that node stops recognising the manager. Until it
+  does, that one ex-manager's own key could still admit someone there. Nobody else gains
+  anything — no other key was ever a manager on that node either — and the same
+  cross-node guard is not attempted here.
 - **An invitation names no invitee, so cancelling one is a manual operator step.** An
   invitation is a bearer credential: whoever holds it can redeem it once, and the strand
   keeps no record of who it was meant for. Managers can now cancel invitations, but nothing
