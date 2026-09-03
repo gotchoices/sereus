@@ -391,14 +391,18 @@ describe('Manager.Authorized seal branch', () => {
 
     // Generation 1 takes the founding branch out of contention on its own terms —
     // it requires new.Generation = 0 — regardless of the seal, so this pins the
-    // OTHER branch a re-founding attempt could try: promotion. Promotion needs an
-    // EXISTING Manager row, signed by its own holder, naming a strictly lower
-    // generation than the new row — and the table is empty, so no such row can ever
-    // exist on a sealed strand. A real signature is supplied anyway so the rejection
-    // cannot be blamed on a missing one; it is the exists() subquery over an empty
-    // Manager table that fails. Pinning this means a future change that let the
-    // founding branch answer for a non-zero generation would surface here as an
-    // unexpected ACCEPT, not silently pass.
+    // OTHER branch a re-founding attempt could try: promotion. Promotion's exists()
+    // needs a DIFFERENT, existing manager (A.MemberKey <> new.MemberKey) at a
+    // strictly lower generation who signed the 'add' digest — and a sealed strand's
+    // Manager table is empty forever, so no such row can exist. A real signature is
+    // supplied anyway so the rejection cannot be blamed on a missing one.
+    // Note this case is NOT seal-specific: the self-promotion conjunct alone would
+    // also refuse it on a LIVE strand, and it could not be made seal-specific — a
+    // distinct subject key would fail MemberExists instead, since a sealed strand
+    // can never admit the second member such a key would need. What it pins is that
+    // NO branch answers a non-zero-generation insert here: a future change that let
+    // the founding branch answer for Generation <> 0 surfaces as an unexpected
+    // ACCEPT rather than silently passing.
     const stampId = generateStrandStampId();
     const signature = signStrandApproval(
       ['Strand.Manager', 'add', founder.publicKeyB64, 1, stampId],
