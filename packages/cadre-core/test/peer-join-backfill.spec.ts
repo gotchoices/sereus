@@ -3,19 +3,20 @@ import type { Libp2p, PeerId } from '@libp2p/interface';
 import type { ActionRev, IBlock, IPeerNetwork } from '@optimystic/db-core';
 import type { BlockCommitProof, IRawStorage } from '@optimystic/db-p2p';
 import {
-  StrandBackfill,
+  PeerJoinBackfill,
   MAX_BLOCK_MESSAGE_BYTES,
-  type StrandBackfillDeps,
-  type StrandBackfillConfig,
-  type StrandBackfillPushClient
-} from '../src/strand-backfill.js';
+  type PeerJoinBackfillDeps,
+  type PeerJoinBackfillConfig,
+  type PeerJoinBackfillPushClient
+} from '../src/peer-join-backfill.js';
 
 /**
- * Unit coverage for the strand peer-join block catch-up. Everything here drives
- * `catchUpPeer` (or the connection:open path) against a FAKE raw store and a captured
- * push client — no libp2p node is dialled, per the ticket's test plan. The physical
- * two-node evidence lives in the integration suite
- * (`strand-membership-closed-strand-e2e.integration.ts`).
+ * Unit coverage for the peer-join block catch-up (shared by strand and control
+ * networks). Everything here drives `catchUpPeer` (or the connection:open path)
+ * against a FAKE raw store and a captured push client — no libp2p node is dialled.
+ * The physical two-node evidence lives in the integration suite
+ * (`strand-membership-closed-strand-e2e.integration.ts` for strands,
+ * `control-offline-read-after-restart.integration.ts` for the control network).
  */
 
 // ── Fakes ────────────────────────────────────────────────────────────────────
@@ -142,7 +143,7 @@ function makePushClient(
   respond: (push: CapturedPush) => { missing: string[] } = () => ({ missing: [] })
 ) {
   const pushes: CapturedPush[] = [];
-  const client: StrandBackfillPushClient = {
+  const client: PeerJoinBackfillPushClient = {
     pushBlocks: async (ids, buffers, reason, meta, options) => {
       const push: CapturedPush = { ids: [...ids], buffers: [...buffers], reason, meta, options };
       pushes.push(push);
@@ -155,14 +156,14 @@ function makePushClient(
 
 function makeBackfill(
   blocks: Record<string, FakeBlock>,
-  config?: StrandBackfillConfig,
-  overrides: Partial<StrandBackfillDeps> & { respond?: (push: CapturedPush) => { missing: string[] } } = {}
+  config?: PeerJoinBackfillConfig,
+  overrides: Partial<PeerJoinBackfillDeps> & { respond?: (push: CapturedPush) => { missing: string[] } } = {}
 ) {
   const { respond, ...depOverrides } = overrides;
   const { pushes, client } = makePushClient(respond);
   const fake = makeLibp2p();
-  const deps: StrandBackfillDeps = {
-    strandId: 'strand-test',
+  const deps: PeerJoinBackfillDeps = {
+    label: 'strand-test',
     libp2p: fake.node,
     peerNetwork: {} as IPeerNetwork,
     storage: makeStorage(blocks),
@@ -170,7 +171,7 @@ function makeBackfill(
     createPushClient: () => client,
     ...depOverrides
   };
-  return { backfill: new StrandBackfill(deps, config), pushes, fake };
+  return { backfill: new PeerJoinBackfill(deps, config), pushes, fake };
 }
 
 /** Poll until `condition` holds (short real-timer waits for the debounced paths). */
@@ -184,7 +185,7 @@ async function until(condition: () => boolean, timeoutMs = 2000): Promise<void> 
 
 // ── Tests ────────────────────────────────────────────────────────────────────
 
-describe('StrandBackfill', () => {
+describe('PeerJoinBackfill', () => {
   it('copies every committed+materialized block, with blockMeta carrying the source (rev, actionId)', async () => {
     const blocks: Record<string, FakeBlock> = { b1: committed('b1', 1), b2: committed('b2', 7), b3: committed('b3', 2) };
     const { backfill, pushes } = makeBackfill(blocks);
@@ -469,8 +470,8 @@ describe('StrandBackfill', () => {
   it('catches up peers that were already connected when start() ran (resumeStrand over live connections)', async () => {
     const { pushes, client } = makePushClient();
     const fake = makeLibp2p([{ remotePeer: peer('pre-connected') }]);
-    const backfill = new StrandBackfill({
-      strandId: 'strand-test',
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
       libp2p: fake.node,
       peerNetwork: {} as IPeerNetwork,
       storage: makeStorage({ b1: committed('b1') }),
@@ -488,7 +489,7 @@ describe('StrandBackfill', () => {
   it('stop() mid-run abandons the remaining chunks', async () => {
     const blocks = { b1: committed('b1'), b2: committed('b2'), b3: committed('b3') };
     // One block per chunk, and the first push stops the backfill while in flight.
-    const holder: { backfill?: StrandBackfill } = {};
+    const holder: { backfill?: PeerJoinBackfill } = {};
     const { backfill, pushes } = makeBackfill(blocks, { maxChunkBlocks: 1 }, {
       respond: () => {
         holder.backfill!.stop();
@@ -510,8 +511,8 @@ describe('StrandBackfill', () => {
   it('is inert (no throw, zero pushes) when the storage backend lacks listBlockIds', async () => {
     const { pushes, client } = makePushClient();
     const fake = makeLibp2p();
-    const backfill = new StrandBackfill({
-      strandId: 'strand-test',
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
       libp2p: fake.node,
       peerNetwork: {} as IPeerNetwork,
       storage: makeStorage({ b1: committed('b1') }, { listBlockIds: false }),
@@ -536,20 +537,109 @@ describe('StrandBackfill', () => {
     expect(fake.listenerCount('connection:open')).toBe(0);
   });
 
+  it('pushes nothing to a peer the authorizePeer gate refuses, and does not memoize it', async () => {
+    // The control-network gate: a connected peer that is not (yet) an authorized member
+    // must receive NOTHING — the control store is the party's whole membership. And the
+    // denial must not be memoized: the production join order is connect-then-authorize,
+    // so the same peer is expected to pass a LATER run over the same connection.
+    let authorized = false;
+    const { backfill, pushes } = makeBackfill(
+      { b1: committed('b1') },
+      undefined,
+      { authorizePeer: async () => authorized }
+    );
+
+    const denied = await backfill.catchUpPeer(peer('joiner'));
+    expect(denied.denied).toBe(true);
+    expect(denied.offered).toBe(0);
+    expect(pushes.length).toBe(0);
+
+    // Authorization lands (membership change) — the next run pushes normally.
+    authorized = true;
+    const allowed = await backfill.catchUpPeer(peer('joiner'));
+    expect(allowed.denied).toBe(false);
+    expect(allowed.accepted).toBe(1);
+    expect(pushes.length).toBe(1);
+
+    // And a clean gated run still memoizes: a third call pushes nothing more.
+    const third = await backfill.catchUpPeer(peer('joiner'));
+    expect(third.offered).toBe(0);
+    expect(pushes.length).toBe(1);
+  });
+
+  it('fails CLOSED when the authorizePeer gate throws — denied, nothing pushed, no rejection', async () => {
+    const { backfill, pushes } = makeBackfill(
+      { b1: committed('b1') },
+      undefined,
+      { authorizePeer: async () => { throw new Error('control DB unavailable'); } }
+    );
+
+    const result = await backfill.catchUpPeer(peer('p1'));
+    expect(result.denied).toBe(true);
+    expect(pushes.length).toBe(0);
+  });
+
+  it('consults the gate at push time, not at schedule time', async () => {
+    // Authorization is revoked DURING the debounce window; the push must not happen.
+    let authorized = true;
+    const { backfill, pushes, fake } = makeBackfill(
+      { b1: committed('b1') },
+      { debounceMs: 20 },
+      { authorizePeer: async () => authorized }
+    );
+    backfill.start();
+
+    fake.dispatchConnectionOpen(peer('p1'));
+    authorized = false;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(pushes.length).toBe(0);
+
+    backfill.stop();
+  });
+
+  it('scheduleConnectedPeers() re-arms a denied-but-still-connected peer without a reconnect', async () => {
+    // The membership-change hook: connection:open fired once (and was denied); when the
+    // peer is later authorized nothing reconnects, so the embedder drives this instead.
+    let authorized = false;
+    const { pushes, client } = makePushClient();
+    const fake = makeLibp2p([{ remotePeer: peer('joiner') }]);
+    const backfill = new PeerJoinBackfill({
+      label: 'control-test',
+      libp2p: fake.node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/control-test',
+      authorizePeer: async () => authorized,
+      createPushClient: () => client
+    }, { debounceMs: 1 });
+
+    backfill.start();
+    // The start() pass runs and is denied.
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(pushes.length).toBe(0);
+
+    authorized = true;
+    backfill.scheduleConnectedPeers();
+    await until(() => pushes.length === 1);
+    expect(pushes[0]!.ids).toEqual(['b1']);
+
+    backfill.stop();
+  });
+
   it('suppresses a concurrent duplicate run for the same peer', async () => {
     let release: (() => void) | undefined;
     const gate = new Promise<void>((resolve) => { release = resolve; });
     // Hold the first run open inside its push so the second call observably overlaps it.
     const captured = makePushClient();
-    const stalledClient: StrandBackfillPushClient = {
+    const stalledClient: PeerJoinBackfillPushClient = {
       pushBlocks: async (...args) => {
         await gate;
         return captured.client.pushBlocks(...args);
       }
     };
     const fake = makeLibp2p();
-    const backfill = new StrandBackfill({
-      strandId: 'strand-test',
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
       libp2p: fake.node,
       peerNetwork: {} as IPeerNetwork,
       storage: makeStorage({ b1: committed('b1') }),

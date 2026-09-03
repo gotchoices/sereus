@@ -63,6 +63,7 @@ import {
 } from './device-token.js';
 import { StrandWatcher, type StrandQueryable, type SAppIdLookup } from './strand-watcher.js';
 import { StrandInstanceManager } from './strand-instance-manager.js';
+import { PeerJoinBackfill } from './peer-join-backfill.js';
 import { deriveCohortMembers } from './strand-cohort.js';
 import type { CohortPeerRow } from './strand-cohort.js';
 import {
@@ -203,6 +204,14 @@ export class CadreNode implements SAppIdLookup {
   private trustedOwnerStore: TrustedOwnerStore | null = null;
   private controlNode: Libp2p | null = null;
   private controlDatabase: ControlDatabase | null = null;
+  /**
+   * The CONTROL network's peer-join block catch-up — same module as the
+   * per-strand ones, but membership-gated (see {@link startControlBackfill}).
+   * Created in {@link start} after the control node and database are up, stopped
+   * and dropped in {@link cleanup} before either is torn down, so a stop()→
+   * start() cycle rebuilds it with a fresh caught-up-peer memo.
+   */
+  private controlBackfill: PeerJoinBackfill | null = null;
   private strandWatcher: StrandWatcher | null = null;
   private strandManager: StrandInstanceManager;
   private hibernationManager: HibernationManager;
@@ -835,6 +844,13 @@ export class CadreNode implements SAppIdLookup {
       // write-while-alone re-replication drain must fire on the first 0→≥1 edge.
       this.wireControlConnectionListeners();
 
+      // Arm the control network's peer-join block catch-up now that the control
+      // DB (which the push-time membership gate reads) is up. Armed even when
+      // this node is alone — like the strand one, it only does work when the
+      // control libp2p node reports a peer connection, and arming it at start is
+      // what closes the "genesised alone, headers never replicate" hole.
+      this.startControlBackfill();
+
       // Seed the per-stream gate's materialized authorized set now that the
       // control DB is up (non-blocking; the helper never rejects). Until it
       // lands the snapshot is empty, which the stream gate treats as cold
@@ -1099,6 +1115,81 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * The control libp2p node's Optimystic network name — ONE binding for every
+   * derivation from it (`db-p2p` namespaces all of the node's protocol ids as
+   * `/optimystic/<networkName>/...`), so the node options and the block-transfer
+   * protocol prefix the control backfill dials can never drift apart.
+   */
+  private controlNetworkName(): string {
+    return `control-${this.config.controlNetwork.partyId}`;
+  }
+
+  /**
+   * Arm the CONTROL network's peer-join block catch-up: push every block in the
+   * control database's own raw store to each newly connected AUTHORIZED member
+   * this runtime has not yet caught up. This is what physically replicates
+   * control blocks committed while the writer was alone — the named
+   * collection-header blocks written once at genesis above all, whose revision
+   * never moves again, so no later commit ever carries them to a member that
+   * joined after them. Without it, such a member that restarts offline reads
+   * the affected control tables as EMPTY, silently (`isMember()` answers false
+   * for peers it knew about before the restart).
+   *
+   * Unlike the per-strand instances (see `strand-instance-manager.ts`), pushes
+   * are gated on {@link isAuthorizedMember}, judged at push time: the control
+   * network's inbound connection gate deliberately admits non-members in
+   * several states (seed delivery to an un-enrolled node, an open enrollment
+   * window, an outstanding invitation, configured bootstrap/relay peers), and
+   * pushing the whole control store to such a peer would hand a stranger the
+   * party's entire membership, addresses and strand list. The receiving side
+   * needs no work of its own: `createLibp2pNode` registers the block-transfer
+   * handler on every node it builds, control node included, and this node's
+   * per-stream gate (`authorizeInboundControlStream`) covers the inbound
+   * direction. A denied peer is retried on its next `connection:open`, and —
+   * because the production join order is connect-then-authorize — on every
+   * committed membership change via {@link refreshAuthorizedControlPeers}'s
+   * `scheduleConnectedPeers()` call.
+   *
+   * No-ops (logged) when the embedder configured no control storage or the
+   * node exposes no key network — the backfill would have nothing to read or
+   * no way to dial.
+   */
+  private startControlBackfill(): void {
+    if (this.config.controlBackfill?.enabled === false || !this.controlNode) {
+      return;
+    }
+    const storage = this.controlStorage;
+    const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
+    if (!storage || !keyNetwork) {
+      log('Control peer-join block catch-up is inert: %s',
+        !storage ? 'no control storage configured' : 'control node exposes no keyNetwork');
+      return;
+    }
+    const networkName = this.controlNetworkName();
+    this.controlBackfill = new PeerJoinBackfill({
+      label: networkName,
+      libp2p: this.controlNode,
+      peerNetwork: keyNetwork,
+      storage,
+      // The same prefix the receiver registered its block-transfer handler
+      // under — derived from the same networkName binding the node options
+      // used, never re-spelled here.
+      protocolPrefix: `/optimystic/${networkName}`,
+      authorizePeer: (peerId) => this.isAuthorizedMember(peerId)
+    }, {
+      // A shorter settle window than the strand default (1000 ms): the control
+      // store is small (a party's membership — dozens of blocks), a re-push is
+      // idempotent, and the window a joiner is connected before going offline
+      // can be short (converge one row, then stop) — a slow debounce is the
+      // difference between that joiner holding the collection headers and
+      // reading its own membership as empty after an offline restart.
+      debounceMs: 250,
+      ...this.config.controlBackfill
+    });
+    this.controlBackfill.start();
+  }
+
+  /**
    * The control database's cache-wrapped raw storage, resolved from
    * `config.storage.provider` on first use and then held in {@link controlStorage}
    * for the rest of this runtime.
@@ -1194,7 +1285,7 @@ export class CadreNode implements SAppIdLookup {
     const nodeOptions: Parameters<typeof createLibp2pNode>[0] = {
       port: 0,
       bootstrapNodes: controlNetwork.bootstrapNodes,
-      networkName: `control-${controlNetwork.partyId}`,
+      networkName: this.controlNetworkName(),
       storage: controlStorageProvider,
       fretProfile: profile === 'storage' ? 'core' : 'edge',
       relay: enableRelay,
@@ -1554,6 +1645,13 @@ export class CadreNode implements SAppIdLookup {
       const members = await this.listAuthorizedMembers(false);
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
       log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
+      // Membership moved: give the control backfill another look at every
+      // connected peer. The production join order is connect-then-authorize, so
+      // a joiner's first catch-up pass was denied at the gate while its
+      // connection stays up — without this re-arm it would wait for a
+      // reconnect. Cheap and idempotent: caught-up and in-flight peers are
+      // skipped before any timer is set, and the gate re-judges at push time.
+      this.controlBackfill?.scheduleConnectedPeers();
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);
     }
@@ -3405,6 +3503,15 @@ export class CadreNode implements SAppIdLookup {
     // announce timestamps that would suppress the next session's refresh.
     this.delegateAdmission.clear();
     this.delegateAnnounceAt.clear();
+
+    // Control backfill first — before the database closes and the control node
+    // stops — so no NEW catch-up push is issued against a torn-down transport.
+    // A push already in flight is not awaited; it fails into the module's own
+    // per-chunk catch. (Mirrors releaseRuntime in strand-instance-manager.ts.)
+    if (this.controlBackfill) {
+      this.controlBackfill.stop();
+      this.controlBackfill = null;
+    }
 
     // Close control database (this also shuts down the collection factory).
     // Detach the membership hub first: nothing this teardown does should drive a

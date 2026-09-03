@@ -10,7 +10,7 @@ import type { StartStrandConfig } from '../src/strand-instance-manager.js';
 /**
  * **What this protects: the ARMING GATE of the peer-join block catch-up.**
  *
- * `StrandBackfill` itself is covered by `strand-backfill.spec.ts`. What is NOT
+ * `PeerJoinBackfill` itself is covered by `peer-join-backfill.spec.ts`. What is NOT
  * covered there is the one decision `buildStrandRuntime` makes about it — whether
  * to construct one at all — and that decision changed when the per-strand
  * `bootstrap`/`networked` mode was retired: the gate used to read
@@ -33,10 +33,10 @@ const mocks = vi.hoisted(() => {
   });
   const backfillStart = vi.fn();
   const backfillStop = vi.fn();
-  const StrandBackfill = vi.fn(function StrandBackfillMock() {
+  const PeerJoinBackfill = vi.fn(function PeerJoinBackfillMock() {
     return { start: backfillStart, stop: backfillStop };
   });
-  return { stop, createLibp2pNode, StrandDatabase, StrandBackfill, backfillStart, backfillStop };
+  return { stop, createLibp2pNode, StrandDatabase, PeerJoinBackfill, backfillStart, backfillStop };
 });
 
 // Partial mock: only `createLibp2pNode` is stubbed. The real module stays for the
@@ -47,7 +47,7 @@ vi.mock(import('@optimystic/db-p2p'), async (importOriginal) => {
   return { ...actual, createLibp2pNode: mocks.createLibp2pNode as unknown as typeof actual.createLibp2pNode };
 });
 vi.mock('../src/strand-database.js', () => ({ StrandDatabase: mocks.StrandDatabase }));
-vi.mock('../src/strand-backfill.js', () => ({ StrandBackfill: mocks.StrandBackfill }));
+vi.mock('../src/peer-join-backfill.js', () => ({ PeerJoinBackfill: mocks.PeerJoinBackfill }));
 
 const testSchema = 'create table Test (id text primary key);';
 const testVersion = '1.0.0';
@@ -84,10 +84,10 @@ function createStartConfig(strandId: string, overrides?: Partial<StartStrandConf
   };
 }
 
-/** Deps object handed to the most recent `StrandBackfill` construction. */
-function lastBackfillDeps(): { strandId: string; protocolPrefix: string; storage: IRawStorage } {
-  const calls = mocks.StrandBackfill.mock.calls as unknown[][];
-  return calls[calls.length - 1]![0] as { strandId: string; protocolPrefix: string; storage: IRawStorage };
+/** Deps object handed to the most recent `PeerJoinBackfill` construction. */
+function lastBackfillDeps(): { label: string; protocolPrefix: string; storage: IRawStorage } {
+  const calls = mocks.PeerJoinBackfill.mock.calls as unknown[][];
+  return calls[calls.length - 1]![0] as { label: string; protocolPrefix: string; storage: IRawStorage };
 }
 
 describe('StrandInstanceManager peer-join catch-up arming', () => {
@@ -97,7 +97,7 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     // lets a peer that joins later receive the founder's blocks.
     await manager.startStrand(createStartConfig('bf-solo', { bootstrapNodes: [] }));
 
-    expect(mocks.StrandBackfill).toHaveBeenCalledTimes(1);
+    expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(1);
     expect(mocks.backfillStart).toHaveBeenCalledTimes(1);
   });
 
@@ -109,7 +109,7 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     await manager.startStrand(createStartConfig('bf-wiring', { storage: { provider: storage } }));
 
     const deps = lastBackfillDeps();
-    expect(deps.strandId).toBe('bf-wiring');
+    expect(deps.label).toBe('bf-wiring');
     // The catch-up gets the same CACHED view the strand node writes through — the
     // memoized wrap of the provided store, not a second cache over the same backend.
     // Asserting THROUGH the helper takes a holder claim, so release it again: the pair
@@ -125,14 +125,14 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('bf-nostore', { storage: undefined }));
 
-    expect(mocks.StrandBackfill).not.toHaveBeenCalled();
+    expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
   });
 
   it('does NOT arm when the embedder disabled it', async () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('bf-off', { backfill: { enabled: false } }));
 
-    expect(mocks.StrandBackfill).not.toHaveBeenCalled();
+    expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
   });
 
   it('does NOT arm when the libp2p node exposes no keyNetwork', async () => {
@@ -142,7 +142,7 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('bf-nokeynet'));
 
-    expect(mocks.StrandBackfill).not.toHaveBeenCalled();
+    expect(mocks.PeerJoinBackfill).not.toHaveBeenCalled();
   });
 
   it('stops the catch-up on quiesce and re-arms it on resume', async () => {
@@ -150,13 +150,13 @@ describe('StrandInstanceManager peer-join catch-up arming', () => {
     // forgot to re-arm would leave a woken strand silently non-replicating.
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('bf-cycle'));
-    expect(mocks.StrandBackfill).toHaveBeenCalledTimes(1);
+    expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(1);
 
     await manager.quiesceStrand('bf-cycle');
     expect(mocks.backfillStop).toHaveBeenCalledTimes(1);
 
     await manager.resumeStrand('bf-cycle', { bootstrapNodes: [] });
-    expect(mocks.StrandBackfill).toHaveBeenCalledTimes(2);
+    expect(mocks.PeerJoinBackfill).toHaveBeenCalledTimes(2);
     expect(mocks.backfillStart).toHaveBeenCalledTimes(2);
   });
 });

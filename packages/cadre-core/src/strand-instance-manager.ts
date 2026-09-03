@@ -3,7 +3,7 @@ import type { PrivateKey } from '@libp2p/interface';
 import { createLibp2pNode, type IRawStorage } from '@optimystic/db-p2p';
 import { wrapStorageWithCache, disposeStorageCache } from '@serfab/quereus-plugin-sereus';
 import { StrandDatabase } from './strand-database.js';
-import { StrandBackfill, type StrandBackfillConfig } from './strand-backfill.js';
+import { PeerJoinBackfill, type PeerJoinBackfillConfig } from './peer-join-backfill.js';
 import { assertSchemaSignature } from './schema-verification.js';
 import type {
   StrandInstance,
@@ -62,14 +62,14 @@ export interface StartStrandConfig {
    */
   clusterSize?: number;
   /**
-   * Tuning for the strand peer-join block catch-up ({@link StrandBackfill}),
+   * Tuning for the strand peer-join block catch-up ({@link PeerJoinBackfill}),
    * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
    * libp2p node connects to a peer this runtime has not yet caught up, every
    * block in the strand's own raw store is pushed to it. Runs only on strands
    * with per-strand storage; `{ enabled: false }` restores the pre-existing
    * no-backfill behaviour.
    */
-  backfill?: StrandBackfillConfig;
+  backfill?: PeerJoinBackfillConfig;
 }
 
 /**
@@ -162,7 +162,7 @@ export class StrandInstanceManager {
    * with a fresh caught-up-peer memo, which is intended (a resumed node may have
    * missed writes).
    */
-  private backfills: Map<string, StrandBackfill> = new Map();
+  private backfills: Map<string, PeerJoinBackfill> = new Map();
   /**
    * The resolved (cache-wrapped) raw storage per strand id — the instance's OWN
    * store, resolved once in `startStrand` and held until `stopStrand` disposes it.
@@ -417,20 +417,23 @@ export class StrandInstanceManager {
       // Peer-join block catch-up: push this strand's own blocks to each newly
       // connected peer, so a machine that joined after blocks were committed
       // still ends up physically holding them (without per-strand storage there
-      // is nothing to copy). Armed for EVERY stored strand: `StrandBackfill`
+      // is nothing to copy). Armed for EVERY stored strand: `PeerJoinBackfill`
       // only does work when the strand's libp2p node reports a peer connection,
       // so on a device that is genuinely alone it is inert, and arming it at
       // launch is what closes the "founded alone, never replicates" hole — a
       // peer that joins later gets the founder's blocks without any relaunch.
+      // No `authorizePeer` gate, deliberately — see the module comment in
+      // peer-join-backfill.ts for the strand-side argument (and why the control
+      // network, which DOES gate, is different).
       //
-      // NOTE: cost is one StrandBackfill object + one `connection:open` listener
+      // NOTE: cost is one PeerJoinBackfill object + one `connection:open` listener
       // per running strand — linear in strand count, negligible at the handful a
       // device or host runs today. If a node ever hosts strands by the hundred,
       // move to one shared listener that dispatches by strand id.
       if (strandStorage && config.backfill?.enabled !== false) {
         if (node.keyNetwork) {
-          const backfill = new StrandBackfill({
-            strandId,
+          const backfill = new PeerJoinBackfill({
+            label: strandId,
             libp2p: node,
             peerNetwork: node.keyNetwork,
             storage: strandStorage,

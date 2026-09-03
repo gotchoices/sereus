@@ -85,7 +85,7 @@
  * Physical replication is proven separately by the FOURTH test, which writes only on
  * the founder and then reads the joiner's raw block store directly, never its database.
  * It gates both halves: post-dial blocks arriving as part of each commit, and pre-dial
- * blocks arriving via the peer-join catch-up (cadre-core's `strand-backfill.ts`) — see
+ * blocks arriving via the peer-join catch-up (cadre-core's `peer-join-backfill.ts`) — see
  * its WHAT IS AND IS NOT CLAIMED comment.
  * PHYSICAL PRESENCE IS NOT USABILITY, and the SIXTH test closes that last step: it waits
  * for whole-store coverage through the raw store alone, STOPS the founder, proves the
@@ -922,7 +922,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//
 	//   2. PEER-JOIN CATCH-UP (second gate, NO narrowing — `founder ⊆ joiner`): the
 	//      blocks committed BEFORE the dial reach the joiner too, pushed by cadre-core's
-	//      `strand-backfill.ts` one debounce (~1 s) after the strand connection opens.
+	//      `peer-join-backfill.ts` one debounce (~1 s) after the strand connection opens.
 	//      Before that module existed, a measured run showed 9 of the founder's 27
 	//      blocks never reached the joiner — the bootstrap Header/Member/Manager data
 	//      blocks, their `default/*/index/_uniq_*` index blocks, and the founder's
@@ -1037,7 +1037,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// ── THE CATCH-UP PROOF: the founder's WHOLE store, pre-dial blocks included ──
 			// No `include` narrowing — founder ⊆ joiner, at revisions no older than the
 			// founder's, with content bytes present. This is the gap the first gate cannot
-			// see and the very thing cadre-core's strand-backfill.ts exists for: the
+			// see and the very thing cadre-core's peer-join-backfill.ts exists for: the
 			// bootstrap blocks committed before the dial must be physically on the joiner.
 			// Still a raw-store poll — the ⚠ joinerDb rule above holds here too.
 			const wholeStoreStartedAt = Date.now();
@@ -1045,7 +1045,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				founderStore, joinerStore,
 				"the founder's WHOLE store (pre-dial blocks included) lands physically in the joiner's block store",
 				"joiner's block store never covered the founder's WHOLE store " +
-				'(peer-join catch-up failed — see cadre-core/src/strand-backfill.ts)',
+				'(peer-join catch-up failed — see cadre-core/src/peer-join-backfill.ts)',
 			);
 			console.log(
 				`[closed-strand:physical] whole-store coverage (peer-join catch-up) complete ` +
@@ -1249,7 +1249,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//      through the joiner can itself pull the block in (`CoordinatorRepo.get` →
 	//      `restoreCorroborated` → `acquireBlockFromCohort` → `saveReplicatedBlock`), which
 	//      would place the bytes this step is supposed to be waiting for. Failing this poll
-	//      is a failure of the CATCH-UP (`cadre-core/src/strand-backfill.ts`), not of
+	//      is a failure of the CATCH-UP (`cadre-core/src/peer-join-backfill.ts`), not of
 	//      offline durability — the message says so, because proceeding past it would make
 	//      the second half meaningless.
 	//   2. STOP THE FOUNDER, then POLL until the joiner's strand node reports ZERO
@@ -1279,7 +1279,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 				"the founder's whole store lands physically in the joiner's block store",
 				"joiner's block store never covered the founder's whole store, so this run says nothing " +
 				'about offline durability — this is a PEER-JOIN CATCH-UP failure ' +
-				'(cadre-core/src/strand-backfill.ts), not an offline-read failure',
+				'(cadre-core/src/peer-join-backfill.ts), not an offline-read failure',
 			);
 
 			// What the joiner was holding at the moment it went solo, for a future reader.

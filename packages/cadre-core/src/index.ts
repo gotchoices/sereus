@@ -112,17 +112,18 @@ export {
   getStrandStoragePath
 } from './strand-instance-manager.js';
 
-// Strand peer-join block catch-up (push this strand's own blocks to each newly
-// connected strand peer, so a late joiner physically holds pre-join blocks).
+// Peer-join block catch-up (push this network's own blocks to each newly
+// connected peer, so a late joiner physically holds pre-join blocks). Shared
+// by the strand networks (ungated) and the control network (membership-gated).
 export {
-  StrandBackfill,
-  DEFAULT_STRAND_BACKFILL,
+  PeerJoinBackfill,
+  DEFAULT_PEER_JOIN_BACKFILL,
   MAX_BLOCK_MESSAGE_BYTES,
-  type StrandBackfillConfig,
-  type StrandBackfillDeps,
-  type StrandBackfillResult,
-  type StrandBackfillPushClient
-} from './strand-backfill.js';
+  type PeerJoinBackfillConfig,
+  type PeerJoinBackfillDeps,
+  type PeerJoinBackfillResult,
+  type PeerJoinBackfillPushClient
+} from './peer-join-backfill.js';
 
 // Hibernation
 export {
