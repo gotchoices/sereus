@@ -171,3 +171,11 @@
 {"slug":"debt-relay-reservation-driver-in-core","file":"debt-relay-reservation-driver-in-core.md","completedAt":"2026-08-03","commit":"6a0cc5138b3a7642081025260636043703f855d2","prunedAt":"2026-09-02T21:39:07.421Z"}
 {"slug":"debt-strand-breadth-counts-machines","file":"debt-strand-breadth-counts-machines.md","completedAt":"2026-08-03","commit":"59ca43495eb2bc4d2fe8d2ed1f2ca40276df1e53","prunedAt":"2026-09-02T21:39:07.421Z"}
 {"slug":"feat-cadre-host-strand-removal-screen","file":"feat-cadre-host-strand-removal-screen.md","completedAt":"2026-08-03","commit":"46b7a6855417cb743193cb178b3f13a9f92f7301","prunedAt":"2026-09-02T21:39:07.421Z"}
+{"slug":"release-smoke-published-install","file":"0-release-smoke-published-install.md","completedAt":"2026-08-04","commit":"9aee7b054c7d6d1baa355746edfe9b00af6a1345","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"bump-optimystic-floors-to-0.19","file":"0.15-bump-optimystic-floors-to-0.19.md","completedAt":"2026-08-04","commit":"9cf0bfb7c548a97758f26af424efa0d7c4c8b5ae","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"release-publish-dist-tag","file":"0.2-release-publish-dist-tag.md","completedAt":"2026-08-04","commit":"140e4606be04596d0068816114c12b0b57e923a5","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"ice-config-peer-assertion-client","file":"35.12-ice-config-peer-assertion-client.md","completedAt":"2026-08-03","commit":"413ceca3629b748dc0a4295f9b5ee06cbde5b1b8","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"turn-deny-deprecated-transition-prefixes","file":"35.2-turn-deny-deprecated-transition-prefixes.md","completedAt":"2026-08-03","commit":"1f87ff4e95c420a1bc2edc76d2440689e9875eec","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"provider-enrollment-detects-dead-child","file":"36.1-provider-enrollment-detects-dead-child.md","completedAt":"2026-08-03","commit":"537676ca7752df70968678757cccdce0aa8c748d","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"provider-reap-stuck-container-records","file":"36.11-provider-reap-stuck-container-records.md","completedAt":"2026-08-03","commit":"8629deea861af1bc590914045f10975fbaf063d8","prunedAt":"2026-09-03T03:34:00.855Z"}
+{"slug":"debt-failed-provision-strands-workdir","file":"36.2-debt-failed-provision-strands-workdir.md","completedAt":"2026-08-04","commit":"378c1e68f826895fcc0b506695d2d088aa259c63","prunedAt":"2026-09-03T03:34:00.855Z"}
