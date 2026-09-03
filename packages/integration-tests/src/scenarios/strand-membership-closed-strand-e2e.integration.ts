@@ -3,21 +3,26 @@
  *
  * Capstone integration coverage for the `Strand.*` membership tables landed by the
  * `strand-membership-*` tickets (founder bootstrap → invite/join → member-peer →
- * manager rotation, member-peer REMOVAL, and both a join and MANAGER ACTIONS driven
- * from the SECOND node's own database). Drives the full CLOSED-strand path
+ * manager rotation, member-peer REMOVAL, both a join and MANAGER ACTIONS driven
+ * from the SECOND node's own database, and SEALING — the end of the lifecycle, where
+ * the sole manager freezes admission forever). Drives the full CLOSED-strand path
  * across two REAL `CadreNode`s over libp2p, modelled on the proven two-node pattern
  * in `rbac-signed-write.integration.ts` (real nodes, `formStrand` over libp2p,
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
  * tests in `strand-formation-e2e.integration.ts`.
  *
- * SIX independent tests, each with its OWN two-node strand via
+ * EIGHT independent tests, each with its OWN two-node strand via
  * {@link bringUpClosedStrand}: the admission/rotation lifecycle, device-record
  * (`MemberPeer`) removal, a JOINER-AUTHORED join, PHYSICAL block replication,
- * MANAGER-AUTHORIZED writers run from the second node, and OFFLINE DURABILITY — the
- * founder STOPPED, the joiner answering out of its own copy. They are deliberately NOT
+ * MANAGER-AUTHORIZED writers run from the second node, OFFLINE DURABILITY — the
+ * founder STOPPED, the joiner answering out of its own copy — and finally two SEAL
+ * tests, which are the only ones whose claim is about a write the second node must
+ * REFUSE rather than one it must accept: that the founder's seal converges and binds
+ * the joiner's own schema, and that a sealed strand cannot be re-founded from the node
+ * that did not seal it. They are deliberately NOT
  * one narrative — the removal test asserts enumerations, the physical-replication test
  * may not read the joiner's database at all, the durability test may not read it until
- * the founder is down, and four of the six end with rejected writes whose post-state
+ * the founder is down, and six of the eight end with rejected writes whose post-state
  * this file does not assert (see the rejection floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
@@ -66,7 +71,8 @@
  *
  * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
  * gate in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
- * every convergence check in the third and fifth tests all throw on timeout, all on the
+ * every convergence check in the third, fifth, seventh and eighth tests all throw on
+ * timeout, all on the
  * shared {@link GATE} budget. The old best-effort/observe-then-require paths are gone. A
  * timeout here is a real convergence defect; do NOT restore a skip branch.
  *
@@ -75,13 +81,16 @@
  * that simply never arrived. If one of these ever times out, check the harness debug
  * log (`Wait condition threw: …`) before concluding it is a convergence failure.
  *
- * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the four
- * CONVERGENCE tests (the first, second, third and fifth) proves a row is VISIBLE from the
+ * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the six
+ * CONVERGENCE tests (the first, second, third, fifth and both SEAL tests) proves a row is
+ * VISIBLE from the
  * other node's database, not that its block lives there. A read on either node resolves one
  * coordinator peer per block; when that resolves to the authoring node, the other node's
  * `select` is a remote call against the author's storage and nothing needs to live
  * locally. Visibility is the property an application actually observes, and it is what
- * those four assert.
+ * those six assert — including the seal tests, whose claim is that the joiner's schema
+ * REFUSES admission once the seal is visible to it, not that the seal's blocks live in
+ * the joiner's store.
  * Physical replication is proven separately by the FOURTH test, which writes only on
  * the founder and then reads the joiner's raw block store directly, never its database.
  * It gates both halves: post-dial blocks arriving as part of each commit, and pre-dial
@@ -121,6 +130,8 @@ import {
 	removeMemberPeer,
 	revokeMember,
 	addManager,
+	sealStrand,
+	isStrandSealed,
 	signStrandApproval,
 	generateStrandStampId,
 	type StrandProvisioner,
@@ -273,6 +284,22 @@ async function managerGeneration(db: Database, memberKey: string): Promise<numbe
 		if (row.MemberKey === memberKey) return Number(row.Generation);
 	}
 	return undefined;
+}
+
+/**
+ * The live `Strand.Manager.StampId` of one manager. Same one-scan-both-columns shape as
+ * {@link managerGeneration}, and the same reason.
+ *
+ * Throws rather than returning `undefined`: its only caller captures the stamp a seal is
+ * about to retire, and a missing stamp there would silently turn the tombstone assertion
+ * into "some `Manager` tombstone exists" — exactly the weakening that assertion exists
+ * to prevent.
+ */
+async function managerStamp(db: Database, memberKey: string): Promise<string> {
+	for await (const row of db.eval('select MemberKey, StampId from Strand.Manager')) {
+		if (row.MemberKey === memberKey) return row.StampId as string;
+	}
+	throw new Error(`no Strand.Manager row for ${memberKey}`);
 }
 
 // ── Raw block-store coverage gate ────────────────────────────────────────────
@@ -1344,6 +1371,206 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			expect(joinerStrand.libp2pNode!.getConnections(), 'joiner strand connections during the reads').toHaveLength(0);
 		} finally {
 			await stopBoth(founderStopped ? undefined : founderNode, joinerNode);
+		}
+	}, 60_000);
+});
+
+// ═════════════════════════════════════════════════════════════════════════════
+
+/**
+ * SEALING, PROVEN ON THE NODE THAT DID NOT SEAL.
+ *
+ * `sealStrand` is the end of a closed strand's admission lifecycle: its SOLE manager
+ * deliberately deletes its own `Strand.Manager` row (plus the matching
+ * `Strand.Revocation` tombstone that makes it permanent), after which every admission
+ * path is dead because every one of them needs a `Manager` row. That is the privacy
+ * guarantee the remaining members are buying — no key is left holding the power to
+ * admit a party who would then read the strand's whole history.
+ *
+ * All of that has been proven SINGLE-NODE (`cadre-core/test/strand-seal.spec.ts`)
+ * against the database that did the sealing. These two tests add the one thing a
+ * single-node spec structurally cannot: THE OTHER MACHINE. A guarantee that binds only
+ * the node which performed the act is not a guarantee at all, so what is asserted here
+ * is (a) the seal CONVERGES — both halves, the delete and the tombstone — and (b) once
+ * it has, the SECOND node's own schema is the thing doing the rejecting, for each
+ * admission path in turn and under the specific constraint name that owns it.
+ *
+ * NOTE: these two tests share ~400 lines of private harness with the six above
+ * (`bringUpClosedStrand`, `stopBoth`, `freshKeyPair`, `GATE`, the `scanColumn` family).
+ * They live here rather than in a sibling file for exactly that reason. If a THIRD
+ * scenario ever needs this harness, hoist it into `src/harness/` rather than duplicating
+ * it — a hoist is a refactor across eight passing network tests and wants its own ticket.
+ *
+ * NOTE: the PROPAGATION WINDOW — the interval in which the sealing node has committed
+ * but another node has not yet converged, during which that node's schema still admits —
+ * deliberately gets NO test here, because it cannot be staged on two nodes. Both ways of
+ * trying were measured, and BOTH end with the founder unable to seal at all:
+ *   - with `Strand.Revocation` never yet written, `sealStrand` fails with
+ *     `Block default/Revocation is unavailable (cohort-unreachable): the repo could not
+ *     determine whether it exists` — sealing is a fresh strand's FIRST `Revocation`
+ *     write, and a block whose existence cannot be determined cannot be written to;
+ *   - with `Revocation` pre-materialised (register then remove a device record first),
+ *     `sealStrand` fails with `Failed to get super-majority: 1/2 approvals (needed 2, 0
+ *     rejects)` on the `Manager` block.
+ * On a TWO-node strand the seal therefore FAILS CLOSED when the other node is
+ * unreachable: nobody is sealed, and both nodes agree on that once the partition heals.
+ * That is a property of this FIXTURE (a commit needs a super-majority of the block's
+ * COHORT, and at two nodes the cohort is both of them), not a guarantee of the system —
+ * above the cohort size a node outside a given block's cohort never has to approve, so
+ * it can stay stale while the seal commits elsewhere, and THAT node's window is
+ * unmeasured (recorded as an arm on `backlog/debt-replication-proof-above-cohort-size`).
+ * Do not assert the fail-closed behaviour either: it is an optimystic quorum property
+ * that may legitimately change, and pinning it here would fail as a false alarm the day
+ * solo-cohort commit reaches that block.
+ *
+ * What IS measured, on this fixture: the joiner reported `isStrandSealed` true 42 ms and
+ * 138 ms after the founder's commit in two runs, and a poll with no sleep between
+ * attempts never once observed a SPLIT state — the `Manager` delete without its
+ * tombstone, or the tombstone without the delete — even though the two land in different
+ * blocks of one transaction.
+ */
+describe('Closed-strand sealing converges to the second node (real two-node strand)', () => {
+	it("the founder's seal reaches the second node and binds ITS schema against every admission path", async () => {
+		const { founderNode, joinerNode, founderDb, joinerDb, founderKeyPair } =
+			await bringUpClosedStrand('seal-binds');
+
+		try {
+			// ── 1. A PRE-SEAL invitation, gated visible on the joiner ────────────
+			// This is the one the rejection block redeems below, and it must be visible
+			// there BEFORE the seal: otherwise its `consumeInvite` could fail on
+			// `InviteExists` (the joiner never heard of the invitation) and the test would
+			// pass for entirely the wrong reason — it is `NotSealed` that must reject it.
+			const { inviteKey: preSealInvite, invitePrivateKey: preSealSecret } =
+				await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+			await waitUntil(
+				async () => (await inviteKeys(joinerDb)).includes(preSealInvite),
+				{ ...GATE, description: 'the pre-seal invitation becomes visible on the second node' },
+			);
+
+			// ── 2. Capture the stamp the seal is about to retire ─────────────────
+			// Read BEFORE the seal, while the row is still live. Keying step 5's tombstone
+			// assertion to this exact stamp is what stops it degrading into "some Manager
+			// tombstone exists".
+			const founderManagerStamp = await managerStamp(founderDb, founderKeyPair.publicKeyB64);
+
+			// ── 3. The joiner can currently see the founder's Manager row ────────
+			// Without this, step 5's "no managers" assertion could pass because the row
+			// never arrived in the first place, rather than because the seal removed it.
+			expect(await managerKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+
+			// ── 4. The founder seals, and THE GATE: the seal reaches the joiner ──
+			// `isStrandSealed` is all three conjuncts at once (closed `Header`, zero
+			// `Manager` rows, a retired `Manager` stamp), so this gate cannot be satisfied
+			// by either half of the seal arriving alone.
+			await sealStrand(founderDb, { managerKeyPair: founderKeyPair });
+			expect(await isStrandSealed(founderDb)).toBe(true);
+			const sealCommittedAt = Date.now();
+			await waitUntil(
+				() => isStrandSealed(joinerDb),
+				{ ...GATE, description: "the founder's seal becomes visible on the second node" },
+			);
+			console.log(
+				`[closed-strand:seal-binds] joiner observed the seal ${Date.now() - sealCommittedAt}ms ` +
+				'after the founder committed it',
+			);
+
+			// ── 5. The joiner's SEALED SHAPE — all of it, before any rejected write ──
+			// Per this file's rejection floor, no count or enumeration assertion may
+			// follow a rejected write, so everything about state is asserted here.
+			// Both reads SCAN and filter in JavaScript: `Revocation`'s primary key is
+			// (TableName, StampId), so an equality on both would be exactly the full-PK
+			// point lookup the header's lookup-shape rule forbids.
+			expect(await managerKeys(joinerDb)).toEqual([]);
+			expect(await revocationExists(joinerDb, 'Manager', founderManagerStamp)).toBe(true);
+
+			// ── 6. THE CLAIM: every admission path is refused ON THE JOINER ──────
+			// Each names the constraint that owns it, so a rejection for an unrelated
+			// reason (a malformed signature, a missing row) cannot be mistaken for the
+			// seal doing its job. The ex-manager's own key drives the three manager
+			// paths — on a sealed strand it is the only key that ever held authority
+			// here, so it is the strongest attacker available.
+			// Rejection floor: `rejects.toThrow()` only; nothing follows.
+			await expect(
+				issueInvite(joinerDb, { managerKeyPair: founderKeyPair }),
+			).rejects.toThrow(/InviteValid/);
+
+			// The STRANGER case, and the one the docs used to get wrong: a fresh key that
+			// was never a manager anywhere, redeeming an invitation issued before the
+			// seal. On a CONVERGED node `NotSealed` refuses it — that gate is
+			// `exists (select 1 from Manager)` over the rows THIS node can see, which is
+			// why it binds here and would not bind on a node that had not yet converged.
+			await expect(
+				consumeInvite(joinerDb, {
+					inviteKey: preSealInvite,
+					invitePrivateKey: preSealSecret,
+					memberKey: freshKeyPair().publicKeyB64,
+				}),
+			).rejects.toThrow(/NotSealed/);
+
+			await expect(
+				addMemberByManager(joinerDb, { managerKeyPair: founderKeyPair, memberKey: freshKeyPair().publicKeyB64 }),
+			).rejects.toThrow(/Authorized/);
+
+			// RE-PROMOTING THE EX-MANAGER, not a fresh key. A promotion naming a key that
+			// is not a member fails on `MemberExists` on a LIVE strand too, so that shape
+			// would pin nothing about sealing. The ex-manager is still a `Member`, so
+			// `MemberExists` passes and `Authorized` is the constraint left to reject:
+			// the founding branch needs generation 0 (the writer seats a successor at 1),
+			// and the promotion branch needs an existing manager to sign as — and the
+			// table is empty.
+			await expect(
+				addManager(joinerDb, { byManagerKeyPair: founderKeyPair, newManagerKey: founderKeyPair.publicKeyB64 }),
+			).rejects.toThrow(/Authorized/);
+		} finally {
+			await stopBoth(founderNode, joinerNode);
+		}
+	}, 60_000);
+
+	// Kept SEPARATE from the test above rather than appended to it. Two reasons: the
+	// claims differ — that one is "the seal binds", this one is "the seal is
+	// IRREVERSIBLE" — and that one's rejection block has already spent its budget for
+	// post-write assertions, so the state this test asserts first could not be asserted
+	// there at all.
+	it('a sealed strand cannot be re-founded from the node that did not seal it', async () => {
+		const { founderNode, joinerNode, founderDb, joinerDb, founderKeyPair } =
+			await bringUpClosedStrand('seal-refound');
+
+		try {
+			await sealStrand(founderDb, { managerKeyPair: founderKeyPair });
+			await waitUntil(
+				() => isStrandSealed(joinerDb),
+				{ ...GATE, description: "the founder's seal becomes visible on the second node" },
+			);
+
+			// State first, for the rejection-floor reason: nothing may be asserted after
+			// the rejected write below. The surviving member matters — a re-founding
+			// attempt is only interesting while somebody is left who might try it.
+			expect(await managerKeys(joinerDb)).toEqual([]);
+			expect(await memberKeys(joinerDb)).toEqual([founderKeyPair.publicKeyB64]);
+
+			// THE CLAIM: a SIGNED generation-0 insert — the founding shape, carrying a real
+			// signature over the 'add' digest so the refusal cannot be blamed on a
+			// malformed or absent context — is refused on the node that did not seal.
+			// Same shape as `cadre-core/test/strand-seal.spec.ts` → "refuses a SIGNED
+			// re-founding attempt at generation 0"; that spec already pins the post-state
+			// locally, and what this adds is THE OTHER MACHINE: the retired `Manager`
+			// stamp closed the founding branch on the joiner too, having arrived over the
+			// wire rather than been written there.
+			const stampId = generateStrandStampId();
+			const signature = signStrandApproval(
+				['Strand.Manager', 'add', founderKeyPair.publicKeyB64, 0, stampId],
+				founderKeyPair.privateKeyB64,
+			);
+			await expect(
+				joinerDb.exec(
+					`insert into Strand.Manager (MemberKey, Generation, StampId)
+					   with context ManagerKey = ?, Signature = ?
+					   values (?, 0, ?)`,
+					[founderKeyPair.publicKeyB64, signature, founderKeyPair.publicKeyB64, stampId],
+				),
+			).rejects.toThrow(/Authorized/);
+		} finally {
+			await stopBoth(founderNode, joinerNode);
 		}
 	}, 60_000);
 });

@@ -110,6 +110,10 @@ declare schema Strand {
         -- manager must survive the transaction, and sealing plus consuming in the SAME
         -- transaction is rejected too. Blocking this insert blocks the whole join, for
         -- exactly the reason NotCancelled gives above.
+        -- The Manager rows this reads are the ones THIS NODE can see, so the gate binds
+        -- only once the seal has reached here — on a node still behind on the seal it
+        -- passes, and a stranger holding a pre-seal invitation joins (the Manager table's
+        -- seal-propagation NOTE).
         constraint NotSealed check on insert (
             exists (select 1 from Manager)
         )
@@ -406,10 +410,15 @@ declare schema Strand {
         -- history. Sealing is irreversible: the founding branch of Authorized closes
         -- for good once any manager stamp has been retired into Revocation.
         -- NOTE: a seal must PROPAGATE before it binds a given node — a node that has
-        -- not yet converged on the delete still shows the manager row, so the
-        -- ex-manager's OWN key could still admit there until the delete arrives. Only
-        -- that one key; no stranger gains anything. Same convergence class as the
-        -- MinOneMember / NotRevoked local-visibility notes; not solved here.
+        -- not yet converged on the delete still shows the manager row, so until the
+        -- delete arrives that node admits as if unsealed. It is NOT only the
+        -- ex-manager's own key that gains: every gate here reads the LOCALLY visible
+        -- Manager rows, and ConsumedInvite.NotSealed is one of them, so a STRANGER
+        -- holding an invitation issued before the seal can redeem it on such a node.
+        -- Same convergence class as the MinOneMember / NotRevoked local-visibility
+        -- notes; not solved here. Arrival IS covered, on the converged side:
+        -- integration-tests' strand-membership-closed-strand-e2e gates a second node on
+        -- the seal and then requires it to refuse every admission path.
         constraint Authorized check on insert, delete (
             -- Every signed branch below is a domain/action-tagged digest bound to the
             -- row's StampId — the same single-use idiom as Member.Authorized: an

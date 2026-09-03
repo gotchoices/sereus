@@ -235,7 +235,8 @@ enforces these invariants:
   behind by a member who was already removed can only be cleared by a manager, so after
   the seal it stays forever. Any invitation still outstanding when the strand is sealed
   dies with it: it can never be redeemed, which matters because after the seal there is
-  nobody left who could even cancel it.
+  nobody left who could even cancel it. Like the rules above, that refusal is decided from
+  what one node can see (see known gaps below).
 - **The founding manager is the only unsigned seat**, and only in the founding state: at
   most one member exists, the founder's member row is already present, and no manager
   exists yet. Every later manager needs a signature. (This is why a strand is bootstrapped
@@ -313,9 +314,18 @@ Known gaps remain, all out of scope of the rules above:
   attempted; tracked in the schema's own notes next to the checks.
 - **A seal only binds a node once it gets there.** Sealing is a deletion like any other,
   and it has to reach a node before that node stops recognising the manager. Until it
-  does, that one ex-manager's own key could still admit someone there. Nobody else gains
-  anything — no other key was ever a manager on that node either — and the same
-  cross-node guard is not attempted here.
+  does, that node still behaves as though the strand were open for admission — and it is
+  not only the ex-manager's own key that gains. Every check that asks "does this strand
+  still have a manager?" is answered from the rows *that one node* can see, and the check
+  that refuses to redeem an invitation on a sealed strand is one of them. So a stranger
+  holding an invitation issued *before* the seal — someone who was never a manager
+  anywhere — can still redeem it and join at a node that has not heard about the seal
+  yet. Nothing un-joins them once the seal arrives; the strand the members thought they
+  had frozen has one more party in it than they agreed to. Once a node *has* the seal it
+  refuses all of this, and the seal travels fast: on a two-node strand it showed up
+  whole — no half-arrived state — within tens of milliseconds of being made. The window
+  is short, but its length on a strand larger than that has not been measured, and no
+  cross-node guard is attempted here.
 - **An invitation names no invitee, so cancelling one is a manual operator step.** An
   invitation is a bearer credential: whoever holds it can redeem it once, and the strand
   keeps no record of who it was meant for. Managers can now cancel invitations, but nothing
