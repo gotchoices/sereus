@@ -19,11 +19,11 @@
  * tests, which are the only ones whose claim is about a write the second node must
  * REFUSE rather than one it must accept: that the founder's seal converges and binds
  * the joiner's own schema, and that a sealed strand cannot be re-founded from the node
- * that did not seal it. They are deliberately NOT
- * one narrative — the removal test asserts enumerations, the physical-replication test
- * may not read the joiner's database at all, the durability test may not read it until
- * the founder is down, and six of the eight end with rejected writes whose post-state
- * this file does not assert (see the rejection floor below).
+ * that did not seal it. They are deliberately NOT one narrative — the removal test
+ * asserts enumerations, the physical-replication test may not read the joiner's database
+ * at all, the durability test may not read it until the founder is down, and six of the
+ * eight end with rejected writes whose post-state this file does not assert (see the
+ * rejection floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
  * This asserts the SQL-LAYER membership lifecycle using the writer APIs against the
@@ -72,9 +72,8 @@
  * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
  * gate in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
  * every convergence check in the third, fifth, seventh and eighth tests all throw on
- * timeout, all on the
- * shared {@link GATE} budget. The old best-effort/observe-then-require paths are gone. A
- * timeout here is a real convergence defect; do NOT restore a skip branch.
+ * timeout, all on the shared {@link GATE} budget. The old best-effort/observe-then-require
+ * paths are gone. A timeout here is a real convergence defect; do NOT restore a skip branch.
  *
  * NOTE: `waitUntil` swallows a throwing condition and retries, so a gate whose read
  * ERRORS on every attempt still reports a plain timeout, indistinguishable from rows
@@ -83,12 +82,11 @@
  *
  * VISIBILITY IS NOT PHYSICAL REPLICATION. Every cross-node assertion in the six
  * CONVERGENCE tests (the first, second, third, fifth and both SEAL tests) proves a row is
- * VISIBLE from the
- * other node's database, not that its block lives there. A read on either node resolves one
- * coordinator peer per block; when that resolves to the authoring node, the other node's
- * `select` is a remote call against the author's storage and nothing needs to live
- * locally. Visibility is the property an application actually observes, and it is what
- * those six assert — including the seal tests, whose claim is that the joiner's schema
+ * VISIBLE from the other node's database, not that its block lives there. A read on either
+ * node resolves one coordinator peer per block; when that resolves to the authoring node,
+ * the other node's `select` is a remote call against the author's storage and nothing needs
+ * to live locally. Visibility is the property an application actually observes, and it is
+ * what those six assert — including the seal tests, whose claim is that the joiner's schema
  * REFUSES admission once the seal is visible to it, not that the seal's blocks live in
  * the joiner's store.
  * Physical replication is proven separately by the FOURTH test, which writes only on
@@ -130,6 +128,7 @@ import {
 	removeMemberPeer,
 	revokeMember,
 	addManager,
+	admitManager,
 	sealStrand,
 	isStrandSealed,
 	signStrandApproval,
@@ -274,21 +273,30 @@ async function managerKeys(db: Database): Promise<string[]> {
 	return scanColumn(db, 'Manager', 'MemberKey');
 }
 
+/** One manager's visible row, or `undefined` if that key holds none. */
+interface VisibleManager { generation: number; stampId: string }
+
 /**
- * The `Strand.Manager.Generation` of one manager, or `undefined` if that key holds no
- * visible row. ONE scan reading both columns together — never two scans matched by
- * position, which the storage layer never promises to keep aligned.
+ * One manager's `Strand.Manager` row, via ONE scan reading every column the callers
+ * below need together — never a scan per column matched by position, which the storage
+ * layer never promises to keep aligned.
  */
-async function managerGeneration(db: Database, memberKey: string): Promise<number | undefined> {
-	for await (const row of db.eval('select MemberKey, Generation from Strand.Manager')) {
-		if (row.MemberKey === memberKey) return Number(row.Generation);
+async function managerRow(db: Database, memberKey: string): Promise<VisibleManager | undefined> {
+	for await (const row of db.eval('select MemberKey, Generation, StampId from Strand.Manager')) {
+		if (row.MemberKey === memberKey) {
+			return { generation: Number(row.Generation), stampId: row.StampId as string };
+		}
 	}
 	return undefined;
 }
 
+/** The `Strand.Manager.Generation` of one manager, or `undefined` if it holds no visible row. */
+async function managerGeneration(db: Database, memberKey: string): Promise<number | undefined> {
+	return (await managerRow(db, memberKey))?.generation;
+}
+
 /**
- * The live `Strand.Manager.StampId` of one manager. Same one-scan-both-columns shape as
- * {@link managerGeneration}, and the same reason.
+ * The live `Strand.Manager.StampId` of one manager.
  *
  * Throws rather than returning `undefined`: its only caller captures the stamp a seal is
  * about to retire, and a missing stamp there would silently turn the tombstone assertion
@@ -296,10 +304,9 @@ async function managerGeneration(db: Database, memberKey: string): Promise<numbe
  * to prevent.
  */
 async function managerStamp(db: Database, memberKey: string): Promise<string> {
-	for await (const row of db.eval('select MemberKey, StampId from Strand.Manager')) {
-		if (row.MemberKey === memberKey) return row.StampId as string;
-	}
-	throw new Error(`no Strand.Manager row for ${memberKey}`);
+	const row = await managerRow(db, memberKey);
+	if (row === undefined) throw new Error(`no Strand.Manager row for ${memberKey}`);
+	return row.stampId;
 }
 
 // ── Raw block-store coverage gate ────────────────────────────────────────────
@@ -1462,9 +1469,14 @@ describe('Closed-strand sealing converges to the second node (real two-node stra
 			// `isStrandSealed` is all three conjuncts at once (closed `Header`, zero
 			// `Manager` rows, a retired `Manager` stamp), so this gate cannot be satisfied
 			// by either half of the seal arriving alone.
+			// The clock starts the instant the seal's transaction returns, BEFORE the
+			// founder-side verification below — that read is itself several networked
+			// scans, and starting the clock after it would subtract them from the
+			// reported propagation delay. Over-reporting is the safe direction for a
+			// number the docs quote as an upper bound.
 			await sealStrand(founderDb, { managerKeyPair: founderKeyPair });
-			expect(await isStrandSealed(founderDb)).toBe(true);
 			const sealCommittedAt = Date.now();
+			expect(await isStrandSealed(founderDb)).toBe(true);
 			await waitUntil(
 				() => isStrandSealed(joinerDb),
 				{ ...GATE, description: "the founder's seal becomes visible on the second node" },
@@ -1521,6 +1533,16 @@ describe('Closed-strand sealing converges to the second node (real two-node stra
 			await expect(
 				addManager(joinerDb, { byManagerKeyPair: founderKeyPair, newManagerKey: founderKeyPair.publicKeyB64 }),
 			).rejects.toThrow(/Authorized/);
+
+			// The last admission path, and the only one this file cannot pin to a single
+			// constraint: `admitManager` writes a `Member` row AND a `Manager` row in one
+			// transaction, so `Member.Authorized` and `Manager.Authorized` can each reject
+			// and which one is REPORTED is engine evaluation order. Pin the fact of a CHECK
+			// rejection only — same compromise, and same reason, as the single-node
+			// `strand-seal.spec.ts` → "rejects every admission path".
+			await expect(
+				admitManager(joinerDb, { byManagerKeyPair: founderKeyPair, newManagerKey: freshKeyPair().publicKeyB64 }),
+			).rejects.toThrow(/CHECK constraint failed/);
 		} finally {
 			await stopBoth(founderNode, joinerNode);
 		}

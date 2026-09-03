@@ -8,6 +8,9 @@
 --
 -- The body below (the table declarations inside `declare schema Strand { ... }`)
 -- MUST stay byte-equivalent to `STRAND_SCHEMA` — mirror any edit in both places.
+-- NOTE: enforced by `quereus-plugin-sereus/test/strand-schema-drift.spec.ts`, which
+-- lives in another package — an edit here that skips the mirror stays green in this
+-- one. Run that spec (or the plugin's suite) after touching this file.
 --
 -- Signed writes use the same crypto idiom as schemas/control.qsql:
 --   verify(digest(<payload field(s)>), <signature>, <pubkey>, 'ed25519')
