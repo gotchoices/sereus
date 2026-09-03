@@ -6,6 +6,58 @@ repro: verified
 difficulty: hard
 ----
 
+> **Gate finished 2026-09-03 — five runs, five red, and the mechanism is not the one this ticket
+> was filed for. Stays blocked, behind a NEW upstream ticket.**
+>
+> The body's unblock gate ("≥ 5 runs of `control-write-degraded-cohort-member.integration.ts`")
+> was finally run as a clean series, in isolation, against `@optimystic/db-p2p` 0.27.0 with both
+> siblings rebuilt from their committed release trees:
+>
+> | round | result |
+> | --- | --- |
+> | 1-5 | **5 failed / 2 passed of 7, every round, identically** |
+>
+> It was set up to retire this ticket on five clean runs. It got the opposite, and something
+> better: a **reliable repro** for a defect that has been intermittent since 2026-08-12.
+>
+> **The `0/3 approvals, 0 rejections` symptom is gone and did not appear once.** What fails now is
+> a different mechanism wearing the same test:
+>
+> ```
+> Transaction rejected by validators (2/3 rejected):
+>   pending conflict: block _Paunze… held by unresolved action(s) urFN0UkUeVOk61QtJDkz6A
+> ```
+>
+> One action wedges one block for the whole process — 50+ seconds, four consecutive tests. Test 1
+> passes, test 2 wedges the block, and tests 3-7 die on the same block and the same action id;
+> that is the whole 5-of-7 cascade. Traced (`optimystic:db-p2p:cluster-member,block-storage,
+> coordinator-repo*`), the counts for the wedging action are unambiguous:
+>
+> | event | wedged block | its sibling block |
+> | --- | --- | --- |
+> | `block-storage pend` | **3** | 3 |
+> | `block-storage commit` | **1** | 3 |
+>
+> A pend spanning two blocks; the commit applied to one block on all three members and to the other
+> on exactly one. The two members that never applied it keep the pending record, and
+> `validatePendOperations` (`cluster-repo.ts:1479`) then rejects every later write to that block —
+> 41 rejections in one run. This is the **durable** record in storage, not the in-memory
+> reservation that `1-abandoned-pend-holds-the-block` and `2-member-must-answer-a-lost-conflict-race`
+> fixed; the stale-threshold sweep cannot reach it, and nothing else sweeps it either.
+>
+> **Filed upstream as `../optimystic/tickets/fix/1-a-half-applied-commit-wedges-a-block-forever`**
+> (`67fc6b64`), with the counts, the trace commands, and the `block-storage.ts:407` widen-if-seen
+> NOTE it trips.
+>
+> **The retry classifier in this repo was checked and is correct** — the "one thing to watch" below
+> did not bite. `isUncommittedTransactorAggregate` matches on the pend-phase `[block:` token, and
+> re-presenting a pend-phase aggregate is safe by design, so the three attempts are right and
+> merely futile against a pend that never clears. No classifier change is warranted.
+>
+> **Do not read a green run as a fix.** This file was 7/7 green twice on 2026-09-02 and 5/5 red on
+> 2026-09-03 with byte-identical code (the only commits between were version bumps and ticket
+> moves). Machine state moves the rate a long way. Re-measure as a series of five, never once.
+
 > **Gate attempt 2026-08-22 — the `0/3` symptom has not appeared in any observation since the
 > upstream fix, but the five-run gate is NOT complete. Stays blocked.**
 >

@@ -6,6 +6,31 @@ difficulty: hard
 repro: verified
 ----
 
+> **Measured 2026-09-03 — the re-run this ticket prescribes has now been done, and the answer is
+> "still masked". Five isolated rounds, five identical failures.**
+>
+> The 2026-08-21 audit below says the upstream unblock condition looks already satisfied and that
+> the next step is to run the scenario ~6 times and see what the carry step does. Run in isolation
+> against `@optimystic/db-p2p` 0.27.0, both siblings rebuilt from committed release trees:
+>
+> | round | result |
+> | --- | --- |
+> | 1-5 | **1 failed of 1, every round**, at ~8.8 s |
+>
+> ```
+> Error during query on table 'Revocation': Query failed:
+>   Block default/Revocation is unavailable (cohort-unreachable): the repo could not determine whether it exists
+> ```
+>
+> Identical to the fingerprint the audit recorded, and still in **boot** — the carry step this
+> scenario exists to measure has still never executed. So the ticket's own question ("what does the
+> carry step do today?") remains unanswerable, and the alternative the body offers — retire this and
+> open a fresh ticket against the boot failure that actually fires — is now the better-evidenced
+> option. That call is a human's; nothing here has been retired.
+>
+> One thing this run does settle: the failure is **not** intermittent any more. Five for five means
+> whoever picks up the boot failure has a reliable repro, which the ticket has never had.
+
 > **Audit 2026-08-21 — premise still holds, but the unblock condition may already have been met.**
 > The scenario `control-cohort-edge-carries-data` still dies before reaching the carry step, so the
 > original stream-reset symptom remains unobservable and the ticket's reasoning stands. Two things
