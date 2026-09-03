@@ -1,6 +1,6 @@
 {
   "name": "@serfab/cadre-provider",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "type": "module",
   "description": "Reference provider service for hosting Sereus cadre nodes on behalf of users",
   "main": "dist/index.js",
