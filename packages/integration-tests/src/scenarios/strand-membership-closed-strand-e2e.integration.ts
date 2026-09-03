@@ -72,7 +72,7 @@
  *
  * Replication of `Strand.*` is GATED EVERYWHERE in this file — the bootstrap-rows
  * gate in {@link bringUpClosedStrand}, the removal test's cross-node checks, and
- * every convergence check in the third, fifth, seventh and eighth tests all throw on
+ * every convergence check in the third, fifth, eighth and ninth tests all throw on
  * timeout, all on the shared {@link GATE} budget. The old best-effort/observe-then-require
  * paths are gone. A timeout here is a real convergence defect; do NOT restore a skip branch.
  *
@@ -169,7 +169,7 @@ import { loadSimpleSApp } from '../fixtures/index.js';
  *
  * Measured convergence is well under a second — ~1 s even with the box at 2×
  * CPU oversubscription — so 15 s is a wide margin, not a hope. One constant so a
- * future CI-driven bump happens once rather than at eight call sites.
+ * future CI-driven bump happens once rather than at every call site.
  */
 const GATE = { timeoutMs: 15_000, intervalMs: 250 } as const;
 
@@ -397,6 +397,32 @@ async function appItemRows(db: Database): Promise<Array<{ id: string; name: stri
 		});
 	}
 	return rows;
+}
+
+// ── Offline-durability isolation proof ───────────────────────────────────────
+
+/**
+ * Poll the joiner's strand node down to ZERO connections, and log what it reached.
+ *
+ * Both offline-durability tests hinge on this: with even one strand connection left, a
+ * read below can be answered over the wire and the test would report durability it never
+ * observed. Shared so the two cannot drift apart in what they wait for.
+ *
+ * The founder's `stop()` stays at the CALL SITE, immediately followed by the caller's own
+ * `founderStopped` flag — that pairing is what keeps the `finally` from stopping an
+ * already-stopped node, and it must not be separated by anything that can throw.
+ *
+ * @param label - The bring-up label, so the log line names which test it came from.
+ */
+async function proveJoinerAlone(joinerStrand: StrandInstance, label: string): Promise<void> {
+	await waitUntil(
+		() => joinerStrand.libp2pNode!.getConnections().length === 0,
+		{ ...GATE, description: "the joiner's strand node drops to zero connections" },
+	);
+	console.log(
+		`[closed-strand:${label}] founder stopped; joiner strand connections = ` +
+		`${joinerStrand.libp2pNode!.getConnections().length}`,
+	);
 }
 
 // ── Two-node closed-strand bring-up ──────────────────────────────────────────
@@ -1357,14 +1383,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// ── 2. The founder goes away, and the joiner is proven alone ─────────
 			await founderNode.stop();
 			founderStopped = true;
-			await waitUntil(
-				() => joinerStrand.libp2pNode!.getConnections().length === 0,
-				{ ...GATE, description: "the joiner's strand node drops to zero connections" },
-			);
-			console.log(
-				`[closed-strand:offline-founder] founder stopped; joiner strand connections = ` +
-				`${joinerStrand.libp2pNode!.getConnections().length}`,
-			);
+			await proveJoinerAlone(joinerStrand, 'offline-founder');
 
 			// ── 3. THE CLAIM: the joiner answers the founding membership by itself ──
 			// Elapsed time of the FIRST post-stop read is logged because that read is the one
@@ -1439,9 +1458,9 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	//      — but the ordering states the intent, and a reader should not have to derive it
 	//      from the narrowing.
 	//   2. WRITE ON THE FOUNDER ONLY: a member admitted through the real invite flow, then
-	//      a signed `App.Items` insert by that member. Three tables (`Invite`, `Member`,
-	//      `App.Items`) because the control-side defect presented PER COLLECTION — one
-	//      table answering says nothing about the next.
+	//      a signed `App.Items` insert by that member. Four tables (`Invite`, `Member`,
+	//      `ConsumedInvite`, `App.Items`) because the control-side defect presented PER
+	//      COLLECTION — one table answering says nothing about the next.
 	//   3. GATE THROUGH THE RAW STORE, narrowed to blocks authored since step 1. Raw store
 	//      only, never `joinerDb`, for the reason `block-store-probe.ts` documents: a read
 	//      issued through the joiner can itself pull in the very bytes this step waits for
@@ -1454,6 +1473,16 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 	// Everything the sixth test says about the 30 s self-coordination grace period and its
 	// degraded-read escape applies here unchanged — see its comment; do not sleep past the
 	// guard.
+	//
+	// WHAT IS NOT CLAIMED — and here the limit is load-bearing rather than incidental. The
+	// joiner receives these post-catch-up blocks at commit time because it is in every
+	// block's COHORT: `DEFAULT_STRAND_CLUSTER_SIZE` is 4 and this strand has two machines,
+	// so the cohort is both of them. Above that size a machine outside a given block's
+	// cohort is not written to at commit, and the sweep — one-shot, at join — never runs
+	// again to cover it, so such a machine would answer this read over the network and hold
+	// nothing to answer it with once the author stops. That is a genuinely different
+	// measurement, and it is the gap `backlog/debt-replication-proof-above-cohort-size`
+	// tracks; do NOT read this test as evidence about it.
 	it('serves a row written AFTER the catch-up from the joiner alone once the founder stops', async () => {
 		const {
 			founderNode, joinerNode, joinerStrand, founderDb, joinerDb, founderKeyPair,
@@ -1524,14 +1553,7 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			// ── 4. The founder goes away, and the joiner is proven alone ─────────
 			await founderNode.stop();
 			founderStopped = true;
-			await waitUntil(
-				() => joinerStrand.libp2pNode!.getConnections().length === 0,
-				{ ...GATE, description: "the joiner's strand node drops to zero connections" },
-			);
-			console.log(
-				'[closed-strand:offline-post-join] founder stopped; joiner strand connections = ' +
-				`${joinerStrand.libp2pNode!.getConnections().length}`,
-			);
+			await proveJoinerAlone(joinerStrand, 'offline-post-join');
 
 			// ── 5. THE CLAIM: the post-catch-up row reads back, BY CONTENT ───────
 			// Scanned rather than sought. A full-PK equality on `App.Items.Id` is a point
@@ -1552,10 +1574,12 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			expect(item!.createdBy).toBe(newMember.publicKeyB64);
 			expect((await joinerDb.get('select Value from App.Items where Id = ?', [itemId]))?.Value).toBe(itemValue);
 
-			// The membership rows written in the same post-catch-up window, on two OTHER
-			// tables — per-collection, because the control-side defect was per-collection.
+			// The membership rows written in the same post-catch-up window, on the THREE
+			// other tables the invite flow touched — per-collection, because the control-side
+			// defect was per-collection, so one table answering says nothing about the next.
 			expect(await memberKeys(joinerDb)).toContain(newMember.publicKeyB64);
 			expect(await inviteKeys(joinerDb)).toContain(inviteKey);
+			expect(await scanColumn(joinerDb, 'ConsumedInvite', 'MemberKey')).toContain(newMember.publicKeyB64);
 
 			// And the FOUNDING rows are still readable: a joiner that served the new row by
 			// losing the old ones would pass every assertion above.
