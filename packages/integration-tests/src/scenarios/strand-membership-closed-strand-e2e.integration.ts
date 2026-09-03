@@ -11,19 +11,20 @@
  * `addStrand` on each side, a manual strand-level dial) and the Phase-2 lifecycle
  * tests in `strand-formation-e2e.integration.ts`.
  *
- * EIGHT independent tests, each with its OWN two-node strand via
+ * NINE independent tests, each with its OWN two-node strand via
  * {@link bringUpClosedStrand}: the admission/rotation lifecycle, device-record
  * (`MemberPeer`) removal, a JOINER-AUTHORED join, PHYSICAL block replication,
- * MANAGER-AUTHORIZED writers run from the second node, OFFLINE DURABILITY — the
- * founder STOPPED, the joiner answering out of its own copy — and finally two SEAL
- * tests, which are the only ones whose claim is about a write the second node must
- * REFUSE rather than one it must accept: that the founder's seal converges and binds
- * the joiner's own schema, and that a sealed strand cannot be re-founded from the node
- * that did not seal it. They are deliberately NOT one narrative — the removal test
- * asserts enumerations, the physical-replication test may not read the joiner's database
- * at all, the durability test may not read it until the founder is down, and six of the
- * eight end with rejected writes whose post-state this file does not assert (see the
- * rejection floor below).
+ * MANAGER-AUTHORIZED writers run from the second node, TWO OFFLINE DURABILITY tests —
+ * the founder STOPPED, the joiner answering out of its own copy, first for the founding
+ * rows the peer-join catch-up carried and then for a row written AFTER that catch-up
+ * finished — and finally two SEAL tests, which are the only ones whose claim is about a
+ * write the second node must REFUSE rather than one it must accept: that the founder's
+ * seal converges and binds the joiner's own schema, and that a sealed strand cannot be
+ * re-founded from the node that did not seal it. They are deliberately NOT one narrative
+ * — the removal test asserts enumerations, the physical-replication test may not read the
+ * joiner's database at all, the two durability tests may not read it until the founder is
+ * down, and six of the nine end with rejected writes whose post-state this file does not
+ * assert (see the rejection floor below).
  *
  * ── SCOPE (read before extending) ────────────────────────────────────────────
  * This asserts the SQL-LAYER membership lifecycle using the writer APIs against the
@@ -99,6 +100,13 @@
  * joiner holds zero strand connections, and only then reads `joinerDb`. With nobody left
  * to answer remotely, those reads are the first in this file that the joiner must serve
  * out of its own storage.
+ * The SEVENTH test is the same shape over a DIFFERENT delivery path. Every row the sixth
+ * reads was seated by the founder's bootstrap and reached the joiner through the one-shot
+ * peer-join catch-up sweep; the seventh waits for that sweep to finish, THEN writes new
+ * membership and application rows on the founder, gates on those later blocks reaching the
+ * joiner's raw store, and reads them back with the founder down. Rows that arrive with
+ * their own commit rather than with the sweep are the case an application actually lives
+ * in, and they were unproven until it.
  *
  * Rejection floor: per the optimystic deferred-constraint-rollback gap (backlog),
  * rejected writes assert via `rejects.toThrow()` ("throws" is the floor) and do NOT
@@ -367,6 +375,28 @@ function itemPayload(id: string, name: string, value: string | null): string {
 function signItem(privateKeyB64: string, id: string, name: string, value: string | null): string {
 	const hashBytes = digest([itemPayload(id, name, value)], 'sha256', 'bytes') as Uint8Array;
 	return sign(hashBytes, privateKeyB64, SAPP_CURVE, 'bytes', 'base64url', 'base64url') as string;
+}
+
+/**
+ * Every `App.Items` row, via an UNFILTERED scan.
+ *
+ * `App.Items` has the single column `Id` as its primary key, so a where-equality on it is
+ * a FULL-PK point lookup that can MISS on a networked strand — see the lookup-shape note
+ * in the file header. Its one caller is the offline read of a row written after the
+ * peer-join catch-up, where a miss would look exactly like the silent empty-table defect
+ * that test is hunting, so it scans and filters in JavaScript instead.
+ */
+async function appItemRows(db: Database): Promise<Array<{ id: string; name: string; value: string | null; createdBy: string }>> {
+	const rows: Array<{ id: string; name: string; value: string | null; createdBy: string }> = [];
+	for await (const row of db.eval('select Id, Name, Value, CreatedBy from App.Items')) {
+		rows.push({
+			id: row.Id as string,
+			name: row.Name as string,
+			value: (row.Value ?? null) as string | null,
+			createdBy: row.CreatedBy as string,
+		});
+	}
+	return rows;
 }
 
 // ── Two-node closed-strand bring-up ──────────────────────────────────────────
@@ -1380,6 +1410,165 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
 			await stopBoth(founderStopped ? undefined : founderNode, joinerNode);
 		}
 	}, 60_000);
+
+	// ── OFFLINE DURABILITY FOR ORDINARY WRITES ───────────────────────────────
+	//
+	// The sixth test proves the joiner answers ALONE, but every row it reads there is one
+	// of the three the founder's bootstrap seated BEFORE the two nodes were ever dialled
+	// together. Those rows reach the joiner through the peer-join CATCH-UP sweep
+	// (`cadre-core/src/peer-join-backfill.ts`) — one sweep, at join time. A row an
+	// application writes AFTERWARDS takes a different path entirely: it rides along with
+	// its own commit to the block's cohort, and the sweep never runs again. Nothing in
+	// this file had shown that second path ends in a row the joiner can serve by itself —
+	// and it is the path a strand spends its whole life in, since a strand is set up once
+	// and written to from then on.
+	//
+	// The failure this exists to catch is the one the control network turned out to have
+	// (`complete/control-network-peer-join-block-catch-up`): a node that had fully
+	// converged the database over the wire was missing the storage blocks behind it, and
+	// once restarted with no connections read whole tables as EMPTY — silently, with no
+	// error. An empty table satisfies any assertion phrased as a count floor over the
+	// wrong table, so the reads below assert ROW CONTENT.
+	//
+	// Sequence, and why the order is load-bearing:
+	//
+	//   1. WHOLE-STORE COVERAGE FIRST, before anything new is written. That is what makes
+	//      the claim specific: everything the catch-up sweep was ever going to carry has
+	//      already landed, so nothing arriving later can be credited to it. Step 3 also
+	//      narrows to exactly the later blocks, so the claim would survive a second sweep
+	//      — but the ordering states the intent, and a reader should not have to derive it
+	//      from the narrowing.
+	//   2. WRITE ON THE FOUNDER ONLY: a member admitted through the real invite flow, then
+	//      a signed `App.Items` insert by that member. Three tables (`Invite`, `Member`,
+	//      `App.Items`) because the control-side defect presented PER COLLECTION — one
+	//      table answering says nothing about the next.
+	//   3. GATE THROUGH THE RAW STORE, narrowed to blocks authored since step 1. Raw store
+	//      only, never `joinerDb`, for the reason `block-store-probe.ts` documents: a read
+	//      issued through the joiner can itself pull in the very bytes this step waits for
+	//      and turn a real gap into a pass.
+	//   4. STOP THE FOUNDER, then POLL to zero strand connections — the same isolation
+	//      proof the sixth test makes, for the same reason: a single leftover connection
+	//      would let the reads below be answered over the wire.
+	//   5. ONLY NOW read `joinerDb`.
+	//
+	// Everything the sixth test says about the 30 s self-coordination grace period and its
+	// degraded-read escape applies here unchanged — see its comment; do not sleep past the
+	// guard.
+	it('serves a row written AFTER the catch-up from the joiner alone once the founder stops', async () => {
+		const {
+			founderNode, joinerNode, joinerStrand, founderDb, joinerDb, founderKeyPair,
+			founderStore, joinerStore,
+		} = await bringUpClosedStrand('offline-post-join');
+
+		// The teardown must not stop a node that is already down: `founderNode.stop()` is
+		// a step of the test itself, not only of the cleanup.
+		let founderStopped = false;
+		try {
+			// ── 1. The catch-up sweep finishes BEFORE anything new is written ────
+			await awaitBlockCoverage(
+				founderStore, joinerStore,
+				"the founder's whole store lands physically in the joiner's block store",
+				"joiner's block store never covered the founder's whole store, so this run says nothing " +
+				'about the durability of later writes — this is a PEER-JOIN CATCH-UP failure ' +
+				'(cadre-core/src/peer-join-backfill.ts), not a post-catch-up failure',
+			);
+			const swept = await readBlockIndex(founderStore);
+			const authoredAfterSweep = newOrAdvancedSince(swept);
+			console.log(
+				`[closed-strand:offline-post-join] catch-up complete: founder holds ${swept.size} committed ` +
+				`blocks, joiner holds ${(await readBlockIndex(joinerStore)).size}`,
+			);
+
+			// ── 2. Founder-only writes, every one of them after that moment ──────
+			const newMember = freshKeyPair();
+			const { inviteKey, invitePrivateKey } = await issueInvite(founderDb, { managerKeyPair: founderKeyPair });
+			await consumeInvite(founderDb, { inviteKey, invitePrivateKey, memberKey: newMember.publicKeyB64 });
+
+			const itemId = 'item-post-catch-up';
+			const itemName = 'post-catch-up';
+			const itemValue = 'written after the joiner had already caught up';
+			const writeSig = signItem(newMember.privateKeyB64, itemId, itemName, itemValue);
+			await founderDb.exec(
+				`insert into App.Items (Id, Name, Value, CreatedBy)
+				   with context MemberKey = ?, Signature = ?
+				   values (?, ?, ?, ?)`,
+				[newMember.publicKeyB64, writeSig, itemId, itemName, itemValue, newMember.publicKeyB64],
+			);
+
+			// ── Anti-vacuity: those writes really produced blocks the sweep never saw ──
+			// An empty narrowed set makes step 3's gate trivially satisfied, and step 5 would
+			// then be reading rows the sweep had delivered after all — precisely the thing
+			// this test exists to distinguish itself from. Measured 2026-09-03: 20 founder
+			// blocks at the moment the sweep completed, 29 after these writes, 13 of them
+			// new-or-advanced since. The floor sits at 4, pinning "more than one table's
+			// worth of work" without pinning the storage layout.
+			const founderIndex = await readBlockIndex(founderStore);
+			const sinceSweep = new Map([...founderIndex].filter(([id, rev]) => authoredAfterSweep(id, rev)));
+			expect(sinceSweep.size, 'founder blocks authored or advanced since the catch-up completed')
+				.toBeGreaterThanOrEqual(4);
+
+			// ── 3. Those blocks reach the joiner's OWN store — RAW STORE ONLY ────
+			await awaitBlockCoverage(
+				founderStore, joinerStore,
+				"the founder's post-catch-up blocks land physically in the joiner's block store",
+				"joiner's block store never covered the blocks the founder authored AFTER the catch-up " +
+				'completed, so those rows were never durable on the joiner at all',
+				{ include: authoredAfterSweep },
+			);
+			console.log(
+				`[closed-strand:offline-post-join] ${sinceSweep.size} post-catch-up blocks covered; founder ` +
+				`now holds ${(await readBlockIndex(founderStore)).size} committed blocks, joiner ` +
+				`${(await readBlockIndex(joinerStore)).size}`,
+			);
+
+			// ── 4. The founder goes away, and the joiner is proven alone ─────────
+			await founderNode.stop();
+			founderStopped = true;
+			await waitUntil(
+				() => joinerStrand.libp2pNode!.getConnections().length === 0,
+				{ ...GATE, description: "the joiner's strand node drops to zero connections" },
+			);
+			console.log(
+				'[closed-strand:offline-post-join] founder stopped; joiner strand connections = ' +
+				`${joinerStrand.libp2pNode!.getConnections().length}`,
+			);
+
+			// ── 5. THE CLAIM: the post-catch-up row reads back, BY CONTENT ───────
+			// Scanned rather than sought. A full-PK equality on `App.Items.Id` is a point
+			// lookup that can MISS (header lookup-shape note), and a miss on the one read
+			// this whole test exists for would be indistinguishable from the silent
+			// empty-table defect it is hunting. The equality below runs afterwards as a
+			// SECOND shape over the same claim, where a miss fails rather than passes.
+			const firstReadStartedAt = Date.now();
+			const items = await appItemRows(joinerDb);
+			console.log(
+				`[closed-strand:offline-post-join] first post-stop read took ${Date.now() - firstReadStartedAt}ms ` +
+				`and returned ${items.length} App.Items row(s)`,
+			);
+			const item = items.find(row => row.id === itemId);
+			expect(item, `App.Items row '${itemId}', read from the joiner with nobody left to answer`).toBeDefined();
+			expect(item!.name).toBe(itemName);
+			expect(item!.value).toBe(itemValue);
+			expect(item!.createdBy).toBe(newMember.publicKeyB64);
+			expect((await joinerDb.get('select Value from App.Items where Id = ?', [itemId]))?.Value).toBe(itemValue);
+
+			// The membership rows written in the same post-catch-up window, on two OTHER
+			// tables — per-collection, because the control-side defect was per-collection.
+			expect(await memberKeys(joinerDb)).toContain(newMember.publicKeyB64);
+			expect(await inviteKeys(joinerDb)).toContain(inviteKey);
+
+			// And the FOUNDING rows are still readable: a joiner that served the new row by
+			// losing the old ones would pass every assertion above.
+			expect(await memberKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+			expect(await managerKeys(joinerDb)).toContain(founderKeyPair.publicKeyB64);
+
+			// Still alone AFTER the reads, not merely before them. Without this a connection
+			// landing mid-test could have answered everything above.
+			expect(joinerStrand.libp2pNode!.getConnections(), 'joiner strand connections during the reads').toHaveLength(0);
+		} finally {
+			await stopBoth(founderStopped ? undefined : founderNode, joinerNode);
+		}
+	}, 60_000);
 });
 
 // ═════════════════════════════════════════════════════════════════════════════
@@ -1402,11 +1591,11 @@ describe('Closed-strand membership lifecycle (real two-node strand)', () => {
  * it has, the SECOND node's own schema is the thing doing the rejecting, for each
  * admission path in turn and under the specific constraint name that owns it.
  *
- * NOTE: these two tests share ~400 lines of private harness with the six above
+ * NOTE: these two tests share ~400 lines of private harness with the seven above
  * (`bringUpClosedStrand`, `stopBoth`, `freshKeyPair`, `GATE`, the `scanColumn` family).
  * They live here rather than in a sibling file for exactly that reason. If a THIRD
  * scenario ever needs this harness, hoist it into `src/harness/` rather than duplicating
- * it — a hoist is a refactor across eight passing network tests and wants its own ticket.
+ * it — a hoist is a refactor across nine passing network tests and wants its own ticket.
  *
  * NOTE: the PROPAGATION WINDOW — the interval in which the sealing node has committed
  * but another node has not yet converged, during which that node's schema still admits —
