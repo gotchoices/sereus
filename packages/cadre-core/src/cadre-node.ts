@@ -1158,7 +1158,11 @@ export class CadreNode implements SAppIdLookup {
     if (this.config.controlBackfill?.enabled === false || !this.controlNode) {
       return;
     }
-    const storage = this.controlStorage;
+    // Through the resolver, not the {@link controlStorage} memo field: the resolver is
+    // idempotent (it returns the same wrapped store `buildControlNodeOptions` already
+    // resolved), so the catch-up cannot be silently disarmed by a future reordering that
+    // moves this call ahead of the one that populated the field.
+    const storage = this.resolveControlStorage();
     const keyNetwork = (this.controlNode as Libp2pNodeWithRepo).keyNetwork;
     if (!storage || !keyNetwork) {
       log('Control peer-join block catch-up is inert: %s',
@@ -1183,6 +1187,14 @@ export class CadreNode implements SAppIdLookup {
       // can be short (converge one row, then stop) — a slow debounce is the
       // difference between that joiner holding the collection headers and
       // reading its own membership as empty after an offline restart.
+      //
+      // NOTE: 250 is reasoned, not swept — the delete-while-alone scenario's
+      // phases 1-3 finish in about a second, so the 1000 ms strand default left
+      // the push racing the joiner's stop, and 250 gives margin. Nobody measured
+      // the shape of the curve either side of it. If the control gates start
+      // flaking on a joiner that stopped before being caught up, lower this
+      // before looking anywhere else; if catch-up pushes start showing up as
+      // connection-churn noise, raise it.
       debounceMs: 250,
       ...this.config.controlBackfill
     });
@@ -1649,8 +1661,20 @@ export class CadreNode implements SAppIdLookup {
       // connected peer. The production join order is connect-then-authorize, so
       // a joiner's first catch-up pass was denied at the gate while its
       // connection stays up — without this re-arm it would wait for a
-      // reconnect. Cheap and idempotent: caught-up and in-flight peers are
-      // skipped before any timer is set, and the gate re-judges at push time.
+      // reconnect. Cheap and idempotent: caught-up peers are skipped before any
+      // timer is set, a peer whose pass is in flight is deferred to the end of
+      // that pass (the pass may already be past its gate check — this very
+      // commit is what would authorize it), and the gate re-judges at push time.
+      //
+      // NOTE: every refresh re-arms every connected peer that is not yet caught
+      // up, and each re-armed pass costs one `CadrePeer` query at the gate. A
+      // connection that is admitted but never authorized — a configured
+      // bootstrap or relay peer, the steady state for a NAT'd node — is
+      // therefore re-judged on every membership write and every timed reconcile
+      // tick, forever. Negligible at a cadre's handful of connections; if a node
+      // ever holds many such connections, or refreshes get frequent, skip
+      // re-arming peers whose last pass was denied under the SAME membership
+      // snapshot instead of re-arming unconditionally.
       this.controlBackfill?.scheduleConnectedPeers();
     } catch (error) {
       log('refreshAuthorizedControlPeers(%s) failed — keeping previous snapshot: %o', reason, error);

@@ -200,6 +200,15 @@ export class PeerJoinBackfill {
   private readonly done = new Set<string>();
   /** Peers with a catch-up currently running (suppresses concurrent duplicates). */
   private readonly inFlight = new Set<string>();
+  /**
+   * Peers whose (re-)schedule arrived while their OWN run was in flight, replayed once
+   * that run finishes. Load-bearing for the gated path: the gate's authorization check is
+   * a control-database read, so the window between it and the run's end is wide enough for
+   * the very membership commit that would have authorized the peer to land inside it —
+   * dropping that schedule (rather than deferring it) leaves the denied peer waiting for a
+   * reconnect, which is exactly what the re-arm exists to avoid.
+   */
+  private readonly rearmAfterFlight = new Set<string>();
   /** Pending per-peer debounce timers, cleared on stop. */
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
   private readonly onConnectionOpen: (evt: CustomEvent<Connection>) => void;
@@ -234,30 +243,42 @@ export class PeerJoinBackfill {
       clearTimeout(timer);
     }
     this.timers.clear();
+    this.rearmAfterFlight.clear();
     log('[%s] stopped', this.deps.label);
   }
 
   /**
    * (Re-)schedule a debounced catch-up for every currently-connected peer not yet caught
-   * up. Idempotent and cheap (done/in-flight peers are skipped before any timer is set).
+   * up. Idempotent and cheap (caught-up peers are skipped before any timer is set, and a
+   * peer whose run is in flight is deferred to the end of that run rather than dropped).
    * Driven by {@link start}, and — on a gated network — by the embedder whenever
    * membership changes, so a peer whose first pass was denied (connected before it was
    * authorized: the production join order) is retried without waiting for a reconnect.
-   * Returns how many peers were considered (for the start() log).
+   * Returns how many distinct peers were considered (for the start() log) — a peer holding
+   * several connections is one peer, and is scheduled once.
    */
   scheduleConnectedPeers(): number {
     if (this.stopped) return 0;
-    const connections = this.deps.libp2p.getConnections();
-    for (const connection of connections) {
+    const peers = new Set<string>();
+    for (const connection of this.deps.libp2p.getConnections()) {
+      const key = connection.remotePeer.toString();
+      if (peers.has(key)) continue;
+      peers.add(key);
       this.schedulePeer(connection.remotePeer);
     }
-    return connections.length;
+    return peers.size;
   }
 
   /** Debounced entry point for connection churn: one run per peer per settle window. */
   private schedulePeer(peerId: PeerId): void {
     const key = peerId.toString();
-    if (this.stopped || this.done.has(key) || this.inFlight.has(key)) return;
+    if (this.stopped || this.done.has(key)) return;
+    if (this.inFlight.has(key)) {
+      // Defer rather than drop: the running pass may already be past its gate check (or
+      // past the block this schedule was meant to carry), so replay it when that pass ends.
+      this.rearmAfterFlight.add(key);
+      return;
+    }
     const existing = this.timers.get(key);
     if (existing) clearTimeout(existing);
     this.timers.set(key, setTimeout(() => {
@@ -298,6 +319,11 @@ export class PeerJoinBackfill {
       return emptyResult();
     } finally {
       this.inFlight.delete(key);
+      // Replay a schedule that arrived mid-run. `schedulePeer` re-checks `done`, so a run
+      // that finished clean re-arms nothing; a denied or failed one gets its retry.
+      if (this.rearmAfterFlight.delete(key)) {
+        this.schedulePeer(peerId);
+      }
     }
   }
 

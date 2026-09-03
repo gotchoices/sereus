@@ -656,4 +656,105 @@ describe('PeerJoinBackfill', () => {
     expect(firstResult.accepted).toBe(1);
     expect(captured.pushes.length).toBe(1);
   });
+
+  it('replays a re-arm that arrived while the peer\'s own denied run was in flight', async () => {
+    // The race the membership re-arm exists for, tightened one notch: the gate check is a
+    // control-database read, so the commit that authorizes the joiner can land AFTER that
+    // check and BEFORE the run ends. Dropping the re-arm in that window (rather than
+    // deferring it) would leave the peer waiting for a reconnect — the exact outcome the
+    // re-arm was added to prevent.
+    let authorized = false;
+    let releaseGate: (() => void) | undefined;
+    const gateHeld = new Promise<void>((resolve) => { releaseGate = resolve; });
+    const { pushes, client } = makePushClient();
+    const fake = makeLibp2p([{ remotePeer: peer('joiner') }]);
+    const backfill = new PeerJoinBackfill({
+      label: 'control-test',
+      libp2p: fake.node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/control-test',
+      // The first check answers "not a member" but only settles after the test has driven
+      // the re-arm — standing in for a slow membership read.
+      authorizePeer: async () => {
+        if (!authorized) {
+          await gateHeld;
+          return false;
+        }
+        return true;
+      },
+      createPushClient: () => client
+    }, { debounceMs: 1 });
+
+    const run = backfill.catchUpPeer(peer('joiner'));
+    // Membership commits mid-run; the embedder re-arms while the run is still in flight.
+    authorized = true;
+    backfill.scheduleConnectedPeers();
+    releaseGate!();
+    expect((await run).denied).toBe(true);
+    expect(pushes.length).toBe(0);
+
+    // The deferred re-arm replays itself — no reconnect, no second embedder call.
+    await until(() => pushes.length === 1);
+    expect(pushes[0]!.ids).toEqual(['b1']);
+
+    backfill.stop();
+  });
+
+  it('does not replay a re-arm that arrived during a run which finished clean', async () => {
+    // The other half: a mid-run re-arm must not cost a second whole-store push once the
+    // peer is caught up. `done` is set before the deferred replay is considered.
+    let release: (() => void) | undefined;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const captured = makePushClient();
+    const stalledClient: PeerJoinBackfillPushClient = {
+      pushBlocks: async (...args) => {
+        await gate;
+        return captured.client.pushBlocks(...args);
+      }
+    };
+    const fake = makeLibp2p([{ remotePeer: peer('p1') }]);
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
+      libp2p: fake.node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/strand-strand-test',
+      createPushClient: () => stalledClient
+    }, { debounceMs: 1 });
+
+    const run = backfill.catchUpPeer(peer('p1'));
+    backfill.scheduleConnectedPeers();
+    release!();
+    expect((await run).accepted).toBe(1);
+
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(captured.pushes.length).toBe(1);
+
+    backfill.stop();
+  });
+
+  it('schedules a multi-connection peer once and reports distinct peers', async () => {
+    const fake = makeLibp2p([
+      { remotePeer: peer('p1') },
+      { remotePeer: peer('p1') },
+      { remotePeer: peer('p2') }
+    ]);
+    const { pushes, client } = makePushClient();
+    const backfill = new PeerJoinBackfill({
+      label: 'strand-test',
+      libp2p: fake.node,
+      peerNetwork: {} as IPeerNetwork,
+      storage: makeStorage({ b1: committed('b1') }),
+      protocolPrefix: '/optimystic/strand-strand-test',
+      createPushClient: () => client
+    }, { debounceMs: 1 });
+
+    expect(backfill.scheduleConnectedPeers()).toBe(2);
+    await until(() => pushes.length === 2);
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    expect(pushes.length).toBe(2); // one whole-store pass per PEER, not per connection
+
+    backfill.stop();
+  });
 });
