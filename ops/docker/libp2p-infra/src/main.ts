@@ -9,6 +9,7 @@ import path from 'node:path'
 
 import { createLibp2p } from 'libp2p'
 import { tcp } from '@libp2p/tcp'
+import { webSockets } from '@libp2p/websockets'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
@@ -24,13 +25,34 @@ if (!ROLE || !['relay', 'bootstrap', 'bootstrap-relay'].includes(ROLE)) {
   throw new Error(`Missing/invalid SEREUS_ROLE. Expected one of: relay|bootstrap|bootstrap-relay (got ${JSON.stringify(process.env.SEREUS_ROLE)})`)
 }
 
-const DATA_DIR = '/data'
+// `/data` is the container volume; override when running the process directly
+// on a workstation (see chat's scripts/relay.sh).  The identity key is stored
+// here, so a stable DATA_DIR means a stable peer id across restarts — which
+// matters because clients pin the relay's /p2p/<peerId> in their config.
+const DATA_DIR = (process.env.DATA_DIR ?? '').trim() || '/data'
 const KEY_FILE = path.join(DATA_DIR, 'libp2p-private.key.pb')
 
 function parseAnnounceAddrs (): string[] | undefined {
   const raw = (process.env.ANNOUNCE_ADDRS ?? '').trim()
   if (!raw) return undefined
   return raw.split(',').map(s => s.trim()).filter(Boolean)
+}
+
+/**
+ * Listen addresses.  Defaults to TCP *and* WebSockets: React Native has no raw
+ * TCP transport, so a phone can only reach this over `/ws` (or `/wss` behind a
+ * TLS front — see ANNOUNCE_ADDRS).  Override to listen on one transport only.
+ */
+const DEFAULT_LISTEN_ADDRS = ['/ip4/0.0.0.0/tcp/4001', '/ip4/0.0.0.0/tcp/4002/ws']
+
+function parseListenAddrs (): string[] {
+  const raw = (process.env.LISTEN_ADDRS ?? '').trim()
+  if (!raw) return DEFAULT_LISTEN_ADDRS
+  const addrs = raw.split(',').map(s => s.trim()).filter(Boolean)
+  if (addrs.length === 0) {
+    throw new Error(`Invalid LISTEN_ADDRS. Expected comma-separated multiaddrs (got ${JSON.stringify(process.env.LISTEN_ADDRS)})`)
+  }
+  return addrs
 }
 
 function parseBooleanEnv (name: string, defaultValue: boolean): boolean {
@@ -105,10 +127,10 @@ if (ROLE === 'bootstrap' || ROLE === 'bootstrap-relay') {
 const node = await createLibp2p({
   privateKey: await loadOrCreatePrivateKey(),
   addresses: {
-    listen: ['/ip4/0.0.0.0/tcp/4001'],
+    listen: parseListenAddrs(),
     ...(announce ? { announce } : {})
   },
-  transports: [tcp()],
+  transports: [tcp(), webSockets()],
   connectionEncrypters: [noise()],
   streamMuxers: [yamux()],
   services
@@ -121,6 +143,15 @@ if (ROLE === 'relay' || ROLE === 'bootstrap-relay') {
   console.log(`relay reservations: applyDefaultLimit=${RELAY_APPLY_DEFAULT_LIMIT} maxReservations=${RELAY_MAX_RESERVATIONS}`)
 }
 console.log('listening/advertising on:')
-node.getMultiaddrs().forEach(ma => console.log(ma.toString()))
+const addrs = node.getMultiaddrs().map(ma => ma.toString())
+addrs.forEach(ma => console.log(`  ${ma}`))
+
+// Phones dial WebSockets, so surface those separately — this is the address a
+// mobile client needs in its relay configuration.
+const wsAddrs = addrs.filter(ma => ma.includes('/ws'))
+if (wsAddrs.length > 0) {
+  console.log('\nWebSocket addresses (for clients without raw TCP, e.g. React Native):')
+  wsAddrs.forEach(ma => console.log(`  ${ma}`))
+}
 
 

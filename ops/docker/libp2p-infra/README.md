@@ -8,7 +8,9 @@ Container image for the party-operated libp2p relay/bootstrap nodes. Built by
 
 | Variable | Applies to | Default | Purpose |
 | --- | --- | --- | --- |
+| `DATA_DIR` | all | `/data` | Where the identity key is persisted. `/data` is the container volume; set it to a writable path when running the process directly on a workstation. A stable value means a stable peer id across restarts. |
 | `SEREUS_ROLE` | all | *(required)* | `relay` \| `bootstrap` \| `bootstrap-relay`. |
+| `LISTEN_ADDRS` | all | `/ip4/0.0.0.0/tcp/4001,/ip4/0.0.0.0/tcp/4002/ws` | Comma-separated multiaddrs to bind. Both TCP and WebSockets are listened on by default: **React Native has no raw-TCP transport**, so a mobile client can only reach this over `/ws` (or `/wss` behind a TLS front). Override to bind one transport only. |
 | `ANNOUNCE_ADDRS` | all | unset | Comma-separated multiaddrs to advertise instead of the bound listen address (e.g. behind a reverse proxy/DNS front). |
 | `RELAY_APPLY_DEFAULT_LIMIT` | `relay`, `bootstrap-relay` | `false` | See below. |
 | `RELAY_MAX_RESERVATIONS` | `relay`, `bootstrap-relay` | `500` | Maximum concurrent reservation slots the relay hands out (`circuitRelayServer`'s `reservations.maxReservations`; libp2p's own default is 15). A cadre member can hold more than one slot — the control node's reservation plus one per strand node running under its own derived transport peerId. |
@@ -65,3 +67,19 @@ The site-instance stacks (`../relay/`, `../bootstrap-relay/`) forward all four
 variables from `env.local` into the container. Anything not listed in their
 `docker-compose.yml` `environment:` block never reaches the process, so a new
 image-level variable must be added there too. See `../README.md`.
+
+## Reaching this from a mobile client
+
+Phones dial `/ws`; they cannot dial `/ip4/.../tcp/4001` directly. On startup the
+process prints its WebSocket addresses separately for that reason.
+
+Two further points matter for a phone:
+
+- Set `RELAY_APPLY_DEFAULT_LIMIT=false`. With the libp2p default, relayed
+  connections are *limited* and the optimystic database services abort their
+  streams — peers connect and then fail every read and write, which is a
+  confusing way to find out.
+- An Android emulator reaches the host at the reserved address `10.0.2.2`, so
+  `/ip4/10.0.2.2/tcp/4002/ws` works with no port forwarding. A USB-attached
+  device needs `adb reverse tcp:4002 tcp:4002` first, then dials
+  `/ip4/127.0.0.1/tcp/4002/ws`.
