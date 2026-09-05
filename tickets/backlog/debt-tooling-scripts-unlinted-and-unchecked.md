@@ -88,3 +88,20 @@ The new files are `scripts/smoke-published-install.mjs`, `scripts/lib/published-
 three decide whether the packages we are about to publish are shippable, and the last is the only
 thing pinning them — all four unlinted and untyped. That sharpens the "the gates themselves are
 unchecked" point above rather than changing the work.
+
+## Evidence for the `ops/**` arm (noted 2026-09-04 during review of PR #9)
+
+A feature change to `ops/docker/libp2p-infra/src/main.ts` — adding the WebSockets listener the RN
+client needs — reached review having been through no automated check whatsoever: `ops/**` is
+eslint-ignored, the folder is not a workspace, and there is no CI configuration in the repo at all
+(no `.github/`), so nothing built it, typed it or ran it. Two of the four defects the review found
+(an unvalidated env var that exits with a transitive dependency's stack trace, and a startup block
+that prints nothing under a supported configuration) are the kind a first run catches. They were
+found by hand-building the image source in a scratch worktree and running it, which is not a
+repeatable gate.
+
+This is the second arm's "decide whether the two per-service builds should be wired into a root
+gate" question, with a concrete instance behind it now: `npm --prefix ops/docker/libp2p-infra
+install && npm run build` is a real type gate that already exists and is simply not reachable from
+any root script.
+

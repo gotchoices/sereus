@@ -16,6 +16,11 @@ The node will:
 
 As long as the key file persists across restarts/upgrades, the Peer ID is stable.
 
+**Missing** is the only condition that generates a key. A key file that exists but cannot
+be read or does not decode — an unmounted volume, a permission change, a truncated copy —
+stops the node with an error naming the file, rather than quietly starting it under a new
+Peer ID that no peer recognises. Restore the file from backup instead of deleting it.
+
 ### Docker (site directory method)
 - `./data/` is bind-mounted into the container as `/data`
 - default key file is `/data/libp2p-private.key.pb` (inside the container)
