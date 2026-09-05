@@ -35,13 +35,38 @@ const KEY_FILE = path.join(DATA_DIR, 'libp2p-private.key.pb')
 
 async function loadOrCreatePrivateKey () {
   await fs.mkdir(DATA_DIR, { recursive: true })
+  const stored = await readKeyFile()
+  if (stored) return decodeKey(stored)
+  const pk = await generateKeyPair('Ed25519')
+  await fs.writeFile(KEY_FILE, privateKeyToProtobuf(pk))
+  console.log(`generated a new identity key: ${KEY_FILE}`)
+  return pk
+}
+
+/** The stored bytes as a key — a damaged file names itself rather than surfacing as a protobuf error. */
+function decodeKey (raw: Uint8Array) {
   try {
-    const raw = await fs.readFile(KEY_FILE)
     return privateKeyFromProtobuf(raw)
-  } catch {
-    const pk = await generateKeyPair('Ed25519')
-    await fs.writeFile(KEY_FILE, privateKeyToProtobuf(pk))
-    return pk
+  } catch (err) {
+    throw new Error(`Identity key ${KEY_FILE} is not a valid key file: ${err?.message ?? err}. Restore it from backup (ops/docs/keys.md); deleting it would change this node's peer id.`, { cause: err })
+  }
+}
+
+/**
+ * The stored identity key, or `undefined` when there is none yet.
+ *
+ * Only a missing file means "generate one" — `ops/docs/keys.md` says the key is created on
+ * first start *if missing*, and every other read failure (a permission problem, a bad
+ * sector, a volume that did not mount) has to stay fatal. Generating over one of those
+ * would hand the node a new peer id, which every client pins as `/p2p/<peerId>` and no
+ * operator would be told about.
+ */
+async function readKeyFile () {
+  try {
+    return await fs.readFile(KEY_FILE)
+  } catch (err) {
+    if (err?.code === 'ENOENT') return undefined
+    throw new Error(`Cannot read identity key ${KEY_FILE}: ${err?.message ?? err}. Refusing to generate a new one - that would change this node's peer id.`, { cause: err })
   }
 }
 
@@ -117,10 +142,13 @@ if (wsAddrs.length > 0) {
   // A non-empty ANNOUNCE_ADDRS REPLACES the advertised set rather than extending it, so a
   // fronted node that announces only its TCP address binds WebSockets and tells nobody.
   // That is silent: the listener is up, and the block above simply prints nothing.
-  console.warn('\nWARNING: listening on WebSockets but advertising no WebSocket address.')
-  console.warn('ANNOUNCE_ADDRS replaces the advertised set, so clients without raw TCP (e.g.')
-  console.warn('React Native) cannot reach this node. Add the WebSocket address operators')
-  console.warn('should dial - /dns4/<host>/tcp/443/tls/ws behind a TLS front - to ANNOUNCE_ADDRS.')
+  console.warn([
+    '',
+    'WARNING: listening on WebSockets but advertising no WebSocket address.',
+    'ANNOUNCE_ADDRS replaces the advertised set, so clients without raw TCP (e.g. React',
+    'Native) cannot reach this node. Add the address they should dial to ANNOUNCE_ADDRS -',
+    'behind a TLS front that is /dns4/<host>/tcp/443/tls/ws.'
+  ].join('\n'))
 }
 
 
