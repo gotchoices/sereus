@@ -6,9 +6,11 @@ services:
     container_name: sereus_libp2p_relay
     ports:
       - "${HOST_BIND_IP:-0.0.0.0}:${HOST_PORT:-4001}:4001/tcp"
+      - "${HOST_BIND_IP:-0.0.0.0}:${HOST_WS_PORT:-4011}:4002/tcp"
     environment:
       - SEREUS_ROLE=relay
       - ANNOUNCE_ADDRS=${ANNOUNCE_ADDRS:-}
+      - LISTEN_ADDRS=${LISTEN_ADDRS:-}
       - RELAY_APPLY_DEFAULT_LIMIT=${RELAY_APPLY_DEFAULT_LIMIT:-}
       - RELAY_MAX_RESERVATIONS=${RELAY_MAX_RESERVATIONS:-}
     volumes:

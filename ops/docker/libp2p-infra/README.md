@@ -61,24 +61,52 @@ the same way a bad `SEREUS_ROLE` does. An empty value is treated as unset and
 takes the default. The resolved values are logged next to the `peerId` line on
 startup.
 
+`LISTEN_ADDRS` and `ANNOUNCE_ADDRS` are held to the same standard: every entry
+must parse as a multiaddr *and* name an address, so a value of `/` — what an
+`env.local` with an unsubstituted variable produces — is rejected rather than
+quietly bound to nothing. Failures name the variable and the offending entry
+(`src/env.ts`). An address that parses but no configured transport can listen on
+fails a moment later inside libp2p, which names it too.
+
 ## Setting these on a deployed node
 
-The site-instance stacks (`../relay/`, `../bootstrap-relay/`) forward all four
-variables from `env.local` into the container. Anything not listed in their
+The site-instance stacks (`../relay/`, `../bootstrap/`, `../bootstrap-relay/`)
+forward every image-level variable above from `env.local` into the container
+except `DATA_DIR`, which stays at its `/data` default because that is where the
+stacks mount the host data directory — overriding it would write the identity key
+somewhere that is not persisted. Anything not listed in a stack's
 `docker-compose.yml` `environment:` block never reaches the process, so a new
 image-level variable must be added there too. See `../README.md`.
+
+The stacks also have to *publish* the ports the process binds. Both default listen
+addresses are published: container `4001` and container `4002` (WebSockets), the
+latter under `HOST_WS_PORT` so it does not collide with the host-port block the
+other roles use. Overriding `LISTEN_ADDRS` to bind different ports means changing
+those mappings to match — a listener nothing maps to is bound inside the container
+and unreachable from anywhere else, with no error to show for it.
 
 ## Reaching this from a mobile client
 
 Phones dial `/ws`; they cannot dial `/ip4/.../tcp/4001` directly. On startup the
 process prints its WebSocket addresses separately for that reason.
 
-Two further points matter for a phone:
+Further points that matter for a phone:
 
+- **If you set `ANNOUNCE_ADDRS`, put the WebSocket address in it.** A non-empty
+  announce set *replaces* the advertised addresses rather than adding to them, so a
+  node fronted by a reverse proxy that announces only its TCP address binds
+  WebSockets and tells no one — the listener is up and no client can find it. The
+  process warns at startup when it is in that state; the fix is to announce the
+  address clients should dial, e.g.
+  `/dns4/relay.example.org/tcp/443/tls/ws` for a TLS front.
 - Set `RELAY_APPLY_DEFAULT_LIMIT=false`. With the libp2p default, relayed
   connections are *limited* and the optimystic database services abort their
   streams — peers connect and then fail every read and write, which is a
   confusing way to find out.
+- Dial the **host** port, not the container port. Running this image from a site
+  stack, WebSockets are published on `HOST_WS_PORT` (`4011` relay, `4012`
+  bootstrap, `4013` bootstrap-relay by default); running the process directly on a
+  workstation it is `4002`. The examples below use `4002` for the direct case.
 - An Android emulator reaches the host at the reserved address `10.0.2.2`, so
   `/ip4/10.0.2.2/tcp/4002/ws` works with no port forwarding. A USB-attached
   device needs `adb reverse tcp:4002 tcp:4002` first, then dials
