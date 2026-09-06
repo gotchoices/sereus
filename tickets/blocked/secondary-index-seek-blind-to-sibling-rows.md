@@ -529,3 +529,50 @@ apart from "the index was never committed".
 upstream and still unfixed. But when the trace lands and `../optimystic` is rebuilt, re-running
 the scenario with the new debug namespace enabled is a cheap, decisive step that does not need to
 wait for a fix, and it is the fastest way to give the upstream ticket the one fact it lacks.
+
+> **Upstream status brought current, 2026-09-05 — this is the edit `../optimystic` asked for twice
+> and could not make itself.** Written from that side during a tending pass; nothing in this repo
+> was re-measured. Their ticket `optimystic/tickets/blocked/secondary-index-repro-exhausted-upstream`
+> records in two separate updates that this file still says the upstream reproduction count is five,
+> and that the edit was not made because writing into another repo's board would leave an
+> uncommitted change in someone else's tree. It is made here now, and committed.
+>
+> **The count is six, not five, and all six are negative.** The sixth attempt built a shared indexed
+> value from nothing, on three machines rather than two, with a UNIQUE index across machines and an
+> index tree large enough to span more than one storage block
+> (`optimystic/packages/quereus-plugin-optimystic/test/two-node-shared-index-key.spec.ts`). All six
+> cases pass. The fifth ran 144 generated two-machine orderings — crossing which machine declares the
+> table first, how the second opens it, when the index is created, write order, read-before-write,
+> and whether the two machines share an indexed value — then re-ran the whole sweep on real libp2p
+> sockets under this repo's own cluster settings. All 144 pass, and so does the socket run.
+>
+> **A hypothesis this ticket may still be carrying is refuted.** It had been proposed that two
+> machines writing rows under one indexed value fight over a single shared index slot, with the
+> loser's row silently dropped. That cannot happen: each row gets its own index entry, keyed by the
+> indexed value followed by the primary key, and a lookup scans the range of entries sharing the
+> value prefix. There is no single slot to contend for. Two earlier hypotheses were likewise settled
+> by measurement and should not be reopened — the index *is* present in the write transaction
+> (proved from this repo's own logs), and the guards added by two earlier upstream tickets are
+> correct and cannot fire here.
+>
+> **So do not commission a seventh two-machine reproduction attempt upstream.** Six negatives plus
+> the positive capture this file already records (the `collection:lineage-divergence` and
+> `collection:context-not-lowered` lines above) is enough; more scenarios of the same shape are
+> unlikely to add anything.
+>
+> **Two upstream leads named since that capture have both been cleared, so the cause is still open.**
+>
+> - `coordinator-mutates-collections-outside-their-latch` — the theory that the commit path mutates a
+>   collection's revision bookkeeping without holding that collection's latch. That work completed
+>   (`optimystic/tickets/complete/2-coordinator-commit-latch-and-rev-threading` and siblings) and did
+>   **not** explain this fingerprint.
+> - `consensus-pend-refusal-is-reported-to-the-writer-as-success` — two writers admitted at one
+>   revision, because a block's reservation is released when the *pend* reaches consensus while the
+>   committed revision only advances when the separate *commit* does. In the captured run the symptom
+>   was a losing write acknowledged and then vanishing rather than a visible fork, so the link to this
+>   divergence is **plausible but not proven**.
+>
+> The architectural half — what the system should *do* once two lineages exist — is parked upstream as
+> an arm on `optimystic/tickets/backlog/more-design/6.5-partition-healing`, which already owns the
+> "Forked (conflict)" case. That is design work behind a human decision, so do not expect it to
+> arrive as a side effect of any in-flight fix.

@@ -64,3 +64,19 @@ npx vitest run src/scenarios/control-write-degraded-cohort-member.integration.ts
 The scenario prints its own retry decisions (`printRetryDecisions`), which is where the table
 above comes from. A run reporting "7 skipped" died at `bootControlTrio` instead and belongs to
 `control-peer-row-refresh-invisible-to-third-node`, not here.
+
+> **Upstream ticket is in flight as of 2026-09-05.** Noted from the `../optimystic` side; nothing
+> here was re-measured.
+>
+> `optimystic/tickets/fix/1-a-reset-attempt-leaves-a-pend-the-retry-collides-with` is being worked
+> through that repo's pipeline now. It carries this ticket's measurement verbatim and names three
+> candidate remedies — the failing attempt cancels the pends it created before returning the
+> retryable error; the retry is recognised as the same writer and permitted to supersede its own
+> pending record; or, weakest, the error names the pend and exposes the cancel.
+>
+> Worth knowing while you wait: the sibling arm of the same problem has already landed upstream
+> (`complete/1-torn-commit-must-cancel-the-blocks-it-abandoned`, the *sweep* path). This ticket is
+> the *tail* path, which that work excluded on purpose. Both wedge a block with a pend nothing can
+> clear, so a re-run of `control-write-degraded-cohort-member` may now fail *differently* rather than
+> less — see the note just added to `control-write-hears-zero-approvals-from-healthy-trio`, which
+> shares the scenario file.

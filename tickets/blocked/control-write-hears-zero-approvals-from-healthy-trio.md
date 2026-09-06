@@ -223,3 +223,43 @@ The healthy-trio scenario (≥ 5 runs of
 unblocking this ticket — the upstream repo could not run it from there.
 
 Do not "fix" this by loosening the scenario's assertions.
+
+> **Upstream fix has LANDED, 2026-09-05, and is available to this repo right now. Re-run the gate.**
+>
+> Written from the `../optimystic` side during a tending pass there; nothing in this repo was
+> changed or re-measured to produce it, so treat the recommendation as "worth a run", not a result.
+>
+> The 2026-09-03 gate above filed `a-half-applied-commit-wedges-a-block-forever` upstream. That
+> ticket has since been through the pipeline and split in two, both now complete:
+>
+> - `optimystic/tickets/complete/1-torn-commit-must-cancel-the-blocks-it-abandoned` — the fix.
+> - `optimystic/tickets/complete/name-a-block-that-is-stuck-behind-a-stale-reservation` — the
+>   diagnostic that names the wedging block.
+>
+> The mechanism it repairs is the one measured here. `NetworkTransactor.commit` commits the tail
+> block, then sweeps the rest; when that sweep failed in a transport-shaped way it returned
+> `{ success: true }` anyway, leaving a durable pending record on every block the sweep never
+> reached. That record's only removers are a client cancel (never sent — the client was told it
+> succeeded), a divergence-shaped refusal, or a forward write of the same action id. So it is
+> permanent, and while it stands `ClusterMember.validatePendOperations` rejects every later write to
+> that block from every writer. That is this ticket's `pend 3 / commit 1` table and its 5-of-7
+> cascade, stated from the other side.
+>
+> The invariant it establishes: when `NetworkTransactor.commit` returns, every block in
+> `request.blockIds` is either committed or has had its pending record cancelled.
+>
+> **You do not need a release to test this.** This workspace resolves `@optimystic/*` to
+> `link:../optimystic/packages/*` (root `package.json`, `resolutions`), so
+> `cd ../optimystic && yarn build` plus a rebuild here picks the fix up from that checkout's `main`.
+> It is *not* in a published 0.28.0 — so do not close this on a green gate without separately
+> deciding what a released consumer gets.
+>
+> **What to run:** the five isolated rounds of `control-write-degraded-cohort-member.integration.ts`
+> this ticket already specifies. Record the result either way.
+>
+> **One caveat that decides how to read a still-red gate.** The upstream fix covers the *sweep* arm
+> only. Its complete ticket records, as a deliberate exclusion, that "the tail's own failure path
+> still leaves the cancel to its caller" — which is the sibling failure this repo tracks as
+> `control-write-retry-does-not-absorb-a-transient-stream-reset`, a *different* upstream ticket,
+> still in flight. If the gate comes back red with the same `pending conflict` text, check which arm
+> produced it before concluding the fix did not work.

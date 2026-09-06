@@ -289,3 +289,28 @@ and load-bearing: a one-node party must be able to write, and
 `control-write-while-alone-convergence.integration.ts` exists to hold that behaviour. Taking
 it away is a product decision, not a bug fix, and it would not repair a fork that has
 already happened. Left alone here on purpose.
+
+> **Upstream ticket is in flight as of 2026-09-05.** Noted from the `../optimystic` side; nothing
+> here was re-measured.
+>
+> The 2026-09-05 re-measurement at the top of this file was filed upstream as
+> `optimystic/tickets/fix/1-a-reader-cannot-tell-its-view-stopped-advancing`, now being worked
+> through that repo's pipeline. It carries this ticket's finding 4 as its whole subject: a
+> collection sitting at revision *n* asks its peers for *revision n's view* and is correctly given
+> it, and nothing in that loop ever asks whether *n* is still the latest — so a view that stops
+> advancing has no way to notice, and read-repair is never invoked at all.
+>
+> **One correction to the measurement above, traced upstream in code rather than inferred.** The
+> table records "466 `no-quorum` on other blocks, every one `holders=0`" and leaves them as a
+> separate, possibly-benign question. They are benign, and the reason is a misleading log name
+> rather than a decline: with `holders=0` there is nothing for `selectQuorumRev` to select, so the
+> `cluster-fetch:no-quorum` line fires on a cohort that unanimously answered *"I hold nothing"* — an
+> answer. The same code returns early from its repair-deadlock reporting for exactly that shape
+> ("the cohort agrees the block is absent, which is an answer, not a deadlock"), and the read is
+> then served as an authoritative, unflagged absent.
+>
+> **That only holds when `silent` is 0, and this capture did not record `silent`.** With those peers
+> silent rather than answering, the identical `cohortPeers`/`holders` numbers give `answered = 0`,
+> verdict `isolated`, and `unavailable: 'cohort-unreachable'` — a genuinely failed read, and the
+> fingerprint that kills `control-read-over-fresh-edge-stream-resets` at boot. Same numbers,
+> opposite outcome. **Record `silent` on the next capture before calling any of these lines benign.**
