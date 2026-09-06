@@ -263,3 +263,65 @@ Do not "fix" this by loosening the scenario's assertions.
 > `control-write-retry-does-not-absorb-a-transient-stream-reset`, a *different* upstream ticket,
 > still in flight. If the gate comes back red with the same `pending conflict` text, check which arm
 > produced it before concluding the fix did not work.
+
+> **Gate re-run from the `../optimystic` side, 2026-09-06 — eight isolated rounds against that
+> repo's `main`. Improved from 0 clean of 5 to 3 clean of 8. NOT fixed; do not close it.**
+>
+> Run here rather than waiting for someone in this repo to do it, because the upstream fix and its
+> sibling both landed in the same pass and the question of whether they helped was answerable
+> immediately. `../optimystic` was rebuilt first (this repo's stale-build guard caught a stale
+> `db-p2p` `dist` and refused to start — it works).
+>
+> | round | result |
+> | --- | --- |
+> | 1 | 7 passed |
+> | 2 | 5 failed / 2 passed |
+> | 3 | 7 passed |
+> | 4 | 5 failed / 2 passed |
+> | 5 | 2 failed / 5 passed |
+> | 6 | 2 failed / 5 passed |
+> | 7 | 7 passed |
+> | 8 | **7 skipped** — suite-level boot gate: `Timeout waiting for B resolves C's signed address record after 45000ms` |
+>
+> Three clean, four with in-suite failures, one boot failure. The previous measurement was 5 failed
+> of 7 on **every** one of five rounds, deterministically. So the wedge cascade is broken — but the
+> file is now *intermittent* rather than green, and rounds 5 and 6 show a smaller, two-failure shape
+> this ticket has not recorded before.
+>
+> **What the remaining failures are, from a captured round (round 6, full log):**
+>
+> ```
+> Control write [self-record-update] failed non-transiently on attempt 1/3, not retried here:
+>   ... cause=The stream has been reset
+>   cause: StreamResetError: The stream has been reset
+>   cancelError: [Error]
+> ...
+> Control write [peer-remove] failed non-transiently on attempt 1/3, not retried here:
+>   SyncRetryExhaustedError: sync for collection default/CadrePeer exhausted 10 retries:
+>   pending conflict: block(s) held by unresolved rival action(s) yRfPLIpAdguxZUfWV8U9YA
+> ```
+>
+> `cancelError` is a **new** field the upstream fix attaches when a failed attempt's own cancel could
+> not discharge. Its presence is the fix working and then hitting its own documented limit: the
+> stream reset that killed the commit also killed the cancel, so the pend stood. The
+> `pending conflict` two operations later is that same standing record refusing an unrelated write —
+> and note it now arrives as `SyncRetryExhaustedError` out of the collection sync loop, a different
+> layer from the control-write retry loop this ticket has been watching.
+>
+> Recorded upstream as a measured arm on
+> `optimystic/tickets/backlog/debt-unpromotable-pending-records-need-a-sweep`, which owns exactly this
+> residual: nothing node-side ever clears a marker whose client could not clear it. That ticket was
+> `repro: static` and now has an observed consequence. It is **not** a new upstream fix ticket — the
+> hole is known and deliberately out of scope of what landed.
+>
+> **Round 8's boot failure is a different ticket.** "B resolves C's signed address record" is
+> `control-peer-row-refresh-invisible-to-third-node`. The upstream work for that also landed in this
+> pass (`optimystic/tickets/complete/a-reader-cannot-tell-its-view-stopped-advancing`, which gates
+> commit-side freshness stamping on quorum intersection), so 1 boot failure in 8 is worth re-measuring
+> against the prior rate rather than read as unchanged. This run carried no `DEBUG`, so there is no
+> evidence here either way about whether the repair path engaged.
+>
+> **Suggested next step for this repo:** keep the ticket open, update
+> `tickets/.pre-existing-known.md` with the 3-of-8 rate so nobody reads a green round as a fix, and
+> re-run with `DEBUG='optimystic:db-p2p:*'` on a round that fails, to see whether the standing pend
+> is ever swept once the transport heals or whether it really is permanent for the process.
