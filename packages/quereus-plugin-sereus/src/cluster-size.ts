@@ -341,6 +341,22 @@ export function resolveStrandClusterSize(configured?: number): number {
  * anything over it — so two members disagreeing (one has replicated a new `CadrePeer` row, one
  * has not) is harmless by construction, not a race to close.
  *
+ * ## The caller must pass machines that SERVE this network, and today one caller does not
+ *
+ * Over-declaring is not merely wasteful, it is unsafe in the availability direction: at
+ * `N >= 3` the corroboration floor is pinned at two peers, so a cohort that can only ever
+ * field one peer can never repair at all (`cluster-fetch:no-quorum`), where a declaration of
+ * 2 would have let its single peer answer. Cadre's strand path currently passes the party's
+ * enrolled-machine count, which is an upper bound on the machines serving a *strand* rather
+ * than the count itself — a strand is launched only on machines whose embedder registered its
+ * sApp config (`CadreNode.addStrand`), so a closed strand shared by two machines of a
+ * three-machine party is over-declared today. Tracked as
+ * `fix/bug-strand-yardstick-counts-party-machines`. The control network has no such gap:
+ * every enrolled machine runs the control node by construction.
+ *
+ * Both arguments must be positive integers; the builders below sanitize before calling, and
+ * a degenerate value here propagates (`NaN` in, `NaN` out) rather than being clamped.
+ *
  * NOTE: on a party of three or more machines where fewer than half are awake, a commit reaches a
  * downsized cohort and no longer arms the freshness window, so each such block's next read costs
  * one cohort consult per read-repair window instead of trusting the local commit. That is the

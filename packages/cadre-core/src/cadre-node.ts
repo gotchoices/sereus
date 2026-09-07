@@ -1657,6 +1657,13 @@ export class CadreNode implements SAppIdLookup {
    * nothing does), and `undefined` is the one that also declines to arm the commit
    * freshness window off a possibly-stale local read. Lifting that for a node that can
    * prove it is alone: `backlog/feat-solo-node-arms-its-own-freshness-window`.
+   *
+   * This is the right count for the CONTROL network — every enrolled machine runs the
+   * control node — and only an UPPER BOUND for a strand, which launches only on machines
+   * whose embedder registered its sApp config ({@link addStrand}). A strand served by
+   * fewer machines than the party holds is therefore over-declared today, and an
+   * over-declared cohort that can field only one peer cannot repair at all. Tracked as
+   * `fix/bug-strand-yardstick-counts-party-machines`.
    */
   private enrolledMachineCount(): number | undefined {
     return this.authorizedControlPeers.size === 0
