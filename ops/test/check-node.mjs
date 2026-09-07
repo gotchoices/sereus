@@ -1,5 +1,6 @@
 import { createLibp2p } from 'libp2p'
 import { tcp } from '@libp2p/tcp'
+import { webSockets } from '@libp2p/websockets'
 import { noise } from '@chainsafe/libp2p-noise'
 import { yamux } from '@chainsafe/libp2p-yamux'
 import { identify } from '@libp2p/identify'
@@ -186,7 +187,9 @@ async function checkOne (targetMa, { relay, dht, timeoutMs }) {
     addresses: {
       listen: ['/ip4/0.0.0.0/tcp/0']
     },
-    transports: [tcp()],
+    // WebSockets alongside TCP: the deployed image listens on both, and a /ws address is
+    // the only one a phone can dial - so it is the one an operator most needs to check.
+    transports: [tcp(), webSockets()],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     services: {
