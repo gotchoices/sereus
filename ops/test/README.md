@@ -40,6 +40,17 @@ You can also pass a concrete multiaddr (must include `/p2p/<peerId>`), e.g.:
 node sereus/ops/test/check-node.mjs --target /ip4/203.0.113.10/tcp/4001/p2p/12D3KooW...
 ```
 
+The script dials raw TCP and WebSockets, so it can also check the `/ws` endpoint the
+deployed image publishes — the only one a React Native client can reach. Worth checking
+separately, since a node can be perfectly healthy on TCP while its WebSocket port is
+unpublished or unannounced:
+
+```bash
+node sereus/ops/test/check-node.mjs --target /ip4/203.0.113.10/tcp/4011/ws/p2p/12D3KooW...
+```
+
+(`4011` is the relay stack's default `HOST_WS_PORT`; see `../docker/README.md`.)
+
 ### What it checks
 - connect/dial succeeds
 - identify succeeds (protocols are learned)

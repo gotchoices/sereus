@@ -20,9 +20,10 @@
     "@libp2p/peer-id-factory": "^4.2.1",
     "@libp2p/ping": "^2.0.36",
     "@libp2p/tcp": "^10.1.18",
+    "@libp2p/websockets": "^9.0.0",
     "@multiformats/dns": "^1.0.10",
     "@multiformats/multiaddr": "^12.3.1",
-    "libp2p": "^2.9.0"
-  },
-  "devDependencies": {}
+    "libp2p": "^2.9.0",
+    "sereus-workspace": "file:../.."
+  }
 }
