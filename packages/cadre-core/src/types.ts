@@ -7,6 +7,7 @@ import type { SeedTrustPolicy } from './seed-trust-policy.js';
 import type { KeyStore, KeyId } from './key-store.js';
 import type { TrustedOwnerStore, TrustSource } from './trusted-owner-store.js';
 import type { BootstrapPeerStore } from './bootstrap-peer-store.js';
+import type { EnrolledMachineStore } from './enrolled-machine-store.js';
 import type { PushNotifier } from './push-notifier.js';
 import type { RevocableTable } from './control-authorization.js';
 
@@ -590,6 +591,40 @@ export interface CadreNodeConfig {
      * `controlNetwork.partyId`; start() fails closed on a mismatch.
      */
     store?: BootstrapPeerStore;
+  };
+
+  /**
+   * Node-local record of how many machines this party had enrolled the last time
+   * this node looked (see `enrolled-machine-store.ts`): the block-repair
+   * corroboration yardstick the CONTROL node declares when its libp2p node is
+   * built. Sibling of {@link trustedOwners} / {@link bootstrapPeers} — same
+   * NON-replicated, per-party, injected-backend shape — and, like
+   * {@link bootstrapPeers}, nothing here is trust-bearing: it is a repair hint,
+   * recomputed from `CadrePeer` rows the moment the control database is up.
+   *
+   * It exists only because the control node is created BEFORE that database, so
+   * the live count is unreadable at the one moment it is needed; remembering it
+   * across the restart is what breaks that deadlock. Absent ⇒ an in-memory store
+   * is created at start(), which cold-starts on every launch and therefore
+   * declares nothing — byte-for-byte the behaviour before this record existed.
+   * No embedder is forced to change.
+   *
+   * A party that grows applies the larger number on each node's NEXT launch,
+   * deliberately: Optimystic freezes the policy at node construction and offers
+   * no runtime setter, and a node still holding the old value runs at exactly
+   * today's behaviour, so there is no forced rebuild.
+   *
+   * A new platform needs no new store class: supply a `DurableSlot` for the
+   * platform's storage and inject `PersistentEnrolledMachineStore.open(slot, partyId)`.
+   */
+  enrolledMachines?: {
+    /**
+     * Injected store instance — e.g. a `FileEnrolledMachineStore` from the
+     * Node-only subpath `@serfab/cadre-core/enrolled-machine-store-file`,
+     * persisted in the node's state directory. Its `partyId` must match
+     * `controlNetwork.partyId`; start() fails closed on a mismatch.
+     */
+    store?: EnrolledMachineStore;
   };
 
   /**

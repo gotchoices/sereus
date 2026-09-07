@@ -32,6 +32,10 @@
       "types": "./dist/bootstrap-peer-store-file.d.ts",
       "import": "./dist/bootstrap-peer-store-file.js"
     },
+    "./enrolled-machine-store-file": {
+      "types": "./dist/enrolled-machine-store-file.d.ts",
+      "import": "./dist/enrolled-machine-store-file.js"
+    },
     "./push-node": {
       "types": "./dist/push-node.d.ts",
       "import": "./dist/push-node.js"

@@ -13,6 +13,7 @@ import {
   DEFAULT_IDENTITY_KEY_ID,
   PersistentTrustedOwnerStore,
   PersistentBootstrapPeerStore,
+  PersistentEnrolledMachineStore,
   loadOrCreateIdentityKey,
   peerKeySigner,
 } from '@serfab/cadre-core';
@@ -40,6 +41,7 @@ import { SecureStoreKeyStore, type SecureStoreKeyStoreOptions } from './secure-k
 import {
   anchorSlotKey,
   bootstrapPeersKvKey,
+  enrolledMachinesKvKey,
   kvStoreSlot,
   secureStoreSlot,
   NODE_LOCAL_DB_NAME,
@@ -155,11 +157,13 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   // a refusal to start, not a silent downgrade to trusting nobody — and cold-
   // starting empty there would let the next snapshot write destroy an intact one.
   //
-  // NOTE: both records are party-scoped and this app does not persist
+  // NOTE: all three records are party-scoped and this app does not persist
   // `opts.partyId` (it is typed into Settings each launch — see the comment in
-  // `push-wake-native.ts`). With a fresh party id per launch both slots load empty
+  // `push-wake-native.ts`). With a fresh party id per launch every slot loads empty
   // every time, so survival across a relaunch is gated on the backlog ticket
-  // `feat-rn-persist-node-start-options`.
+  // `feat-rn-persist-node-start-options`. For the enrolled-machine count that means
+  // this app declares no repair yardstick today no matter what it records — the
+  // wiring is here so it starts working the moment the party id persists.
   //
   // `??=`, not a plain open: `use-cadre`'s cold-start hook re-runs startPhoneNode
   // after the OS killed the node WITHOUT calling stopPhoneNode, so an
@@ -172,6 +176,15 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
   );
   const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
     kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), bootstrapPeersKvKey(opts.partyId)),
+    opts.partyId,
+  );
+  // The party's enrolled-machine count, from which the control node declares its
+  // block-repair yardstick at bring-up — before the database that could answer the
+  // question live exists. Same LevelDB as the dial hints, its own key. Unlike the
+  // two records above, an unreadable slot here does NOT fail the start: the count is
+  // a repair hint, so `open` cold-starts and the node declares nothing.
+  const enrolledMachineStore = await PersistentEnrolledMachineStore.open(
+    kvStoreSlot(new LevelDBKVStore(nodeLocalDb, NODE_LOCAL_KV_PREFIX), enrolledMachinesKvKey(opts.partyId)),
     opts.partyId,
   );
 
@@ -250,6 +263,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
     hibernation: { enabled: false },
     trustedOwners: { store: trustedOwnerStore },
     bootstrapPeers: { store: bootstrapPeerStore },
+    enrolledMachines: { store: enrolledMachineStore },
     // Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
     // ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
     // policy so the demo can form strands. Production nodes must leave this unset.

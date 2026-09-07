@@ -34,7 +34,7 @@ import type {
   PeerAddressRecord,
   ResolveDeviceTokenOpts
 } from './types.js';
-import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
+import { controlClusterPolicy, CONTROL_REPLICATION_BREADTH, DEFAULT_CHECKIN_WINDOW_MS } from './types.js';
 import { sign } from '@optimystic/quereus-plugin-crypto';
 import { ed25519KeyPairFromLibp2p, ed25519PublicKeyFromPrivate, requireEd25519PublicKeyB64, type Ed25519KeyPair } from './ed25519-key.js';
 import { strandTransportKey } from './strand-transport-key.js';
@@ -42,6 +42,7 @@ import { DEFAULT_IDENTITY_KEY_ID } from './key-store.js';
 import { loadOrCreateIdentityKey } from './identity-key.js';
 import { MemoryTrustedOwnerStore, type TrustedOwnerStore, type TrustSource } from './trusted-owner-store.js';
 import { MemoryBootstrapPeerStore, type BootstrapPeerStore } from './bootstrap-peer-store.js';
+import { MemoryEnrolledMachineStore, type EnrolledMachineStore } from './enrolled-machine-store.js';
 import { mergePeerAddrs, groupAddrsByPeerId, type MergeAddrsResult } from './peer-addr-book.js';
 import { verifyCadrePeerVoucher } from './peer-authorization.js';
 import { ed25519PublicKeyB64FromPeerId } from './seed-bootstrap.js';
@@ -440,6 +441,36 @@ export class CadreNode implements SAppIdLookup {
    */
   private bootstrapPeerStore: BootstrapPeerStore | null = null;
 
+  /**
+   * Node-local record of the party's enrolled-machine count (see
+   * `enrolled-machine-store.ts`), kept so the CONTROL node can declare a
+   * block-repair yardstick at bring-up. Constructed (or adopted from
+   * `config.enrolledMachines.store`) by {@link initializeEnrolledMachineStore};
+   * written by {@link refreshAuthorizedControlPeers}. Like
+   * {@link bootstrapPeerStore} it is deliberately NOT cleared by {@link cleanup},
+   * so it survives a stop()→start() cycle of the same node instance.
+   */
+  private enrolledMachineStore: EnrolledMachineStore | null = null;
+
+  /**
+   * The enrolled-machine count this node's CONTROL libp2p node was (or will be)
+   * built with — read out of {@link enrolledMachineStore} during {@link start},
+   * before {@link createControlNode}, and consumed by
+   * {@link buildControlNodeOptions}.
+   *
+   * A captured FIELD rather than a live `store.count()` read, deliberately: the
+   * store moves as membership changes, but Optimystic froze the policy when the
+   * node was built, so this field is the honest answer to "what did this node
+   * actually declare?" and does not drift away from the running node. It is
+   * re-read on each {@link start}, which is what makes a stop()→start() cycle pick
+   * up a count recorded during the previous run.
+   *
+   * `undefined` — a brand-new node, an unreadable slot, or the ephemeral default
+   * store — means "this node does not know", which `controlClusterPolicy` answers
+   * with the frozen base policy itself.
+   */
+  private declaredEnrolledMachines: number | undefined;
+
   /** Initial self-registration timer (see {@link scheduleSelfRegistration}). */
   private selfRegistrationTimer: ReturnType<typeof setTimeout> | null = null;
   /** TTL heartbeat that re-publishes the self record before it goes stale. */
@@ -710,6 +741,14 @@ export class CadreNode implements SAppIdLookup {
       // closed before any network bring-up, and the retained dial targets are
       // loaded before the first reconcile pass could consult them.
       this.initializeBootstrapPeerStore();
+
+      // Read the party's enrolled-machine count out of its node-local record and
+      // capture it for buildControlNodeOptions below. This MUST precede
+      // createControlNode: Optimystic freezes the cluster policy when the node is
+      // built, and the ControlDatabase that could answer the question live does not
+      // exist until after that. Remembering the number across the restart is the
+      // only way to declare it at all — see `enrolled-machine-store.ts`.
+      this.initializeEnrolledMachineStore();
 
       // Arm the connection gate's BRING-UP QUIET PERIOD before the libp2p node
       // exists, so no connection can form ahead of it: `@libp2p/bootstrap` emits
@@ -1065,6 +1104,50 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
+   * Construct (or adopt) the node-local enrolled-machine store and capture the
+   * count this run will declare into {@link declaredEnrolledMachines}.
+   *
+   * Synchronous for the same reason {@link initializeBootstrapPeerStore} is: an
+   * injected store has already loaded its persisted count by the time it is handed
+   * in (its `open` is the async part), and the in-memory default has nothing to
+   * load. Must run BEFORE {@link createControlNode} — that is the whole point of
+   * the record; see `enrolled-machine-store.ts`.
+   *
+   * The store instance is kept across stop()→start() (so a count recorded during
+   * the previous run is not lost with the ephemeral default), but the DECLARED
+   * count is re-read every time — which is how a restart applies a number the
+   * previous run learned.
+   *
+   * A store scoped to a different party is a configuration error, fail closed. It
+   * is only a repair hint, but a hint sized by a foreign party's membership is a
+   * number nobody chose, and the mismatch always means a miswired embedder.
+   */
+  private initializeEnrolledMachineStore(): void {
+    const partyId = this.config.controlNetwork.partyId;
+    const store = this.enrolledMachineStore
+      ?? this.config.enrolledMachines?.store
+      ?? new MemoryEnrolledMachineStore(partyId);
+    if (store.partyId !== partyId) {
+      throw new Error(
+        `CadreNodeConfig: enrolledMachines.store is scoped to party ${store.partyId}, ` +
+        `but this node serves party ${partyId} — refusing to size a repair yardstick from a foreign party`
+      );
+    }
+    this.enrolledMachineStore = store;
+    this.declaredEnrolledMachines = store.count();
+    log('control repair yardstick will be declared from %o enrolled machine(s)', this.declaredEnrolledMachines);
+  }
+
+  /**
+   * The node-local enrolled-machine store (null before {@link start}) — what this
+   * node last knew about its party's size. Exposed for diagnostics and for a host
+   * that wants to show which repair yardstick the next launch will declare.
+   */
+  getEnrolledMachineStore(): EnrolledMachineStore | null {
+    return this.enrolledMachineStore;
+  }
+
+  /**
    * The node-local cold-start bootstrap-peer store (null before {@link start}) —
    * the retained owner addresses {@link reconcileControlCohort}'s cold-start
    * branch re-dials. Exposed for diagnostics and for a host that wants to show
@@ -1308,7 +1391,15 @@ export class CadreNode implements SAppIdLookup {
       // CONTROL_CLUSTER_POLICY: only the admission gate defaults to 2, while the read-repair
       // corroboration floor would otherwise fall back to this clusterSize of 16.
       clusterSize: CONTROL_REPLICATION_BREADTH,
-      clusterPolicy: CONTROL_CLUSTER_POLICY,
+      // The base control policy with the block-repair corroboration yardstick declared
+      // from the machines this party had enrolled at this node's last look
+      // ({@link declaredEnrolledMachines}, read in start() before this runs). Handed
+      // `undefined` — a brand-new node, an unreadable record, or an embedder that
+      // injected no store — this returns the frozen CONTROL_CLUSTER_POLICY object
+      // itself, so the unknown case is provably byte-for-byte the old behaviour.
+      // The yardstick moves ALONE: `assumedClusterSize` stays pinned at 2, because a
+      // party of phones cannot promise three quarters of its machines are awake.
+      clusterPolicy: controlClusterPolicy(this.declaredEnrolledMachines),
       arachnode: { enableRingZulu: profile === 'storage' },
       ...(identityKey && { privateKey: identityKey }),
       ...(network?.transports && { transports: network.transports }),
@@ -1694,6 +1785,25 @@ export class CadreNode implements SAppIdLookup {
       const members = await this.listAuthorizedMembers(false);
       this.authorizedControlPeers = new Set(members.map((m) => m.peerId));
       log('refreshAuthorizedControlPeers(%s): %d authorized peer(s)', reason, this.authorizedControlPeers.size);
+      // Remember the party's size for the NEXT launch's control-node repair yardstick
+      // (see `enrolled-machine-store.ts`): this is the only place the count is known,
+      // and the control node that needs it was built long before this ran. Recorded
+      // from the snapshot just materialized — no second membership query.
+      //
+      // `+ 1` for this node, which is not in its own authorized set. Recorded even at
+      // a size of 0 (⇒ 1), unlike {@link enrolledMachineCount}, which reports an empty
+      // set as "unknown": the two are equivalent on this path, because the yardstick's
+      // floor is MIN_CLUSTER_SIZE, so a persisted 1 declares 2 — which is exactly what
+      // declaring nothing resolves to through the base policy's `assumedClusterSize`.
+      //
+      // A removed peer stops counting at REVOCATION, not at reap: `queryCadrePeers`
+      // drops rows whose `StampId` is retired, and `listAuthorizedMembers` reads
+      // through it. That is why there is no reap hook writing this record.
+      //
+      // `void`: the store never rejects and logs its own persist failures, and this
+      // method's contract is never-rejects. A failed write leaves the in-memory count
+      // correct for this session and re-lands on the next refresh.
+      void this.enrolledMachineStore?.record(this.authorizedControlPeers.size + 1);
       // Membership moved: give the control backfill another look at every
       // connected peer. The production join order is connect-then-authorize, so
       // a joiner's first catch-up pass was denied at the gate while its

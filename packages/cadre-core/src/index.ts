@@ -94,6 +94,20 @@ export {
   type BootstrapPeerEntry
 } from './bootstrap-peer-store.js';
 
+// Node-local enrolled-machine count: the machines this party had enrolled the
+// last time this node looked, remembered across restarts so the CONTROL node can
+// declare a block-repair yardstick at bring-up — which is before the database
+// holding the membership rows exists. Same cross-platform split as the two
+// records above; Node-only file backend behind the subpath
+// '@serfab/cadre-core/enrolled-machine-store-file'. Its load policy deliberately
+// DIVERGES from theirs (an unreadable slot cold-starts rather than throwing) —
+// see the module comment before unifying the three.
+export {
+  MemoryEnrolledMachineStore,
+  PersistentEnrolledMachineStore,
+  type EnrolledMachineStore
+} from './enrolled-machine-store.js';
+
 // Strand database
 export { StrandDatabase, type StrandDatabaseConfig } from './strand-database.js';
 

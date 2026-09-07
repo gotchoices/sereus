@@ -1,11 +1,12 @@
 /**
- * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's two
- * **node-local** records: the trusted-owner anchor (`PersistentTrustedOwnerStore`)
- * and the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`), both
- * from `@serfab/cadre-core`. Wired in `cadre-phone.ts` (`startPhoneNode`).
+ * node-local-slots.ts — the phone's `DurableSlot` backends for cadre-core's three
+ * **node-local** records: the trusted-owner anchor (`PersistentTrustedOwnerStore`),
+ * the cold-start bootstrap-peer store (`PersistentBootstrapPeerStore`) and the
+ * enrolled-machine count (`PersistentEnrolledMachineStore`), all from
+ * `@serfab/cadre-core`. Wired in `cadre-phone.ts` (`startPhoneNode`).
  *
- * The two records get DIFFERENT backends, deliberately — they have different
- * security properties and different sizes.
+ * The anchor gets a DIFFERENT backend from the other two, deliberately — it has
+ * different security properties and a different size.
  *
  * **Trusted-owner anchor → the platform secure enclave** (`expo-secure-store`:
  * iOS Keychain / Android Keystore-encrypted preferences), through the same
@@ -27,6 +28,14 @@
  * and the snapshot grows for the node's whole lifetime, so it would cross
  * SecureStore's ~2048-byte value limit and fail the write.
  *
+ * **Enrolled-machine count → the same app-private LevelDB**, its own key. Also not
+ * trust-bearing: it is a block-repair yardstick, recomputed from the party's
+ * `CadrePeer` rows the moment the control database is up, and a phone that loses it
+ * simply declares nothing on its next launch. Size is not the argument here — one
+ * integer would fit secure store easily — but a record whose worst failure is
+ * "declare today's default" has no business behind a keystore that can prompt or
+ * deny, so it sits with the other non-trust-bearing record.
+ *
  * Neither backend is a new native dependency (`expo-secure-store` and
  * `rn-leveldb` are both already linked), so nothing here forces a dev-client
  * rebuild. `expo-file-system` was the other candidate for the dial hints and was
@@ -34,7 +43,10 @@
  *
  * Everything above the slot — cold start, corrupt JSON, foreign `partyId`,
  * discard-all vs drop-entry, synchronous visibility, failed-persist recovery —
- * belongs to `node-local-snapshot.ts` in cadre-core and is not restated here.
+ * belongs to cadre-core and is not restated here: `node-local-snapshot.ts` for the
+ * anchor and the dial hints, `enrolled-machine-store.ts` for the count, which
+ * deliberately does NOT share that machinery (an unreadable slot cold-starts there
+ * rather than throwing, because a lost repair hint must not stop a node starting).
  */
 
 import type { DurableSlot } from '@serfab/cadre-core';
@@ -78,6 +90,15 @@ export function anchorSlotKey(partyId: string): string {
  */
 export function bootstrapPeersKvKey(partyId: string): string {
 	return `bootstrap-peers.${partyId}`;
+}
+
+/**
+ * `LevelDBKVStore` key for a party's last-known enrolled-machine count. Same
+ * database and encoding-free shape as {@link bootstrapPeersKvKey}, its own key so
+ * neither record's snapshot write can clobber the other.
+ */
+export function enrolledMachinesKvKey(partyId: string): string {
+	return `enrolled-machines.${partyId}`;
 }
 
 /**
@@ -137,8 +158,9 @@ export function secureStoreSlot(
 }
 
 /**
- * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the bootstrap-peer
- * store's backend.
+ * A {@link DurableSlot} over one key of a `LevelDBKVStore` — the backend for both
+ * non-trust-bearing records (the bootstrap-peer store and the enrolled-machine
+ * count), each over its own key.
  *
  * A direct pass-through: the KV store already deals in text and already reports
  * an absent key as `undefined`, and a read fault throws out of `get`, which is

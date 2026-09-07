@@ -8,7 +8,8 @@ import { peerIdFromPrivateKey } from '@libp2p/peer-id';
 import type { CircuitRelayTarget } from '../src/delegate-admission.js';
 import { CadreNode } from '../src/cadre-node.js';
 import { InMemoryKeyStore } from '../src/key-store.js';
-import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE } from '../src/types.js';
+import { CONTROL_CLUSTER_POLICY, CONTROL_REPLICATION_BREADTH, DEFAULT_STRAND_CLUSTER_SIZE, MIN_CLUSTER_SIZE } from '../src/types.js';
+import { MemoryEnrolledMachineStore } from '../src/enrolled-machine-store.js';
 import type { CadreNodeConfig } from '../src/types.js';
 
 /**
@@ -138,6 +139,114 @@ describe('CadreNode control-network node options', () => {
       // control writes on fewer peers than this one. See CONTROL_CLUSTER_POLICY.
       expect(options.clusterPolicy?.superMajorityThreshold).toBeUndefined();
       expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+    });
+  });
+
+  /**
+   * The block-repair corroboration yardstick, declared from the machines this party
+   * had enrolled at this node's LAST look — read out of the node-local
+   * `EnrolledMachineStore` in `start()` because the control libp2p node is built
+   * before the database holding the membership rows exists (see
+   * `enrolled-machine-store.ts`).
+   *
+   * `initializeEnrolledMachineStore` is the private step of `start()` that captures
+   * the count; reached the same private-cast way as `buildControlNodeOptions`, so
+   * these stay pure unit tests with no libp2p node and no database.
+   */
+  describe('repair yardstick (repairCorroborationClusterSize)', () => {
+    function captureEnrolledMachines(node: CadreNode): void {
+      (node as unknown as { initializeEnrolledMachineStore(): void }).initializeEnrolledMachineStore();
+    }
+
+    /** Options built by a node whose node-local record holds `count` machines. */
+    async function optionsForCount(count: number): Promise<Parameters<typeof createLibp2pNode>[0]> {
+      const config = createConfig();
+      const store = new MemoryEnrolledMachineStore(config.controlNetwork.partyId);
+      await store.record(count);
+      const node = new CadreNode({ ...config, enrolledMachines: { store } });
+      captureEnrolledMachines(node);
+      return controlOptions(node);
+    }
+
+    it('declares nothing when the node has never recorded a count — the base policy, by identity', () => {
+      // The cold-start path must be byte-for-byte the behaviour that shipped before
+      // this record existed, which is what object identity proves: `controlClusterPolicy`
+      // returns the frozen shared constant itself rather than a copy of it.
+      const config = createConfig();
+      const node = new CadreNode(config);
+      captureEnrolledMachines(node);
+
+      const options = controlOptions(node);
+
+      expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBeUndefined();
+    });
+
+    it('declares nothing when start() has not captured a count yet', () => {
+      // `buildControlNodeOptions` reads a field, not the store, so a node that never
+      // reached `initializeEnrolledMachineStore` declares nothing rather than throwing.
+      const options = controlOptions(new CadreNode(createConfig()));
+
+      expect(options.clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+    });
+
+    it('declares a recorded count of 5 as 5', async () => {
+      const options = await optionsForCount(5);
+
+      // Structural, not identity: a known count builds a fresh frozen policy.
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(5);
+      // The yardstick moves ALONE — the membership admission gate stays pinned at 2,
+      // because a party of phones cannot promise three quarters of its machines are awake.
+      expect(options.clusterPolicy?.assumedClusterSize).toBe(2);
+      expect(options.clusterPolicy?.superMajorityThreshold).toBeUndefined();
+      expect(options.clusterPolicy).not.toBe(CONTROL_CLUSTER_POLICY);
+    });
+
+    it('floors a recorded count of 1 at MIN_CLUSTER_SIZE, declaring 2', async () => {
+      // A lone node is a genuine founder-alone party, but it is equally a freshly
+      // seeded node whose membership rows have not replicated — and it cannot tell
+      // those apart. 2 is also what declaring nothing resolves to, so the floor makes
+      // the derivation able only to RAISE the number.
+      const options = await optionsForCount(1);
+
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(MIN_CLUSTER_SIZE);
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(2);
+    });
+
+    it('caps a party larger than the control breadth at that breadth', async () => {
+      // A block only ever lives on `min(breadth, machines serving)` machines, and the
+      // control cohort caps at 16 too — declaring 20 would make the commit freshness
+      // rule harder to satisfy while buying nothing on repair.
+      const options = await optionsForCount(20);
+
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(CONTROL_REPLICATION_BREADTH);
+      expect(options.clusterPolicy?.repairCorroborationClusterSize).toBe(16);
+    });
+
+    it('fails closed when the injected store is scoped to another party', () => {
+      const config = createConfig();
+      const node = new CadreNode({
+        ...config,
+        enrolledMachines: { store: new MemoryEnrolledMachineStore('some-other-party') }
+      });
+
+      expect(() => captureEnrolledMachines(node)).toThrow(/scoped to party some-other-party/);
+    });
+
+    it('re-reads the store on each capture, so a restart applies a count the last run learned', async () => {
+      const config = createConfig();
+      const store = new MemoryEnrolledMachineStore(config.controlNetwork.partyId);
+      const node = new CadreNode({ ...config, enrolledMachines: { store } });
+
+      captureEnrolledMachines(node);
+      expect(controlOptions(node).clusterPolicy).toBe(CONTROL_CLUSTER_POLICY);
+
+      // What `refreshAuthorizedControlPeers` does during the run...
+      await store.record(4);
+      // ...reaches the policy only at the next start(), never mid-process: Optimystic
+      // froze the policy when the node was built and offers no runtime setter.
+      captureEnrolledMachines(node);
+      expect(controlOptions(node).clusterPolicy?.repairCorroborationClusterSize).toBe(4);
     });
   });
 

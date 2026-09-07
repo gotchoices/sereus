@@ -15,8 +15,8 @@ import type { ConnectionGater, PrivateKey } from '@libp2p/interface';
 import { MemoryRawStorage } from '@optimystic/db-p2p';
 import type { Libp2pTransports } from '@optimystic/db-p2p';
 import { generatePrivateKey, getPublicKey } from '@optimystic/quereus-plugin-crypto';
-import { CadreNode, ed25519KeyPairFromLibp2p, signSchema } from '@serfab/cadre-core';
-import type { CadreNodeConfig, SAppConfig } from '@serfab/cadre-core';
+import { CadreNode, ed25519KeyPairFromLibp2p, signSchema, MemoryEnrolledMachineStore } from '@serfab/cadre-core';
+import type { CadreNodeConfig, EnrolledMachineStore, SAppConfig } from '@serfab/cadre-core';
 import { slowMemoryStorageProvider } from './slow-raw-storage.js';
 import { waitUntil } from './wait-utils.js';
 import { readCohort } from './control-cohort.js';
@@ -83,6 +83,17 @@ export interface ControlNodeOpts {
   /** Owner keys pinned into the node-local trusted-owner anchor at start(). */
   pinnedOwnerKeys?: string[];
   /**
+   * Node-local enrolled-machine record this node declares its block-repair
+   * yardstick from at bring-up. Build one with {@link enrolledMachineStoreWith}.
+   *
+   * Left unset the node behaves as production does on a first launch: nothing
+   * recorded, so `controlClusterPolicy` hands back the frozen base policy and the
+   * node declares no yardstick. Set it to model a node that has run before — the
+   * only way to get a control node to declare a number, since the count is read in
+   * `start()` and the record is what carries it across a restart.
+   */
+  enrolledMachines?: EnrolledMachineStore;
+  /**
    * Test-supplied libp2p connection gater. On the control node it is composed
    * under the built-in membership admission gate: a deny from EITHER side wins on
    * `denyInboundEncryptedConnection`, `denyDialPeer` and
@@ -91,6 +102,19 @@ export interface ControlNodeOpts {
    * ADDS denials (membership, and the bring-up quiet period).
    */
   connectionGater?: ConnectionGater;
+}
+
+/**
+ * An in-memory {@link EnrolledMachineStore} already holding `count`, for
+ * {@link ControlNodeOpts.enrolledMachines} — the stand-in for a node that recorded
+ * that many machines on a previous run. `count` is the machine count, NOT the
+ * yardstick: `controlClusterPolicy` clamps it to
+ * `max(MIN_CLUSTER_SIZE, min(count, CONTROL_REPLICATION_BREADTH))`.
+ */
+export async function enrolledMachineStoreWith(partyId: string, count: number): Promise<EnrolledMachineStore> {
+  const store = new MemoryEnrolledMachineStore(partyId);
+  await store.record(count);
+  return store;
 }
 
 /** Build a `CadreNodeConfig` for one control-network test node. */
@@ -106,6 +130,7 @@ export function controlNodeConfig(opts: ControlNodeOpts): CadreNodeConfig {
     },
     ...(opts.strandWatchMs !== undefined ? { strandWatchInterval: opts.strandWatchMs } : {}),
     ...(opts.privateKey ? { privateKey: opts.privateKey } : {}),
+    ...(opts.enrolledMachines ? { enrolledMachines: { store: opts.enrolledMachines } } : {}),
     network: {
       transports: wsTransports(),
       listenAddrs: opts.listenAddrs ?? ['/ip4/127.0.0.1/tcp/0/ws'],

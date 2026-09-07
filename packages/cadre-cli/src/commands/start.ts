@@ -13,6 +13,7 @@ import {
 import { createPushNotifier } from '@serfab/cadre-core/push-node';
 import { FileTrustedOwnerStore } from '@serfab/cadre-core/trusted-owner-store-file';
 import { FileBootstrapPeerStore } from '@serfab/cadre-core/bootstrap-peer-store-file';
+import { FileEnrolledMachineStore } from '@serfab/cadre-core/enrolled-machine-store-file';
 import { fromString } from 'uint8arrays';
 import { resolveConfig } from '../config/index.js';
 import { resolveStorageConfig } from './node-session.js';
@@ -144,6 +145,17 @@ export const startCommand = new Command('start')
         config.controlNetwork.partyId,
       );
 
+      // How many machines this party had enrolled at this node's last look, kept in
+      // the same directory. The control node's block-repair yardstick is declared
+      // from it at bring-up, which is before the database holding the membership
+      // rows exists — so the count has to come off disk or not at all. An absent or
+      // unreadable file is a cold start (declare nothing, run as before), never a
+      // failed launch.
+      const enrolledMachineStore = await FileEnrolledMachineStore.open(
+        config.nodeStateDir,
+        config.controlNetwork.partyId,
+      );
+
       const nodeConfig: CadreNodeConfig = {
         privateKey: config.privateKey,
         trustedOwners: {
@@ -152,6 +164,7 @@ export const startCommand = new Command('start')
           pinnedSource: 'operator',
         },
         bootstrapPeers: { store: bootstrapPeerStore },
+        enrolledMachines: { store: enrolledMachineStore },
         controlNetwork: config.controlNetwork,
         profile: config.profile,
         strandFilter: config.strandFilter,
