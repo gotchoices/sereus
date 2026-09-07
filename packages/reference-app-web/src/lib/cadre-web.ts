@@ -33,6 +33,7 @@ import {
 	generateStrandMemberKey,
 	PersistentTrustedOwnerStore,
 	PersistentBootstrapPeerStore,
+	PersistentEnrolledMachineStore,
 	peerKeySigner,
 } from '@serfab/cadre-core';
 import type {
@@ -43,6 +44,7 @@ import type {
 	StrandFormationDisclosure,
 	TrustedOwnerStore,
 	BootstrapPeerStore,
+	EnrolledMachineStore,
 	RelayReservationState,
 } from '@serfab/cadre-core';
 import type { Libp2p, PrivateKey } from '@libp2p/interface';
@@ -67,7 +69,7 @@ import {
 	getStoreStorage,
 	CONTROL_STORE_KEY,
 } from './strand-storage.js';
-import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY } from './node-local-slots.js';
+import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY } from './node-local-slots.js';
 import { getChatSAppConfig, CHAT_STRAND_ID, CHAT_SAPP_ID } from './chat-strand.js';
 import { insertChatMessage, selectChatMessages } from './chat-dml.js';
 
@@ -167,6 +169,7 @@ let ownerState: OwnerState = 'pending';
 let ownerError: string | null = null;
 let trustedOwnerStore: TrustedOwnerStore | null = null;
 let bootstrapPeerStore: BootstrapPeerStore | null = null;
+let enrolledMachineStore: EnrolledMachineStore | null = null;
 let solicitationReady = false;
 const formedStrands = new Map<string, FormedStrand>();
 
@@ -322,6 +325,15 @@ export async function startCadre(): Promise<CadreNode> {
 		kvSlot(controlHandle, BOOTSTRAP_PEERS_KV_KEY),
 		partyId,
 	);
+	// The party's enrolled-machine count, from which the control node declares its
+	// block-repair yardstick at bring-up — before the database that could answer the
+	// question live exists. Unlike the two records above, an unreadable slot here does
+	// NOT fail the start: the count is a repair hint, so `open` cold-starts and the
+	// tab simply declares nothing.
+	enrolledMachineStore = await PersistentEnrolledMachineStore.open(
+		kvSlot(controlHandle, ENROLLED_MACHINES_KV_KEY),
+		partyId,
+	);
 
 	const config: CadreNodeConfig = {
 		privateKey,
@@ -370,6 +382,7 @@ export async function startCadre(): Promise<CadreNode> {
 		hibernation: { enabled: false },
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
+		enrolledMachines: { store: enrolledMachineStore },
 	};
 
 	node = new CadreNode(config);
@@ -749,6 +762,7 @@ export async function stopCadre(): Promise<void> {
 	// above — drop the references so nothing can write through a closed handle.
 	trustedOwnerStore = null;
 	bootstrapPeerStore = null;
+	enrolledMachineStore = null;
 }
 
 // ── Formed-strand connectivity + DML (e2e formation→convergence hooks) ────────

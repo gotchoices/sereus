@@ -11,10 +11,14 @@
  * genuinely runs with its members declaring different numbers until each restarts —
  * that is the designed steady state, not a race to close.
  *
- * The safety argument for that is short: the yardstick is per-node and gates only
- * that node's own reads, and no node refuses another anything over it. This scenario
- * exists because that is a claim worth PROVING once on a real network rather than
- * only reasoning about — a yardstick that leaked into the write path (into the
+ * It also covers the WRITE half of that record end to end — a run that learns its
+ * party's size leaves that size behind for the next launch — which no unit test can
+ * reach, since it needs a real control database with real vouched membership rows.
+ *
+ * The safety argument for the divergence is short: the yardstick is per-node and
+ * gates only that node's own reads, and no node refuses another anything over it.
+ * This scenario exists because that is a claim worth PROVING once on a real network
+ * rather than only reasoning about — a yardstick that leaked into the write path (into the
  * membership admission gate, the approval bar, or the cohort a coordinator will
  * accept) would show up here as a write that will not commit, or a member that never
  * catches up.
@@ -63,7 +67,7 @@ import { CadreNode, CONTROL_REPLICATION_BREADTH } from '@serfab/cadre-core';
 import type { Libp2pNodeWithRepo } from '@serfab/cadre-core';
 import {
 	controlNodeConfig, makeOwnOwner, connectControlNodes, enrolledMachineStoreWith,
-	randomPeerId, waitForCadrePeerConverged
+	randomPeerId, waitForCadrePeerConverged, waitUntil
 } from '../harness/index.js';
 
 /** Machines A remembers — the LAGGING view, from before the party grew. */
@@ -73,6 +77,14 @@ const B_REMEMBERED_MACHINES = 3;
 
 /** Convergence by pull-on-read; the bound the two-node convergence scenario uses. */
 const CONVERGE_TIMEOUT_MS = 30_000;
+
+/**
+ * How long the node-local record may lag the membership write that drove it. The
+ * refresh is local and coalesced (no network), so this is generous rather than
+ * tuned — it exists so a hang fails with this scenario's message instead of the
+ * suite timeout.
+ */
+const RECORD_TIMEOUT_MS = 10_000;
 
 /**
  * The repair yardstick a LIVE node resolved, read off its control `CoordinatorRepo`.
@@ -144,6 +156,31 @@ describe('control writes across members that declare different repair yardsticks
 				description: 'B (yardstick 3) observes a row committed by A (yardstick 2)',
 			});
 			expect(await B.isMember(xPeerId)).toBe(true);
+
+			// The WRITE half of the record, which nothing else covers: a run that learns
+			// its party's size must leave that size behind for the next launch to read.
+			// A has vouched B and X, and its own authorized set excludes itself, so the
+			// count it records is 2 + 1. Without this the `record()` call in
+			// `refreshAuthorizedControlPeers` could be deleted and every other test in the
+			// repo would still pass — the yardstick would simply never advance in the
+			// field. Polled rather than asserted outright: the refresh is driven off the
+			// membership-change listener and coalesced, so it settles shortly after the
+			// write rather than within it.
+			await waitUntil(() => A!.getEnrolledMachineStore()?.count() === 3, {
+				timeoutMs: RECORD_TIMEOUT_MS,
+				description: "A records the party's grown size (A + B + X) for its next launch",
+			});
+			// B holds no trusted-owner anchor of its own, so it authorizes nobody and
+			// records 1 — overwriting the 3 planted above. That is the documented cost of
+			// recording an empty snapshot rather than skipping it (see the NOTE at the
+			// record site in `cadre-node.ts`): the number must be able to come back DOWN
+			// when a party genuinely shrinks, so an empty read writes 1 even when the
+			// emptiness is only "this node cannot authorize anyone yet". Safe in both
+			// directions here — the yardstick floor turns a recorded 1 back into today's
+			// 2, and B's DECLARED 3 is unaffected, having been captured at start(). What
+			// B must never do is inherit A's 3: the record is per node, written from what
+			// that node itself can authorize.
+			expect(B!.getEnrolledMachineStore()?.count()).toBe(1);
 		} finally {
 			await B?.stop();
 			await A?.stop();

@@ -6,11 +6,12 @@
  * Scope is deliberately narrow. The node-local *store policy* over an arbitrary
  * slot (cold start, corrupt JSON, foreign partyId, discard-all vs drop-entry,
  * synchronous visibility, failed-persist recovery) is owned and covered by
- * `packages/cadre-core/test/node-local-snapshot.spec.ts` against its own fake
- * slot — re-asserting it here would only duplicate it. What this file covers is
- * what the RN app actually owns: the two slots themselves (`secureStoreSlot`,
- * `kvStoreSlot`), the key-shape helpers, and the composition of each real slot
- * with the two node-local stores.
+ * `packages/cadre-core/test/node-local-snapshot.spec.ts` (and, for the count,
+ * `enrolled-machine-store.spec.ts`) against its own fake slot — re-asserting it
+ * here would only duplicate it. What this file covers is what the RN app
+ * actually owns: the two slots themselves (`secureStoreSlot`, `kvStoreSlot`),
+ * the key-shape helpers, and the composition of each real slot with the
+ * node-local stores it backs.
  */
 import { describe, it, expect } from 'vitest';
 import {

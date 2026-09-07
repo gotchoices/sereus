@@ -1,17 +1,18 @@
 /**
  * `node-local-slots.ts` — the phone's single `DurableSlot` backend for
- * cadre-core's node-local records (`PersistentTrustedOwnerStore`,
- * `PersistentBootstrapPeerStore`), over the `kv` table of the
- * `sereus-peer-identity` SQLite database.
+ * cadre-core's three node-local records (`PersistentTrustedOwnerStore`,
+ * `PersistentBootstrapPeerStore`, `PersistentEnrolledMachineStore`), over the
+ * `kv` table of the `sereus-peer-identity` SQLite database.
  *
  * Scope is deliberately narrow. The node-local *store policy* over an arbitrary
  * slot (cold start, corrupt JSON, foreign partyId, discard-all vs drop-entry,
  * synchronous visibility, failed-persist recovery) is owned and covered by
- * `packages/cadre-core/test/node-local-snapshot.spec.ts` against its own fake
- * slot — re-asserting it here would only duplicate it. What this file covers is
- * what the NS app actually owns: the pass-through slot itself (`kvSlot`), the
- * two key-shape helpers, and the composition of the real slot with the two
- * node-local stores.
+ * `packages/cadre-core/test/node-local-snapshot.spec.ts` (and, for the count,
+ * `enrolled-machine-store.spec.ts`) against its own fake slot — re-asserting it
+ * here would only duplicate it. What this file covers is what the NS app
+ * actually owns: the pass-through slot itself (`kvSlot`), the key-shape
+ * helpers, and the composition of the real slot with the node-local stores it
+ * backs.
  *
  * No real SQLite here. What `SqliteKVStore` does with SQL belongs to
  * `@optimystic/db-p2p-storage-ns` and is covered in that repo; the seam this
@@ -19,11 +20,16 @@
  * stand in for it.
  */
 import { describe, it, expect } from 'vitest';
-import { PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
+import {
+	PersistentTrustedOwnerStore,
+	PersistentBootstrapPeerStore,
+	PersistentEnrolledMachineStore,
+} from '@serfab/cadre-core';
 import {
 	kvSlot,
 	anchorSlotKey,
 	bootstrapPeersSlotKey,
+	enrolledMachinesSlotKey,
 	type KvStoreApi,
 } from '../src/node-local-slots';
 
@@ -94,28 +100,32 @@ describe('kvSlot', () => {
 // phone's anchor / dial targets rather than failing.
 
 describe('key-shape helpers', () => {
-	it('pins the two key strings exactly', () => {
+	it('pins the three key strings exactly', () => {
 		expect(anchorSlotKey('p')).toBe('trusted-owners.p');
 		expect(bootstrapPeersSlotKey('p')).toBe('bootstrap-peers.p');
+		expect(enrolledMachinesSlotKey('p')).toBe('enrolled-machines.p');
 	});
 
 	it('gives distinct parties distinct keys', () => {
 		expect(anchorSlotKey('party-1')).not.toBe(anchorSlotKey('party-2'));
 		expect(bootstrapPeersSlotKey('party-1')).not.toBe(bootstrapPeersSlotKey('party-2'));
+		expect(enrolledMachinesSlotKey('party-1')).not.toBe(enrolledMachinesSlotKey('party-2'));
 	});
 
-	it('never lets the two families collide, for any pair of parties', () => {
-		// Both records share one `SqliteKVStore` with an EMPTY prefix (see
+	it('never lets the three families collide, for any pair of parties', () => {
+		// All three records share one `SqliteKVStore` with an EMPTY prefix (see
 		// `cadre-phone.ts`), so a collision would have one record silently overwrite
-		// the other rather than land in a separate namespace.
-		const parties = ['p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', ''];
-		const anchors = parties.map(anchorSlotKey);
-		const peers = parties.map(bootstrapPeersSlotKey);
+		// another rather than land in a separate namespace.
+		const parties = [
+			'p', 'party-1', 'trusted-owners.p', 'bootstrap-peers.p', 'enrolled-machines.p', '',
+		];
+		const keys = [
+			...parties.map(anchorSlotKey),
+			...parties.map(bootstrapPeersSlotKey),
+			...parties.map(enrolledMachinesSlotKey),
+		];
 
-		for (const anchor of anchors) {
-			expect(peers).not.toContain(anchor);
-		}
-		expect(new Set([...anchors, ...peers]).size).toBe(anchors.length + peers.length);
+		expect(new Set(keys).size).toBe(keys.length);
 	});
 });
 
@@ -261,20 +271,67 @@ describe('PersistentBootstrapPeerStore over kvSlot', () => {
 	});
 });
 
-// ── Both records in ONE kv store, under an empty prefix ───────────────────────
-// `cadre-phone.ts` gives BOTH stores the same `SqliteKVStore` instance with the
-// empty prefix `''`, so the two records are neighbours in one `kv` table rather
-// than in separate namespaces. Asserting the key strings differ is not enough:
-// what matters is that neither write clobbers the other.
+// ── PersistentEnrolledMachineStore over a real kvSlot ─────────────────────────
+// The control network's block-repair yardstick, read back at the next launch.
+// Its load policy DIVERGES from the two records above — an unreadable slot
+// cold-starts rather than throwing, because a lost repair hint must not stop a
+// node starting. That divergence is the one thing worth asserting here.
 
-describe('the two node-local records sharing one kv store', () => {
-	it('lets the anchor and the bootstrap peers survive each other\'s writes', async () => {
+describe('PersistentEnrolledMachineStore over kvSlot', () => {
+	it('persists the count across a fresh open() of the same slot', async () => {
+		const kv = new FakeKvStore();
+		const key = enrolledMachinesSlotKey('party-1');
+
+		const first = await PersistentEnrolledMachineStore.open(kvSlot(kv, key), 'party-1');
+		await first.record(4);
+
+		const reopened = await PersistentEnrolledMachineStore.open(kvSlot(kv, key), 'party-1');
+		expect(reopened.count()).toBe(4);
+	});
+
+	it('a failed read COLD-STARTS open() rather than rejecting', async () => {
+		const kv = new FakeKvStore();
+		kv.getError = new Error('SQLite read failed');
+
+		const store = await PersistentEnrolledMachineStore.open(
+			kvSlot(kv, enrolledMachinesSlotKey('party-1')),
+			'party-1',
+		);
+		expect(store.count()).toBeUndefined();
+	});
+
+	it('a failed persist does not reject, and the in-memory count still stands', async () => {
+		const kv = new FakeKvStore();
+		const store = await PersistentEnrolledMachineStore.open(
+			kvSlot(kv, enrolledMachinesSlotKey('party-1')),
+			'party-1',
+		);
+		kv.setError = new Error('SQLite write failed');
+
+		await expect(store.record(4)).resolves.toBeUndefined();
+		expect(store.count()).toBe(4);
+	});
+});
+
+// ── All three records in ONE kv store, under an empty prefix ──────────────────
+// `cadre-phone.ts` gives ALL THREE stores the same `SqliteKVStore` instance with
+// the empty prefix `''`, so the records are neighbours in one `kv` table rather
+// than in separate namespaces. Asserting the key strings differ is not enough:
+// what matters is that no write clobbers another.
+
+describe('the node-local records sharing one kv store', () => {
+	it('lets the anchor, the bootstrap peers and the count survive each other\'s writes', async () => {
 		const kv = new FakeKvStore();
 		const anchors = await PersistentTrustedOwnerStore.open(kvSlot(kv, anchorSlotKey('party-1')), 'party-1');
 		const peers = await PersistentBootstrapPeerStore.open(kvSlot(kv, bootstrapPeersSlotKey('party-1')), 'party-1');
+		const counts = await PersistentEnrolledMachineStore.open(
+			kvSlot(kv, enrolledMachinesSlotKey('party-1')),
+			'party-1',
+		);
 
 		await anchors.trust('owner-key-b64', 'genesis');
 		await peers.record(REAL_PEER_ID, ['/ip4/1.2.3.4/tcp/4001/ws']);
+		await counts.record(3);
 		await anchors.trust('second-owner-b64', 'invite');
 
 		const reopenedAnchors = await PersistentTrustedOwnerStore.open(
@@ -285,8 +342,13 @@ describe('the two node-local records sharing one kv store', () => {
 			kvSlot(kv, bootstrapPeersSlotKey('party-1')),
 			'party-1',
 		);
+		const reopenedCounts = await PersistentEnrolledMachineStore.open(
+			kvSlot(kv, enrolledMachinesSlotKey('party-1')),
+			'party-1',
+		);
 		expect(reopenedAnchors.all()).toEqual(new Set(['owner-key-b64', 'second-owner-b64']));
 		expect([...reopenedPeers.all().keys()]).toEqual([REAL_PEER_ID]);
+		expect(reopenedCounts.count()).toBe(3);
 	});
 
 	it('keeps one party\'s records out of another party\'s slots', async () => {

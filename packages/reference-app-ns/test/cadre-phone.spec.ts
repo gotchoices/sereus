@@ -1,7 +1,7 @@
 /**
  * `cadre-phone.ts` — the NativeScript app's `CadreNode` lifecycle: one SQLite
- * handle held open for the node's life, the two node-local records read out of
- * that same handle's `kv` table, and the start/stop rules around both.
+ * handle held open for the node's life, the three node-local records read out of
+ * that same handle's `kv` table, and the start/stop rules around them.
  *
  * The module keeps two pieces of state private to itself (the `CadreNode`
  * singleton and the `OptimysticNSDBHandle`) with no injection seam, so this
@@ -11,11 +11,11 @@
  * `startPhoneNode` early-return over the following test's assertions.
  *
  * `@serfab/cadre-core` is mocked only in its `CadreNode` export — everything
- * else, `PersistentTrustedOwnerStore` and `PersistentBootstrapPeerStore`
- * included, stays REAL and runs over the faked `SqliteKVStore` below. That is
- * the point of the suite: the empty KV prefix and the literal
- * `trusted-owners.<partyId>` / `bootstrap-peers.<partyId>` keys are proven end
- * to end, not merely as constructor arguments.
+ * else, the three `Persistent*Store` classes included, stays REAL and runs over
+ * the faked `SqliteKVStore` below. That is the point of the suite: the empty KV
+ * prefix and the literal `trusted-owners.<partyId>` /
+ * `bootstrap-peers.<partyId>` / `enrolled-machines.<partyId>` keys are proven
+ * end to end, not merely as constructor arguments.
  *
  * The libp2p transport factories (`webSockets()`, `circuitRelayTransport()`) are
  * only constructed here, never started, and import cleanly under plain Node — so
@@ -27,7 +27,12 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 // here it is charged to the file's import phase; done inside the first test that
 // happened to touch it, it blows the default 5s test timeout instead. It also
 // primes the namespace `H.state.core` caches for every later `vi.resetModules()`.
-import { CadreNode, PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
+import {
+	CadreNode,
+	PersistentTrustedOwnerStore,
+	PersistentBootstrapPeerStore,
+	PersistentEnrolledMachineStore,
+} from '@serfab/cadre-core';
 import type { CadreNodeConfig, ControlNetworkSeed, StrandConfig } from '@serfab/cadre-core';
 
 /**
@@ -163,7 +168,7 @@ const H = vi.hoisted(() => {
 		 * `@quereus/quereus` behind it) for no gain.
 		 *
 		 * NOTE: the cache also means cadre-core is NOT re-evaluated between tests.
-		 * Fine today — the only exports this suite uses from it are the two
+		 * Fine today — the only exports this suite uses from it are the three
 		 * node-local store classes, which hold no module-level state. If cadre-core
 		 * ever grows module-scoped mutable state a test needs cleared, drop the
 		 * `??=` and pay the re-import (and raise `testTimeout` with it).
@@ -242,6 +247,7 @@ describe('the @serfab/cadre-core mock', () => {
 		expect<unknown>(CadreNode).toBe(H.FakeCadreNode);
 		expect(typeof PersistentTrustedOwnerStore.open).toBe('function');
 		expect(typeof PersistentBootstrapPeerStore.open).toBe('function');
+		expect(typeof PersistentEnrolledMachineStore.open).toBe('function');
 	});
 });
 
@@ -260,11 +266,15 @@ describe('startPhoneNode identity database', () => {
 		expect(H.state.kvConstructions[0]!.prefix).toBe('');
 	});
 
-	it('reads exactly the two node-local keys during start', async () => {
+	it('reads exactly the three node-local keys during start', async () => {
 		const { startPhoneNode } = await loadModule();
 		await startPhoneNode({ partyId: PARTY, bootstrapAddrs: [] });
 
-		expect(H.state.keysRead).toEqual([`trusted-owners.${PARTY}`, `bootstrap-peers.${PARTY}`]);
+		expect(H.state.keysRead).toEqual([
+			`trusted-owners.${PARTY}`,
+			`bootstrap-peers.${PARTY}`,
+			`enrolled-machines.${PARTY}`,
+		]);
 		// Cold start reads; it does not write. A write here would mean an empty
 		// snapshot overwriting a record some other code path had just put there.
 		expect(H.state.keysWritten).toEqual([]);

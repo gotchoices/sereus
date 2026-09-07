@@ -7,16 +7,28 @@
  * owned and covered by `packages/cadre-core/test/node-local-snapshot.spec.ts`
  * against its own fake slot — re-asserting it here would only duplicate it.
  * What this file covers is what web actually owns: `kvSlot` itself, and the
- * composition of a real `kvSlot` with the two stores — including the two places
- * the composition could quietly disagree with what the store expects (a
- * non-string `kv` value, and a read that fails).
+ * composition of a real `kvSlot` with the three stores — including the two
+ * places the composition could quietly disagree with what the store expects (a
+ * non-string `kv` value, and a read that fails). The enrolled-machine count's
+ * own policy lives in `packages/cadre-core/test/enrolled-machine-store.spec.ts`;
+ * it deliberately cold-starts where the other two throw, which is the one thing
+ * asserted here.
  */
 import { describe, it, expect } from 'vitest';
 import { generateKeyPair } from '@libp2p/crypto/keys';
 import { peerIdFromPrivateKey } from '@libp2p/peer-id';
-import { PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
+import {
+	PersistentTrustedOwnerStore,
+	PersistentBootstrapPeerStore,
+	PersistentEnrolledMachineStore,
+} from '@serfab/cadre-core';
 import type { OptimysticWebDBHandle } from '@optimystic/db-p2p-storage-web';
-import { kvSlot, TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY } from '../src/lib/node-local-slots';
+import {
+	kvSlot,
+	TRUSTED_OWNERS_KV_KEY,
+	BOOTSTRAP_PEERS_KV_KEY,
+	ENROLLED_MACHINES_KV_KEY,
+} from '../src/lib/node-local-slots';
 
 /**
  * A real Ed25519 peer id — the bootstrap-peer store's loader validates ids on
@@ -101,7 +113,7 @@ describe('kvSlot', () => {
 	});
 });
 
-// ── The two node-local stores over a real kvSlot ───────────────────────────────
+// ── The node-local stores over a real kvSlot ──────────────────────────────────
 
 describe('node-local stores over kvSlot', () => {
 	/**
@@ -111,6 +123,32 @@ describe('node-local stores over kvSlot', () => {
 	it('pins the kv keys the stores are persisted under', () => {
 		expect(TRUSTED_OWNERS_KV_KEY).toBe('trusted-owners');
 		expect(BOOTSTRAP_PEERS_KV_KEY).toBe('bootstrap-peers');
+		expect(ENROLLED_MACHINES_KV_KEY).toBe('enrolled-machines');
+	});
+
+	it('gives every record a key of its own, so no snapshot write clobbers another', () => {
+		const keys = [TRUSTED_OWNERS_KV_KEY, BOOTSTRAP_PEERS_KV_KEY, ENROLLED_MACHINES_KV_KEY];
+		expect(new Set(keys).size).toBe(keys.length);
+	});
+
+	it('persists the enrolled-machine count across a fresh open() of the same slot', async () => {
+		const { handle } = fakeHandle();
+		const first = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
+		await first.record(4);
+
+		const reopened = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
+		expect(reopened.count()).toBe(4);
+	});
+
+	// The deliberate divergence: this record is a block-repair hint, recomputed the
+	// moment the control database is up, so an unreadable slot must not stop the tab
+	// starting. `enrolled-machine-store.ts` carries the reasoning.
+	it('cold-starts the enrolled-machine count when the database read fails, rather than rejecting', async () => {
+		const { fake, handle } = fakeHandle();
+		fake.getError = new Error('IndexedDB blocked');
+
+		const store = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
+		expect(store.count()).toBeUndefined();
 	});
 
 	it('persists a trusted owner key across a fresh open() of the same slot', async () => {
@@ -137,18 +175,22 @@ describe('node-local stores over kvSlot', () => {
 	// Both records share ONE database with the tab's identity (see the module
 	// header of `node-local-slots.ts`), so their snapshot writes are the one place
 	// they could clobber each other.
-	it('keeps both records side by side in one database', async () => {
+	it('keeps all three records side by side in one database', async () => {
 		const { handle } = fakeHandle();
 		const peer = await realPeerId();
 		const owners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
 		const peers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
+		const counts = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
 		await owners.trust('owner-key-b64', 'genesis');
 		await peers.record(peer, ['/ip4/1.2.3.4/tcp/4001/ws']);
+		await counts.record(4);
 
 		const reopenedOwners = await PersistentTrustedOwnerStore.open(kvSlot(handle, TRUSTED_OWNERS_KV_KEY), 'party-1');
 		const reopenedPeers = await PersistentBootstrapPeerStore.open(kvSlot(handle, BOOTSTRAP_PEERS_KV_KEY), 'party-1');
+		const reopenedCounts = await PersistentEnrolledMachineStore.open(kvSlot(handle, ENROLLED_MACHINES_KV_KEY), 'party-1');
 		expect(reopenedOwners.all()).toEqual(new Set(['owner-key-b64']));
 		expect([...reopenedPeers.all().keys()]).toEqual([peer]);
+		expect(reopenedCounts.count()).toBe(4);
 	});
 
 	// `kv` values are `string | Uint8Array`; `kvSlot` reports a non-string as

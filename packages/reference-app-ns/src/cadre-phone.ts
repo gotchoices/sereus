@@ -7,13 +7,19 @@
  *   proxy — see ns-storage.ts)
  * - Transaction profile (Ring Zulu only, intermittent connectivity)
  * - Stable Ed25519 identity persisted in SQLite (key 'peer-private-key')
- * - Durable node-local records (trusted-owner anchor + cold-start bootstrap
- *   peers) in that same SQLite db — see node-local-slots.ts
+ * - Durable node-local records (trusted-owner anchor, cold-start bootstrap
+ *   peers, enrolled-machine count) in that same SQLite db — see
+ *   node-local-slots.ts
  *
  * Mirrors packages/reference-app-rn/src/cadre-phone.ts with NS storage/identity.
  */
 
-import { CadreNode, PersistentTrustedOwnerStore, PersistentBootstrapPeerStore } from '@serfab/cadre-core';
+import {
+	CadreNode,
+	PersistentTrustedOwnerStore,
+	PersistentBootstrapPeerStore,
+	PersistentEnrolledMachineStore,
+} from '@serfab/cadre-core';
 import type {
 	CadreNodeConfig,
 	ControlNetworkSeed,
@@ -33,7 +39,7 @@ import {
 	type OptimysticNSDBHandle,
 } from '@optimystic/db-p2p-storage-ns';
 import { makeLazyNsStorage } from './ns-storage';
-import { anchorSlotKey, bootstrapPeersSlotKey, kvSlot } from './node-local-slots';
+import { anchorSlotKey, bootstrapPeersSlotKey, enrolledMachinesSlotKey, kvSlot } from './node-local-slots';
 
 // ── Peer identity ─────────────────────────────────────────────────────────────
 // Persist a single Ed25519 keypair so the node keeps the same PeerId across
@@ -60,9 +66,10 @@ let node: CadreNode | null = null;
 
 /**
  * The {@link PEER_IDENTITY_DB_NAME} SQLite handle, held open for the node's
- * whole life. It backs three things that deliberately share one fate: the
- * Ed25519 identity BLOB, the trusted-owner anchor, and the bootstrap-peer
- * store (both node-local records, via `SqliteKVStore`'s `kv` table). This app
+ * whole life. It backs four things that deliberately share one fate: the
+ * Ed25519 identity BLOB, the trusted-owner anchor, the bootstrap-peer store
+ * and the enrolled-machine count (all three node-local records, via
+ * `SqliteKVStore`'s `kv` table, each under its own key). This app
  * has no Keychain/Keystore integration (see the module comment), so the
  * anchor is only as protected as the plaintext identity it qualifies until
  * that hardening lands — moving one without the other would be a downgrade,
@@ -99,7 +106,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 	if (node?.isRunning) return node;
 
 	// One handle for the node's life, reused for the identity load below and for
-	// both node-local records — see the `identityDb` doc comment for why they
+	// all three node-local records — see the `identityDb` doc comment for why they
 	// share fate. `??=`, not a plain open: a leaked native handle blocks the next
 	// open of this file, and the `node?.isRunning` early-return above already
 	// keeps a healthy node from reaching here twice.
@@ -114,9 +121,17 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 
 	const privateKey = await loadOrCreatePhoneKey(db);
 
-	// Empty prefix, not `SqliteKVStore`'s default `'optimystic:txn:'`: the slot
-	// keys are the literal `trusted-owners.<partyId>` / `bootstrap-peers.<partyId>`
-	// strings, and this db holds nothing else under those names.
+	// Empty prefix, not `SqliteKVStore`'s default `'optimystic:txn:'`: the slot keys
+	// are the literal `trusted-owners.<partyId>` / `bootstrap-peers.<partyId>` /
+	// `enrolled-machines.<partyId>` strings, and this db holds nothing else under
+	// those names.
+	//
+	// NOTE: all three records are party-scoped and this app does not persist
+	// `opts.partyId` (it is typed into Settings each launch), so every slot loads
+	// empty every launch until the backlog ticket `feat-rn-persist-node-start-options`
+	// lands. For the enrolled-machine count that means this app declares no repair
+	// yardstick today no matter what it records — the wiring is here so it starts
+	// working the moment the party id persists.
 	const nodeLocalKv = new SqliteKVStore(db, '');
 	// NOTE: the trusted-owner anchor is only as protected as the plaintext
 	// identity BLOB it qualifies — this app has no Keychain/Keystore integration
@@ -128,6 +143,15 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 	);
 	const bootstrapPeerStore = await PersistentBootstrapPeerStore.open(
 		kvSlot(nodeLocalKv, bootstrapPeersSlotKey(opts.partyId)),
+		opts.partyId,
+	);
+	// The party's enrolled-machine count, from which the control node declares its
+	// block-repair yardstick at bring-up — before the database that could answer the
+	// question live exists. Unlike the two records above, an unreadable slot here does
+	// NOT fail the start: the count is a repair hint, so `open` cold-starts and the
+	// node simply declares nothing.
+	const enrolledMachineStore = await PersistentEnrolledMachineStore.open(
+		kvSlot(nodeLocalKv, enrolledMachinesSlotKey(opts.partyId)),
 		opts.partyId,
 	);
 
@@ -149,6 +173,7 @@ export async function startPhoneNode(opts: PhoneNodeOptions): Promise<CadreNode>
 		hibernation: { enabled: false },
 		trustedOwners: { store: trustedOwnerStore },
 		bootstrapPeers: { store: bootstrapPeerStore },
+		enrolledMachines: { store: enrolledMachineStore },
 		// Demo opt-out: the chat sApp config is unsigned (its `id` is a name, not an
 		// ed25519 author key — see getChatSAppConfig). Relax the fail-closed schema
 		// policy so the demo can form strands. Production nodes must leave this unset.

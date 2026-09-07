@@ -1790,11 +1790,26 @@ export class CadreNode implements SAppIdLookup {
       // and the control node that needs it was built long before this ran. Recorded
       // from the snapshot just materialized — no second membership query.
       //
-      // `+ 1` for this node, which is not in its own authorized set. Recorded even at
-      // a size of 0 (⇒ 1), unlike {@link enrolledMachineCount}, which reports an empty
-      // set as "unknown": the two are equivalent on this path, because the yardstick's
-      // floor is MIN_CLUSTER_SIZE, so a persisted 1 declares 2 — which is exactly what
-      // declaring nothing resolves to through the base policy's `assumedClusterSize`.
+      // `+ 1` for this node, which is not in its own authorized set. An EMPTY snapshot
+      // is recorded as 1 rather than skipped, unlike {@link enrolledMachineCount},
+      // which reports empty as "unknown". The asymmetry is deliberate and the reason
+      // is a party that genuinely SHRANK: if empty meant "record nothing", a party
+      // whose other machines were all revoked would keep declaring its old, larger
+      // number forever, and over-declaring is the unsafe direction — at a yardstick of
+      // 3 or more Optimystic pins the repair corroboration floor at two peers, so a
+      // cohort that can only field one peer could never repair at all. Recording 1
+      // lets the number come back down; the floor then turns it into 2, which is
+      // exactly what declaring nothing resolves to.
+      //
+      // NOTE: the cost of that choice is that a TRANSIENT empty read overwrites a good
+      // remembered count with 1 — a membership snapshot is legitimately empty early in
+      // a run on a node whose rows have not replicated yet or whose trusted-owner
+      // anchor is still unseeded (`listAuthorizedMembers` authorizes no one without an
+      // anchor). Bounded and safe: the next refresh once rows land re-records the real
+      // count, and the only node that loses anything is one stopped inside that window,
+      // which then declares 2 — today's behaviour — on its next launch. If a node ever
+      // needs to declare the right number on its FIRST post-restart launch, the fix is
+      // to distinguish "no rows yet" from "no members" at this site, not to skip empty.
       //
       // A removed peer stops counting at REVOCATION, not at reap: `queryCadrePeers`
       // drops rows whose `StampId` is retired, and `listAuthorizedMembers` reads

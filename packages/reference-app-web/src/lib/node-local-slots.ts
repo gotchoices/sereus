@@ -1,10 +1,12 @@
 /**
  * node-local-slots.ts — `DurableSlot` factory over the control database's
  * `kv` IndexedDB object store, for the browser's node-local records: the
- * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`) and the
- * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`).
+ * trusted-owner anchor (`@serfab/cadre-core/trusted-owner-store`), the
+ * cold-start bootstrap-peer store (`@serfab/cadre-core/bootstrap-peer-store`)
+ * and the enrolled-machine count (`@serfab/cadre-core/enrolled-machine-store`),
+ * each under its own key.
  *
- * Both records go in the SAME database as the tab's Ed25519 identity and
+ * All three records go in the SAME database as the tab's Ed25519 identity and
  * party id (`strand-storage.ts`'s `CONTROL_STORE_KEY` database, `kv` store) —
  * not a separate one. The decisive property is shared fate: "Clear site data"
  * must wipe identity, anchor, and dial targets together so the tab cold-starts
@@ -22,10 +24,18 @@ export const TRUSTED_OWNERS_KV_KEY = 'trusted-owners';
 export const BOOTSTRAP_PEERS_KV_KEY = 'bootstrap-peers';
 
 /**
+ * `kv` key for the tab's last-known enrolled-machine count — the control
+ * network's block-repair yardstick, read back at the next launch because the
+ * control node is built before the database holding the membership rows exists.
+ */
+export const ENROLLED_MACHINES_KV_KEY = 'enrolled-machines';
+
+/**
  * A `DurableSlot` over one `kv` key of the control database. The `kv` store's
  * value type is `string | Uint8Array`; `DurableSlot` deals in text only, so a
  * non-string value is a corrupt slot and is treated the same as absent (the
- * shared loader in `node-local-snapshot.ts` then cold-starts empty).
+ * loader — `node-local-snapshot.ts` for the two snapshot records,
+ * `enrolled-machine-store.ts` for the count — then cold-starts empty).
  *
  * NOTE: two same-origin tabs open the same IndexedDB database and each
  * snapshot-writes its own full view on `save`, so the last writer wins and the

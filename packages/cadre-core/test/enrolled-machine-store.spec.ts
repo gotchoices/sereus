@@ -357,6 +357,31 @@ describe('PersistentEnrolledMachineStore over a fake slot', () => {
 		expect(slot.saves).toBe(afterFirst);
 	});
 
+	it('a value recorded back to what the slot holds, mid-write, leaves the slot and its belief agreed', async () => {
+		// The one interleaving the two skip tests above do not reach: a write for a NEW
+		// value is already chained when the caller records the value the slot ALREADY
+		// holds. The second call short-circuits on `persisted`, so the chained link is
+		// what must not write the number that was reverted — it re-reads the settled
+		// count when it runs rather than capturing the one it was queued for.
+		const slot = new FakeSlot();
+		const store = await PersistentEnrolledMachineStore.open(slot, PARTY);
+		await store.record(3);
+		const afterFirst = slot.saves;
+
+		const chained = store.record(4);
+		await store.record(3);
+		await chained;
+
+		expect(store.count()).toBe(3);
+		expect(JSON.parse(slot.text ?? '{}')).toEqual({ version: 1, partyId: PARTY, enrolledMachines: 3 });
+		expect(slot.saves).toBe(afterFirst);
+
+		// And the belief is not left stale by that short-circuit: a genuinely new count
+		// still reaches the slot afterwards.
+		await store.record(5);
+		expect(JSON.parse(slot.text ?? '{}')).toEqual({ version: 1, partyId: PARTY, enrolledMachines: 5 });
+	});
+
 	it('a burst of records collapses to one write of the latest value', async () => {
 		const slot = new FakeSlot();
 		const store = await PersistentEnrolledMachineStore.open(slot, PARTY);

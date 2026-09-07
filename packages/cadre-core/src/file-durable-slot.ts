@@ -5,9 +5,11 @@
  * parties without cross-party leakage.
  *
  * This is the whole platform-specific part of the file-backed node-local
- * stores (`trusted-owner-store-file.ts`, `bootstrap-peer-store-file.ts`); the
- * load policy, envelope and write chain are cross-platform in
- * `node-local-snapshot.ts`. Like its two importers, this module imports
+ * stores (`trusted-owner-store-file.ts`, `bootstrap-peer-store-file.ts`,
+ * `enrolled-machine-store-file.ts`); the load policy, envelope and write chain
+ * are cross-platform — in `node-local-snapshot.ts` for the first two, and in
+ * `enrolled-machine-store.ts` for the third, which deliberately does not share
+ * that machinery. Like its three importers, this module imports
  * `node:fs/promises`, so it is kept OUT of the package's cross-platform
  * default entry and is not itself an exported subpath.
  */

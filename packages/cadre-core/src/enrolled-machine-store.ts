@@ -56,10 +56,13 @@
  * will not start.
  *
  * NOTE: writes are serialised in-process only, the same caveat `NodeLocalSnapshot`
- * carries. Two processes (or two browser tabs) sharing ONE slot for ONE party would
- * each write their own view and the loser's count is lost. Harmless here — the value
- * is re-derived on the next membership refresh either way — and no backend today
- * shares a slot: each node gets its own directory or origin database.
+ * carries. Two processes (or two browser tabs) sharing ONE slot for ONE party each
+ * write their own view and the loser's count is lost. Two same-origin tabs of
+ * `reference-app-web` do exactly that — its slot is one key of a shared IndexedDB
+ * database, the same last-writer-wins caveat its `node-local-slots.ts` already
+ * records for the other two records. Harmless here, unlike there: this value is one
+ * integer both tabs re-derive from the same membership rows on their next refresh,
+ * so the views reconverge rather than losing an entry nobody rewrites.
  */
 import debug from 'debug';
 import type { DurableSlot } from './node-local-snapshot.js';

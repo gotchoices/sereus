@@ -6,7 +6,13 @@
  *  - the trusted-owner anchor (`trusted-owner-store.ts`),
  *  - the cold-start bootstrap-peer store (`bootstrap-peer-store.ts`).
  *
- * Both are the same mechanism with a different payload: a
+ * A THIRD node-local record — the enrolled-machine count
+ * (`enrolled-machine-store.ts`) — reuses {@link DurableSlot} but deliberately
+ * NOT this module's snapshot machinery: it is one scalar rather than an entry
+ * map, and it must cold-start rather than throw on an unreadable slot. Its
+ * module comment carries the reasoning; do not fold it in here.
+ *
+ * Both records here are the same mechanism with a different payload: a
  * `{ version, partyId, <entries> }` envelope, snapshot-written whole on every
  * change, loaded under one fail-safe-but-not-fail-silent policy. The only part
  * that differs per platform is WHERE the bytes are kept — Node writes a file,
@@ -37,6 +43,12 @@ export interface DurableSlot {
 	 * failed read reported as `undefined` silently converts a recoverable error
 	 * (permissions, a blocked database upgrade, an I/O fault) into destruction
 	 * of a still-intact record on the next save.
+	 *
+	 * A slot always reports the fault; what a READER does with it is the
+	 * reader's policy. The two records here rethrow it; the enrolled-machine
+	 * count catches it and cold-starts, because losing a repair hint must not
+	 * stop a node. So an implementation must never soften this to `undefined`
+	 * on a reader's behalf.
 	 */
 	load(): Promise<string | undefined>;
 	/**
