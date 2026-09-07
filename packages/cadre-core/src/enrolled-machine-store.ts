@@ -7,18 +7,21 @@
  *
  * `resolveRepairYardstick` (in `@serfab/quereus-plugin-sereus`'s `cluster-size.ts`
  * — read it first; the arithmetic and both clamps are explained there and are not
- * repeated here) derives the yardstick from the machines enrolled in the party.
- * Optimystic freezes a network's `clusterPolicy` when its libp2p node is built and
- * offers no runtime setter, so the number has to be known at construction time.
+ * repeated here) derives the yardstick from the machines that SERVE the network being
+ * configured. For the CONTROL network that is the machines enrolled in the party, and
+ * exactly so: every enrolled machine runs the control node by construction. (It is NOT
+ * the right number for a strand, which runs on a subset — see
+ * `StartStrandConfig.servingMachines`. This store is control-network-only, and that
+ * scope is a safety property, not an accident.) Optimystic freezes a network's
+ * `clusterPolicy` when its libp2p node is built and offers no runtime setter, so the
+ * number has to be known at construction time.
  *
- * A STRAND node can just read it: `StrandInstanceManager` builds strand nodes long
- * after the control database is up, so `CadreNode.enrolledMachineCount()` is a field
- * read off the already-materialized membership snapshot. The CONTROL node cannot.
- * `CadreNode.buildControlNodeOptions` runs inside `start()` BEFORE
- * `createControlNode()`, which is before the `ControlDatabase` holding the
- * `CadrePeer` rows exists — so at the one moment the number is needed, nothing can
- * answer. That deadlock is why the control network declared no yardstick at all and
- * ran at `CONTROL_CLUSTER_POLICY`'s `assumedClusterSize` of 2.
+ * The control node cannot read it when it needs it. `CadreNode.buildControlNodeOptions`
+ * runs inside `start()` BEFORE `createControlNode()`, which is before the
+ * `ControlDatabase` holding the `CadrePeer` rows exists — so at the one moment the
+ * number is needed, nothing can answer. That deadlock is why the control network
+ * declared no yardstick at all and ran at `CONTROL_CLUSTER_POLICY`'s
+ * `assumedClusterSize` of 2.
  *
  * This store breaks it the only way a chicken-and-egg is broken: by remembering
  * across the restart. `CadreNode.refreshAuthorizedControlPeers` records the count

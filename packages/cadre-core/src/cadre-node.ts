@@ -1726,43 +1726,6 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Machines enrolled in this party (this node included), for a network's block-repair
-   * corroboration yardstick — see `resolveRepairYardstick` in
-   * `@serfab/quereus-plugin-sereus`'s `cluster-size.ts`. A pure field read of the
-   * already-materialized {@link authorizedControlPeers} snapshot, deliberately: the
-   * strand launch and wake paths call this on every rebuild (a hibernating strand
-   * rebuilds many times a day), so it must never be a control-DB query and certainly
-   * never a network round-trip.
-   *
-   * A machine enters that snapshot by a signed enrollment and leaves it by a signed
-   * removal — `queryCadrePeers` drops rows whose `StampId` is retired in
-   * `CadreControl.Revocation` before this set is built — so this is a declaration from
-   * authenticated application state, never a network observation, and a removed peer
-   * stops counting at revocation rather than at reap.
-   *
-   * An EMPTY snapshot returns `undefined` ("this node does not know"), not 1. Empty is
-   * a genuine founder-alone party, a freshly seeded node whose membership rows have not
-   * replicated yet, and a node with an empty trusted-owner anchor — indistinguishable
-   * from here. The two answers are equivalent for repair anyway (the yardstick's floor
-   * is `MIN_CLUSTER_SIZE`, so 1 would declare 2, and 2 behaves exactly as declaring
-   * nothing does), and `undefined` is the one that also declines to arm the commit
-   * freshness window off a possibly-stale local read. Lifting that for a node that can
-   * prove it is alone: `backlog/feat-solo-node-arms-its-own-freshness-window`.
-   *
-   * This is the right count for the CONTROL network — every enrolled machine runs the
-   * control node — and only an UPPER BOUND for a strand, which launches only on machines
-   * whose embedder registered its sApp config ({@link addStrand}). A strand served by
-   * fewer machines than the party holds is therefore over-declared today, and an
-   * over-declared cohort that can field only one peer cannot repair at all. Tracked as
-   * `fix/bug-strand-yardstick-counts-party-machines`.
-   */
-  private enrolledMachineCount(): number | undefined {
-    return this.authorizedControlPeers.size === 0
-      ? undefined
-      : this.authorizedControlPeers.size + 1;
-  }
-
-  /**
    * Refresh {@link authorizedControlPeers} from the control DB, best-effort: a
    * failed read keeps the previous snapshot (never clears it), so a transient
    * DB error can neither flip the stream gate's cold-start carve-out back open
@@ -1790,9 +1753,18 @@ export class CadreNode implements SAppIdLookup {
       // and the control node that needs it was built long before this ran. Recorded
       // from the snapshot just materialized — no second membership query.
       //
+      // CONTROL-NETWORK ONLY, and that scope is load-bearing. Every enrolled machine
+      // runs the control node by construction, so here the party's machine count IS
+      // the count of machines serving the network — the quantity
+      // `resolveRepairYardstick` asks for. It is NOT that quantity for a strand, which
+      // launches only on machines whose embedder registered its sApp config (see
+      // {@link addStrand}), so this number must never be routed to a strand node:
+      // over-declaring pins Optimystic's repair corroboration floor at two peers and a
+      // strand that can field only one can then never repair. `launchStrand` therefore
+      // declares nothing; see the NOTE there.
+      //
       // `+ 1` for this node, which is not in its own authorized set. An EMPTY snapshot
-      // is recorded as 1 rather than skipped, unlike {@link enrolledMachineCount},
-      // which reports empty as "unknown". The asymmetry is deliberate and the reason
+      // is recorded as 1 rather than skipped. That is deliberate, and the reason
       // is a party that genuinely SHRANK: if empty meant "record nothing", a party
       // whose other machines were all revoked would keep declaring its old, larger
       // number forever, and over-declaring is the unsafe direction — at a yardstick of
@@ -3810,11 +3782,10 @@ export class CadreNode implements SAppIdLookup {
   }
 
   /**
-   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort inputs
-   * first: the discovery seed may have grown since the strand last ran, and so may
-   * the party's enrolled-machine count. Shared by the wake (`handleStrandWake`) and
-   * check-in (`handleStrandCheckIn`) paths so both apply the same fresh
-   * resolution. `resumeStrand` is idempotent
+   * Rebuild a quiesced strand's runtime, re-resolving the volatile cohort input
+   * first: the discovery seed may have grown since the strand last ran. Shared by
+   * the wake (`handleStrandWake`) and check-in (`handleStrandCheckIn`) paths so both
+   * apply the same fresh resolution. `resumeStrand` is idempotent
    * (returns the live instance unchanged) as a backstop against double-resume.
    */
   private async resumeStrandRuntime(strandId: string): Promise<void> {
@@ -3825,13 +3796,10 @@ export class CadreNode implements SAppIdLookup {
       ? peerIdFromPrivateKey(await strandTransportKey(this.identityKey, strandId)).toString()
       : undefined;
     const bootstrapNodes = await this.resolveCohortSeed(strandId, delegatePeerId);
-    const instance = await this.strandManager.resumeStrand(strandId, {
-      bootstrapNodes,
-      // The other volatile input: the party may have enrolled or removed a machine while
-      // this strand slept, and the rebuilt node freezes the repair yardstick derived from
-      // it. A field read, not a query — see `enrolledMachineCount`.
-      enrolledMachines: this.enrolledMachineCount()
-    });
+    // NOTE: no `servingMachines` override — see `launchStrand` for why a strand node
+    // declares no repair yardstick, and `StartStrandConfig.servingMachines` for the
+    // count that would legitimately go here once one exists.
+    const instance = await this.strandManager.resumeStrand(strandId, { bootstrapNodes });
     // Same reason as the launch path: `bootstrapNodes` only reaches the address
     // book through @libp2p/bootstrap discovery, so merge it directly as well.
     if (instance.libp2pNode) {
@@ -4331,7 +4299,20 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes,
       requireSignedSchemas: this.config.requireSignedSchemas,
       clusterSize: this.config.strandClusterSize,
-      enrolledMachines: this.enrolledMachineCount(),
+      // NOTE: deliberately NO `servingMachines`, so `strandClusterPolicy` declares no
+      // block-repair corroboration yardstick and the strand node runs the frozen
+      // STRAND_CLUSTER_POLICY. The only count this node holds is the party's enrolled
+      // machines (`authorizedControlPeers`), and that is the WRONG quantity for a
+      // strand: a strand launches only on machines whose embedder registered its sApp
+      // config (see `addStrand`), so a strand shared by two machines of a three-machine
+      // party would be over-declared — and an over-declaration pins Optimystic's
+      // corroboration floor at two peers, which a cohort that can only field one peer
+      // can never reach, so it could never repair a block at all. Declaring nothing
+      // instead leaves the known, upstream-tracked single-voter exposure
+      // (`backlog/debt-read-repair-single-voter-corroboration`), which is strictly
+      // better. An authenticated per-strand serving count is
+      // `backlog/feat-strand-yardstick-from-serving-machines`; when it lands it feeds
+      // `servingMachines` here and in `resumeStrandRuntime`.
       backfill: this.config.strandBackfill,
       founder
     });

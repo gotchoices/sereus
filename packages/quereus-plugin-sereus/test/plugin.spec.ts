@@ -585,6 +585,12 @@ describe('resolveRepairYardstick', () => {
 	// rather than observed: the cohort a node can see comes from unauthenticated routing,
 	// so a partition (or an attacker with routing influence) shrinks the view and, with it,
 	// the corroboration floor. See the arithmetic note on the function.
+	//
+	// The first argument is the machines that SERVE the network being configured. For the
+	// control network that is the party's enrolled machines (every enrolled machine runs the
+	// control node); for a strand it is emphatically NOT the party count, which over-declares
+	// a strand served by a subset and can make it unable to repair at all. Nothing in
+	// production passes a strand count today — see `strandClusterPolicy`.
 	it('floors at MIN_CLUSTER_SIZE, so it can only ever raise the declaration', () => {
 		// A node that authorizes nobody is a founder alone, a freshly seeded node whose
 		// membership rows have not replicated, or one with an empty owner anchor — the
@@ -594,7 +600,7 @@ describe('resolveRepairYardstick', () => {
 		expect(resolveRepairYardstick(2, CONTROL_REPLICATION_BREADTH)).toBe(MIN_CLUSTER_SIZE);
 	});
 
-	it('declares the party size once it exceeds the floor', () => {
+	it('declares the serving-machine count once it exceeds the floor', () => {
 		// 5 >= 3 is what puts the corroboration floor at two voters unconditionally,
 		// including when the cohort view has momentarily shrunk to one peer. That is the
 		// whole point of the derivation.
@@ -602,15 +608,15 @@ describe('resolveRepairYardstick', () => {
 	});
 
 	it('caps at the replication breadth, because a block never lives on more machines', () => {
-		// Eight machines running strands at a breadth of 4 have a cohort of 4. Declaring 8
+		// Eight machines serving a network at a breadth of 4 have a cohort of 4. Declaring 8
 		// would make the commit freshness window's `approvals > 8/2` unsatisfiable (a
-		// super-majority of 4 is 3), so no strand commit would ever arm it — and buy
+		// super-majority of 4 is 3), so no commit would ever arm it — and buy
 		// nothing on repair, whose floor is already capped at 4. Do not drop this clamp.
 		expect(resolveRepairYardstick(8, 4)).toBe(4);
 	});
 
 	it('declares the honest 2 for a strand configured at the minimum breadth', () => {
-		// A five-machine party running a `clusterSize: 2` strand has a cohort of two, and
+		// Five machines serving a `clusterSize: 2` strand still have a cohort of two, and
 		// two is what it should declare — the relaxed single-voter floor is the correct
 		// reading of a two-machine cohort, not a bug for a later reader to "fix".
 		expect(resolveRepairYardstick(5, MIN_CLUSTER_SIZE)).toBe(MIN_CLUSTER_SIZE);
@@ -620,7 +626,10 @@ describe('resolveRepairYardstick', () => {
 describe('controlClusterPolicy / strandClusterPolicy', () => {
 	it('returns the frozen base constant BY IDENTITY when the count is unknown', () => {
 		// Identity, not equality: the unknown path must be provably today's behaviour, and
-		// every existing consumer and identity assertion has to keep working.
+		// every existing consumer and identity assertion has to keep working. For a strand
+		// this is the ONLY path production takes — no per-strand serving count exists yet
+		// (`backlog/feat-strand-yardstick-from-serving-machines`), so cadre-core hands
+		// `strandClusterPolicy` nothing and every strand node runs the frozen constant.
 		expect(controlClusterPolicy(undefined)).toBe(CONTROL_CLUSTER_POLICY);
 		expect(controlClusterPolicy()).toBe(CONTROL_CLUSTER_POLICY);
 		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE)).toBe(STRAND_CLUSTER_POLICY);
@@ -659,6 +668,8 @@ describe('controlClusterPolicy / strandClusterPolicy', () => {
 	});
 
 	it('caps the strand yardstick at that strand\'s own breadth', () => {
+		// Exercises the derived path the strand seam will use once a serving count exists;
+		// nothing reaches it in production today.
 		expect(strandClusterPolicy(DEFAULT_STRAND_CLUSTER_SIZE, 8).repairCorroborationClusterSize)
 			.toBe(DEFAULT_STRAND_CLUSTER_SIZE);
 		expect(strandClusterPolicy(MIN_CLUSTER_SIZE, 5).repairCorroborationClusterSize)

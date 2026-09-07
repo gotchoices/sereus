@@ -62,14 +62,35 @@ export interface StartStrandConfig {
    */
   clusterSize?: number;
   /**
-   * Machines enrolled in this party (this node included), for the strand node's
-   * block-repair corroboration yardstick — see `resolveRepairYardstick`. Volatile:
-   * re-resolved on every resume beside the cohort seed, because a party grows and
-   * shrinks while a strand is hibernating. Omitting it means "this node does not
-   * know", which declares nothing and leaves Optimystic's repair floor exactly
-   * where it sits today.
+   * Machines that SERVE THIS STRAND (this node included), for the strand node's
+   * block-repair corroboration yardstick — see `resolveRepairYardstick`. It must be
+   * an authenticated per-strand count: the machines that actually run a node for this
+   * strand, not the machines that exist.
+   *
+   * **The party's enrolled-machine count is NOT this number and must never be passed
+   * here.** A strand launches only on machines whose embedding app registered its sApp
+   * config (`CadreNode.addStrand`), so a closed strand shared by two machines of a
+   * three-machine party is served by two. Passing three over-declares, and
+   * over-declaring is the unsafe direction: at a declaration of 3 or more Optimystic
+   * pins the repair corroboration floor at two corroborating peers, which a cohort
+   * that can only ever field one peer can never reach — so the strand can never repair
+   * a block (`cluster-fetch:no-quorum`, surfacing as reads failing with `Missing
+   * block`). That regression is why this field was renamed off "enrolledMachines":
+   * `bug-strand-yardstick-counts-party-machines`.
+   *
+   * **Nothing feeds it in production today.** No authenticated per-strand serving count
+   * exists yet, so `CadreNode` passes nothing and the strand node runs the frozen
+   * `STRAND_CLUSTER_POLICY` — declaring no yardstick, which leaves the known,
+   * upstream-tracked single-voter exposure
+   * (`backlog/debt-read-repair-single-voter-corroboration`). Building the count is
+   * `backlog/feat-strand-yardstick-from-serving-machines`; this field and its
+   * threading are the seam it plugs into.
+   *
+   * Volatile when a source does exist: re-resolve it on every resume beside the cohort
+   * seed, since machines join and leave a strand while it hibernates. Omitting it means
+   * "this node does not know", which declares nothing.
    */
-  enrolledMachines?: number;
+  servingMachines?: number;
   /**
    * Tuning for the strand peer-join block catch-up ({@link PeerJoinBackfill}),
    * forwarded from {@link CadreNodeConfig.strandBackfill}. When the strand's
@@ -94,11 +115,13 @@ export interface ResumeStrandOverrides {
    */
   bootstrapNodes?: string[];
   /**
-   * Freshly-read enrolled-machine count for the repair yardstick (see
-   * {@link StartStrandConfig.enrolledMachines}). Moves whenever the party enrolls or
-   * removes a machine, which a hibernating strand does not otherwise notice.
+   * Freshly-read count of the machines serving this strand, for the repair yardstick
+   * (see {@link StartStrandConfig.servingMachines} — including why the party's
+   * enrolled-machine count is not it). Moves whenever a machine starts or stops
+   * serving the strand, which a hibernating strand does not otherwise notice. Nothing
+   * passes it today.
    */
-  enrolledMachines?: number;
+  servingMachines?: number;
 }
 
 /**
@@ -328,7 +351,7 @@ export class StrandInstanceManager {
    * Build (or rebuild) the libp2p node + StrandDatabase for an instance and
    * attach them, transitioning it to `active`. Shared by `startStrand` (fresh
    * launch) and `resumeStrand` (rehydrating a quiesced instance). Reads all
-   * volatile inputs (bootstrapNodes, enrolledMachines, network, profile,
+   * volatile inputs (bootstrapNodes, servingMachines, network, profile,
    * privateKey, sApp config) from `config`, so the caller controls the
    * cohort-derived values. Storage is the
    * one input it does NOT re-read from `config`: that belongs to the instance and
@@ -381,11 +404,13 @@ export class StrandInstanceManager {
         // breadth reasoning, and the shape match with the control policy is a coincidence.
         //
         // The builder declares this node's block-repair corroboration yardstick from the
-        // party's enrolled-machine count, capped at the breadth above (a block never lives
-        // on more machines than the cohort is wide). Given no count it returns the frozen
-        // STRAND_CLUSTER_POLICY itself. Resolved HERE rather than at `startStrand`, so a
-        // wake from hibernation picks up a party that grew while the strand slept.
-        clusterPolicy: strandClusterPolicy(strandClusterSize, config.enrolledMachines),
+        // count of machines SERVING this strand, capped at the breadth above (a block
+        // never lives on more machines than the cohort is wide). Given no count — the
+        // production path today, since no per-strand serving count exists yet — it
+        // returns the frozen STRAND_CLUSTER_POLICY itself, declaring nothing. Resolved
+        // HERE rather than at `startStrand`, so a wake from hibernation would pick up a
+        // serving set that changed while the strand slept.
+        clusterPolicy: strandClusterPolicy(strandClusterSize, config.servingMachines),
         arachnode: {
           enableRingZulu: config.profile === 'storage'
         },
@@ -575,7 +600,7 @@ export class StrandInstanceManager {
    * Resume a previously-quiesced strand: rebuild its libp2p node + StrandDatabase
    * from the retained launch config and re-attach them, transitioning it back to
    * `active`. `overrides` re-applies volatile inputs that may have changed since
-   * launch (the cohort `bootstrapNodes` seed and the party's `enrolledMachines`
+   * launch (the cohort `bootstrapNodes` seed and the strand's `servingMachines`
    * count) and updates the retained config so a later resume reuses the latest
    * values. Returns the live instance unchanged if it is already running.
    */
@@ -606,7 +631,7 @@ export class StrandInstanceManager {
     const resumeConfig: StartStrandConfig = {
       ...launchConfig,
       bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes,
-      enrolledMachines: overrides?.enrolledMachines ?? launchConfig.enrolledMachines
+      servingMachines: overrides?.servingMachines ?? launchConfig.servingMachines
     };
     this.launchConfigs.set(strandId, resumeConfig);
 

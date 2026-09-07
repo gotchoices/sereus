@@ -160,17 +160,21 @@ export const CONTROL_CLUSTER_POLICY = Object.freeze({
  * voter is a third machine **or a declaration that there are three** — not a wider target.
  * `corroboratorCapacity` takes the max of the cohort peers actually present and the declared
  * repair yardstick, so raising *this* number (the replication breadth) does nothing: the
- * yardstick is a separate declaration. Cadre now derives it from the machines enrolled in the
- * party ({@link resolveRepairYardstick}, threaded to {@link strandClusterPolicy} through
- * `StartStrandConfig.enrolledMachines`), so a strand on a party of three or more declares its
- * way to a floor of two corroborators even when its cohort view has momentarily shrunk to one
- * peer — which is the case the declaration exists for, since that view comes from
- * unauthenticated routing. What remains exposed is a strand whose declaration is honestly 2: an
- * explicit `clusterSize: 2`, or a genuinely two-machine party, which fields exactly one peer and
- * can never supply a second corroborator however wide the target is. The underlying Optimystic
- * behaviour is unfixed — `backlog/debt-read-repair-single-voter-corroboration` — so those still
- * take the exposure. Raising this number does not buy the way out; a machine, or an honest
- * declaration of the machines already enrolled, does.
+ * yardstick is a separate declaration, and **a strand node makes no such declaration today**.
+ * The control network derives one from the party's enrolled machines
+ * ({@link controlClusterPolicy}), which is exact there because every enrolled machine runs the
+ * control node. A strand has no equivalent count: it launches only on machines whose embedder
+ * registered its sApp config, and reusing the party count over-declares — which is worse than
+ * declaring nothing, because at a yardstick of three or more the corroboration floor is pinned
+ * at two peers and a strand that can field only one could then never repair at all. So every
+ * strand runs {@link STRAND_CLUSTER_POLICY} unchanged and takes the single-voter exposure
+ * whenever its cohort view shrinks to one peer. The underlying Optimystic behaviour is unfixed
+ * (`backlog/debt-read-repair-single-voter-corroboration`) and the per-strand serving count that
+ * would let a strand declare honestly is `backlog/feat-strand-yardstick-from-serving-machines`
+ * — its seam ({@link strandClusterPolicy}'s `servingMachines`, threaded through
+ * `StartStrandConfig.servingMachines`) is already in place and fed by nothing. Raising this
+ * number does not buy the way out; a machine, or an honest declaration of the machines actually
+ * serving the strand, does.
  *
  * **Why not derived from the party or member count.** The strand's `Member` rows live *in* the
  * strand database, which runs on the strand libp2p node, whose cluster size is frozen at
@@ -238,14 +242,16 @@ export const DEFAULT_STRAND_CLUSTER_SIZE = 4;
  * number, so the relaxed branch is reachable only by a cohort that is genuinely that small. See
  * Optimystic's `cluster/cluster-policy.ts` ("Why two size yardsticks, not one").
  *
- * **`assumedClusterSize` is now the ADMISSION yardstick**, for the same reason and with the same
- * warning as {@link CONTROL_CLUSTER_POLICY}'s: whenever the enrolled-machine count is known the
- * repair corroboration floor reads {@link strandClusterPolicy}'s separate
- * `repairCorroborationClusterSize` instead, leaving the 2 here to govern only the membership
- * admission gate's low-confidence fallback (it remains the repair fallback on the
- * unknown-count path, which is what the paragraph above describes). Do not raise it to match the
- * repair yardstick — a strand shared between phones cannot promise that `ceil(0.75 x N)` of its
- * machines are awake, and the gate would refuse its writes.
+ * `assumedClusterSize` also carries the ADMISSION yardstick, and on the strand path it carries
+ * BOTH jobs today. Optimystic prefers a separately declared
+ * `repairCorroborationClusterSize` for the repair floor and falls back to this field only when
+ * nothing was declared — which, for a strand, is always: no per-strand serving count exists yet,
+ * so {@link strandClusterPolicy} declares nothing and the 2 here governs the repair floor
+ * exactly as the paragraph above describes, alongside the membership admission gate's
+ * low-confidence fallback. Do not raise it if a strand yardstick ever does get declared
+ * (`backlog/feat-strand-yardstick-from-serving-machines`): a strand shared between phones cannot
+ * promise that `ceil(0.75 x N)` of its machines are awake, and the admission gate would refuse
+ * its writes. Same reason and same warning as {@link CONTROL_CLUSTER_POLICY}'s.
  *
  * The `satisfies` is load-bearing for the same reason as {@link CONTROL_CLUSTER_POLICY}'s.
  */
@@ -284,8 +290,8 @@ export function resolveStrandClusterSize(configured?: number): number {
 }
 
 /**
- * The repair yardstick to declare for a network, from the machines enrolled in this party and
- * the breadth that network replicates to.
+ * The repair yardstick to declare for a network, from the machines that SERVE that network and
+ * the breadth it replicates to.
  *
  * ## What this number does
  *
@@ -318,7 +324,7 @@ export function resolveStrandClusterSize(configured?: number): number {
  *   `approvals > fullCohortSize / 2`. Here a larger `N` is NOT free — see the NOTE below.
  * - The `repair-fault-tolerance` startup advisory — log text only.
  *
- * Hence `max(MIN_CLUSTER_SIZE, min(enrolledMachines, replicationBreadth))`, two clamps each for
+ * Hence `max(MIN_CLUSTER_SIZE, min(servingMachines, replicationBreadth))`, two clamps each for
  * a stated reason:
  *
  * - **Capped at the replication breadth**, because a block only ever lives on
@@ -341,18 +347,27 @@ export function resolveStrandClusterSize(configured?: number): number {
  * anything over it — so two members disagreeing (one has replicated a new `CadrePeer` row, one
  * has not) is harmless by construction, not a race to close.
  *
- * ## The caller must pass machines that SERVE this network, and today one caller does not
+ * ## The contract: callers pass machines that SERVE this network, or nothing at all
  *
  * Over-declaring is not merely wasteful, it is unsafe in the availability direction: at
  * `N >= 3` the corroboration floor is pinned at two peers, so a cohort that can only ever
  * field one peer can never repair at all (`cluster-fetch:no-quorum`), where a declaration of
- * 2 would have let its single peer answer. Cadre's strand path currently passes the party's
- * enrolled-machine count, which is an upper bound on the machines serving a *strand* rather
- * than the count itself — a strand is launched only on machines whose embedder registered its
- * sApp config (`CadreNode.addStrand`), so a closed strand shared by two machines of a
- * three-machine party is over-declared today. Tracked as
- * `fix/bug-strand-yardstick-counts-party-machines`. The control network has no such gap:
- * every enrolled machine runs the control node by construction.
+ * 2 would have let its single peer answer. So the number a caller passes must be the machines
+ * that actually serve the network in question — never a broader population that merely bounds
+ * it from above, and never a guess. A caller with no trustworthy count passes nothing, which
+ * the builders below turn into "declare no yardstick at all".
+ *
+ * The CONTROL network satisfies this from the party's enrolled machines, because every enrolled
+ * machine runs the control node by construction: there, enrolled IS serving
+ * ({@link controlClusterPolicy}, fed by cadre-core's `enrolled-machine-store.ts`). A STRAND does
+ * not — it launches only on machines whose embedder registered its sApp config
+ * (`CadreNode.addStrand`), so a closed strand shared by two machines of a three-machine party is
+ * served by two, and declaring three would be exactly the unsafe over-declaration above. No
+ * authenticated per-strand serving count exists yet, so strand nodes declare NOTHING and run the
+ * frozen {@link STRAND_CLUSTER_POLICY} — keeping the known, upstream-tracked single-voter
+ * exposure (`backlog/debt-read-repair-single-voter-corroboration`) rather than risking the
+ * cannot-repair-at-all failure. Building that count:
+ * `backlog/feat-strand-yardstick-from-serving-machines`.
  *
  * Both arguments must be positive integers; the builders below sanitize before calling, and
  * a degenerate value here propagates (`NaN` in, `NaN` out) rather than being clamped.
@@ -366,21 +381,21 @@ export function resolveStrandClusterSize(configured?: number): number {
  * NOT measured under load. If a large, mostly-hibernating party's read path ever shows up as
  * slow, this is the first thing to look at.
  */
-export function resolveRepairYardstick(enrolledMachines: number, replicationBreadth: number): number {
-	return Math.max(MIN_CLUSTER_SIZE, Math.min(enrolledMachines, replicationBreadth));
+export function resolveRepairYardstick(servingMachines: number, replicationBreadth: number): number {
+	return Math.max(MIN_CLUSTER_SIZE, Math.min(servingMachines, replicationBreadth));
 }
 
 /**
- * The enrolled-machine count as a usable number, or `undefined` for "this node does not know".
+ * A serving-machine count as a usable number, or `undefined` for "this node does not know".
  * Anything that is not a positive integer is unknown rather than clamped: Optimystic itself
  * treats a degenerate declaration as absent, so silently rounding one here would hide a caller
  * bug behind a number nobody chose.
  */
-function asKnownMachineCount(enrolledMachines?: number): number | undefined {
-	return enrolledMachines !== undefined
-		&& Number.isInteger(enrolledMachines)
-		&& enrolledMachines >= 1
-		? enrolledMachines
+function asKnownMachineCount(servingMachines?: number): number | undefined {
+	return servingMachines !== undefined
+		&& Number.isInteger(servingMachines)
+		&& servingMachines >= 1
+		? servingMachines
 		: undefined;
 }
 
@@ -388,6 +403,11 @@ function asKnownMachineCount(enrolledMachines?: number): number | undefined {
  * {@link CONTROL_CLUSTER_POLICY} with the repair yardstick declared from `enrolledMachines`
  * (see {@link resolveRepairYardstick}); the frozen base object ITSELF when the count is unknown,
  * so the cold path is provably today's behaviour and identity assertions keep holding.
+ *
+ * The parameter keeps the name `enrolledMachines`, unlike {@link strandClusterPolicy}'s, because
+ * for the CONTROL network the two quantities are one and the same by construction: every
+ * enrolled machine runs the control node, so the machines enrolled in the party ARE the machines
+ * serving this network.
  */
 export function controlClusterPolicy(enrolledMachines?: number): NonNullable<NodeOptions['clusterPolicy']> {
 	const known = asKnownMachineCount(enrolledMachines);
@@ -401,16 +421,23 @@ export function controlClusterPolicy(enrolledMachines?: number): NonNullable<Nod
 }
 
 /**
- * {@link STRAND_CLUSTER_POLICY} with the repair yardstick declared from `enrolledMachines` and
- * this strand's own `clusterSize` (already resolved by {@link resolveStrandClusterSize}, so it is
- * at least {@link MIN_CLUSTER_SIZE} and the formula's two clamps can never cross); the frozen
- * base object ITSELF when the count is unknown.
+ * {@link STRAND_CLUSTER_POLICY} with the repair yardstick declared from `servingMachines` — the
+ * machines that serve THIS strand — and this strand's own `clusterSize` (already resolved by
+ * {@link resolveStrandClusterSize}, so it is at least {@link MIN_CLUSTER_SIZE} and the formula's
+ * two clamps can never cross); the frozen base object ITSELF when the count is unknown.
+ *
+ * **The unknown path is the production path today.** No authenticated per-strand serving count
+ * exists, and the party's enrolled-machine count is emphatically not one (see
+ * {@link resolveRepairYardstick}'s contract section), so cadre-core passes nothing and every
+ * strand node runs the frozen constant. The parameter and its threading through
+ * `StartStrandConfig.servingMachines` stay in place as the seam that
+ * `backlog/feat-strand-yardstick-from-serving-machines` plugs a real count into.
  */
 export function strandClusterPolicy(
 	clusterSize: number,
-	enrolledMachines?: number
+	servingMachines?: number
 ): NonNullable<NodeOptions['clusterPolicy']> {
-	const known = asKnownMachineCount(enrolledMachines);
+	const known = asKnownMachineCount(servingMachines);
 	if (known === undefined) {
 		return STRAND_CLUSTER_POLICY;
 	}

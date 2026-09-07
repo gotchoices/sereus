@@ -122,9 +122,9 @@ describe('StrandInstanceManager cluster size wiring', () => {
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-policy'));
 
-    // Structural, not identity: with no `enrolledMachines` the builder returns the shared
+    // Structural, not identity: with no `servingMachines` the builder returns the shared
     // constant itself, but the assertion has to survive a config that DOES carry a count
-    // (see the enrolled-machine tests below), where the policy is a derived object. What
+    // (see the serving-machine tests below), where the policy is a derived object. What
     // must not drift is the shape — a hand-copied literal here is exactly how this site and
     // the plugin's networked e2e mesh diverged before. The identity of the unknown-count
     // path is pinned separately, immediately below.
@@ -149,8 +149,12 @@ describe('StrandInstanceManager cluster size wiring', () => {
   });
 
   it('passes the frozen STRAND_CLUSTER_POLICY BY IDENTITY when no machine count is known', async () => {
-    // The cold path — no control database, or a node whose membership rows have not
-    // replicated yet — must be provably today's behaviour, not a look-alike object.
+    // THIS IS THE PRODUCTION PATH. No authenticated per-strand serving count exists yet, so
+    // `CadreNode` passes no `servingMachines` at all and every strand node gets the frozen
+    // constant itself — provably, not a look-alike object. See
+    // `StartStrandConfig.servingMachines` for why the party's enrolled-machine count is not a
+    // substitute, and `backlog/feat-strand-yardstick-from-serving-machines` for the count that
+    // will eventually exercise the derived path the tests below cover.
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-policy-unknown'));
 
@@ -159,13 +163,18 @@ describe('StrandInstanceManager cluster size wiring', () => {
     );
   });
 
-  it('declares the repair yardstick from the enrolled-machine count', async () => {
+  it('declares the repair yardstick from the serving-machine count', async () => {
+    // Plumbing coverage, not a production path: nothing feeds `servingMachines` today (see the
+    // identity test above). It stays because the threading is the seam
+    // `backlog/feat-strand-yardstick-from-serving-machines` plugs into, and a count that
+    // silently stopped reaching `createLibp2pNode` would make that feature a no-op.
+    //
     // Optimystic measures a block-repair answer against a DECLARED size, not the peers
     // currently visible — the visible set comes from unauthenticated routing, so a
     // partition can shrink it and, undeclared, talk the corroboration floor down to a
-    // single voter. Five machines at a breadth of four declares four.
+    // single voter. Five serving machines at a breadth of four declares four.
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-policy-enrolled', { enrolledMachines: 5 }));
+    await manager.startStrand(createStartConfig('cs-policy-serving', { servingMachines: 5 }));
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -185,12 +194,12 @@ describe('StrandInstanceManager cluster size wiring', () => {
   });
 
   it('caps the declared yardstick at this strand\'s own configured breadth', async () => {
-    // A strand explicitly configured at the minimum has a cohort of two whatever the
-    // party size, and two is the honest declaration for it. Do not "fix" this to 5.
+    // A strand explicitly configured at the minimum has a cohort of two however many
+    // machines serve it, and two is the honest declaration for it. Do not "fix" this to 5.
     const manager = new StrandInstanceManager();
     await manager.startStrand(createStartConfig('cs-policy-capped', {
       clusterSize: MIN_CLUSTER_SIZE,
-      enrolledMachines: 5
+      servingMachines: 5
     }));
 
     expect(mocks.createLibp2pNode).toHaveBeenCalledWith(
@@ -205,7 +214,7 @@ describe('StrandInstanceManager cluster size wiring', () => {
     // count (or an unknown one). Reverting to "undeclared" on such a wake would quietly
     // reopen the single-voter floor the launch-time declaration closed.
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-policy-resume-retained', { enrolledMachines: 5 }));
+    await manager.startStrand(createStartConfig('cs-policy-resume-retained', { servingMachines: 5 }));
     await manager.quiesceStrand('cs-policy-resume-retained');
     await manager.resumeStrand('cs-policy-resume-retained', { bootstrapNodes: [] });
 
@@ -220,13 +229,13 @@ describe('StrandInstanceManager cluster size wiring', () => {
   });
 
   it('applies a fresh machine count on resume and retains it for the next one', async () => {
-    // The party grew from two to three while the strand slept; the rebuilt node must
+    // A third machine started serving the strand while it slept; the rebuilt node must
     // declare three (which is what pins the floor at two corroborators), and a LATER
     // no-override resume must still see three rather than reverting to the launch value.
     const manager = new StrandInstanceManager();
-    await manager.startStrand(createStartConfig('cs-policy-resume-fresh', { enrolledMachines: 2 }));
+    await manager.startStrand(createStartConfig('cs-policy-resume-fresh', { servingMachines: 2 }));
     await manager.quiesceStrand('cs-policy-resume-fresh');
-    await manager.resumeStrand('cs-policy-resume-fresh', { bootstrapNodes: [], enrolledMachines: 3 });
+    await manager.resumeStrand('cs-policy-resume-fresh', { bootstrapNodes: [], servingMachines: 3 });
 
     expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
       expect.objectContaining({
