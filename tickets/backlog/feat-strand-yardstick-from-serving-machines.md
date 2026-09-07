@@ -66,3 +66,26 @@ it correctly (`resolveRepairYardstick`). What is missing is a trustworthy **sour
 - A node that does not know declares nothing (today's behavior), never a guess.
 - Cross-platform: any persistence must ride the existing app-supplied `DurableSlot` idiom
   (browser, RN, Node all inject their own backends today).
+
+## Added at review of `bug-strand-yardstick-counts-party-machines` (2026-09-07)
+
+Two arms found reviewing that fix, both resolving at the same site this ticket already owns
+(`packages/cadre-core/src/strand-instance-manager.ts`).
+
+- **Nothing stops a caller passing the wrong number into `StartStrandConfig.servingMachines`.**
+  The fix removed the one bad caller and renamed the field so the mistake is harder to make by
+  accident, but the field is public, plainly typed `number`, and an embedder driving
+  `StrandInstanceManager` directly can still hand it the party's machine count — which is the
+  exact failure this ticket's safety property exists to prevent. Prose forbids it; nothing
+  enforces it. When the real count lands, consider making the count a value only its
+  authenticated producer can mint (an opaque type with a single constructor) rather than a bare
+  `number` any caller can supply, so the "declared value never exceeds the serving machines"
+  requirement above is carried by the type rather than by a comment. Not filed separately —
+  there is nothing to guard until something can produce the count.
+- **`resumeStrand`'s override merge cannot clear the count.** It is
+  `overrides?.servingMachines ?? launchConfig.servingMachines`, so a resume can raise or lower
+  the number but cannot say "this node no longer knows" — the direction that would go back to
+  declaring nothing. Harmless while nothing feeds the field; it matters the moment the source
+  can legitimately fail (a strand whose member rows became unreadable), because the node would
+  then keep declaring a stale count over a serving set it can no longer see. A `NOTE:` marks
+  the merge site.

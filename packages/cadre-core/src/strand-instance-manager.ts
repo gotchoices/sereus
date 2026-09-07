@@ -119,7 +119,8 @@ export interface ResumeStrandOverrides {
    * (see {@link StartStrandConfig.servingMachines} — including why the party's
    * enrolled-machine count is not it). Moves whenever a machine starts or stops
    * serving the strand, which a hibernating strand does not otherwise notice. Nothing
-   * passes it today.
+   * passes it today. Omitting it here does NOT mean "unknown" the way omitting it from
+   * {@link StartStrandConfig} does — it retains the last value; see `resumeStrand`.
    */
   servingMachines?: number;
 }
@@ -631,6 +632,13 @@ export class StrandInstanceManager {
     const resumeConfig: StartStrandConfig = {
       ...launchConfig,
       bootstrapNodes: overrides?.bootstrapNodes ?? launchConfig.bootstrapNodes,
+      // NOTE: `??` retains, so an override can raise or lower the count but cannot CLEAR it
+      // back to "this node no longer knows" — the direction that would declare nothing. Moot
+      // while nothing feeds `servingMachines` at all; if a source lands
+      // (`backlog/feat-strand-yardstick-from-serving-machines`) that can legitimately lose the
+      // count — a strand whose member rows became unreadable — this merge must gain an explicit
+      // clear rather than silently declaring a stale number over a serving set it can no longer
+      // see. Same applies to `bootstrapNodes` above, where a stale seed is harmless.
       servingMachines: overrides?.servingMachines ?? launchConfig.servingMachines
     };
     this.launchConfigs.set(strandId, resumeConfig);

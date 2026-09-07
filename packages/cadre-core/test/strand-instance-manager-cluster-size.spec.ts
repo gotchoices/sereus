@@ -163,6 +163,23 @@ describe('StrandInstanceManager cluster size wiring', () => {
     );
   });
 
+  it('still passes STRAND_CLUSTER_POLICY BY IDENTITY after a quiesce/resume with no count', async () => {
+    // The other half of the production path, and the one a hibernating strand walks many
+    // times a day. `resumeStrand` rebuilds the retained launch config with an explicit
+    // `servingMachines: overrides?.servingMachines ?? launchConfig.servingMachines`, so the
+    // resumed config carries the KEY with an `undefined` value where the launch config had
+    // no key at all. That must still resolve to the frozen constant itself — a rebuild that
+    // started returning a derived look-alike would arm a repair floor nothing declared.
+    const manager = new StrandInstanceManager();
+    await manager.startStrand(createStartConfig('cs-policy-unknown-resume'));
+    await manager.quiesceStrand('cs-policy-unknown-resume');
+    await manager.resumeStrand('cs-policy-unknown-resume', { bootstrapNodes: [] });
+
+    expect(mocks.createLibp2pNode).toHaveBeenLastCalledWith(
+      expect.objectContaining({ clusterPolicy: STRAND_CLUSTER_POLICY })
+    );
+  });
+
   it('declares the repair yardstick from the serving-machine count', async () => {
     // Plumbing coverage, not a production path: nothing feeds `servingMachines` today (see the
     // identity test above). It stays because the threading is the seam

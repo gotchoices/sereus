@@ -4299,20 +4299,13 @@ export class CadreNode implements SAppIdLookup {
       bootstrapNodes,
       requireSignedSchemas: this.config.requireSignedSchemas,
       clusterSize: this.config.strandClusterSize,
-      // NOTE: deliberately NO `servingMachines`, so `strandClusterPolicy` declares no
-      // block-repair corroboration yardstick and the strand node runs the frozen
-      // STRAND_CLUSTER_POLICY. The only count this node holds is the party's enrolled
-      // machines (`authorizedControlPeers`), and that is the WRONG quantity for a
-      // strand: a strand launches only on machines whose embedder registered its sApp
-      // config (see `addStrand`), so a strand shared by two machines of a three-machine
-      // party would be over-declared — and an over-declaration pins Optimystic's
-      // corroboration floor at two peers, which a cohort that can only field one peer
-      // can never reach, so it could never repair a block at all. Declaring nothing
-      // instead leaves the known, upstream-tracked single-voter exposure
-      // (`backlog/debt-read-repair-single-voter-corroboration`), which is strictly
-      // better. An authenticated per-strand serving count is
-      // `backlog/feat-strand-yardstick-from-serving-machines`; when it lands it feeds
-      // `servingMachines` here and in `resumeStrandRuntime`.
+      // NOTE: deliberately NO `servingMachines`, so the strand node declares no repair
+      // yardstick and runs the frozen STRAND_CLUSTER_POLICY. The only count this node holds
+      // is the party's enrolled machines (`authorizedControlPeers`), and passing that here
+      // is the regression `bug-strand-yardstick-counts-party-machines` removed — a strand
+      // runs on a subset of the party, and over-declaring makes repair impossible rather
+      // than merely weak. The full argument, and the count that will legitimately go here,
+      // are on `StartStrandConfig.servingMachines`.
       backfill: this.config.strandBackfill,
       founder
     });
